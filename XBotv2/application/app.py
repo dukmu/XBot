@@ -41,6 +41,7 @@ async def start_application(
     session_id: str | None = None,
     thread_id: str = "agent",
     workspace_root: Path | str | None = None,
+    no_plugins: bool = False,
     plugin_dirs: list[Path | str] | None = None,
     llm_override=None,
     selected_agent: str | None = None,
@@ -56,8 +57,9 @@ async def start_application(
 
     Returns the owning XCore application context. Consumers obtain the loop
     driver from ``ctx.engine``; lifecycle and plugin services remain on the
-    application instead of leaking through Engine. ``extra_plugins`` appends
-    session-scoped plugin entries."""
+    application instead of leaking through Engine. ``plugin_dirs`` only adds
+    external import roots; ``no_plugins`` selects the core Agent composition.
+    ``extra_plugins`` contains session-scoped configuration patches."""
     _validate_identifier("provider_name", provider_name)
     session_id = session_id or _new_session_id()
     _validate_identifier("session_id", session_id)
@@ -79,6 +81,7 @@ async def start_application(
         paths=paths,
         workspace_root=workspace_root,
         is_subagent=is_subagent,
+        no_plugins=no_plugins,
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,
     )
@@ -88,6 +91,7 @@ async def start_application(
         provider_name=provider_name,
         session_id=session_id,
         workspace_root=workspace_root,
+        no_plugins=no_plugins,
         plugin_dirs=plugin_dirs,
         llm_override=llm_override,
         parent_thread_id=thread_id,
@@ -156,7 +160,7 @@ async def create_agent_application(
     """Typed factory exported to composition roots, not session internals."""
     extra_plugins = (
         [
-            {"id": name, "name": name, "config": config}
+            {"id": name, "config": config}
             for name, config in options.plugin_configs.items()
         ]
         if options.plugin_configs
@@ -168,7 +172,7 @@ async def create_agent_application(
         session_id=options.session_id,
         thread_id=options.thread_id,
         workspace_root=options.workspace_root,
-        plugin_dirs=[] if options.no_plugins else None,
+        no_plugins=options.no_plugins,
         extra_plugins=extra_plugins,
         llm_override=options.model_override,
         selected_agent=options.selected_agent,

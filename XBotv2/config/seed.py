@@ -8,8 +8,9 @@ from pathlib import Path
 _INITIAL_PLUGINS_YAML = """\
 # Global user plugin tree overlay for this data directory.
 # The bundled XBotv2/xcore.yaml is the base tree; entries here are merged
-# over it (same-id entries deep-merge config, new entries mount). Workspace
-# overlays live in <workspace>/.xbot/plugins.yaml instead.
+# over it (same-id entries retain omitted fields and deep-merge config; new
+# entries require name). Workspace overlays take precedence and live in
+# <workspace>/.xbot/plugins.yaml. Session overrides are applied last.
 # Example:
 # - id: agents
 #   disabled: true

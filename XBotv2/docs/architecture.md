@@ -17,8 +17,9 @@ Agent loop -> never imports -> concrete plugins
 ```
 
 Core defines interfaces; application startup wires plugins from plugin-tree entries.
-`plugin_dirs=[]` disables plugin discovery (pure-core test mode).
-`--no-plugins` CLI flag equivalent.
+`plugin_dirs` only supplies external Python import roots. `--no-plugins`
+selects the core Agent composition: optional capabilities and external plugins
+are absent, while the services required to run an Agent remain mounted.
 
 ### System Architecture
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from XBotv2.loader import PluginTree
+from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader.types import PluginOverlay
 
 
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
@@ -19,6 +20,7 @@ OPTIONAL_CAPABILITIES = frozenset({
     "subagents",
     "browser",
     "token_manager",
+    "workspace_instructions",
 })
 
 
@@ -27,29 +29,41 @@ def load_agent_tree(
     paths: Any,
     workspace_root: Path | str,
     is_subagent: bool,
+    no_plugins: bool,
     plugin_dirs: list[Path | str] | None,
     extra_plugins: list[dict[str, Any]] | None,
 ) -> PluginTree:
-    """Load the bundled Agent tree and apply external configuration layers."""
-    disabled = SUBAGENT_FORBIDDEN_PLUGINS if is_subagent else frozenset()
-    values = {"disabled": disabled}
-    tree = PluginTree.from_yaml(DEFAULT_TREE, values=values)
-    if plugin_dirs is not None:
-        tree = tree.excluding(set(OPTIONAL_CAPABILITIES))
-
-    entries = _external_entries(plugin_dirs, disabled)
-    if entries:
-        tree = tree.merged_with(PluginTree.from_dict(entries))
-    if extra_plugins:
-        tree = tree.merged_with(PluginTree.from_dict(extra_plugins))
+    """Compose the Agent tree in global, workspace, then session order."""
+    excluded = frozenset(
+        (OPTIONAL_CAPABILITIES if no_plugins else frozenset())
+        | (SUBAGENT_FORBIDDEN_PLUGINS if is_subagent else frozenset())
+    )
+    external_entries = _external_entries(plugin_dirs, excluded)
+    if no_plugins:
+        excluded |= frozenset(entry.id for entry in external_entries)
+    tree = PluginTree.from_yaml(DEFAULT_TREE).excluding(excluded)
+    if not no_plugins:
+        tree = PluginTree([*tree.entries, *external_entries])
 
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file, values=values))
+        tree = tree.patched_with(
+            PluginOverlay.from_yaml(plugins_file),
+            excluded=excluded,
+            allow_new=not no_plugins,
+        )
     workspace_plugins = Path(workspace_root) / ".xbot" / "plugins.yaml"
     if workspace_plugins.exists():
-        tree = tree.merged_with(
-            PluginTree.from_yaml(workspace_plugins, values=values)
+        tree = tree.patched_with(
+            PluginOverlay.from_yaml(workspace_plugins),
+            excluded=excluded,
+            allow_new=not no_plugins,
+        )
+    if extra_plugins:
+        tree = tree.patched_with(
+            PluginOverlay.from_dict(extra_plugins),
+            excluded=excluded,
+            allow_new=False,
         )
     return tree.for_profile("agent")
 
@@ -59,7 +73,7 @@ def load_server_tree(*, paths: Any) -> PluginTree:
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
+        tree = tree.patched_with(PluginOverlay.from_yaml(plugins_file))
     selected = tree.for_profile("server")
     if not any(entry.id == "llm" for entry in selected.entries):
         raise ValueError("server application requires the llm profile entry")
@@ -71,15 +85,15 @@ def load_acp_tree(*, paths: Any) -> PluginTree:
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
-        tree = tree.merged_with(PluginTree.from_yaml(plugins_file))
+        tree = tree.patched_with(PluginOverlay.from_yaml(plugins_file))
     return tree.for_profile("acp")
 
 
 def _external_entries(
     plugin_dirs: list[Path | str] | None,
-    disabled: frozenset[str],
-) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
+    excluded: frozenset[str],
+) -> list[PluginEntry]:
+    entries: list[PluginEntry] = []
     for plugin_dir in plugin_dirs or []:
         root = Path(plugin_dir)
         if not root.exists():
@@ -90,12 +104,8 @@ def _external_entries(
                 or (candidate / "__init__.py").exists()
             ):
                 continue
-            if candidate.name not in disabled:
-                entries.append({
-                    "id": candidate.name,
-                    "name": candidate.name,
-                    "config": {},
-                })
+            if candidate.name not in excluded:
+                entries.append(PluginEntry(id=candidate.name, name=candidate.name))
     return entries
 
 

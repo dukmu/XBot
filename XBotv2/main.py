@@ -63,7 +63,7 @@ def _common_parser() -> argparse.ArgumentParser:
         "--no-plugins",
         action="store_true",
         default=str(_env("NO_PLUGINS", "")).lower() in {"1", "true", "yes"},
-        help="disable plugin discovery",
+        help="disable optional Agent capabilities and external plugins",
     )
     parser.add_argument(
         "--log-level",
@@ -493,7 +493,7 @@ async def _terminal_loop(args):
             session_id=getattr(args, "session", None),
             thread_id=getattr(args, "thread", "agent"),
             workspace_root=str(_workspace_root(args)),
-            plugin_dirs=[] if args.no_plugins else None,
+            no_plugins=args.no_plugins,
             selected_agent=getattr(args, "agent", None),
         )
         engine = application.engine
@@ -618,7 +618,7 @@ async def _run_once(args):
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
-        plugin_dirs=[] if args.no_plugins else None,
+        no_plugins=args.no_plugins,
         selected_agent=getattr(args, "agent", None),
         interactive=False,
     )

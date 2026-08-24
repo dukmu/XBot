@@ -16,7 +16,7 @@ def _write_plugins(data_dir, overlay):
     """
     entries = []
     for entry_id, patch in overlay.items():
-        item = {"id": entry_id, "name": entry_id}
+        item = {"id": entry_id}
         if "config" in patch:
             item["config"] = patch["config"]
         if patch.get("disabled"):
@@ -1044,7 +1044,7 @@ plugin = ConfiguredPlugin()
 class TestApplicationStartupNoPlugins:
     """Engine works correctly in explicit no-plugin mode."""
 
-    def _make_tree(self, plugin_dirs, include_builtins):
+    def _make_tree(self, *, no_plugins=False, plugin_dirs=None):
         import tempfile
         from XBotv2.application.tree import load_agent_tree
 
@@ -1054,13 +1054,14 @@ class TestApplicationStartupNoPlugins:
             paths=paths,
             workspace_root=tmp,
             is_subagent=False,
-            plugin_dirs=plugin_dirs if not include_builtins else None,
+            no_plugins=no_plugins,
+            plugin_dirs=plugin_dirs,
             extra_plugins=None,
         )
 
-    def test_explicit_empty_plugin_dirs_disables_builtin_scan(self):
-        """Explicit no-plugin mode stays pure even when built-ins exist."""
-        tree = self._make_tree(plugin_dirs=[], include_builtins=False)
+    def test_explicit_no_plugins_excludes_optional_capabilities(self):
+        """No-plugin mode selects the core application profile."""
+        tree = self._make_tree(no_plugins=True)
         ids = {entry.id for entry in tree.entries}
         assert "goal" not in ids
         assert "tools" in ids
@@ -1068,9 +1069,9 @@ class TestApplicationStartupNoPlugins:
         assert "agent-runtime" in ids
         assert "agentloop" in ids
 
-    def test_default_plugin_dirs_scan_builtins(self):
-        """Default runtime mode includes the built-in plugins in the tree."""
-        tree = self._make_tree(plugin_dirs=None, include_builtins=True)
+    def test_default_mode_includes_optional_capabilities(self):
+        """Default runtime mode includes optional built-in capabilities."""
+        tree = self._make_tree()
         ids = {entry.id for entry in tree.entries}
         assert "goal" in ids
         assert "todolist" in ids
@@ -1079,6 +1080,105 @@ class TestApplicationStartupNoPlugins:
         assert "agent-runtime" in ids
         assert "agentloop" in ids
 
+    def test_empty_plugin_dirs_only_disables_external_discovery(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        tree = load_agent_tree(
+            paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+            workspace_root=tmp_path / "workspace",
+            is_subagent=False,
+            no_plugins=False,
+            plugin_dirs=[],
+            extra_plugins=None,
+        )
+        assert "goal" in {entry.id for entry in tree.entries}
+
+    def test_config_layers_apply_global_workspace_then_session(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        paths.config_dir.mkdir(parents=True)
+        paths.config_dir.joinpath("plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "goal",
+                "config": {"layer": {"global": 1, "value": "global"}},
+                "disabled": True,
+            }]),
+            encoding="utf-8",
+        )
+        workspace = tmp_path / "workspace"
+        workspace.joinpath(".xbot").mkdir(parents=True)
+        workspace.joinpath(".xbot", "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "goal",
+                "config": {"layer": {"workspace": 2, "value": "workspace"}},
+                "disabled": False,
+            }]),
+            encoding="utf-8",
+        )
+
+        tree = load_agent_tree(
+            paths=paths,
+            workspace_root=workspace,
+            is_subagent=False,
+            no_plugins=False,
+            plugin_dirs=None,
+            extra_plugins=[{
+                "id": "goal",
+                "config": {"layer": {"session": 3, "value": "session"}},
+                "disabled": True,
+            }],
+        )
+        goal = next(entry for entry in tree.entries if entry.id == "goal")
+        assert goal.name == "goal"
+        assert goal.disabled is True
+        assert goal.config["layer"] == {
+            "global": 1,
+            "workspace": 2,
+            "session": 3,
+            "value": "session",
+        }
+
+    def test_restricted_profiles_cannot_be_reintroduced_by_overlays(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        plugin_root = tmp_path / "plugins"
+        plugin_root.joinpath("external").mkdir(parents=True)
+        plugin_root.joinpath("external", "__init__.py").touch()
+        paths.config_dir.mkdir(parents=True)
+        paths.config_dir.joinpath("plugins.yaml").write_text(
+            yaml.safe_dump([
+                {"id": "goal", "disabled": False},
+                {"id": "workspace_instructions", "disabled": False},
+                {"id": "external", "config": {"enabled": True}},
+            ]),
+            encoding="utf-8",
+        )
+
+        no_plugins_tree = load_agent_tree(
+            paths=paths,
+            workspace_root=tmp_path / "workspace",
+            is_subagent=False,
+            no_plugins=True,
+            plugin_dirs=[plugin_root],
+            extra_plugins=[{"id": "goal", "disabled": False}],
+        )
+        no_plugins_ids = {entry.id for entry in no_plugins_tree.entries}
+        assert "goal" not in no_plugins_ids
+        assert "workspace_instructions" not in no_plugins_ids
+        assert "external" not in no_plugins_ids
+
+        subagent_tree = load_agent_tree(
+            paths=paths,
+            workspace_root=tmp_path / "workspace",
+            is_subagent=True,
+            no_plugins=False,
+            plugin_dirs=[plugin_root],
+            extra_plugins=[{"id": "subagents", "disabled": False}],
+        )
+        assert "subagents" not in {entry.id for entry in subagent_tree.entries}
+
     @pytest.mark.asyncio
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):
         """Core engine with no plugins runs ReAct correctly."""
@@ -1086,7 +1186,7 @@ class TestApplicationStartupNoPlugins:
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
-            plugin_dirs=[],  # Explicitly no plugin dirs
+            no_plugins=True,
             llm_override=MockLLM(responses=[{"content": "I work without plugins!"}]),
         )
         application.sandbox.workspace_root = temp_workspace

@@ -1,13 +1,4 @@
-"""Public plugin-tree declarations and configuration parsing.
-
-Reference model: DeepSeek Harness's Cordis loader
-(``@cordisjs/plugin-loader`` + ``@cordisjs/plugin-include``).  The runtime is
-declared as a tree of plugin *entries* (id / module name / config / disabled /
-inject / isolate); a loader service imports each module, resolves the plugin
-it exports, and mounts it on the XCore context (optionally on an isolated
-scope).  Dependencies are expressed with XCore's ``inject`` (services) and the
-tree's load order -- there is no separate plugin system beside XCore's.
-"""
+"""Validated plugin-tree declarations and configuration overlays."""
 
 from __future__ import annotations
 
@@ -19,120 +10,200 @@ from typing import Any
 
 import yaml
 
+
 class LoadError(RuntimeError):
     """A tree entry failed to load or did not activate."""
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PluginEntry:
-    """One configured plugin node in the tree (aligned with EntryOptions)."""
+    """One complete, resolved plugin declaration."""
 
     id: str
     name: str
     config: dict[str, Any] = field(default_factory=dict)
     disabled: bool = False
-    isolate: dict[str, Any] | None = None
-    # Bundled entries may opt into one or more application profiles. External
-    # entries without a profile belong to the Agent profile by default.
+    isolate: dict[str, str | bool] | None = None
     profiles: frozenset[str] | None = None
 
 
-_MISSING = object()
+class _Unset:
+    __slots__ = ()
 
 
-def _lookup(values: dict[str, Any] | None, ref: str) -> Any:
-    """Resolve ``a.b.c`` against a values mapping (set memberships allowed).
-
-    Returns :data:`_MISSING` when a key does not exist (so an existing key
-    with a ``None`` value stays resolvable).
-    """
-    if values is None:
-        return _MISSING
-    parts = ref.split(".")
-    target: Any = values
-    for index, part in enumerate(parts):
-        if isinstance(target, dict):
-            if part not in target:
-                return _MISSING
-            target = target[part]
-        elif isinstance(target, (set, frozenset)):
-            if index != len(parts) - 1:
-                return _MISSING
-            return part in target
-        elif isinstance(target, (list, tuple)) and part.isdigit():
-            position = int(part)
-            if position >= len(target):
-                return _MISSING
-            target = target[position]
-        else:
-            return _MISSING
-    return target
+UNSET = _Unset()
 
 
-def _resolve_ref(value: Any, values: dict[str, Any] | None) -> Any:
-    """Resolve ``${name}`` / ``${env:VAR}`` references in tree config.
+@dataclass(frozen=True, slots=True)
+class PluginPatch:
+    """A partial declaration that preserves omitted fields."""
 
-    Mirrors DeepSeek Harness's ``!!js`` expressions in cordis.patch.yml: the
-    tree is fully declarative and the composition root supplies the dynamic
-    session values (paths, state store, provider, child-engine factory, ...)
-    as a plain mapping.  ``${env:NAME}`` reads the process environment.
-    """
-    if values is None:
-        return value
+    id: str
+    name: str | _Unset = UNSET
+    config: dict[str, Any] | _Unset = UNSET
+    disabled: bool | _Unset = UNSET
+    isolate: dict[str, str | bool] | None | _Unset = UNSET
+    profiles: frozenset[str] | None | _Unset = UNSET
+
+
+_ENTRY_FIELDS = frozenset({"id", "name", "config", "disabled", "isolate", "profiles"})
+_TOP_LEVEL_FIELDS = frozenset({"plugins", "entries"})
+
+
+def _resolve_ref(value: Any) -> Any:
     if isinstance(value, str):
         match = re.fullmatch(r"\$\{([^}]+)\}", value)
         if match:
             ref = match.group(1)
             if ref.startswith("env:"):
                 return os.environ.get(ref[4:], "")
-            resolved = _lookup(values, ref)
-            if resolved is _MISSING:
-                # Unknown references stay literal: runtime variables such as
-                # ${workspace} are expanded by the consuming service.
-                return value
-            return resolved
         return value
     if isinstance(value, dict):
-        return {key: _resolve_ref(item, values) for key, item in value.items()}
+        return {key: _resolve_ref(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_resolve_ref(item, values) for item in value]
+        return [_resolve_ref(item) for item in value]
     return value
 
 
-def _entry_from_dict(
-    data: dict[str, Any], values: dict[str, Any] | None = None
-) -> PluginEntry:
-    resolved_config = _resolve_ref(data.get("config") or {}, values)
-    if not isinstance(resolved_config, dict):
-        # A bare ${...} reference without runtime values stays literal;
-        # treat it as the default (no config).
-        resolved_config = {}
-    raw_profiles = data.get("profiles")
-    if raw_profiles is None:
-        profiles = None
-    elif isinstance(raw_profiles, str):
-        profiles = frozenset({raw_profiles})
-    elif isinstance(raw_profiles, list) and all(
-        isinstance(item, str) and item for item in raw_profiles
+def _raw_entries(data: Any) -> list[Any]:
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        raise TypeError("plugin document must be a list or a mapping with 'plugins'")
+    unknown = set(data) - _TOP_LEVEL_FIELDS
+    if unknown:
+        raise ValueError(
+            f"unknown plugin document fields: {sorted(map(str, unknown))}"
+        )
+    present = [key for key in _TOP_LEVEL_FIELDS if key in data]
+    if len(present) != 1:
+        raise ValueError("plugin document must contain exactly one of 'plugins' or 'entries'")
+    raw = data[present[0]]
+    if not isinstance(raw, list):
+        raise TypeError("plugin document entries must be a list")
+    return raw
+
+
+def _mapping(value: Any, *, subject: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{subject} must be a mapping")
+    unknown = set(value) - _ENTRY_FIELDS
+    if unknown:
+        raise ValueError(f"unknown {subject} fields: {sorted(map(str, unknown))}")
+    return value
+
+
+def _identifier(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise TypeError(f"plugin {field_name} must be a non-empty string")
+    return value
+
+
+def _entry_id(data: dict[str, Any]) -> str:
+    value = data.get("id", data.get("name"))
+    if value is None:
+        raise ValueError("plugin declaration requires an id or name")
+    return _identifier(value, field_name="id")
+
+
+def _config(value: Any) -> dict[str, Any]:
+    resolved = _resolve_ref(value)
+    if not isinstance(resolved, dict):
+        raise TypeError("plugin config must resolve to a mapping")
+    return dict(resolved)
+
+
+def _disabled(value: Any) -> bool:
+    resolved = _resolve_ref(value)
+    if not isinstance(resolved, bool):
+        raise TypeError("plugin disabled must resolve to a boolean")
+    return resolved
+
+
+def _isolate(value: Any) -> dict[str, str | bool] | None:
+    resolved = _resolve_ref(value)
+    if resolved is None:
+        return None
+    if not isinstance(resolved, dict):
+        raise TypeError("plugin isolate must resolve to a mapping or null")
+    result: dict[str, str | bool] = {}
+    for service, label in resolved.items():
+        if not isinstance(service, str) or not service:
+            raise TypeError("plugin isolate service names must be non-empty strings")
+        if label is not True and (not isinstance(label, str) or not label):
+            raise TypeError("plugin isolate labels must be true or non-empty strings")
+        result[service] = label
+    return result
+
+
+def _profiles(value: Any) -> frozenset[str] | None:
+    resolved = _resolve_ref(value)
+    if resolved is None:
+        return None
+    if isinstance(resolved, str):
+        resolved = [resolved]
+    if not isinstance(resolved, list) or not resolved or not all(
+        isinstance(item, str) and item for item in resolved
     ):
-        profiles = frozenset(raw_profiles)
-    else:
-        raise TypeError("plugin entry profiles must be a string or list of strings")
-    entry = PluginEntry(
-        id=str(data.get("id") or data.get("name")),
-        name=str(data["name"]),
-        config=dict(resolved_config or {}),
-        disabled=bool(_resolve_ref(data.get("disabled", False), values)),
-        isolate=_resolve_ref(data.get("isolate"), values),
-        profiles=profiles,
+        raise TypeError("plugin profiles must be a string or non-empty list of strings")
+    return frozenset(resolved)
+
+
+def _entry_from_dict(value: Any) -> PluginEntry:
+    data = _mapping(value, subject="entry")
+    if "name" not in data:
+        raise ValueError("complete plugin entry requires a name")
+    return PluginEntry(
+        id=_entry_id(data),
+        name=_identifier(data["name"], field_name="name"),
+        config=_config(data.get("config", {})),
+        disabled=_disabled(data.get("disabled", False)),
+        isolate=_isolate(data.get("isolate")),
+        profiles=_profiles(data.get("profiles")),
     )
-    if not entry.id:
-        raise ValueError("plugin tree entry requires an id or name")
-    return entry
+
+
+def _patch_from_dict(value: Any) -> PluginPatch:
+    data = _mapping(value, subject="patch")
+    return PluginPatch(
+        id=_entry_id(data),
+        name=(
+            _identifier(data["name"], field_name="name")
+            if "name" in data
+            else UNSET
+        ),
+        config=_config(data["config"]) if "config" in data else UNSET,
+        disabled=_disabled(data["disabled"]) if "disabled" in data else UNSET,
+        isolate=_isolate(data["isolate"]) if "isolate" in data else UNSET,
+        profiles=_profiles(data["profiles"]) if "profiles" in data else UNSET,
+    )
+
+
+class PluginOverlay:
+    """An ordered, validated collection of partial plugin declarations."""
+
+    def __init__(self, patches: list[PluginPatch]) -> None:
+        seen: set[str] = set()
+        for patch in patches:
+            if patch.id in seen:
+                raise ValueError(f"duplicate plugin patch id: {patch.id}")
+            seen.add(patch.id)
+        self.patches = list(patches)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "PluginOverlay":
+        return cls([_patch_from_dict(item) for item in _raw_entries(data)])
+
+    @classmethod
+    def from_yaml(cls, path: Path | str) -> "PluginOverlay":
+        with open(path, encoding="utf-8") as stream:
+            return cls.from_dict(yaml.safe_load(stream))
 
 
 class PluginTree:
-    """Ordered list of plugin entries (from a dict, YAML file, or entries)."""
+    """An ordered collection of complete plugin declarations."""
 
     def __init__(self, entries: list[PluginEntry]) -> None:
         seen: set[str] = set()
@@ -144,73 +215,40 @@ class PluginTree:
 
     @classmethod
     def from_dict(cls, data: Any) -> "PluginTree":
-        if data is None:
-            return cls([])
-        if isinstance(data, dict):
-            raw = data.get("plugins") or data.get("entries") or []
-        elif isinstance(data, list):
-            raw = data
-        else:
-            raise TypeError("plugin tree must be a list of entries or {plugins: [...]}")
-        if not isinstance(raw, list):
-            raise TypeError("plugin tree entries must be a list")
-        return cls([_entry_from_dict(item) for item in raw])
+        return cls([_entry_from_dict(item) for item in _raw_entries(data)])
 
     @classmethod
-    def from_yaml(
-        cls, path: Path | str, values: dict[str, Any] | None = None
-    ) -> "PluginTree":
+    def from_yaml(cls, path: Path | str) -> "PluginTree":
         with open(path, encoding="utf-8") as stream:
-            data = yaml.safe_load(stream)
-        if isinstance(data, dict):
-            raw = data.get("plugins") or data.get("entries") or []
-        elif isinstance(data, list):
-            raw = data
-        else:
-            raw = []
-        return cls([_entry_from_dict(item, values) for item in raw])
+            return cls.from_dict(yaml.safe_load(stream))
 
-    def merged_with(self, other: "PluginTree") -> "PluginTree":
-        """Later tree overrides entries with the same id; others append.
-
-        The later entry's ``config`` is deep-merged into the base entry's
-        config (so an overlay can patch one field without restating the
-        session-dynamic values); ``disabled`` / ``isolate`` / ``profiles`` are
-        replaced by the later entry. Service dependencies are
-        plugin declarations and are intentionally absent from tree entries.
-        """
-        merged: dict[str, PluginEntry] = {entry.id: entry for entry in self.entries}
-        for entry in other.entries:
-            existing = merged.get(entry.id)
-            if existing is not None:
-                entry = PluginEntry(
-                    id=entry.id,
-                    name=entry.name,
-                    config=_merge_config(existing.config, entry.config),
-                    disabled=entry.disabled,
-                    isolate=entry.isolate if entry.isolate is not None else existing.isolate,
-                    profiles=(
-                        entry.profiles
-                        if entry.profiles is not None
-                        else existing.profiles
-                    ),
-                )
-            merged[entry.id] = entry
+    def patched_with(
+        self,
+        overlay: PluginOverlay,
+        *,
+        excluded: frozenset[str] = frozenset(),
+        allow_new: bool = True,
+    ) -> "PluginTree":
+        merged = {entry.id: entry for entry in self.entries}
+        for patch in overlay.patches:
+            if patch.id in excluded:
+                continue
+            current = merged.get(patch.id)
+            if current is None:
+                if not allow_new:
+                    if isinstance(patch.name, _Unset):
+                        raise ValueError(f"unknown plugin patch id: {patch.id!r}")
+                    continue
+                if isinstance(patch.name, _Unset):
+                    raise ValueError(f"new plugin patch {patch.id!r} requires a name")
+                current = PluginEntry(id=patch.id, name=patch.name)
+            merged[patch.id] = _merge_entry(current, patch)
         return PluginTree(list(merged.values()))
 
-    def excluding(self, entry_ids: set[str]) -> "PluginTree":
-        """Return a tree without the given entry ids."""
-        return PluginTree(
-            [entry for entry in self.entries if entry.id not in entry_ids]
-        )
+    def excluding(self, entry_ids: set[str] | frozenset[str]) -> "PluginTree":
+        return PluginTree([entry for entry in self.entries if entry.id not in entry_ids])
 
     def for_profile(self, profile: str) -> "PluginTree":
-        """Select entries for one application profile.
-
-        Unscoped entries are Agent plugins. Server/client extensions must opt
-        in explicitly so a user Agent plugin cannot accidentally execute in a
-        process-wide host.
-        """
         return PluginTree([
             entry
             for entry in self.entries
@@ -234,4 +272,37 @@ def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
     return merged
 
 
-__all__ = ["LoadError", "PluginEntry", "PluginTree"]
+def _merge_entry(current: PluginEntry, patch: PluginPatch) -> PluginEntry:
+    return PluginEntry(
+        id=patch.id,
+        name=current.name if isinstance(patch.name, _Unset) else patch.name,
+        config=(
+            current.config
+            if isinstance(patch.config, _Unset)
+            else _merge_config(current.config, patch.config)
+        ),
+        disabled=(
+            current.disabled
+            if isinstance(patch.disabled, _Unset)
+            else patch.disabled
+        ),
+        isolate=(
+            current.isolate
+            if isinstance(patch.isolate, _Unset)
+            else patch.isolate
+        ),
+        profiles=(
+            current.profiles
+            if isinstance(patch.profiles, _Unset)
+            else patch.profiles
+        ),
+    )
+
+
+__all__ = [
+    "LoadError",
+    "PluginEntry",
+    "PluginOverlay",
+    "PluginPatch",
+    "PluginTree",
+]

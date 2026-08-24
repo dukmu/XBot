@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader.types import PluginOverlay
 from XBotv2.loader.runtime import (
     mount_plugin_tree,
     resolve_plugin_from_module,
@@ -97,26 +98,88 @@ class TestPluginTree:
                 {"id": "a", "name": "m2"},
             ])
 
-    def test_merged_with_overrides_by_id(self):
+    def test_overlay_preserves_omitted_fields_and_merges_config(self):
         base = PluginTree.from_dict([{
             "id": "a",
             "name": "m1",
             "config": {"policy": {"allow": ["base"], "ask": []}},
+            "disabled": True,
+            "isolate": {"tools": "private"},
+            "profiles": ["agent"],
         }])
-        override = PluginTree.from_dict([
+        overlay = PluginOverlay.from_dict([
             {
                 "id": "a",
-                "name": "m2",
                 "config": {"policy": {"ask": ["overlay"]}},
             },
             {"id": "b", "name": "m3"},
         ])
-        merged = base.merged_with(override)
+        merged = base.patched_with(overlay)
         ids = {e.id: e.name for e in merged.entries}
-        assert ids == {"a": "m2", "b": "m3"}
+        assert ids == {"a": "m1", "b": "m3"}
         assert merged.entries[0].config == {
             "policy": {"allow": ["base"], "ask": ["overlay"]},
         }
+        assert merged.entries[0].disabled is True
+        assert merged.entries[0].isolate == {"tools": "private"}
+        assert merged.entries[0].profiles == frozenset({"agent"})
+
+    def test_overlay_new_entry_requires_name(self):
+        with pytest.raises(ValueError, match="requires a name"):
+            PluginTree([]).patched_with(PluginOverlay.from_dict([{"id": "new"}]))
+
+    def test_session_style_overlay_rejects_unknown_id(self):
+        with pytest.raises(ValueError, match="unknown plugin patch id"):
+            PluginTree([]).patched_with(
+                PluginOverlay.from_dict([{"id": "typo", "config": {}}]),
+                allow_new=False,
+            )
+
+    @pytest.mark.parametrize(
+        ("document", "error"),
+        [
+            ("not-a-tree", TypeError),
+            ({"unknown": []}, ValueError),
+            ({"plugins": [], "entries": []}, ValueError),
+            ([{"id": "a", "name": "m", "unknown": True}], ValueError),
+            ([{"id": "a", "name": "m", "disabled": "false"}], TypeError),
+            ([{"id": "a", "name": "m", "config": []}], TypeError),
+            ([{"id": "a", "name": "m", "isolate": []}], TypeError),
+            ([{"id": "a", "name": "m", "profiles": []}], TypeError),
+            ([{"id": "a"}], ValueError),
+        ],
+    )
+    def test_complete_tree_rejects_malformed_documents(self, document, error):
+        with pytest.raises(error):
+            PluginTree.from_dict(document)
+
+    def test_overlay_rejects_unresolved_non_boolean_disabled(self):
+        overlay = [{"id": "a", "disabled": "${flag}"}]
+        with pytest.raises(TypeError, match="boolean"):
+            PluginOverlay.from_dict(overlay)
+
+    def test_environment_references_resolve_without_runtime_values(self, monkeypatch):
+        monkeypatch.setenv("XBOT_TEST_PLUGIN_DISABLED", "false")
+        with pytest.raises(TypeError, match="boolean"):
+            PluginOverlay.from_dict([{
+                "id": "a",
+                "disabled": "${env:XBOT_TEST_PLUGIN_DISABLED}",
+            }])
+
+    def test_overlay_can_explicitly_clear_isolate_and_profiles(self):
+        base = PluginTree.from_dict([{
+            "id": "a",
+            "name": "m",
+            "isolate": {"tools": True},
+            "profiles": ["agent"],
+        }])
+        patched = base.patched_with(PluginOverlay.from_dict([{
+            "id": "a",
+            "isolate": None,
+            "profiles": None,
+        }]))
+        assert patched.entries[0].isolate is None
+        assert patched.entries[0].profiles is None
 
 
 # ------------------------------------------------------------------

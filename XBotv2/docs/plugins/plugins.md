@@ -9,7 +9,9 @@ Plugins -> import -> Stable contracts (core/)
 
 Plugins extend the engine via hooks, tools, and prompt fragments.
 They live in top-level plugin packages and are loaded by application startup.
-Disable all plugins with `plugin_dirs=[]` or `--no-plugins`.
+`plugin_dirs` supplies external Python import roots; an empty list does not
+disable bundled capabilities. `--no-plugins` selects the core Agent
+composition without optional capabilities or external plugins.
 
 ## Plugin Shape
 
@@ -221,6 +223,25 @@ or other services in a generic invocation context.
 Add durable workspace entries to `.xbot/plugins.yaml`; the loader imports
 `<name>.plugin` first and otherwise tries `<name>`. Required service ownership
 belongs in the plugin's `inject` declaration, not in tree configuration.
+
+The bundled `xcore.yaml` contains complete entries and therefore requires
+`name`. User configuration files are partial overlays: an existing entry can
+be changed by `id` without repeating `name`, and omitted fields retain their
+previous values. A new entry must provide both `id` and `name`.
+
+Configuration has one precedence order:
+
+1. bundled `xcore.yaml`;
+2. `<data-dir>/config/plugins.yaml`;
+3. `<workspace>/.xbot/plugins.yaml`;
+4. session or direct-call overrides.
+
+Only `config` is deep-merged. When present, `name`, `disabled`, `isolate`, and
+`profiles` replace the earlier value. Invalid document shapes, unknown fields,
+and values with the wrong type stop startup at the configuration boundary.
+`--no-plugins` and the subagent composition select their allowed plugin set
+before overlays are applied, so an overlay cannot add a capability that is not
+part of that application profile.
 
 ## Built-in Plugins
 

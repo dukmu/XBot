@@ -2,6 +2,7 @@ from pathlib import Path
 
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.loader.types import PluginOverlay
 
 
 def test_initial_config_materializes_packaged_plugin_skill(tmp_path: Path) -> None:
@@ -23,3 +24,11 @@ def test_initial_config_preserves_unrelated_global_skills(tmp_path: Path) -> Non
     ensure_initial_config(paths)
 
     assert custom.read_text(encoding="utf-8") == "custom"
+
+
+def test_initial_plugin_overlay_is_accepted_by_runtime_parser(tmp_path: Path) -> None:
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+
+    ensure_initial_config(paths)
+
+    assert PluginOverlay.from_yaml(paths.config_dir / "plugins.yaml").patches == []

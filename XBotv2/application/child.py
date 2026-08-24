@@ -23,6 +23,7 @@ class ChildApplications:
     provider_name: str
     session_id: str
     workspace_root: Any
+    no_plugins: bool
     plugin_dirs: list[Any] | None
     llm_override: Any
     parent_thread_id: str
@@ -40,6 +41,7 @@ class ChildApplications:
             session_id=self.session_id,
             thread_id=request.thread_id,
             workspace_root=self.workspace_root,
+            no_plugins=self.no_plugins,
             plugin_dirs=self.plugin_dirs,
             llm_override=self.llm_override,
             agent_definition=request.definition,
