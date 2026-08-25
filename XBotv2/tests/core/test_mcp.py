@@ -304,18 +304,14 @@ def _mcp_plugin(servers):
 
     plugin = MCPPlugin()
     mount_plugin_standalone(plugin, {"servers": servers})
-    plugin.ctx.set(
-        "interactions",
-        type("Interactions", (), {"request_user_input": AsyncMock()})(),
-    )
-    plugin.ctx.set(
-        "session",
-        SessionInfo(
-            session_id="s",
-            thread_id="t",
-            workspace_root=str(plugin.ctx.workspace_root),
-            provider="mock",
-        ),
+    plugin._interactions = type(
+        "Interactions", (), {"request_user_input": AsyncMock()}
+    )()
+    plugin._session = SessionInfo(
+        session_id="s",
+        thread_id="t",
+        workspace_root=str(plugin.ctx.workspace_root),
+        provider="mock",
     )
     plugin._client.connect_and_list = AsyncMock()
     plugin._client.server_capabilities = lambda _server: {"tools": {}}

@@ -117,6 +117,27 @@ Runtime skill.
         assert skill is not None
         assert skill.scope == "global"
 
+    def test_discover_does_not_scan_process_home(self, tmp_path, monkeypatch):
+        from XBotv2.skills.registry import SkillRegistry
+
+        home = tmp_path / "home"
+        skill_dir = home / ".agents" / "skills" / "home-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("""---
+name: home-skill
+description: Must not leak into a configured XBot data directory
+---
+Home skill.
+""", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        registry = SkillRegistry()
+        registry.discover(workspace)
+
+        assert registry.load_skill("home-skill") is None
+
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
         from XBotv2.skills.registry import SkillRegistry
 
@@ -213,7 +234,7 @@ Body
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
         tools = plugin.ctx.tools
         ctx = ApplicationInitialized(
@@ -267,7 +288,7 @@ Body
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         plugin._registry.discover(skill_workspace)
         mount_plugin(plugin, state_store)
         manual_result = await plugin._on_before_user_message(
@@ -302,7 +323,7 @@ Body
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
         await plugin._on_session_init(ApplicationInitialized(
             agent=None,
@@ -478,7 +499,7 @@ Body
             return "existing"
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
         tools = plugin.ctx.tools
         collision_name = tools.register(

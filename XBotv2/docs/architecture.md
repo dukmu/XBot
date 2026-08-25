@@ -408,9 +408,12 @@ answered through the same Sessions API used by HTTP clients.
 ### Session Resume
 
 Session creation uses explicit `new` and `resume` modes. The server does not
-silently change the requested mode. Resume closes any in-memory runtime with the
-same session id and rebuilds from persisted history; pending interactions and
-turn coroutines are connection-owned and are never restored.
+silently change the requested mode. `resume` attaches to an already-active
+`(session_id, thread_id)` runtime without rebuilding or interrupting it. Only an
+inactive persisted thread is reconstructed from storage. Event subscriptions
+are per client and broadcast from the shared runtime; detaching, navigating, or
+closing one client transport does not destroy the runtime. `interrupt` and
+`close` are explicit destructive operations.
 
 ## Unified Command System
 

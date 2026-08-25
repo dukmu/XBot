@@ -35,6 +35,15 @@ plugin. Persisted conversation and plugin state belong in their storage
 contracts. Do not put a live handle or a session-specific object into a
 persisted namespace.
 
+`apply` is the composition boundary. It may read declared services from `ctx`,
+but constructed services and handlers receive narrow typed dependencies and do
+not retain `Context`. Required dependencies are resolved by XCore before
+activation; runtime probing is not a replacement for `inject`.
+
+State namespaces are logical ownership boundaries. StateService alone chooses
+the `plugin_state` layout and serialized model; plugins never join a data path
+or share state files with configuration.
+
 ## Tool Pipeline
 
 The standard path is: `BEFORE_TOOL_CALL` rewrite -> schema validation ->

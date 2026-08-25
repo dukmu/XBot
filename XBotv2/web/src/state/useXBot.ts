@@ -25,8 +25,6 @@ export function useXBot() {
       streamFlushTimer.current = null;
     }
     streamEvents.current = [];
-    for (const controller of messageControllers.current) controller.abort();
-    messageControllers.current.clear();
     for (const timer of taskTimers.current.values()) window.clearTimeout(timer);
     taskTimers.current.clear();
     if (threadRefreshTimer.current !== null) {
@@ -99,6 +97,7 @@ export function useXBot() {
     eventController.current?.abort();
     const controller = new AbortController();
     eventController.current = controller;
+    dispatch({ type: "event_stream", value: true });
     void (async () => {
       try {
         for await (const event of api.streamEvents(
@@ -108,10 +107,10 @@ export function useXBot() {
         )) {
           handleEvent(event, generation);
         }
-        if (!controller.signal.aborted && generation === navigationGeneration.current) dispatch({ type: "connected", value: false });
+        if (!controller.signal.aborted && generation === navigationGeneration.current) dispatch({ type: "event_stream", value: false });
       } catch (error) {
         if (!controller.signal.aborted && generation === navigationGeneration.current) {
-          dispatch({ type: "connected", value: false });
+          dispatch({ type: "event_stream", value: false });
           reportError(error, true);
         }
       }
@@ -120,8 +119,6 @@ export function useXBot() {
 
   const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
     if (generation !== navigationGeneration.current) return;
-    resetStreamingState();
-    dispatch({ type: "opened", session });
     let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[]];
     try {
       resources = await Promise.all([
@@ -130,11 +127,12 @@ export function useXBot() {
         api.listTasks(session.session_id, session.thread_id),
       ]);
     } catch (error) {
-      if (generation === navigationGeneration.current) dispatch({ type: "connected", value: false });
       throw error;
     }
     const [threads, agents, tasks] = resources;
     if (generation !== navigationGeneration.current) return;
+    resetStreamingState();
+    dispatch({ type: "opened", session });
     dispatch({ type: "threads", threads });
     dispatch({ type: "agents", agents });
     dispatch({ type: "tasks", tasks });
@@ -161,7 +159,7 @@ export function useXBot() {
         if (!alive) return;
         dispatch({ type: "sessions", sessions });
         dispatch({ type: "providers", providers: providers.providers });
-        dispatch({ type: "connected", value: true });
+        dispatch({ type: "server_reachable", value: true });
         dispatch({ type: "loading", value: false });
       } catch (error) {
         if (alive) reportError(error);
@@ -179,13 +177,8 @@ export function useXBot() {
   }, [api, reportError]);
 
   const createSession = useCallback(async (workspaceRoot: string) => {
-    if (state.turnRunning) {
-      reportError(new Error("Interrupt the active turn before switching sessions"));
-      return;
-    }
+    const previous = state.current;
     const generation = ++navigationGeneration.current;
-    resetStreamingState();
-    dispatch({ type: "connected", value: false });
     dispatch({ type: "loading", value: true });
     try {
       const session = await api.openSession({
@@ -196,22 +189,20 @@ export function useXBot() {
       await activate(session, generation);
       if (generation === navigationGeneration.current) await refreshSessions();
     } catch (error) {
-      if (generation === navigationGeneration.current) reportError(error);
+      if (generation === navigationGeneration.current) {
+        if (previous) startEventStream(previous, generation);
+        reportError(error);
+      }
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, refreshSessions, reportError, resetStreamingState, state.turnRunning]);
+  }, [activate, api, refreshSessions, reportError, startEventStream, state.current]);
 
   const resumeSession = useCallback(async (sessionId?: string) => {
     const id = sessionId || state.current?.session_id;
     if (!id) return;
-    if (state.turnRunning) {
-      reportError(new Error("Interrupt the active turn before switching sessions"));
-      return;
-    }
+    const previous = state.current;
     const generation = ++navigationGeneration.current;
-    dispatch({ type: "connected", value: false });
-    resetStreamingState();
     dispatch({ type: "loading", value: true });
     try {
       const threads = await api.listThreads(id);
@@ -228,21 +219,19 @@ export function useXBot() {
       await activate(session, generation);
       if (generation === navigationGeneration.current) await refreshSessions();
     } catch (error) {
-      if (generation === navigationGeneration.current) reportError(error);
+      if (generation === navigationGeneration.current) {
+        if (previous) startEventStream(previous, generation);
+        reportError(error);
+      }
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, refreshSessions, reportError, resetStreamingState, state.current?.session_id, state.turnRunning]);
+  }, [activate, api, refreshSessions, reportError, startEventStream, state.current]);
 
   const selectThread = useCallback(async (thread: ThreadSummary) => {
     if (!state.current || thread.thread_id === state.current.thread_id) return;
-    if (state.turnRunning) {
-      reportError(new Error("Interrupt the active turn before switching threads"));
-      return;
-    }
+    const previous = state.current;
     const generation = ++navigationGeneration.current;
-    dispatch({ type: "connected", value: false });
-    resetStreamingState();
     dispatch({ type: "loading", value: true });
     try {
       const session = thread.kind === "main"
@@ -256,11 +245,14 @@ export function useXBot() {
       if (generation !== navigationGeneration.current) return;
       await activate(session, generation);
     } catch (error) {
-      if (generation === navigationGeneration.current) reportError(error);
+      if (generation === navigationGeneration.current) {
+        startEventStream(previous, generation);
+        reportError(error);
+      }
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, reportError, resetStreamingState, state.current]);
+  }, [activate, api, reportError, startEventStream, state.current]);
 
   const sendMessage = useCallback(async (rawContent: string, attachments: PendingAttachment[] = []) => {
     const current = state.current;

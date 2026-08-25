@@ -1,7 +1,5 @@
 """Behavior tests for shared context accounting and TokenManager diagnostics."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from XBotv2.token_manager.plugin import TokenManagerPlugin
@@ -16,6 +14,8 @@ from XBotv2.core import (
 from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
 from XBotv2.llm.mock import MockLLM
+from XBotv2.session import SessionInfo
+from XBotv2.core import ModelResponse
 
 
 def make_plugin() -> TokenManagerPlugin:
@@ -85,12 +85,12 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     ctx = EventContext(
         messages=messages,
         settings=LoopSettings(provider="test", context_window=204_800),
-        session=SimpleNamespace(turn_count=3),
+        session=SessionInfo("s", "t", provider="test", turn_count=3),
         model_request=ModelRequest(messages, [], MockLLM(responses=[])),
     )
 
     await plugin._on_before_model_request(ctx)
-    ctx.model_response = SimpleNamespace(usage_metadata={
+    ctx.model_response = ModelResponse(usage_metadata={
         "input_tokens": 100,
         "output_tokens": 20,
         "context_tokens": 180,

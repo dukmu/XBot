@@ -1084,8 +1084,8 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
 
     assert resumed.status_code == 200
     replacement = await manager.get("resume-history", "t1")
-    assert replacement is not original
-    assert replacement.engine is not original.engine
+    assert replacement is original
+    assert replacement.engine is original.engine
     history = resumed.json()["history"]
     assert [(item["role"], item["content"]) for item in history] == [
         ("user", "remember this"),
@@ -1257,9 +1257,9 @@ async def test_real_tui_session_command_resumes_history_and_continues_chat(
     async with app.run_test(headless=True, size=(120, 40)) as pilot:
         for _ in range(60):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
-        assert app._connected
+        assert app._session_attached
         composer = app.query_one("#input")
         composer.load_text("/session persisted-session")
         await app.submit_composer()
@@ -1914,11 +1914,20 @@ async def test_request_permission_tool_emits_request_id() -> None:
             captured["event"] = event
             return {"decision": "allow", "scope": "once"}
 
+    class _Permissions:
+        def grant_once(self, tool, params):
+            captured["grant"] = (tool, params)
+
+    async def record_decision(_event, _decision, _scope):
+        raise AssertionError("once approval must not persist a session rule")
+
     result = await request_tool_permission(
         "shell",
         {},
         "needs approval",
+        permissions=_Permissions(),
         approval=_Approval(),
+        record_permission_decision=record_decision,
     )
     assert result.status == "success"
     event = captured["event"]
@@ -2083,7 +2092,7 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_resume_and_fork_without_persistence_fail_clearly(
+async def test_active_attach_without_persistence_succeeds_but_rebuild_fails(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"
@@ -2176,9 +2185,16 @@ async def test_resume_and_fork_without_persistence_fail_clearly(
             "/sessions",
             json={"session_id": "mem", "thread_id": "t", "mode": "resume"},
         )
-        assert resumed.status_code == 400
-        assert resumed.json()["code"] == "persistence_unavailable"
-        assert "persistence is not mounted" in resumed.json()["message"]
+        assert resumed.status_code == 200
+
+        closed = await ac.post("/sessions/mem/close")
+        assert closed.status_code == 200
+        resumed = await ac.post(
+            "/sessions",
+            json={"session_id": "mem", "thread_id": "t", "mode": "resume"},
+        )
+        assert resumed.status_code == 404
+        assert resumed.json()["code"] == "session_not_found"
     await server.stop()
 
 
@@ -2858,6 +2874,31 @@ async def test_session_close_drops_pending_inbox_and_resume_starts_empty(http_ap
     )
 
     assert resumed.engine.pending_input_count == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_active_session_attaches_without_rebuilding(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "unused"}])
+    runtime = await http_app.state.manager.open_session(
+        session_id="active-attach",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+
+    attached = await http_app.state.manager.open_session(
+        session_id="active-attach",
+        thread_id="t",
+        provider_name="different-request-does-not-reconfigure",
+        workspace_root="/different/request/workspace",
+        mode="resume",
+        no_plugins=True,
+    )
+
+    assert attached is runtime
+    assert attached.workspace_root == str(http_app.state.paths.data_dir)
 
 
 @pytest.mark.asyncio
@@ -3773,9 +3814,9 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
         await pilot.pause()
         for _ in range(60):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
-        assert app._connected, "TUI did not connect to the server"
+        assert app._session_attached, "TUI did not connect to the server"
 
         ctx = await http_app.state.manager.get("tui-q", "t")
         ctx.application._context.permissions.replace_rules({"allow": [{"tool": ".*"}]})
@@ -3850,9 +3891,9 @@ async def test_tui_input_submitted_while_busy_is_retried_after_turn(
         await pilot.pause()
         for _ in range(60):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
-        assert app._connected
+        assert app._session_attached
         ctx = await http_app.state.manager.get("tui-retry", "t")
 
         composer = app.query_one("#input")

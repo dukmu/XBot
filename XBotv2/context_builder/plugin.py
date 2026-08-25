@@ -26,32 +26,38 @@ class ContextBuilderComponent:
     def apply(self, ctx: Any, config: Any = None) -> None:
         builder = ContextBuilder()
         ctx.set("context_builder", builder)
+        ctx.on(BUILD_CONTEXT, ContextBuildHandler(builder, ctx).build)
 
-        async def build(event: ContextBuildRequest) -> None:
-            components = builder.build_components(
-                messages=event.messages,
-                agent_name=event.agent_name,
-                agent_role=event.agent_role,
-                user_name=event.user_name,
-                user_id=event.user_id,
-                developer_instructions=event.developer_instructions,
-                instructions=event.instructions,
-                memory=event.memory,
-                sandbox_summary=event.sandbox_summary,
-                runtime_paths=event.runtime_paths,
-                system_notice=event.system_notice,
-                turn_count=event.turn_count,
-                active_subagents=event.active_subagents,
-            )
-            component_event = ContextComponentsBuilt(
-                components=components,
-                session=event.session,
-            )
-            await ctx.emit(CONTEXT_COMPONENTS_BUILT, component_event)
-            components = component_event.components
-            event.context_messages = builder.messages_from_components(components)
 
-        ctx.on(BUILD_CONTEXT, build)
+class ContextBuildHandler:
+    def __init__(self, builder: ContextBuilder, events: Any) -> None:
+        self._builder = builder
+        self._events = events
+
+    async def build(self, event: ContextBuildRequest) -> None:
+        components = self._builder.build_components(
+            messages=event.messages,
+            agent_name=event.agent_name,
+            agent_role=event.agent_role,
+            user_name=event.user_name,
+            user_id=event.user_id,
+            developer_instructions=event.developer_instructions,
+            instructions=event.instructions,
+            memory=event.memory,
+            sandbox_summary=event.sandbox_summary,
+            runtime_paths=event.runtime_paths,
+            system_notice=event.system_notice,
+            turn_count=event.turn_count,
+            active_subagents=event.active_subagents,
+        )
+        component_event = ContextComponentsBuilt(
+            components=components,
+            session=event.session,
+        )
+        await self._events.emit(CONTEXT_COMPONENTS_BUILT, component_event)
+        event.context_messages = self._builder.messages_from_components(
+            component_event.components
+        )
 
 
 plugin = ContextBuilderComponent()

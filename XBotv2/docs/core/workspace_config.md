@@ -152,8 +152,9 @@ starts. Later layers win and plugin configuration is deep-merged. Loader then
 imports and mounts that fixed tree; it has no runtime patch or hot-update path.
 
 Changes to either `plugins.yaml` file or to `.agents/*.md` require a new Agent
-application. Close and reopen the thread, resume it through a carrier that
-rebuilds the application, or restart the owning process. Existing applications
+application. Explicitly close the live thread before resuming it, or restart
+the owning process. Attaching to an already-active thread does not rebuild it.
+Existing applications
 keep their current plugin graph and Agent catalog. `AGENTS.md` is different:
 it is read before every context build, so instruction edits affect the next
 model request without rebuilding the application.

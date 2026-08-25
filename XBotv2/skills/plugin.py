@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.agentloop import ToolsPort
+from XBotv2.core.paths import RuntimePaths
 from XBotv2.core import (
     prompt_container,
     prompt_element,
@@ -22,11 +24,28 @@ from .registry import Skill, SkillRegistry
 from .skill_tool import load_skill
 
 
+class SkillToolHandler:
+    """Load and activate one discovered skill without capturing plugin locals."""
+
+    def __init__(self, runtime: "SkillsPlugin", skill: Skill) -> None:
+        self._runtime = runtime
+        self._skill = skill
+
+    async def invoke(self) -> ToolResult:
+        content = await load_skill(
+            self._skill.name,
+            skill_registry=self._runtime._registry,
+            sandbox=self._runtime._sandbox,
+        )
+        self._runtime._activate_skill(self._skill)
+        return ToolResult.success(
+            f"{content}\n\nSkill activated: {self._skill.name} "
+            f"({self._skill.scope})",
+        )
+
+
 class SkillsPlugin:
-    inject = {
-        "required": ["tools", "commands", "sandbox"],
-        "optional": ["runtime_paths"],
-    }
+    inject = ["tools", "commands", "sandbox", "runtime_paths"]
     name = "skills"
 
     def __init__(self) -> None:
@@ -40,8 +59,10 @@ class SkillsPlugin:
         self._initialized = False
 
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        self._runtime_paths = ctx.get("runtime_paths", strict=False)
+        self._tools: ToolsPort = ctx.tools
+        self._commands = ctx.commands
+        self._sandbox = ctx.sandbox
+        self._runtime_paths: RuntimePaths = ctx.runtime_paths
         ctx.dispose(self._cleanup_runtime)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
@@ -52,10 +73,10 @@ class SkillsPlugin:
     def _cleanup_runtime(self) -> None:
         """Unregister session-registered skill tools/commands and reset state."""
         for command_name in reversed(self._skill_commands):
-            self.ctx.commands.unregister(command_name)
+            self._commands.unregister(command_name)
         self._skill_commands.clear()
         for registered_name in reversed(self._skill_tools):
-            self.ctx.tools.unregister(registered_name)
+            self._tools.unregister(registered_name)
         self._skill_tools.clear()
         self._registry = SkillRegistry()
         self._active_skills.clear()
@@ -67,10 +88,7 @@ class SkillsPlugin:
         if self._initialized:
             return
         ws = event.session.workspace_root or str(Path.cwd())
-        global_dirs = ()
-        runtime_paths = getattr(self, "_runtime_paths", None)
-        if runtime_paths is not None:
-            global_dirs = (runtime_paths.data_dir / ".agents" / "skills",)
+        global_dirs = (self._runtime_paths.data_dir / ".agents" / "skills",)
         self._registry.discover(Path(ws), global_dirs=global_dirs)
         max_context = int(
             event.settings.context_window or 0
@@ -87,7 +105,7 @@ class SkillsPlugin:
                     self._skill_tools.append(registered_name)
                     self._model_skill_names.add(skill.name)
                 if skill.user_invocable:
-                    command_name = self.ctx.commands.register(Command(
+                    command_name = self._commands.register(Command(
                         name=skill.name,
                         kind="prompt",
                         description=skill.description,
@@ -102,7 +120,7 @@ class SkillsPlugin:
 
     def _register_skill_tool(self, skill: Skill) -> str:
         """Register one skill Tool through the public service."""
-        return self.ctx.tools.register(
+        return self._tools.register(
             self._skill_as_tool(skill),
             namespace=f"skills:{skill.scope}",
         )
@@ -115,11 +133,11 @@ class SkillsPlugin:
         remaining = self._metadata_budget_chars
         selected = []
         for tool in tools:
-            name = str(getattr(tool, "name", ""))
+            name = tool.name
             if name not in self._model_skill_names:
                 selected.append(tool)
                 continue
-            description = str(getattr(tool, "description", "") or "")
+            description = tool.description
             size = len(name) + len(description)
             if size <= remaining:
                 selected.append(tool)
@@ -133,21 +151,13 @@ class SkillsPlugin:
         request.tools = selected
 
     def _skill_as_tool(self, skill: Skill) -> Tool:
-        async def invoke() -> ToolResult:
-            content = await load_skill(
-                skill.name,
-                skill_registry=self._registry,
-                sandbox=self.ctx.sandbox,
-            )
-            self._activate_skill(skill)
-            return ToolResult.success(
-                f"{content}\n\nSkill activated: {skill.name} ({skill.scope})",
-            )
-
-        invoke.__doc__ = (
-            f"Load Skill instructions for this turn. {skill.description}"
+        handler = SkillToolHandler(self, skill)
+        return Tool(
+            name=skill.name,
+            description=f"Load Skill instructions for this turn. {skill.description}",
+            function=handler.invoke,
+            parameters={"type": "object", "properties": {}},
         )
-        return Tool.from_function(invoke, name=skill.name)
 
     def _activate_skill(self, skill: Skill) -> None:
         if skill.name in self._active_skills:
@@ -186,7 +196,7 @@ class SkillsPlugin:
             skill_name,
             arguments=instructions,
             skill_registry=self._registry,
-            sandbox=self.ctx.sandbox,
+            sandbox=self._sandbox,
         )
         self._activate_skill(skill)
         return {

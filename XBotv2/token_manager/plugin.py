@@ -25,15 +25,14 @@ class TokenManagerPlugin:
         request = ctx.model_request
         messages = list(request.messages) if request is not None else []
         tools = list(request.tools) if request is not None else []
-        context_window = int(
-            getattr(ctx.settings, "context_window", 0)
-            or 0
-        )
+        if ctx.settings is None or ctx.session is None:
+            raise RuntimeError("Token manager requires a complete request context")
+        context_window = int(ctx.settings.context_window or 0)
         context_tokens, raw_estimate, source = calibrated_context_tokens(
             messages,
             tools,
             list(ctx.messages),
-            provider=str(getattr(ctx.session, "provider", "") or ""),
+            provider=ctx.session.provider,
             context_window=context_window,
         )
         self._latest = {
@@ -50,7 +49,9 @@ class TokenManagerPlugin:
         }
 
     async def _on_after_model_response(self, ctx: EventContext) -> None:
-        usage = getattr(ctx.model_response, "usage_metadata", None) or {}
+        if ctx.model_response is None:
+            raise RuntimeError("Token manager requires a model response")
+        usage = ctx.model_response.usage_metadata
         self._latest["provider_usage"] = {
             key: int(usage[key])
             for key in (

@@ -219,7 +219,7 @@ class BrowserSession:
         scheme = urlsplit(request.url).scheme
         if scheme == "file":
             try:
-                self._file_url(request.url, getattr(self, "_sandbox", None))
+                self._file_url(request.url, self._sandbox)
             except Exception:
                 await route.abort("blockedbyclient")
                 return

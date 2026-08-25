@@ -43,7 +43,8 @@ Startup sequence:
   missing.
 - Supplying TUI `--session` selects resume mode. Omitting it selects new mode.
 - Resume rebuilds the visible transcript from the typed display history in the
-  open-session response before accepting another message.
+  open-session response before accepting another message. If the runtime is
+  already active, resume attaches to it without rebuilding or interrupting it.
 - The TUI passes `workspace_root` to the server. The server may host sessions
   from multiple workspace roots in one process.
 - The TUI displays Agent, provider/model mode, session token totals, context
@@ -93,6 +94,9 @@ thread's persisted workspace when no override was supplied. It clears the old
 transcript, loads the returned display history, refreshes command metadata, and
 starts a new server-event subscription before accepting input. An active turn
 or queued message must be finished or interrupted before switching.
+Switching and exiting detach the TUI transport; they do not call the destructive
+session-close endpoint. A failed switch preserves the previous session/thread
+identity and restarts its event subscription.
 
 Server command results render as transcript notices but do not enter LLM message
 history.

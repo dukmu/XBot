@@ -21,7 +21,7 @@ from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.usage.models import UsageSnapshot
-from XBotv2.session.runtime import SessionBusy, SessionRuntime, require_idle
+from XBotv2.session.runtime import SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
     AgentApplicationOptions,
@@ -83,6 +83,9 @@ class SessionManager:
         self.thread_persistence_factory = thread_persistence_factory
         self.application_factory = application_factory
         self._sessions: dict[tuple[str, str], SessionRuntime] = {}
+        self._opening: dict[
+            tuple[str, str], asyncio.Task[SessionRuntime]
+        ] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
 
@@ -135,7 +138,7 @@ class SessionManager:
                 and not ctx.turn_lock.locked()
                 and not ctx.pending_responses
                 and ctx.engine.pending_input_count == 0
-                and ctx.session_events is None
+                and not ctx.event_streams
             ]
             for ctx in due:
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
@@ -181,29 +184,102 @@ class SessionManager:
         parent_permission_system: Any | None = None,
         is_subagent: bool = False,
     ) -> SessionRuntime:
+        mode = (mode or "new").lower().strip()
+        if mode not in {"new", "resume"}:
+            raise ValueError("session mode must be new or resume")
+        if mode == "resume" and not session_id:
+            raise ValueError("resume mode requires session_id")
+        if mode == "new":
+            session_id = session_id or _new_session_id()
+        assert session_id is not None
+        key = (session_id, thread_id)
+
         async with self._lock:
-            mode = (mode or "new").lower().strip()
-            if mode not in {"new", "resume"}:
-                raise ValueError("session mode must be new or resume")
-            if mode == "resume" and not session_id:
-                raise ValueError("resume mode requires session_id")
-            if mode == "new":
-                session_id = session_id or _new_session_id()
-            assert session_id is not None
-            key = (session_id, thread_id)
             existing = self._sessions.get(key)
             if existing is not None:
                 if mode == "resume":
-                    if not existing.application.persistence_available:
-                        raise OperationError(
-                            "persistence_unavailable",
-                            f"Cannot resume {session_id}/{thread_id}: "
-                            "message persistence is not mounted",
-                        )
-                    self._sessions.pop(key)
-                    await existing.close()
+                    existing.touch()
+                    return existing
                 else:
                     raise SessionExists(f"{session_id}/{thread_id}")
+            opening = self._opening.get(key)
+            if opening is not None:
+                if mode == "new":
+                    raise SessionExists(f"{session_id}/{thread_id}")
+                task = opening
+            else:
+                task = self._prepare_open_task(
+                    key=key,
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    provider_name=provider_name,
+                    workspace_root=workspace_root,
+                    selected_agent=selected_agent,
+                    mode=mode,
+                    no_plugins=no_plugins,
+                    plugin_configs=plugin_configs,
+                    llm_override=llm_override,
+                    parent_thread_id=parent_thread_id,
+                    parent_permission_system=parent_permission_system,
+                    is_subagent=is_subagent,
+                )
+                self._opening[key] = task
+        return await asyncio.shield(task)
+
+    def _prepare_open_task(
+        self,
+        *,
+        key: tuple[str, str],
+        session_id: str,
+        thread_id: str,
+        provider_name: str,
+        workspace_root: str,
+        selected_agent: str | None,
+        mode: str,
+        no_plugins: bool,
+        plugin_configs: dict[str, JsonObject] | None,
+        llm_override: Any | None,
+        parent_thread_id: str,
+        parent_permission_system: Any | None,
+        is_subagent: bool,
+    ) -> asyncio.Task[SessionRuntime]:
+        return asyncio.create_task(
+            self._build_and_register(
+                key=key,
+                session_id=session_id,
+                thread_id=thread_id,
+                provider_name=provider_name,
+                workspace_root=workspace_root,
+                selected_agent=selected_agent,
+                mode=mode,
+                no_plugins=no_plugins,
+                plugin_configs=plugin_configs,
+                llm_override=llm_override,
+                parent_thread_id=parent_thread_id,
+                parent_permission_system=parent_permission_system,
+                is_subagent=is_subagent,
+            ),
+            name=f"xbotv2-open-{session_id}-{thread_id}",
+        )
+
+    async def _build_and_register(
+        self,
+        *,
+        key: tuple[str, str],
+        session_id: str,
+        thread_id: str,
+        provider_name: str,
+        workspace_root: str,
+        selected_agent: str | None,
+        mode: str,
+        no_plugins: bool,
+        plugin_configs: dict[str, JsonObject] | None,
+        llm_override: Any | None,
+        parent_thread_id: str,
+        parent_permission_system: Any | None,
+        is_subagent: bool,
+    ) -> SessionRuntime:
+        try:
             session_paths = self.paths.session(session_id)
             if mode == "resume" and not session_paths.has_thread(thread_id):
                 raise SessionNotFound(f"{session_id}/{thread_id}")
@@ -211,6 +287,10 @@ class SessionManager:
                 mode == "resume"
                 and _has_persisted_session(session_paths, thread_id)
             )
+            if mode == "resume" and not had_persisted_session:
+                raise SessionNotFound(
+                    f"{session_id}/{thread_id} has no persisted session"
+                )
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
             if self.application_factory is None:
@@ -241,19 +321,6 @@ class SessionManager:
                         f"Cannot resume {session_id}/{thread_id}: "
                         "message persistence is not mounted",
                     )
-                if not had_persisted_session:
-                    # A leftover thread directory (state/ exists but the
-                    # session never committed thread metadata) must not
-                    # silently reopen as an empty session on reconnect.
-                    # Remove the fresh metadata the aborted start wrote so
-                    # the leftover stays untouched.
-                    session_paths.thread(thread_id).metadata_file.unlink(
-                        missing_ok=True
-                    )
-                    await application.close()
-                    raise SessionNotFound(
-                        f"{session_id}/{thread_id} has no persisted session"
-                    )
             ctx = SessionRuntime(
                 session_id=session_id,
                 thread_id=thread_id,
@@ -269,8 +336,14 @@ class SessionManager:
             except BaseException:
                 await ctx.close("session_start_failed")
                 raise
-            self._sessions[key] = ctx
+            async with self._lock:
+                self._sessions[key] = ctx
             return ctx
+        finally:
+            async with self._lock:
+                current = asyncio.current_task()
+                if self._opening.get(key) is current:
+                    self._opening.pop(key, None)
 
     async def close_thread(
         self,
@@ -282,10 +355,19 @@ class SessionManager:
     ) -> None:
         async with self._lock:
             key = (session_id, thread_id)
+            opening = self._opening.get(key)
             ctx = self._sessions.get(key)
             if expected is not None and ctx is not expected:
                 return
             ctx = self._sessions.pop(key, None)
+        if opening is not None:
+            try:
+                ctx = await asyncio.shield(opening)
+            except Exception:
+                ctx = None
+            else:
+                async with self._lock:
+                    self._sessions.pop(key, None)
         if ctx is not None:
             await ctx.close(reason)
 
@@ -296,6 +378,11 @@ class SessionManager:
         reason: str = "session_closed",
     ) -> None:
         async with self._lock:
+            opening = [
+                task
+                for (active_session_id, _), task in self._opening.items()
+                if active_session_id == session_id
+            ]
             contexts = [
                 ctx
                 for (active_session_id, _), ctx in self._sessions.items()
@@ -303,10 +390,25 @@ class SessionManager:
             ]
             for ctx in contexts:
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
+        for task in opening:
+            try:
+                runtime = await asyncio.shield(task)
+            except Exception:
+                continue
+            async with self._lock:
+                self._sessions.pop((runtime.session_id, runtime.thread_id), None)
+            contexts.append(runtime)
         for ctx in contexts:
             await ctx.close(reason)
 
     async def close_all(self) -> None:
+        async with self._lock:
+            opening = list(self._opening.values())
+        if opening:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in opening),
+                return_exceptions=True,
+            )
         async with self._lock:
             contexts = list(self._sessions.values())
             self._sessions.clear()
@@ -515,14 +617,7 @@ class SessionManager:
         thread_id: str,
     ) -> AsyncIterator[SessionStreamEvent]:
         runtime = await self.get(session_id, thread_id)
-        try:
-            events = runtime.attach_event_stream()
-        except SessionBusy as exc:
-            raise OperationError(
-                "event_stream_connected",
-                str(exc),
-                retryable=True,
-            ) from exc
+        events = runtime.attach_event_stream()
         async def stream():
             try:
                 while True:
@@ -860,112 +955,120 @@ class SessionManagerComponent:
             application_factory=ctx.agent_application_factory,
         )
         ctx.set("sessions", manager)
+        handlers = SessionManagerHandlers(
+            manager,
+            ctx,
+            workspace_root=str(ctx.workspace_root),
+        )
+        ctx.on(DISPATCH_OPERATION, handlers.dispatch)
+        ctx.on(DISPATCH_SESSION_OPERATION, handlers.dispatch_all)
+        ctx.on(QUERY_STATUS, handlers.status)
+        manager.start_reaper()
+        ctx.dispose(manager.close_all)
 
-        async def dispatch(envelope: SessionDispatch) -> object:
-            if not isinstance(envelope, SessionDispatch):
-                raise TypeError("session/dispatch requires SessionDispatch")
-            runtime = await manager.get(
-                envelope.target.session_id,
-                envelope.target.thread_id,
-            )
-            runtime.touch()
-            exclusive = envelope.operation.requires_exclusive(envelope.request)
-            if not exclusive:
-                result = await dispatch_operation(
-                    runtime.application.events,
-                    envelope.operation,
-                    envelope.request,
-                )
-            else:
-                if runtime.turn_lock.locked():
-                    raise OperationError(
-                        "thread_busy",
-                        f"Cannot run {envelope.operation.name!r} while a turn is active.",
-                        retryable=True,
-                    )
-                async with runtime.turn_lock:
-                    result = await dispatch_operation(
-                        runtime.application.events,
-                        envelope.operation,
-                        envelope.request,
-                    )
-            await ctx.emit(
-                OPERATION_COMPLETED,
-                SessionOperationCompleted(
-                    target=envelope.target,
-                    operation_name=envelope.operation.name,
-                    result=result,
-                ),
-            )
-            return result
 
-        ctx.on(DISPATCH_OPERATION, dispatch)
+class SessionManagerHandlers:
+    def __init__(
+        self,
+        manager: SessionManager,
+        events: Any,
+        *,
+        workspace_root: str,
+    ) -> None:
+        self._manager = manager
+        self._events = events
+        self._workspace_root = workspace_root
 
-        async def dispatch_all(envelope: SessionGroupDispatch) -> object:
-            if not isinstance(envelope, SessionGroupDispatch):
-                raise TypeError(
-                    "session/dispatch-all requires SessionGroupDispatch"
-                )
-            active = await manager.active_threads()
-            runtimes = sorted(
-                (
-                    runtime
-                    for (session_id, _thread_id), runtime in active.items()
-                    if session_id == envelope.session_id
-                ),
-                key=lambda runtime: runtime.thread_id,
+    async def dispatch(self, envelope: SessionDispatch) -> object:
+        if not isinstance(envelope, SessionDispatch):
+            raise TypeError("session/dispatch requires SessionDispatch")
+        runtime = await self._manager.get(
+            envelope.target.session_id,
+            envelope.target.thread_id,
+        )
+        runtime.touch()
+        if not envelope.operation.requires_exclusive(envelope.request):
+            result = await dispatch_operation(
+                runtime.application.events,
+                envelope.operation,
+                envelope.request,
             )
-            if not runtimes:
-                raise OperationError(
-                    "thread_not_active",
-                    "Session operations require at least one active thread.",
-                )
-            exclusive = envelope.operation.requires_exclusive(envelope.request)
-            if exclusive and any(
-                runtime.turn_lock.locked() for runtime in runtimes
-            ):
+        else:
+            if runtime.turn_lock.locked():
                 raise OperationError(
                     "thread_busy",
                     f"Cannot run {envelope.operation.name!r} while a turn is active.",
                     retryable=True,
                 )
-            async with AsyncExitStack() as stack:
-                if exclusive:
-                    for runtime in runtimes:
-                        await stack.enter_async_context(runtime.turn_lock)
-                results = []
-                for runtime in runtimes:
-                    runtime.touch()
-                    result = await dispatch_operation(
-                        runtime.application.events,
-                        envelope.operation,
-                        envelope.request,
-                    )
-                    results.append(result)
-                    await ctx.emit(
-                        OPERATION_COMPLETED,
-                        SessionOperationCompleted(
-                            target=SessionRef(
-                                envelope.session_id,
-                                runtime.thread_id,
-                            ),
-                            operation_name=envelope.operation.name,
-                            result=result,
-                        ),
-                    )
-            return tuple(results)
+            async with runtime.turn_lock:
+                result = await dispatch_operation(
+                    runtime.application.events,
+                    envelope.operation,
+                    envelope.request,
+                )
+        await self._completed(envelope.target, envelope.operation.name, result)
+        return result
 
-        ctx.on(DISPATCH_SESSION_OPERATION, dispatch_all)
-        ctx.on(
-            QUERY_STATUS,
-            lambda: ServerStatus(
-                sessions=manager.size,
-                threads=manager.thread_count,
-                workspace_root=str(ctx.workspace_root),
+    async def dispatch_all(self, envelope: SessionGroupDispatch) -> object:
+        if not isinstance(envelope, SessionGroupDispatch):
+            raise TypeError("session/dispatch-all requires SessionGroupDispatch")
+        active = await self._manager.active_threads()
+        runtimes = sorted(
+            (
+                runtime
+                for (session_id, _thread_id), runtime in active.items()
+                if session_id == envelope.session_id
+            ),
+            key=lambda runtime: runtime.thread_id,
+        )
+        if not runtimes:
+            raise OperationError(
+                "thread_not_active",
+                "Session operations require at least one active thread.",
+            )
+        exclusive = envelope.operation.requires_exclusive(envelope.request)
+        if exclusive and any(runtime.turn_lock.locked() for runtime in runtimes):
+            raise OperationError(
+                "thread_busy",
+                f"Cannot run {envelope.operation.name!r} while a turn is active.",
+                retryable=True,
+            )
+        async with AsyncExitStack() as stack:
+            if exclusive:
+                for runtime in runtimes:
+                    await stack.enter_async_context(runtime.turn_lock)
+            results = []
+            for runtime in runtimes:
+                runtime.touch()
+                result = await dispatch_operation(
+                    runtime.application.events,
+                    envelope.operation,
+                    envelope.request,
+                )
+                results.append(result)
+                await self._completed(
+                    SessionRef(envelope.session_id, runtime.thread_id),
+                    envelope.operation.name,
+                    result,
+                )
+        return tuple(results)
+
+    async def _completed(self, target: SessionRef, name: str, result: object) -> None:
+        await self._events.emit(
+            OPERATION_COMPLETED,
+            SessionOperationCompleted(
+                target=target,
+                operation_name=name,
+                result=result,
             ),
         )
-        manager.start_reaper()
-        ctx.dispose(manager.close_all)
+
+    def status(self) -> ServerStatus:
+        return ServerStatus(
+            sessions=self._manager.size,
+            threads=self._manager.thread_count,
+            workspace_root=self._workspace_root,
+        )
 
 
 plugin = SessionManagerComponent()

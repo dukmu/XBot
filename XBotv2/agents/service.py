@@ -10,8 +10,6 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any
 
-from xcore import Context
-
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
     AgentDefinition,
@@ -19,6 +17,7 @@ from XBotv2.agents.contracts import (
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.application import ApplicationEventsPort
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
     AgentLoopDriverPort,
@@ -26,9 +25,11 @@ from XBotv2.agentloop import (
     LoopFactoryOptions,
     LoopSettings,
     ToolsPort,
+    LoopState,
 )
 from XBotv2.config import RuntimeConfig
 from XBotv2.core.errors import OperationError
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.tools import json_object
 from XBotv2.llm import ModelConfig, ProviderConfig
@@ -40,20 +41,35 @@ class AgentsService:
 
     def __init__(
         self,
-        ctx: Context,
+        *,
         catalog: AgentCatalogPort,
         factory: AgentLoopFactoryPort,
+        events: ApplicationEventsPort,
+        state: LoopState,
+        settings: Any,
+        providers: Any,
+        model: Any,
+        tools: ToolsPort,
+        artifacts: ArtifactStorePort,
+        metadata: Any,
     ) -> None:
-        self.ctx = ctx
         self.catalog = catalog
         self._factory = factory
+        self._events = events
+        self._state = state
+        self._settings = settings
+        self._providers = providers
+        self._model = model
+        self._tools = tools
+        self._artifacts = artifacts
+        self._metadata = metadata
+        self._engine: AgentLoopDriverPort | None = None
 
     async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort:
         """Resolve one Agent and publish the driver returned by its factory."""
-        ctx = self.ctx
-        state = ctx.loop_state
-        state.metadata = ctx.thread_metadata
-        config = ctx.settings.load_runtime_config(
+        state = self._state
+        state.metadata = self._metadata
+        config = self._settings.load_runtime_config(
             options.workspace_root,
             options.session_id,
         )
@@ -68,7 +84,7 @@ class AgentsService:
         if definition is not None:
             self._apply_definition(config, definition)
 
-        provider = ctx.llm.provider_config(
+        provider = self._providers.provider_config(
             provider_name,
             require_key=options.model_override is None,
         )
@@ -97,11 +113,13 @@ class AgentsService:
         ))
 
         model = (
-            options.model_override.bind_artifacts(ctx.artifacts)
+            options.model_override.bind_artifacts(self._artifacts)
             if options.model_override is not None
-            else ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
+            else self._providers.create(
+                provider, model_config, artifacts=self._artifacts
+            )
         )
-        user = ctx.settings.user_context()
+        user = self._settings.user_context()
         loop_settings = LoopSettings(
             provider=provider_name,
             model=model_config.model,
@@ -118,11 +136,11 @@ class AgentsService:
             workspace=options.workspace_root,
             llm_is_override=options.model_override is not None,
         )
-        ctx.model.replace(model)
+        self._model.replace(model)
         engine = self._factory.create(LoopFactoryOptions(
-            model_client=ctx.model,
-            tools=ctx.tools,
-            events=ctx,
+            model_client=self._model,
+            tools=self._tools,
+            events=self._events,
             state=state,
             settings=loop_settings,
             max_iterations=(
@@ -131,34 +149,40 @@ class AgentsService:
                 else DEFAULT_MAX_ITERATIONS
             ),
         ))
-        ctx.set("engine", engine)
+        self._engine = engine
         return engine
 
     async def announce_initialized(self) -> None:
         """Notify fully mounted plugins after the dependency graph is running."""
         definition = self.active_definition()
         self._restrict_tools(
-            self.ctx.tools,
+            self._tools,
             self.runtime_config(definition),
             definition,
         )
-        await self.ctx.emit(
+        engine = self._require_engine()
+        await self._events.emit(
             APPLICATION_INITIALIZED,
             ApplicationInitialized(
                 agent=definition,
-                session=self.ctx.loop_state.session,
-                settings=self.ctx.engine.settings,
+                session=self._state.session,
+                settings=engine.settings,
             ),
         )
 
     def definition(self, name: str) -> AgentDefinition | None:
         return self.catalog.get(name)
 
+    def _require_engine(self) -> AgentLoopDriverPort:
+        if self._engine is None:
+            raise RuntimeError("Agent runtime has not been created")
+        return self._engine
+
     def definitions(self) -> tuple[AgentDefinition, ...]:
         return self.catalog.definitions()
 
     def active_definition(self) -> AgentDefinition | None:
-        stored = self.ctx.loop_state.metadata.value.agent_definition
+        stored = self._state.metadata.value.agent_definition
         return (
             self._restore_definition(stored)
             if isinstance(stored, dict)
@@ -166,7 +190,7 @@ class AgentsService:
         )
 
     def current_selection(self) -> AgentSelection:
-        engine = self.ctx.engine
+        engine = self._require_engine()
         return AgentSelection(
             active=engine.settings.agent_name,
             provider=engine.settings.provider,
@@ -180,8 +204,8 @@ class AgentsService:
         definition: AgentDefinition | None = None,
     ) -> RuntimeConfig:
         """Resolve current runtime config with the active Agent overlay."""
-        state = self.ctx.loop_state
-        config = self.ctx.settings.load_runtime_config(
+        state = self._state
+        config = self._settings.load_runtime_config(
             state.session.workspace_root,
             state.session.session_id,
         )
@@ -196,12 +220,11 @@ class AgentsService:
         if definition is None or definition.mode == "subagent":
             raise ValueError(f"Unknown primary Agent: {name}")
 
-        ctx = self.ctx
-        engine = ctx.engine
-        state = ctx.loop_state
+        engine = self._require_engine()
+        state = self._state
         config = self.runtime_config(definition)
         provider_name = definition.provider or engine.settings.provider
-        provider = ctx.llm.provider_config(
+        provider = self._providers.provider_config(
             provider_name,
             require_key=not engine.settings.llm_is_override,
         )
@@ -212,13 +235,15 @@ class AgentsService:
         )
         config.max_output_tokens = model_config.max_output_tokens
         if not engine.settings.llm_is_override:
-            ctx.model.replace(
-                ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
+            self._model.replace(
+                self._providers.create(
+                    provider, model_config, artifacts=self._artifacts
+                )
             )
 
-        self._restrict_tools(ctx.tools, config, definition)
+        self._restrict_tools(self._tools, config, definition)
         engine.configure(
-            model_client=ctx.model,
+            model_client=self._model,
             max_iterations=definition.max_iterations or DEFAULT_MAX_ITERATIONS,
             provider=provider_name,
             model=model_config.model,
@@ -241,7 +266,7 @@ class AgentsService:
             model_mode=model_config.model_mode,
             context_window=config.max_context_tokens,
         ))
-        await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
+        await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=definition,
             session=state.session,
             agent_name=engine.settings.agent_name,
@@ -268,22 +293,23 @@ class AgentsService:
         ``model`` selects one catalog entry of the provider; unknown model
         names fail closed before the client is recreated.
         """
-        ctx = self.ctx
-        if name not in ctx.llm.names():
+        if name not in self._providers.names():
             raise ValueError(f"Unknown provider: {name}")
-        engine = ctx.engine
-        state = ctx.loop_state
-        provider = ctx.llm.provider_config(
+        engine = self._require_engine()
+        state = self._state
+        provider = self._providers.provider_config(
             name,
             require_key=not engine.settings.llm_is_override,
         )
         model_config = provider.resolve(model)
         if not engine.settings.llm_is_override:
-            ctx.model.replace(
-                ctx.llm.create(provider, model_config, artifacts=ctx.artifacts)
+            self._model.replace(
+                self._providers.create(
+                    provider, model_config, artifacts=self._artifacts
+                )
             )
         engine.configure(
-            model_client=ctx.model,
+            model_client=self._model,
             provider=name,
             model=model_config.model,
             model_mode=model_config.model_mode,
@@ -298,7 +324,7 @@ class AgentsService:
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
         ))
-        await ctx.emit(AGENT_CONFIGURED, AgentConfigured(
+        await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=None,
             session=state.session,
             agent_name=engine.settings.agent_name,
@@ -319,11 +345,10 @@ class AgentsService:
         Only tiers the model advertises in its ``effort`` list are accepted;
         the provider client is rebuilt with the new tier.
         """
-        ctx = self.ctx
-        engine = ctx.engine
+        engine = self._require_engine()
         provider_name = engine.settings.provider
         model_name = engine.settings.model
-        entry = ctx.llm.provider_config(
+        entry = self._providers.provider_config(
             provider_name,
             require_key=not engine.settings.llm_is_override,
         )
@@ -343,19 +368,21 @@ class AgentsService:
             update={"reasoning_effort": value}
         )
         if not engine.settings.llm_is_override:
-            ctx.model.replace(
-                ctx.llm.create(entry, model_config, artifacts=ctx.artifacts)
+            self._model.replace(
+                self._providers.create(
+                    entry, model_config, artifacts=self._artifacts
+                )
             )
         engine.configure(
-            model_client=ctx.model,
+            model_client=self._model,
             provider=provider_name,
             model=model_name,
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens or 0,
         )
-        ctx.loop_state.metadata.replace(replace(
-            ctx.loop_state.metadata.value,
+        self._state.metadata.replace(replace(
+            self._state.metadata.value,
             provider=provider_name,
             model=model_name,
             model_mode=model_config.model_mode,
@@ -378,15 +405,16 @@ class AgentsService:
         definition = self.definition(name)
         if definition is None or definition.mode == "subagent":
             raise OperationError("agent_not_found", f"Unknown primary Agent: {name}")
-        if definition.name != self.ctx.engine.settings.agent_name:
+        engine = self._require_engine()
+        if definition.name != engine.settings.agent_name:
             await self.activate(definition.name)
         return {
             "active": definition.name,
             "agent_name": definition.name,
-            "provider": self.ctx.engine.settings.provider,
-            "model": self.ctx.engine.settings.model,
-            "model_mode": self.ctx.engine.settings.model_mode,
-            "context_window": self.ctx.engine.context_window,
+            "provider": engine.settings.provider,
+            "model": engine.settings.model,
+            "model_mode": engine.settings.model_mode,
+            "context_window": engine.context_window,
         }
 
     def _resolve_definition(
@@ -444,7 +472,7 @@ class AgentsService:
         if provider_name == "default":
             provider_name = configured_provider
         if provider_name == "default":
-            provider_name = self.ctx.llm.default_name()
+            provider_name = self._providers.default_name()
         if definition is not None and definition.provider:
             provider_name = definition.provider
         return metadata.provider or provider_name

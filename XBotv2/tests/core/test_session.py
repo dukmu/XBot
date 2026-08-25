@@ -134,6 +134,28 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_runtime_events_are_broadcast_to_multiple_clients(tmp_path):
+    session = runtime(tmp_path)
+    first = session.attach_event_stream()
+    second = session.attach_event_stream()
+
+    session._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
+        "completion_notice",
+        {"task_id": "t1", "status": "completed"},
+    )))
+
+    assert (await asyncio.wait_for(first.get(), timeout=1))["type"] == (
+        "completion_notice"
+    )
+    assert (await asyncio.wait_for(second.get(), timeout=1))["type"] == (
+        "completion_notice"
+    )
+    session.detach_event_stream(first)
+    assert second in session.event_streams
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_history_change_is_projected_from_typed_session_event(tmp_path):
     session = runtime(tmp_path)
     events = session.attach_event_stream()

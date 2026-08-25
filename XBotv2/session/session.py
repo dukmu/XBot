@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import secrets
 import shutil
-from typing import Any
+from typing import Any, Protocol
 
+from XBotv2.agentloop import LoopState
 from XBotv2.core.errors import OperationError
 from XBotv2.core.messages import Message
-from XBotv2.core.paths import SessionPaths
+from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     PREPARE_FORK,
@@ -37,22 +38,26 @@ def _new_fork_id() -> str:
     return f"{stamp}-{secrets.token_hex(2)}"
 
 
+class SessionEventsPort(Protocol):
+    async def emit(self, event: str, *args: object) -> None: ...
+
+
 class Session:
     """One active session's identity, path allocation, and history surface."""
 
     def __init__(
         self,
         *,
-        ctx: Any = None,
+        events: SessionEventsPort,
         session_id: str,
         thread_id: str,
         workspace_root: str,
-        paths: Any,
+        paths: RuntimePaths,
         variables: Any,
-        state: Any,
+        state: LoopState,
         session_paths: SessionPaths,
     ) -> None:
-        self.ctx = ctx
+        self._events = events
         self.session_id = session_id
         self.thread_id = thread_id
         self.workspace_root = workspace_root
@@ -76,7 +81,7 @@ class Session:
         )
 
     async def fork(self) -> str:
-        await self.ctx.emit(
+        await self._events.emit(
             PREPARE_FORK,
             PrepareFork(self.session_id, self.thread_id),
         )
@@ -111,7 +116,7 @@ class Session:
         operation: str,
         turns: int = 0,
     ) -> None:
-        await self.ctx.emit(
+        await self._events.emit(
             HISTORY_CHANGED,
             HistoryChanged(self.state.history.snapshot(), operation, turns),
         )

@@ -16,6 +16,17 @@ from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_service import ToolsService
 
 
+class _UnavailableApproval:
+    async def request(self, _event: dict[str, Any]) -> dict[str, str]:
+        return {"status": "unavailable", "decision": "", "scope": "once"}
+
+
+async def _ignore_permission_decision(
+    _event: dict[str, Any], _decision: str, _scope: str
+) -> None:
+    return None
+
+
 def make_tool_ctx(
     registry: ToolRegistry,
     *,
@@ -40,15 +51,17 @@ def make_tool_ctx(
         tools_service = ToolsService(registry, events=ctx)
         ctx.set("tools", tools_service)
     if permissions is not None:
-        from XBotv2.permissions.guard import make_permission_guard
+        from XBotv2.permissions.guard import PermissionGuard
 
         if ctx.get("permissions", strict=False) is None:
             ctx.set("permissions", permissions)
-        tools_service.guard(make_permission_guard(
+        guard = PermissionGuard(
             permissions,
-            approval,
+            approval or _UnavailableApproval(),
             ctx.emit,
-        ))
+            _ignore_permission_decision,
+        )
+        tools_service.guard(guard.check)
     if sandbox is not None:
         if ctx.get("sandbox", strict=False) is None:
             ctx.set("sandbox", sandbox)

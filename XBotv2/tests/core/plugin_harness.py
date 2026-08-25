@@ -15,6 +15,10 @@ def mount_ctx(state_store):
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
 
+    class TestInteractions:
+        async def request_user_input(self, *_args, **_kwargs):
+            raise AssertionError("test interaction was not configured")
+
     ctx = Context(
         data_dir=state_store.paths.plugin_state_dir,
         state_service=state_store.state,
@@ -24,9 +28,11 @@ def mount_ctx(state_store):
     ctx.set("prompts", PromptsService(ContextBuilder()))
     ctx.set("agent_catalog", AgentCatalog())
     ctx.set("jobs", JobRegistry())
+    ctx.set("interactions", TestInteractions())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", state_store.workspace_root)
     ctx.set("data_root", state_store.paths.runtime.data_dir)
+    ctx.set("runtime_paths", state_store.paths.runtime)
     ctx.set("session", None)
     ctx.set("runtime", None)
     ctx.set("paths", state_store.paths)
@@ -47,6 +53,7 @@ def mount_ctx(state_store):
             provider="default",
         ),
     ))
+    ctx.set("session", ctx.loop_state.session)
     ctx.set("sandbox", SandboxPolicy(
         {"enabled": False, "resources": []},
         data_root=state_store.paths.runtime.data_dir,

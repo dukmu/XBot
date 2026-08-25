@@ -62,7 +62,7 @@ async def build_compaction_proposal(
         if removed_estimate <= minimum_summary_estimate:
             return None
 
-    turn = int(getattr(session, "turn_count", 0) or 0)
+    turn = int(session.turn_count or 0)
     chars_before = history_chars(messages)
     logger.info(
         "compaction started reason=%s turn=%d messages=%d history_chars=%d "
@@ -131,7 +131,7 @@ async def build_compaction_proposal(
 
     compacted = compacted_message(summary, reason=reason)
     compacted_messages = [compacted, *messages[split:]]
-    usage = model_usage(getattr(response, "usage_metadata", None))
+    usage = model_usage(response.usage_metadata)
     summary_estimate = estimate_messages_tokens([compacted])
     context_tokens_after = max(
         1,

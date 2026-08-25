@@ -11,7 +11,11 @@ not part of this contract; SDK clients call typed resource operations.
   and live tasks.
 - The main thread has no parent. Subagent threads record `parent_thread_id`,
   inherit the parent's permission intersection, and cannot create subagents.
-- `close` releases live runtimes. It never deletes persisted resources.
+- `open(mode="resume")` attaches to an active runtime or reconstructs an
+  inactive persisted thread. It never replaces an active runtime.
+- Closing a client transport or event subscription is `detach`; it does not
+  close a thread. `interrupt` cancels a turn. Explicit `close` releases live
+  runtimes but never deletes persisted resources.
 
 Every thread operation is rooted at:
 

@@ -72,7 +72,9 @@ class SessionRuntime:
     # Protocol routing only. Input content lives exclusively in engine.inbox.
     pending_responses: dict[str, PendingResponse] = field(default_factory=dict)
     response_output: asyncio.Queue[dict[str, Any] | None] | None = None
-    session_events: asyncio.Queue[dict[str, Any] | None] | None = None
+    event_streams: set[asyncio.Queue[dict[str, Any] | None]] = field(
+        default_factory=set
+    )
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
     # ``message`` events published before the event stream attaches; flushed
@@ -100,9 +102,7 @@ class SessionRuntime:
 
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
-        if self.session_events is None:
-            return
-        await self.session_events.put(session_event(
+        self._publish_runtime_event(session_event(
             "history_updated",
             {
                 "history": display_history(event.messages),
@@ -121,12 +121,12 @@ class SessionRuntime:
             "model_mode": event.model_mode,
             "context_window": event.context_window,
         }
-        if data and self.session_events is not None:
-            await self.session_events.put(session_event("agent_configured", data))
+        if data:
+            self._publish_runtime_event(session_event("agent_configured", data))
 
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
-        if self.session_events is not None:
-            self.session_events.put_nowait(event)
+        for stream in tuple(self.event_streams):
+            stream.put_nowait(event)
 
     def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
@@ -148,8 +148,8 @@ class SessionRuntime:
             "message",
             {"id": message_id, "role": "user", "content": content},
         )
-        if self.session_events is not None:
-            self.session_events.put_nowait(event)
+        if self.event_streams:
+            self._publish_runtime_event(event)
         else:
             self._pending_message_events.append(event)
 
@@ -226,20 +226,18 @@ class SessionRuntime:
         return True
 
     def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
-        if self.session_events is not None:
-            raise SessionBusy("session event stream is already connected")
-        self.session_events = asyncio.Queue()
+        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         for event in self._pending_message_events:
-            self.session_events.put_nowait(event)
+            events.put_nowait(event)
         self._pending_message_events.clear()
-        return self.session_events
+        self.event_streams.add(events)
+        return events
 
     def detach_event_stream(
         self,
         events: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
-        if self.session_events is events:
-            self.session_events = None
+        self.event_streams.discard(events)
 
     def request_interrupt(self) -> bool:
         task = self.turn_task
@@ -264,8 +262,7 @@ class SessionRuntime:
                 self,
                 content=None,
             ):
-                if self.session_events is not None:
-                    await self.session_events.put(event)
+                self._publish_runtime_event(event)
         except SessionBusy:
             pass
         finally:
@@ -296,9 +293,9 @@ class SessionRuntime:
             await self.response_output.put(None)
             self.response_output = None
         await self.engine.discard_inputs()
-        if self.session_events is not None:
-            await self.session_events.put(None)
-            self.session_events = None
+        for stream in tuple(self.event_streams):
+            stream.put_nowait(None)
+        self.event_streams.clear()
         try:
             await self.engine.close_session()
         except Exception:

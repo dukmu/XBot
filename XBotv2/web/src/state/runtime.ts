@@ -54,7 +54,9 @@ export interface NoticeEntry {
 }
 
 export interface RuntimeState {
-  connected: boolean;
+  serverReachable: boolean;
+  sessionAttached: boolean;
+  eventStreamConnected: boolean;
   loading: boolean;
   sessions: SessionSummary[];
   threads: ThreadSummary[];
@@ -72,7 +74,9 @@ export interface RuntimeState {
 
 export type RuntimeAction =
   | { type: "loading"; value: boolean }
-  | { type: "connected"; value: boolean }
+  | { type: "server_reachable"; value: boolean }
+  | { type: "session_attached"; value: boolean }
+  | { type: "event_stream"; value: boolean }
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "threads"; threads: ThreadSummary[] }
   | { type: "providers"; providers: ProviderInfo[] }
@@ -92,7 +96,9 @@ export type RuntimeAction =
   | { type: "clear_error" };
 
 export const initialRuntimeState: RuntimeState = {
-  connected: false,
+  serverReachable: false,
+  sessionAttached: false,
+  eventStreamConnected: false,
   loading: true,
   sessions: [],
   threads: [],
@@ -112,8 +118,12 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
   switch (action.type) {
     case "loading":
       return { ...state, loading: action.value };
-    case "connected":
-      return { ...state, connected: action.value };
+    case "server_reachable":
+      return { ...state, serverReachable: action.value };
+    case "session_attached":
+      return { ...state, sessionAttached: action.value };
+    case "event_stream":
+      return { ...state, eventStreamConnected: action.value };
     case "sessions":
       return { ...state, sessions: action.sessions };
     case "threads":
@@ -125,7 +135,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "opened":
       return {
         ...state,
-        connected: true,
+        sessionAttached: true,
         loading: false,
         current: action.session,
         entries: historyEntries(action.session.history),

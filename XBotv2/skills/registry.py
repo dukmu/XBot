@@ -20,13 +20,6 @@ _DISCOVERY_PATHS = [
     ".agents/skills",
     ".opencode/skills",
 ]
-_GLOBAL_PATHS = [
-    Path.home() / ".claude/skills",
-    Path.home() / ".agents/skills",
-    Path.home() / ".config/opencode/skills",
-]
-
-
 @dataclass
 class Skill:
     name: str
@@ -53,10 +46,7 @@ class SkillRegistry:
     ) -> None:
         self._skills.clear()
         self._scan_project(workspace)
-        if global_dirs:
-            self._scan_global(global_dirs)
-        else:
-            self._scan_global()
+        self._scan_global(global_dirs)
 
     def list_skills(self) -> list[Skill]:
         return sorted(self._skills.values(), key=lambda s: s.name)
@@ -75,10 +65,10 @@ class SkillRegistry:
                 break
             current = current.parent
 
-    def _scan_global(self, extra_dirs: list[Path] | tuple[Path, ...] = ()) -> None:
+    def _scan_global(self, directories: list[Path] | tuple[Path, ...]) -> None:
         seen: set[Path] = set()
-        for skills_dir in (*extra_dirs, *_GLOBAL_PATHS):
-            skills_dir = Path(skills_dir).expanduser()
+        for skills_dir in directories:
+            skills_dir = Path(skills_dir)
             if skills_dir in seen:
                 continue
             seen.add(skills_dir)

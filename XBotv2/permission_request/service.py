@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from XBotv2.agentloop import EventContext, Events
+from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
 from XBotv2.core.tools import ClientEvent
 from XBotv2.permission_request.waiter import ApprovalWaiter
 
@@ -19,9 +20,13 @@ Answerer = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | str]]
 class ApprovalService:
     """Live approval transport with no permission-policy knowledge."""
 
-    def __init__(self, ctx: Any, client_events: Any) -> None:
-        self.ctx = ctx
-        self.client_events = client_events
+    def __init__(
+        self,
+        events: ApplicationEventsPort,
+        client_events: ClientEventsPort,
+    ) -> None:
+        self._events = events
+        self._client_events = client_events
         self._answerers: list[Answerer] = []
         self._waiter = ApprovalWaiter()
 
@@ -73,6 +78,9 @@ class ApprovalService:
     def is_pending(self, request_id: str) -> bool:
         return self._waiter.is_pending(request_id)
 
+    def session_closed(self, _event: EventContext) -> None:
+        self.cancel_all("session_closed")
+
     # ------------------------------------------------------------------
     # Approval flow
     # ------------------------------------------------------------------
@@ -80,11 +88,11 @@ class ApprovalService:
     async def request(self, client_event: dict[str, Any]) -> dict[str, Any]:
         """Publish a request and return the client's raw decision record."""
         envelope = ClientEvent.from_mapping(client_event)
-        await self.ctx.emit(
+        await self._events.emit(
             Events.CLIENT_EVENT,
             EventContext(client_event=envelope),
         )
-        sink_result = await self.client_events.request(envelope)
+        sink_result = await self._client_events.request(envelope)
         if sink_result is not None:
             return sink_result
         for answerer in list(self._answerers):

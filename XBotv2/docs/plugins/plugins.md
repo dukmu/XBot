@@ -75,8 +75,9 @@ phase at unload. State survives plugin unload and session resume until the
 plugin explicitly clears it.
 
 Reads return a fresh persisted snapshot. Mutating a list or mapping returned by
-`get` or `all` does not update state; call `set` explicitly. Values must be
-YAML-safe, and failed serialization preserves the previous file. Operations in
+`get` or `all` does not update state; call `set` explicitly. Values must satisfy
+the strict JSON state contract, and failed validation or persistence preserves
+the previous snapshot. Operations in
 one session event loop are serialized because a store operation performs no
 internal await. Cross-process transactions over the same session directory are
 not supported.
@@ -91,52 +92,26 @@ explicit runtime defaults rather than relying on schema documentation.
 ## Plugin Template
 
 ```python
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.core import Tool, ToolCall
+
+
+class ExampleHandler:
+    def __init__(self, prefix: str) -> None:
+        self._prefix = prefix
+
+    async def run(self, value: str, *, tool_call: ToolCall) -> str:
+        """Return one prefixed value."""
+        return f"{self._prefix} ({tool_call.id}): {value}"
 
 
 class ExamplePlugin:
     name = "example"
-    inject = {"required": ["tools"], "optional": ["metrics"]}
-
-    def __init__(self) -> None:
-        self._tool_names: list[str] = []
+    inject = ["tools"]
 
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        self._prefix = str((config or {}).get("prefix") or "example")
-        self._metrics = ctx.get("metrics", strict=False)
-        ctx.dispose(self._cleanup)
-        ctx.on(APPLICATION_INITIALIZED, self._on_initialized)
-        # Static registrations are fiber effects: undone automatically on
-        # unload (XCore current_fiber binds the cleanup).
-        ctx.tools.register(self._build_tool())
-
-    def _cleanup(self) -> None:
-        for name in reversed(self._tool_names):
-            self.ctx.tools.unregister(name)
-
-    async def _on_initialized(self, event: ApplicationInitialized) -> None:
-        # Event-time registrations happen outside apply's fiber effect and
-        # therefore need explicit ownership.
-        name = self.ctx.tools.register(
-            Tool.from_function(self._runtime_status, name="example-runtime")
-        )
-        self._tool_names.append(name)
-
-    def _build_tool(self) -> Tool:
-        prefix = self._prefix
-        metrics = self._metrics
-
-        async def run(value: str, *, tool_call: ToolCall) -> str:
-            if metrics is not None:
-                metrics.record(tool_call.id)
-            return f"{prefix}: {value}"
-
-        return Tool.from_function(run, name="example")
-
-    async def _runtime_status(self) -> str:
-        return "ready"
+        prefix = str((config or {}).get("prefix") or "example")
+        handler = ExampleHandler(prefix)
+        ctx.tools.register(Tool.from_function(handler.run, name="example"))
 ```
 
 Python plugins override `apply(ctx)` and register through the XCore context:
@@ -174,12 +149,13 @@ Runtime registrations performed from event listeners must be tracked by the
 plugin and unregistered in its disposer; otherwise unload and failure
 rollback cannot be complete.
 
-Dynamic tools discovered from an event such as `APPLICATION_INITIALIZED`
-register through the plugin's `ctx.tools` service and record their registered
-names:
+Dynamic tools discovered from an event such as `APPLICATION_INITIALIZED` are
+owned by a per-application runtime object. That object receives `tools` in its
+constructor, records returned registration names, and unregisters them from its
+named disposer. It does not retain the whole `Context`.
 
 ```python
-name = self.ctx.tools.register(
+name = self._tools.register(
     tool,
     namespace="plugin:my-plugin",
 )
@@ -196,16 +172,20 @@ automatically when the plugin unloads:
 ```python
 from XBotv2.core import Tool
 
-capability = ctx.capability
+class MyToolHandler:
+    def __init__(self, capability) -> None:
+        self._capability = capability
 
-async def invoke(value: str) -> str:
-    return await capability.run(value)
+    async def invoke(self, value: str) -> str:
+        return await self._capability.run(value)
 
-ctx.tools.register(Tool.from_function(invoke, name="my-tool"))
+
+handler = MyToolHandler(ctx.capability)
+ctx.tools.register(Tool.from_function(handler.invoke, name="my-tool"))
 ```
 
-Core supplies no arbitrary invocation dependency dictionary. Capture declared
-services in a plugin-owned factory or closure. When a Tool needs the identity
+Core supplies no arbitrary invocation dependency dictionary. Pass declared
+services to a named handler or service. When a Tool needs the identity
 of the final rewritten invocation, declare one keyword-only `ToolCall`
 parameter; it is excluded from the model schema. Do not wrap sandbox, session,
 or other services in a generic invocation context.

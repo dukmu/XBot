@@ -64,6 +64,7 @@ source = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["XBotv2*"]
+exclude = ["XBotv2.tests*"]
 namespaces = true
 
 [tool.setuptools.package-data]

@@ -67,7 +67,5 @@ class ClientEventRouter:
     def pending_request_ids(self) -> list[str]:
         pending: list[str] = []
         for waiter in self._waiters.values():
-            request_ids = getattr(waiter, "pending_request_ids", None)
-            if callable(request_ids):
-                pending.extend(request_ids())
+            pending.extend(waiter.pending_request_ids())
         return pending

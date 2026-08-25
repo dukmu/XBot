@@ -131,227 +131,186 @@ class SubagentRunner:
             await self._child.cancel()
 
 
+class SubagentTools:
+    """Named handlers for the subagent job tool surface."""
+
+    def __init__(
+        self,
+        *,
+        registry: JobsPort,
+        launcher: SubagentLauncher,
+        catalog: AgentCatalogPort,
+    ) -> None:
+        self._registry = registry
+        self._launcher = launcher
+        self._catalog = catalog
+
+    async def spawn_subagent(
+        self,
+        agent: str,
+        prompt: str,
+        name: str | None = None,
+    ) -> ToolResult:
+        """Delegate a focused task to a registered subagent.
+
+        Args:
+            agent: Registered subagent name shown in the system instructions.
+            prompt: Complete task, context, constraints, and expected output.
+            name: Optional short label for listing.
+        """
+        if self._registry.closing:
+            return ToolResult.failure("session_closing", "Session is closing")
+        if agent not in {item.name for item in self._catalog.definitions()}:
+            return ToolResult.failure("agent_not_found", f"Unknown subagent: {agent}")
+        if not prompt.strip():
+            return ToolResult.failure("invalid_prompt", "Subagent prompt cannot be empty")
+        try:
+            job = await self._registry.create(
+                kind=JobKind.SUBAGENT,
+                metadata={
+                    "agent": agent,
+                    "command": f"{agent}: {_preview(prompt, _MAX_PROMPT_PREVIEW)}",
+                },
+                name=name,
+            )
+        except JobRegistryClosed:
+            return ToolResult.failure("session_closing", "Session is closing")
+        self._registry.start(
+            job.id,
+            SubagentRunner(session=self._launcher, agent=agent, prompt=prompt),
+        )
+        return ToolResult.success(f"Started {job.id} (status: {job.status.value})")
+
+    async def list_subagents(self, status: str | None = None) -> ToolResult:
+        """List subagent jobs, optionally filtered by terminal status."""
+        summaries = self._registry.list(
+            kind=JobKind.SUBAGENT,
+            status=_parse_status(status),
+        )
+        return ToolResult.success(f"{len(summaries)} subagent job(s)")
+
+    async def wait_subagent(
+        self,
+        ids: list[str] | None = None,
+        mode: str = "all",
+        timeout_ms: int | None = None,
+    ) -> ToolResult:
+        """Wait for subagent jobs; read_subagent returns their final text."""
+        if mode not in {"all", "any"}:
+            return ToolResult.failure("invalid_mode", "mode must be 'all' or 'any'")
+        resolved = ids or [
+            job.id for job in self._registry.all() if job.kind is JobKind.SUBAGENT
+        ]
+        if not resolved:
+            return ToolResult.failure("subagent_not_found", "No subagent jobs to wait for")
+        try:
+            await self._registry.wait(
+                resolved,
+                mode=mode,
+                timeout=(timeout_ms / 1000) if timeout_ms is not None else None,
+            )
+        except JobNotFound:
+            return ToolResult.failure("subagent_not_found", "Unknown subagent job id")
+        return ToolResult.success("Wait complete")
+
+    async def read_subagent(
+        self,
+        id: str,
+        cursor: int | None = None,
+        max_chars: int = 8000,
+    ) -> ToolResult:
+        """Read one completed subagent response from the given character offset."""
+        job = self._registry.get_or_none(id)
+        if job is None or job.kind is not JobKind.SUBAGENT:
+            return ToolResult.failure("subagent_not_found", f"Unknown subagent job: {id}")
+        store = job.result.output_store if job.result is not None else None
+        if store is None:
+            if job.error is not None:
+                return ToolResult.failure(job.error.code, job.error.message)
+            return ToolResult.success("No response captured yet")
+        chunk = await store.read(cursor=cursor, max_bytes=max_chars)
+        return ToolResult.success(chunk.data)
+
+    async def cancel_subagent(self, id: str) -> ToolResult:
+        """Cancel one subagent job idempotently."""
+        job = self._registry.get_or_none(id)
+        if job is None or job.kind is not JobKind.SUBAGENT:
+            return ToolResult.failure("subagent_not_found", f"Unknown subagent job: {id}")
+        result = await self._registry.cancel(id)
+        return ToolResult.success(f"Subagent {id} {result.status}")
+
+
 class SubagentsPlugin:
+    """Register subagent job tools and their prompt catalog."""
+
     inject = {
         "required": [
-            "session",
-            "agent_catalog",
-            "child_applications",
-            "permissions",
-            "client_events",
-            "jobs",
-            "tools",
-            "prompts",
+            "session", "agent_catalog", "child_applications", "permissions",
+            "client_events", "jobs", "tools", "prompts",
         ],
         "optional": ["thread_persistence"],
     }
-    """Register subagent job tools and their prompt catalog."""
-
     name = "agents.subagents"
-    Config = S.object({
-        "timeout_seconds": S.number().optional(),
-    })
-
-    def __init__(self) -> None:
-        self._timeout_seconds = 600.0
+    Config = S.object({"timeout_seconds": S.number().optional()})
 
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        self._timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
         if not ctx.has("thread_persistence"):
             return
-        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
-
-        launcher = SubagentLauncher(
-            catalog=ctx.agent_catalog,
-            session=ctx.session,
-            children=ctx.child_applications,
-            lifecycle=ctx.thread_persistence.lifecycle,
-            parent_permissions=ctx.permissions,
-            client_events=ctx.client_events,
+        timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
+        catalog: AgentCatalogPort = ctx.agent_catalog
+        prompts = ctx.prompts
+        ctx.on(
+            APPLICATION_INITIALIZED,
+            SubagentCatalogPrompt(catalog, prompts).publish,
         )
-        registry: JobsPort = ctx.jobs
-
-        async def spawn_subagent(
-            agent: str,
-            prompt: str,
-            name: str | None = None,
-        ) -> ToolResult:
-            """Delegate a focused task to a registered subagent.
-
-            The child runs asynchronously in a separate thread under the current
-            session and returns a job ID immediately. Use ``wait_subagent`` when
-            later work depends on completion and ``read_subagent`` to read the
-            final response. The full history remains in the child thread; only
-            the final response and usage are captured here. The child may spawn
-            further subagents itself.
-
-            Args:
-                agent: Registered subagent name shown in the system instructions.
-                prompt: Complete task, relevant context, constraints, and expected output.
-                name: Optional short label for listing.
-            """
-            if registry.closing:
-                return ToolResult.failure(
-                    "session_closing", "Session is closing"
-                )
-            definition = ctx.agent_catalog.definitions()
-            known = {item.name for item in definition}
-            if agent not in known:
-                return ToolResult.failure(
-                    "agent_not_found", f"Unknown subagent: {agent}"
-                )
-            if not prompt.strip():
-                return ToolResult.failure(
-                    "invalid_prompt", "Subagent prompt cannot be empty"
-                )
-            try:
-                job = await registry.create(
-                    kind=JobKind.SUBAGENT,
-                    metadata={
-                        "agent": agent,
-                        "command": f"{agent}: {_preview(prompt, _MAX_PROMPT_PREVIEW)}",
-                    },
-                    name=name,
-                )
-            except JobRegistryClosed:
-                return ToolResult.failure(
-                    "session_closing", "Session is closing"
-                )
-            registry.start(
-                job.id,
-                SubagentRunner(session=launcher, agent=agent, prompt=prompt),
-            )
-            return ToolResult.success(f"Started {job.id} (status: {job.status.value})")
-
-        async def list_subagents(status: str | None = None) -> ToolResult:
-            """List subagent jobs with lightweight metadata only.
-
-            Returns IDs, names, statuses, and elapsed time — never prompts or
-            responses. Use ``read_subagent`` to read a completed response.
-
-            Args:
-                status: Optional filter: pending, running, completed, failed, cancelled.
-            """
-            status_filter = _parse_status(status)
-            summaries = registry.list(
-                kind=JobKind.SUBAGENT, status=status_filter
-            )
-            return ToolResult.success(f"{len(summaries)} subagent job(s)")
-
-        async def wait_subagent(
-            ids: list[str] | None = None,
-            mode: str = "all",
-            timeout_ms: int | None = None,
-        ) -> ToolResult:
-            """Wait for subagent jobs to reach a terminal state.
-
-            Returns only IDs and statuses, never responses; use
-            ``read_subagent`` for the final text.
-
-            Args:
-                ids: Subagent job IDs to wait for. Omit to wait for any subagent
-                    owned by this session.
-                mode: ``all`` waits for every listed job; ``any`` returns on the first.
-                timeout_ms: Optional maximum wait time in milliseconds.
-            """
-            if mode not in {"all", "any"}:
-                return ToolResult.failure(
-                    "invalid_mode", "mode must be 'all' or 'any'"
-                )
-            resolved = ids or [
-                job.id for job in registry.all() if job.kind is JobKind.SUBAGENT
-            ]
-            if not resolved:
-                return ToolResult.failure(
-                    "subagent_not_found", "No subagent jobs to wait for"
-                )
-            try:
-                result = await registry.wait(
-                    resolved,
-                    mode=mode,
-                    timeout=(timeout_ms / 1000) if timeout_ms is not None else None,
-                )
-            except JobNotFound:
-                return ToolResult.failure(
-                    "subagent_not_found", "Unknown subagent job id"
-                )
-            return ToolResult.success("Wait complete")
-
-        async def read_subagent(
-            id: str,
-            cursor: int | None = None,
-            max_chars: int = 8000,
-        ) -> ToolResult:
-            """Read the final response from one subagent job.
-
-            Continue reading by passing the returned ``next_cursor``. Reading
-            never changes the job's status.
-
-            Args:
-                id: Subagent job ID returned by spawn_subagent.
-                cursor: Character offset to start reading from.
-                max_chars: Maximum characters to return (default 8000).
-            """
-            job = registry.get_or_none(id)
-            if job is None or job.kind is not JobKind.SUBAGENT:
-                return ToolResult.failure(
-                    "subagent_not_found", f"Unknown subagent job: {id}"
-                )
-            store = job.result.output_store if job.result is not None else None
-            if store is None:
-                if job.error is not None:
-                    return ToolResult.failure(job.error.code, job.error.message)
-                return ToolResult.success("No response captured yet")
-            chunk = await store.read(cursor=cursor, max_bytes=max_chars)
-            return ToolResult.success(chunk.data)
-
-        async def cancel_subagent(id: str) -> ToolResult:
-            """Cancel one subagent job (idempotent).
-
-            Args:
-                id: Subagent job ID returned by spawn_subagent.
-            """
-            job = registry.get_or_none(id)
-            if job is None or job.kind is not JobKind.SUBAGENT:
-                return ToolResult.failure(
-                    "subagent_not_found", f"Unknown subagent job: {id}"
-                )
-            result = await registry.cancel(id)
-            return ToolResult.success(f"Subagent {id} {result.status}")
-
+        handlers = SubagentTools(
+            registry=ctx.jobs,
+            catalog=catalog,
+            launcher=SubagentLauncher(
+                catalog=catalog,
+                session=ctx.session,
+                children=ctx.child_applications,
+                lifecycle=ctx.thread_persistence.lifecycle,
+                parent_permissions=ctx.permissions,
+                client_events=ctx.client_events,
+            ),
+        )
         ctx.tools.register(
-            Tool.from_function(spawn_subagent, name="spawn_subagent"),
-            timeout_seconds=self._timeout_seconds,
+            Tool.from_function(handlers.spawn_subagent),
+            timeout_seconds=timeout_seconds,
         )
-        for function in (
-            list_subagents,
-            wait_subagent,
-            read_subagent,
-            cancel_subagent,
+        for handler in (
+            handlers.list_subagents,
+            handlers.wait_subagent,
+            handlers.read_subagent,
+            handlers.cancel_subagent,
         ):
-            ctx.tools.register(
-                Tool.from_function(function),
-            )
+            ctx.tools.register(Tool.from_function(handler))
 
-    def _on_session_init(self, _event: ApplicationInitialized) -> None:
-        """Publish the subagent catalog once all definitions are registered."""
-        visible_subagents = [
+
+class SubagentCatalogPrompt:
+    def __init__(self, catalog: AgentCatalogPort, prompts: Any) -> None:
+        self._catalog = catalog
+        self._prompts = prompts
+
+    def publish(self, _event: ApplicationInitialized) -> None:
+        visible = [
             definition
-            for definition in self.ctx.agent_catalog.definitions()
+            for definition in self._catalog.definitions()
             if definition.mode in {"subagent", "all"} and not definition.hidden
         ]
-        if visible_subagents:
-            lines = ["Available subagents for the spawn_subagent tool:"]
-            lines.extend(
-                f"- {definition.name}: {definition.description}"
-                for definition in visible_subagents
-            )
-            self.ctx.prompts.add(
-                "context_suffix",
-                "\n".join(lines),
-                source="available_subagents",
-            )
+        if not visible:
+            return
+        lines = ["Available subagents for the spawn_subagent tool:"]
+        lines.extend(
+            f"- {definition.name}: {definition.description}"
+            for definition in visible
+        )
+        self._prompts.add(
+            "context_suffix",
+            "\n".join(lines),
+            source="available_subagents",
+        )
 
 
 def _parse_status(value: str | None) -> JobStatus | None:

@@ -1,10 +1,9 @@
 """Permission request component: the approval seam as an XCore service.
 
 Provides ``ctx.approval`` — the live one-shot approval channel for tool
-``ask`` decisions.  The tool pipeline resolves ``ask`` through this service
-opportunistically (``ctx.get("approval")``); a deployment without it keeps
-the fail-closed deny degrade.  Answerers are registered by protocol/UI
-plugins that own the client event and the human response.
+``ask`` decisions. Permissions declares it as a required dependency, so XCore
+activates the policy guard only after the channel is available. Answerers are
+registered by protocol/UI plugins that own the client event and human response.
 """
 
 from __future__ import annotations
@@ -27,10 +26,7 @@ class PermissionRequestComponent:
         ctx.dispose(ctx.client_events.register_waiter(
             "permission_request", service.waiter
         ))
-        ctx.on(
-            Events.SESSION_CLOSE,
-            lambda _event: service.cancel_all("session_closed"),
-        )
+        ctx.on(Events.SESSION_CLOSE, service.session_closed)
 
 
 plugin = PermissionRequestComponent()

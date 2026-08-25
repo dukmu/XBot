@@ -42,9 +42,9 @@ class BrowserPlugin:
         self._web: WebAccess | None = None
         self._browser: BrowserSession | None = None
         self._artifacts = None
+        self._sandbox = None
 
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
         config = config or {}
         self._search.update(config.get("search") or {})
         network = config.get("network") or {}
@@ -57,6 +57,7 @@ class BrowserPlugin:
         self._browser_options.update(config.get("browser") or {})
         ctx.dispose(self._dispose)
         self._artifacts = ctx.artifacts
+        self._sandbox = ctx.sandbox
         for function in (
             self.web_search,
             self.web_fetch,
@@ -87,7 +88,7 @@ class BrowserPlugin:
             max_results: Number of results from 1 to 10; defaults to 5.
             freshness: Optional day, week, month, or year recency filter.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._web_access().search(
@@ -109,7 +110,7 @@ class BrowserPlugin:
         Args:
             url: Absolute public http or https URL without embedded credentials.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._web_access().fetch(url)
@@ -124,7 +125,7 @@ class BrowserPlugin:
             url: Absolute public http/https URL, or absolute file:// URL within
                 the sandbox-approved filesystem scope.
         """
-        return await self._browser_session().open(url, sandbox=self.ctx.sandbox)
+        return await self._browser_session().open(url, sandbox=self._sandbox)
 
     async def browser_snapshot(self) -> ToolResult:
         """Read the active page text and refresh its interactive element refs.
@@ -139,7 +140,7 @@ class BrowserPlugin:
         Args:
             ref: Element identifier such as e1 from browser_snapshot.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().click(ref)
@@ -154,7 +155,7 @@ class BrowserPlugin:
             ref: Editable element identifier from browser_snapshot.
             text: Exact text to place in the element.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().fill(ref, text)
@@ -165,7 +166,7 @@ class BrowserPlugin:
         Args:
             key: Key name or chord such as Enter or Control+A.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().press(key)
@@ -177,7 +178,7 @@ class BrowserPlugin:
             ref: Select element identifier from browser_snapshot.
             value: Exact option value to select.
         """
-        unavailable = network_available(self.ctx.sandbox)
+        unavailable = network_available(self._sandbox)
         if unavailable:
             return unavailable
         return await self._browser_session().select(ref, value)

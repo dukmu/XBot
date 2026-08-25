@@ -7,7 +7,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from XBotv2.application.services import ChildApplicationRequest
+from XBotv2.application.host import mounted_application
+from XBotv2.application.services import AgentApplicationPort, ChildApplicationRequest
 from XBotv2.agents import AgentSessionResult, SubagentTurnError
 from XBotv2.persistence.models import ThreadLifecycleRecord
 from XBotv2.persistence import ThreadLifecycleWriterPort
@@ -50,7 +51,7 @@ class ChildApplications:
             client_events=request.client_events if self.interactive else None,
         )
         child = ChildApplicationSession(
-            context=child_ctx,
+            application=mounted_application(child_ctx),
             prompt=request.prompt,
             agent=request.definition.name,
             thread_id=request.thread_id,
@@ -65,7 +66,7 @@ class ChildApplications:
 class ChildApplicationSession:
     """Run and release a child application through the AgentSession contract."""
 
-    context: Any
+    application: AgentApplicationPort
     prompt: str
     agent: str
     thread_id: str
@@ -76,7 +77,7 @@ class ChildApplicationSession:
         self._record("started")
 
     async def wait(self) -> AgentSessionResult:
-        engine = self.context.engine
+        engine = self.application.driver
         await engine.start_session()
         output = ""
         error = ""
@@ -98,8 +99,7 @@ class ChildApplicationSession:
             self._record("cancelled", error=error)
             raise
 
-        usage_service = self.context.get("usage", strict=False)
-        usage = usage_service.snapshot() if usage_service is not None else {}
+        usage = self.application.usage.snapshot()
         close_error = await self._close()
         if close_error and not error:
             error = close_error
@@ -118,11 +118,11 @@ class ChildApplicationSession:
 
     async def _close(self) -> str:
         try:
-            await self.context.engine.close_session()
+            await self.application.driver.close_session()
         except Exception as exc:  # noqa: BLE001 - close errors become results
             return f"Subagent close failed: {exc}"
         finally:
-            await self.context.destroy()
+            await self.application.close()
         return ""
 
     def _record(

@@ -33,21 +33,39 @@ class ConfigComponent:
             user_context=user,
         )
         ctx.set("settings", settings)
-        ctx.on(GET_POLICY.name, lambda _request: settings.policy())
+        operations = ConfigOperations(settings)
+        ctx.on(GET_POLICY.name, operations.get_policy)
         ctx.on(UPDATE_POLICY.name, settings.update_policy)
+        persister = PermissionRulePersister(
+            paths=ctx.runtime_paths,
+            session_id=ctx.session_launch.session_id,
+        )
+        ctx.on(PERMISSION_DECIDED, persister.persist)
 
-        async def persist_permission(event: PermissionDecided) -> None:
-            from XBotv2.config.policy import persist_permission_rule
 
-            persist_permission_rule(
-                paths=ctx.runtime_paths,
-                session_id=ctx.session_launch.session_id,
-                rule=event.rule,
-                decision=event.decision,
-                scope=event.scope,
-            )
+class PermissionRulePersister:
+    def __init__(self, *, paths: Any, session_id: str) -> None:
+        self._paths = paths
+        self._session_id = session_id
 
-        ctx.on(PERMISSION_DECIDED, persist_permission)
+    async def persist(self, event: PermissionDecided) -> None:
+        from XBotv2.config.policy import persist_permission_rule
+
+        persist_permission_rule(
+            paths=self._paths,
+            session_id=self._session_id,
+            rule=event.rule,
+            decision=event.decision,
+            scope=event.scope,
+        )
+
+
+class ConfigOperations:
+    def __init__(self, settings: ConfigService) -> None:
+        self._settings = settings
+
+    def get_policy(self, _request: EmptyRequest):
+        return self._settings.policy()
 
 
 plugin = ConfigComponent()

@@ -39,16 +39,20 @@ class SandboxComponent:
         ctx.tools.guard(policy.make_guard())
         for command in build_sandbox_commands(ctx.settings):
             ctx.commands.register(command)
+        handlers = SandboxHandlers(policy)
+        ctx.on(POLICY_CHANGED, handlers.update_policy)
+        ctx.on(BEFORE_CONTEXT_BUILD, handlers.contribute_context, prepend=True)
 
-        async def update_policy(event: PolicyChanged) -> None:
-            policy.replace_config(event.config.sandbox)
 
-        ctx.on(POLICY_CHANGED, update_policy)
+class SandboxHandlers:
+    def __init__(self, policy: SandboxPolicy) -> None:
+        self._policy = policy
 
-        async def contribute_context(event: ContextBuildRequest) -> None:
-            event.sandbox_summary = policy.describe()
+    async def update_policy(self, event: PolicyChanged) -> None:
+        self._policy.replace_config(event.config.sandbox)
 
-        ctx.on(BEFORE_CONTEXT_BUILD, contribute_context, prepend=True)
+    async def contribute_context(self, event: ContextBuildRequest) -> None:
+        event.sandbox_summary = self._policy.describe()
 
 
 plugin = SandboxComponent()

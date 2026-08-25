@@ -104,12 +104,20 @@ class AgentRuntimeComponent:
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:
         service = AgentsService(
-            ctx,
             catalog=ctx.agent_catalog,
             factory=ctx.agent_loop_factory,
+            events=ctx,
+            state=ctx.loop_state,
+            settings=ctx.settings,
+            providers=ctx.llm,
+            model=ctx.model,
+            tools=ctx.tools,
+            artifacts=ctx.artifacts,
+            metadata=ctx.thread_metadata,
         )
         ctx.set("agent_runtime", service)
-        await service.create(ctx.agent_options)
+        engine = await service.create(ctx.agent_options)
+        ctx.set("engine", engine)
         AgentRuntimeOperations(service, ctx.agent_catalog).register(ctx)
 
 

@@ -3,10 +3,11 @@ import type { RuntimeState } from "../state/runtime";
 export function StatusBar({ state }: { state: RuntimeState }) {
   const current = state.current;
   if (!current) {
+    const reachable = state.serverReachable;
     return (
       <footer className="status-bar">
-        <span className={`connection-state ${state.connected ? "online" : "offline"}`} />
-        <span>{state.connected ? "Connected" : "Disconnected"}</span>
+        <span className={`connection-state ${reachable ? "online" : "offline"}`} />
+        <span>{reachable ? "Server ready" : "Server unavailable"}</span>
       </footer>
     );
   }
@@ -18,9 +19,13 @@ export function StatusBar({ state }: { state: RuntimeState }) {
     + state.usage.cache_read_input_tokens
     + state.usage.cache_creation_input_tokens
     + state.usage.prompt_cache_write_tokens;
+  const live = state.serverReachable && state.sessionAttached && state.eventStreamConnected;
+  const connectionTitle = live
+    ? "Session attached · live events connected"
+    : state.sessionAttached ? "Session attached · live events disconnected" : "Session detached";
   return (
     <footer className="status-bar">
-      <span className={`connection-state ${state.connected ? "online" : "offline"}`} title={state.connected ? "Connected" : "Disconnected"} />
+      <span className={`connection-state ${live ? "online" : "offline"}`} title={connectionTitle} />
       <span className="status-agent">agent:{current.agent_name}</span>
       <span className="status-model" title={model}>{model}</span>
       {Object.entries(current.status_slots).map(([name, value]) => (

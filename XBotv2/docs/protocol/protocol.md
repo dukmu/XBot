@@ -46,10 +46,11 @@ Thread status and history remain queryable after its runtime closes.
 ### Modes
 
 - `new`: create session, generate session_id if not provided
-- `resume`: reconnect to existing session state on disk
+- `resume`: attach to an active thread, or reconstruct an inactive persisted thread
 - `new` with an existing explicit id returns HTTP 409; `resume` with a missing
-  id returns HTTP 404. Resume always replaces any same-process runtime and
-  rebuilds the engine from persisted history.
+  id returns HTTP 404. Resume never replaces an active same-process runtime.
+  Requested provider/workspace overrides do not reconfigure an active thread;
+  the response reports the runtime's authoritative values.
 - The CLI treats an explicit TUI `--session` as `resume`; omitting it creates a
   new generated session. Programmatic clients continue to send the mode
   explicitly.
@@ -78,6 +79,9 @@ Thread status and history remain queryable after its runtime closes.
   replacement do not erase token accounting.
 - Protocol/configuration text is UTF-8. Clients do not attempt Latin-1 or
   CP1252 repair when text is already decoded.
+- More than one client may subscribe to the same thread event stream. Each
+  receives the same runtime events; disconnecting one subscription has no
+  effect on the others or on a running turn.
 
 ### Endpoints
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence
+from collections.abc import Callable
+from typing import Any, Protocol, Sequence
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core import (
@@ -32,29 +33,35 @@ from XBotv2.compact.protocol import compact_event
 logger = logging.getLogger("xbotv2.compact")
 
 
+class CompactEventsPort(Protocol):
+    async def serial(self, event: str, *args: object) -> object: ...
+
+    async def emit(self, event: str, *args: object) -> None: ...
+
+
 class CompactService:
     """Own compaction runtime state, proposal generation, and commit semantics."""
 
-    def __init__(self) -> None:
-        self._automatic = True
-        self._output_reservation: int | None = None
-        self._trigger_ratio = 0.8
-        self._keep_recent_turns = 4
-        self._summary_max_chars = 8_000
-        self._manual_requested = False
-        self._compactions = 0
-        self._last_reason = ""
-        self._last_compaction: dict[str, Any] = {}
-
-    def bind(self, ctx: Any, model: Any, config: CompactConfig) -> None:
-        self.ctx = ctx
+    def __init__(
+        self,
+        *,
+        events: CompactEventsPort,
+        model: Any,
+        state: Any,
+        config: CompactConfig,
+    ) -> None:
+        self._events = events
         self.model = model
-        self.state = ctx.loop_state
+        self.state = state
         self._automatic = config.automatic
         self._output_reservation = config.output_reservation
         self._trigger_ratio = config.trigger_ratio
         self._keep_recent_turns = config.keep_recent_turns
         self._summary_max_chars = config.summary_max_chars
+        self._manual_requested = False
+        self._compactions = 0
+        self._last_reason = ""
+        self._last_compaction: dict[str, Any] = {}
 
     async def _dispose(self) -> None:
         self._manual_requested = False
@@ -120,19 +127,21 @@ class CompactService:
 
         messages = list(ctx.messages)
         request = ctx.model_request
-        context_messages = list(request.messages) if request is not None else []
-        tools = list(request.tools) if request is not None else []
+        if request is None or ctx.settings is None or ctx.session is None:
+            raise RuntimeError("Compaction requires a complete model request context")
+        context_messages = list(request.messages)
+        tools = list(request.tools)
         max_context = _context_window(ctx.settings)
         context_tokens, request_estimate, estimate_source = calibrated_context_tokens(
             context_messages,
             tools,
             messages,
-            provider=str(getattr(ctx.session, "provider", "") or ""),
+            provider=ctx.session.provider,
             context_window=max_context,
         )
         configured_output = max(
             0,
-            int(getattr(ctx.settings, "max_output_tokens", 0) or 0),
+            int(ctx.settings.max_output_tokens or 0),
         )
         output_reservation = (
             self._output_reservation
@@ -178,7 +187,7 @@ class CompactService:
             session=ctx.session,
             reason=reason,
         )
-        pre_result = await self.ctx.serial(PRE_COMPACT, pre)
+        pre_result = await self._events.serial(PRE_COMPACT, pre)
 
         messages = list(pre.messages)
         reason = pre.reason
@@ -221,8 +230,8 @@ class CompactService:
             previous_message_count=previous_count,
             current_message_count=len(ctx.messages),
         )
-        await self.ctx.emit(POST_COMPACT, committed)
-        await self.ctx.emit(
+        await self._events.emit(POST_COMPACT, committed)
+        await self._events.emit(
             HISTORY_CHANGED,
             HistoryChanged(
                 tuple(ctx.messages),
@@ -277,7 +286,7 @@ class CompactService:
         )
 
     async def _publish_runtime_event(self, event: ClientEvent) -> None:
-        await self.ctx.emit(
+        await self._events.emit(
             RUNTIME_EVENT,
             RuntimeEvent(client_event=event),
         )
@@ -298,7 +307,7 @@ class CompactService:
             "context_tokens_before=%d context_tokens_after_estimate=%d "
             "summary_chars=%d input_tokens=%d output_tokens=%d total_tokens=%d",
             reason,
-            int(getattr(session, "turn_count", 0) or 0),
+            int(session.turn_count or 0),
             metrics.get("messages_before", 0),
             metrics.get("messages_after", 0),
             metrics.get("history_chars_before", 0),

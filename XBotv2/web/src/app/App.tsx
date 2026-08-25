@@ -62,7 +62,7 @@ export function App() {
           <div className="error-banner" role="alert">
             <AlertCircle size={16} />
             <span>{state.error}</span>
-            {!state.connected && state.current && (
+            {!state.eventStreamConnected && state.current && (
               <button className="text-button" onClick={() => void runtime.resumeSession()}>
                 <RefreshCw size={14} /> Reconnect
               </button>

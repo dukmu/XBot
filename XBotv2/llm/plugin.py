@@ -55,10 +55,15 @@ class LlmComponent:
         ctx.set("llm", service)
         ctx.set("model", ModelService())
 
-        def list_providers(_request: EmptyRequest) -> ProviderCatalog:
-            return service.catalog()
+        ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
 
-        ctx.on(LIST_PROVIDERS.name, list_providers)
+
+class ProviderCatalogHandler:
+    def __init__(self, service: LlmService) -> None:
+        self._service = service
+
+    def list_providers(self, _request: EmptyRequest) -> ProviderCatalog:
+        return self._service.catalog()
 
 
 

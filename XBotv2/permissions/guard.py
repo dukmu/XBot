@@ -4,22 +4,29 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from XBotv2.core.tools import ClientEvent, GuardDecision
-from XBotv2.permission_request import PermissionRequestData
+from XBotv2.core.tools import ClientEvent, GuardDecision, ToolCall
+from XBotv2.permission_request import ApprovalPort, PermissionRequestData
+from XBotv2.permissions import PermissionsPort
 from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
 
 
-def make_permission_guard(
-    permissions: Any,
-    approval: Any,
-    emit: Callable[[str, Any], Awaitable[Any]],
-    *,
-    record_decision: Callable[[dict[str, Any], str, str], Awaitable[None]] | None = None,
-) -> Any:
-    """Build a guard that resolves tri-state policy inside this plugin."""
+class PermissionGuard:
+    """Resolve tri-state policy through explicit permission dependencies."""
 
-    async def guard(tool_call: Any, _entry: Any) -> GuardDecision | None:
-        decision, reason = permissions.check_tool_call(tool_call)
+    def __init__(
+        self,
+        permissions: PermissionsPort,
+        approval: ApprovalPort,
+        emit: Callable[[str, Any], Awaitable[Any]],
+        record_decision: Callable[[dict[str, Any], str, str], Awaitable[None]],
+    ) -> None:
+        self._permissions = permissions
+        self._approval = approval
+        self._emit = emit
+        self._record_decision = record_decision
+
+    async def check(self, tool_call: ToolCall, _entry: Any) -> GuardDecision | None:
+        decision, reason = self._permissions.check_tool_call(tool_call)
         if decision == "allow":
             return None
         if decision == "deny":
@@ -36,18 +43,14 @@ def make_permission_guard(
             "type": "permission_request",
             "data": payload.model_dump(exclude_none=True),
         }
-        await emit(
+        await self._emit(
             PERMISSION_REQUESTED,
             PermissionRequested(
                 tool_call=tool_call,
                 client_event=ClientEvent.from_mapping(event),
             ),
         )
-        result = await approval.request(event) if approval is not None else {
-            "status": "unavailable",
-            "decision": "",
-            "scope": "once",
-        }
+        result = await self._approval.request(event)
         if str(result.get("decision") or "") != "allow":
             return GuardDecision(
                 "deny",
@@ -55,8 +58,6 @@ def make_permission_guard(
                 source="permissions",
             )
         scope = str(result.get("scope") or "once")
-        if scope == "session" and record_decision is not None:
-            await record_decision(event, "allow", scope)
+        if scope == "session":
+            await self._record_decision(event, "allow", scope)
         return None
-
-    return guard

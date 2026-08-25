@@ -50,6 +50,8 @@ as `/home/...` exists. The invariant is that tests, the plugin loader, and
 references progressively:
 
 - For a first plugin and a complete example, read [first-plugin.md](references/first-plugin.md).
+- For Tool, command, event, service, state, and resource-owner patterns, read
+  [extension-patterns.md](references/extension-patterns.md).
 - For ownership, composition, and built-ins, read [xbot-architecture.md](references/xbot-architecture.md).
 - For stable symbols and Tool/route contracts, read [xbot-api.md](references/xbot-api.md).
 - For `Context`, `inject`, events, services, schemas, and lifecycle, read [xcore-api.md](references/xcore-api.md).
@@ -65,13 +67,15 @@ the map; the checked-out code and tests are the final contract.
    prompt fragment, event observer, service, or protocol route.
 2. Choose the owning package boundary. A plugin owns its implementation and
    state; shared declarations belong in the owner package's public root.
-3. Declare required and optional services with `inject`. Required services
-   gate activation; optional services are read with `ctx.get(name,
-   strict=False)` and must have a no-service behavior.
-4. Implement `apply(ctx, config=None)`. Register hooks, Tools, commands, and
-   prompt fragments through `ctx`; register cleanup before opening resources.
-5. Bind plugin services in a typed factory or closure before registering a
-   Tool. Never use an arbitrary `injected={...}` dictionary or a service bag.
+3. Declare required services with `inject`; XCore gates activation until every
+   dependency exists. Use an optional dependency only for a documented feature
+   mode where absence is valid, and resolve it once at the composition boundary.
+4. Implement `apply(ctx, config=None)` as composition: read declared services,
+   construct typed runtime objects/handlers, and register their named methods.
+   Business services must not retain the whole `Context`.
+5. Pass Tool dependencies to a named handler or service before registration.
+   Avoid business closures, service bags, runtime dependency probing, and
+   defensive `None` fallbacks for required services.
 6. Add a focused behavior test using the selected runtime Python (`uv run
    pytest` for uv, or `python -m pytest` for pip). Test public
    behavior, schema, permission/guard behavior, unload, and failure rollback.
@@ -80,6 +84,28 @@ the map; the checked-out code and tests are the final contract.
 8. Run the focused test, architecture check, compile check, and diff check.
    Run broader suites when the plugin crosses core, provider, protocol, or
    session boundaries.
+
+Do not skip directly from a code snippet to editing the user's global plugin
+tree. A first plugin is complete only when all of these checkpoints have
+observable evidence:
+
+1. **Import:** the package imports from the same interpreter as `xbot`.
+2. **Composition:** a real XCore `Context` activates the plugin with its
+   required services, and missing services leave it pending or fail tree
+   validation clearly.
+3. **Behavior:** the registered Tool, command, event listener, or service does
+   the promised work through its public contract.
+4. **Cleanup:** stop/dispose removes registrations and closes owned resources.
+5. **Persistence:** if state is used, a new Context over the same data directory
+   reads the JSON-compatible value through the same namespace.
+6. **Application:** the intended XBot profile loads the tree entry and exposes
+   the capability through the real client boundary.
+7. **Distribution:** a built wheel contains the plugin package and any bundled
+   skill/reference assets; a clean environment can install and import it.
+
+For each checkpoint, prefer one small assertion that observes the contract.
+Do not inspect a private list merely because it is easier than invoking the
+registered behavior.
 
 ## Stable Design Rules
 
@@ -96,6 +122,11 @@ the map; the checked-out code and tests are the final contract.
   their owner. Discovery should be idempotent and transactional.
 - Persist plugin state with `ctx.state.namespace("plugin-name")`; keep runtime
   handles, waiters, and clients out of persisted state.
+- Treat plugin configuration as immutable startup input. Never write runtime
+  state into configuration or construct paths under `plugin_state`; the shared
+  StateService owns validation, serialization, locking, and physical layout.
+- XBot has no runtime reload contract. Let XCore dependency activation compose
+  the application once, and use ordinary typed events for runtime facts.
 - Reuse built-in services and the standard Tool/guard/event path. Do not create
   a second executor, permission bypass, private wakeup callback, or hard-coded
   dependency on a built-in plugin name.
@@ -115,6 +146,21 @@ git diff --check
 For a uv project, replace `python -m ...` with `uv run ...`. Architecture
 checks and source-wide compile checks are checkout-only; for an installed
 package, verify imports, plugin-tree loading, and the plugin's own tests.
+
+Before changing the real data directory, use a disposable data directory and
+workspace:
+
+```bash
+mkdir -p /tmp/xbot-plugin-smoke/data /tmp/xbot-plugin-smoke/workspace
+xbot once --data-dir /tmp/xbot-plugin-smoke/data \
+  --workspace /tmp/xbot-plugin-smoke/workspace "Use the hello tool for Ada"
+# uv project: prefix with `uv run`; pip: use the active environment's `xbot`.
+```
+
+Copy the plugin overlay into that workspace only after the package import and
+mounted tests pass. A model response is not sufficient evidence by itself:
+inspect startup errors and confirm the expected Tool/command registration or
+client event was actually exercised.
 
 Do not claim success from a command that used a different interpreter, an
 uncollected test, or a test that stopped before exercising the plugin. Record

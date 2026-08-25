@@ -4,7 +4,6 @@ from XBotv2.tests.helpers import make_engine
 
 import json
 import xml.etree.ElementTree as ET
-from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +24,7 @@ from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
     REQUEST_ESTIMATE_KEY,
+    REQUEST_PROVIDER_KEY,
 )
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
@@ -35,19 +35,25 @@ from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.session import SessionInfo
 
 
-def make_plugin(config=None) -> CompactPlugin:
+def make_session(turn_count: int) -> SessionInfo:
+    return SessionInfo("s", "t", provider="test", turn_count=turn_count)
+
+
+def make_plugin(config=None):
     from XBotv2.compact.plugin import CompactPlugin
 
-    return mount_plugin_standalone(CompactPlugin(), config)
+    component = mount_plugin_standalone(CompactPlugin(), config)
+    return component.ctx.compact
 
 
 class SetupContext:
     """Post-apply view of a plugin's registrations on a real XCore context."""
 
     def __init__(self, plugin) -> None:
-        self.ctx = plugin.ctx
+        self.ctx = plugin._events
         self.tool = None
         self.options = None
         self.commands: dict = {}
@@ -126,7 +132,7 @@ async def test_commit_dispatches_pre_and_post_compact_bracket():
     setup.ctx.on(POST_COMPACT, post_compact)
     plugin._manual_requested = True
     original = history(3)
-    ctx = EventContext(messages=original, session=SimpleNamespace(turn_count=3))
+    ctx = EventContext(messages=original, session=make_session(3))
     result = await plugin._on_before_context(ctx)
 
     assert result == {"rebuild": True}
@@ -146,7 +152,7 @@ async def test_manual_tool_requests_compaction_below_threshold():
     original = history(3)
     ctx = EventContext(
         messages=original,
-        session=SimpleNamespace(turn_count=3),
+        session=make_session(3),
     )
     result = await setup.ctx.serial(Events.BEFORE_CONTEXT, ctx)
 
@@ -252,7 +258,7 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 
     ctx = EventContext(
         messages=original,
-        session=SimpleNamespace(turn_count=3),
+        session=make_session(3),
     )
     result = await plugin._on_before_context(ctx)
 
@@ -278,7 +284,7 @@ async def test_large_context_does_not_use_fixed_character_threshold():
             provider="test",
             context_window=1_048_576,
         ),
-        session=SimpleNamespace(turn_count=3),
+        session=make_session(3),
     ))
 
     assert result is None
@@ -292,6 +298,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
     request_estimate = estimate_request_tokens(context)
     original[-1].response_metadata[REQUEST_ESTIMATE_KEY] = request_estimate
     original[-1].response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = 200_000
+    original[-1].response_metadata[REQUEST_PROVIDER_KEY] = "test"
     original[-1].usage_metadata["context_tokens"] = 136_000
 
     plugin.model = MockLLM(responses=[{"content": (
@@ -309,7 +316,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
             context_window=200_000,
             max_output_tokens=64_000,
         ),
-        session=SimpleNamespace(turn_count=3),
+        session=make_session(3),
     ))
 
     sent = plugin.model.get_call_messages(0)
@@ -354,7 +361,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
             provider="test",
             context_window=100,
         ),
-        session=SimpleNamespace(turn_count=1),
+        session=make_session(1),
     )
     result = await plugin._on_before_model_request(ctx)
 
@@ -373,7 +380,7 @@ async def test_failed_summary_leaves_history_untouched():
 
     ctx = EventContext(
         messages=original,
-        session=SimpleNamespace(turn_count=2),
+        session=make_session(2),
     )
 
     with pytest.raises(RuntimeError, match="summary unavailable"):
@@ -402,7 +409,7 @@ async def test_failed_automatic_summary_continues_with_original_history():
             provider="test",
             context_window=1_000,
         ),
-        session=SimpleNamespace(turn_count=2),
+        session=make_session(2),
     )
 
     assert await plugin._on_before_model_request(ctx) is None

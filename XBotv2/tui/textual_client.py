@@ -168,7 +168,9 @@ class XBotTextualApp(App[None]):
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-        self._connected = False
+        self._server_reachable = False
+        self._session_attached = False
+        self._event_stream_connected = False
         self._request_sequence = 0
         self._pending_messages: dict[int, str] = {}
         # Windowed transcript: ``state.transcript[_window_start:_window_end]``
@@ -283,7 +285,7 @@ class XBotTextualApp(App[None]):
         await self._cancel_tool_refresh_timer()
         self._deferred_tool_ids.clear()
         self._stop_session_events()
-        if self._connected:
+        if self._server_reachable:
             await self.session.disconnect()
 
     @on(Collapsible.Toggled)
@@ -301,7 +303,9 @@ class XBotTextualApp(App[None]):
             self.state.status = "Connecting"
             self._refresh_all()
             session = await self.session.connect()
+            self._server_reachable = True
             await self._apply_open_session(session)
+            self._session_attached = True
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
@@ -309,7 +313,6 @@ class XBotTextualApp(App[None]):
                     self.commands.merge_server(commands)
             except Exception:
                 logger.exception("failed to load server commands")
-            self._connected = True
             self.state.status = "Ready"
             self._refresh_all()
             self._start_session_events()
@@ -343,6 +346,7 @@ class XBotTextualApp(App[None]):
         if not hasattr(self.session, "session_events"):
             return
         self._stop_session_events()
+        self._event_stream_connected = True
         self._session_events_worker = self.run_worker(
             self._collect_session_events,
             exclusive=False,
@@ -352,6 +356,7 @@ class XBotTextualApp(App[None]):
     def _stop_session_events(self) -> None:
         worker = self._session_events_worker
         self._session_events_worker = None
+        self._event_stream_connected = False
         if worker is not None and not getattr(worker, "is_finished", False):
             cancel = getattr(worker, "cancel", None)
             if callable(cancel):
@@ -389,7 +394,7 @@ class XBotTextualApp(App[None]):
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
             return
-        if not self._connected:
+        if not self._session_attached:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
 
@@ -568,7 +573,7 @@ class XBotTextualApp(App[None]):
 
     async def _cmd_session(self, args: str) -> None:
         """List or switch sessions using the same persisted session API as WebUI."""
-        if not self._connected:
+        if not self._server_reachable:
             await self._append_local_notice("/session", "Not connected")
             return
         try:
@@ -631,16 +636,15 @@ class XBotTextualApp(App[None]):
             return
         try:
             self._stop_session_events()
-            self._cancel_interaction_response()
-            self._pending_images.clear()
-            self._history_index = None
-            self._connected = False
             opened = await self.session.switch(
                 session_id=session_id,
                 thread_id=thread_id if session_id else "agent",
                 workspace_root=workspace,
                 mode=mode,
             )
+            self._cancel_interaction_response()
+            self._pending_images.clear()
+            self._history_index = None
             await self._cmd_clear()
             self.state = TuiState(
                 session_id=self.session.session_id,
@@ -655,7 +659,7 @@ class XBotTextualApp(App[None]):
                     self.commands.merge_server(commands)
             except Exception:
                 logger.exception("failed to load server commands after session switch")
-            self._connected = True
+            self._session_attached = True
             self.state.status = "Ready"
             self._refresh_all()
             self._start_session_events()
@@ -664,10 +668,11 @@ class XBotTextualApp(App[None]):
                 f"Switched to {self.state.session_id} ({self.state.workspace_root or 'workspace unavailable'})",
             )
         except Exception as exc:
+            self._start_session_events()
             self._record_error(exc)
 
     async def _dispatch_remote_command(self, spec: CommandSpec) -> None:
-        if not self._connected:
+        if not self._session_attached:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
         if spec.kind == "prompt":
@@ -849,9 +854,9 @@ class XBotTextualApp(App[None]):
             # running turn finishes; this self-retry is race-free (no reliance
             # on a cross-worker flush at turn_finished).
             self._refresh_all()
-            while self.state.turn_active and self._connected:
+            while self.state.turn_active and self._session_attached:
                 await asyncio.sleep(0.1)
-            if not self._connected:
+            if not self._session_attached:
                 return
         self._pending_messages.pop(sequence, None)
         self._refresh_all()
@@ -892,6 +897,8 @@ class XBotTextualApp(App[None]):
         except Exception as exc:  # noqa: BLE001
             if self.is_mounted:
                 self._record_error(exc)
+        finally:
+            self._event_stream_connected = False
 
     async def _collect_response(
         self,

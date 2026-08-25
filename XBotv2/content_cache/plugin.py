@@ -49,6 +49,18 @@ class ContentCacheService:
             kind=kind,
         )
 
+    async def bind_model_request(
+        self,
+        event: EventContext,
+        artifacts: ArtifactStorePort,
+    ) -> None:
+        request = event.model_request
+        if request is not None:
+            request.messages = self.bound_context_messages(
+                request.messages,
+                artifacts,
+            )
+
 
 class ContentCacheComponent:
     """Register the content cache service as ``ctx.content_cache``."""
@@ -59,17 +71,17 @@ class ContentCacheComponent:
     def apply(self, ctx: Any, config: Any = None) -> None:
         service = ContentCacheService()
         ctx.set("content_cache", service)
+        handler = ContentCacheHandler(service, ctx.artifacts)
+        ctx.on(Events.MODEL_REQUEST_READY, handler.bind_model_request)
 
-        async def bind_model_request(event: EventContext) -> None:
-            request = event.model_request
-            if request is None:
-                return
-            request.messages = service.bound_context_messages(
-                request.messages,
-                ctx.artifacts,
-            )
 
-        ctx.on(Events.MODEL_REQUEST_READY, bind_model_request)
+class ContentCacheHandler:
+    def __init__(self, service: ContentCacheService, artifacts: ArtifactStorePort) -> None:
+        self._service = service
+        self._artifacts = artifacts
+
+    async def bind_model_request(self, event: EventContext) -> None:
+        await self._service.bind_model_request(event, self._artifacts)
 
 
 plugin = ContentCacheComponent()

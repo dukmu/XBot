@@ -68,7 +68,8 @@ class TerminalSession:
         self._transport: Transport = transport or HttpTransport(
             base_url, token=token, uds_path=uds_path
         )
-        self._connected = False
+        self._server_reachable = False
+        self._session_attached = False
 
     @property
     def session_id(self) -> str:
@@ -85,7 +86,7 @@ class TerminalSession:
     async def connect(self) -> dict[str, Any] | None:
         """Perform hello + open_session."""
 
-        if self._connected:
+        if self._session_attached:
             return None
         hello = await self._transport.hello(
             session_id=self._session_id,
@@ -93,18 +94,19 @@ class TerminalSession:
         )
         server_session = str(hello.get("session_id") or self._session_id)
         server_thread = str(hello.get("thread_id") or self._thread_id)
-        self._session_id = server_session
-        self._thread_id = server_thread
+        self._server_reachable = True
         open_kwargs = dict(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
+            session_id=server_session,
+            thread_id=server_thread,
             workspace_root=self._workspace_root,
             mode=self._session_mode,
         )
         if self._agent:
             open_kwargs["agent"] = self._agent
         session = await self._transport.open_session(**open_kwargs)
-        self._connected = True
+        self._session_id = server_session
+        self._thread_id = server_thread
+        self._session_attached = True
         return session
 
     async def list_commands(self) -> dict[str, Any]:
@@ -129,28 +131,32 @@ class TerminalSession:
         workspace_root: str | None = None,
         mode: str = "resume",
     ) -> dict[str, Any] | None:
-        """Close the current runtime and connect to another session/thread.
+        """Attach to another session/thread without destroying the current runtime.
 
         The HTTP transport remains open so switching does not invalidate the
         client connection. Persisted sessions retain their recorded workspace
         when ``workspace_root`` is omitted; ``new`` sessions use the supplied
         workspace or the current working directory.
         """
-        if self._connected:
-            try:
-                await self._transport.shutdown(session_id=self._session_id)
-            except Exception:
-                pass
-        self._session_id = session_id or _new_session_id()
-        self._thread_id = thread_id
-        self._workspace_root = (
+        target_session = session_id or _new_session_id()
+        target_workspace = (
             None
             if mode == "resume" and workspace_root is None
             else str(Path(workspace_root or Path.cwd()).resolve())
         )
+        opened = await self._transport.open_session(
+            session_id=target_session,
+            thread_id=thread_id,
+            workspace_root=target_workspace,
+            mode=mode,
+            **({"agent": self._agent} if self._agent else {}),
+        )
+        self._session_id = target_session
+        self._thread_id = thread_id
+        self._workspace_root = target_workspace
         self._session_mode = mode
-        self._connected = False
-        return await self.connect()
+        self._session_attached = True
+        return opened
 
     async def run_command(
         self,
@@ -170,16 +176,10 @@ class TerminalSession:
         )
 
     async def disconnect(self) -> None:
-        """Best-effort session shutdown + transport close."""
+        """Detach this client and close its transport without destroying a session."""
 
-        if not self._connected:
-            await self._transport.close()
-            return
-        try:
-            await self._transport.shutdown(session_id=self._session_id)
-        except Exception:
-            pass
-        self._connected = False
+        self._session_attached = False
+        self._server_reachable = False
         await self._transport.close()
 
     async def __aenter__(self) -> "TerminalSession":

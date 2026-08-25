@@ -6,8 +6,10 @@ from XBotv2.permission_request.protocol import (
     PermissionResponseRequest,
     RequestedPermissionData,
 )
+from XBotv2.permission_request.services import ApprovalPort
 
 __all__ = [
+    "ApprovalPort",
     "PermissionDeniedData",
     "PermissionRequestData",
     "PermissionResponseRequest",

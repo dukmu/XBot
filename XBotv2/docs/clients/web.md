@@ -34,6 +34,13 @@ Completed or stopped tasks remain briefly visible and are then removed from
 the task dock. Failed tasks remain available for diagnosis. The server remains
 the source of truth and tasks stay queryable through its API.
 
+Navigation is non-destructive. Opening an active session attaches to its
+existing runtime; switching the visible session aborts only the old event
+subscription, not an in-flight message request or another client's turn. The
+client tracks server reachability, session attachment, event-stream health,
+and turn activity separately. If navigation fails, the previous identity,
+timeline, and event subscription are restored.
+
 ## Hosting
 
 During development Vite proxies `/api` to the loopback HTTP server. Production

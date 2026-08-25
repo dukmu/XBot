@@ -47,8 +47,9 @@ ambiguity before large implementation changes.
   cancels it when the SSE consumer disconnects.
 - Real-socket tests cover both `ask_user` and permission response round trips,
   including responses that outlive the transport's ordinary read timeout.
-- Keep live interactions connection-owned. Disconnect destroys pending requests
-  and the current runtime; resume rebuilds only from persisted message history.
+- Keep live interaction waits runtime-owned and correlated by request id.
+  Detaching one event client does not destroy the runtime; explicit close does.
+  An inactive runtime can later be reconstructed from persisted message history.
 - Persisted message history is restored into subsequent provider requests.
   Provider-request tests and a real Minimax TUI process restart verify this
   separately from the deliberately unsupported in-flight interaction recovery.

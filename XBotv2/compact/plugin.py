@@ -23,25 +23,31 @@ from XBotv2.compact.summary import (
 from XBotv2.compact.tools import build_compact_tool
 
 
-class CompactPlugin(CompactService):
+class CompactPlugin:
     inject = ["tools", "commands", "model", "loop_state"]
     name = "compact"
     Config = CONFIG_SCHEMA
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        self.bind(ctx, ctx.model, parse_compact_config(config))
+        service = CompactService(
+            events=ctx,
+            model=ctx.model,
+            state=ctx.loop_state,
+            config=parse_compact_config(config),
+        )
 
-        ctx.dispose(self._dispose)
-        ctx.on(Events.BEFORE_CONTEXT, self._on_before_context)
-        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
-        ctx.tools.register(build_compact_tool(self))
+        ctx.dispose(service._dispose)
+        ctx.on(Events.BEFORE_CONTEXT, service._on_before_context)
+        ctx.on(Events.BEFORE_MODEL_REQUEST, service._on_before_model_request)
+        ctx.tools.register(build_compact_tool(service))
         ctx.commands.register(Command(
             name="compact",
             description="Compact conversation history immediately while idle.",
-            handler=self._compact_command,
+            handler=service._compact_command,
             usage="/compact",
             examples=("/compact",),
         ))
+        ctx.set("compact", service)
 
 
 plugin = CompactPlugin()

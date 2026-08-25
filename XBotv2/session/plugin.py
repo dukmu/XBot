@@ -46,7 +46,7 @@ class SessionComponent:
         )
         artifacts = ctx.artifacts
         session = Session(
-            ctx=ctx,
+            events=ctx,
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=str(workspace_root),

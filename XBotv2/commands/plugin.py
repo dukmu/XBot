@@ -48,6 +48,49 @@ class CommandsService:
         return len(self._commands)
 
 
+class CommandOperations:
+    def __init__(self, commands: CommandsService) -> None:
+        self._commands = commands
+
+    def list_commands(self, _request: EmptyRequest) -> CommandCatalog:
+        return CommandCatalog(commands=tuple(
+            CommandDescription(
+                name=command.name,
+                slash=f"/{command.name}",
+                kind=command.kind,
+                description=command.description,
+                usage=command.usage or f"/{command.name}",
+                examples=command.examples,
+                parameters=command.parameters,
+                exclusive=command.exclusive,
+            )
+            for command in self._commands.all()
+        ))
+
+    async def execute_command(self, request: ExecuteCommand) -> CommandExecution:
+        name = request.command.lower().strip().removeprefix("/")
+        if request.kind == "prompt":
+            return CommandExecution(
+                command=name,
+                status="error",
+                message="Prompt expansions must be submitted through the message endpoint.",
+            )
+        command = self._commands.get(name)
+        if command is None or command.kind != "server":
+            return CommandExecution(
+                command=name,
+                status="error",
+                message=f"Unknown server command: /{name}",
+            )
+        assert command.handler is not None
+        result = await command.handler(request.raw_args)
+        return CommandExecution(
+            command=name,
+            status=result.status,
+            message=result.message,
+        )
+
+
 class CommandsComponent:
     """Register the command registry as ``ctx.commands``."""
 
@@ -56,52 +99,9 @@ class CommandsComponent:
     def apply(self, ctx: Any, config: Any = None) -> None:
         service = CommandsService()
         ctx.set("commands", service)
-
-        def list_commands(_request: EmptyRequest) -> CommandCatalog:
-            return CommandCatalog(commands=tuple(
-                CommandDescription(
-                    name=command.name,
-                    slash=f"/{command.name}",
-                    kind=command.kind,
-                    description=command.description,
-                    usage=command.usage or f"/{command.name}",
-                    examples=command.examples,
-                    parameters=command.parameters,
-                    exclusive=command.exclusive,
-                )
-                for command in service.all()
-            ))
-
-        async def execute_command(
-            request: ExecuteCommand,
-        ) -> CommandExecution:
-            name = request.command.lower().strip().removeprefix("/")
-            if request.kind == "prompt":
-                return CommandExecution(
-                    command=name,
-                    status="error",
-                    message=(
-                        "Prompt expansions must be submitted through the "
-                        "message endpoint."
-                    ),
-                )
-            command = service.get(name)
-            if command is None or command.kind != "server":
-                return CommandExecution(
-                    command=name,
-                    status="error",
-                    message=f"Unknown server command: /{name}",
-                )
-            assert command.handler is not None
-            result = await command.handler(request.raw_args)
-            return CommandExecution(
-                command=name,
-                status=result.status,
-                message=result.message,
-            )
-
-        ctx.on(LIST_COMMANDS.name, list_commands)
-        ctx.on(EXECUTE_COMMAND.name, execute_command)
+        operations = CommandOperations(service)
+        ctx.on(LIST_COMMANDS.name, operations.list_commands)
+        ctx.on(EXECUTE_COMMAND.name, operations.execute_command)
 
 
 plugin = CommandsComponent()

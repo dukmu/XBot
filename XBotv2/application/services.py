@@ -79,6 +79,8 @@ class InteractionWaiterPort(Protocol):
         reason: str = "cancelled",
     ) -> InteractionResultPort: ...
 
+    def pending_request_ids(self) -> list[str]: ...
+
 
 class ClientEventSink(Protocol):
     async def __call__(
@@ -135,6 +137,7 @@ class AgentApplicationPort(Protocol):
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
+    usage: UsageSnapshotPort
     persistence_available: bool
     parent_permissions: PermissionsPort
 

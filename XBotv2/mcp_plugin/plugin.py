@@ -23,6 +23,81 @@ import logging
 logger = logging.getLogger("xbotv2.mcp")
 
 
+class MCPResourceHandler:
+    def __init__(self, client: MCPClient, server: str, *, subscriptions: bool) -> None:
+        self._client = client
+        self._server = server
+        self.operations = ["list", "read"]
+        if subscriptions:
+            self.operations.extend(["subscribe", "unsubscribe"])
+
+    async def invoke(self, operation: str, uri: str = "") -> ToolResult:
+        """List, read, subscribe to, or unsubscribe from MCP resources."""
+        if operation == "list":
+            return _protocol_result(await self._client.list_resources(self._server))
+        if operation == "read" and uri:
+            return _protocol_result(await self._client.read_resource(self._server, uri))
+        if operation == "subscribe" and "subscribe" in self.operations and uri:
+            return _protocol_result(await self._client.subscribe_resource(self._server, uri))
+        if operation == "unsubscribe" and "unsubscribe" in self.operations and uri:
+            return _protocol_result(await self._client.unsubscribe_resource(self._server, uri))
+        return ToolResult.failure(
+            "invalid_mcp_resource_request",
+            f"Unsupported resource operation or missing uri: {operation}",
+        )
+
+
+class MCPPromptHandler:
+    def __init__(self, client: MCPClient, server: str) -> None:
+        self._client = client
+        self._server = server
+
+    async def invoke(
+        self,
+        operation: str,
+        name: str = "",
+        arguments: dict[str, str] | None = None,
+    ) -> ToolResult:
+        """List MCP prompts or render one prompt with arguments."""
+        if operation == "list":
+            return _protocol_result({
+                "prompts": await self._client.list_prompts(self._server),
+            })
+        if operation == "get" and name:
+            return _protocol_result(
+                await self._client.get_prompt(self._server, name, arguments)
+            )
+        return ToolResult.failure(
+            "invalid_mcp_prompt_request",
+            f"Unsupported prompt operation or missing name: {operation}",
+        )
+
+
+class MCPCompletionHandler:
+    def __init__(self, client: MCPClient, server: str) -> None:
+        self._client = client
+        self._server = server
+
+    async def invoke(
+        self,
+        reference_type: str,
+        reference: str,
+        argument: dict[str, str],
+        context_arguments: dict[str, str] | None = None,
+    ) -> ToolResult:
+        """Complete an MCP prompt argument or resource-template argument."""
+        ref = {
+            "type": "ref/resource" if reference_type == "resource" else "ref/prompt",
+            "uri" if reference_type == "resource" else "name": reference,
+        }
+        return _protocol_result(await self._client.complete(
+            self._server,
+            ref,
+            argument,
+            context_arguments,
+        ))
+
+
 class MCPPlugin:
     inject = ["tools", "model", "interactions", "session"]
     name = MCP_PLUGIN_ID
@@ -38,7 +113,10 @@ class MCPPlugin:
         self._initialized = False
 
     def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
+        self._tools = ctx.tools
+        self._model = ctx.model
+        self._interactions = ctx.interactions
+        self._session = ctx.session
         self._config = dict(config or {})
         ctx.dispose(self._dispose)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
@@ -51,9 +129,20 @@ class MCPPlugin:
         if not servers:
             self._initialized = True
             return
+        if not isinstance(servers, dict):
+            raise TypeError("MCP 'servers' configuration must be an object")
         for server_name, server_cfg in servers.items():
+            if not isinstance(server_name, str) or not server_name:
+                raise TypeError("MCP server names must be non-empty strings")
             if not isinstance(server_cfg, dict):
-                continue
+                raise TypeError(
+                    f"MCP server {server_name!r} configuration must be an object"
+                )
+            for option in ("enabled", "required"):
+                if option in server_cfg and not isinstance(server_cfg[option], bool):
+                    raise TypeError(
+                        f"MCP server {server_name!r} option {option!r} must be boolean"
+                    )
             if not server_cfg.get("enabled", True):
                 self._server_status[server_name] = {"status": "disabled"}
                 continue
@@ -62,9 +151,9 @@ class MCPPlugin:
                     server_name,
                     server_cfg,
                     callbacks=client_callbacks(
-                        self.ctx.model,
-                        self.ctx.interactions,
-                        self.ctx.session,
+                        self._model,
+                        self._interactions,
+                        self._session,
                     ),
                 )
                 registered_names = self._register_server_tools(
@@ -121,7 +210,7 @@ class MCPPlugin:
 
     def _register_tool(self, tool: Tool, server_name: str) -> str:
         """Register one MCP Tool through the public service."""
-        return self.ctx.tools.register(
+        return self._tools.register(
             tool,
             namespace=f"mcp:{server_name}",
         )
@@ -131,37 +220,24 @@ class MCPPlugin:
         server: str,
         capability: dict[str, Any],
     ) -> str:
-        operations = ["list", "read"]
-        if capability.get("subscribe"):
-            operations.extend(["subscribe", "unsubscribe"])
-
-        async def resources(operation: str, uri: str = "") -> ToolResult:
-            """List, read, subscribe to, or unsubscribe from MCP resources."""
-            if operation == "list":
-                return _protocol_result(await self._client.list_resources(server))
-            if operation == "read" and uri:
-                return _protocol_result(await self._client.read_resource(server, uri))
-            if operation == "subscribe" and "subscribe" in operations and uri:
-                return _protocol_result(await self._client.subscribe_resource(server, uri))
-            if operation == "unsubscribe" and "unsubscribe" in operations and uri:
-                return _protocol_result(await self._client.unsubscribe_resource(server, uri))
-            return ToolResult.failure(
-                "invalid_mcp_resource_request",
-                f"Unsupported resource operation or missing uri: {operation}",
-            )
+        handler = MCPResourceHandler(
+            self._client,
+            server,
+            subscriptions=bool(capability.get("subscribe")),
+        )
 
         return self._register_bridge(
             server,
             Tool(
                 name=f"mcp__{server}__protocol_resources",
-                description=resources.__doc__ or "",
-                function=resources,
+                description=handler.invoke.__doc__ or "",
+                function=handler.invoke,
                 parameters={
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": operations,
+                            "enum": handler.operations,
                         },
                         "uri": {"type": "string"},
                     },
@@ -174,31 +250,14 @@ class MCPPlugin:
         self,
         server: str,
     ) -> str:
-        async def prompts(
-            operation: str,
-            name: str = "",
-            arguments: dict[str, str] | None = None,
-        ) -> ToolResult:
-            """List MCP prompts or render one prompt with arguments."""
-            if operation == "list":
-                return _protocol_result({
-                    "prompts": await self._client.list_prompts(server),
-                })
-            if operation == "get" and name:
-                return _protocol_result(
-                    await self._client.get_prompt(server, name, arguments)
-                )
-            return ToolResult.failure(
-                "invalid_mcp_prompt_request",
-                f"Unsupported prompt operation or missing name: {operation}",
-            )
+        handler = MCPPromptHandler(self._client, server)
 
         return self._register_bridge(
             server,
             Tool(
                 name=f"mcp__{server}__protocol_prompts",
-                description=prompts.__doc__ or "",
-                function=prompts,
+                description=handler.invoke.__doc__ or "",
+                function=handler.invoke,
                 parameters={
                     "type": "object",
                     "properties": {
@@ -218,30 +277,14 @@ class MCPPlugin:
         self,
         server: str,
     ) -> str:
-        async def complete(
-            reference_type: str,
-            reference: str,
-            argument: dict[str, str],
-            context_arguments: dict[str, str] | None = None,
-        ) -> ToolResult:
-            """Complete an MCP prompt argument or resource-template argument."""
-            ref = {
-                "type": "ref/resource" if reference_type == "resource" else "ref/prompt",
-                "uri" if reference_type == "resource" else "name": reference,
-            }
-            return _protocol_result(await self._client.complete(
-                server,
-                ref,
-                argument,
-                context_arguments,
-            ))
+        handler = MCPCompletionHandler(self._client, server)
 
         return self._register_bridge(
             server,
             Tool(
                 name=f"mcp__{server}__protocol_complete",
-                description=complete.__doc__ or "",
-                function=complete,
+                description=handler.invoke.__doc__ or "",
+                function=handler.invoke,
                 parameters={
                     "type": "object",
                     "properties": {
@@ -276,7 +319,7 @@ class MCPPlugin:
         server_name: str,
     ) -> None:
         for registered_name in reversed(self._server_tools.pop(server_name, [])):
-            self.ctx.tools.unregister(registered_name)
+            self._tools.unregister(registered_name)
         await self._client.disconnect(server_name)
 
     async def _rollback_all(self) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Sequence
 
 from XBotv2.core import Message
 
@@ -45,11 +45,11 @@ def compact_prefix_end(messages: Sequence[Message], keep_recent_turns: int) -> i
     return 0
 
 
-def leading_system_messages(messages: Sequence[Any]) -> list[Any]:
+def leading_system_messages(messages: Sequence[Message]) -> list[Message]:
     """Return the stable leading system prefix of a provider request."""
-    prefix: list[Any] = []
+    prefix: list[Message] = []
     for message in messages:
-        if getattr(message, "role", "") != "system":
+        if message.role != "system":
             break
         prefix.append(message)
     return prefix

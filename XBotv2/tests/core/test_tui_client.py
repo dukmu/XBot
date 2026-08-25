@@ -50,7 +50,7 @@ async def test_remote_command_dispatch_shows_command_notice():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
-        _connected = True
+        _session_attached = True
         session = type("Session", (), {"run_command": AsyncMock(
             return_value={
                 "data": {
@@ -118,7 +118,7 @@ async def test_invalid_remote_syntax_is_a_notice_not_tui_error() -> None:
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
-        _connected = True
+        _session_attached = True
         session = type("Session", (), {"run_command": AsyncMock(
             side_effect=ValueError("Usage: /undo [count]")
         )})()
@@ -2303,6 +2303,52 @@ async def test_terminal_session_passes_explicit_resume_mode():
     assert opened["mode"] == "resume"
     assert opened["agent"] == "builder"
     assert response["history"] == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
+    class FakeTransport:
+        def __init__(self):
+            self.fail = False
+            self.shutdown_calls = 0
+
+        async def hello(self, *, session_id, thread_id):
+            return {"session_id": session_id, "thread_id": thread_id}
+
+        async def open_session(self, **payload):
+            if self.fail:
+                raise RuntimeError("open failed")
+            return payload
+
+        async def shutdown(self, **_payload):
+            self.shutdown_calls += 1
+
+        async def close(self):
+            return None
+
+    transport = FakeTransport()
+    session = TerminalSession(
+        transport=transport,
+        session_id="old",
+        thread_id="main",
+    )
+    await session.connect()
+    await session.switch(
+        session_id="new",
+        thread_id="agent",
+        workspace_root="/workspace",
+    )
+
+    assert (session.session_id, session.thread_id) == ("new", "agent")
+    assert transport.shutdown_calls == 0
+
+    transport.fail = True
+    with pytest.raises(RuntimeError, match="open failed"):
+        await session.switch(session_id="broken", thread_id="agent")
+
+    assert (session.session_id, session.thread_id) == ("new", "agent")
+    await session.disconnect()
+    assert transport.shutdown_calls == 0
 
 
 @pytest.mark.asyncio

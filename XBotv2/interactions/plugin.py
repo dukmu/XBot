@@ -15,15 +15,20 @@ import uuid
 from XBotv2.interactions.interactions import InteractionResult, InteractionWaiter
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.agentloop import EventContext, Events
+from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
 from XBotv2.core.tools import ClientEvent
 
 
 class InteractionsService:
     """Per-engine interaction coordination with an installable event sink."""
 
-    def __init__(self, ctx: Any, client_events: Any) -> None:
-        self.ctx = ctx
-        self.client_events = client_events
+    def __init__(
+        self,
+        events: ApplicationEventsPort,
+        client_events: ClientEventsPort,
+    ) -> None:
+        self._events = events
+        self._client_events = client_events
         self._waiter = InteractionWaiter()
 
     @property
@@ -48,6 +53,9 @@ class InteractionsService:
 
     def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
         return self._waiter.cancel_all(reason)
+
+    def session_closed(self, _event: EventContext) -> None:
+        self.cancel_all("session_closed")
 
     # ------------------------------------------------------------------
     # User-input interaction (ask_user and friends)
@@ -86,11 +94,11 @@ class InteractionsService:
             "user_input_required",
             payload.model_dump(),
         )
-        await self.ctx.emit(
+        await self._events.emit(
             Events.CLIENT_EVENT,
             EventContext(client_event=client_event),
         )
-        sink_result = await self.client_events.request(
+        sink_result = await self._client_events.request(
             client_event,
             timeout_seconds=timeout_seconds,
             tool_call_id=tool_call_id,
@@ -106,7 +114,7 @@ class InteractionsService:
                 "reason": "live_user_input_unsupported",
             }
         return {
-            "answer": getattr(result, "answer", ""),
+            "answer": result.answer,
             "request_id": result.request_id,
             "status": result.status,
             "reason": result.reason,
@@ -131,10 +139,7 @@ class InteractionsComponent:
         ctx.tools.register(send_message)
         if ctx.session_launch.interactive:
             ctx.tools.register(build_ask_user_tool(service))
-        ctx.on(
-            Events.SESSION_CLOSE,
-            lambda _event: service.cancel_all("session_closed"),
-        )
+        ctx.on(Events.SESSION_CLOSE, service.session_closed)
 
 
 plugin = InteractionsComponent()

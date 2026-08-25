@@ -13,6 +13,9 @@ def test_initial_config_materializes_packaged_plugin_skill(tmp_path: Path) -> No
     skill = paths.data_dir / ".agents" / "skills" / "xbot-plugin-development" / "SKILL.md"
     assert skill.is_file()
     assert "xbot-plugin-development" in skill.read_text(encoding="utf-8")
+    references = skill.parent / "references"
+    assert (references / "first-plugin.md").is_file()
+    assert (references / "extension-patterns.md").is_file()
 
 
 def test_initial_config_preserves_unrelated_global_skills(tmp_path: Path) -> None:

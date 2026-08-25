@@ -1,7 +1,7 @@
 """Permissions component: the permission system as an XCore service.
 
-Decides tool-call allow/ask/deny against the runtime permission rules and
-(optionally) a parent session's permission system (subagent intersection).
+Decides tool-call allow/ask/deny against runtime permission rules and, for a
+child Agent, an optional parent session permission system (intersection).
 The system registers itself as a monotonic execution guard on ``ctx.tools``
 (see :meth:`ToolsService.guard`), so the tool pipeline gates calls through
 it without importing or depending on this plugin.
@@ -9,6 +9,7 @@ it without importing or depending on this plugin.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
@@ -17,7 +18,7 @@ from XBotv2.config import POLICY_CHANGED, PolicyChanged
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ToolCall
 from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
-from XBotv2.permissions.guard import make_permission_guard
+from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
@@ -40,13 +41,18 @@ class PermissionsService:
         self._base_config = self._as_dict(config)
         self._agent_overlay: Any = None
         self._parent = parent
-        self._system: Any = None
+        self._system: PermissionSystem | PermissionIntersection
         self._rebuild()
 
     @property
     def config(self) -> Any:
-        target = getattr(self._system, "child", self._system)
-        return getattr(target, "config", None)
+        return self._child.config
+
+    @property
+    def _child(self) -> PermissionSystem:
+        if isinstance(self._system, PermissionIntersection):
+            return self._system.child
+        return self._system
 
     def configure(self, config: Any, *, parent: Any = None) -> None:
         self._base_config = self._as_dict(config)
@@ -98,8 +104,7 @@ class PermissionsService:
         return dict(value)
 
     def add_rule(self, decision: str, rule: dict[str, Any]) -> None:
-        target = getattr(self._system, "child", self._system)
-        target.add_rule(decision, rule)
+        self._child.add_rule(decision, rule)
 
     def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str:
         return self._system.check(tool_name, args)
@@ -149,63 +154,71 @@ class PermissionsComponent:
         ctx.set("permissions", permissions)
         for command in build_permissions_commands(ctx.settings):
             ctx.commands.register(command)
+        handlers = PermissionHandlers(permissions, ctx.emit)
 
-        async def record_permission_decision(
-            event: dict[str, Any],
-            decision: str,
-            scope: str,
-        ) -> None:
-            data = event.get("data") or {}
-            if data.get("source") == "request_permission":
-                rule = requested_permission_rule(data.get("permission"))
-            else:
-                rule = permission_rule_for_tool_call(
-                    ToolCall.from_dict(dict(data.get("tool_call") or {}))
-                )
-            if not rule:
-                return
-            if scope == "session":
-                permissions.add_rule(decision, rule)
-            await ctx.emit(
-                PERMISSION_DECIDED,
-                PermissionDecided(
-                    decision=decision,
-                    scope=scope,
-                    rule=rule,
-                ),
-            )
-
-        ctx.tools.guard(make_permission_guard(
+        guard = PermissionGuard(
             permissions,
             ctx.approval,
             ctx.emit,
-            record_decision=record_permission_decision,
-        ))
-
-        async def configure_initial_agent(event: ApplicationInitialized) -> None:
-            if event.agent is not None:
-                permissions.configure_agent(event.agent.permissions)
-
-        async def configure_agent(event: AgentConfigured) -> None:
-            if event.agent is not None:
-                permissions.configure_agent(event.agent.permissions)
-
-        ctx.on(APPLICATION_INITIALIZED, configure_initial_agent, prepend=True)
-        ctx.on(AGENT_CONFIGURED, configure_agent, prepend=True)
-
-        async def update_policy(event: PolicyChanged) -> None:
-            permissions.replace_rules(event.config.permissions)
-
-        ctx.on(POLICY_CHANGED, update_policy)
+            handlers.record_decision,
+        )
+        ctx.tools.guard(guard.check)
+        ctx.on(APPLICATION_INITIALIZED, handlers.configure_initial, prepend=True)
+        ctx.on(AGENT_CONFIGURED, handlers.configure_agent, prepend=True)
+        ctx.on(POLICY_CHANGED, handlers.update_policy)
 
         if ctx.session_launch.interactive:
-            from XBotv2.permissions.tools import build_request_permission_tool
+            from XBotv2.permissions.tools import RequestPermissionTool
 
-            ctx.tools.register(build_request_permission_tool(
+            tool = RequestPermissionTool(
                 permissions,
                 ctx.approval,
-                record_permission_decision,
-            ))
+                handlers.record_decision,
+            )
+            ctx.tools.register(tool.as_tool())
+
+
+class PermissionHandlers:
+    def __init__(
+        self,
+        permissions: PermissionsService,
+        emit: Callable[[str, Any], Awaitable[Any]],
+    ) -> None:
+        self._permissions = permissions
+        self._emit = emit
+
+    async def record_decision(
+        self,
+        event: dict[str, Any],
+        decision: str,
+        scope: str,
+    ) -> None:
+        data = event.get("data") or {}
+        if data.get("source") == "request_permission":
+            rule = requested_permission_rule(data.get("permission"))
+        else:
+            rule = permission_rule_for_tool_call(
+                ToolCall.from_dict(dict(data.get("tool_call") or {}))
+            )
+        if not rule:
+            return
+        if scope == "session":
+            self._permissions.add_rule(decision, rule)
+        await self._emit(
+            PERMISSION_DECIDED,
+            PermissionDecided(decision=decision, scope=scope, rule=rule),
+        )
+
+    async def configure_initial(self, event: ApplicationInitialized) -> None:
+        if event.agent is not None:
+            self._permissions.configure_agent(event.agent.permissions)
+
+    async def configure_agent(self, event: AgentConfigured) -> None:
+        if event.agent is not None:
+            self._permissions.configure_agent(event.agent.permissions)
+
+    async def update_policy(self, event: PolicyChanged) -> None:
+        self._permissions.replace_rules(event.config.permissions)
 
 
 plugin = PermissionsComponent()

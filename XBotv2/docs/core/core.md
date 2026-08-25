@@ -222,9 +222,10 @@ but is not added to subsequent Chat Completions requests.
 
 `config/tree.py` owns reading the bundled tree and applying user overlays.
 The Agent app supplies launch facts, `boot_application()` creates the Context
-and settles the Loader, then the app creates one Agent instance from the
-mounted services. Order: config tree → boot → services converge → Agent
-construction → `APPLICATION_INITIALIZED` → tool restriction → Engine.
+after the complete plugin tree has been mounted, then XCore activates services
+from declared `inject` dependencies. Order: config tree → mount complete tree →
+one `Context.start()` → Agent/Engine construction →
+`APPLICATION_INITIALIZED` → tool restriction → ready application.
 Application passes only the model port, tool service, event port, loop state,
 and loop settings into Engine.
 

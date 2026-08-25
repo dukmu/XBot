@@ -145,22 +145,27 @@ class ToolsComponent:
             service,
         )
 
-        def list_tools(_request: EmptyRequest) -> ToolCatalog:
-            enabled = set(tool_registry.names())
-            return ToolCatalog(tools=tuple(
-                ToolDescription(
-                    name=str(getattr(entry.tool, "name", entry.registered_name)),
-                    registered_name=entry.registered_name,
-                    namespace=entry.namespace,
-                    description=str(getattr(entry.tool, "description", "") or ""),
-                    parameters=dict(getattr(entry.tool, "parameters", {}) or {}),
-                    timeout_seconds=entry.timeout_seconds,
-                )
-                for entry in tool_registry.registered_entries()
-                if entry.model_visible and entry.registered_name in enabled
-            ))
+        ctx.on(LIST_TOOLS.name, ToolsCatalogHandler(tool_registry).list_tools)
 
-        ctx.on(LIST_TOOLS.name, list_tools)
+
+class ToolsCatalogHandler:
+    def __init__(self, registry: ToolRegistry) -> None:
+        self._registry = registry
+
+    def list_tools(self, _request: EmptyRequest) -> ToolCatalog:
+        enabled = set(self._registry.names())
+        return ToolCatalog(tools=tuple(
+            ToolDescription(
+                name=entry.tool.name,
+                registered_name=entry.registered_name,
+                namespace=entry.namespace,
+                description=entry.tool.description,
+                parameters=dict(entry.tool.parameters),
+                timeout_seconds=entry.timeout_seconds,
+            )
+            for entry in self._registry.registered_entries()
+            if entry.model_visible and entry.registered_name in enabled
+        ))
 
 
 plugin = ToolsComponent()

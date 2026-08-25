@@ -313,7 +313,7 @@ async def test_status_bar_uses_open_session_metadata() -> None:
     async with app.run_test(headless=True, size=(120, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
 
         status = app.query_one("#status_bar")
@@ -367,7 +367,7 @@ async def test_resumed_assistant_history_uses_markdown_rendering() -> None:
     async with app.run_test(headless=True, size=(80, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
 
         assert isinstance(app.query_one(".user .body", Static).content, Text)
@@ -1045,7 +1045,7 @@ async def test_session_command_lists_and_switches_workspace() -> None:
     async with app.run_test(headless=True, size=(100, 32)) as pilot:
         for _ in range(5):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
 
         composer = app.query_one("#input")
@@ -1156,7 +1156,7 @@ async def test_command_palette_scrolls_to_long_server_command_list() -> None:
     async with app.run_test(headless=True, size=(60, 20)) as pilot:
         for _ in range(5):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
         await pilot.press("ctrl+p")
         await pilot.pause()
