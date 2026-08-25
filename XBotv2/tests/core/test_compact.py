@@ -556,7 +556,6 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
     events = [event async for event in engine.run_turn("continue")]
 
     assert llm.call_count == 2
-    assert engine.messages.revision == 3
     assert any(event["type"] == "assistant_message" for event in events)
     assert engine.messages[0].role == "system"
     root = ET.fromstring(engine.messages[0].content)

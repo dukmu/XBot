@@ -29,11 +29,6 @@ class ConversationHistory(Sequence[Message]):
         for message in self._messages:
             message.seal()
         self._sink = sink
-        self._revision = 0
-
-    @property
-    def revision(self) -> int:
-        return self._revision
 
     def snapshot(self) -> tuple[Message, ...]:
         return tuple(self._messages)
@@ -50,7 +45,6 @@ class ConversationHistory(Sequence[Message]):
         for message in added:
             message.seal()
         self._messages.extend(added)
-        self._revision += 1
 
     def replace(self, messages: Iterable[Message]) -> None:
         replacement = tuple(messages)
@@ -59,7 +53,6 @@ class ConversationHistory(Sequence[Message]):
         for message in replacement:
             message.seal()
         self._messages = list(replacement)
-        self._revision += 1
 
     def replace_last(self, message: Message) -> None:
         if not self._messages:

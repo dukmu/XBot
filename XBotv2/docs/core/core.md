@@ -141,9 +141,9 @@ example `shell`); non-core examples include `plugin:skills:skill`,
 ### Sandbox (`sandbox/` plugin)
 
 `BubblewrapBackend` provides process isolation via `bwrap`.
-`SandboxPolicy` exposes capability methods: `run_shell`, `read_file`,
-`write_file`, `list_dir`. The core-tools plugin binds its session sandbox when
-it builds the filesystem and shell Tools. Bwrap exposes the complete filesystem
+`SandboxPolicy` resolves and validates paths for the merged `read`, `edit`,
+`path`, `search`, and `shell` Tools. The core-tools plugin binds the session
+sandbox when it builds those Tools. Bwrap exposes the complete filesystem
 read-only, then overlays the workspace, `/tmp`, and configured writable
 resources. Filesystem Tools apply the separate path permission policy before
 entering that sandbox.

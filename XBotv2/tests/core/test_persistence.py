@@ -168,7 +168,6 @@ class TestConversationHistory:
         history.append(Message(role="user", content="one"))
         history.extend([Message(role="assistant", content="two")])
 
-        assert history.revision == 2
         assert [message.content for message in history] == ["one", "two"]
         assert persistence.history.load() == history
 
@@ -212,7 +211,7 @@ class TestConversationHistory:
         with pytest.raises(RuntimeError, match="immutable"):
             message.data["items"].append({"status": "completed"})
 
-    def test_failed_sink_write_does_not_change_history_or_revision(self):
+    def test_failed_sink_write_does_not_change_history(self):
         class FailingSink:
             def append(self, _messages):
                 raise OSError("disk full")
@@ -226,12 +225,10 @@ class TestConversationHistory:
         with pytest.raises(OSError, match="disk full"):
             history.append(Message(role="assistant", content="not durable"))
         assert history.snapshot() == (original,)
-        assert history.revision == 0
 
         with pytest.raises(OSError, match="disk full"):
             history.clear()
         assert history.snapshot() == (original,)
-        assert history.revision == 0
 
 
 class TestThreadMetadataStore:

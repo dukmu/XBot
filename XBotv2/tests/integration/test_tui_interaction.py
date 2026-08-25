@@ -32,7 +32,6 @@ import pytest
 
 from XBotv2.tui.command import CommandRegistry
 from XBotv2.tui.completion_popup import CompletionPopup
-from XBotv2.tui.terminal import CommandOutcome
 from XBotv2.tui.textual_client import XBotTextualApp
 
 
@@ -1515,7 +1514,7 @@ async def test_thinking_and_details_commands_control_current_and_future_blocks(
                 "type": "tool_calls_started",
                 "data": {
                     "tool_calls": [
-                        {"id": "c2", "name": "read_file", "args": {"path": "README.md"}}
+                        {"id": "c2", "name": "read", "args": {"path": "README.md"}}
                     ]
                 },
             }

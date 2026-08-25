@@ -208,9 +208,9 @@ def _task_status(status: str) -> str:
 
 
 def _tool_kind(name: str) -> str:
-    if name.startswith("filesystem_read") or name in {"read_file", "list_files"}:
+    if name == "read":
         return "read"
-    if name.startswith("filesystem_") or name in {"write_file", "edit_file"}:
+    if name in {"edit", "path"}:
         return "edit"
     if name in {"shell", "shell_start", "run_command"}:
         return "execute"

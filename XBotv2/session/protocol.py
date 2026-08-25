@@ -11,6 +11,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
@@ -34,6 +35,7 @@ from XBotv2.server import ModelOverride, ServerOptions, contribute_router
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
     AttachmentUpload,
+    HistoryMutation,
     ImageUpload,
     InteractionReceipt,
     OpenedSession,
@@ -265,51 +267,31 @@ SessionMode = Literal["new", "resume"]
 
 
 def _open_session_response(value: OpenedSession) -> OpenSessionResponse:
-    return OpenSessionResponse(
-        session_id=value.session_id,
-        thread_id=value.thread_id,
-        agent_name=value.agent_name,
-        workspace_root=value.workspace_root,
-        provider=value.provider,
-        model=value.model,
-        model_mode=value.model_mode,
-        context_window=value.context_window,
-        usage=value.usage,
-        history=display_history(value.history),
-        status_slots=value.status_slots,
+    return OpenSessionResponse.model_validate(
+        {**_record_data(value), "history": display_history(value.history)}
     )
 
 
 def _session_summary(value: SessionSnapshot) -> SessionSummary:
-    return SessionSummary(
-        session_id=value.session_id,
-        status=value.status,
-        active_threads=value.active_threads,
-        thread_count=value.thread_count,
-        workspace_root=value.workspace_root,
-        title=value.title,
-    )
+    return SessionSummary.model_validate(_record_data(value))
 
 
 def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
-    return ThreadSummary(
-        session_id=value.session_id,
-        thread_id=value.thread_id,
-        status=value.status,
-        kind=value.kind,
-        turn_status=value.turn_status,
-        parent_thread_id=value.parent_thread_id,
-        agent=value.agent,
-        provider=value.provider,
-        model=value.model,
-        model_mode=value.model_mode,
-        context_window=value.context_window,
-        message_count=value.message_count,
-        usage=value.usage,
-        pending_interactions=list(value.pending_interactions),
-        status_slots=value.status_slots,
-        workspace_root=value.workspace_root,
-        title=value.title,
+    return ThreadSummary.model_validate(_record_data(value))
+
+
+def _record_data(value: object) -> dict[str, Any]:
+    return {field.name: getattr(value, field.name) for field in fields(value)}
+
+
+def _history_response(
+    session_id: str, thread_id: str, result: HistoryMutation
+) -> HistoryMutationResponse:
+    return HistoryMutationResponse(
+        session_id=session_id,
+        thread_id=thread_id,
+        removed_turns=result.removed_turns,
+        messages=display_history(result.messages),
     )
 
 
@@ -329,6 +311,88 @@ async def _interaction_response(
     return InteractionResponse(
         request_id=value.request_id,
         pending_interactions=list(value.pending_interactions),
+    )
+
+
+async def _message_sse(
+    events: AsyncIterator,
+    session_id: str,
+    thread_id: str,
+    request_id: str,
+) -> AsyncIterator[bytes]:
+    sequence = 0
+    try:
+        async for event in events:
+            sequence += 1
+            yield _format_sse(
+                event={"type": event.type, "data": event.data},
+                seq=sequence,
+                session_id=session_id,
+                thread_id=thread_id,
+                request_id=request_id,
+            )
+    except asyncio.CancelledError:
+        logger.info("SSE stream cancelled for session %s", session_id)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("SSE stream errored for %s", session_id)
+        sequence += 1
+        yield _format_sse(
+            event=session_error_event(
+                "stream_failed",
+                str(exc),
+                details={"exception_type": type(exc).__name__},
+            ),
+            seq=sequence,
+            session_id=session_id,
+            thread_id=thread_id,
+            request_id=request_id,
+        )
+    yield _format_sse(
+        event={"type": "end", "data": {"status": "ok"}},
+        seq=sequence + 1,
+        session_id=session_id,
+        thread_id=thread_id,
+        request_id=request_id,
+    )
+
+
+async def _session_sse(
+    events: AsyncIterator,
+    session_id: str,
+    thread_id: str,
+) -> AsyncIterator[bytes]:
+    request_id = f"events-{uuid.uuid4().hex}"
+    sequence = 0
+    try:
+        async for event in events:
+            sequence += 1
+            yield _format_sse(
+                event={"type": event.type, "data": event.data},
+                seq=sequence,
+                session_id=session_id,
+                thread_id=thread_id,
+                request_id=request_id,
+            )
+    except asyncio.CancelledError:
+        return
+
+
+async def _session_not_found(
+    _: Request, exc: SessionNotFound
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content=_error_payload("session_not_found", str(exc)),
+    )
+
+
+async def _thread_not_active(
+    _: Request, exc: ThreadNotActive
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content=_error_payload("thread_not_active", str(exc), retryable=True),
     )
 
 
@@ -493,12 +557,7 @@ def build_session_router(
         thread_id: str,
     ) -> HistoryMutationResponse:
         result = await sessions.clear_history(session_id, thread_id)
-        return HistoryMutationResponse(
-            session_id=session_id,
-            thread_id=thread_id,
-            removed_turns=result.removed_turns,
-            messages=display_history(result.messages),
-        )
+        return _history_response(session_id, thread_id, result)
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/history/undo",
@@ -510,12 +569,7 @@ def build_session_router(
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
         result = await sessions.undo_history(session_id, thread_id, payload.count)
-        return HistoryMutationResponse(
-            session_id=session_id,
-            thread_id=thread_id,
-            removed_turns=result.removed_turns,
-            messages=display_history(result.messages),
-        )
+        return _history_response(session_id, thread_id, result)
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/messages",
@@ -557,65 +611,10 @@ def build_session_router(
                 status=400,
             ) from exc
 
-        async def sse_stream() -> AsyncIterator[bytes]:
-            seq = 0
-            end_emitted = False
-            disconnected = False
-
-            def emit_end() -> bytes:
-                nonlocal end_emitted
-                if end_emitted:
-                    return b""
-                end_emitted = True
-                return _format_sse(
-                    event={"type": "end", "data": {"status": "ok"}},
-                    seq=seq + 1,
-                    session_id=session_id,
-                    thread_id=thread_id,
-                    request_id=client_request_id,
-                )
-
-            try:
-                try:
-                    async for event in events:
-                        seq += 1
-                        yield _format_sse(
-                            event={"type": event.type, "data": event.data},
-                            seq=seq,
-                            session_id=session_id,
-                            thread_id=thread_id,
-                            request_id=client_request_id,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("SSE stream errored for %s", session_id)
-                    seq += 1
-                    yield _format_sse(
-                        event={
-                            "type": "error",
-                            "data": {
-                                "code": "stream_failed",
-                                "message": str(exc),
-                                "details": {
-                                    "exception_type": type(exc).__name__,
-                                },
-                            },
-                        },
-                        seq=seq,
-                        session_id=session_id,
-                        thread_id=thread_id,
-                        request_id=client_request_id,
-                    )
-            except asyncio.CancelledError:
-                disconnected = True
-                logger.info("SSE stream cancelled for session %s", session_id)
-            finally:
-                if not disconnected:
-                    final = emit_end()
-                    if final:
-                        yield final
-
         return StreamingResponse(
-            sse_stream(),
+            _message_sse(
+                events, session_id, thread_id, client_request_id
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -632,24 +631,8 @@ def build_session_router(
     async def session_events(session_id: str, thread_id: str) -> Response:
         events = await sessions.stream_events(session_id, thread_id)
 
-        async def sse_stream() -> AsyncIterator[bytes]:
-            seq = 0
-            request_id = f"events-{uuid.uuid4().hex}"
-            try:
-                async for event in events:
-                    seq += 1
-                    yield _format_sse(
-                        event={"type": event.type, "data": event.data},
-                        seq=seq,
-                        session_id=session_id,
-                        thread_id=thread_id,
-                        request_id=request_id,
-                    )
-            except asyncio.CancelledError:
-                return
-
         return StreamingResponse(
-            sse_stream(),
+            _session_sse(events, session_id, thread_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -747,22 +730,6 @@ class SessionProtocolPlugin:
     name = "xbot.protocol.session"
 
     async def apply(self, ctx: Context, config: object = None) -> None:
-        async def _on_session_not_found(
-            _: Request, exc: SessionNotFound
-        ) -> JSONResponse:
-            return JSONResponse(
-                status_code=404,
-                content=_error_payload("session_not_found", str(exc)),
-            )
-
-        async def _on_thread_not_active(
-            _: Request, exc: ThreadNotActive
-        ) -> JSONResponse:
-            return JSONResponse(
-                status_code=409,
-                content=_error_payload("thread_not_active", str(exc), retryable=True),
-            )
-
         await contribute_router(
             ctx,
             owner=self.name,
@@ -771,8 +738,8 @@ class SessionProtocolPlugin:
                 options=ctx.server_options,
             ),
             exception_handlers=(
-                (SessionNotFound, _on_session_not_found),
-                (ThreadNotActive, _on_thread_not_active),
+                (SessionNotFound, _session_not_found),
+                (ThreadNotActive, _thread_not_active),
             ),
         )
 

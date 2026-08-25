@@ -16,7 +16,7 @@ from XBotv2.core.paths import RuntimePaths
 __version__ = "0.2.0"
 
 
-_COMMANDS = {"serve", "tui", "web", "once", "terminal", "acp"}
+_COMMANDS = {"serve", "tui", "web", "once", "acp"}
 _WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
 # $HOME/.local/state/xbotv2 is the default state dir on Linux
 # on Windows, it will be %LOCALAPPDATA%\xbotv2\state
@@ -89,11 +89,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    terminal = commands.add_parser(
-        "terminal", parents=[common], help="run the basic interactive terminal"
-    )
-    terminal.set_defaults(command="terminal")
-
     tui = commands.add_parser(
         "tui", parents=[common], help="run the Textual client"
     )
@@ -157,11 +152,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    """Default invocations without a named command to terminal mode."""
+    """Default invocations without a named command to TUI mode."""
     if argv in (["-h"], ["--help"], ["--version"]):
         return argv
     if not argv or argv[0] not in _COMMANDS:
-        return ["terminal", *argv]
+        return ["tui", *argv]
     return argv
 
 
@@ -192,8 +187,6 @@ def main(argv: list[str] | None = None):
             _run_tui(args)
         elif args.command == "web":
             _run_web(args)
-        elif args.command == "terminal":
-            asyncio.run(_terminal_loop(args))
         elif args.command == "once":
             asyncio.run(_run_once(args))
         elif args.command == "acp":
@@ -478,132 +471,6 @@ def _spawn_pythonpath() -> str:
 
 def _workspace_root(args) -> Path:
     return Path(getattr(args, "workspace", None) or Path.cwd()).resolve()
-
-
-async def _terminal_loop(args):
-    """Direct engine terminal session — reads from stdin, prints responses."""
-    from XBotv2.application.app import start_application
-
-    print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
-
-    try:
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(args.data_dir),
-            provider_name=args.provider,
-            session_id=getattr(args, "session", None),
-            thread_id=getattr(args, "thread", "agent"),
-            workspace_root=str(_workspace_root(args)),
-            no_plugins=args.no_plugins,
-            selected_agent=getattr(args, "agent", None),
-        )
-        engine = application.engine
-        await engine.start_session()
-        from XBotv2.session.runtime import install_client_event_sink
-
-        install_client_event_sink(application.client_events, _terminal_interaction)
-    except Exception as exc:
-        print(f"Error starting engine: {exc}")
-        return
-
-    while True:
-        try:
-            user_input = input("> ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
-
-        if not user_input.strip():
-            continue
-        if user_input.strip() == "/quit":
-            print("Goodbye.")
-            break
-
-        try:
-            async for event in engine.run_turn(user_input):
-                etype = event.get("type", "")
-                data = event.get("data", {})
-
-                if etype == "assistant_message":
-                    content = data.get("content", "")
-                    tool_calls = data.get("tool_calls")
-                    if content:
-                        print(content)
-                    if tool_calls:
-                        print(f"\n[tool calls: {len(tool_calls)}]")
-                elif etype == "tool_result":
-                    tc_id = data.get("tool_call_id", "")
-                    content = data.get("content", "")
-                    print(f"  [{tc_id}]: {content[:200]}")
-                elif etype == "client_message":
-                    print(f"\n[message] {data.get('message', '')}")
-                elif etype == "permission_request":
-                    print(f"\n[approval required] {data.get('reason', '')}")
-                elif etype == "permission_denied":
-                    print(f"\n[permission denied] {data.get('reason', '')}")
-                elif etype == "user_input_required":
-                    print(f"\n[question] {data.get('question', '')}")
-                elif etype == "error":
-                    print(f"\nError: {data.get('message', 'unknown')}")
-        except Exception as exc:
-            print(f"\nError: {exc}")
-
-    try:
-        await engine.close_session()
-    finally:
-        await application.stop()
-
-
-async def _terminal_interaction(
-    event: dict,
-    *,
-    timeout_seconds: float | None = None,
-    tool_call_id: str = "",
-) -> dict:
-    """Resolve one live Engine interaction through stdin."""
-    del timeout_seconds, tool_call_id
-    event_type = str(event.get("type") or "")
-    data = event.get("data") or {}
-    request_id = str(data.get("request_id") or "")
-    try:
-        if event_type == "permission_request":
-            call = data.get("tool_call") or {}
-            tool = call.get("name") or "tool"
-            answer = await asyncio.to_thread(
-                input,
-                f"\nAllow {tool}? [y] once / [a] session / [N] deny: ",
-            )
-            choice = answer.strip().lower()
-            return {
-                "request_id": request_id,
-                "status": "answered",
-                "decision": "allow"
-                if choice in {"y", "yes", "a", "always"}
-                else "deny",
-                "scope": "session" if choice in {"a", "always"} else "once",
-            }
-
-        options = data.get("options") or []
-        print(f"\n{data.get('question', 'Input required')}")
-        for index, option in enumerate(options, 1):
-            label = option.get("label", "") if isinstance(option, dict) else str(option)
-            description = option.get("description", "") if isinstance(option, dict) else ""
-            suffix = f" - {description}" if description else ""
-            print(f"  {index}. {label}{suffix}")
-        answer = await asyncio.to_thread(input, "Select an option: ")
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
-            selected = options[int(answer) - 1]
-            answer = (
-                selected.get("label", "")
-                if isinstance(selected, dict)
-                else str(selected)
-            )
-        return {"request_id": request_id, "status": "answered", "answer": answer}
-    except (EOFError, KeyboardInterrupt):
-        return {
-            "request_id": request_id,
-            "status": "cancelled",
-            "reason": "terminal_input_cancelled",
-        }
 
 
 async def _run_once(args):

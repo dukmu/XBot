@@ -99,14 +99,6 @@ class ContextBuilder:
         """Remove a plugin's fragment."""
         self._fragments.get(stage, {}).pop(plugin_name, None)
 
-    def get_fragment(
-        self,
-        stage: PromptFragmentStage,
-        plugin_name: str,
-    ) -> str | None:
-        fragment = self._fragments.get(stage, {}).get(plugin_name)
-        return fragment.text if fragment is not None else None
-
     def build(
         self,
         *,

@@ -95,11 +95,6 @@ class SessionRuntime:
         """Mark the runtime active; resets the idle-reaper deadline."""
         self.last_activity = time.monotonic()
 
-    async def send_input(self, content: str, **kwargs: Any) -> Any:
-        """Queue a plugin-command follow-up through the Agent's sole inbox."""
-        self.touch()
-        return await self.engine.followup(content, **kwargs)
-
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
         self._publish_runtime_event(session_event(

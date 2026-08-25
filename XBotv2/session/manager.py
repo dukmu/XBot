@@ -8,7 +8,7 @@ import binascii
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.core.errors import OperationError
-from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
@@ -56,13 +56,39 @@ from XBotv2.core.operations import (
     Operation,
     RequestT,
     ResponseT,
-    ScopeT,
-    ScopedOperation,
     dispatch_operation,
-    dispatch_scoped_operation,
 )
 
 logger = logging.getLogger("xbotv2.session_manager")
+
+
+async def _runtime_message_events(
+    runtime: SessionRuntime,
+    request: SendMessage,
+    images: list[ImageContent],
+    attachments: list[ArtifactRef],
+) -> AsyncIterator[SessionStreamEvent]:
+    async for event in runtime.stream_message(
+        request.content,
+        request.request_id,
+        images=images,
+        artifacts=attachments,
+    ):
+        yield SessionStreamEvent.from_mapping(event)
+
+
+async def _runtime_events(
+    runtime: SessionRuntime,
+    events: asyncio.Queue[dict[str, Any] | None],
+) -> AsyncIterator[SessionStreamEvent]:
+    try:
+        while True:
+            event = await events.get()
+            if event is None:
+                return
+            yield SessionStreamEvent.from_mapping(event)
+    finally:
+        runtime.detach_event_stream(events)
 
 
 class SessionManager:
@@ -208,59 +234,26 @@ class SessionManager:
                     raise SessionExists(f"{session_id}/{thread_id}")
                 task = opening
             else:
-                task = self._prepare_open_task(
-                    key=key,
-                    session_id=session_id,
-                    thread_id=thread_id,
-                    provider_name=provider_name,
-                    workspace_root=workspace_root,
-                    selected_agent=selected_agent,
-                    mode=mode,
-                    no_plugins=no_plugins,
-                    plugin_configs=plugin_configs,
-                    llm_override=llm_override,
-                    parent_thread_id=parent_thread_id,
-                    parent_permission_system=parent_permission_system,
-                    is_subagent=is_subagent,
+                task = asyncio.create_task(
+                    self._build_and_register(
+                        key=key,
+                        session_id=session_id,
+                        thread_id=thread_id,
+                        provider_name=provider_name,
+                        workspace_root=workspace_root,
+                        selected_agent=selected_agent,
+                        mode=mode,
+                        no_plugins=no_plugins,
+                        plugin_configs=plugin_configs,
+                        llm_override=llm_override,
+                        parent_thread_id=parent_thread_id,
+                        parent_permission_system=parent_permission_system,
+                        is_subagent=is_subagent,
+                    ),
+                    name=f"xbotv2-open-{session_id}-{thread_id}",
                 )
                 self._opening[key] = task
         return await asyncio.shield(task)
-
-    def _prepare_open_task(
-        self,
-        *,
-        key: tuple[str, str],
-        session_id: str,
-        thread_id: str,
-        provider_name: str,
-        workspace_root: str,
-        selected_agent: str | None,
-        mode: str,
-        no_plugins: bool,
-        plugin_configs: dict[str, JsonObject] | None,
-        llm_override: Any | None,
-        parent_thread_id: str,
-        parent_permission_system: Any | None,
-        is_subagent: bool,
-    ) -> asyncio.Task[SessionRuntime]:
-        return asyncio.create_task(
-            self._build_and_register(
-                key=key,
-                session_id=session_id,
-                thread_id=thread_id,
-                provider_name=provider_name,
-                workspace_root=workspace_root,
-                selected_agent=selected_agent,
-                mode=mode,
-                no_plugins=no_plugins,
-                plugin_configs=plugin_configs,
-                llm_override=llm_override,
-                parent_thread_id=parent_thread_id,
-                parent_permission_system=parent_permission_system,
-                is_subagent=is_subagent,
-            ),
-            name=f"xbotv2-open-{session_id}-{thread_id}",
-        )
 
     async def _build_and_register(
         self,
@@ -600,16 +593,7 @@ class SessionManager:
             )
             for item in request.attachments
         ]
-        async def stream():
-            async for event in runtime.stream_message(
-                request.content,
-                request.request_id,
-                images=images,
-                artifacts=attachments,
-            ):
-                yield SessionStreamEvent.from_mapping(event)
-
-        return stream()
+        return _runtime_message_events(runtime, request, images, attachments)
 
     async def stream_events(
         self,
@@ -618,17 +602,7 @@ class SessionManager:
     ) -> AsyncIterator[SessionStreamEvent]:
         runtime = await self.get(session_id, thread_id)
         events = runtime.attach_event_stream()
-        async def stream():
-            try:
-                while True:
-                    event = await events.get()
-                    if event is None:
-                        return
-                    yield SessionStreamEvent.from_mapping(event)
-            finally:
-                runtime.detach_event_stream(events)
-
-        return stream()
+        return _runtime_events(runtime, events)
 
     async def respond_permission(
         self,
@@ -735,24 +709,6 @@ class SessionManager:
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
         return await dispatch_operation(runtime.application.events, operation, request)
-
-    async def dispatch_scoped(
-        self,
-        session_id: str,
-        thread_id: str,
-        operation: ScopedOperation[ScopeT, RequestT, ResponseT],
-        request: RequestT,
-    ) -> ResponseT:
-        """Route an operation with its manager-owned typed session scope."""
-        runtime = await self.get(session_id, thread_id)
-        runtime.touch()
-        return await dispatch_scoped_operation(
-            runtime.application.events,
-            operation,
-            runtime,
-            request,
-        )
-
 
 def _has_persisted_session(
     session_paths: Any,
@@ -957,7 +913,7 @@ class SessionManagerComponent:
         ctx.set("sessions", manager)
         handlers = SessionManagerHandlers(
             manager,
-            ctx,
+            ctx.emit,
             workspace_root=str(ctx.workspace_root),
         )
         ctx.on(DISPATCH_OPERATION, handlers.dispatch)
@@ -971,12 +927,12 @@ class SessionManagerHandlers:
     def __init__(
         self,
         manager: SessionManager,
-        events: Any,
+        emit: Callable[[str, object], Awaitable[object]],
         *,
         workspace_root: str,
     ) -> None:
         self._manager = manager
-        self._events = events
+        self._emit = emit
         self._workspace_root = workspace_root
 
     async def dispatch(self, envelope: SessionDispatch) -> object:
@@ -1054,7 +1010,7 @@ class SessionManagerHandlers:
         return tuple(results)
 
     async def _completed(self, target: SessionRef, name: str, result: object) -> None:
-        await self._events.emit(
+        await self._emit(
             OPERATION_COMPLETED,
             SessionOperationCompleted(
                 target=target,

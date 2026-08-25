@@ -174,14 +174,6 @@ def test_tui_state_applies_protocol_events_and_renders_lines():
     assert state.notices[-1].kind == "client_message"
     assert state.usage["total_tokens"] == 15
 
-    rendered = "\n".join(state.lines(width=80, height=12))
-    assert "TestBot> hello world" in rendered
-    assert "Tool filesystem_read [success]" in rendered
-    assert "cached result" in rendered
-    assert "Notice> heads up" in rendered
-    assert "Tokens 15" in rendered
-
-
 def test_tui_state_applies_flat_usage_delta():
     state = TuiState()
 
@@ -589,9 +581,7 @@ def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
     assert state.status == "Ready"
     assert state.pending_user_input_payload is None
     assert state.notices[-1].kind == "user_input_required"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Question> Proceed?" in rendered
-    assert "Options:" not in rendered
+    assert state.notices[-1].text == "Proceed?"
 
 
 def test_tui_state_turn_finished_clears_pending_and_denial_status():
@@ -628,8 +618,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
 
     assert state.status == "Ready"
     assert state.notices[-1].kind == "user_input_recorded"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Answer> user_input:c1" in rendered
+    assert state.notices[-1].text == "user_input:c1"
 
     # Permission requests attach to tool widgets now, not notices
     state.tools["c2"] = TuiTool(tool_call_id="c2", name="shell")
@@ -687,15 +676,11 @@ def test_tui_state_permission_denied_keeps_active_turn_running():
     assert state.status == "Running"
 
 
-def test_tui_fallback_wrap_preserves_explicit_newlines():
+def test_tui_notice_preserves_explicit_newlines():
     state = TuiState()
     state.append_notice("client_message", "first line\nsecond line")
 
-    rendered = state.lines(width=80, height=8)
-
-    assert any("first line" in line for line in rendered)
-    assert any("second line" in line for line in rendered)
-    assert not any("first line second line" in line for line in rendered)
+    assert state.notices[-1].text == "first line\nsecond line"
 
 
 @pytest.mark.parametrize(
@@ -2454,13 +2439,7 @@ def test_tui_state_closes_failed_turn_without_hiding_error():
     assert state.status == "Running"
 
 
-def test_tui_state_renders_error_with_visible_label_in_lines():
-    """When the transcript is rendered into plain lines (e.g. for
-    snapshot tests or log capture), the error
-    must be visible with a leading ``Error>`` marker — *not* buried
-    as a normal message.
-    """
-
+def test_tui_state_records_error_in_transcript():
     state = TuiState()
     state.apply_event(
         {
@@ -2478,13 +2457,8 @@ def test_tui_state_renders_error_with_visible_label_in_lines():
         }
     )
 
-    rendered = state.lines(width=120, height=30)
-    flat = "\n".join(rendered)
-    # The error must be visible in the transcript body, not just the
-    # status row at the top.
-    body_rows = "\n".join(rendered[3:-2])
-    assert "Error>" in body_rows
-    assert "Bad tool message order" in body_rows
+    assert state.errors == ["Bad tool message order"]
+    assert state.transcript[-1] == TuiTranscriptEntry(kind="error", key="0")
 
 
 @pytest.mark.asyncio

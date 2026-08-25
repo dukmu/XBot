@@ -212,15 +212,6 @@ class TestSandboxPolicySerialisation:
             config=d, workspace_root=str(temp_workspace)
         ).to_dict() == d
 
-    def test_update_from_config_preserves_untouched_keys(self, temp_workspace):
-        policy = SandboxPolicy(
-            config={"enabled": True, "network": True},
-            workspace_root=str(temp_workspace),
-        )
-        policy.update_from_config({"network": False})
-        assert policy.enabled is True
-        assert policy.network is False
-
     def test_external_read_default_values(self, temp_workspace):
         policy = SandboxPolicy(workspace_root=str(temp_workspace))
         assert policy.external_read == "readonly"

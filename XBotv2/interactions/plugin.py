@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 import uuid
 
-from XBotv2.interactions.interactions import InteractionResult, InteractionWaiter
+from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
@@ -35,31 +35,8 @@ class InteractionsService:
     def waiter(self) -> InteractionWaiter:
         return self._waiter
 
-    # ------------------------------------------------------------------
-    # Session-facing API
-    # ------------------------------------------------------------------
-
-    def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
-        return self._waiter.answer(request_id, answer=answer)
-
-    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        return self._waiter.cancel(request_id, reason)
-
-    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self._waiter.cancel_all(reason)
-
-    def pending_user_input_request_ids(self) -> list[str]:
-        return self._waiter.pending_request_ids()
-
-    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self._waiter.cancel_all(reason)
-
     def session_closed(self, _event: EventContext) -> None:
-        self.cancel_all("session_closed")
-
-    # ------------------------------------------------------------------
-    # User-input interaction (ask_user and friends)
-    # ------------------------------------------------------------------
+        self._waiter.cancel_all("session_closed")
 
     async def request_user_input(
         self,

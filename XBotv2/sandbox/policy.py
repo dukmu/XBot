@@ -81,9 +81,6 @@ class SandboxPolicy:
         self._rules.insert(0, rule)
         return rule
 
-    def remove_rule(self, rule: SandboxResourceRule) -> None:
-        self._rules = [item for item in self._rules if item is not rule]
-
     def replace_config(self, config: dict[str, Any]) -> None:
         """Replace policy state without invalidating runtime references."""
         replacement = SandboxPolicy(
@@ -312,30 +309,28 @@ class SandboxPolicy:
         asks; human approval is exclusively the permission layer's job.
         """
 
-        def guard(tool_call: Any, entry: Any) -> Any:
-            args = dict(tool_call.args or {})
-            escalated = (
-                tool_call.name == "shell"
-                and args.get("sandbox_permissions") == "require_escalated"
-            )
-            if escalated:
-                return None
-            issues = self.check_tool_access(tool_call.name, args)
-            if not issues:
-                return None
-            details = "; ".join(
-                f"{'write' if issue['write'] else 'read'} access: {issue['path']}"
-                for issue in issues
-            )
-            from XBotv2.core.tools import GuardDecision
+        return self._guard
 
-            return GuardDecision(
-                "deny",
-                f"Sandbox denied {details}",
-                source="sandbox",
-            )
+    def _guard(self, tool_call: Any, _entry: Any) -> Any:
+        args = dict(tool_call.args or {})
+        escalated = (
+            tool_call.name == "shell"
+            and args.get("sandbox_permissions") == "require_escalated"
+        )
+        if escalated:
+            return None
+        issues = self.check_tool_access(tool_call.name, args)
+        if not issues:
+            return None
+        details = "; ".join(
+            f"{'write' if issue['write'] else 'read'} access: {issue['path']}"
+            for issue in issues
+        )
+        from XBotv2.core.tools import GuardDecision
 
-        return guard
+        return GuardDecision(
+            "deny", f"Sandbox denied {details}", source="sandbox"
+        )
 
     def _path_decision(self, path: Path, *, write: bool) -> str:
         lexical = _absolute_path(path)
@@ -396,38 +391,6 @@ class SandboxPolicy:
             )
             access = rule_data.get("access", "readonly")
             self._rules.append(SandboxResourceRule(path=path, access=access))
-
-    def update_from_config(self, config: dict[str, Any]) -> None:
-        """Apply a sparse config dict on top of live state.
-
-        Keys not present in *config* are left untouched,
-        but ``resources`` / ``network`` / ``enabled`` are
-        reapplied fully — the existing rule-list is rebuilt.
-
-        This is the sibling of ``_load_config`` for
-        post-startup live updates (e.g. ``/sandbox set``
-        and session-policy updates).
-        """
-
-        if "enabled" in config:
-            self.enabled = config["enabled"]
-        if "network" in config:
-            self._network = config["network"]
-            self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
-        for field in ("external_read", "external_write", "workspace_read", "workspace_write"):
-            if field in config:
-                setattr(self, field, str(config[field]))
-        if "resources" in config:
-            self._rules = []
-            for rule_data in config["resources"]:
-                path = self.variables.expand(
-                    str(rule_data.get("path", "")),
-                    source="sandbox resource path",
-                )
-                self._rules.append(SandboxResourceRule(
-                    path=path,
-                    access=rule_data.get("access", "readonly"),
-                ))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the live sandbox config back to the format

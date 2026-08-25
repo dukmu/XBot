@@ -267,13 +267,14 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
     seen = []
 
-    async def approve(event):
-        seen.append((event["type"], event["data"]["request_id"]))
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        seen.append((event.type, event.data["request_id"]))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -530,13 +531,14 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     )
     events = []
 
-    async def approve(event):
-        events.append(event)
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        events.append(event.to_dict())
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,

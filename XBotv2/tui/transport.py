@@ -106,9 +106,6 @@ class Transport(Protocol):
     ) -> dict[str, Any]:
         """Resolve a live ``user_input_required`` with the user's answer."""
 
-    async def shutdown(self, *, session_id: str) -> dict[str, Any]:
-        """Close a session."""
-
     async def interrupt(
         self,
         *,

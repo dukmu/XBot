@@ -10,19 +10,10 @@ import pytest
 
 from XBotv2.coretools import filesystem as filesystem_module
 from XBotv2.coretools.filesystem import (
+    edit,
+    path as manage_path,
     read,
-    copy_path,
-    delete_path,
-    edit_file,
-    find_files,
-    list_files,
-    make_directory,
-    move_path,
-    patch_file,
-    read_file,
-    search_text,
-    stat_path,
-    write_file,
+    search,
 )
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.filesystem.artifacts import ArtifactStore
@@ -32,6 +23,62 @@ from XBotv2.core.paths import RuntimePaths
 def _artifact_store(tmp_path: Path) -> ArtifactStore:
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     return ArtifactStore(paths.session("test").thread("agent"))
+
+
+# Test-call adapters keep each assertion focused while exercising only the
+# four public merged tools.
+async def read_file(path: str, **kwargs):
+    return await read(path, **kwargs)
+
+
+async def stat_path(path: str, **kwargs):
+    return await read(path, mode="stat", **kwargs)
+
+
+async def list_files(path: str, **kwargs):
+    return await read(path, mode="list", **kwargs)
+
+
+async def write_file(path: str, content: str, **kwargs):
+    return await edit(path, mode="write", content=content, **kwargs)
+
+
+async def edit_file(path: str, old_text: str, new_text: str, **kwargs):
+    return await edit(
+        path, mode="replace", old_text=old_text, new_text=new_text, **kwargs
+    )
+
+
+async def patch_file(path: str, patch: str, **kwargs):
+    return await edit(path, mode="patch", patch=patch, **kwargs)
+
+
+async def make_directory(path: str, **kwargs):
+    return await manage_path(operation="mkdir", path=path, **kwargs)
+
+
+async def copy_path(source: str, destination: str, **kwargs):
+    return await manage_path(
+        operation="copy", source=source, destination=destination, **kwargs
+    )
+
+
+async def move_path(source: str, destination: str, **kwargs):
+    return await manage_path(
+        operation="move", source=source, destination=destination, **kwargs
+    )
+
+
+async def delete_path(path: str, **kwargs):
+    return await manage_path(operation="delete", path=path, **kwargs)
+
+
+async def search_text(pattern: str, path: str, **kwargs):
+    return await search(pattern, path, mode="content", **kwargs)
+
+
+async def find_files(pattern: str, path: str, **kwargs):
+    return await search(pattern, path, mode="name", **kwargs)
 
 
 class TestReadImage:

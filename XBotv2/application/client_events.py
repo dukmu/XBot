@@ -8,6 +8,7 @@ feature plugin that may need a client response.
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 from XBotv2.application.services import ClientEventSink, InteractionWaiterPort
 from XBotv2.core.tools import ClientEvent, JsonObject
@@ -19,7 +20,7 @@ class ClientEventRouter:
     def __init__(self, parent: "ClientEventRouter | None" = None) -> None:
         self._parent = parent
         self._sink: ClientEventSink | None = None
-        self._waiters: dict[str, Any] = {}
+        self._waiters: dict[str, InteractionWaiterPort] = {}
 
     def set_sink(self, sink: ClientEventSink | None) -> ClientEventSink | None:
         previous = self._sink
@@ -56,10 +57,12 @@ class ClientEventRouter:
             raise ValueError(f"client event waiter already registered: {event_type}")
         self._waiters[event_type] = waiter
 
-        def dispose() -> bool:
-            return self._waiters.pop(event_type, None) is waiter
+        return partial(self._unregister_waiter, event_type, waiter)
 
-        return dispose
+    def _unregister_waiter(
+        self, event_type: str, waiter: InteractionWaiterPort
+    ) -> bool:
+        return self._waiters.pop(event_type, None) is waiter
 
     def waiter(self, event_type: str) -> InteractionWaiterPort | None:
         return self._waiters.get(event_type)

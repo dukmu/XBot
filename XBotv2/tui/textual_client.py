@@ -461,31 +461,30 @@ class XBotTextualApp(App[None]):
         worker name so re-pressing ESC does not stack workers.
         """
 
-        # Build a fresh coroutine each call so ESC spam doesn't
-        # reuse a finished one.
-        async def _do() -> None:
-            try:
-                result = await self.session.transport.interrupt(
-                    session_id=self.session.session_id,
-                    thread_id=self.session.thread_id,
-                )
-            except Exception:  # noqa: BLE001 — worker must not raise
-                return
-            if not self.is_mounted:
-                return
-            if result.get("cancelled"):
-                self.state.status = "Interrupting..."
-                self._refresh_status()
-            elif self.state.turn_active:
-                self.state.status = "Running"
-                self._refresh_status()
-
         self.run_worker(
-            _do(),
+            self._interrupt_turn(),
             exclusive=False,
             name="tui_interrupt",
             description="ESC: cancel running turn",
         )
+
+    async def _interrupt_turn(self) -> None:
+        try:
+            result = await self.session.transport.interrupt(
+                session_id=self.session.session_id,
+                thread_id=self.session.thread_id,
+            )
+        except Exception:  # noqa: BLE001 — worker must not raise
+            return
+        if not self.is_mounted:
+            return
+        if result.get("cancelled"):
+            self.state.status = "Interrupting..."
+        elif self.state.turn_active:
+            self.state.status = "Running"
+        else:
+            return
+        self._refresh_status()
 
     def action_copy_last(self) -> None:
         """Copy the most recent assistant reply as plain text.

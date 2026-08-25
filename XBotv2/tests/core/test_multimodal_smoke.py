@@ -10,7 +10,7 @@ import pytest
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.application.app import start_application
 from XBotv2.coretools.filesystem import read
-from XBotv2.coretools.filesystem import read_file
+from XBotv2.coretools.filesystem import read
 from XBotv2.llm.anthropic import anthropic_request_messages
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import openai_messages
@@ -51,7 +51,7 @@ async def test_read_image_path_produces_image_tool_result(tmp_path, artifact_sto
     assert image.media_type == "image/png"
     assert artifact_store.read(image.path) == payload
 
-    text_result = await read_file(str(path), sandbox=sandbox)
+    text_result = await read(str(path), sandbox=sandbox)
     assert text_result.status == "success"
     assert text_result.images == ()
     assert "Non-text file" in text_result.content

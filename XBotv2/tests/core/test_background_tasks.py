@@ -280,13 +280,14 @@ async def test_escalated_background_shell_requires_approval(
     ))
     events = []
 
-    async def approve(event):
-        events.append(event)
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        events.append(event.to_dict())
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -328,13 +329,14 @@ async def test_denied_background_shell_escalation_creates_no_job(
         if tool.name == "shell"
     ))
 
-    async def deny(event):
+    async def deny(event, **_kwargs):
         del event
-        return "rejected"
+        return {"status": "answered", "decision": "deny", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(deny)
+    client_events = ClientEventRouter()
+    client_events.set_sink(deny)
+    approval = ApprovalService(service_ctx, client_events)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,

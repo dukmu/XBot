@@ -11,20 +11,12 @@ per the design document §10.5.2.
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from XBotv2.tui.transport import Transport
 from XBotv2.tui.transport_http import HttpTransport
-
-
-@dataclass(frozen=True)
-class CommandOutcome:
-    message: str
-    data: dict[str, Any] = field(default_factory=dict)
-    history: list[dict[str, Any]] | None = None
 
 
 def _new_session_id() -> str:
@@ -68,7 +60,6 @@ class TerminalSession:
         self._transport: Transport = transport or HttpTransport(
             base_url, token=token, uds_path=uds_path
         )
-        self._server_reachable = False
         self._session_attached = False
 
     @property
@@ -94,7 +85,6 @@ class TerminalSession:
         )
         server_session = str(hello.get("session_id") or self._session_id)
         server_thread = str(hello.get("thread_id") or self._thread_id)
-        self._server_reachable = True
         open_kwargs = dict(
             session_id=server_session,
             thread_id=server_thread,
@@ -179,7 +169,6 @@ class TerminalSession:
         """Detach this client and close its transport without destroying a session."""
 
         self._session_attached = False
-        self._server_reachable = False
         await self._transport.close()
 
     async def __aenter__(self) -> "TerminalSession":

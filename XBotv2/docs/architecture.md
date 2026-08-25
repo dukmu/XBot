@@ -191,10 +191,11 @@ messages; Session owns undo and clear.
   owners bind their own runtime services before registration.
 - **ToolRegistry** (`registry.py`): namespace-aware canonical names and
   `restrict()` with wildcard selectors.
-- **SandboxPolicy** (`sandbox.py`): integrates **BubblewrapBackend** (`sandbox_bwrap.py`)
-  for process isolation. Provides capability methods: `run_shell`, `read_file`,
-  `write_file`, `list_dir`.
-- **PermissionSystem** (`permissions.py`): deny/allow/ask with regex pattern matching.
+- **SandboxPolicy** (`sandbox/policy.py`): validates path access and integrates
+  `BubblewrapBackend` (`sandbox/bwrap.py`) for process isolation. Core-tools
+  expose the merged `read`, `edit`, `path`, `search`, and `shell` Tools.
+- **PermissionSystem** (`permissions/system.py`): deny/allow/ask with regex
+  pattern matching.
 
 ### Job System (`core/jobs.py`, `jobs/`)
 

@@ -7,7 +7,7 @@ context created by JobRegistry for one execution.
 from __future__ import annotations
 
 from XBotv2.jobs.contracts import OutputStore
-from XBotv2.jobs.output import StreamOutputStore, TextOutputStore
+from XBotv2.jobs.output import TextOutputStore
 
 
 class JobContext:
@@ -24,10 +24,6 @@ class _OutputFactory:
     @staticmethod
     def create_text(text: str = "") -> TextOutputStore:
         return TextOutputStore(text)
-
-    @staticmethod
-    def create_stream() -> StreamOutputStore:
-        return StreamOutputStore()
 
 
 __all__ = ["JobContext"]

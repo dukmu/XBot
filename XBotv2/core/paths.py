@@ -53,10 +53,6 @@ class RuntimePaths:
     def memory_file(self) -> Path:
         return self.memory_dir / "MEMORY.md"
 
-    @property
-    def default_log_file(self) -> Path:
-        return self.logs_dir / "xbotv2.log"
-
     def session(self, session_id: str) -> SessionPaths:
         return SessionPaths(self, _identifier("session_id", session_id))
 

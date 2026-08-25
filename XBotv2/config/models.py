@@ -138,10 +138,6 @@ class RuntimeConfig(StrictModel):
             if entry.enabled
         }
 
-    @property
-    def disabled_plugins(self) -> list[str]:
-        return [name for name, entry in self.plugins.items() if not entry.enabled]
-
 def config_dict(value: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
     if value is None:
         return {}

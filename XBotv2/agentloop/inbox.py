@@ -294,12 +294,4 @@ class AgentInbox:
             if item.message_id not in self._claimed_ids
         ]
 
-    @property
-    def has_next_turn(self) -> bool:
-        return any(
-            item.message_id not in self._claimed_ids
-            for item in self._next_turn
-        )
-
-
 __all__ = ["AgentInbox", "InboxInput", "InboxSink", "InboxTarget"]

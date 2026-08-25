@@ -60,7 +60,7 @@ use the workspace recorded when it was created.
 ## Transport
 
 ACP JSON-RPC is the only data written to stdout. Clients should launch
-`xbot acp` directly rather than the TUI or terminal modes. Runtime logs use
+`xbot acp` directly rather than the TUI or WebUI modes. Runtime logs use
 XBot's normal logging configuration and must target stderr or a log file.
 
 ## Known boundaries

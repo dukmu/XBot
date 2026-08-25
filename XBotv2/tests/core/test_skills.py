@@ -599,7 +599,7 @@ class TestSkillPermissionScope:
         scope.add(allowed=["shell(git *)"])
         assert scope.check("shell", {"command": "git status"}) == "allow"
         assert scope.check("shell", {"command": "rm -rf build"}) is None
-        assert scope.check("read_file", {"path": "README.md"}) is None
+        assert scope.check("read", {"path": "README.md"}) is None
 
     def test_disallowed_overrides_allowed(self):
         from XBotv2.skills.permission_scope import SkillPermissionScope

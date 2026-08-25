@@ -8,8 +8,8 @@ lifecycle do not belong to the carrier.
 
 from __future__ import annotations
 
+from functools import partial
 import time
-from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, FastAPI
@@ -56,6 +56,8 @@ class WebServer:
 
     def register_contribution(self, contribution: RouteContribution) -> Disposer:
         """Mount routes and exception handlers as one disposable effect."""
+        if not isinstance(contribution, RouteContribution):
+            raise TypeError("http/route requires RouteContribution")
         conflicts = [
             error_type.__name__
             for error_type, _handler in contribution.exception_handlers
@@ -69,14 +71,18 @@ class WebServer:
         for error_type, handler in contribution.exception_handlers:
             self.app.add_exception_handler(error_type, handler)
 
-        def dispose() -> bool:
-            dispose_routes()
-            for error_type, handler in contribution.exception_handlers:
-                if self.app.exception_handlers.get(error_type) is handler:
-                    self.app.exception_handlers.pop(error_type, None)
-            return True
+        return partial(
+            self._remove_contribution, contribution, dispose_routes
+        )
 
-        return dispose
+    def _remove_contribution(
+        self, contribution: RouteContribution, dispose_routes: Disposer
+    ) -> bool:
+        dispose_routes()
+        for error_type, handler in contribution.exception_handlers:
+            if self.app.exception_handlers.get(error_type) is handler:
+                self.app.exception_handlers.pop(error_type, None)
+        return True
 
 
 def _route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
@@ -112,12 +118,7 @@ class ServerComponent:
         app = create_app(server_name=info.name)
         carrier = WebServer(app)
 
-        def register_route(contribution: RouteContribution) -> Callable[[], bool]:
-            if not isinstance(contribution, RouteContribution):
-                raise TypeError("http/route requires RouteContribution")
-            return carrier.register_contribution(contribution)
-
-        ctx.on(REGISTER_ROUTE, register_route)
+        ctx.on(REGISTER_ROUTE, carrier.register_contribution)
         ctx.set("server_info", info)
         ctx.set("server", app)
 

@@ -48,7 +48,7 @@ def test_workspace_overrides_session_and_global_config(
     assert config.permissions.allow[1].tool == "todo"
     assert config.permissions.ask[0].tool == ".*"
     assert config.plugins["sample"].config == {"source": "workspace"}
-    assert config.disabled_plugins == ["disabled"]
+    assert config.plugins["disabled"].enabled is False
     assert config.plugin_paths == [str(temp_workspace / ".xbot" / "plugins")]
     assert config.workspace_tools[0].base_dir == temp_workspace / ".xbot"
     assert config.hooks[0].base_dir == temp_workspace / ".xbot"

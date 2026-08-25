@@ -7,6 +7,7 @@ event.
 
 from __future__ import annotations
 
+from functools import partial
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -111,10 +112,13 @@ def set_llm_override(app: FastAPI, llm: BaseProvider | None) -> None:
     if llm is None:
         app.dependency_overrides.pop(current_model_override, None)
     else:
-        async def override() -> BaseProvider:
-            return llm
+        app.dependency_overrides[current_model_override] = partial(
+            _fixed_model, llm
+        )
 
-        app.dependency_overrides[current_model_override] = override
+
+async def _fixed_model(llm: BaseProvider) -> BaseProvider:
+    return llm
 
 
 __all__ = [

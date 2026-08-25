@@ -45,7 +45,6 @@ class TuiMessage:
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
-    # True while assistant content is still streaming.
     streaming: bool = False
 
 
@@ -70,25 +69,13 @@ class TuiTool:
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     images: list[dict[str, Any]] = field(default_factory=list)
-    # Wall-clock seconds between ``tool_calls_started`` and
-    # ``tool_result``. Set when the result arrives. While pending,
-    # the value is the live elapsed (see ``elapsed()``).
     started_at: float = 0.0
     finished_at: float = 0.0
-    # Permission state — set when the engine sends a
-    # ``permission_request`` for this tool. The TUI renders
-    # inline approval choices inside the tool widget instead of
-    # creating a separate notice entry.
     permission_pending: bool = False
     permission_request_id: str = ""
     permission_reason: str = ""
 
     def elapsed(self, now: float | None = None) -> float:
-        """Return seconds since the tool started.
-
-        Returns 0.0 if the tool never started (defensive default).
-        """
-
         if self.started_at <= 0:
             return 0.0
         end = self.finished_at if self.finished_at > 0 else (now or self.started_at)
@@ -214,10 +201,6 @@ class TuiState:
                 else:
                     self.append_message("assistant", content)
             elif tool_calls:
-                # Reset the streaming index so the next LLM call
-                # creates a fresh message entry. Reasoning (if any)
-                # was already streamed; the tool widget itself tells
-                # the user the model is acting.
                 self._streaming_assistant_index = None
             self._apply_tool_calls(tool_calls)
             self._streaming_tool_ids.clear()
@@ -256,9 +239,6 @@ class TuiState:
                 dict(image) for image in data.get("images") or []
                 if isinstance(image, dict)
             ]
-            # Mark the wall-clock end of this tool call so the
-            # transcript can show "shell success  0.4s" (per user
-            # request: per-tool latency in the entry title).
             tool.finished_at = time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
             self._changed_tool_ids.add(tool.tool_call_id)
@@ -573,63 +553,6 @@ class TuiState:
             self.tasks.pop(task_id, None)
         return bool(expired)
 
-    def lines(self, *, width: int, height: int) -> list[str]:
-        width = max(20, width)
-        height = max(5, height)
-        lines = [
-            f"XBotv2  {self.session_id}/{self.thread_id}  {self.status}"[:width],
-            f"Agent {self.agent_name}  Turn {self.turn}  Tokens {self.usage['total_tokens']}"[:width],
-            "=" * min(width, 200),
-        ]
-
-        body_height = max(1, height - 5)
-        body = self._transcript_lines(width, body_height) or ["No messages yet."]
-        for index in range(body_height):
-            lines.append((body[index] if index < len(body) else "")[:width])
-
-        lines.append("-" * min(width, 200))
-        lines.append("[Enter] send  /exit quit"[:width])
-        return lines[:height]
-
-    def _transcript_lines(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-        for entry in self.transcript:
-            if entry.kind == "message":
-                try:
-                    message = self.messages[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                label = self.agent_name if message.role == "assistant" else "You"
-                if message.reasoning:
-                    lines.extend(_wrap(f"{label} (thinking)> {message.reasoning}", width))
-                lines.extend(_wrap(f"{label}> {message.content}", width))
-            elif entry.kind == "tool":
-                tool = self.tools.get(entry.key)
-                if tool is None:
-                    continue
-                lines.append(shorten(f"Tool {tool.name} [{tool.status}]", width=width, placeholder="..."))
-                # Show finalized args (clean dict repr) when available;
-                # fall back to the raw streaming buffer so the user
-                # still sees something mid-stream. Avoids
-                # ``{"command": "cu`` flicker in narrow terminals.
-                preview = tool.args_preview if tool.args_finalized else tool.args_streaming
-                detail = " | ".join(part for part in (preview, tool.summary) if part)
-                if detail:
-                    lines.extend(_wrap(f"  {detail}", width))
-            elif entry.kind == "error":
-                try:
-                    error = self.errors[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                lines.extend(_wrap(f"Error> {error}", width))
-            elif entry.kind == "notice":
-                try:
-                    notice = self.notices[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                lines.extend(_wrap(f"{_notice_label(notice.kind)}> {notice.text}", width))
-        return lines[-height:]
-
     def _apply_tool_calls(self, tool_calls: Any) -> None:
         if not isinstance(tool_calls, list):
             return
@@ -652,10 +575,6 @@ class TuiState:
                 tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
                 self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
             tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
-            # tool_calls_started carries the FINAL parsed args (dict).
-            # Replace the streaming preview with the clean dict repr
-            # and mark finalized so the title/body no longer show the
-            # raw partial JSON string.
             final_args = raw_tool.get("args") or raw_tool.get("arguments")
             if final_args:
                 if isinstance(final_args, dict):
@@ -663,9 +582,6 @@ class TuiState:
                 tool.args_preview = _preview(final_args)
                 tool.args_finalized = True
             tool.status = "pending"
-            # Stamp the start of this tool call only on the FIRST
-            # tool_calls_started event for this id — re-firing the
-            # same call (e.g. on resume) should not reset the clock.
             if tool.started_at <= 0:
                 tool.started_at = time.monotonic()
             self._ensure_tool_transcript(tool_call_id)
@@ -808,51 +724,6 @@ def format_value(value: Any, *, indent: int | None = None) -> str:
         )
     except TypeError:
         return str(value)
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    if width <= 0:
-        return [""]
-    lines: list[str] = []
-    for source_line in text.splitlines() or [""]:
-        lines.extend(_wrap_line(source_line, width))
-    return lines
-
-
-def _wrap_line(text: str, width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        if len(word) > width:
-            if current:
-                lines.append(current)
-                current = ""
-            lines.extend(word[index : index + width] for index in range(0, len(word), width))
-            continue
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def _notice_label(kind: str) -> str:
-    labels = {
-        "client_message": "Notice",
-        "permission_request": "Approval",
-        "permission_denied": "Denied",
-        "user_input_required": "Question",
-        "user_input_recorded": "Answer",
-        "permission_response_recorded": "Approval",
-    }
-    return labels.get(kind, "Event")
 
 
 def _parse_permission_decision(text: str) -> dict[str, str]:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable
 from urllib.parse import quote
 
 from XBotv2.client import XBotClient
@@ -11,7 +11,7 @@ from XBotv2.commands import (
     CommandRequest,
     CommandResponse,
 )
-from XBotv2.protocol import ServerEvent
+from XBotv2.protocol import ServerEvent, WireModel
 from XBotv2.tui.trace import trace_event
 
 
@@ -40,15 +40,14 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> dict[str, Any]:
-        payload = (
-            await self._client.hello(
+        return await _response(
+            "hello",
+            self._client.hello(
                 client_name="xbotv2-tui",
                 session_id=session_id,
                 thread_id=thread_id,
-            )
-        ).model_dump()
-        _trace_response("hello", payload)
-        return payload
+            ),
+        )
 
     async def open_session(
         self,
@@ -59,29 +58,22 @@ class HttpTransport:
         mode: str = "new",
         agent: str | None = None,
     ) -> dict[str, Any]:
-        payload = (
-            await self._client.open_session(
+        return await _response(
+            "open_session",
+            self._client.open_session(
                 session_id=session_id,
                 thread_id=thread_id,
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
-            )
-        ).model_dump()
-        _trace_response("open_session", payload)
-        return payload
+            ),
+        )
 
     async def list_sessions(self) -> dict[str, Any]:
-        result = await self._client.list_sessions()
-        payload = result.model_dump()
-        _trace_response("list_sessions", payload)
-        return payload
+        return await _response("list_sessions", self._client.list_sessions())
 
     async def list_threads(self, *, session_id: str) -> dict[str, Any]:
-        result = await self._client.list_threads(session_id)
-        payload = result.model_dump()
-        _trace_response("list_threads", payload)
-        return payload
+        return await _response("list_threads", self._client.list_threads(session_id))
 
     async def list_commands(
         self,
@@ -167,17 +159,16 @@ class HttpTransport:
         decision: str,
         scope: str,
     ) -> dict[str, Any]:
-        payload = (
-            await self._client.respond_permission(
+        return await _response(
+            "permission_response",
+            self._client.respond_permission(
                 session_id,
                 thread_id,
                 request_id=request_id,
                 decision=decision,
                 scope=scope,
-            )
-        ).model_dump()
-        _trace_response("permission_response", payload)
-        return payload
+            ),
+        )
 
     async def send_user_input(
         self,
@@ -187,19 +178,15 @@ class HttpTransport:
         request_id: str,
         answer: Any,
     ) -> dict[str, Any]:
-        payload = (
-            await self._client.respond_user_input(
+        return await _response(
+            "user_input",
+            self._client.respond_user_input(
                 session_id,
                 thread_id,
                 request_id=request_id,
                 answer=answer,
-            )
-        ).model_dump()
-        _trace_response("user_input", payload)
-        return payload
-
-    async def shutdown(self, *, session_id: str) -> dict[str, Any]:
-        return (await self._client.close_session(session_id)).model_dump()
+            ),
+        )
 
     async def interrupt(
         self,
@@ -207,11 +194,9 @@ class HttpTransport:
         session_id: str,
         thread_id: str,
     ) -> dict[str, Any]:
-        payload = (
-            await self._client.interrupt(session_id, thread_id)
-        ).model_dump()
-        _trace_response("interrupt", payload)
-        return payload
+        return await _response(
+            "interrupt", self._client.interrupt(session_id, thread_id)
+        )
 
     async def close(self) -> None:
         await self._client.close()
@@ -248,5 +233,9 @@ def _thread_path(session_id: str, thread_id: str) -> str:
     )
 
 
-def _trace_response(stage: str, payload: dict[str, Any]) -> None:
+async def _response(
+    stage: str, request: Awaitable[WireModel]
+) -> dict[str, Any]:
+    payload = (await request).model_dump()
     trace_event("tui.http", {"stage": stage, "status": 200, "payload": payload})
+    return payload
