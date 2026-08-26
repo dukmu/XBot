@@ -11,7 +11,6 @@ from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import EventContext, Events, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.core.usage import UsageDelta
-from XBotv2.usage.models import UsageSnapshot
 
 
 class UsageService:
@@ -19,7 +18,7 @@ class UsageService:
 
     def __init__(self, store: StateService) -> None:
         self._store = store
-        self._snapshot = UsageSnapshot()
+        self._snapshot = UsageDelta()
         self._initialized = False
 
     async def initialize(self, messages: Sequence[Message]) -> None:
@@ -27,7 +26,7 @@ class UsageService:
             return
         stored = await self._store.get("snapshot")
         if stored is None:
-            snapshot = UsageSnapshot()
+            snapshot = UsageDelta()
             for message in messages:
                 usage = message.usage_metadata
                 if usage:
@@ -36,11 +35,11 @@ class UsageService:
                         snapshot = snapshot.add(delta)
             self._snapshot = snapshot
             if snapshot.requests:
-                await self._store.set("snapshot", snapshot.to_dict())
+                await self._store.set("snapshot", snapshot.to_snapshot())
         else:
             if not isinstance(stored, Mapping):
                 raise TypeError("Persisted usage snapshot must be an object")
-            self._snapshot = UsageSnapshot.from_dict(stored)
+            self._snapshot = UsageDelta.from_snapshot(stored)
         self._initialized = True
 
     def snapshot(self) -> dict[str, int]:
@@ -53,7 +52,7 @@ class UsageService:
         if delta.is_empty():
             return False
         self._snapshot = self._snapshot.add(delta)
-        await self._store.set("snapshot", self._snapshot.to_dict())
+        await self._store.set("snapshot", self._snapshot.to_snapshot())
         return True
 
 

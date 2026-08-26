@@ -111,13 +111,15 @@ class PermissionSystem:
         *,
         default_decision: PermissionDecision = "ask",
         variables: RuntimeVariables | None = None,
+        parent: Any | None = None,
     ) -> None:
         self.default_decision = default_decision
         self.variables = variables or RuntimeVariables()
         self.config: Any = config  # original rules (dict / model) for consumers
-        self._deny_rules: list[PermissionRule] = []
-        self._allow_rules: list[PermissionRule] = []
-        self._ask_rules: list[PermissionRule] = []
+        self.parent = parent
+        self._rules: dict[PermissionDecision, list[PermissionRule]] = {
+            decision: [] for decision in ("deny", "allow", "ask")
+        }
         self._once_grants: list[PermissionRule] = []
 
         if config is not None:
@@ -135,28 +137,21 @@ class PermissionSystem:
         else:
             return
 
-        for rule_data in data.get("deny", []):
-            self._deny_rules.append(self._parse_rule(rule_data, "deny"))
-        for rule_data in data.get("allow", []):
-            self._allow_rules.append(self._parse_rule(rule_data, "allow"))
-        for rule_data in data.get("ask", []):
-            self._ask_rules.append(self._parse_rule(rule_data, "ask"))
+        for decision, rules in self._rules.items():
+            rules.extend(
+                self._parse_rule(rule, decision)
+                for rule in data.get(decision, [])
+            )
 
     def add_rule(self, decision: PermissionDecision, rule_data: dict[str, Any]) -> None:
         """Add one live permission rule to the in-memory policy."""
         rule = self._parse_rule(rule_data, decision)
-        target = {
-            "deny": self._deny_rules,
-            "allow": self._allow_rules,
-            "ask": self._ask_rules,
-        }[decision]
-        target.insert(0, rule)
+        self._rules[decision].insert(0, rule)
 
     def replace_rules(self, config: Any | None) -> None:
         """Replace configured rules without invalidating shared references."""
-        self._deny_rules.clear()
-        self._allow_rules.clear()
-        self._ask_rules.clear()
+        for rules in self._rules.values():
+            rules.clear()
         if config is not None:
             self._load_config(config)
 
@@ -218,6 +213,17 @@ class PermissionSystem:
         Returns "allow", "deny", or "ask".
         """
         args = args or {}
+        if self.parent is not None:
+            return self._check_intersection(tool_name, args)
+        return self._check_local(tool_name, args)
+
+    def _check_local(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        use_grants: bool = True,
+    ) -> PermissionDecision:
         grant_index = next(
             (
                 index
@@ -225,10 +231,10 @@ class PermissionSystem:
                 if self._rule_matches(grant, tool_name, args)
             ),
             None,
-        )
+        ) if use_grants else None
 
         # Deny always wins
-        for rule in self._deny_rules:
+        for rule in self._rules["deny"]:
             if self._rule_matches(rule, tool_name, args):
                 if grant_index is not None:
                     self._once_grants.pop(grant_index)
@@ -239,16 +245,40 @@ class PermissionSystem:
             return "allow"
 
         # Allow checked second
-        for rule in self._allow_rules:
+        for rule in self._rules["allow"]:
             if self._rule_matches(rule, tool_name, args):
                 return "allow"
 
         # Ask checked third
-        for rule in self._ask_rules:
+        for rule in self._rules["ask"]:
             if self._rule_matches(rule, tool_name, args):
                 return "ask"
 
         return self.default_decision
+
+    def _check_intersection(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> PermissionDecision:
+        parent_decision = self.parent.check(tool_name, args)
+        grant_index = next(
+            (
+                index
+                for index, grant in enumerate(self._once_grants)
+                if self._rule_matches(grant, tool_name, args)
+            ),
+            None,
+        )
+        child_decision = self._check_local(tool_name, args, use_grants=False)
+        if "deny" in {parent_decision, child_decision}:
+            if grant_index is not None:
+                self._once_grants.pop(grant_index)
+            return "deny"
+        if grant_index is not None:
+            self._once_grants.pop(grant_index)
+            return "allow"
+        if "ask" in {parent_decision, child_decision}:
+            return "ask"
+        return "allow"
 
     def explicit_allow(
         self,
@@ -267,6 +297,10 @@ class PermissionSystem:
         by a human unless a rule deliberately permits them.
         """
         args = args or {}
+        if self.parent is not None and self.parent.explicit_allow(
+            tool_name, args, constrain_param=constrain_param
+        ):
+            return True
         if any(
             (constrain_param is None or constrain_param in grant.param_patterns)
             and self._rule_matches(grant, tool_name, args)
@@ -276,7 +310,7 @@ class PermissionSystem:
         return any(
             (constrain_param is None or constrain_param in rule.param_patterns)
             and self._rule_matches(rule, tool_name, args)
-            for rule in self._allow_rules
+            for rule in self._rules["allow"]
         )
 
     # ------------------------------------------------------------------
@@ -369,102 +403,3 @@ class PermissionSystem:
             elif expanded is not None and not re.fullmatch(expanded, str(resolved)):
                 return False
         return True
-
-
-class PermissionIntersection:
-    """Return the more restrictive decision from parent and child policy."""
-
-    def __init__(self, parent: Any, child: Any) -> None:
-        self.parent = parent
-        self.child = child
-        self._once_grants: list[PermissionRule] = []
-
-    @property
-    def config(self) -> Any:
-        """The child (session-scoped) rules for consumers."""
-        return self.child.config
-
-    def grant_once(
-        self,
-        tool_name: str,
-        param_patterns: dict[str, str],
-    ) -> None:
-        """Allow one matching call unless either policy explicitly denies it."""
-        self._once_grants.append(_one_shot_rule(tool_name, param_patterns))
-
-    def check(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-    ) -> PermissionDecision:
-        args = args or {}
-        decisions = {
-            self.parent.check(tool_name, args),
-            self.child.check(tool_name, args),
-        }
-        grant_index = next(
-            (
-                index
-                for index, grant in enumerate(self._once_grants)
-                if _matches_name_and_params(grant, tool_name, args)
-            ),
-            None,
-        )
-        if "deny" in decisions:
-            if grant_index is not None:
-                self._once_grants.pop(grant_index)
-            return "deny"
-        if grant_index is not None:
-            self._once_grants.pop(grant_index)
-            return "allow"
-        if "ask" in decisions:
-            return "ask"
-        return "allow"
-
-    def explicit_allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-        *,
-        constrain_param: str | None = None,
-    ) -> bool:
-        """Whether either policy explicitly permits the call.
-
-        See :meth:`PermissionSystem.explicit_allow` for *constrain_param*.
-        """
-        args = args or {}
-        if any(
-            (constrain_param is None or constrain_param in grant.param_patterns)
-            and _matches_name_and_params(grant, tool_name, args)
-            for grant in self._once_grants
-        ):
-            return True
-        return self.parent.explicit_allow(
-            tool_name, args, constrain_param=constrain_param
-        ) or self.child.explicit_allow(tool_name, args, constrain_param=constrain_param)
-
-    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
-        """Apply intersection policy with the same escalation constraint."""
-        tool_name = tool_call.name
-        args = dict(tool_call.args or {})
-        escalated = (
-            tool_name == "shell"
-            and args.get("sandbox_permissions") == "require_escalated"
-        )
-        decision = self.check(tool_name, args)
-        if escalated and decision == "allow" and not self.explicit_allow(
-            tool_name, args, constrain_param="sandbox_permissions"
-        ):
-            decision = "ask"
-        if decision == "deny":
-            return decision, f"Permission denied for tool: {tool_name}"
-        if decision == "ask" and escalated:
-            justification = str(args.get("justification") or "").strip()
-            return decision, (
-                f"Sandbox escape requires human approval: {justification}"
-                if justification
-                else "Sandbox escape requires human approval."
-            )
-        if decision == "ask":
-            return decision, f"Permission approval required for tool: {tool_name}."
-        return decision, ""

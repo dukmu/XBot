@@ -26,7 +26,6 @@ from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
 from XBotv2.agentloop.inbox import AgentInbox
 from XBotv2.permissions.system import (
-    PermissionIntersection,
     PermissionSystem,
     normalize_agent_permissions,
 )
@@ -836,15 +835,17 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
 
 def test_child_permissions_cannot_expand_parent_policy():
     parent = PermissionSystem({"ask": [{"tool": "shell"}]}, default_decision="allow")
-    child = PermissionSystem({"allow": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
+    permissions = PermissionSystem(
+        {"allow": [{"tool": "shell"}]}, default_decision="allow", parent=parent
+    )
 
     assert permissions.check("shell", {"command": "pwd"}) == "ask"
 
 
 def test_child_permissions_can_restrict_parent_policy():
     parent = PermissionSystem({"allow": [{"tool": "shell"}]})
-    child = PermissionSystem({"deny": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
+    permissions = PermissionSystem(
+        {"deny": [{"tool": "shell"}]}, default_decision="allow", parent=parent
+    )
 
     assert permissions.check("shell", {"command": "pwd"}) == "deny"

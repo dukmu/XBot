@@ -1,8 +1,4 @@
-"""Textual HTTP/SSE TUI client.
-
-This frontend talks to ``xbotv2 serve`` through ``TerminalSession``
-and does not import runtime engine or application-startup modules.
-"""
+"""Textual HTTP/SSE client over ``TerminalSession``."""
 
 from __future__ import annotations
 
@@ -424,13 +420,7 @@ class XBotTextualApp(App[None]):
         )
 
     def action_clear_input(self) -> None:
-        """ESC handler: interrupt the running turn or clear the composer.
-
-        Per OpenCode convention (design doc §2.3.1: ``session_interrupt
-        = escape``): while a turn is in progress, ESC cancels it.
-        Otherwise (composer is free), ESC clears the composer text
-        like the old behaviour.
-        """
+        """Interrupt a turn or clear the composer."""
 
         if self.state.turn_active or self._pending_messages:
             self.action_interrupt_turn()
@@ -453,13 +443,7 @@ class XBotTextualApp(App[None]):
         self.exit()
 
     def action_interrupt_turn(self) -> None:
-        """Cancel the running turn via the HTTP /interrupt endpoint.
-        Textual's action system does not auto-await coroutine
-        actions. We schedule the actual HTTP round-trip on a
-        worker. The worker is ``exclusive=False`` so the in-flight
-        message streams keep running. We bind to a unique
-        worker name so re-pressing ESC does not stack workers.
-        """
+        """Schedule one non-exclusive interrupt request."""
 
         self.run_worker(
             self._interrupt_turn(),
@@ -470,10 +454,7 @@ class XBotTextualApp(App[None]):
 
     async def _interrupt_turn(self) -> None:
         try:
-            result = await self.session.transport.interrupt(
-                session_id=self.session.session_id,
-                thread_id=self.session.thread_id,
-            )
+            result = await self.session.interrupt()
         except Exception:  # noqa: BLE001 — worker must not raise
             return
         if not self.is_mounted:
@@ -487,12 +468,7 @@ class XBotTextualApp(App[None]):
         self._refresh_status()
 
     def action_copy_last(self) -> None:
-        """Copy the most recent assistant reply as plain text.
-
-        The TUI itself does not support text selection; this keyboard shortcut
-        (and the ``/copy`` command) lets the user pull text out of the app
-        when the terminal cannot select rendered content.
-        """
+        """Copy the latest assistant reply as plain text."""
         assistant = [m for m in self.state.messages if m.role == "assistant"]
         if not assistant:
             self._copy_feedback(0)
@@ -517,15 +493,7 @@ class XBotTextualApp(App[None]):
         self.push_screen(CommandPalette(registry=self.commands))
 
     def _current_tui_mode(self) -> Mode:
-        """Derive the high-level Mode from existing TUI state predicates.
-
-        Single source for mode classification; the rest of the app consults
-        this method instead of re-running the same boolean ladder.
-
-        Renamed from ``_current_mode`` to avoid clashing with Textual's
-        built-in ``App.current_mode`` (a string property used by its
-        mode system, unrelated to ours).
-        """
+        """Derive one keyboard-dispatch mode from protocol state."""
 
         if self._choice_mode_active():
             return Mode.CHOOSING
@@ -905,12 +873,7 @@ class XBotTextualApp(App[None]):
         *,
         images: list[dict[str, str]] | None = None,
     ) -> bool:
-        """Consume one message stream (turn events, tool events, reply).
-
-        The user text itself is rendered by the shared event stream's
-        ``message`` event, not here. Returns True when the input was rejected
-        (no fold boundary before the turn ended) so the caller retries.
-        """
+        """Consume one stream; report inputs rejected before a fold boundary."""
         rejected = False
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
@@ -1024,10 +987,7 @@ class XBotTextualApp(App[None]):
             task.cancel()
 
     def _safe_query_one(self, selector: str, expect_type: type | None = None) -> Any:
-        """``query_one`` that returns ``None`` instead of raising when the
-        widget is unmounting or not found.  All DOM lookups in
-        tear-down-safe code should go through this method.
-        """
+        """Query a widget that may be unmounted or absent."""
 
         if not self.is_mounted:
             return None
@@ -1321,13 +1281,7 @@ class XBotTextualApp(App[None]):
             await self._refresh_changed_tool_widgets(ids)
 
     async def _render_replay_window(self) -> None:
-        """Mount only the tail of a resumed history on startup.
-
-        Long sessions replay hundreds of entries; constructing a widget for
-        every one of them stalls startup. We render a bounded window around
-        the end (where the user lands after resume) and leave older entries
-        in ``state.transcript`` for lazy loading on scroll.
-        """
+        """Mount a bounded tail of resumed history."""
         total = len(self.state.transcript)
         if total <= _REPLAY_WINDOW:
             self._window_start = 0
@@ -1339,13 +1293,7 @@ class XBotTextualApp(App[None]):
         await self._render_new_transcript_entries()
 
     async def _load_earlier_replay(self) -> None:
-        """Shift the window to an earlier batch of replayed history.
-
-        Called when the user scrolls to the top of the transcript. Mounts the
-        batch immediately before the current window, drops the newest entries
-        from the far end to keep the mounted window bounded, and keeps the
-        viewport stable by compensating the scroll offset.
-        """
+        """Shift the bounded replay window to an earlier batch."""
         if self._replay_loading or self._window_start <= 0:
             return
         self._replay_loading = True
@@ -1378,12 +1326,7 @@ class XBotTextualApp(App[None]):
             self._replay_loading = False
 
     async def _load_newer_replay(self) -> None:
-        """Shift the window forward to re-mount the newest entries.
-
-        Called when the user scrolls back to the bottom after entries were
-        dropped while loading earlier history. Mounts the next batch of the
-        live tail and drops the oldest entries to keep the window bounded.
-        """
+        """Shift the bounded replay window toward the live tail."""
         async with self._render_lock:
             stream = self.query_one("#transcript", VerticalScroll)
             if self._window_end >= len(self.state.transcript):
@@ -1433,12 +1376,7 @@ class XBotTextualApp(App[None]):
         *,
         prepend: bool = False,
     ) -> list[Any]:
-        """Mount ``transcript[start:end]`` as widgets and track them.
-
-        ``prepend`` inserts the batch before the current first child (used when
-        loading earlier history); otherwise widgets are appended at the end.
-        Returns the successfully mounted widgets (in entry order).
-        """
+        """Mount and track one transcript slice in entry order."""
         widgets: list[Any] = []
         reference = stream.children[0] if prepend and stream.children else None
         for entry in self.state.transcript[start:end]:
@@ -1473,11 +1411,7 @@ class XBotTextualApp(App[None]):
         )
 
     async def _drop_leading_excess(self, stream: VerticalScroll, follow: bool) -> int:
-        """Drop the oldest mounted entries when the window exceeds the cap.
-
-        Only trims while following the tail; while the user is scrolled up the
-        window may grow so their viewport never moves.
-        """
+        """Bound the mounted tail without moving a historical viewport."""
         if not follow:
             return 0
         excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
@@ -1849,12 +1783,7 @@ class XBotTextualApp(App[None]):
         return None
 
     def _trim_message_widgets(self) -> None:
-        """Drop the oldest cached message widgets beyond the cap.
-
-        Only the cache is pruned here; mounted widgets stay in the DOM until
-        they naturally scroll away. This bounds memory and repeated lookups
-        without churning visible entries.
-        """
+        """Bound the widget cache without removing mounted entries."""
         while len(self._message_widgets) > _MAX_MESSAGE_WIDGETS:
             oldest = next(iter(self._message_widgets))
             self._message_widgets.pop(oldest, None)
@@ -1865,14 +1794,7 @@ class XBotTextualApp(App[None]):
             self._tool_widgets.pop(oldest, None)
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
-        """Synchronously refresh the cached tool widget in place.
-
-        Used by ``_widget_for_entry`` to make sure a reused
-        widget body matches the current tool state.  Only the
-        title and body widgets are updated — choice widgets are
-        not touched here; ``_sync_tool_permission_choices``
-        (async) handles those.
-        """
+        """Refresh cached tool content; the async path owns choices."""
         tool = self.state.tools.get(tool_call_id)
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
@@ -1929,13 +1851,7 @@ class XBotTextualApp(App[None]):
     async def _apply_streaming_message_widget(
         self, widget: Any, message: TuiMessage
     ) -> None:
-        """Render reasoning + content of a streaming message into *widget*.
-
-        Reasoning (when present) goes into a separate ``.reasoning``
-        Static so the user can distinguish model thinking from the
-        final reply. The body always reflects the visible content
-        only — never a concatenation of reasoning + content.
-        """
+        """Render separate reasoning and visible-content blocks."""
         reasoning = self._query_child_first(widget, ".reasoning")
         if message.reasoning:
             if reasoning is not None:

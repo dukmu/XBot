@@ -20,7 +20,7 @@ from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.usage.models import UsageSnapshot
+from XBotv2.core.usage import UsageDelta
 from XBotv2.session.runtime import SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
@@ -178,12 +178,6 @@ class SessionManager:
     @property
     def thread_count(self) -> int:
         return len(self._sessions)
-
-    def touch(self, session_id: str, thread_id: str) -> None:
-        """Mark a runtime active (e.g. on any API interaction)."""
-        ctx = self._sessions.get((session_id, thread_id))
-        if ctx is not None:
-            ctx.touch()
 
     async def get(self, session_id: str, thread_id: str) -> SessionRuntime:
         async with self._lock:
@@ -810,7 +804,7 @@ async def _read_usage(
         return _empty_usage()
     if not isinstance(stored, dict):
         raise TypeError("Persisted usage snapshot must be an object")
-    return UsageSnapshot.from_dict(stored).totals()
+    return UsageDelta.from_snapshot(stored).totals()
 
 
 def _upload_bytes(data: str) -> bytes:

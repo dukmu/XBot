@@ -19,11 +19,11 @@ USAGE_FIELDS = (
 
 @dataclass(frozen=True, slots=True)
 class UsageDelta:
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
-    requests: int
-    context_tokens: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    requests: int = 0
+    context_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     prompt_cache_write_tokens: int = 0
@@ -61,6 +61,29 @@ class UsageDelta:
 
     def is_empty(self) -> bool:
         return not any(getattr(self, field) for field in USAGE_FIELDS)
+
+    @classmethod
+    def from_snapshot(cls, value: Mapping[str, object]) -> "UsageDelta":
+        expected = {"schema_version", *USAGE_FIELDS}
+        if set(value) != expected:
+            raise ValueError("Usage snapshot fields do not match schema version 1")
+        if _tokens(value, "schema_version") != 1:
+            raise ValueError(f"Unsupported usage schema version: {value['schema_version']}")
+        return cls(**{field: _tokens(value, field) for field in USAGE_FIELDS})
+
+    def add(self, delta: "UsageDelta") -> "UsageDelta":
+        totals = {
+            field: getattr(self, field) + getattr(delta, field)
+            for field in USAGE_FIELDS
+        }
+        totals["context_tokens"] = delta.context_tokens
+        return UsageDelta(**totals)
+
+    def totals(self) -> dict[str, int]:
+        return {field: getattr(self, field) for field in USAGE_FIELDS}
+
+    def to_snapshot(self) -> dict[str, int]:
+        return {"schema_version": 1, **self.totals()}
 
     def to_event_dict(self) -> dict[str, int]:
         result = {

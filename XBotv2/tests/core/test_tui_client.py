@@ -770,14 +770,10 @@ def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatch):
-    """HttpTransport must preserve UTF-8 payload in tui.http trace events.
+async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypatch):
+    """The TUI HTTP boundary must preserve UTF-8 trace payloads."""
 
-    Replaces the legacy ``test_protocol_trace_records_unicode_frames``
-    stdio test now that stdio is removed (docs v2.2).
-    """
-
-    from XBotv2.tui.transport_http import HttpTransport
+    from XBotv2.client import XBotClient
 
     trace_path = tmp_path / "http-trace.jsonl"
     monkeypatch.setenv("XBOT_TUI_TRACE", str(trace_path))
@@ -820,8 +816,8 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
         async def aclose(self):
             return None
 
-    client = HttpTransport("http://127.0.0.1:4096")
-    client._client._http = FakeClient([
+    client = XBotClient("http://127.0.0.1:4096")
+    client._http = FakeClient([
         "event: assistant_message",
         "id: 1",
         "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",
@@ -832,13 +828,11 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
         "",
     ])
 
+    session = TerminalSession(client=client, session_id="s", thread_id="t")
     events: list[dict[str, Any]] = []
-    async for event in client.send_message(
-        session_id="s", thread_id="t", content="当前磁盘用了多少",
-        request_id="r",
-    ):
+    async for event in session.send_message("当前磁盘用了多少"):
         events.append(event)
-    await client.close()
+    await session.disconnect()
 
     records = [
         json.loads(line)
@@ -2209,27 +2203,30 @@ def test_permission_decision_parser_supports_scopes():
 
 @pytest.mark.asyncio
 async def test_terminal_session_only_yields_live_interaction_events():
-    class FakeTransport:
-        async def hello(self, *, session_id, thread_id):
-            return {"session_id": session_id, "thread_id": thread_id}
+    class FakeClient:
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
 
         async def open_session(self, *, session_id, thread_id, workspace_root=None, mode=None):
             del workspace_root, mode
-            return {"session_id": session_id, "thread_id": thread_id, "status": "ready"}
+            return Mock(model_dump=lambda: {
+                "session_id": session_id, "thread_id": thread_id, "status": "ready"
+            })
 
-        def send_message(self, *, session_id, thread_id, content, request_id):
+        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, request_id, images
             async def _events():
-                yield {"type": "turn_started", "data": {"turn": 1}}
-                yield {
-                    "type": "permission_request",
-                    "data": {"request_id": "permission:c1", "reason": "approve?"},
-                }
-                yield {
-                    "type": "user_input_required",
-                    "data": {"request_id": "user_input:c2", "question": "continue?"},
-                }
-                yield {"type": "turn_finished", "data": {"turn": 1}}
-                yield {"type": "end", "data": {"status": "ok"}}
+                from XBotv2.protocol import server_event
+                yield server_event(type="turn_started", data={"turn": 1})
+                yield server_event(type="permission_request", data={
+                    "request_id": "permission:c1", "reason": "approve?"
+                })
+                yield server_event(type="user_input_required", data={
+                    "request_id": "user_input:c2", "question": "continue?"
+                })
+                yield server_event(type="turn_finished", data={"turn": 1})
+                yield server_event(type="end", data={"status": "ok"})
 
             return _events()
 
@@ -2248,7 +2245,7 @@ async def test_terminal_session_only_yields_live_interaction_events():
         async def close(self):
             return None
 
-    session = TerminalSession(transport=FakeTransport(), session_id="s", thread_id="t")
+    session = TerminalSession(client=FakeClient(), session_id="s", thread_id="t")
     await session.connect()
 
     events = [event async for event in session.send_message("run")]
@@ -2265,19 +2262,22 @@ async def test_terminal_session_only_yields_live_interaction_events():
 async def test_terminal_session_passes_explicit_resume_mode():
     opened = {}
 
-    class FakeTransport:
-        async def hello(self, *, session_id, thread_id):
-            return {"session_id": session_id, "thread_id": thread_id}
+    class FakeClient:
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
 
         async def open_session(self, **payload):
             opened.update(payload)
-            return {"session_id": payload["session_id"], "history": []}
+            return Mock(model_dump=lambda: {
+                "session_id": payload["session_id"], "history": []
+            })
 
         async def close(self):
             return None
 
     session = TerminalSession(
-        transport=FakeTransport(),
+        client=FakeClient(),
         session_id="existing",
         session_mode="resume",
         agent="builder",
@@ -2292,18 +2292,19 @@ async def test_terminal_session_passes_explicit_resume_mode():
 
 @pytest.mark.asyncio
 async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
-    class FakeTransport:
+    class FakeClient:
         def __init__(self):
             self.fail = False
             self.shutdown_calls = 0
 
-        async def hello(self, *, session_id, thread_id):
-            return {"session_id": session_id, "thread_id": thread_id}
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
 
         async def open_session(self, **payload):
             if self.fail:
                 raise RuntimeError("open failed")
-            return payload
+            return Mock(model_dump=lambda: payload)
 
         async def shutdown(self, **_payload):
             self.shutdown_calls += 1
@@ -2311,9 +2312,9 @@ async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
         async def close(self):
             return None
 
-    transport = FakeTransport()
+    client = FakeClient()
     session = TerminalSession(
-        transport=transport,
+        client=client,
         session_id="old",
         thread_id="main",
     )
@@ -2325,30 +2326,32 @@ async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
     )
 
     assert (session.session_id, session.thread_id) == ("new", "agent")
-    assert transport.shutdown_calls == 0
+    assert client.shutdown_calls == 0
 
-    transport.fail = True
+    client.fail = True
     with pytest.raises(RuntimeError, match="open failed"):
         await session.switch(session_id="broken", thread_id="agent")
 
     assert (session.session_id, session.thread_id) == ("new", "agent")
     await session.disconnect()
-    assert transport.shutdown_calls == 0
+    assert client.shutdown_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_terminal_session_consumes_transport_end_sentinel():
-    class FakeTransport:
-        def send_message(self, *, session_id, thread_id, content, request_id):
+    class FakeClient:
+        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, request_id, images
             async def _events():
-                yield {"type": "turn_started", "data": {"turn": 1}}
-                yield {"type": "turn_finished", "data": {"turn": 1}}
-                yield {"type": "end", "data": {"status": "ok"}}
+                from XBotv2.protocol import server_event
+                yield server_event(type="turn_started", data={"turn": 1})
+                yield server_event(type="turn_finished", data={"turn": 1})
+                yield server_event(type="end", data={"status": "ok"})
 
             return _events()
 
     session = TerminalSession(
-        transport=FakeTransport(), session_id="s", thread_id="t"
+        client=FakeClient(), session_id="s", thread_id="t"
     )
 
     events = [event async for event in session.send_message("run")]

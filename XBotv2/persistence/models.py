@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.metadata import ThreadMetadata
@@ -24,86 +25,82 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass(frozen=True, slots=True)
-class MessageRecord:
-    schema_version: int
-    position: int
-    role: str
+class PersistenceRecord(BaseModel):
+    """Strict field validation and JSON encoding for persisted records."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, arbitrary_types_allowed=True
+    )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> Self:
+        _exact_fields(value, set(cls.model_fields), cls.__name__)
+        return cls.model_validate(value)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            name: _persisted_value(getattr(self, name))
+            for name in type(self).model_fields
+        }
+
+
+class MessageRecord(PersistenceRecord):
+    schema_version: Literal[1] = MESSAGE_SCHEMA_VERSION
+    position: int = Field(ge=1)
+    role: Literal["system", "user", "assistant", "tool"]
     status: str
-    data: JsonValue
-    parts: tuple[JsonObject, ...]
+    data: Any
+    parts: tuple[dict[str, Any], ...]
     tool_call_id: str
     input_id: str
     name: str
-    additional_kwargs: JsonObject
-    response_metadata: JsonObject
-    usage_metadata: JsonObject
-    artifact: JsonValue
-    error: JsonObject | None
+    additional_kwargs: dict[str, Any]
+    response_metadata: dict[str, Any]
+    usage_metadata: dict[str, Any]
+    artifact: Any
+    error: dict[str, Any] | None
 
     @classmethod
     def from_message(cls, message: Message, position: int) -> "MessageRecord":
-        if message.role not in {"system", "user", "assistant", "tool"}:
-            raise ValueError(f"Unsupported persisted message role: {message.role!r}")
-        if position < 1:
-            raise ValueError("position must be positive")
         return cls(
-            schema_version=MESSAGE_SCHEMA_VERSION,
             position=position,
             role=message.role,
-            status=_string(message.status, "status"),
-            data=json_value(message.data),
-            parts=tuple(
-                _message_part(part.to_dict()) for part in message.parts
-            ),
-            tool_call_id=_string(message.tool_call_id, "tool_call_id"),
-            input_id=_string(message.input_id, "input_id"),
-            name=_string(message.name, "name"),
-            additional_kwargs=json_object(message.additional_kwargs),
-            response_metadata=json_object(message.response_metadata),
-            usage_metadata=json_object(message.usage_metadata),
+            status=message.status,
+            data=message.data,
+            parts=tuple(part.to_dict() for part in message.parts),
+            tool_call_id=message.tool_call_id,
+            input_id=message.input_id,
+            name=message.name,
+            additional_kwargs=message.additional_kwargs,
+            response_metadata=message.response_metadata,
+            usage_metadata=message.usage_metadata,
             artifact=_artifact_value(message.artifact),
-            error=(
-                json_object(message.error)
-                if message.error is not None
-                else None
-            ),
+            error=message.error,
         )
 
+    @field_validator("parts", mode="before")
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "MessageRecord":
-        expected = {
-            "schema_version", "position", "role", "status", "data",
-            "parts", "tool_call_id", "input_id", "name", "additional_kwargs",
-            "response_metadata", "usage_metadata", "artifact", "error",
-        }
-        _exact_fields(value, expected, "MessageRecord")
-        version = _integer(value["schema_version"], "schema_version", minimum=1)
-        if version != MESSAGE_SCHEMA_VERSION:
-            raise ValueError(f"Unsupported MessageRecord schema version: {version}")
-        raw_parts = value["parts"]
-        if not isinstance(raw_parts, list):
+    def _validate_parts(cls, value: object) -> tuple[JsonObject, ...]:
+        if not isinstance(value, (list, tuple)):
             raise TypeError("MessageRecord.parts must be a list")
-        error = value["error"]
-        if error is not None and not isinstance(error, Mapping):
-            raise TypeError("MessageRecord.error must be an object or null")
-        artifact = json_value(value["artifact"])
-        return cls(
-            schema_version=version,
-            position=_integer(value["position"], "position", minimum=1),
-            role=_role(value["role"]),
-            status=_string(value["status"], "status"),
-            data=json_value(value["data"]),
-            parts=tuple(_message_part(part) for part in raw_parts),
-            tool_call_id=_string(value["tool_call_id"], "tool_call_id"),
-            input_id=_string(value["input_id"], "input_id"),
-            name=_string(value["name"], "name"),
-            additional_kwargs=_object(value["additional_kwargs"], "additional_kwargs"),
-            response_metadata=_object(value["response_metadata"], "response_metadata"),
-            usage_metadata=_object(value["usage_metadata"], "usage_metadata"),
-            artifact=artifact,
-            error=json_object(error) if isinstance(error, Mapping) else None,
-        )
+        return tuple(_message_part(part) for part in value)
+
+    @field_validator("data", "artifact", mode="before")
+    @classmethod
+    def _validate_value(cls, value: object) -> JsonValue:
+        return json_value(value)
+
+    @field_validator(
+        "additional_kwargs", "response_metadata", "usage_metadata", mode="before"
+    )
+    @classmethod
+    def _validate_object(cls, value: object) -> JsonObject:
+        return _object(value, "message metadata")
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def _validate_error(cls, value: object) -> JsonObject | None:
+        return None if value is None else _object(value, "error")
 
     def to_message(self) -> Message:
         return Message(
@@ -121,28 +118,9 @@ class MessageRecord:
             error=self.error,
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "schema_version": self.schema_version,
-            "position": self.position,
-            "role": self.role,
-            "status": self.status,
-            "data": self.data,
-            "parts": [dict(part) for part in self.parts],
-            "tool_call_id": self.tool_call_id,
-            "input_id": self.input_id,
-            "name": self.name,
-            "additional_kwargs": self.additional_kwargs,
-            "response_metadata": self.response_metadata,
-            "usage_metadata": self.usage_metadata,
-            "artifact": self.artifact,
-            "error": self.error,
-        }
 
-
-@dataclass(frozen=True, slots=True)
-class ThreadLifecycleRecord:
-    schema_version: int
+class ThreadLifecycleRecord(PersistenceRecord):
+    schema_version: Literal[1] = THREAD_LIFECYCLE_SCHEMA_VERSION
     event: Literal["started", "completed", "failed", "cancelled"]
     thread_id: str
     parent_thread_id: str
@@ -163,104 +141,64 @@ class ThreadLifecycleRecord:
         if event not in {"started", "completed", "failed", "cancelled"}:
             raise ValueError(f"Unsupported thread lifecycle event: {event!r}")
         return cls(
-            schema_version=THREAD_LIFECYCLE_SCHEMA_VERSION,
             event=event,
-            thread_id=_string(thread_id, "thread_id"),
-            parent_thread_id=_string(parent_thread_id, "parent_thread_id"),
-            agent=_string(agent, "agent"),
+            thread_id=thread_id,
+            parent_thread_id=parent_thread_id,
+            agent=agent,
             timestamp=utc_now(),
-            error=_string(error, "error"),
+            error=error,
         )
 
+    @field_validator("timestamp", mode="before")
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "ThreadLifecycleRecord":
-        expected = {
-            "schema_version", "event", "thread_id", "parent_thread_id",
-            "agent", "timestamp", "error",
-        }
-        _exact_fields(value, expected, "ThreadLifecycleRecord")
-        version = _integer(value["schema_version"], "schema_version", minimum=1)
-        if version != THREAD_LIFECYCLE_SCHEMA_VERSION:
-            raise ValueError(
-                f"Unsupported ThreadLifecycleRecord schema version: {version}"
-            )
-        event = _string(value["event"], "event")
-        if event not in {"started", "completed", "failed", "cancelled"}:
-            raise ValueError(f"Unsupported thread lifecycle event: {event!r}")
-        return cls(
-            schema_version=version,
-            event=cast(
-                Literal["started", "completed", "failed", "cancelled"], event
-            ),
-            thread_id=_string(value["thread_id"], "thread_id"),
-            parent_thread_id=_string(value["parent_thread_id"], "parent_thread_id"),
-            agent=_string(value["agent"], "agent"),
-            timestamp=_timestamp(value["timestamp"], "timestamp"),
-            error=_string(value["error"], "error"),
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "schema_version": self.schema_version,
-            "event": self.event,
-            "thread_id": self.thread_id,
-            "parent_thread_id": self.parent_thread_id,
-            "agent": self.agent,
-            "timestamp": self.timestamp,
-            "error": self.error,
-        }
+    def _validate_timestamp(cls, value: object) -> str:
+        return _timestamp(value, "timestamp")
 
 
-@dataclass(frozen=True, slots=True)
-class InboxItemRecord:
+class InboxItemRecord(PersistenceRecord):
     message_id: str
     content: str
     target: Literal["next-turn", "next-step"]
     source: str
-    images: tuple[JsonObject, ...]
+    images: tuple[dict[str, Any], ...]
     artifacts: tuple[ArtifactRef, ...]
-    metadata: JsonObject
+    metadata: dict[str, Any]
 
     @classmethod
     def from_input(cls, item: "InboxInput") -> "InboxItemRecord":
         return cls(
-            message_id=_string(item.message_id, "message_id"),
-            content=_string(item.content, "content"),
+            message_id=item.message_id,
+            content=item.content,
             target=item.target.value,
-            source=_string(item.source, "source"),
-            images=tuple(_image(image.to_dict()) for image in item.images),
+            source=item.source,
+            images=tuple(image.to_dict() for image in item.images),
             artifacts=tuple(item.artifacts),
-            metadata=json_object(item.metadata),
+            metadata=item.metadata,
         )
 
+    @field_validator("images", mode="before")
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "InboxItemRecord":
-        expected = {
-            "message_id", "content", "target", "source", "images",
-            "artifacts", "metadata",
-        }
-        _exact_fields(value, expected, "InboxItemRecord")
-        target = _string(value["target"], "target")
-        if target not in {"next-turn", "next-step"}:
-            raise ValueError(f"Unsupported inbox target: {target!r}")
-        images = value["images"]
-        artifacts = value["artifacts"]
-        if not isinstance(images, list):
+    def _validate_images(cls, value: object) -> tuple[JsonObject, ...]:
+        if not isinstance(value, (list, tuple)):
             raise TypeError("InboxItemRecord.images must be a list")
-        if not isinstance(artifacts, list):
+        return tuple(_image(image) for image in value)
+
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def _validate_artifacts(cls, value: object) -> tuple[ArtifactRef, ...]:
+        if not isinstance(value, (list, tuple)):
             raise TypeError("InboxItemRecord.artifacts must be a list")
-        return cls(
-            message_id=_string(value["message_id"], "message_id"),
-            content=_string(value["content"], "content"),
-            target=target,
-            source=_string(value["source"], "source"),
-            images=tuple(_image(image) for image in images),
-            artifacts=tuple(
-                ArtifactRef.from_dict(_mapping(artifact, "artifact"))
-                for artifact in artifacts
-            ),
-            metadata=_object(value["metadata"], "metadata"),
+        return tuple(
+            artifact
+            if isinstance(artifact, ArtifactRef)
+            else ArtifactRef.from_dict(_mapping(artifact, "artifact"))
+            for artifact in value
         )
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _validate_metadata(cls, value: object) -> JsonObject:
+        return _object(value, "metadata")
 
     def to_input(self) -> "InboxInput":
         from XBotv2.agentloop.inbox import InboxInput, InboxTarget
@@ -275,21 +213,9 @@ class InboxItemRecord:
             metadata=self.metadata,
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "message_id": self.message_id,
-            "content": self.content,
-            "target": self.target,
-            "source": self.source,
-            "images": [dict(image) for image in self.images],
-            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
-            "metadata": self.metadata,
-        }
 
-
-@dataclass(frozen=True, slots=True)
-class InboxSnapshot:
-    schema_version: int
+class InboxSnapshot(PersistenceRecord):
+    schema_version: Literal[1] = INBOX_SCHEMA_VERSION
     items: tuple[InboxItemRecord, ...]
 
     @classmethod
@@ -299,31 +225,20 @@ class InboxSnapshot:
             items=tuple(InboxItemRecord.from_input(item) for item in items),
         )
 
+    @field_validator("items", mode="before")
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "InboxSnapshot":
-        _exact_fields(value, {"schema_version", "items"}, "InboxSnapshot")
-        version = _integer(value["schema_version"], "schema_version", minimum=1)
-        if version != INBOX_SCHEMA_VERSION:
-            raise ValueError(f"Unsupported InboxSnapshot schema version: {version}")
-        items = value["items"]
-        if not isinstance(items, list):
+    def _validate_items(cls, value: object) -> tuple[InboxItemRecord, ...]:
+        if not isinstance(value, (list, tuple)):
             raise TypeError("InboxSnapshot.items must be a list")
-        return cls(
-            schema_version=version,
-            items=tuple(
-                InboxItemRecord.from_dict(_mapping(item, "inbox item"))
-                for item in items
-            ),
+        return tuple(
+            item
+            if isinstance(item, InboxItemRecord)
+            else InboxItemRecord.from_dict(_mapping(item, "inbox item"))
+            for item in value
         )
 
     def to_inputs(self) -> list["InboxInput"]:
         return [item.to_input() for item in self.items]
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "schema_version": self.schema_version,
-            "items": [item.to_dict() for item in self.items],
-        }
 
 
 def _message_part(value: object) -> JsonObject:
@@ -387,6 +302,16 @@ def _restore_artifacts(value: JsonValue) -> object:
     return value
 
 
+def _persisted_value(value: object) -> JsonValue:
+    if isinstance(value, PersistenceRecord):
+        return value.to_dict()
+    if isinstance(value, ArtifactRef):
+        return value.to_dict()
+    if isinstance(value, tuple):
+        return [_persisted_value(item) for item in value]
+    return json_value(value)
+
+
 def _exact_fields(
     value: Mapping[str, object],
     expected: set[str],
@@ -397,13 +322,6 @@ def _exact_fields(
         missing = sorted(expected - actual)
         unknown = sorted(actual - expected)
         raise ValueError(f"{name} fields mismatch; missing={missing}, unknown={unknown}")
-
-
-def _role(value: object) -> str:
-    role = _string(value, "role")
-    if role not in {"system", "user", "assistant", "tool"}:
-        raise ValueError(f"Unsupported persisted message role: {role!r}")
-    return role
 
 
 def _string(value: object, name: str) -> str:

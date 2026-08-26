@@ -24,11 +24,7 @@ from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
     requested_permission_rule,
 )
-from XBotv2.permissions.system import (
-    PermissionIntersection,
-    PermissionSystem,
-    normalize_agent_permissions,
-)
+from XBotv2.permissions.system import PermissionSystem, normalize_agent_permissions
 
 _KEEP_PARENT = object()
 
@@ -41,7 +37,7 @@ class PermissionsService:
         self._base_config = self._as_dict(config)
         self._agent_overlay: Any = None
         self._parent = parent
-        self._system: PermissionSystem | PermissionIntersection
+        self._system: PermissionSystem
         self._rebuild()
 
     @property
@@ -50,8 +46,6 @@ class PermissionsService:
 
     @property
     def _child(self) -> PermissionSystem:
-        if isinstance(self._system, PermissionIntersection):
-            return self._system.child
         return self._system
 
     def configure(self, config: Any, *, parent: Any = None) -> None:
@@ -72,13 +66,9 @@ class PermissionsService:
         child = PermissionSystem(
             {key: value for key, value in merged.items() if value},
             variables=self._variables,
+            parent=self._parent,
         )
-        parent_system = self._parent
-        self._system = (
-            PermissionIntersection(parent_system, child)
-            if parent_system is not None
-            else child
-        )
+        self._system = child
 
     def configure_agent(
         self,

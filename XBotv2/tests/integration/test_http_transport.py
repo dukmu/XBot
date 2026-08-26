@@ -54,7 +54,6 @@ from XBotv2.session import InteractionReceipt, ThreadNotActive
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
 from XBotv2.protocol import ServerEvent
 from XBotv2.tui.terminal import TerminalSession
-from XBotv2.tui.transport_http import HttpTransport
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -1243,13 +1242,12 @@ async def test_real_tui_session_command_resumes_history_and_continues_chat(
     ))
     await setup_client.close()
 
-    transport = HttpTransport.__new__(HttpTransport)
-    transport._client = XBotClient("http://test", transport=ASGITransport(app=http_app))
+    client = XBotClient("http://test", transport=ASGITransport(app=http_app))
     session = TerminalSession(
         session_id="tui-current",
         thread_id="agent",
         workspace_root=str(tmp_path),
-        transport=transport,
+        client=client,
     )
     app = XBotTextualApp(session_id="tui-current", thread_id="agent")
     app.session = session
@@ -1282,7 +1280,7 @@ async def test_real_tui_session_command_resumes_history_and_continues_chat(
                 break
         assert any(message.content == "continued reply" for message in app.state.messages)
 
-    await transport._client.close()
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -1888,7 +1886,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
             "type": event_type,
             "data": {"request_id": request_id},
         }
-        assert waiter.is_pending(request_id)
+        assert request_id in waiter.pending_request_ids()
 
         waiter.answer(request_id, **answer)
         result = await sink_task
@@ -2909,7 +2907,7 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
     must close the SSE stream with a ``turn_cancelled`` event.
 
     This exercises the full production path:
-    TUI ESC → ``HttpTransport.interrupt`` → ``POST /interrupt`` →
+    TUI ESC → ``TerminalSession.interrupt`` → ``POST /interrupt`` →
     session ``turn_task.cancel`` → ``Engine.run_turn`` catch
     ``CancelledError`` → yield ``turn_cancelled`` → SSE → client.
 
@@ -3146,7 +3144,7 @@ async def _real_terminal_session(
             session_id="default",
             thread_id="agent",
             workspace_root=workspace,
-            transport=HttpTransport(base_url, timeout=timeout),
+            client=XBotClient(base_url, timeout=timeout),
         )
         await session.connect()
         yield session
@@ -3229,10 +3227,7 @@ async def test_real_http_interrupt_while_permission_waits(
             async for event in session.send_message("list workspace"):
                 collected.append(event)
                 if event.get("type") == "permission_request":
-                    response = await session.transport.interrupt(
-                        session_id=session.session_id,
-                        thread_id=session.thread_id,
-                    )
+                    response = await session.interrupt()
                     assert response["cancelled"] is True
             return collected
 
@@ -3287,10 +3282,7 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
                     "allow",
                 )
             elif event.get("type") == "user_input_required":
-                response = await session.transport.interrupt(
-                    session_id=session.session_id,
-                    thread_id=session.thread_id,
-                )
+                response = await session.interrupt()
                 assert response["cancelled"] is True
 
         request = next(
@@ -3799,13 +3791,11 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
     ]))
 
     client = XBotClient("http://test", transport=ASGITransport(app=http_app))
-    transport = HttpTransport.__new__(HttpTransport)
-    transport._client = client
     session = TerminalSession(
         session_id="tui-q",
         thread_id="t",
         workspace_root=str(tmp_path),
-        transport=transport,
+        client=client,
     )
     app = XBotTextualApp(session_id="tui-q", thread_id="t", workspace_root=str(tmp_path))
     app.session = session
@@ -3876,13 +3866,11 @@ async def test_tui_input_submitted_while_busy_is_retried_after_turn(
     set_llm_override(http_app, llm)
 
     client = XBotClient("http://test", transport=ASGITransport(app=http_app))
-    transport = HttpTransport.__new__(HttpTransport)
-    transport._client = client
     session = TerminalSession(
         session_id="tui-retry",
         thread_id="t",
         workspace_root=str(tmp_path),
-        transport=transport,
+        client=client,
     )
     app = XBotTextualApp(session_id="tui-retry", thread_id="t", workspace_root=str(tmp_path))
     app.session = session

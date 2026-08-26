@@ -92,27 +92,10 @@ class MessageHistoryStore:
             self.load()
 
     def _records(self) -> list[MessageRecord]:
-        if not self._path.exists():
-            return []
-        records: list[MessageRecord] = []
-        with self._path.open(encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                if not line.strip():
-                    raise ValueError(
-                        f"messages.jsonl contains a blank record at line {line_number}"
-                    )
-                try:
-                    raw = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"Invalid messages.jsonl record at line {line_number}"
-                    ) from exc
-                if not isinstance(raw, Mapping):
-                    raise TypeError(
-                        f"messages.jsonl line {line_number} must be an object"
-                    )
-                records.append(MessageRecord.from_dict(raw))
-        return records
+        return [
+            MessageRecord.from_dict(raw)
+            for raw in _read_jsonl(self._path, "messages.jsonl")
+        ]
 
 
 class ThreadMetadataStore:
@@ -120,14 +103,9 @@ class ThreadMetadataStore:
         self._path = paths.metadata_file
 
     def load(self) -> ThreadMetadata:
-        if not self._path.exists():
+        raw = _read_json(self._path, "thread metadata")
+        if raw is None:
             return ThreadMetadata()
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError("Invalid thread metadata JSON") from exc
-        if not isinstance(raw, Mapping):
-            raise TypeError("Thread metadata must be an object")
         return ThreadMetadata.from_dict(raw)
 
     def save(self, metadata: ThreadMetadata) -> None:
@@ -144,14 +122,9 @@ class InboxStore:
         self._path = paths.inbox_file
 
     def load(self) -> list[InboxInput]:
-        if not self._path.exists():
+        raw = _read_json(self._path, "inbox snapshot")
+        if raw is None:
             return []
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError("Invalid inbox snapshot JSON") from exc
-        if not isinstance(raw, Mapping):
-            raise TypeError("Inbox snapshot must be an object")
         return InboxSnapshot.from_dict(raw).to_inputs()
 
     def replace(self, items: Sequence[InboxInput]) -> None:
@@ -196,23 +169,40 @@ class ThreadLifecycleStore:
             os.close(descriptor)
 
     def load(self) -> list[ThreadLifecycleRecord]:
-        if not self._path.exists():
-            return []
-        records: list[ThreadLifecycleRecord] = []
-        with self._path.open(encoding="utf-8") as stream:
-            for line_number, line in enumerate(stream, start=1):
-                try:
-                    raw = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"Invalid thread lifecycle record at line {line_number}"
-                    ) from exc
-                if not isinstance(raw, Mapping):
-                    raise TypeError(
-                        f"Thread lifecycle line {line_number} must be an object"
-                    )
-                records.append(ThreadLifecycleRecord.from_dict(raw))
-        return records
+        return [
+            ThreadLifecycleRecord.from_dict(raw)
+            for raw in _read_jsonl(self._path, "thread lifecycle")
+        ]
+
+
+def _read_json(path: Path, name: str) -> Mapping[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {name} JSON") from exc
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name.capitalize()} must be an object")
+    return value
+
+
+def _read_jsonl(path: Path, name: str) -> list[Mapping[str, object]]:
+    if not path.exists():
+        return []
+    records: list[Mapping[str, object]] = []
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid {name} record at line {line_number}"
+                ) from exc
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{name} line {line_number} must be an object")
+            records.append(value)
+    return records
 
 
 class ThreadPersistence:

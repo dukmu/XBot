@@ -9,10 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from XBotv2.permissions.system import (
-    PermissionIntersection,
-    PermissionSystem,
-)
+from XBotv2.permissions.system import PermissionSystem
 from XBotv2.core import ToolCall
 from XBotv2.config.policy import persist_permission_rule
 from XBotv2.permissions.rules import permission_rule_for_tool_call
@@ -33,12 +30,13 @@ class TestPermissionSystemBasics:
 
     def test_replacing_rules_updates_intersection_behavior(self):
         parent = PermissionSystem({"deny": [{"tool": "shell"}]})
-        child = PermissionSystem({"ask": [{"tool": "shell"}]})
-        permissions = PermissionIntersection(parent, child)
+        permissions = PermissionSystem(
+            {"ask": [{"tool": "shell"}]}, parent=parent
+        )
 
         assert permissions.check("shell") == "deny"
         parent.replace_rules({"allow": [{"tool": "shell"}]})
-        child.replace_rules({"allow": [{"tool": "shell"}]})
+        permissions.replace_rules({"allow": [{"tool": "shell"}]})
 
         assert permissions.check("shell") == "allow"
 

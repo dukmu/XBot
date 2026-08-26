@@ -9,7 +9,9 @@ plugin-facing route directory is ``XBotv2.llm.service.LlmService``
 from __future__ import annotations
 
 import logging
+import json
 import os
+from typing import Any
 
 from XBotv2.llm.config import ProviderConfig, expand_env
 from XBotv2.core.artifacts import ArtifactStorePort
@@ -82,9 +84,41 @@ def _retry_settings() -> tuple[int | None, float]:
     return max_retries, backoff
 
 
+def _provider_arguments(provider_config, model_config) -> dict[str, Any]:
+    """Resolve configuration shared by concrete remote adapters."""
+    api_key = expand_env(provider_config.api_key or "")
+    _require_api_key(provider_config.protocol, model_config.model, api_key)
+    max_retries, retry_backoff_factor = _retry_settings()
+    return {
+        "model": model_config.model,
+        "api_key": api_key,
+        "base_url": expand_env(provider_config.base_url)
+        if provider_config.base_url
+        else None,
+        "temperature": model_config.temperature,
+        "max_output_tokens": model_config.max_output_tokens,
+        "reasoning_effort": model_config.reasoning_effort,
+        "thinking": model_config.thinking,
+        "extra_body": model_config.extra_body,
+        "max_retries": max_retries,
+        "retry_backoff_factor": retry_backoff_factor,
+        "input_modalities": model_config.input_modalities,
+    }
+
+
+def _parse_tool_args(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw) if raw else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 __all__ = [
     "DEFAULT_PROVIDER_MAX_RETRIES",
     "create_llm",
     "_require_api_key",
     "_retry_settings",
+    "_provider_arguments",
+    "_parse_tool_args",
 ]

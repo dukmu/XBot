@@ -32,8 +32,9 @@ Startup sequence:
 4. `POST /sessions` with `workspace_root` and `mode`
 5. Register local and server command completion metadata
 
-`TerminalSession` owns the lifecycle from the TUI perspective. It wraps a
-`Transport` implementation, usually `HttpTransport`.
+`TerminalSession` owns the lifecycle from the TUI perspective and uses the
+typed `XBotClient` directly. Human slash-command discovery remains a TUI-only
+endpoint and is not added to the public Python SDK.
 
 ## Session Semantics
 

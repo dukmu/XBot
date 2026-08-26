@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class InteractionDisconnected(RuntimeError):
-    """Raised when the live client disconnects during an interaction."""
-
-
 class InteractionNotPending(RuntimeError):
     """Raised when a response targets no live interaction request."""
 
@@ -99,11 +95,5 @@ class InteractionWaiter:
                 continue
         return results
 
-    def is_pending(self, request_id: str) -> bool:
-        return request_id in self._pending
-
     def pending_request_ids(self) -> list[str]:
         return list(self._pending)
-
-
-UserInputDisconnected = InteractionDisconnected

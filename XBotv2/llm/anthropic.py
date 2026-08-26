@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, AsyncIterator, Callable
 
@@ -21,6 +20,7 @@ from XBotv2.core.tools import ToolCall
 from XBotv2.core.providers import BaseProvider
 from XBotv2.llm.base import attachment_prompt, usage_metadata
 from XBotv2.llm.config import merge_request_extras
+from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
@@ -421,16 +421,6 @@ def _merge_anthropic_usage(total: dict[str, int], usage: Any) -> None:
             total[key] = int(value)
 
 
-def _parse_tool_args(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 __all__ = ["AnthropicProvider"]
 
 
@@ -440,38 +430,17 @@ def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
     ``provider_config`` is the adapter instance (endpoint + credentials);
     ``model_config`` is the selected specific model from its catalog.
     """
-    from XBotv2.llm.config import expand_env
-    from XBotv2.llm.client import _require_api_key, _retry_settings
-
     protocol = provider_config.protocol
-    api_key = expand_env(provider_config.api_key or "")
-    base_url = (
-        expand_env(provider_config.base_url)
-        if provider_config.base_url
-        else None
-    )
     if model_config.max_output_tokens is None:
         raise ValueError(
             "Anthropic protocol providers require max_output_tokens "
             f"for model {model_config.model!r}"
         )
-    _require_api_key(protocol, model_config.model, api_key)
-    max_retries, retry_backoff_factor = _retry_settings()
     logging.getLogger("llm").info(
         "creating anthropic provider=%s model=%s", protocol, model_config.model
     )
     return AnthropicProvider(
-        model=model_config.model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=model_config.temperature,
-        max_output_tokens=model_config.max_output_tokens,
-        reasoning_effort=model_config.reasoning_effort,
-        thinking=model_config.thinking,
-        extra_body=model_config.extra_body,
-        max_retries=max_retries,
-        retry_backoff_factor=retry_backoff_factor,
-        input_modalities=model_config.input_modalities,
+        **_provider_arguments(provider_config, model_config),
         artifacts=artifacts,
     )
 

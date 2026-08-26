@@ -11,7 +11,7 @@ from typing import Any
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
 from XBotv2.core.tools import ClientEvent
-from XBotv2.permission_request.waiter import ApprovalWaiter
+from XBotv2.interactions.interactions import InteractionWaiter
 
 class ApprovalService:
     """Live approval transport with no permission-policy knowledge."""
@@ -23,10 +23,10 @@ class ApprovalService:
     ) -> None:
         self._events = events
         self._client_events = client_events
-        self._waiter = ApprovalWaiter()
+        self._waiter = InteractionWaiter()
 
     @property
-    def waiter(self) -> ApprovalWaiter:
+    def waiter(self) -> InteractionWaiter:
         """Fallback waiter used when no live sink answerer is installed."""
         return self._waiter
 

@@ -16,7 +16,6 @@ import asyncio
 import pytest
 
 from XBotv2.tui.textual_client import XBotTextualApp
-from XBotv2.tui.transport import Transport
 
 
 # ----------------------------------------------------------------------
@@ -39,7 +38,6 @@ class _InterruptibleSession:
         # reads ``session.session_id`` to scope the interrupt.
         self.session_id = "s"
         self.thread_id = "t"
-        self.transport = None  # wired by the test fixture
         # The asyncio task currently running ``send_message``;
         # the ``interrupt`` method cancels it to abort the turn.
         self.turn_task: asyncio.Task | None = None
@@ -78,8 +76,8 @@ class _InterruptibleSession:
     async def respond_permission(self, request_id, decision, *, scope="once"):
         return {}
 
-    async def interrupt(self, *, session_id: str, thread_id: str):
-        self.interrupt_calls.append((session_id, thread_id))
+    async def interrupt(self):
+        self.interrupt_calls.append((self.session_id, self.thread_id))
         if self.turn_task is not None and not self.turn_task.done():
             # Mirror the real HTTP session runtime: cancel the in-flight turn
             # task. The send_message generator's ``release.wait()`` will
@@ -95,11 +93,6 @@ async def test_esc_during_running_turn_calls_transport_interrupt() -> None:
     ``Transport.interrupt(session_id)``."""
 
     session = _InterruptibleSession()
-    # The TUI addresses the transport through ``session.transport``.
-    # In production this is ``HttpTransport``; in tests we wire the
-    # scripted session to itself so ``session.transport.interrupt``
-    # lands on our ``_InterruptibleSession.interrupt`` recorder.
-    session.transport = session
     app = XBotTextualApp(
         session_id="s",
         thread_id="t",
@@ -139,18 +132,14 @@ async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     """
 
     class CancellableSession(_InterruptibleSession):
-        async def interrupt(self, *, session_id: str, thread_id: str):
+        async def interrupt(self):
             # Simulate the protocol: the engine emits turn_cancelled,
             # the HTTP session runtime pipes it through the SSE stream, the
             # TUI's state.apply_event fires.
-            await super().interrupt(
-                session_id=session_id,
-                thread_id=thread_id,
-            )
+            await super().interrupt()
             return {"status": "interrupting", "cancelled": True}
 
     session = CancellableSession()
-    session.transport = session
     app = XBotTextualApp(
         session_id="s",
         thread_id="t",
