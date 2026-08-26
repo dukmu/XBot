@@ -5,10 +5,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
+from XBotv2.core.state import JsonStateModel
 from XBotv2.core.tools import JsonObject
+from pydantic import Field
 
 JobId = str
 MAX_SUMMARY_CHARS = 256
@@ -67,17 +69,13 @@ class JobRunnerContext(Protocol):
     primary_output: OutputStore | None
 
 
-@dataclass(slots=True)
-class JobError:
+class JobError(JsonStateModel):
     code: str
     message: str
     detail: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        value: dict[str, str] = {"code": self.code, "message": self.message}
-        if self.detail:
-            value["detail"] = self.detail
-        return value
+    def to_dict(self) -> JsonObject:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 @dataclass(slots=True)
@@ -118,59 +116,28 @@ class JobRunner(Protocol):
     async def cancel(self, job: Job) -> None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class JobSummary:
+class JobSummary(JsonStateModel):
     id: JobId
     kind: str
     status: str
     name: str | None = None
-    created_at: float = 0.0
     elapsed_ms: int = 0
     parent_job_id: JobId | None = None
     summary: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "id": self.id,
-            "kind": self.kind,
-            "status": self.status,
-            "elapsed_ms": self.elapsed_ms,
-        }
-        if self.name:
-            value["name"] = self.name
-        if self.parent_job_id:
-            value["parent_job_id"] = self.parent_job_id
-        if self.summary:
-            value["summary"] = self.summary
-        return value
+    def to_dict(self) -> JsonObject:
+        return self.model_dump(mode="json", exclude_none=True)
 
-
-@dataclass(frozen=True, slots=True)
-class WaitResult:
-    ready: list[JobSummary] = field(default_factory=list)
-    pending: list[JobId] = field(default_factory=list)
+class WaitResult(JsonStateModel):
+    ready: list[JobSummary] = Field(default_factory=list)
+    pending: list[JobId] = Field(default_factory=list)
     timed_out: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ready": [summary.to_dict() for summary in self.ready],
-            "pending": list(self.pending),
-            "timed_out": self.timed_out,
-        }
 
-
-@dataclass(frozen=True, slots=True)
-class CancelResult:
+class CancelResult(JsonStateModel):
     id: JobId
     status: str
     cancelled: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "status": self.status,
-            "cancelled": self.cancelled,
-        }
 
 
 class JobNotFound(KeyError):
@@ -258,31 +225,6 @@ STOP_TASK = Operation("jobs/stop", StopTask, StoppedTasks)
 STOP_ALL_TASKS = Operation("jobs/stop-all", EmptyRequest, StoppedTasks)
 
 
-def task_snapshot(data: dict[str, object]) -> TaskSnapshot:
-    """Validate the registry's internal snapshot at the capability boundary."""
-    kind = str(data["kind"])
-    status = str(data["status"])
-    if kind not in {"shell", "agent"}:
-        raise ValueError(f"invalid task kind: {kind}")
-    if status not in {"pending", "running", "completed", "failed", "stopped"}:
-        raise ValueError(f"invalid task status: {status}")
-    return TaskSnapshot(
-        task_id=str(data["task_id"]),
-        kind=kind,  # type: ignore[arg-type]
-        command=str(data["command"]),
-        cwd=str(data["cwd"]),
-        status=status,  # type: ignore[arg-type]
-        created_at=float(data["created_at"]),
-        started_at=float(data["started_at"]),
-        finished_at=float(data["finished_at"]),
-        output=str(data.get("output") or ""),
-        error=str(data.get("error") or ""),
-        agent=str(data.get("agent") or ""),
-        thread_id=str(data.get("thread_id") or ""),
-        usage=dict(data.get("usage") or {}),  # type: ignore[arg-type]
-    )
-
-
 __all__ = [
     "CancelResult",
     "Job",
@@ -312,5 +254,4 @@ __all__ = [
     "TextOutputStorePort",
     "WaitMode",
     "WaitResult",
-    "task_snapshot",
 ]

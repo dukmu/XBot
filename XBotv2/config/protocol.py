@@ -17,9 +17,7 @@ from XBotv2.config.contracts import (
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
-from XBotv2.session import (
-    dispatch_session_group_operation,
-)
+from XBotv2.session import SessionsPort
 
 
 PermissionDecision = Literal["allow", "deny", "ask"]
@@ -96,7 +94,7 @@ def _policy_response(
     )
 
 
-def build_router(*, events: Any) -> APIRouter:
+def build_router(*, sessions: SessionsPort) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -104,11 +102,8 @@ def build_router(*, events: Any) -> APIRouter:
         operation_id="get_session_policy",
     )
     async def get_session_policy(session_id: str) -> SessionPolicyResponse:
-        snapshots = await dispatch_session_group_operation(
-            events,
-            session_id,
-            GET_POLICY,
-            EmptyRequest(),
+        snapshots = await sessions.dispatch_all(
+            session_id, GET_POLICY, EmptyRequest()
         )
         return _policy_response(session_id, snapshots[0])
 
@@ -120,8 +115,7 @@ def build_router(*, events: Any) -> APIRouter:
         session_id: str,
         payload: SessionPolicyPatch,
     ) -> SessionPolicyResponse:
-        snapshots = await dispatch_session_group_operation(
-            events,
+        snapshots = await sessions.dispatch_all(
             session_id,
             UPDATE_POLICY,
             PatchPolicy(
@@ -138,13 +132,13 @@ def build_router(*, events: Any) -> APIRouter:
 
 class ConfigProtocolPlugin:
     name = "xbot.protocol.config"
-    inject = ["server"]
+    inject = ["server", "sessions"]
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:
         await contribute_router(
             ctx,
             owner=self.name,
-            router=build_router(events=ctx),
+            router=build_router(sessions=ctx.sessions),
         )
 
 

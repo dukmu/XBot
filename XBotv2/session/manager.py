@@ -8,7 +8,7 @@ import binascii
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
@@ -25,15 +25,8 @@ from XBotv2.session.runtime import SessionRuntime, require_idle
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
     AgentApplicationOptions,
-    DISPATCH_OPERATION,
-    DISPATCH_SESSION_OPERATION,
-    OPERATION_COMPLETED,
     PREPARE_FORK,
     PrepareFork,
-    SessionDispatch,
-    SessionGroupDispatch,
-    SessionOperationCompleted,
-    SessionRef,
 )
 from XBotv2.session.session import fork_persisted_session
 from XBotv2.session.types import (
@@ -702,7 +695,50 @@ class SessionManager:
         """Route one typed operation to the owning session application."""
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
-        return await dispatch_operation(runtime.application.events, operation, request)
+        if not operation.requires_exclusive(request):
+            return await dispatch_operation(runtime.application.events, operation, request)
+        require_idle(runtime, f"run {operation.name!r}")
+        async with runtime.turn_lock:
+            return await dispatch_operation(runtime.application.events, operation, request)
+
+    async def dispatch_all(
+        self,
+        session_id: str,
+        operation: Operation[RequestT, ResponseT],
+        request: RequestT,
+    ) -> tuple[ResponseT, ...]:
+        active = await self.active_threads()
+        runtimes = sorted(
+            (
+                runtime
+                for (active_session_id, _), runtime in active.items()
+                if active_session_id == session_id
+            ),
+            key=lambda runtime: runtime.thread_id,
+        )
+        if not runtimes:
+            raise OperationError(
+                "thread_not_active",
+                "Session operations require at least one active thread.",
+            )
+        exclusive = operation.requires_exclusive(request)
+        if exclusive and any(runtime.turn_lock.locked() for runtime in runtimes):
+            raise OperationError(
+                "thread_busy",
+                f"Cannot run {operation.name!r} while a turn is active.",
+                retryable=True,
+            )
+        async with AsyncExitStack() as stack:
+            if exclusive:
+                for runtime in runtimes:
+                    await stack.enter_async_context(runtime.turn_lock)
+            results = []
+            for runtime in runtimes:
+                runtime.touch()
+                results.append(await dispatch_operation(
+                    runtime.application.events, operation, request
+                ))
+        return tuple(results)
 
 def _has_persisted_session(
     session_paths: Any,
@@ -748,7 +784,7 @@ async def thread_summary(
     if active is not None:
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
-        parent_thread_id = str(metadata.get("parent_thread_id") or "")
+        parent_thread_id = metadata.parent_thread_id
         return ThreadSnapshot(
             session_id=session_id,
             thread_id=thread_id,
@@ -756,7 +792,7 @@ async def thread_summary(
             kind="subagent" if parent_thread_id else "main",
             turn_status="running" if active.turn_lock.locked() else "idle",
             parent_thread_id=parent_thread_id,
-            agent=str(metadata.get("agent") or snapshot.agent),
+            agent=metadata.agent or snapshot.agent,
             provider=active.provider_name,
             model=snapshot.model,
             model_mode=snapshot.model_mode,
@@ -766,7 +802,7 @@ async def thread_summary(
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
-            title=str(metadata.get("title") or session_id),
+            title=metadata.title or session_id,
         )
 
     session = manager.paths.session(session_id)
@@ -905,13 +941,7 @@ class SessionManagerComponent:
             application_factory=ctx.agent_application_factory,
         )
         ctx.set("sessions", manager)
-        handlers = SessionManagerHandlers(
-            manager,
-            ctx.emit,
-            workspace_root=str(ctx.workspace_root),
-        )
-        ctx.on(DISPATCH_OPERATION, handlers.dispatch)
-        ctx.on(DISPATCH_SESSION_OPERATION, handlers.dispatch_all)
+        handlers = SessionManagerHandlers(manager, workspace_root=str(ctx.workspace_root))
         ctx.on(QUERY_STATUS, handlers.status)
         manager.start_reaper()
         ctx.dispose(manager.close_all)
@@ -921,97 +951,11 @@ class SessionManagerHandlers:
     def __init__(
         self,
         manager: SessionManager,
-        emit: Callable[[str, object], Awaitable[object]],
         *,
         workspace_root: str,
     ) -> None:
         self._manager = manager
-        self._emit = emit
         self._workspace_root = workspace_root
-
-    async def dispatch(self, envelope: SessionDispatch) -> object:
-        if not isinstance(envelope, SessionDispatch):
-            raise TypeError("session/dispatch requires SessionDispatch")
-        runtime = await self._manager.get(
-            envelope.target.session_id,
-            envelope.target.thread_id,
-        )
-        runtime.touch()
-        if not envelope.operation.requires_exclusive(envelope.request):
-            result = await dispatch_operation(
-                runtime.application.events,
-                envelope.operation,
-                envelope.request,
-            )
-        else:
-            if runtime.turn_lock.locked():
-                raise OperationError(
-                    "thread_busy",
-                    f"Cannot run {envelope.operation.name!r} while a turn is active.",
-                    retryable=True,
-                )
-            async with runtime.turn_lock:
-                result = await dispatch_operation(
-                    runtime.application.events,
-                    envelope.operation,
-                    envelope.request,
-                )
-        await self._completed(envelope.target, envelope.operation.name, result)
-        return result
-
-    async def dispatch_all(self, envelope: SessionGroupDispatch) -> object:
-        if not isinstance(envelope, SessionGroupDispatch):
-            raise TypeError("session/dispatch-all requires SessionGroupDispatch")
-        active = await self._manager.active_threads()
-        runtimes = sorted(
-            (
-                runtime
-                for (session_id, _thread_id), runtime in active.items()
-                if session_id == envelope.session_id
-            ),
-            key=lambda runtime: runtime.thread_id,
-        )
-        if not runtimes:
-            raise OperationError(
-                "thread_not_active",
-                "Session operations require at least one active thread.",
-            )
-        exclusive = envelope.operation.requires_exclusive(envelope.request)
-        if exclusive and any(runtime.turn_lock.locked() for runtime in runtimes):
-            raise OperationError(
-                "thread_busy",
-                f"Cannot run {envelope.operation.name!r} while a turn is active.",
-                retryable=True,
-            )
-        async with AsyncExitStack() as stack:
-            if exclusive:
-                for runtime in runtimes:
-                    await stack.enter_async_context(runtime.turn_lock)
-            results = []
-            for runtime in runtimes:
-                runtime.touch()
-                result = await dispatch_operation(
-                    runtime.application.events,
-                    envelope.operation,
-                    envelope.request,
-                )
-                results.append(result)
-                await self._completed(
-                    SessionRef(envelope.session_id, runtime.thread_id),
-                    envelope.operation.name,
-                    result,
-                )
-        return tuple(results)
-
-    async def _completed(self, target: SessionRef, name: str, result: object) -> None:
-        await self._emit(
-            OPERATION_COMPLETED,
-            SessionOperationCompleted(
-                target=target,
-                operation_name=name,
-                result=result,
-            ),
-        )
 
     def status(self) -> ServerStatus:
         return ServerStatus(

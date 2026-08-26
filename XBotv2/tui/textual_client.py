@@ -548,7 +548,9 @@ class XBotTextualApp(App[None]):
         except ValueError as exc:
             await self._append_local_notice("/session", str(exc))
             return
-        if not values:
+        if not values or (
+            len(values) == 1 and values[0].lower() in {"list", "ls"}
+        ):
             try:
                 payload = await self.session.list_sessions()
             except Exception as exc:

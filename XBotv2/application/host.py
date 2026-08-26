@@ -51,7 +51,7 @@ class MountedAgentApplication:
             context_window=self.driver.context_window,
             messages=tuple(self.driver.messages),
             usage=dict(self.usage.snapshot()),
-            metadata=self.loop_state.metadata.value.to_state(),
+            metadata=self.loop_state.metadata.value,
             status_slots=await self.status_slots(),
         )
 

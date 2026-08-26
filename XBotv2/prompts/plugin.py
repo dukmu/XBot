@@ -6,6 +6,7 @@ auto-cleanup; capability plugins add prompt fragments through ``ctx.prompts``.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from xcore import bound_effect, current_plugin_name
@@ -26,9 +27,7 @@ class PromptsService:
     ) -> None:
         plugin_name = current_plugin_name()
         self._builder.register_fragment(stage, plugin_name, text, source=source)
-        bound_effect(
-            lambda: self._builder.unregister_fragment(stage, plugin_name),
-        )
+        bound_effect(partial(self.remove, stage, plugin_name))
 
     def remove(self, stage: Any, plugin_name: str) -> None:
         self._builder.unregister_fragment(stage, plugin_name)

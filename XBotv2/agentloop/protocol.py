@@ -129,10 +129,8 @@ def agentloop_event(
     return {"type": type, "data": payload.model_dump(exclude_unset=True)}
 
 
-def build_tools_router(*, events: Any) -> APIRouter:
+def build_tools_router(*, sessions: Any) -> APIRouter:
     """Read-only tool catalog for the active thread."""
-
-    from XBotv2.session import SessionRef, dispatch_session_operation
 
     router = APIRouter()
 
@@ -144,11 +142,8 @@ def build_tools_router(*, events: Any) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> ToolListResponse:
-        catalog = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            LIST_TOOLS,
-            EmptyRequest(),
+        catalog = await sessions.dispatch(
+            session_id, thread_id, LIST_TOOLS, EmptyRequest()
         )
         return ToolListResponse(tools=[
             ToolInfo(
@@ -168,7 +163,7 @@ def build_tools_router(*, events: Any) -> APIRouter:
 class ToolsProtocolPlugin:
     """Contribute the tool catalog route through the XCore route event."""
 
-    inject = ["server"]
+    inject = ["server", "sessions"]
     name = "xbot.protocol.tools"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
@@ -177,7 +172,7 @@ class ToolsProtocolPlugin:
         await contribute_router(
             ctx,
             owner=self.name,
-            router=build_tools_router(events=ctx),
+            router=build_tools_router(sessions=ctx.sessions),
         )
 
 

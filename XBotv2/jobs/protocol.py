@@ -18,7 +18,7 @@ from XBotv2.jobs.contracts import (
 )
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
-from XBotv2.session import SessionRef, dispatch_session_operation
+from XBotv2.session import SessionsPort
 
 
 class TaskUpdatedData(WireModel):
@@ -74,7 +74,7 @@ class TaskStopResponse(TaskListResponse):
     matched_count: int = Field(ge=0)
 
 
-def build_tasks_router(*, events: Any) -> APIRouter:
+def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
     """Background task control routes backed by the session jobs registry."""
 
     router = APIRouter()
@@ -87,11 +87,8 @@ def build_tasks_router(*, events: Any) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> TaskListResponse:
-        result = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            LIST_TASKS,
-            EmptyRequest(),
+        result = await sessions.dispatch(
+            session_id, thread_id, LIST_TASKS, EmptyRequest()
         )
         return TaskListResponse(
             session_id=session_id,
@@ -108,11 +105,8 @@ def build_tasks_router(*, events: Any) -> APIRouter:
         thread_id: str,
         task_id: str,
     ) -> TaskStopResponse:
-        result = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            STOP_TASK,
-            StopTask(task_id),
+        result = await sessions.dispatch(
+            session_id, thread_id, STOP_TASK, StopTask(task_id)
         )
         return TaskStopResponse(
             session_id=session_id,
@@ -129,11 +123,8 @@ def build_tasks_router(*, events: Any) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> TaskStopResponse:
-        result = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            STOP_ALL_TASKS,
-            EmptyRequest(),
+        result = await sessions.dispatch(
+            session_id, thread_id, STOP_ALL_TASKS, EmptyRequest()
         )
         return TaskStopResponse(
             session_id=session_id,
@@ -148,14 +139,14 @@ def build_tasks_router(*, events: Any) -> APIRouter:
 class JobsProtocolPlugin:
     """Contribute task routes through the XCore route event."""
 
-    inject = ["server"]
+    inject = ["server", "sessions"]
     name = "xbot.protocol.jobs"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(
             ctx,
             owner=self.name,
-            router=build_tasks_router(events=ctx),
+            router=build_tasks_router(sessions=ctx.sessions),
         )
 
 

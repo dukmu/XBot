@@ -263,10 +263,6 @@ class Engine:
         ctx = self._make_event_context()
         await self._dispatch(Events.SESSION_START, ctx, short_circuit=False)
 
-    async def resume_session(self) -> None:
-        """Dispatch resume for state loaded by its owning plugin."""
-        await self._resume_loaded_state()
-
     async def _resume_loaded_state(self) -> None:
         self._close_interrupted_tool_calls("session_restarted")
         self.session.turn_count = self.turn_count
@@ -1131,17 +1127,12 @@ class Engine:
     def _bind_tools_for_provider(self, tools: list[Tool]) -> ModelPort:
         if not tools:
             return self.model_client
-        schemas = [provider_tool_schema(tool) for tool in tools]
-        try:
-            return self.model_client.bind_tools(schemas)
-        except NotImplementedError:
-            return self.model_client
+        return self.model_client.bind_tools([
+            provider_tool_schema(tool) for tool in tools
+        ])
 
     def _llm_without_tools(self) -> ModelPort:
-        try:
-            return self.model_client.bind_tools([])
-        except NotImplementedError:
-            return self.model_client
+        return self.model_client.bind_tools([])
 
     def _iteration_limit_notice(self) -> str:
         return (
@@ -1336,8 +1327,7 @@ class Engine:
 
         if new_turn:
             self.turn_count += 1
-            if self.session is not None:
-                self.session.turn_count = self.turn_count
+            self.session.turn_count = self.turn_count
         self.messages.append(Message(
             role="user",
             content=user_input,

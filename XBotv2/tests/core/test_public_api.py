@@ -103,7 +103,6 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "SessionsPort",
         "SessionPort",
         "SessionInfo",
-        "SessionRef",
         "ThreadSummary",
     }
     assert set(server.__all__) >= {

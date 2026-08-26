@@ -9,8 +9,9 @@ it without importing or depending on this plugin.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+from pydantic import BaseModel
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
@@ -32,26 +33,12 @@ _KEEP_PARENT = object()
 class PermissionsService:
     """Stable plugin capability whose concrete policy remains plugin-owned."""
 
-    def __init__(self, config: Any, variables: Any, parent: Any = None) -> None:
+    def __init__(self, config: object, variables: Any, parent: Any = None) -> None:
         self._variables = variables
         self._base_config = self._as_dict(config)
         self._agent_overlay: Any = None
         self._parent = parent
         self._system: PermissionSystem
-        self._rebuild()
-
-    @property
-    def config(self) -> Any:
-        return self._child.config
-
-    @property
-    def _child(self) -> PermissionSystem:
-        return self._system
-
-    def configure(self, config: Any, *, parent: Any = None) -> None:
-        self._base_config = self._as_dict(config)
-        self._parent = parent
-        self._agent_overlay = None
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -81,20 +68,22 @@ class PermissionsService:
             self._parent = parent
         self._rebuild()
 
-    def replace_rules(self, config: Any) -> None:
+    def replace_rules(self, config: object) -> None:
         self._base_config = self._as_dict(config)
         self._rebuild()
 
     @staticmethod
-    def _as_dict(value: Any) -> dict[str, Any]:
+    def _as_dict(value: object) -> dict[str, Any]:
         if value is None:
             return {}
-        if hasattr(value, "model_dump"):
+        if isinstance(value, BaseModel):
             return dict(value.model_dump(exclude_none=True))
-        return dict(value)
+        if isinstance(value, Mapping):
+            return dict(value)
+        raise TypeError("Permission configuration must be a mapping")
 
     def add_rule(self, decision: str, rule: dict[str, Any]) -> None:
-        self._child.add_rule(decision, rule)
+        self._system.add_rule(decision, rule)
 
     def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str:
         return self._system.check(tool_name, args)

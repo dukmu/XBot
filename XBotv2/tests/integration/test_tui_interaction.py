@@ -1055,6 +1055,13 @@ async def test_session_command_lists_and_switches_workspace() -> None:
         assert listing and "old-session" in listing[-1].text
         assert "/work/old" in listing[-1].text
 
+        composer.load_text("/session list")
+        await app.submit_composer()
+        await pilot.pause()
+        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
+        assert len(listing) == 2
+        assert session.switches == []
+
         composer.load_text("/session other-session")
         await app.submit_composer()
         for _ in range(10):

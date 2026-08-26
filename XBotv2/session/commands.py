@@ -7,7 +7,6 @@ from XBotv2.commands import (
     CommandResult,
     command_usage,
     guard_command,
-    run_command_operation,
     split_command_args,
 )
 from XBotv2.session.services import SessionPort
@@ -33,9 +32,9 @@ def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
     async def clear_command(raw_args: str) -> CommandResult:
         if raw_args.strip():
             return command_usage("/clear")
-        return await run_command_operation(
-            session.clear_history(),
-            lambda removed: f"Cleared {removed} conversation turns.",
+        removed = await session.clear_history()
+        return CommandResult(
+            f"Cleared {removed} conversation turns."
         )
 
     async def undo_command(raw_args: str) -> CommandResult:
@@ -48,18 +47,14 @@ def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
             return CommandResult("Undo count must be a positive integer.", status="error")
         if count < 1:
             return CommandResult("Undo count must be a positive integer.", status="error")
-        return await run_command_operation(
-            session.undo_history(count),
-            lambda _messages: f"Removed {count} conversation turn(s).",
-        )
+        await session.undo_history(count)
+        return CommandResult(f"Removed {count} conversation turn(s).")
 
     async def fork_command(raw_args: str) -> CommandResult:
         if raw_args.strip():
             return command_usage("/fork")
-        return await run_command_operation(
-            session.fork(),
-            lambda session_id: f"Forked session to {session_id}.",
-        )
+        session_id = await session.fork()
+        return CommandResult(f"Forked session to {session_id}.")
 
     return (
         Command("status", "Show the current session and thread status", handler=guard_command(status_command), usage="/status"),

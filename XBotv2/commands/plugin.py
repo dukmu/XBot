@@ -7,8 +7,9 @@ registering plugin unloads.
 
 from __future__ import annotations
 
-from typing import Any
+from functools import partial
 
+from xcore import Context, bound_effect
 from XBotv2.commands.contracts import (
     Command,
     CommandCatalog,
@@ -19,7 +20,6 @@ from XBotv2.commands.contracts import (
     LIST_COMMANDS,
 )
 from XBotv2.core.operations import EmptyRequest
-from xcore import bound_effect
 
 
 class CommandsService:
@@ -32,7 +32,7 @@ class CommandsService:
         if command.name in self._commands:
             raise ValueError(f"Command {command.name!r} is already registered")
         self._commands[command.name] = command
-        bound_effect(lambda: self._commands.pop(command.name, None))
+        bound_effect(partial(self.unregister, command.name))
         return command.name
 
     def unregister(self, name: str) -> bool:
@@ -96,7 +96,7 @@ class CommandsComponent:
 
     name = "xbot.commands"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object = None) -> None:
         service = CommandsService()
         ctx.set("commands", service)
         operations = CommandOperations(service)

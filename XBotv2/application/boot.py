@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
-from collections.abc import Callable
+from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ async def boot_application(
     data_dir: Path,
     state_service: StateService | None = None,
     plugin_dirs: list[Path | str] | None = None,
-    prepare: Callable[[Context], Any] | None = None,
+    services: Mapping[str, object] | None = None,
 ) -> Context:
     """Create, prepare, mount, and start one XCore application context."""
     import_paths: list[str] = []
@@ -34,19 +34,10 @@ async def boot_application(
 
     ctx = xcore.Context(data_dir=data_dir, state_service=state_service)
     _ = ctx.state
-    def release_import_paths() -> None:
-        for path in reversed(import_paths):
-            try:
-                sys.path.remove(path)
-            except ValueError:
-                pass
-
-    ctx.on("dispose", release_import_paths)
+    ctx.on("dispose", partial(_release_import_paths, import_paths))
     try:
-        if prepare is not None:
-            prepared = prepare(ctx)
-            if inspect.isawaitable(prepared):
-                await prepared
+        for name, value in (services or {}).items():
+            ctx.set(name, value)
         handles = mount_plugin_tree(ctx, tree)
         await ctx.start()
         validate_mounted_tree(handles)
@@ -60,6 +51,14 @@ async def boot_application(
                 f"{cleanup_error!r}"
             )
         raise
+
+
+def _release_import_paths(paths: list[str]) -> None:
+    for path in reversed(paths):
+        try:
+            sys.path.remove(path)
+        except ValueError:
+            pass
 
 
 __all__ = ["boot_application"]

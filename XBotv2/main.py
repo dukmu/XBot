@@ -269,29 +269,7 @@ def _run_tui(args) -> None:
         args.log_level,
     )
 
-    server_url = args.server
-    uds_path: str | None = getattr(args, "uds", None)
-    spawned_server: subprocess.Popen | None = None
-
-    if server_url is None:
-        if uds_path is None:
-            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-{os.getpid()}.sock"
-        server_url = "http://localhost"
-        args.uds = uds_path
-        spawned_server = _spawn_server(args)
-        if not _wait_for_health(server_url, timeout=15.0, uds_path=uds_path):
-            print(f"Error: spawned server at {uds_path} did not become healthy", file=sys.stderr)
-            if spawned_server is not None:
-                if spawned_server.poll() is not None:
-                    _, err = spawned_server.communicate(timeout=1)
-                    if err:
-                        print("Server stderr:", file=sys.stderr)
-                        for line in err.decode("utf-8", errors="replace").splitlines()[-20:]:
-                            print(f"  {line}", file=sys.stderr)
-                spawned_server.terminate()
-                spawned_server.wait()
-            _cleanup_socket(uds_path)
-            sys.exit(2)
+    server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
 
     from XBotv2.tui.textual_client import TextualTuiClient
 
@@ -308,11 +286,7 @@ def _run_tui(args) -> None:
         asyncio.run(client.run())
     finally:
         if spawned_server is not None:
-            spawned_server.terminate()
-            try:
-                spawned_server.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                spawned_server.kill()
+            _stop_process(spawned_server)
             _cleanup_socket(uds_path)
 
 
@@ -329,24 +303,7 @@ def _run_web(args) -> None:
     if args.web_bind != "127.0.0.1":
         raise SystemExit("Error: Web mode only supports --web-bind 127.0.0.1")
 
-    api_url = args.server or "http://localhost"
-    uds_path = args.uds
-    spawned_server: subprocess.Popen | None = None
-    if args.server is None:
-        if uds_path is None:
-            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-web-{os.getpid()}.sock"
-        args.uds = uds_path
-        spawned_server = _spawn_server(args)
-        if not _wait_for_health(api_url, timeout=15.0, uds_path=uds_path):
-            if spawned_server.poll() is not None:
-                _, error = spawned_server.communicate(timeout=1)
-                if error:
-                    print(error.decode("utf-8", errors="replace"), file=sys.stderr)
-            _stop_process(spawned_server)
-            _cleanup_socket(uds_path)
-            raise SystemExit(
-                f"Error: spawned server at {uds_path} did not become healthy"
-            )
+    api_url, uds_path, spawned_server = _local_server(args, "xbotv2-web")
 
     try:
         import uvicorn
@@ -380,6 +337,30 @@ def _cleanup_socket(path: str | None) -> None:
             os.unlink(path)
         except OSError:
             pass
+
+
+def _local_server(
+    args: argparse.Namespace,
+    socket_prefix: str,
+) -> tuple[str, str | None, subprocess.Popen | None]:
+    if args.server is not None:
+        return args.server, args.uds, None
+    uds_path = args.uds or (
+        f"{_DEFAULT_STATE_DIR}/{socket_prefix}-{os.getpid()}.sock"
+    )
+    args.uds = uds_path
+    process = _spawn_server(args)
+    if _wait_for_health("http://localhost", timeout=15.0, uds_path=uds_path):
+        return "http://localhost", uds_path, process
+    if process.poll() is not None:
+        _, error = process.communicate(timeout=1)
+        if error:
+            print(error.decode("utf-8", errors="replace"), file=sys.stderr)
+    _stop_process(process)
+    _cleanup_socket(uds_path)
+    raise SystemExit(
+        f"Error: spawned server at {uds_path} did not become healthy"
+    )
 
 
 def _stop_process(process: subprocess.Popen) -> None:

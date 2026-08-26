@@ -72,18 +72,6 @@ def guard_command(handler: CommandHandler) -> CommandHandler:
     return wrapped
 
 
-async def run_command_operation(coroutine: Any, render: Any) -> CommandResult:
-    """Run one typed operation and render failures as command results."""
-    try:
-        data = await coroutine
-    except (OperationError, ValueError) as error:
-        return CommandResult(str(error), status="error")
-    result = render(data)
-    if isinstance(result, CommandResult):
-        return result
-    return CommandResult(result)
-
-
 @dataclass(frozen=True, slots=True)
 class CommandDescription:
     name: str
@@ -138,6 +126,5 @@ __all__ = [
     "command_error",
     "command_usage",
     "guard_command",
-    "run_command_operation",
     "split_command_args",
 ]

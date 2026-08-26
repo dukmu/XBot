@@ -10,6 +10,12 @@ from XBotv2.llm.config import ModelConfig, ProviderConfig
 class TestProviderConfig:
     """LLM client factory tests."""
 
+    @staticmethod
+    def _create(config: ProviderConfig):
+        from XBotv2.llm.plugin import build_llm_service
+
+        return build_llm_service().create(config, config.resolve())
+
     def _config(self, **overrides) -> ProviderConfig:
         base = {
             "protocol": "openai",
@@ -21,8 +27,6 @@ class TestProviderConfig:
 
     def test_create_llm_openai_protocol(self):
         """An openai-protocol config creates an OpenAI client."""
-        from XBotv2.llm.client import create_llm
-
         config = ProviderConfig(
             protocol="openai",
             base_url="https://api.example.com/v1",
@@ -36,7 +40,7 @@ class TestProviderConfig:
                 )
             ],
         )
-        llm = create_llm(config, config.resolve())
+        llm = self._create(config)
         from XBotv2.llm.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
@@ -44,8 +48,6 @@ class TestProviderConfig:
 
     def test_create_llm_anthropic_protocol(self):
         """An anthropic-protocol config creates an Anthropic client."""
-        from XBotv2.llm.client import create_llm
-
         config = ProviderConfig(
             protocol="anthropic",
             base_url="https://api.anthropic.com",
@@ -59,7 +61,7 @@ class TestProviderConfig:
                 )
             ],
         )
-        llm = create_llm(config, config.resolve())
+        llm = self._create(config)
         from XBotv2.llm.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
@@ -67,8 +69,6 @@ class TestProviderConfig:
 
     def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
-        from XBotv2.llm.client import create_llm
-
         monkeypatch.setenv("TEST_KEY", "expanded-key")
 
         config = ProviderConfig(
@@ -77,12 +77,11 @@ class TestProviderConfig:
             models=[ModelConfig(model="gpt-4")],
             api_key="${TEST_KEY}",
         )
-        llm = create_llm(config, config.resolve())
+        llm = self._create(config)
         assert llm.client.api_key == "expanded-key"
 
     def test_create_llm_from_mock_provider_config(self):
         """Provider config can select deterministic MockLLM."""
-        from XBotv2.llm.client import create_llm
         from XBotv2.llm.mock import MockLLM
 
         config = ProviderConfig(
@@ -90,7 +89,7 @@ class TestProviderConfig:
             default_model="mock",
             models=[ModelConfig(model="mock", mock_responses=[{"content": "mocked"}])],
         )
-        llm = create_llm(config, config.resolve())
+        llm = self._create(config)
 
         assert isinstance(llm, MockLLM)
         assert llm.responses == [{"content": "mocked"}]
@@ -98,11 +97,9 @@ class TestProviderConfig:
     def test_unknown_protocol_raises(self):
         """Unknown protocol implementations fail closed instead of silently
         falling back to OpenAI."""
-        from XBotv2.llm.client import create_llm
-
         config = self._config(protocol="not-a-protocol")
         with pytest.raises(ValueError, match="Unknown protocol implementation"):
-            create_llm(config, config.resolve())
+            self._create(config)
 
     def test_unknown_model_in_catalog_fails_closed(self):
         config = ProviderConfig(

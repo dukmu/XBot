@@ -13,7 +13,6 @@ from XBotv2.commands.contracts import (
     command_error,
     command_usage,
     guard_command,
-    run_command_operation,
     split_command_args,
 )
 __all__ = [
@@ -33,7 +32,6 @@ __all__ = [
     "command_error",
     "command_usage",
     "guard_command",
-    "run_command_operation",
     "split_command_args",
 ]
 

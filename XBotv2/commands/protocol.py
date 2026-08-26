@@ -16,7 +16,7 @@ from XBotv2.commands.contracts import (
     LIST_COMMANDS,
 )
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.session import SessionRef, dispatch_session_operation
+from XBotv2.session import SessionsPort
 
 
 class CommandRequest(WireModel):
@@ -51,7 +51,7 @@ class CommandResponse(WireModel):
     data: CommandResultData
 
 
-def build_commands_router(*, events: Any) -> APIRouter:
+def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
     """Command discovery and execution routes (the command plane)."""
 
     router = APIRouter()
@@ -65,11 +65,8 @@ def build_commands_router(*, events: Any) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> CommandListResponse:
-        catalog = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            LIST_COMMANDS,
-            EmptyRequest(),
+        catalog = await sessions.dispatch(
+            session_id, thread_id, LIST_COMMANDS, EmptyRequest()
         )
         return CommandListResponse(
             commands=[{
@@ -110,11 +107,8 @@ def build_commands_router(*, events: Any) -> APIRouter:
             args = parts[1:] if parts else []
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
-        catalog = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            LIST_COMMANDS,
-            EmptyRequest(),
+        catalog = await sessions.dispatch(
+            session_id, thread_id, LIST_COMMANDS, EmptyRequest()
         )
         declared = next(
             (item for item in catalog.commands if item.name == command.lower()),
@@ -125,9 +119,9 @@ def build_commands_router(*, events: Any) -> APIRouter:
             _, _, raw_args = raw_args.partition(" ")
         elif not raw_args:
             raw_args = " ".join(args)
-        result = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
+        result = await sessions.dispatch(
+            session_id,
+            thread_id,
             EXECUTE_COMMAND,
             ExecuteCommand(
                 command=command,
@@ -151,14 +145,14 @@ def build_commands_router(*, events: Any) -> APIRouter:
 class CommandsProtocolPlugin:
     """Contribute command-plane routes through the XCore route event."""
 
-    inject = ["server"]
+    inject = ["server", "sessions"]
     name = "xbot.protocol.commands"
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
         await contribute_router(
             ctx,
             owner=self.name,
-            router=build_commands_router(events=ctx),
+            router=build_commands_router(sessions=ctx.sessions),
         )
 
 

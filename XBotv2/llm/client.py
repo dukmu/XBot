@@ -1,10 +1,4 @@
-"""Provider factory and shared provider construction helpers.
-
-``create_llm`` is the module-level provider route (used where no XCore
-context is at hand, e.g. the agent-loop's dynamic provider switch); the
-plugin-facing route directory is ``XBotv2.llm.service.LlmService``
-(``ctx.llm``), which registers the same factories per provider name.
-"""
+"""Shared provider construction helpers."""
 
 from __future__ import annotations
 
@@ -13,46 +7,11 @@ import json
 import os
 from typing import Any
 
-from XBotv2.llm.config import ProviderConfig, expand_env
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.providers import BaseProvider
+from XBotv2.llm.config import expand_env
 
 logger = logging.getLogger("llm")
 
 DEFAULT_PROVIDER_MAX_RETRIES = 16
-
-
-def create_llm(
-    provider_config: ProviderConfig,
-    model_config,
-    *,
-    artifacts: ArtifactStorePort | None = None,
-) -> BaseProvider:
-    """Create a provider adapter for one adapter instance + specific model.
-
-    Module-level route mirroring ``LlmService.create`` for code without an
-    XCore context.
-    """
-    protocol = provider_config.protocol
-    if protocol == "mock":
-        from XBotv2.llm.mock import create_mock_provider
-
-        return create_mock_provider(
-            provider_config, model_config, artifacts=artifacts
-        )
-    if protocol == "openai":
-        from XBotv2.llm.openai import create_openai_provider
-
-        return create_openai_provider(
-            provider_config, model_config, artifacts=artifacts
-        )
-    if protocol == "anthropic":
-        from XBotv2.llm.anthropic import create_anthropic_provider
-
-        return create_anthropic_provider(
-            provider_config, model_config, artifacts=artifacts
-        )
-    raise ValueError(f"Unknown protocol implementation: {protocol!r}")
 
 
 def _require_api_key(provider: str, model: str, api_key: str) -> None:
@@ -116,7 +75,6 @@ def _parse_tool_args(raw: str) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_PROVIDER_MAX_RETRIES",
-    "create_llm",
     "_require_api_key",
     "_retry_settings",
     "_provider_arguments",

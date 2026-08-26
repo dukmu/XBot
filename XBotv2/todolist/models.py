@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Literal, cast
 
+from pydantic import field_validator
+from XBotv2.core.state import JsonStateModel
 from XBotv2.core.tools import JsonObject
 
 TODO_SCHEMA_VERSION = 1
@@ -19,8 +20,7 @@ class TodoValidationError(ValueError):
         self.code = code
 
 
-@dataclass(frozen=True, slots=True)
-class TodoItem:
+class TodoItem(JsonStateModel):
     content: str
     status: TodoStatus
 
@@ -40,40 +40,25 @@ class TodoItem:
             raise TodoValidationError(
                 "invalid_todo_status", f"Unsupported Todo status: {status!r}"
             )
-        return cls(content.strip(), cast(TodoStatus, status))
+        return cls(content=content.strip(), status=cast(TodoStatus, status))
 
-    def to_dict(self) -> JsonObject:
-        return {"content": self.content, "status": self.status}
-
-
-@dataclass(frozen=True, slots=True)
-class TodoSnapshot:
-    schema_version: int = TODO_SCHEMA_VERSION
+class TodoSnapshot(JsonStateModel):
+    schema_version: Literal[1] = TODO_SCHEMA_VERSION
     items: tuple[TodoItem, ...] = ()
 
     @classmethod
     def from_items(cls, items: Sequence[Mapping[str, object]]) -> "TodoSnapshot":
         return cls(items=tuple(TodoItem.from_mapping(item) for item in items))
 
+    @field_validator("items", mode="before")
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "TodoSnapshot":
-        if set(value) != {"schema_version", "items"}:
-            raise ValueError("TodoSnapshot contains unknown or missing fields")
-        version = value["schema_version"]
-        if type(version) is not int or version != TODO_SCHEMA_VERSION:
-            raise ValueError(f"Unsupported TodoSnapshot schema version: {version!r}")
-        items = value["items"]
-        if not isinstance(items, list):
+    def _validate_items(cls, value: object) -> tuple[TodoItem, ...]:
+        if not isinstance(value, (list, tuple)):
             raise TypeError("TodoSnapshot.items must be a list")
-        if not all(isinstance(item, Mapping) for item in items):
-            raise TypeError("TodoSnapshot items must be objects")
-        return cls.from_items(items)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "schema_version": self.schema_version,
-            "items": [item.to_dict() for item in self.items],
-        }
+        return tuple(
+            item if isinstance(item, TodoItem) else TodoItem.from_mapping(item)
+            for item in value
+        )
 
     def projection(self) -> JsonObject:
         return {"kind": "todo_snapshot", **self.to_dict()}

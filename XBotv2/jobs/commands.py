@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from XBotv2.jobs.contracts import TaskSnapshot
 
 from XBotv2.commands import (
     Command,
@@ -14,7 +15,7 @@ from XBotv2.commands import (
 
 
 class JobsCommandPort(Protocol):
-    def snapshots(self) -> list[dict[str, object]]: ...
+    def snapshots(self) -> list[TaskSnapshot]: ...
 
     def get_or_none(self, job_id: str) -> object | None: ...
 
@@ -30,7 +31,7 @@ def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
             return command_usage("/tasks [ps]")
         tasks = jobs.snapshots()
         message = "No background tasks." if not tasks else "\n".join(
-            f"{task['kind']}  {task['task_id']}  {task['status']}  {task['command']}"
+            f"{task.kind}  {task.task_id}  {task.status}  {task.command}"
             for task in tasks
         )
         return CommandResult(message)

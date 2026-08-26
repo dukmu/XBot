@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import re
 import fnmatch
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from pydantic import BaseModel
 
 from XBotv2.core.variables import RuntimeVariables
+from XBotv2.permissions.services import PermissionsPort
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 
 PermissionDecision = Literal["allow", "deny", "ask"]
@@ -111,11 +114,10 @@ class PermissionSystem:
         *,
         default_decision: PermissionDecision = "ask",
         variables: RuntimeVariables | None = None,
-        parent: Any | None = None,
+        parent: PermissionsPort | None = None,
     ) -> None:
         self.default_decision = default_decision
         self.variables = variables or RuntimeVariables()
-        self.config: Any = config  # original rules (dict / model) for consumers
         self.parent = parent
         self._rules: dict[PermissionDecision, list[PermissionRule]] = {
             decision: [] for decision in ("deny", "allow", "ask")
@@ -130,12 +132,12 @@ class PermissionSystem:
     # ------------------------------------------------------------------
 
     def _load_config(self, config: Any) -> None:
-        if hasattr(config, "model_dump"):
+        if isinstance(config, BaseModel):
             data = config.model_dump()
-        elif isinstance(config, dict):
-            data = config
+        elif isinstance(config, Mapping):
+            data = dict(config)
         else:
-            return
+            raise TypeError("Permission configuration must be a mapping")
 
         for decision, rules in self._rules.items():
             rules.extend(

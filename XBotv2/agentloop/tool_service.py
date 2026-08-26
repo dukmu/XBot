@@ -14,6 +14,7 @@ no knowledge of individual plugins.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Awaitable, Callable
 
 from XBotv2.agentloop.events import EventPort
@@ -52,7 +53,7 @@ class ToolsService:
         the guard.
         """
         self._guards.append(guard)
-        return bound_effect(lambda: self._guards.remove(guard))
+        return bound_effect(partial(self._guards.remove, guard))
 
     def guards(self) -> tuple[Guard, ...]:
         return tuple(self._guards)
@@ -77,7 +78,7 @@ class ToolsService:
             timeout_seconds=timeout_seconds,
             namespace=namespace,
         )
-        bound_effect(lambda: self._registry.unregister(name))
+        bound_effect(partial(self._registry.unregister, name))
         return name
 
     def unregister(self, name: str) -> bool:

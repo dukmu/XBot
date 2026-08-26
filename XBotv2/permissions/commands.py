@@ -8,7 +8,6 @@ from XBotv2.commands import (
     CommandResult,
     command_usage,
     guard_command,
-    run_command_operation,
     split_command_args,
 )
 
@@ -27,15 +26,13 @@ def build_permissions_commands(settings: SettingsPort) -> tuple[Command, ...]:
                     "Permission value must be allow, deny, or ask.",
                     status="error",
                 )
-            return await run_command_operation(
-                settings.update_policy(PatchPolicy(permissions={tool: decision})),
-                lambda _data: f"permission policy set: {tool}={decision}",
-            )
+            await settings.update_policy(PatchPolicy(permissions={tool: decision}))
+            return CommandResult(f"permission policy set: {tool}={decision}")
         if action == "reset" and len(parts) == 2:
-            return await run_command_operation(
-                settings.update_policy(PatchPolicy(remove_permissions=(parts[1],))),
-                lambda _data: "permission session policy reset.",
+            await settings.update_policy(
+                PatchPolicy(remove_permissions=(parts[1],))
             )
+            return CommandResult("permission session policy reset.")
         return command_usage(
             "/permission [status|set <tool> <decision>|reset <tool>]"
         )

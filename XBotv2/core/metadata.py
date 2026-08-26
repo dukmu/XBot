@@ -3,62 +3,44 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, Self
 
+from pydantic import Field, field_validator
+
+from XBotv2.core.state import JsonStateModel
 from XBotv2.core.tools import JsonObject, json_object
 
 THREAD_METADATA_SCHEMA_VERSION = 1
 
 
-@dataclass(frozen=True, slots=True)
-class ThreadMetadata:
-    schema_version: int = THREAD_METADATA_SCHEMA_VERSION
+class ThreadMetadata(JsonStateModel):
+    schema_version: Literal[1] = THREAD_METADATA_SCHEMA_VERSION
     agent: str = ""
-    agent_definition: JsonObject | None = None
+    agent_definition: dict[str, object] | None = None
     provider: str = ""
     model: str = ""
     model_mode: str = ""
-    context_window: int = 0
+    context_window: int = Field(default=0, ge=0)
     parent_thread_id: str = ""
     workspace_root: str = ""
     title: str = ""
 
+    @field_validator("agent_definition", mode="before")
     @classmethod
-    def from_state(cls, value: Mapping[str, object]) -> "ThreadMetadata":
-        known = {
-            "agent", "agent_definition", "provider", "model", "model_mode",
-            "context_window", "parent_thread_id", "workspace_root", "title",
-        }
-        unknown = set(value) - known
-        if unknown:
-            raise ValueError(
-                "Unknown thread metadata fields: " + ", ".join(sorted(unknown))
-            )
-        definition = value.get("agent_definition")
-        if definition is not None and not isinstance(definition, Mapping):
+    def _validate_definition(cls, value: object) -> JsonObject | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
             raise TypeError("agent_definition must be an object or null")
-        return cls(
-            agent=_optional_string(value, "agent"),
-            agent_definition=(
-                json_object(definition) if isinstance(definition, Mapping) else None
-            ),
-            provider=_optional_string(value, "provider"),
-            model=_optional_string(value, "model"),
-            model_mode=_optional_string(value, "model_mode"),
-            context_window=_optional_integer(value, "context_window"),
-            parent_thread_id=_optional_string(value, "parent_thread_id"),
-            workspace_root=_optional_string(value, "workspace_root"),
-            title=_optional_string(value, "title"),
-        )
+        return json_object(value)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "ThreadMetadata":
-        expected = {
-            "schema_version", "agent", "agent_definition", "provider",
-            "model", "model_mode", "context_window", "parent_thread_id",
-            "workspace_root", "title",
-        }
+    def from_state(cls, value: Mapping[str, object]) -> "ThreadMetadata":
+        return cls.model_validate({"schema_version": 1, **value})
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> Self:
+        expected = set(cls.model_fields)
         if set(value) != expected:
             missing = sorted(expected - set(value))
             unknown = sorted(set(value) - expected)
@@ -66,28 +48,12 @@ class ThreadMetadata:
                 "ThreadMetadata fields mismatch; "
                 f"missing={missing}, unknown={unknown}"
             )
-        version = _integer(value["schema_version"], "schema_version")
-        if version != THREAD_METADATA_SCHEMA_VERSION:
-            raise ValueError(f"Unsupported ThreadMetadata schema version: {version}")
-        return cls.from_state({
-            key: value[key] for key in expected - {"schema_version"}
-        })
+        return cls.model_validate(dict(value))
 
     def to_state(self) -> JsonObject:
-        return {
-            "agent": self.agent,
-            "agent_definition": self.agent_definition,
-            "provider": self.provider,
-            "model": self.model,
-            "model_mode": self.model_mode,
-            "context_window": self.context_window,
-            "parent_thread_id": self.parent_thread_id,
-            "workspace_root": self.workspace_root,
-            "title": self.title,
-        }
-
-    def to_dict(self) -> JsonObject:
-        return {"schema_version": self.schema_version, **self.to_state()}
+        value = self.to_dict()
+        value.pop("schema_version")
+        return value
 
 
 class ThreadMetadataSink(Protocol):
@@ -117,23 +83,10 @@ class ThreadMetadataState:
             self._sink.save(value)
         self._value = value
 
-
-def _optional_string(value: Mapping[str, object], name: str) -> str:
-    raw = value.get(name, "")
-    if not isinstance(raw, str):
-        raise TypeError(f"{name} must be a string")
-    return raw
-
-
-def _optional_integer(value: Mapping[str, object], name: str) -> int:
-    return _integer(value.get(name, 0), name)
-
-
-def _integer(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise TypeError(f"{name} must be a non-negative integer")
-    return value
-
+    def update(self, **values: object) -> None:
+        self.replace(ThreadMetadata.model_validate({
+            **self._value.to_dict(), **values,
+        }))
 
 __all__ = [
     "THREAD_METADATA_SCHEMA_VERSION",

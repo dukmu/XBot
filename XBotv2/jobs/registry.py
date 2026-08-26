@@ -30,14 +30,14 @@ from XBotv2.jobs.contracts import (
     WaitResult,
     WaitMode,
     JobRunner,
+    TaskSnapshot,
 )
 from XBotv2.jobs.runner import JobContext
 from XBotv2.core.tools import JsonObject
 
 logger = logging.getLogger("xbotv2.jobs")
 
-JobSnapshot = dict[str, Any]
-TaskCallback = Callable[[JobSnapshot], Awaitable[None]]
+TaskCallback = Callable[[TaskSnapshot], Awaitable[None]]
 
 # Client-facing kind names preserved for the protocol / TUI task surface.
 _PROTOCOL_KIND = {
@@ -254,14 +254,18 @@ class JobRegistry:
         """Cancel a job idempotently. Terminal jobs are left untouched."""
         job = self._require(job_id)
         if job.terminal:
-            return CancelResult(job_id, job.status.value, cancelled=False)
+            return CancelResult(
+                id=job_id, status=job.status.value, cancelled=False
+            )
         if job.status is JobStatus.PENDING:
             self._finish(job, JobStatus.CANCELLED)
-            return CancelResult(job_id, job.status.value, cancelled=True)
+            return CancelResult(id=job_id, status=job.status.value, cancelled=True)
 
         runner_task = self._tasks.get(job.id)
         if runner_task is None or runner_task.done():
-            return CancelResult(job_id, job.status.value, cancelled=False)
+            return CancelResult(
+                id=job_id, status=job.status.value, cancelled=False
+            )
         runner = self._runners.get(job.id)
         if runner is not None:
             try:
@@ -270,7 +274,7 @@ class JobRegistry:
                 logger.exception("runner.cancel failed for job %s", job_id)
         runner_task.cancel()
         await asyncio.gather(runner_task, return_exceptions=True)
-        return CancelResult(job_id, job.status.value, cancelled=True)
+        return CancelResult(id=job_id, status=job.status.value, cancelled=True)
 
     def remove(self, job_id: JobId) -> None:
         """Drop one terminal job and its outputs from the registry."""
@@ -283,14 +287,14 @@ class JobRegistry:
         job.result = None
         job.metadata.clear()
 
-    async def stop_all(self) -> list[JobSnapshot]:
+    async def stop_all(self) -> list[TaskSnapshot]:
         """Cancel every non-terminal job and return their final snapshots."""
         active = [job for job in self._jobs.values() if not job.terminal]
         for job in active:
             await self.cancel(job.id)
         return [self.snapshot(job) for job in active]
 
-    async def shutdown(self) -> list[JobSnapshot]:
+    async def shutdown(self) -> list[TaskSnapshot]:
         """Cancel all non-terminal jobs; drop terminal jobs' outputs."""
         self._closing = True
         # Suppress completion notices: shutdown is not an ordinary completion.
@@ -372,8 +376,8 @@ class JobRegistry:
     # Snapshot / rendering
     # ------------------------------------------------------------------
 
-    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot:
-        """Protocol/TUI-facing snapshot dict with bounded bulk fields."""
+    def snapshot(self, job: Job, *, full_output: bool = False) -> TaskSnapshot:
+        """Build one bounded client-facing task snapshot."""
         metadata = job.metadata
         if job.kind is JobKind.SHELL:
             command = str(metadata.get("command") or "")
@@ -387,25 +391,25 @@ class JobRegistry:
             thread_id = str(metadata.get("thread_id") or "")
         output = self._snapshot_output(job, full_output=full_output)
         error = str(job.error.message if job.error is not None else "")
-        return {
-            "task_id": job.id,
-            "kind": _PROTOCOL_KIND[job.kind],
-            "command": command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
-            "cwd": cwd,
-            "status": _PROTOCOL_STATUS[job.status],
-            "created_at": job.created_at,
-            "started_at": job.started_at or 0.0,
-            "finished_at": job.finished_at or 0.0,
-            "output": output,
-            "error": _preview(error, _MAX_SNAPSHOT_OUTPUT),
-            "agent": agent,
-            "thread_id": thread_id,
-            "usage": dict(
+        return TaskSnapshot(
+            task_id=job.id,
+            kind=_PROTOCOL_KIND[job.kind],
+            command=command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
+            cwd=cwd,
+            status=_PROTOCOL_STATUS[job.status],
+            created_at=job.created_at,
+            started_at=job.started_at or 0.0,
+            finished_at=job.finished_at or 0.0,
+            output=output,
+            error=_preview(error, _MAX_SNAPSHOT_OUTPUT),
+            agent=agent,
+            thread_id=thread_id,
+            usage=dict(
                 (job.result.data.get("usage") if job.result is not None else {}) or {}
             ),
-        }
+        )
 
-    def snapshots(self) -> list[JobSnapshot]:
+    def snapshots(self) -> list[TaskSnapshot]:
         """Snapshot every live job in registration order."""
         return [self.snapshot(job) for job in self.all()]
 
@@ -448,7 +452,6 @@ def job_summary(job: Job) -> JobSummary:
         kind=job.kind.value,
         status=job.status.value,
         name=job.name,
-        created_at=job.created_at,
         elapsed_ms=job.elapsed_ms,
         parent_job_id=job.parent_job_id,
         summary=summary,

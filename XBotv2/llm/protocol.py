@@ -18,7 +18,7 @@ from XBotv2.llm.contracts import (
 )
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
-from XBotv2.session import SessionRef, dispatch_session_operation
+from XBotv2.session import SessionsPort
 
 
 class ModelInfo(WireModel):
@@ -72,7 +72,7 @@ class EffortSelectionResponse(WireModel):
     available: list[str] = Field(default_factory=list)
 
 
-def build_router(*, events: Any) -> APIRouter:
+def build_router(*, events: Any, sessions: SessionsPort) -> APIRouter:
     router = APIRouter()
 
     @router.get("/providers", operation_id="list_providers")
@@ -112,9 +112,9 @@ def build_router(*, events: Any) -> APIRouter:
         payload: ProviderSelectionRequest,
     ) -> ProviderSelectionResponse:
         try:
-            selected = await dispatch_session_operation(
-                events,
-                SessionRef(session_id, thread_id),
+            selected = await sessions.dispatch(
+                session_id,
+                thread_id,
                 SELECT_PROVIDER,
                 SelectProvider(payload.name, payload.model),
             )
@@ -139,9 +139,9 @@ def build_router(*, events: Any) -> APIRouter:
         payload: EffortSelectionRequest,
     ) -> EffortSelectionResponse:
         try:
-            selected = await dispatch_session_operation(
-                events,
-                SessionRef(session_id, thread_id),
+            selected = await sessions.dispatch(
+                session_id,
+                thread_id,
                 SELECT_EFFORT,
                 SelectEffort(payload.effort),
             )
@@ -162,10 +162,14 @@ def build_router(*, events: Any) -> APIRouter:
 
 class LlmProtocolPlugin:
     name = "xbot.protocol.llm"
-    inject = ["server", "llm"]
+    inject = ["server", "llm", "sessions"]
 
     async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
+        await contribute_router(
+            ctx,
+            owner=self.name,
+            router=build_router(events=ctx, sessions=ctx.sessions),
+        )
 
 
 plugin = LlmProtocolPlugin()

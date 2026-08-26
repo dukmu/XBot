@@ -133,4 +133,11 @@ class SessionsPort(Protocol):
         request: RequestT,
     ) -> ResponseT: ...
 
+    async def dispatch_all(
+        self,
+        session_id: str,
+        operation: Operation[RequestT, ResponseT],
+        request: RequestT,
+    ) -> tuple[ResponseT, ...]: ...
+
 __all__ = ["SessionPort", "SessionsPort"]

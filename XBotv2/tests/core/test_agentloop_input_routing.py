@@ -40,7 +40,7 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         llm_override=provider,
     )
     engine = services.engine
-    services.permissions.configure({"allow": [{"tool": ".*"}]})
+    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
     engine.tools.register(Tool.from_function(blocker))
     application = mounted_application(services)
     runtime = SessionRuntime(

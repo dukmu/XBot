@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 import json
 from typing import Literal
 
@@ -127,7 +126,7 @@ class GoalService:
         if event.stop_reason == "client_interrupt":
             goal = await self._active_goal()
             if goal is not None:
-                await self._write(replace(goal, status="paused"))
+                await self._write(goal.model_copy(update={"status": "paused"}))
             return
         await self.start()
 
@@ -195,7 +194,7 @@ class GoalService:
         if goal is None:
             return _no_active_goal()
         status = "blocked" if action == "block" else "complete"
-        updated = replace(goal, status=status, summary=summary.strip())
+        updated = goal.model_copy(update={"status": status, "summary": summary.strip()})
         await self._write(updated)
         message = "Goal completed." if status == "complete" else "Goal blocked."
         return ToolResult.success(
@@ -208,7 +207,7 @@ class GoalService:
             return ToolResult.failure("no_goal", "No goal exists to resume")
         if goal.status == "active":
             return ToolResult.failure("goal_active", "The goal is already active")
-        updated = replace(goal, status="active")
+        updated = goal.model_copy(update={"status": "active"})
         await self._write(updated)
         return ToolResult.success(_format_goal(updated))
 
@@ -216,7 +215,7 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None:
             return _no_active_goal()
-        updated = replace(goal, status="paused")
+        updated = goal.model_copy(update={"status": "paused"})
         await self._write(updated)
         return ToolResult.success(_format_goal(updated))
 

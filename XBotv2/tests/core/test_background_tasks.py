@@ -61,21 +61,19 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
 
     ctx.on(RUNTIME_EVENT, record)
     JobsComponent().apply(ctx, {})
-    snapshot = {
-        "task_id": "sh_1",
-        "kind": "shell",
-        "command": "printf x",
-        "cwd": "/workspace",
-        "status": "completed",
-        "created_at": 1.0,
-        "started_at": 2.0,
-        "finished_at": 3.0,
-        "output": "x",
-        "error": "",
-        "agent": "",
-        "thread_id": "",
-        "usage": {},
-    }
+    from XBotv2.jobs import TaskSnapshot
+
+    snapshot = TaskSnapshot(
+        task_id="sh_1",
+        kind="shell",
+        command="printf x",
+        cwd="/workspace",
+        status="completed",
+        created_at=1.0,
+        started_at=2.0,
+        finished_at=3.0,
+        output="x",
+    )
 
     assert ctx.jobs.on_update is not None
     assert ctx.jobs.on_complete is not None
@@ -193,7 +191,7 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     job = registry.get(started.content.split("Started ")[1])
     await registry.wait([job.id])
 
-    assert len(registry.snapshot(job)["output"]) < 2_100
+    assert len(registry.snapshot(job).output) < 2_100
     read = await invoke(
         tools, "read_shell", {"id": job.id, "max_bytes": 20_000}, registry
     )

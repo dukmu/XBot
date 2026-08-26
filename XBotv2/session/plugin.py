@@ -7,8 +7,7 @@ but it does not create the state consumed by the loop.
 
 from __future__ import annotations
 
-from typing import Any
-
+from xcore import Context
 from XBotv2.agentloop import LoopState
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.session import Session
@@ -22,8 +21,7 @@ class SessionComponent:
 
     name = "xbot.session"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        config = config or {}
+    def apply(self, ctx: Context, config: object = None) -> None:
         launch = ctx.session_launch
         paths = ctx.runtime_paths
         session_id = launch.session_id
@@ -36,20 +34,17 @@ class SessionComponent:
         variables = RuntimeVariables.for_thread(
             paths, workspace_root, thread_paths
         )
-        state = LoopState(
-            session=SessionInfo(
-                session_id=session_id,
-                thread_id=thread_id,
-                workspace_root=str(workspace_root),
-                provider="default",
-            ),
-        )
-        artifacts = ctx.artifacts
-        session = Session(
-            events=ctx,
+        info = SessionInfo(
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=str(workspace_root),
+            provider="default",
+        )
+        state = LoopState(session=info)
+        artifacts = ctx.artifacts
+        session = Session(
+            events=ctx,
+            info=info,
             paths=paths,
             variables=variables,
             state=state,

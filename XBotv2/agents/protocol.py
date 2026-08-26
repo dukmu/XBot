@@ -16,7 +16,7 @@ from XBotv2.agents.contracts import (
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
-from XBotv2.session import SessionRef, dispatch_session_operation
+from XBotv2.session import SessionsPort
 
 
 class AgentInfo(WireModel):
@@ -47,7 +47,7 @@ class AgentSelectionResponse(WireModel):
     context_window: int = Field(ge=0)
 
 
-def build_router(*, events: Any) -> APIRouter:
+def build_router(*, sessions: SessionsPort) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -55,11 +55,8 @@ def build_router(*, events: Any) -> APIRouter:
         operation_id="list_agents",
     )
     async def list_agents(session_id: str, thread_id: str) -> AgentListResponse:
-        catalog = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            LIST_AGENTS,
-            EmptyRequest(),
+        catalog = await sessions.dispatch(
+            session_id, thread_id, LIST_AGENTS, EmptyRequest()
         )
         return AgentListResponse(
             active=catalog.active,
@@ -85,11 +82,8 @@ def build_router(*, events: Any) -> APIRouter:
         thread_id: str,
         payload: AgentSelectionRequest,
     ) -> AgentSelectionResponse:
-        selected = await dispatch_session_operation(
-            events,
-            SessionRef(session_id, thread_id),
-            SELECT_AGENT,
-            SelectAgent(payload.name),
+        selected = await sessions.dispatch(
+            session_id, thread_id, SELECT_AGENT, SelectAgent(payload.name)
         )
         return AgentSelectionResponse(
             session_id=session_id,
@@ -106,10 +100,12 @@ def build_router(*, events: Any) -> APIRouter:
 
 class AgentsProtocolPlugin:
     name = "xbot.protocol.agents"
-    inject = ["server"]
+    inject = ["server", "sessions"]
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:
-        await contribute_router(ctx, owner=self.name, router=build_router(events=ctx))
+        await contribute_router(
+            ctx, owner=self.name, router=build_router(sessions=ctx.sessions)
+        )
 
 
 plugin = AgentsProtocolPlugin()

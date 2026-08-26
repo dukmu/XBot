@@ -11,7 +11,7 @@ from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message
-from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
 from XBotv2.core.tools import ClientEvent, JsonObject
@@ -42,7 +42,7 @@ class AgentApplicationSnapshot:
     context_window: int
     messages: tuple[Message, ...]
     usage: dict[str, int]
-    metadata: dict[str, object]
+    metadata: ThreadMetadata
     status_slots: dict[str, str]
 
 

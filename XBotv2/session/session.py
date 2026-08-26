@@ -17,6 +17,7 @@ from XBotv2.session.contracts import (
     PrepareFork,
     SessionStatus,
 )
+from XBotv2.session.types import SessionInfo
 
 
 def fork_persisted_session(paths: Any, source_session_id: str) -> str:
@@ -49,22 +50,30 @@ class Session:
         self,
         *,
         events: SessionEventsPort,
-        session_id: str,
-        thread_id: str,
-        workspace_root: str,
+        info: SessionInfo,
         paths: RuntimePaths,
         variables: Any,
         state: LoopState,
         session_paths: SessionPaths,
     ) -> None:
         self._events = events
-        self.session_id = session_id
-        self.thread_id = thread_id
-        self.workspace_root = workspace_root
+        self.info = info
         self.paths = paths
         self.variables = variables
         self.state = state
         self.session_paths = session_paths
+
+    @property
+    def session_id(self) -> str:
+        return self.info.session_id
+
+    @property
+    def thread_id(self) -> str:
+        return self.info.thread_id
+
+    @property
+    def workspace_root(self) -> str:
+        return self.info.workspace_root
 
     # -- session identity (SessionInfo-compatible surface) ------------------
 

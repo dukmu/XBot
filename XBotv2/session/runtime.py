@@ -7,6 +7,7 @@ import logging
 import time
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
@@ -309,7 +310,9 @@ async def _live_sink(
     events: asyncio.Queue[dict[str, Any] | None],
     disconnect_task: asyncio.Task[Any],
     timeout_seconds: float | None = None,
+    tool_call_id: str = "",
 ) -> JsonObject:
+    del tool_call_id
     event_type = client_event.type
     event_data = client_event.data
     request_id = str(event_data.get("request_id") or "")
@@ -367,49 +370,21 @@ async def _live_interaction_sink(
     disconnected: asyncio.Event,
 ) -> AsyncIterator[None]:
     disconnect_task = asyncio.create_task(disconnected.wait())
-
-    async def sink(
-        client_event: ClientEvent,
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> JsonObject:
-        del tool_call_id
-        return await _live_sink(
-            client_event,
-            client_events=runtime.application.client_events,
-            events=events,
-            disconnect_task=disconnect_task,
-            timeout_seconds=timeout_seconds,
-        )
-
-    previous = install_client_event_sink(runtime.application.client_events, sink)
+    client_events = runtime.application.client_events
+    sink = partial(
+        _live_sink,
+        client_events=client_events,
+        events=events,
+        disconnect_task=disconnect_task,
+    )
+    previous = client_events.set_sink(sink)
     try:
         yield
     finally:
-        restore_client_event_sinks(runtime.application.client_events, previous)
+        client_events.set_sink(previous)
         if not disconnect_task.done():
             disconnect_task.cancel()
             await asyncio.gather(disconnect_task, return_exceptions=True)
-
-
-def install_client_event_sink(
-    client_events: ClientEventsPort,
-    sink: Any | None,
-) -> Any | None:
-    """Install one live protocol sink on the application event router.
-
-    Feature services publish through the shared router, so the transport does
-    not discover or modify individual plugins. Returns the previous sink.
-    """
-    return client_events.set_sink(sink)
-
-
-def restore_client_event_sinks(
-    client_events: ClientEventsPort,
-    previous: Any | None,
-) -> None:
-    client_events.set_sink(previous)
 
 
 def _event_payload(event: dict[str, Any]) -> JsonObject:

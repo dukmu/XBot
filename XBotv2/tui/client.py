@@ -559,33 +559,14 @@ class TuiState:
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
-            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
-            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
-            if raw_id:
-                tool_call_id = str(raw_id)
-                previous_id = self._streaming_tool_ids.get(stream_index)
-                if (
-                    previous_id
-                    and previous_id != tool_call_id
-                    and _is_provisional_tool_id(previous_id)
-                ):
-                    self._rename_tool(previous_id, tool_call_id)
-                self._streaming_tool_ids[stream_index] = tool_call_id
-            else:
-                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
-                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
-            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            tool_call_id, tool = self._streaming_tool(raw_tool, index)
             final_args = raw_tool.get("args") or raw_tool.get("arguments")
             if final_args:
                 if isinstance(final_args, dict):
                     tool.args = dict(final_args)
                 tool.args_preview = _preview(final_args)
                 tool.args_finalized = True
-            tool.status = "pending"
-            if tool.started_at <= 0:
-                tool.started_at = time.monotonic()
-            self._ensure_tool_transcript(tool_call_id)
-            self._changed_tool_ids.add(tool_call_id)
+            self._mark_tool_pending(tool)
 
     def _apply_tool_call_delta(self, tool_calls: Any) -> None:
         if not isinstance(tool_calls, list):
@@ -593,26 +574,7 @@ class TuiState:
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
-            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
-            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
-            if raw_id:
-                tool_call_id = str(raw_id)
-                previous_id = str(
-                    raw_tool.get("replaces_tool_call_id")
-                    or self._streaming_tool_ids.get(stream_index)
-                    or ""
-                )
-                if (
-                    previous_id
-                    and previous_id != tool_call_id
-                    and _is_provisional_tool_id(previous_id)
-                ):
-                    self._rename_tool(previous_id, tool_call_id)
-                self._streaming_tool_ids[stream_index] = tool_call_id
-            else:
-                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
-                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
-            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            _, tool = self._streaming_tool(raw_tool, index)
             # Accumulate raw JSON in args_streaming only. The
             # title and body keep args_preview empty until the
             # tool_calls_started event delivers the parsed dict —
@@ -627,11 +589,38 @@ class TuiState:
                 tool.args_streaming = f"{tool.args_streaming}{args}"
             elif args:
                 tool.args_streaming = str(args)
-            tool.status = "pending"
-            if tool.started_at <= 0:
-                tool.started_at = time.monotonic()
-            self._ensure_tool_transcript(tool_call_id)
-            self._changed_tool_ids.add(tool_call_id)
+            self._mark_tool_pending(tool)
+
+    def _streaming_tool(
+        self,
+        raw: dict[str, Any],
+        default_index: int,
+    ) -> tuple[str, TuiTool]:
+        index = int(raw.get("index") if raw.get("index") is not None else default_index)
+        raw_id = raw.get("tool_call_id") or raw.get("id")
+        tool_call_id = str(raw_id or self._streaming_tool_ids.get(index) or f"tool_{index}")
+        previous_id = str(
+            raw.get("replaces_tool_call_id")
+            or self._streaming_tool_ids.get(index)
+            or ""
+        )
+        if (
+            previous_id
+            and previous_id != tool_call_id
+            and _is_provisional_tool_id(previous_id)
+        ):
+            self._rename_tool(previous_id, tool_call_id)
+        self._streaming_tool_ids[index] = tool_call_id
+        return tool_call_id, self._tool(
+            tool_call_id, name=str(raw.get("name") or "tool")
+        )
+
+    def _mark_tool_pending(self, tool: TuiTool) -> None:
+        tool.status = "pending"
+        if tool.started_at <= 0:
+            tool.started_at = time.monotonic()
+        self._ensure_tool_transcript(tool.tool_call_id)
+        self._changed_tool_ids.add(tool.tool_call_id)
 
     def _apply_usage(self, data: dict[str, Any]) -> None:
         self.context_input_tokens = _effective_context_tokens(

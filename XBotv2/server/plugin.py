@@ -96,13 +96,14 @@ def _route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
 
 
 def _remove_routes(app: FastAPI, routes: list[BaseRoute]) -> Disposer:
-    def dispose() -> bool:
-        for route in routes:
-            if route in app.routes:
-                app.routes.remove(route)
-        return True
+    return partial(_discard_routes, app, routes)
 
-    return dispose
+
+def _discard_routes(app: FastAPI, routes: list[BaseRoute]) -> bool:
+    for route in routes:
+        if route in app.routes:
+            app.routes.remove(route)
+    return True
 
 
 class ServerComponent:

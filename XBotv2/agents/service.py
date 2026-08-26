@@ -7,7 +7,7 @@ loop composition.
 
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from typing import Any
 
 from XBotv2.agents.contracts import (
@@ -257,15 +257,14 @@ class AgentsService:
             memory=config.memory,
         )
         state.session.provider = provider_name
-        state.metadata.replace(replace(
-            state.metadata.value,
+        state.metadata.update(
             agent=definition.name,
             agent_definition=json_object(asdict(definition)),
             provider=provider_name,
             model=model_config.model,
             model_mode=model_config.model_mode,
             context_window=config.max_context_tokens,
-        ))
+        )
         await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=definition,
             session=state.session,
@@ -317,13 +316,12 @@ class AgentsService:
             max_output_tokens=model_config.max_output_tokens or 0,
         )
         state.session.provider = name
-        state.metadata.replace(replace(
-            state.metadata.value,
+        state.metadata.update(
             provider=name,
             model=model_config.model,
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
-        ))
+        )
         await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             agent=None,
             session=state.session,
@@ -381,13 +379,12 @@ class AgentsService:
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens or 0,
         )
-        self._state.metadata.replace(replace(
-            self._state.metadata.value,
+        self._state.metadata.update(
             provider=provider_name,
             model=model_name,
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
-        ))
+        )
         return {
             "provider": provider_name,
             "model": model_name,

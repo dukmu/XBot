@@ -8,7 +8,6 @@ from XBotv2.commands import (
     CommandResult,
     command_usage,
     guard_command,
-    run_command_operation,
     split_command_args,
 )
 
@@ -26,10 +25,8 @@ def build_sandbox_commands(settings: SettingsPort) -> tuple[Command, ...]:
                 parsed = _sandbox_value(key, value)
             except ValueError as error:
                 return CommandResult(str(error), status="error")
-            return await run_command_operation(
-                settings.update_policy(PatchPolicy(sandbox={key: parsed})),
-                lambda _data: f"sandbox policy set: {key}={value}",
-            )
+            await settings.update_policy(PatchPolicy(sandbox={key: parsed}))
+            return CommandResult(f"sandbox policy set: {key}={value}")
         if action == "reset" and len(parts) <= 2:
             keys = (
                 (parts[1],)
@@ -43,10 +40,8 @@ def build_sandbox_commands(settings: SettingsPort) -> tuple[Command, ...]:
                     "workspace_write",
                 )
             )
-            return await run_command_operation(
-                settings.update_policy(PatchPolicy(remove_sandbox=keys)),
-                lambda _data: "sandbox session policy reset.",
-            )
+            await settings.update_policy(PatchPolicy(remove_sandbox=keys))
+            return CommandResult("sandbox session policy reset.")
         return command_usage("/sandbox [status|set <key> <value>|reset [key]]")
 
     return (

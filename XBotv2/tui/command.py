@@ -84,9 +84,10 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         name="session",
         kind="client",
         description="List, resume, or create sessions",
-        usage="/session [<session-id> | new [workspace]]",
+        usage="/session [list | <session-id> [workspace] | new [workspace]]",
         raw="/session",
         parameters={
+            "list": "List persisted sessions",
             "<session-id>": "Resume a persisted session",
             "new [workspace]": "Create a session in a workspace",
         },

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from xcore import bound_effect, current_plugin_name
@@ -33,7 +34,7 @@ class AgentCatalog:
             raise ValueError(f"Agent {definition.name!r} is already registered")
         layer[definition.name] = definition
         owners[definition.name] = owner
-        bound_effect(lambda: self._unregister(definition.name, owner=owner))
+        bound_effect(partial(self._unregister, definition.name, owner=owner))
         return definition.name
 
     def register_markdown(
@@ -51,9 +52,7 @@ class AgentCatalog:
             for definition in load_definitions(directory, variables)
         )
         if names and bind_cleanup:
-            bound_effect(
-                lambda: [self._unregister(name, owner=owner) for name in names]
-            )
+            bound_effect(partial(self._unregister_many, names, owner))
         return names
 
     def unregister_owned(
@@ -104,6 +103,10 @@ class AgentCatalog:
                 layer.pop(name, None)
                 return True
         return False
+
+    def _unregister_many(self, names: tuple[str, ...], owner: str) -> None:
+        for name in names:
+            self._unregister(name, owner=owner)
 
 
 __all__ = ["AgentCatalog"]

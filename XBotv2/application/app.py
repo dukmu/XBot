@@ -130,10 +130,10 @@ async def start_application(
         is_subagent=is_subagent,
     )
 
-    def prepare(ctx: Context) -> None:
-        ctx.set("runtime_paths", paths)
-        ctx.set("agent_options", agent_options)
-        ctx.set("session_launch", SessionLaunch(
+    services: dict[str, object] = {
+        "runtime_paths": paths,
+        "agent_options": agent_options,
+        "session_launch": SessionLaunch(
             session_id=session_id,
             thread_id=thread_id,
             workspace_root=workspace_root,
@@ -141,15 +141,21 @@ async def start_application(
             session_paths=session_paths,
             interactive=interactive,
             is_subagent=is_subagent,
-        ))
-        ctx.set("parent_permissions", ParentPermissions(parent_permission_system))
-        ctx.set("client_events", ClientEventRouter(parent=client_events))
-        ctx.set("child_applications", children)
-        ctx.set("artifacts", artifacts)
-        if thread_persistence is not None:
-            ctx.set("thread_persistence", thread_persistence)
-        else:
-            ctx.set("thread_metadata", ThreadMetadataState())
+        ),
+        "parent_permissions": ParentPermissions(parent_permission_system),
+        "client_events": ClientEventRouter(parent=client_events),
+        "child_applications": children,
+        "artifacts": artifacts,
+        (
+            "thread_persistence"
+            if thread_persistence is not None
+            else "thread_metadata"
+        ): (
+            thread_persistence
+            if thread_persistence is not None
+            else ThreadMetadataState()
+        ),
+    }
 
     try:
         plugin_ctx = await boot_application(
@@ -161,7 +167,7 @@ async def start_application(
                 else None
             ),
             plugin_dirs=plugin_dirs,
-            prepare=prepare,
+            services=services,
         )
         await plugin_ctx.agent_runtime.announce_initialized()
 

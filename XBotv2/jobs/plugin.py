@@ -25,7 +25,7 @@ from XBotv2.jobs.contracts import (
     StopTask,
     StoppedTasks,
     TaskCatalog,
-    task_snapshot,
+    TaskSnapshot,
 )
 from XBotv2.session import PREPARE_FORK, PrepareFork
 
@@ -65,15 +65,14 @@ class JobHandlers:
         self._engine = engine
         self._events = events
 
-    async def publish_update(self, snapshot: dict[str, Any]) -> None:
+    async def publish_update(self, snapshot: TaskSnapshot) -> None:
         await self._events.emit(
             RUNTIME_EVENT,
-            RuntimeEvent(client_event=task_updated_event(task_snapshot(snapshot))),
+            RuntimeEvent(client_event=task_updated_event(snapshot)),
         )
 
-    async def publish_completion(self, snapshot: dict[str, Any]) -> None:
-        task = task_snapshot(snapshot)
-        event = task_completion_event(task)
+    async def publish_completion(self, snapshot: TaskSnapshot) -> None:
+        event = task_completion_event(snapshot)
         payload = event.data
         await self._engine.inject(
             prompt_container(
@@ -85,7 +84,7 @@ class JobHandlers:
                 )],
                 attributes={"source": "tasks", "event": "completed"},
             ),
-            source=task.task_id,
+            source=snapshot.task_id,
             metadata={"kind": "notification", "payload": payload},
         )
         await self._events.emit(
@@ -94,22 +93,17 @@ class JobHandlers:
         )
 
     def list_tasks(self, _request: EmptyRequest) -> TaskCatalog:
-        return TaskCatalog(tuple(
-            task_snapshot(snapshot) for snapshot in self._registry.snapshots()
-        ))
+        return TaskCatalog(tuple(self._registry.snapshots()))
 
     async def stop_task(self, request: StopTask) -> StoppedTasks:
         job = self._registry.get_or_none(request.task_id)
         if job is None:
             raise OperationError("task_not_found", f"Unknown task: {request.task_id}")
         await self._registry.cancel(request.task_id)
-        return StoppedTasks((task_snapshot(self._registry.snapshot(job)),))
+        return StoppedTasks((self._registry.snapshot(job),))
 
     async def stop_all(self, _request: EmptyRequest) -> StoppedTasks:
-        return StoppedTasks(tuple(
-            task_snapshot(snapshot)
-            for snapshot in await self._registry.stop_all()
-        ))
+        return StoppedTasks(tuple(await self._registry.stop_all()))
 
     def prepare_fork(self, _request: PrepareFork) -> None:
         if self._registry.is_busy():
