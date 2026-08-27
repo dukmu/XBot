@@ -14,7 +14,7 @@ from XBotv2.protocol.models import ErrorResponse, server_event
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
-logger = logging.getLogger("xbotv2.server")
+logger = logging.getLogger("xbotv2.api")
 
 _SSE_RESPONSE = {
     200: {

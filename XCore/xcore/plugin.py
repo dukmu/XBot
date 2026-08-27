@@ -95,7 +95,11 @@ async def _await_all(results: list[Any]) -> None:
         try:
             await result
         except BaseException as exc:  # noqa: BLE001 - cleanup must not raise
-            logger.error("async disposer failed: %s", exc, exc_info=exc)
+            logger.error(
+                "async disposer failed error_type=%s",
+                type(exc).__name__,
+                exc_info=exc,
+            )
 
 
 class EffectOwner:
@@ -147,7 +151,11 @@ class EffectOwner:
                 try:
                     result = disposer_fn()
                 except BaseException as exc:  # noqa: BLE001
-                    logger.error("disposer failed: %s", exc, exc_info=exc)
+                    logger.error(
+                        "disposer failed error_type=%s",
+                        type(exc).__name__,
+                        exc_info=exc,
+                    )
                     continue
                 if inspect.isawaitable(result):
                     pending.append(result)
@@ -169,7 +177,11 @@ class EffectOwner:
                     await result
             except BaseException as exc:  # noqa: BLE001 - cleanup must not raise
                 errors.append(exc)
-                logger.error("disposer failed: %s", exc, exc_info=exc)
+                logger.error(
+                    "disposer failed error_type=%s",
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
         return errors
 
 
@@ -365,6 +377,14 @@ class Registry:
             uid=self._counter,
         )
         runtime.fibers.append(fiber)
+        logger.debug(
+            "plugin.mounted name=%s uid=%s required=%s optional=%s provides=%s",
+            definition.name,
+            fiber.uid,
+            sorted(name for name, required in definition.inject.items() if required),
+            sorted(name for name, required in definition.inject.items() if not required),
+            sorted(definition.provided),
+        )
         # Child fiber cleanup is an effect of the parent fiber: unloading the
         # parent recursively unloads plugins it mounted (Cordis §10.3).
         parent.fiber._add_disposer(_child_fiber_disposer(fiber))
@@ -439,6 +459,12 @@ class Registry:
         ]
         if not affected:
             return
+        logger.debug(
+            "dependency.refresh services=%s plugins=%s await_settle=%s",
+            sorted(names),
+            sorted(fiber.name for fiber in affected),
+            await_settle,
+        )
         tasks = [
             asyncio.ensure_future(fiber.settle_to(_TARGET_CONVERGE))
             for fiber in affected
@@ -448,12 +474,21 @@ class Registry:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException):
-                logger.error("dependent refresh failed: %s", result, exc_info=result)
+                logger.error(
+                    "dependent refresh failed error_type=%s",
+                    type(result).__name__,
+                    exc_info=result,
+                )
 
     def _notify_provided(self, fiber: "Fiber") -> None:
         """Wake dependents when a fiber becomes RUNNING (A1 fix)."""
         names = self.ctx._services.names_provided_by(fiber)
         if names:
+            logger.debug(
+                "service.available plugin=%s services=%s",
+                fiber.name,
+                sorted(names),
+            )
             asyncio.ensure_future(self._refresh_dependents(names))
 
 
@@ -537,6 +572,17 @@ class Fiber(EffectOwner):
         if old_state is new_state:
             return
         self.state = new_state
+        log = logger.info if new_state in {
+            FiberState.RUNNING,
+            FiberState.FAILED,
+            FiberState.DISPOSED,
+        } else logger.debug
+        log(
+            "plugin.state name=%s from=%s to=%s",
+            self.name,
+            old_state.value,
+            new_state.value,
+        )
         self.ctx._bus._emit_sync("internal/status", self, old_state)
 
     def _next_action(self, target: str) -> str | None:
@@ -623,7 +669,12 @@ class Fiber(EffectOwner):
             self.ctx.registry._notify_provided(self)
         except BaseException as exc:  # noqa: BLE001 - plugin failure is isolated
             self._error = exc
-            logger.error("plugin %r failed: %s", self.name, exc, exc_info=exc)
+            logger.error(
+                "plugin %r failed error_type=%s",
+                self.name,
+                type(exc).__name__,
+                exc_info=exc,
+            )
             self.ctx._bus._emit_sync("internal/error", self, exc)
             # Roll back partial effects registered before the failure (Cordis).
             await self._run_disposers(list(self._disposers))
@@ -648,6 +699,11 @@ class Fiber(EffectOwner):
         # this fiber's own cleanup runs.
         removed = self.ctx._services.unset_by_owner(self)
         if removed:
+            logger.debug(
+                "service.unavailable plugin=%s services=%s",
+                self.name,
+                sorted(removed),
+            )
             await self.ctx.registry._refresh_dependents(removed, await_settle=True)
         errors = await self._run_disposers(list(self._disposers))
         self._disposers.clear()

@@ -22,7 +22,8 @@ from XBotv2.core.tools import GuardDecision, Tool
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.contracts import LIST_TOOLS, ToolCatalog, ToolDescription
 from XBotv2.core.operations import EmptyRequest
-from xcore import bound_effect
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from xcore import bound_effect, current_plugin_name
 
 Guard = Callable[[Any, Any], GuardDecision | None | Awaitable[GuardDecision | None]]
 
@@ -41,9 +42,11 @@ class ToolsService:
         registry: Any,
         *,
         events: EventPort | None = None,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._registry = registry
         self.events = events
+        self._log = runtime_log.bind("tools")
         self._guards: list[Guard] = []
 
     def guard(self, guard: Guard) -> Any:
@@ -53,6 +56,11 @@ class ToolsService:
         the guard.
         """
         self._guards.append(guard)
+        self._log.debug(
+            "tool.guard.registered",
+            owner=current_plugin_name(),
+            guard=getattr(guard, "__qualname__", type(guard).__qualname__),
+        )
         return bound_effect(partial(self._guards.remove, guard))
 
     def guards(self) -> tuple[Guard, ...]:
@@ -78,11 +86,21 @@ class ToolsService:
             timeout_seconds=timeout_seconds,
             namespace=namespace,
         )
-        bound_effect(partial(self._registry.unregister, name))
+        self._log.info(
+            "tool.registered",
+            name=name,
+            owner=current_plugin_name(),
+            model_visible=model_visible,
+            timeout_seconds=timeout_seconds,
+        )
+        bound_effect(partial(self.unregister, name))
         return name
 
     def unregister(self, name: str) -> bool:
-        return self._registry.unregister(name)
+        removed = self._registry.unregister(name)
+        if removed:
+            self._log.info("tool.unregistered", name=name)
+        return removed
 
     def enabled(self) -> tuple[Tool, ...]:
         return tuple(self._registry.get_all())
@@ -105,10 +123,22 @@ class ToolsService:
         return self._registry.registered_entries()
 
     def restrict(self, selectors: list[str] | None) -> tuple[str, ...]:
-        return tuple(self._registry.restrict(selectors))
+        enabled = tuple(self._registry.restrict(selectors))
+        self._log.debug(
+            "tool.selection.restricted",
+            selectors=selectors or ["*"],
+            enabled_count=len(enabled),
+        )
+        return enabled
 
     def exclude(self, selectors: list[str]) -> tuple[str, ...]:
-        return tuple(self._registry.exclude(selectors))
+        enabled = tuple(self._registry.exclude(selectors))
+        self._log.debug(
+            "tool.selection.excluded",
+            selectors=selectors,
+            enabled_count=len(enabled),
+        )
+        return enabled
 
     async def execute_all(
         self,
@@ -131,16 +161,22 @@ class ToolsService:
             events=self.events,
             guards=self.guards(),
             context_factory=context_factory,
+            runtime_log=self._log,
         )
 
 class ToolsComponent:
     """Register the loop-owned tool service."""
 
     name = "xbot.agentloop.tools"
+    inject = ["runtime_log"]
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         tool_registry = ToolRegistry()
-        service = ToolsService(tool_registry, events=ctx)
+        service = ToolsService(
+            tool_registry,
+            events=ctx,
+            runtime_log=ctx.runtime_log,
+        )
         ctx.set(
             "tools",
             service,

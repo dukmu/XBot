@@ -100,6 +100,7 @@ class AgentRuntimeComponent:
         "commands",
         "agent_options",
         "thread_metadata",
+        "runtime_log",
     ]
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:
@@ -114,6 +115,7 @@ class AgentRuntimeComponent:
             tools=ctx.tools,
             artifacts=ctx.artifacts,
             metadata=ctx.thread_metadata,
+            runtime_log=ctx.runtime_log,
         )
         ctx.set("agent_runtime", service)
         engine = await service.create(ctx.agent_options)

@@ -32,6 +32,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.tools import json_object
+from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.llm import ModelConfig, ProviderConfig
 from XBotv2.agents.services import AgentCatalogPort
 
@@ -52,6 +53,7 @@ class AgentsService:
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
         metadata: Any,
+        runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog
         self._factory = factory
@@ -63,6 +65,7 @@ class AgentsService:
         self._tools = tools
         self._artifacts = artifacts
         self._metadata = metadata
+        self._log = runtime_log.bind("agent")
         self._engine: AgentLoopDriverPort | None = None
 
     async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort:
@@ -150,6 +153,17 @@ class AgentsService:
             ),
         ))
         self._engine = engine
+        self._log.info(
+            "agent.created",
+            session_id=options.session_id,
+            thread_id=options.thread_id,
+            agent=definition.name if definition is not None else config.agent_name,
+            provider=provider_name,
+            model=model_config.model,
+            context_window=config.max_context_tokens,
+            tools_enabled=len(self._tools.enabled()),
+            resumed=state.resumed,
+        )
         return engine
 
     async def announce_initialized(self) -> None:
@@ -274,6 +288,13 @@ class AgentsService:
             model_mode=engine.settings.model_mode,
             context_window=engine.settings.context_window,
         ))
+        self._log.info(
+            "agent.selected",
+            agent=definition.name,
+            provider=provider_name,
+            model=model_config.model,
+            context_window=config.max_context_tokens,
+        )
         return {
             "agent": definition,
             "provider": provider_name,
@@ -331,6 +352,12 @@ class AgentsService:
             model_mode=engine.settings.model_mode,
             context_window=engine.settings.context_window,
         ))
+        self._log.info(
+            "provider.selected",
+            provider=name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+        )
         return {
             "provider": name,
             "model": model_config.model,
@@ -384,6 +411,12 @@ class AgentsService:
             model=model_name,
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
+        )
+        self._log.info(
+            "model.effort.selected",
+            provider=provider_name,
+            model=model_name,
+            reasoning_effort=value,
         )
         return {
             "provider": provider_name,

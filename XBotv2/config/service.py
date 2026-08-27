@@ -16,6 +16,7 @@ from XBotv2.config.models import (
     RuntimeConfig,
     UserContext,
 )
+from XBotv2.core.runtime_logging import RuntimeLog
 
 
 class ConfigService:
@@ -28,12 +29,14 @@ class ConfigService:
         session_id: str,
         workspace_root: Any,
         events: Any,
+        runtime_log: RuntimeLog,
         user_context: UserContext | None = None,
     ) -> None:
         self.paths = paths
         self.session_id = session_id
         self.workspace_root = workspace_root
         self.events = events
+        self._log = runtime_log.bind("config", session_id=session_id)
         self._user_context = user_context or UserContext()
 
     def user_context(self) -> UserContext:
@@ -69,6 +72,13 @@ class ConfigService:
         await self.events.emit(
             POLICY_CHANGED,
             PolicyChanged(policy=policy, config=config),
+        )
+        self._log.info(
+            "config.policy.updated",
+            permission_fields=sorted((patch.permissions or {}).keys()),
+            removed_permissions=sorted(patch.remove_permissions),
+            sandbox_fields=sorted((patch.sandbox or {}).keys()),
+            removed_sandbox=sorted(patch.remove_sandbox),
         )
         return PolicySnapshot(
             policy=policy,

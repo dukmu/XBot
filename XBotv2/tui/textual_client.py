@@ -71,7 +71,7 @@ _REPLAY_BATCH = 50
 _MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
 
 
-logger = logging.getLogger("tui")
+logger = logging.getLogger("xbotv2.tui")
 
 
 def _kind_tag(kind: str) -> str:

@@ -166,7 +166,12 @@ class MCPPlugin:
                     "status": "error",
                     "error": str(exc),
                 }
-                logger.error("MCP server %s initialization failed: %s", server_name, exc)
+                logger.error(
+                    "MCP server %s initialization failed error_type=%s",
+                    server_name,
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
                 if server_cfg.get("required", False):
                     await self._rollback_all()
                     raise

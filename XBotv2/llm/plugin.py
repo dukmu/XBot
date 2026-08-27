@@ -49,9 +49,15 @@ class LlmComponent:
     """Register the provider route directory as ``ctx.llm``."""
 
     name = "xbot.llm"
+    inject = ["runtime_log"]
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         service = build_llm_service(dict(config or {}))
+        ctx.runtime_log.bind("llm").info(
+            "provider.catalog.loaded",
+            providers=list(service.names()),
+            configured_default=(config or {}).get("default", ""),
+        )
         ctx.set("llm", service)
         ctx.set("model", ModelService())
 

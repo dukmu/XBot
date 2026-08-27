@@ -37,6 +37,9 @@ class ServiceStore:
     def __init__(self) -> None:
         self._impls: dict[tuple[Any, str], Impl] = {}
 
+    def __len__(self) -> int:
+        return len(self._impls)
+
     def set(self, label: Any, name: str, value: Any, owner: Any) -> None:
         """Provide a service in a scope. Raises on duplicate non-None provide."""
         if value is None:

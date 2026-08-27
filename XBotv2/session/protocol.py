@@ -49,7 +49,7 @@ from XBotv2.session.types import (
     ThreadSnapshot,
 )
 
-logger = logging.getLogger("xbotv2.http_server")
+logger = logging.getLogger("xbotv2.api")
 
 
 def _empty_usage() -> UsageData:

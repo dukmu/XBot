@@ -11,7 +11,7 @@ from xcore import Context, FiberState, PluginHandle
 
 from XBotv2.loader.types import LoadError, PluginEntry, PluginTree
 
-logger = logging.getLogger("loader")
+logger = logging.getLogger("xbotv2.loader")
 
 
 def resolve_plugin_from_module(module: Any, name: str) -> Any:
@@ -44,7 +44,7 @@ def mount_plugin_tree(
     handles: dict[str, PluginHandle] = {}
     for entry in tree.entries:
         if entry.disabled:
-            logger.info("loader: entry %s disabled, skipping", entry.id)
+            logger.debug("plugin.skipped entry=%s reason=disabled", entry.id)
             continue
         plugin = _fresh_plugin(_import_plugin(entry.name), entry)
         mount_ctx = ctx
@@ -54,7 +54,12 @@ def mount_plugin_tree(
                 label if label is not True else None,
             )
         handles[entry.id] = mount_ctx.plugin(plugin, entry.config)
-        logger.info("loader: mounted entry %s (%s)", entry.id, entry.name)
+        logger.debug(
+            "plugin.mounted entry=%s module=%s isolates=%s",
+            entry.id,
+            entry.name,
+            sorted((entry.isolate or {}).keys()),
+        )
     return handles
 
 
@@ -66,6 +71,12 @@ def validate_mounted_tree(handles: dict[str, PluginHandle]) -> None:
             raise handle.error
     for entry_id, handle in handles.items():
         if handle.state is not FiberState.RUNNING:
+            logger.error(
+                "plugin.activation.blocked entry=%s state=%s missing_dependencies=%s",
+                entry_id,
+                handle.state.value,
+                list(handle.missing_dependencies),
+            )
             raise LoadError(
                 f"plugin {entry_id!r} did not activate; "
                 "unmet inject dependencies: "

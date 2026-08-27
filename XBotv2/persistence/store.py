@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths, ThreadPaths
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.persistence.models import (
     InboxSnapshot,
@@ -25,8 +27,13 @@ from xcore.state import StateService
 class MessageHistoryStore:
     """Durable current-history store implementing the HistorySink contract."""
 
-    def __init__(self, paths: ThreadPaths) -> None:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
         self._path = paths.messages_file
+        self._log = runtime_log
         self._next_position = 1
 
     @property
@@ -34,6 +41,7 @@ class MessageHistoryStore:
         return self._path
 
     def load(self) -> list[Message]:
+        started = time.perf_counter()
         records = self._records()
         positions = [record.position for record in records]
         if positions != list(range(1, len(positions) + 1)):
@@ -42,6 +50,11 @@ class MessageHistoryStore:
         messages = [record.to_message() for record in records]
         for message in messages:
             message.seal()
+        self._log.debug(
+            "persistence.history.loaded",
+            messages=len(messages),
+            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+        )
         return messages
 
     def append(self, messages: Sequence[Message]) -> None:
@@ -64,6 +77,11 @@ class MessageHistoryStore:
             stream.flush()
             os.fsync(stream.fileno())
         self._next_position += len(records)
+        self._log.debug(
+            "persistence.history.appended",
+            messages=len(records),
+            next_position=self._next_position,
+        )
 
     def replace(self, messages: Sequence[Message]) -> None:
         records = [
@@ -76,6 +94,11 @@ class MessageHistoryStore:
         )
         write_text_atomic(self._path, content)
         self._next_position = len(records) + 1
+        self._log.info(
+            "persistence.history.replaced",
+            messages=len(records),
+            bytes=len(content.encode("utf-8")),
+        )
 
     def count(self) -> int:
         return len(self._records())
@@ -99,8 +122,13 @@ class MessageHistoryStore:
 
 
 class ThreadMetadataStore:
-    def __init__(self, paths: ThreadPaths) -> None:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
         self._path = paths.metadata_file
+        self._log = runtime_log
 
     def load(self) -> ThreadMetadata:
         raw = _read_json(self._path, "thread metadata")
@@ -113,13 +141,19 @@ class ThreadMetadataStore:
             self._path,
             json.dumps(metadata.to_dict(), ensure_ascii=False, indent=2) + "\n",
         )
+        self._log.debug("persistence.metadata.saved")
 
 
 class InboxStore:
     """Atomic projection of inputs not yet committed to conversation history."""
 
-    def __init__(self, paths: ThreadPaths) -> None:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
         self._path = paths.inbox_file
+        self._log = runtime_log
 
     def load(self) -> list[InboxInput]:
         raw = _read_json(self._path, "inbox snapshot")
@@ -133,6 +167,7 @@ class InboxStore:
             self._path,
             json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2) + "\n",
         )
+        self._log.debug("persistence.inbox.replaced", items=len(items))
 
     def reconcile(self, committed_input_ids: set[str]) -> list[InboxInput]:
         stored = self.load()
@@ -141,12 +176,23 @@ class InboxStore:
         ]
         if len(pending) != len(stored):
             self.replace(pending)
+        self._log.debug(
+            "persistence.inbox.reconciled",
+            stored=len(stored),
+            committed=len(stored) - len(pending),
+            pending=len(pending),
+        )
         return pending
 
 
 class ThreadLifecycleStore:
-    def __init__(self, paths: ThreadPaths) -> None:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
         self._path = paths.session.threads_log
+        self._log = runtime_log
 
     def append(self, record: ThreadLifecycleRecord) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +213,10 @@ class ThreadLifecycleStore:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        self._log.debug(
+            "persistence.lifecycle.appended",
+            bytes=len(payload),
+        )
 
     def load(self) -> list[ThreadLifecycleRecord]:
         return [
@@ -222,13 +272,18 @@ class ThreadPersistence:
         self.thread_id = paths.thread_id
         self.workspace_root = workspace_root
         self.provider = provider
-        self.history = MessageHistoryStore(paths)
+        runtime_log = DEFAULT_RUNTIME_LOG.bind(
+            "persistence",
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+        )
+        self.history = MessageHistoryStore(paths, runtime_log)
         self.artifacts: ArtifactStorePort = (
             artifacts if artifacts is not None else ArtifactStore(paths)
         )
-        self.metadata = ThreadMetadataStore(paths)
-        self.inbox = InboxStore(paths)
-        self.lifecycle = ThreadLifecycleStore(paths)
+        self.metadata = ThreadMetadataStore(paths, runtime_log)
+        self.inbox = InboxStore(paths, runtime_log)
+        self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
         self.state = state
 
     def has_persisted_state(self) -> bool:

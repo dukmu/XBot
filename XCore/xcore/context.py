@@ -214,6 +214,12 @@ class Context:
         label = self._isolate_label(name)
         owner = self.fiber
         self._services.set(label, name, value, owner=owner)
+        logger.debug(
+            "service.provided name=%s owner=%s type=%s",
+            name,
+            owner.name,
+            type(value).__name__,
+        )
         # Only an active context has fibers waiting on dependencies; on a
         # fresh (not-yet-started) context there is nothing to refresh and no
         # event loop to schedule on.
@@ -232,6 +238,7 @@ class Context:
         label = self._isolate_label(name)
         removed = self._services.unset(label, name, value)
         if removed:
+            logger.debug("service.released name=%s", name)
             asyncio.ensure_future(self._registry._refresh_dependents([name]))
         return removed
 
@@ -505,12 +512,22 @@ class Context:
             if self._is_active:
                 logger.warning("start() called on an already-active root; no-op")
                 return
+            logger.info(
+                "application.start plugins=%d services=%d",
+                len(self._registry),
+                len(self._services),
+            )
             self._is_active = True
             await self._load_fixpoint()
             try:
                 await self._bus.emit("ready")
             except BaseException:  # noqa: BLE001 - ready failures must not wedge start
                 logger.exception("ready listeners failed; app continues")
+            running = sum(
+                fiber.state is FiberState.RUNNING
+                for fiber in self._registry._all_fibers()
+            )
+            logger.info("application.ready plugins_running=%d", running)
 
     async def _load_fixpoint(self) -> None:
         """Iteratively load every loadable pending/failed fiber (review B1)."""
@@ -544,6 +561,7 @@ class Context:
         if not self._is_active:
             logger.warning("stop() called on an inactive root; no-op")
             return
+        logger.info("application.stop plugins=%d", len(self._registry))
         self._is_active = False
         try:
             await self._bus.emit("dispose")
@@ -557,6 +575,7 @@ class Context:
         fibers.sort(key=lambda fiber: fiber._load_seq, reverse=True)
         for fiber in fibers:
             await fiber.settle_to(_TARGET_PENDING)
+        logger.info("application.stopped")
 
     async def destroy(self) -> None:
         """Permanently tear down this context subtree (irreversible)."""
@@ -566,6 +585,7 @@ class Context:
         async with self._lifecycle_lock:
             if self._destroyed:
                 return
+            logger.info("application.destroy")
             await self._stop_locked()
             for fiber in list(self._registry._all_fibers()):
                 await fiber.settle_to(_TARGET_DISPOSED)
@@ -575,7 +595,12 @@ class Context:
                 await child._destroy_child()
             self._destroyed = True
             if errors:
-                logger.error("root dispose errors: %s", errors)
+                logger.error(
+                    "root dispose errors count=%d error_types=%s",
+                    len(errors),
+                    sorted(type(error).__name__ for error in errors),
+                )
+            logger.info("application.destroyed")
 
     async def _destroy_child(self) -> None:
         if self._destroyed:

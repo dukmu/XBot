@@ -28,6 +28,7 @@ from XBotv2.session import SessionInfo
 from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.core.history import ConversationHistory
+from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.permission_request import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
@@ -850,6 +851,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
     registry = ToolRegistry()
     registry.register(large_output_tool)
     plugin_ctx = xcore.Context()
+    plugin_ctx.set("runtime_log", RuntimeLog())
     plugin_ctx.on(
         Events.AFTER_TOOLS,
         make_tool_result_cache_hook(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -21,6 +20,7 @@ from XBotv2.application import (
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.session.history import display_history
 from XBotv2.core.paths import RuntimePaths
@@ -28,9 +28,6 @@ from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.session.protocol import session_error_event, session_event
-logger = logging.getLogger("xbotv2.session")
-
-
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
 
@@ -66,6 +63,7 @@ class SessionRuntime:
     no_plugins: bool
     application: AgentApplicationPort
     engine: AgentLoopDriverPort
+    runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG
     interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
@@ -82,8 +80,14 @@ class SessionRuntime:
     # on connect so early inputs are never lost.
     _pending_message_events: list[dict[str, Any]] = field(default_factory=list)
     _wakeup_requested: bool = False
+    _log: RuntimeLog = field(init=False)
 
     def __post_init__(self) -> None:
+        self._log = self.runtime_log.bind(
+            "session",
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+        )
         self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
         events = self.application.events
@@ -227,6 +231,10 @@ class SessionRuntime:
             events.put_nowait(event)
         self._pending_message_events.clear()
         self.event_streams.add(events)
+        self._log.debug(
+            "session.events.attached",
+            streams=len(self.event_streams),
+        )
         return events
 
     def detach_event_stream(
@@ -234,6 +242,10 @@ class SessionRuntime:
         events: asyncio.Queue[dict[str, Any] | None],
     ) -> None:
         self.event_streams.discard(events)
+        self._log.debug(
+            "session.events.detached",
+            streams=len(self.event_streams),
+        )
 
     def request_interrupt(self) -> bool:
         task = self.turn_task
@@ -294,8 +306,11 @@ class SessionRuntime:
         self.event_streams.clear()
         try:
             await self.engine.close_session()
-        except Exception:
-            logger.exception("Engine close_session failed for %s", self.session_id)
+        except Exception as exc:
+            self._log.exception(
+                "session.engine.close.failed",
+                error_type=type(exc).__name__,
+            )
         finally:
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
@@ -420,10 +435,14 @@ async def _pump_turn(
                     payload["data"]["status_slots"] = slots
             await events.put(payload)
     except asyncio.CancelledError:
-        logger.info("Turn cancelled for session %s", runtime.session_id)
+        runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Engine run_turn failed")
+        runtime._log.exception(
+            "session.turn.failed",
+            request_id=request_id,
+            error_type=type(exc).__name__,
+        )
         await events.put(session_error_event(
             "turn_failed",
             str(exc),

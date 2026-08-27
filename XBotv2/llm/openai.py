@@ -320,7 +320,7 @@ def create_openai_provider(provider_config, model_config, *, artifacts=None):
     ``model_config`` is the selected specific model from its catalog.
     """
     protocol = provider_config.protocol
-    logging.getLogger("llm").info(
+    logging.getLogger("xbotv2.llm").info(
         "creating openai-compatible provider=%s model=%s",
         protocol, model_config.model,
     )

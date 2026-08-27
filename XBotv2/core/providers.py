@@ -20,7 +20,7 @@ import httpx
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 
-logger = logging.getLogger("llm")
+logger = logging.getLogger("xbotv2.llm")
 
 InputModality = Literal["text", "image"]
 
@@ -131,9 +131,29 @@ class BaseProvider(ABC):
                     yield chunk
                 return
             except Exception as exc:
-                if emitted or not retryable_provider_error(exc):
+                retryable = retryable_provider_error(exc)
+                status_code = getattr(exc, "status_code", None)
+                if emitted or not retryable:
+                    logger.error(
+                        "provider.request.failed model=%s error_type=%s "
+                        "status_code=%s emitted=%s retryable=%s retries=%d",
+                        self.model,
+                        type(exc).__name__,
+                        status_code,
+                        emitted,
+                        retryable,
+                        retries,
+                    )
                     raise
                 if self.max_retries is not None and retries >= self.max_retries:
+                    logger.error(
+                        "provider.retry.exhausted model=%s error_type=%s "
+                        "status_code=%s retries=%d",
+                        self.model,
+                        type(exc).__name__,
+                        status_code,
+                        retries,
+                    )
                     raise ProviderRetryExhaustedError(
                         model=self.model,
                         retries=retries,
@@ -143,11 +163,12 @@ class BaseProvider(ABC):
                 retries += 1
                 logger.warning(
                     "provider request failed; retrying model=%s retry=%d "
-                    "delay=%.1fs error=%s",
+                    "delay=%.1fs error_type=%s status_code=%s",
                     self.model,
                     retries,
                     delay,
-                    exc,
+                    type(exc).__name__,
+                    status_code,
                 )
                 if delay:
                     await asyncio.sleep(delay)

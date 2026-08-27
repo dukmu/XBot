@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -20,8 +21,30 @@ from XBotv2.core.tools import (
     tool_parameters_schema,
 )
 from XBotv2.core.messages import Message
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 
-logger = logging.getLogger("XBotv2.agentloop.tools")
+_DEFAULT_TOOL_LOG = DEFAULT_RUNTIME_LOG.bind("tools")
+
+
+def _log_tool_finish(
+    runtime_log: RuntimeLog,
+    started: float,
+    *,
+    call_id: str,
+    name: str,
+    status: str,
+    level: int = logging.INFO,
+    **fields: Any,
+) -> None:
+    runtime_log.log(
+        level,
+        "tool.execute.finish",
+        call_id=call_id,
+        name=name,
+        status=status,
+        duration_ms=round((time.perf_counter() - started) * 1000, 3),
+        **fields,
+    )
 
 
 class ToolDispatchTimeoutError(TimeoutError):
@@ -42,6 +65,7 @@ async def execute_tools(
     events: EventPort | None = None,
     guards: tuple[Any, ...] = (),
     context_factory: Any = None,
+    runtime_log: RuntimeLog = _DEFAULT_TOOL_LOG,
 ) -> list[Message]:
     """Execute tool calls through the guard pipeline.
 
@@ -65,15 +89,32 @@ async def execute_tools(
     observed_tool_calls: list[ToolCall] = []
 
     for call in tool_calls:
+        started = time.perf_counter()
         tool_name = call.name
         entry = registry.get(tool_name) if registry is not None else None
-        logger.info(
-            "tool.guard start id=%s name=%s args_keys=%s",
-            call.id, tool_name, sorted(call.args),
+        runtime_log.debug(
+            "tool.guard.start",
+            call_id=call.id,
+            name=tool_name,
+            argument_fields=sorted(call.args),
+            guard_count=len(guards),
         )
 
         if entry is None:
-            await _emit_tool_denied(events, context_factory, call, f"Tool not registered: {tool_name}")
+            _log_tool_finish(
+                runtime_log,
+                started,
+                call_id=call.id,
+                name=tool_name,
+                status="not_registered",
+                level=logging.WARNING,
+            )
+            await _emit_tool_denied(
+                events,
+                context_factory,
+                call,
+                f"Tool not registered: {tool_name}",
+            )
             results.append(_error_message(call, f"Tool not registered: {tool_name}"))
             observed_tool_calls.append(call)
             continue
@@ -83,6 +124,7 @@ async def execute_tools(
             events=events,
             guards=guards,
             context_factory=context_factory,
+            runtime_log=runtime_log,
             results=results,
             observed_tool_calls=observed_tool_calls,
         )
@@ -169,11 +211,18 @@ async def _execute_one_tool(
     events: Any,
     guards: tuple[Any, ...],
     context_factory: Any,
+    runtime_log: RuntimeLog,
     results: list[Message], observed_tool_calls: list[ToolCall],
 ) -> None:
     tool_id = call.id
     tool_name = call.name
-    logger.info("tool.execute start id=%s name=%s", tool_id, tool_name)
+    started = time.perf_counter()
+    runtime_log.info(
+        "tool.execute.start",
+        call_id=tool_id,
+        name=tool_name,
+        argument_fields=sorted(call.args),
+    )
 
     tool = entry.tool
     args = dict(call.args)
@@ -209,6 +258,14 @@ async def _execute_one_tool(
                 msg = _error_message(call, f"Tool not registered: {tool_name}")
                 observed_tool_calls.append(call)
                 results.append(msg)
+                _log_tool_finish(
+                    runtime_log,
+                    started,
+                    call_id=tool_id,
+                    name=tool_name,
+                    status="not_registered_after_rewrite",
+                    level=logging.WARNING,
+                )
                 await _emit_tool_denied(events, context_factory, call, msg.content)
                 return
             tool = entry.tool
@@ -228,6 +285,15 @@ async def _execute_one_tool(
         reason = f"Invalid arguments for {tool_name}{location}: {exc.message}"
         observed_tool_calls.append(call)
         results.append(_error_message(call, reason))
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status="invalid_arguments",
+            level=logging.WARNING,
+            invalid_path=path,
+        )
         await _emit_tool_denied(
             events,
             context_factory,
@@ -252,6 +318,14 @@ async def _execute_one_tool(
     if denial is not None:
         reason = denial.reason or f"Tool denied: {tool_name}"
         client_events = list(denial.client_events)
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status="denied",
+            level=logging.WARNING,
+        )
         await _emit_tool_denied(events, context_factory, call, reason)
         results.append(_error_message(call, reason, events=client_events))
         observed_tool_calls.append(call)
@@ -268,15 +342,32 @@ async def _execute_one_tool(
         observed_call = ToolCall(tool_id, tool_name, args)
         observed_tool_calls.append(observed_call)
         results.append(message)
-        logger.info("tool.execute finished id=%s name=%s status=%s content_len=%d", tool_id, tool_name, message.status, len(str(message.content)))
-        await _run_tool_event(events, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, short_circuit=False)
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status=message.status,
+            result_chars=len(str(message.content)),
+        )
+        await _run_tool_event(
+            events,
+            context_factory,
+            Events.AFTER_TOOL_CALL,
+            tool_call=observed_call,
+            tool_result=message,
+            short_circuit=False,
+        )
 
     except ToolDispatchTimeoutError as exc:
-        logger.warning(
-            "Tool %s timed out id=%s timeout=%s",
-            tool_name,
-            tool_id,
-            exc.timeout_seconds,
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status="timeout",
+            level=logging.WARNING,
+            timeout_seconds=exc.timeout_seconds,
         )
         observed_call = ToolCall(tool_id, tool_name, args)
         timeout = exc.timeout_seconds
@@ -312,13 +403,37 @@ async def _execute_one_tool(
             short_circuit=False,
         )
     except Exception as exc:
-        logger.exception("Tool %s failed", tool_name)
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status="error",
+            level=logging.ERROR,
+            error_type=type(exc).__name__,
+        )
         observed_call = ToolCall(tool_id, tool_name, args)
         message = _error_message(observed_call, f"Error executing {tool_name}: {exc}")
         observed_tool_calls.append(observed_call)
         results.append(message)
-        await _run_tool_event(events, context_factory, Events.TOOL_CALL_FAILURE, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
-        await _run_tool_event(events, context_factory, Events.AFTER_TOOL_CALL, tool_call=observed_call, tool_result=message, error=exc, short_circuit=False)
+        await _run_tool_event(
+            events,
+            context_factory,
+            Events.TOOL_CALL_FAILURE,
+            tool_call=observed_call,
+            tool_result=message,
+            error=exc,
+            short_circuit=False,
+        )
+        await _run_tool_event(
+            events,
+            context_factory,
+            Events.AFTER_TOOL_CALL,
+            tool_call=observed_call,
+            tool_result=message,
+            error=exc,
+            short_circuit=False,
+        )
 
 
 def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:

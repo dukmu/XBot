@@ -10,14 +10,20 @@ from xcore.state import StateService
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import EventContext, Events, LoopState
 from XBotv2.core.messages import Message
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.core.usage import UsageDelta
 
 
 class UsageService:
     """Own the one cumulative usage snapshot for a thread."""
 
-    def __init__(self, store: StateService) -> None:
+    def __init__(
+        self,
+        store: StateService,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
         self._store = store
+        self._log = runtime_log.bind("usage")
         self._snapshot = UsageDelta()
         self._initialized = False
 
@@ -25,6 +31,7 @@ class UsageService:
         if self._initialized:
             return
         stored = await self._store.get("snapshot")
+        source = "history"
         if stored is None:
             snapshot = UsageDelta()
             for message in messages:
@@ -37,10 +44,17 @@ class UsageService:
             if snapshot.requests:
                 await self._store.set("snapshot", snapshot.to_snapshot())
         else:
+            source = "snapshot"
             if not isinstance(stored, Mapping):
                 raise TypeError("Persisted usage snapshot must be an object")
             self._snapshot = UsageDelta.from_snapshot(stored)
         self._initialized = True
+        self._log.info(
+            "usage.initialized",
+            source=source,
+            messages=len(messages),
+            **self._snapshot.totals(),
+        )
 
     def snapshot(self) -> dict[str, int]:
         return self._snapshot.totals()
@@ -53,6 +67,11 @@ class UsageService:
             return False
         self._snapshot = self._snapshot.add(delta)
         await self._store.set("snapshot", self._snapshot.to_snapshot())
+        self._log.info(
+            "usage.recorded",
+            delta=delta.totals(),
+            cumulative=self._snapshot.totals(),
+        )
         return True
 
 
@@ -71,11 +90,11 @@ class UsageHandlers:
 
 
 class UsageComponent:
-    inject = ["state", "loop_state"]
+    inject = ["state", "loop_state", "runtime_log"]
     name = "xbot.usage"
 
     def apply(self, ctx: Context, config: object | None = None) -> None:
-        service = UsageService(ctx.state.namespace("usage"))
+        service = UsageService(ctx.state.namespace("usage"), ctx.runtime_log)
         handlers = UsageHandlers(service, ctx.loop_state)
         ctx.set("usage", service)
         ctx.on(Events.AFTER_MODEL_RESPONSE, handlers.record)

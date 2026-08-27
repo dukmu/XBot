@@ -9,7 +9,7 @@ from typing import Any
 
 from XBotv2.llm.config import expand_env
 
-logger = logging.getLogger("llm")
+logger = logging.getLogger("xbotv2.llm")
 
 DEFAULT_PROVIDER_MAX_RETRIES = 16
 

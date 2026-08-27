@@ -436,7 +436,7 @@ def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
             "Anthropic protocol providers require max_output_tokens "
             f"for model {model_config.model!r}"
         )
-    logging.getLogger("llm").info(
+    logging.getLogger("xbotv2.llm").info(
         "creating anthropic provider=%s model=%s", protocol, model_config.model
     )
     return AnthropicProvider(

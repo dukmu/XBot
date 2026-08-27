@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
@@ -47,6 +47,12 @@ from XBotv2.core.messages import (
     ModelChunk,
     ModelResponse,
     merge_model_chunk,
+)
+from XBotv2.core.runtime_logging import (
+    DEFAULT_RUNTIME_LOG,
+    RuntimeLog,
+    push_log_context,
+    reset_log_context,
 )
 from XBotv2.context_builder import (
     BEFORE_CONTEXT_BUILD,
@@ -101,9 +107,6 @@ class _ModelRequestResult:
 class _ToolBatchResult:
     stop_loop: bool = False
     turn_complete: bool = False
-
-logger = logging.getLogger("xbotv2.engine")
-
 
 def xbot_tool_call_deltas(
     chunk: ModelChunk,
@@ -188,6 +191,7 @@ class Engine:
         state: LoopState,
         settings: LoopSettings,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.model_client = model_client
         self.tools = tools
@@ -195,6 +199,7 @@ class Engine:
         self.state = state
         self.settings = settings
         self.max_iterations = max_iterations
+        self._log = runtime_log.bind("engine")
         self.inbox = AgentInbox(
             items=state.inbox_items,
             sink=state.inbox_sink,
@@ -398,10 +403,23 @@ class Engine:
         if not claimed:
             return
         request_token = self._request_id.set(request_id)
+        log_token = push_log_context(
+            session_id=self.session.session_id,
+            thread_id=self.session.thread_id,
+            request_id=request_id,
+        )
         turn_started = False
         turn_ended = False
         self.continuation = any(
             bool(item.metadata.get("continuation")) for item in claimed
+        )
+        turn_started_at = time.perf_counter()
+        outcome = "completed"
+        self._log.info(
+            "turn.start",
+            inputs=len(claimed),
+            input_chars=sum(len(item.content) for item in claimed),
+            continuation=self.continuation,
         )
         try:
             async for event in self._run_turn_impl(
@@ -413,7 +431,8 @@ class Engine:
                     turn_ended = True
                 yield event
         except asyncio.CancelledError:
-            logger.info("Turn %s interrupted by client", self.turn_count)
+            outcome = "cancelled"
+            self._log.info("turn.interrupted", turn=self.turn_count)
             self._close_interrupted_tool_calls("client_interrupt")
             if not turn_ended:
                 turn_ctx = self._make_event_context(stop_reason="client_interrupt",
@@ -430,7 +449,12 @@ class Engine:
             )
             raise
         except BaseException as exc:
-            logger.exception("Turn failed")
+            outcome = "error"
+            self._log.exception(
+                "turn.failed",
+                turn=self.turn_count,
+                error_type=type(exc).__name__,
+            )
             current_input = next(
                 (
                     item.content
@@ -474,9 +498,22 @@ class Engine:
                     },
                 )
                 await self._publish_state_change()
+            except Exception:
+                outcome = "state_error"
+                raise
             finally:
                 self.continuation = False
                 self._request_id.reset(request_token)
+                self._log.info(
+                    "turn.finish",
+                    turn=self.turn_count,
+                    outcome=outcome,
+                    duration_ms=round(
+                        (time.perf_counter() - turn_started_at) * 1000,
+                        3,
+                    ),
+                )
+                reset_log_context(log_token)
 
     async def _run_turn_impl(
         self,
@@ -561,10 +598,7 @@ class Engine:
                 if response is None:
                     raise RuntimeError("LLM stream completed without a response")
             except asyncio.TimeoutError as exc:
-                logger.error(
-                    "engine.turn LLM timed out (turn=%d)",
-                    self.turn_count,
-                )
+                self._log.error("llm.request.timeout", turn=self.turn_count)
                 err_ctx = self._make_event_context(
                     context_messages=context_messages,
                     model_request=model_request,
@@ -576,7 +610,13 @@ class Engine:
                     short_circuit=False,
                 )
                 raise asyncio.TimeoutError("LLM call timed out") from None
-            except BaseException as exc:
+            except Exception as exc:
+                self._log.exception(
+                    "llm.request.error",
+                    provider=self.settings.provider,
+                    model=self.settings.model,
+                    error_type=type(exc).__name__,
+                )
                 err_ctx = self._make_event_context(context_messages=context_messages,
                     model_request=model_request,
                     error=exc,
@@ -601,11 +641,11 @@ class Engine:
                     "stop_reason", "unknown"
                 )
                 context = " after ToolResult" if after_tool else ""
-                logger.debug(
-                    "invalid model response%s stop_reason=%s reasoning=%r",
-                    context,
-                    stop_reason,
-                    reasoning[:1000],
+                self._log.debug(
+                    "llm.response.invalid",
+                    after_tool=after_tool,
+                    stop_reason=stop_reason,
+                    reasoning_chars=len(reasoning),
                 )
                 raise RuntimeError(
                     f"LLM returned no assistant content or ToolUse{context} "
@@ -727,11 +767,11 @@ class Engine:
             )
             return
 
-        logger.info(
-            "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
-            self.turn_count,
-            len(tool_calls),
-            [call.name for call in tool_calls],
+        self._log.info(
+            "tool.batch.started",
+            turn=self.turn_count,
+            count=len(tool_calls),
+            names=[call.name for call in tool_calls],
         )
         yield agentloop_event(
             "tool_calls_started",
@@ -755,12 +795,16 @@ class Engine:
                 tool_names_by_id.get(str(message.tool_call_id), "tool"),
             )
 
-        logger.info(
-            "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
-            self.turn_count,
-            len(tool_messages),
-            [message.tool_call_id for message in tool_messages],
-            [message.status for message in tool_messages],
+        self._log.info(
+            "tool.batch.finished",
+            turn=self.turn_count,
+            count=len(tool_messages),
+            names=[
+                tool_names_by_id.get(str(message.tool_call_id), "tool")
+                for message in tool_messages
+            ],
+            statuses=[message.status for message in tool_messages],
+            result_chars=sum(len(str(message.content)) for message in tool_messages),
         )
         self.messages.extend(tool_messages)
         # Announce committed state before exposing results or requesting the
@@ -1097,9 +1141,31 @@ class Engine:
             short_circuit=False,
         )
         model_request = ready_ctx.model_request or model_request
+        self._log.debug(
+            "llm.tools.bound",
+            names=[tool.name for tool in model_request.tools],
+        )
+        self._log.info(
+            "llm.request.ready",
+            provider=self.settings.provider,
+            model=self.settings.model,
+            messages=len(model_request.messages),
+            tools=len(model_request.tools),
+            estimated_input_tokens=estimate_request_tokens(
+                model_request.messages,
+                model_request.tools,
+            ),
+            context_window=self.settings.context_window,
+            max_output_tokens=self.settings.max_output_tokens,
+        )
         return _ModelRequestResult(request=model_request)
 
     async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
+        self._log.info(
+            "turn.stop",
+            turn=self.turn_count,
+            reason=stop_reason,
+        )
         turn_ctx = self._make_event_context(stop_reason=stop_reason,
         )
         await self._dispatch(Events.TURN_END, turn_ctx,
@@ -1150,7 +1216,10 @@ class Engine:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
+        started = time.perf_counter()
+        chunk_count = 0
         async for chunk in llm.astream(context_messages):
+            chunk_count += 1
             if isinstance(chunk, ModelChunk):
                 aggregate = merge_model_chunk(aggregate, chunk)
                 if chunk.content:
@@ -1171,12 +1240,29 @@ class Engine:
             if isinstance(chunk, ModelResponse):
                 aggregate = chunk
                 continue
-            logger.warning(
-                "_stream_model_response: unexpected chunk type %s",
-                type(chunk).__name__,
+            self._log.warning(
+                "llm.response.unexpected_chunk",
+                chunk_type=type(chunk).__name__,
             )
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")
+        usage = aggregate.usage_metadata
+        self._log.info(
+            "llm.response",
+            provider=self.settings.provider,
+            model=self.settings.model,
+            chunks=chunk_count,
+            content_chars=len(aggregate.content),
+            reasoning_chars=len(aggregate.reasoning),
+            tool_calls=len(aggregate.tool_calls),
+            input_tokens=usage.get("input_tokens", "unknown"),
+            output_tokens=usage.get("output_tokens", "unknown"),
+            total_tokens=usage.get("total_tokens", "unknown"),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+            stop_reason=aggregate.response_metadata.get("stop_reason", "unknown"),
+            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+        )
         yield {"type": "_model_response", "data": {"response": aggregate}}
 
     # ------------------------------------------------------------------

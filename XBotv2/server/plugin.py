@@ -110,13 +110,13 @@ class ServerComponent:
     """Build the HTTP/SSE FastAPI app and register it as ``ctx.server``."""
 
     name = "xbot.server"
-    inject: list[str] = []
+    inject = ["runtime_log"]
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         from XBotv2.server.http import create_app
 
         info = ServerInfo(name="xbotv2", started_at=time.monotonic())
-        app = create_app(server_name=info.name)
+        app = create_app(server_name=info.name, runtime_log=ctx.runtime_log)
         carrier = WebServer(app)
 
         ctx.on(REGISTER_ROUTE, carrier.register_contribution)

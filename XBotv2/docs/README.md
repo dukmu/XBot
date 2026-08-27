@@ -14,6 +14,7 @@ project discipline and verification.
 - [Prompt assembly](core/prompts.md) — context builder contract
 - [Agents](core/agents.md) — Agent and subagent definitions
 - [Configuration](core/workspace_config.md) — global / session / workspace YAML layers
+- [Runtime logging](core/logging.md) — levels, structured records, and plugin use
 
 ## API and Protocol
 

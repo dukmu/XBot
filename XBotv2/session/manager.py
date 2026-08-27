@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -15,6 +14,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from XBotv2.core.paths import RuntimePaths, SessionPaths
+from XBotv2.core.runtime_logging import (
+    DEFAULT_RUNTIME_LOG,
+    RuntimeLog,
+    push_log_context,
+    reset_log_context,
+)
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
@@ -51,9 +56,6 @@ from XBotv2.core.operations import (
     ResponseT,
     dispatch_operation,
 )
-
-logger = logging.getLogger("xbotv2.session_manager")
-
 
 async def _runtime_message_events(
     runtime: SessionRuntime,
@@ -95,12 +97,14 @@ class SessionManager:
         reap_interval: float = 60.0,
         thread_persistence_factory: ThreadPersistenceFactory | None = None,
         application_factory: AgentApplicationFactory | None = None,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.paths = paths
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
         self.thread_persistence_factory = thread_persistence_factory
         self.application_factory = application_factory
+        self._log = runtime_log.bind("session")
         self._sessions: dict[tuple[str, str], SessionRuntime] = {}
         self._opening: dict[
             tuple[str, str], asyncio.Task[SessionRuntime]
@@ -142,8 +146,11 @@ class SessionManager:
             await asyncio.sleep(self.reap_interval)
             try:
                 await self._reap_idle()
-            except Exception:
-                logger.exception("idle reaper pass failed")
+            except Exception as exc:
+                self._log.exception(
+                    "session.reaper.failed",
+                    error_type=type(exc).__name__,
+                )
 
     async def _reap_idle(self) -> None:
         if self.idle_timeout is None or self.idle_timeout <= 0:
@@ -162,7 +169,21 @@ class SessionManager:
             for ctx in due:
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
         for ctx in due:
-            await ctx.close("idle_timeout")
+            await self._close_runtime(ctx, "idle_timeout")
+
+    async def _close_runtime(
+        self,
+        runtime: SessionRuntime,
+        reason: str,
+    ) -> None:
+        log_token = push_log_context(
+            session_id=runtime.session_id,
+            thread_id=runtime.thread_id,
+        )
+        try:
+            await runtime.close(reason)
+        finally:
+            reset_log_context(log_token)
 
     @property
     def size(self) -> int:
@@ -206,12 +227,26 @@ class SessionManager:
             session_id = session_id or _new_session_id()
         assert session_id is not None
         key = (session_id, thread_id)
+        self._log.info(
+            "session.open.request",
+            session_id=session_id,
+            thread_id=thread_id,
+            mode=mode,
+            provider=provider_name,
+            workspace_root=workspace_root,
+            no_plugins=no_plugins,
+        )
 
         async with self._lock:
             existing = self._sessions.get(key)
             if existing is not None:
                 if mode == "resume":
                     existing.touch()
+                    self._log.info(
+                        "session.open.reused",
+                        session_id=session_id,
+                        thread_id=thread_id,
+                    )
                     return existing
                 else:
                     raise SessionExists(f"{session_id}/{thread_id}")
@@ -259,6 +294,11 @@ class SessionManager:
         parent_permission_system: Any | None,
         is_subagent: bool,
     ) -> SessionRuntime:
+        started = time.perf_counter()
+        log_token = push_log_context(
+            session_id=session_id,
+            thread_id=thread_id,
+        )
         try:
             session_paths = self.paths.session(session_id)
             if mode == "resume" and not session_paths.has_thread(thread_id):
@@ -310,6 +350,7 @@ class SessionManager:
                 no_plugins=no_plugins,
                 application=application,
                 engine=engine,
+                runtime_log=self._log,
             )
             try:
                 await engine.start_session()
@@ -318,12 +359,28 @@ class SessionManager:
                 raise
             async with self._lock:
                 self._sessions[key] = ctx
+            self._log.info(
+                "session.opened",
+                mode=mode,
+                provider=ctx.provider_name,
+                resumed=had_persisted_session,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
             return ctx
+        except BaseException as exc:
+            self._log.error(
+                "session.open.failed",
+                mode=mode,
+                error_type=type(exc).__name__,
+                duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
+            raise
         finally:
             async with self._lock:
                 current = asyncio.current_task()
                 if self._opening.get(key) is current:
                     self._opening.pop(key, None)
+            reset_log_context(log_token)
 
     async def close_thread(
         self,
@@ -349,7 +406,13 @@ class SessionManager:
                 async with self._lock:
                     self._sessions.pop(key, None)
         if ctx is not None:
-            await ctx.close(reason)
+            await self._close_runtime(ctx, reason)
+            self._log.info(
+                "session.thread.closed",
+                session_id=session_id,
+                thread_id=thread_id,
+                reason=reason,
+            )
 
     async def close_session(
         self,
@@ -379,7 +442,13 @@ class SessionManager:
                 self._sessions.pop((runtime.session_id, runtime.thread_id), None)
             contexts.append(runtime)
         for ctx in contexts:
-            await ctx.close(reason)
+            await self._close_runtime(ctx, reason)
+        self._log.info(
+            "session.closed",
+            session_id=session_id,
+            threads=len(contexts),
+            reason=reason,
+        )
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -393,7 +462,7 @@ class SessionManager:
             contexts = list(self._sessions.values())
             self._sessions.clear()
         for ctx in contexts:
-            await ctx.close()
+            await self._close_runtime(ctx, "session_closed")
         reaper = self._reaper
         self._reaper = None
         if reaper is not None and not reaper.done():
@@ -454,11 +523,25 @@ class SessionManager:
                 f"Cannot fork {session_id}: message persistence is not mounted",
             )
         for runtime in runtimes:
-            await runtime.application.events.emit(
-                PREPARE_FORK,
-                PrepareFork(session_id, runtime.thread_id),
+            log_token = push_log_context(
+                session_id=session_id,
+                thread_id=runtime.thread_id,
             )
-        return fork_persisted_session(self.paths, session_id)
+            try:
+                await runtime.application.events.emit(
+                    PREPARE_FORK,
+                    PrepareFork(session_id, runtime.thread_id),
+                )
+            finally:
+                reset_log_context(log_token)
+        forked_id = fork_persisted_session(self.paths, session_id)
+        self._log.info(
+            "session.forked",
+            session_id=session_id,
+            forked_session_id=forked_id,
+            threads=len(runtimes),
+        )
+        return forked_id
 
     async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]:
         await session_summary(self, session_id)
@@ -542,8 +625,18 @@ class SessionManager:
     ) -> HistoryMutation:
         runtime = await self.get(session_id, thread_id)
         require_idle(runtime, "rewrite history")
-        async with runtime.turn_lock:
-            removed = await runtime.application.history.clear_history()
+        log_token = push_log_context(session_id=session_id, thread_id=thread_id)
+        try:
+            async with runtime.turn_lock:
+                removed = await runtime.application.history.clear_history()
+        finally:
+            reset_log_context(log_token)
+        self._log.info(
+            "session.history.cleared",
+            session_id=session_id,
+            thread_id=thread_id,
+            removed_turns=removed,
+        )
         return HistoryMutation(removed_turns=removed, messages=())
 
     async def undo_history(
@@ -554,8 +647,19 @@ class SessionManager:
     ) -> HistoryMutation:
         runtime = await self.get(session_id, thread_id)
         require_idle(runtime, "rewrite history")
-        async with runtime.turn_lock:
-            messages = await runtime.application.history.undo_history(count)
+        log_token = push_log_context(session_id=session_id, thread_id=thread_id)
+        try:
+            async with runtime.turn_lock:
+                messages = await runtime.application.history.undo_history(count)
+        finally:
+            reset_log_context(log_token)
+        self._log.info(
+            "session.history.undone",
+            session_id=session_id,
+            thread_id=thread_id,
+            removed_turns=count,
+            remaining_messages=len(messages),
+        )
         return HistoryMutation(removed_turns=count, messages=tuple(messages))
 
     async def stream_message(
@@ -580,6 +684,15 @@ class SessionManager:
             )
             for item in request.attachments
         ]
+        self._log.info(
+            "session.message.accepted",
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            request_id=request.request_id,
+            content_chars=len(request.content),
+            images=len(images),
+            attachments=len(attachments),
+        )
         return _runtime_message_events(runtime, request, images, attachments)
 
     async def stream_events(
@@ -683,7 +796,14 @@ class SessionManager:
         thread_id: str,
     ) -> InterruptResult:
         runtime = await self.get(session_id, thread_id)
-        return InterruptResult(cancelled=runtime.request_interrupt())
+        cancelled = runtime.request_interrupt()
+        self._log.info(
+            "session.interrupt",
+            session_id=session_id,
+            thread_id=thread_id,
+            cancelled=cancelled,
+        )
+        return InterruptResult(cancelled=cancelled)
 
     async def dispatch(
         self,
@@ -695,11 +815,30 @@ class SessionManager:
         """Route one typed operation to the owning session application."""
         runtime = await self.get(session_id, thread_id)
         runtime.touch()
-        if not operation.requires_exclusive(request):
-            return await dispatch_operation(runtime.application.events, operation, request)
-        require_idle(runtime, f"run {operation.name!r}")
-        async with runtime.turn_lock:
-            return await dispatch_operation(runtime.application.events, operation, request)
+        self._log.debug(
+            "session.operation",
+            session_id=session_id,
+            thread_id=thread_id,
+            operation=operation.name,
+            exclusive=operation.requires_exclusive(request),
+        )
+        log_token = push_log_context(session_id=session_id, thread_id=thread_id)
+        try:
+            if not operation.requires_exclusive(request):
+                return await dispatch_operation(
+                    runtime.application.events,
+                    operation,
+                    request,
+                )
+            require_idle(runtime, f"run {operation.name!r}")
+            async with runtime.turn_lock:
+                return await dispatch_operation(
+                    runtime.application.events,
+                    operation,
+                    request,
+                )
+        finally:
+            reset_log_context(log_token)
 
     async def dispatch_all(
         self,
@@ -932,6 +1071,7 @@ class SessionManagerComponent:
         "runtime_paths",
         "agent_application_factory",
         "workspace_root",
+        "runtime_log",
     ]
 
     def apply(self, ctx, config=None) -> None:
@@ -939,6 +1079,7 @@ class SessionManagerComponent:
             ctx.runtime_paths,
             thread_persistence_factory=ctx.thread_persistence_factory,
             application_factory=ctx.agent_application_factory,
+            runtime_log=ctx.runtime_log,
         )
         ctx.set("sessions", manager)
         handlers = SessionManagerHandlers(manager, workspace_root=str(ctx.workspace_root))
