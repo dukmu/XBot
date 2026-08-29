@@ -128,6 +128,19 @@ class HistoryMutation:
 
 
 @dataclass(frozen=True, slots=True)
+class MessagePage:
+    messages: tuple[Message, ...]
+    next_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPayload:
+    content: bytes
+    media_type: str
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SendMessage:
     session_id: str
     thread_id: str
@@ -135,6 +148,13 @@ class SendMessage:
     request_id: str
     images: tuple[ImageUpload, ...] = ()
     attachments: tuple[AttachmentUpload, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RegenerateMessage:
+    session_id: str
+    thread_id: str
+    request_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +189,7 @@ class InterruptResult:
 
 __all__ = [
     "AttachmentUpload",
+    "ArtifactPayload",
     "HistoryMutation",
     "ImageUpload",
     "InteractionReceipt",
@@ -176,6 +197,8 @@ __all__ = [
     "OpenedSession",
     "OpenSession",
     "OpenThread",
+    "MessagePage",
+    "RegenerateMessage",
     "SendMessage",
     "SessionExists",
     "SessionInfo",

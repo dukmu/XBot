@@ -11,6 +11,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest, Operation
 
 CommandHandler = Callable[[str], Awaitable["CommandResult"]]
+CommandEffect = Literal["history", "thread", "agents", "tasks", "commands", "sessions"]
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -18,6 +19,7 @@ _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 class CommandResult:
     message: str
     status: Literal["ok", "error"] = "ok"
+    effects: tuple[CommandEffect, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +104,7 @@ class CommandExecution:
     command: str
     status: Literal["ok", "error"]
     message: str
+    effects: tuple[CommandEffect, ...] = ()
 
 
 LIST_COMMANDS = Operation("commands/list", EmptyRequest, CommandCatalog)
@@ -117,6 +120,7 @@ __all__ = [
     "Command",
     "CommandCatalog",
     "CommandDescription",
+    "CommandEffect",
     "CommandExecution",
     "CommandHandler",
     "CommandResult",

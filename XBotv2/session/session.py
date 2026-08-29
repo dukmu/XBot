@@ -32,6 +32,17 @@ def fork_persisted_session(paths: Any, source_session_id: str) -> str:
     return session_id
 
 
+def delete_persisted_session(paths: RuntimePaths, session_id: str) -> None:
+    """Permanently remove one validated persisted session tree."""
+    root = paths.session(session_id).root
+    if root.is_symlink():
+        raise OperationError(
+            "invalid_session_storage",
+            f"Cannot delete symlinked session storage: {session_id}",
+        )
+    shutil.rmtree(root)
+
+
 def _new_fork_id() -> str:
     from datetime import datetime
 
@@ -119,6 +130,29 @@ class Session:
         self.state._update_turn_count()
         await self._announce_history_change("undo", count)
         return list(messages)
+
+    async def regenerate_history(self) -> Message:
+        """Remove the latest human-authored turn and return its input."""
+        history = self.state.history
+        index = next(
+            (
+                position
+                for position in range(len(history) - 1, -1, -1)
+                if history[position].role == "user"
+                and "runtime_input" not in history[position].additional_kwargs
+            ),
+            None,
+        )
+        if index is None:
+            raise OperationError(
+                "nothing_to_regenerate",
+                "History has no human-authored turn to regenerate.",
+            )
+        message = history[index]
+        history.replace(history[:index])
+        self.state._update_turn_count()
+        await self._announce_history_change("regenerate", 1)
+        return message
 
     async def _announce_history_change(
         self,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_USAGE, type OpenSessionResponse, type ServerEvent } from "../api/types";
+import { EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
 const opened: OpenSessionResponse = {
@@ -30,6 +30,174 @@ function event(type: string, data: Record<string, unknown>): ServerEvent {
 }
 
 describe("runtimeReducer", () => {
+  it("renders injected model context with provenance and content, not as a user", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "history",
+      history: [{
+        role: "user",
+        content: "job finished with result 42",
+        tool_calls: [],
+        tool_call_id: "",
+        status: "",
+        data: null,
+        error: null,
+        artifacts: [],
+        images: [],
+        runtime: { source: "task-1", event: "notification" },
+      }],
+      nextCursor: null,
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "runtime",
+      source: "task-1",
+      event: "notification",
+      content: "job finished with result 42",
+    });
+  });
+
+  it("uses authoritative history and message events without duplicating optimistic input", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "user_message",
+      id: "request-1",
+      content: "hello",
+      images: [],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", { id: "request-1", role: "user", content: "hello" }),
+    });
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("history_updated", {
+        operation: "regenerate",
+        turns: 1,
+        history: [],
+      }),
+    });
+    expect(state.entries).toEqual([]);
+  });
+
+  it("prepends one server page and advances its cursor", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened,
+      history_cursor: "20",
+      history: [{
+        role: "assistant", content: "new", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+    } });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "old", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+    });
+    expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
+    expect(state.historyCursor).toBeNull();
+  });
+
+  it("keeps live entries when an older persisted page is prepended", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened, history_cursor: "10",
+    } });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", { content: "live answer", tool_calls: [] }),
+    });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+    });
+    expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual([
+      "old question", "live answer",
+    ]);
+  });
+
+  it("projects Todo state from its authoritative client event", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("todo_updated", {
+        kind: "todo_snapshot",
+        schema_version: 1,
+        items: [
+          { content: "implement", status: "in_progress" },
+          { content: "verify", status: "pending" },
+        ],
+      }),
+    });
+    expect(state.todos).toEqual([
+      { content: "implement", status: "in_progress" },
+      { content: "verify", status: "pending" },
+    ]);
+  });
+
+  it("detaches all thread projections when the current session is deleted", () => {
+    const state = runtimeReducer(
+      {
+        ...runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+        loading: true,
+        sessions: [{
+          session_id: opened.session_id,
+          status: "active",
+          active_threads: 1,
+          thread_count: 1,
+        }],
+      },
+      { type: "session_deleted", sessionId: opened.session_id },
+    );
+
+    expect(state).toMatchObject({
+      loading: false,
+      sessionAttached: false,
+      eventStreamConnected: false,
+      current: null,
+      sessions: [],
+      entries: [],
+      threads: [],
+    });
+  });
+
+  it("synchronizes current runtime metadata from the active thread", () => {
+    const thread: ThreadSummary = {
+      session_id: "session-1",
+      thread_id: "agent",
+      status: "active",
+      kind: "main",
+      turn_status: "idle",
+      parent_thread_id: "",
+      agent: "reviewer",
+      provider: "openai",
+      model: "gpt",
+      model_mode: "high",
+      context_window: 2000,
+      message_count: 4,
+      usage: { ...EMPTY_USAGE, total_tokens: 25, context_tokens: 20 },
+      pending_interactions: [],
+      status_slots: { goal: "active" },
+      workspace_root: "/updated",
+    };
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "thread_synced", thread },
+    );
+
+    expect(state.current).toMatchObject({
+      agent_name: "reviewer", provider: "openai", model: "gpt", workspace_root: "/updated",
+    });
+    expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 20 });
+  });
+
   it("assembles streaming reasoning and assistant content once", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { reasoning: "inspect " }) });

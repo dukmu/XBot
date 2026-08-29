@@ -395,7 +395,7 @@ Default TUI transport: auto-generates `/tmp/xbotv2-{pid}.sock`, spawns server
 subprocess bound to it. No TCP port needed for local use. `--server URL` for
 remote HTTP connection.
 
-### ACP (`acp/`)
+### ACP (`acp_plugin/`)
 
 ACP is an XCore carrier profile alongside HTTP. The shared process-level
 Session manager injects a `SessionsPort` into the ACP plugin; the adapter does
@@ -423,13 +423,14 @@ the LLM component registers `/provider` `/model` `/effort`, the agents
 plugin `/agent`, session `/status` `/clear` `/undo` `/fork`, jobs `/tasks`
 `/task`, permissions `/permission`,
 and sandbox `/sandbox` — all into the shared `ctx.commands` registry.
-`GET/POST
-/sessions/{sid}/threads/{tid}/commands` is the only command wire: clients
-discover the merged catalog and execute any command; results are detached
-notices that never enter model history.  UI-local commands
+`GET/POST /sessions/{sid}/threads/{tid}/commands` is the server-command wire:
+clients discover the merged catalog and execute server-owned commands; results
+are detached notices that never enter model history. UI-local commands
 (`exit` `help` `thinking` `details` `attach` `clear-screen`) stay
-client-side.  Plugins register human commands and Agent Tools as separate
-capabilities that may reuse private business methods.  Ordinary model and
+client-side. Web session navigation and history commands may shadow catalog
+entries and call typed resources when the client must replace its local
+projection or event subscription. Plugins register human commands and Agent
+Tools as separate capabilities that may reuse private business methods. Ordinary model and
 MCP Tools do not become slash commands.
 
 `application/` owns only startup/assembly; per-domain logic lives in plugin
@@ -437,7 +438,8 @@ services and named command handlers. The Commands plugin translates use-case
 failures into command results. Plugin-tree and Agent-definition changes take
 effect when the Agent application starts; XBot exposes no live reconfiguration
 event, command, or protocol route. Machine clients (SDK/ACP) keep using the
-typed resource endpoints; human UIs use the command plane only, so the
+typed resource endpoints; human UIs share the catalog and use the command plane
+for server-owned commands, so the
 TUI, Web, and future clients share one command model.
 
 ## Persistence

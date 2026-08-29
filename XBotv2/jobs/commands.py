@@ -42,10 +42,16 @@ def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
             if jobs.get_or_none(parts[1]) is None:
                 return CommandResult(f"Unknown task: {parts[1]}", status="error")
             await jobs.cancel(parts[1])
-            return CommandResult(f"Stopped background task {parts[1]}.")
+            return CommandResult(
+                f"Stopped background task {parts[1]}.",
+                effects=("tasks",),
+            )
         if parts == ["stopall"]:
             tasks = await jobs.stop_all()
-            return CommandResult(f"Stopped {len(tasks)} background task(s).")
+            return CommandResult(
+                f"Stopped {len(tasks)} background task(s).",
+                effects=("tasks",),
+            )
         return command_usage("/task stop <id> | /task stopall")
 
     return (

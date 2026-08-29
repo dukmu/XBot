@@ -26,21 +26,28 @@ from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.core.usage import UsageDelta
-from XBotv2.session.runtime import SessionRuntime, require_idle
+from XBotv2.session.runtime import (
+    SessionRuntime,
+    regenerate_turn_stream,
+    require_idle,
+)
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
     AgentApplicationOptions,
     PREPARE_FORK,
     PrepareFork,
 )
-from XBotv2.session.session import fork_persisted_session
+from XBotv2.session.session import delete_persisted_session, fork_persisted_session
 from XBotv2.session.types import (
+    ArtifactPayload,
     HistoryMutation,
     InteractionReceipt,
     InterruptResult,
+    MessagePage,
     OpenedSession,
     OpenSession,
     OpenThread,
+    RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionNotFound,
@@ -68,6 +75,17 @@ async def _runtime_message_events(
         request.request_id,
         images=images,
         artifacts=attachments,
+    ):
+        yield SessionStreamEvent.from_mapping(event)
+
+
+async def _runtime_regenerate_events(
+    runtime: SessionRuntime,
+    request: RegenerateMessage,
+) -> AsyncIterator[SessionStreamEvent]:
+    async for event in regenerate_turn_stream(
+        runtime,
+        request_id=request.request_id,
     ):
         yield SessionStreamEvent.from_mapping(event)
 
@@ -543,6 +561,24 @@ class SessionManager:
         )
         return forked_id
 
+    async def delete_session(self, session_id: str) -> None:
+        await session_summary(self, session_id)
+        active = await self.active_threads()
+        runtimes = [
+            runtime
+            for (active_session_id, _), runtime in active.items()
+            if active_session_id == session_id
+        ]
+        if any(runtime.turn_lock.locked() for runtime in runtimes):
+            raise OperationError(
+                "thread_busy",
+                "Cannot delete while a session thread has an active turn.",
+                retryable=True,
+            )
+        await self.close_session(session_id, reason="session_deleted")
+        delete_persisted_session(self.paths, session_id)
+        self._log.info("session.deleted", session_id=session_id)
+
     async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]:
         await session_summary(self, session_id)
         return tuple([
@@ -617,6 +653,66 @@ class SessionManager:
             raise SessionNotFound(f"{session_id}/{thread_id}")
         persistence = self._thread_persistence(session, thread_id=thread_id)
         return tuple(persistence.history.load())
+
+    async def message_page(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None,
+        limit: int | None,
+    ) -> MessagePage:
+        messages = await self.messages(session_id, thread_id)
+        if limit is None:
+            if cursor is not None:
+                raise OperationError(
+                    "invalid_cursor", "A message cursor requires a page limit."
+                )
+            return MessagePage(messages)
+        try:
+            end = len(messages) if cursor is None else int(cursor)
+        except ValueError as exc:
+            raise OperationError(
+                "invalid_cursor", "Message cursor is invalid."
+            ) from exc
+        if end < 0 or end > len(messages):
+            raise OperationError(
+                "invalid_cursor", "Message cursor is outside the history."
+            )
+        start = max(0, end - limit)
+        return MessagePage(
+            messages=messages[start:end],
+            next_cursor=str(start) if start else None,
+        )
+
+    async def artifact(
+        self,
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> ArtifactPayload:
+        messages = await self.messages(session_id, thread_id)
+        ref = _history_artifact(messages, artifact_id)
+        if ref is None:
+            raise OperationError(
+                "artifact_not_found",
+                f"Artifact is not referenced by {session_id}/{thread_id}.",
+            )
+        active = (await self.active_threads()).get((session_id, thread_id))
+        store = (
+            active.application.artifacts
+            if active is not None
+            else self._thread_persistence(
+                self.paths.session(session_id), thread_id=thread_id
+            ).artifacts
+        )
+        try:
+            content = store.read(ref)
+        except (FileNotFoundError, ValueError) as exc:
+            raise OperationError(
+                "artifact_not_found", f"Artifact does not exist: {artifact_id}"
+            ) from exc
+        return ArtifactPayload(content, ref.media_type, ref.name)
 
     async def clear_history(
         self,
@@ -694,6 +790,20 @@ class SessionManager:
             attachments=len(attachments),
         )
         return _runtime_message_events(runtime, request, images, attachments)
+
+    async def regenerate_message(
+        self,
+        request: RegenerateMessage,
+    ) -> AsyncIterator[SessionStreamEvent]:
+        runtime = await self.get(request.session_id, request.thread_id)
+        require_idle(runtime, "regenerate a response")
+        self._log.info(
+            "session.message.regenerated",
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            request_id=request.request_id,
+        )
+        return _runtime_regenerate_events(runtime, request)
 
     async def stream_events(
         self,
@@ -990,6 +1100,25 @@ def _upload_bytes(data: str) -> bytes:
     if not payload:
         raise ValueError("upload data must not be empty")
     return payload
+
+
+def _history_artifact(
+    messages: tuple[Message, ...],
+    artifact_id: str,
+) -> ArtifactRef | None:
+    for message in messages:
+        for image in message.images:
+            if image.path == artifact_id:
+                return ArtifactRef(
+                    id=image.path,
+                    kind=ArtifactKind.MEDIA,
+                    media_type=image.media_type,
+                    size=image.size,
+                )
+        for value in message.artifact or []:
+            if isinstance(value, ArtifactRef) and value.id == artifact_id:
+                return value
+    return None
 
 
 async def session_summary(

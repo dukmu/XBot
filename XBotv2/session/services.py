@@ -9,12 +9,15 @@ from XBotv2.core.messages import Message
 from XBotv2.core.operations import Operation
 from XBotv2.session.contracts import SessionStatus
 from XBotv2.session.types import (
+    ArtifactPayload,
     HistoryMutation,
     InteractionReceipt,
     InterruptResult,
+    MessagePage,
     OpenedSession,
     OpenSession,
     OpenThread,
+    RegenerateMessage,
     SendMessage,
     SessionStreamEvent,
     SessionSnapshot,
@@ -43,6 +46,8 @@ class SessionPort(Protocol):
 
     async def undo_history(self, count: int) -> list[Message]: ...
 
+    async def regenerate_history(self) -> Message: ...
+
 
 class SessionsPort(Protocol):
     """Transport-neutral process API for persistent sessions and threads."""
@@ -57,6 +62,8 @@ class SessionsPort(Protocol):
 
     async def fork_session(self, session_id: str) -> str: ...
 
+    async def delete_session(self, session_id: str) -> None: ...
+
     async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]: ...
 
     async def open_thread(self, request: OpenThread) -> OpenedSession: ...
@@ -68,6 +75,22 @@ class SessionsPort(Protocol):
     ) -> ThreadSnapshot: ...
 
     async def messages(self, session_id: str, thread_id: str) -> tuple[Message, ...]: ...
+
+    async def message_page(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None,
+        limit: int | None,
+    ) -> MessagePage: ...
+
+    async def artifact(
+        self,
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> ArtifactPayload: ...
 
     async def clear_history(
         self,
@@ -85,6 +108,11 @@ class SessionsPort(Protocol):
     async def stream_message(
         self,
         request: SendMessage,
+    ) -> AsyncIterator[SessionStreamEvent]: ...
+
+    async def regenerate_message(
+        self,
+        request: RegenerateMessage,
     ) -> AsyncIterator[SessionStreamEvent]: ...
 
     async def stream_events(

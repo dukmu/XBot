@@ -9,6 +9,9 @@ from xcore import Context
 from xcore.state import StateService
 
 from XBotv2.core import Tool, ToolResult
+from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.tools import ClientEvent
+from XBotv2.todolist.contracts import GET_TODOS
 from XBotv2.todolist.models import TodoSnapshot, TodoValidationError
 
 
@@ -96,7 +99,15 @@ class TodolistService:
             content = f"Todo list {action}."
             if not changed:
                 content += "\nDo not call update_todos again until the work changes."
-        return ToolResult.success(content, data=active.projection())
+        projection = active.projection()
+        return ToolResult(
+            content=content,
+            data=projection,
+            client_events=(ClientEvent("todo_updated", projection),),
+        )
+
+    async def get_snapshot(self, _request: EmptyRequest) -> TodoSnapshot:
+        return await self.snapshot()
 
 
 class TodolistPlugin:
@@ -106,6 +117,7 @@ class TodolistPlugin:
     def apply(self, ctx: Context, config: object | None = None) -> None:
         service = TodolistService(ctx.state.namespace(self.name))
         ctx.set("todolist", service)
+        ctx.on(GET_TODOS.name, service.get_snapshot)
         ctx.tools.register(
             Tool(
                 name="update_todos",

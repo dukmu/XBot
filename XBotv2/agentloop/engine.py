@@ -81,6 +81,20 @@ from XBotv2.core.tools import (
 _UNCHANGED = object()
 
 
+def _runtime_input(
+    source: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Retain display provenance without copying private inbox payloads."""
+    if source == "user":
+        return {}
+    values = metadata or {}
+    event = values.get("kind")
+    if not isinstance(event, str) or not event:
+        event = "continuation" if values.get("continuation") else "injected"
+    return {"runtime_input": {"source": source, "event": event}}
+
+
 @dataclass(slots=True)
 class _TurnStartResult:
     user_input: str
@@ -855,12 +869,16 @@ class Engine:
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
         input_id: str = "",
+        source: str = "user",
+        metadata: dict[str, Any] | None = None,
     ) -> _TurnStartResult:
         accepted = await self._accept_user_message(
             user_input,
             images=images,
             artifacts=artifacts,
             input_id=input_id,
+            source=source,
+            metadata=metadata,
             new_turn=True,
         )
         if not accepted.proceed:
@@ -887,6 +905,7 @@ class Engine:
                 input_id=previous.input_id,
                 images=previous.images,
                 artifact=previous.artifact,
+                additional_kwargs=previous.additional_kwargs,
             ))
         accepted.events.append(agentloop_event(
             "turn_started",
@@ -913,6 +932,9 @@ class Engine:
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
+                input_id=item.message_id,
+                source=item.source,
+                metadata=item.metadata,
             )
             events.extend(accepted.events)
             if not accepted.proceed:
@@ -926,6 +948,8 @@ class Engine:
             images=primary.images,
             artifacts=primary.artifacts,
             input_id=primary.message_id,
+            source=primary.source,
+            metadata=primary.metadata,
         )
         await self.inbox.commit([item.message_id for item in claimed])
         started.events = [
@@ -1373,6 +1397,8 @@ class Engine:
                 images=item.images,
                 artifacts=item.artifacts,
                 input_id=item.message_id,
+                source=item.source,
+                metadata=item.metadata,
             )
             if accepted.proceed:
                 accepted_ids.append(item.message_id)
@@ -1389,6 +1415,8 @@ class Engine:
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
         input_id: str = "",
+        source: str = "user",
+        metadata: dict[str, Any] | None = None,
         new_turn: bool = False,
     ) -> _TurnStartResult:
         accept_ctx = self._make_event_context(user_input=user_input,
@@ -1420,6 +1448,7 @@ class Engine:
             input_id=input_id,
             images=list(images or []),
             artifact=list(artifacts or []),
+            additional_kwargs=_runtime_input(source, metadata),
         ))
         for event in (
             Events.AFTER_USER_MESSAGE_ACCEPT,

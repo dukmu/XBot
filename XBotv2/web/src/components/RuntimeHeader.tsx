@@ -4,17 +4,25 @@ import type { RuntimeState } from "../state/runtime";
 
 interface RuntimeHeaderProps {
   state: RuntimeState;
+  busy: boolean;
   onMenu: () => void;
   onAgent: (name: string) => Promise<void>;
-  onProvider: (name: string) => Promise<void>;
+  onProvider: (name: string, model?: string) => Promise<void>;
+  onEffort: (effort: string) => Promise<void>;
   onUndo: (count?: number) => Promise<void>;
   onFork: () => Promise<void>;
   onClear: () => Promise<void>;
 }
 
-export function RuntimeHeader({ state, onMenu, onAgent, onProvider, onUndo, onFork, onClear }: RuntimeHeaderProps) {
+export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffort, onUndo, onFork, onClear }: RuntimeHeaderProps) {
   const current = state.current;
   const [mobileSettings, setMobileSettings] = useState(false);
+  const selectedModel = state.providers
+    .find((provider) => provider.name === current?.provider)
+    ?.models.find((model) => model.model === current?.model);
+  const providerValue = current
+    ? JSON.stringify([current.provider, current.model])
+    : "";
   return (
     <header className="runtime-header">
       <button className="icon-button menu-button" title="Sessions" aria-label="Open sessions" onClick={onMenu}>
@@ -30,7 +38,7 @@ export function RuntimeHeader({ state, onMenu, onAgent, onProvider, onUndo, onFo
             aria-label="Agent"
             title="Agent"
             value={current.agent_name}
-            disabled={state.turnRunning}
+            disabled={state.turnRunning || state.loading || busy}
             onChange={(event) => void onAgent(event.target.value)}
           >
             {state.agents.filter((agent) => agent.mode !== "subagent").map((agent) => (
@@ -40,14 +48,30 @@ export function RuntimeHeader({ state, onMenu, onAgent, onProvider, onUndo, onFo
           <select
             aria-label="Provider"
             title="Provider"
-            value={current.provider}
-            disabled={state.turnRunning}
-            onChange={(event) => void onProvider(event.target.value)}
+            value={providerValue}
+            disabled={state.turnRunning || state.loading || busy}
+            onChange={(event) => {
+              const [provider, model] = JSON.parse(event.target.value) as [string, string];
+              void onProvider(provider, model);
+            }}
           >
-            {state.providers.map((provider) => (
-              <option key={provider.name} value={provider.name}>{provider.name}</option>
-            ))}
+            {state.providers.flatMap((provider) => provider.models.map((model) => (
+              <option key={`${provider.name}/${model.model}`} value={JSON.stringify([provider.name, model.model])}>
+                {provider.name} / {model.model}
+              </option>
+            )))}
           </select>
+          {selectedModel && selectedModel.effort.length > 0 && (
+            <select
+              aria-label="Reasoning effort"
+              title="Reasoning effort"
+              value={current.model_mode || selectedModel.reasoning_effort}
+              disabled={state.turnRunning || state.loading || busy}
+              onChange={(event) => void onEffort(event.target.value)}
+            >
+              {selectedModel.effort.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+            </select>
+          )}
         </div>
       )}
       {current && (
@@ -62,11 +86,15 @@ export function RuntimeHeader({ state, onMenu, onAgent, onProvider, onUndo, onFo
       )}
       {current && mobileSettings && (
         <div className="mobile-runtime-menu">
+          <div className="mobile-runtime-workspace">
+            <span>Workspace</span>
+            <code title={current.workspace_root}>{current.workspace_root}</code>
+          </div>
           <label>
             <span>Agent</span>
             <select
               value={current.agent_name}
-              disabled={state.turnRunning}
+              disabled={state.turnRunning || state.loading || busy}
               onChange={(event) => {
                 setMobileSettings(false);
                 void onAgent(event.target.value);
@@ -80,30 +108,33 @@ export function RuntimeHeader({ state, onMenu, onAgent, onProvider, onUndo, onFo
           <label>
             <span>Provider</span>
             <select
-              value={current.provider}
-              disabled={state.turnRunning}
+              value={providerValue}
+              disabled={state.turnRunning || state.loading || busy}
               onChange={(event) => {
                 setMobileSettings(false);
-                void onProvider(event.target.value);
+                const [provider, model] = JSON.parse(event.target.value) as [string, string];
+                void onProvider(provider, model);
               }}
             >
-              {state.providers.map((provider) => (
-                <option key={provider.name} value={provider.name}>{provider.name}</option>
-              ))}
+              {state.providers.flatMap((provider) => provider.models.map((model) => (
+                <option key={`${provider.name}/${model.model}`} value={JSON.stringify([provider.name, model.model])}>
+                  {provider.name} / {model.model}
+                </option>
+              )))}
             </select>
           </label>
         </div>
       )}
       {current && (
         <div className="header-actions">
-          <button className="icon-button" title="Undo last turn" aria-label="Undo last turn" disabled={state.turnRunning} onClick={() => void onUndo(1)}>
+          <button className="icon-button" title="Undo last turn" aria-label="Undo last turn" disabled={state.turnRunning || state.loading || busy} onClick={() => void onUndo(1)}>
             <RotateCcw size={16} />
           </button>
-          <button className="icon-button" title="Fork session" aria-label="Fork session" disabled={state.turnRunning} onClick={() => void onFork()}>
+          <button className="icon-button" title="Fork session" aria-label="Fork session" disabled={state.turnRunning || state.loading || busy} onClick={() => void onFork()}>
             <GitFork size={16} />
           </button>
-          <button className="icon-button danger-hover" title="Clear history" aria-label="Clear history" disabled={state.turnRunning} onClick={() => {
-            if (window.confirm("Clear this thread's conversation history?")) void onClear();
+          <button className="icon-button danger-hover" title="Clear history" aria-label="Clear history" disabled={state.turnRunning || state.loading || busy} onClick={() => {
+            void onClear();
           }}>
             <Trash2 size={16} />
           </button>

@@ -47,10 +47,19 @@ def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
     return history
 
 
+def display_history_page(
+    messages: Iterable[Message],
+    limit: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    values = tuple(messages)
+    start = max(0, len(values) - limit)
+    return display_history(values[start:]), str(start) if start else None
+
+
 def _artifact_data(value: Any) -> dict[str, Any] | None:
     if hasattr(value, "to_dict"):
         return value.to_dict()
     return dict(value) if isinstance(value, dict) else None
 
 
-__all__ = ["display_history"]
+__all__ = ["display_history", "display_history_page"]

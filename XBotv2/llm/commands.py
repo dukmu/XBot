@@ -34,7 +34,8 @@ def build_llm_commands(
     ) -> CommandResult:
         selected = await runtime.select_provider(name, model=model)
         return CommandResult(
-            f"{verb} {selected['provider']} ({selected['model']})."
+            f"{verb} {selected['provider']} ({selected['model']}).",
+            effects=("thread",),
         )
 
     async def provider_command(raw_args: str) -> CommandResult:
@@ -102,7 +103,8 @@ def build_llm_commands(
             changed = await runtime.select_effort(parts[0])
             return CommandResult(
                 f"Effort switched to {changed['reasoning_effort']} "
-                f"({changed['model_mode']})."
+                f"({changed['model_mode']}).",
+                effects=("thread",),
             )
         return command_usage("/effort [<level>]")
 

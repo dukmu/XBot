@@ -18,9 +18,10 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from XBotv2.acp.xbot_agent import XBotACPAgent
-from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
+from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.application.acp import start_acp_application
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ToolCall
@@ -232,6 +233,14 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     replayed = replay_history([
         Message(role="user", content="inspect"),
         Message(
+            role="user",
+            content="background task completed",
+            input_id="runtime-1",
+            additional_kwargs={
+                "runtime_input": {"source": "task-1", "event": "notification"}
+            },
+        ),
+        Message(
             role="assistant",
             reasoning="checking",
             tool_calls=[ToolCall("call-1", "shell", {"command": "pwd"})],
@@ -241,14 +250,25 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
             content="/workspace",
             tool_call_id="call-1",
             status="success",
+            data={"exit_code": 0},
+            artifact=[ArtifactRef(id="tool_results/out.txt")],
         ),
     ])
     assert [update.session_update for update in replayed] == [
         "user_message_chunk",
+        "tool_call",
         "agent_thought_chunk",
         "tool_call",
         "tool_call_update",
     ]
+    assert replayed[1].title == "Injected context · task-1 / notification"
+    assert replayed[-1].raw_output == {
+        "content": "/workspace",
+        "data": {"exit_code": 0},
+        "error": None,
+        "artifacts": [ArtifactRef(id="tool_results/out.txt").to_dict()],
+        "images": [],
+    }
 
 
 async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None:

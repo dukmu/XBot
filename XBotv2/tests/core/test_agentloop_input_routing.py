@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from XBotv2.session.runtime import SessionRuntime
+from XBotv2.session.history import display_history
 from XBotv2.application.app import start_application
 from XBotv2.application.host import mounted_application
 from XBotv2.core.paths import RuntimePaths
@@ -102,7 +103,12 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         application,
         engine,
     )
-    await engine.inject("job finished", source="job", message_id="job-1")
+    await engine.inject(
+        "job finished",
+        source="job",
+        message_id="job-1",
+        metadata={"kind": "completion"},
+    )
 
     assert engine.pending_input_count == 1
     assert runtime.wakeup_task is None
@@ -125,6 +131,15 @@ async def test_injected_notification_is_durable_and_does_not_wake(
     assert [message.content for message in resumed.messages] == [
         "job finished", "continue", "observed",
     ]
+    assert resumed.messages[0].additional_kwargs["runtime_input"] == {
+        "source": "job",
+        "event": "completion",
+    }
+    assert display_history(resumed.messages)[0]["runtime"] == {
+        "source": "job",
+        "event": "completion",
+    }
+    assert "runtime_input" not in resumed.messages[1].additional_kwargs
     assert events[-1]["type"] == "turn_finished"
     await resumed_services.stop()
     await services.stop()

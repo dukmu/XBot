@@ -88,6 +88,7 @@ class CommandOperations:
             command=name,
             status=result.status,
             message=result.message,
+            effects=result.effects if result.status == "ok" else (),
         )
 
 

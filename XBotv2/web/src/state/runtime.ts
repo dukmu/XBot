@@ -10,12 +10,13 @@ import {
   type ServerEvent,
   type SessionSummary,
   type TaskData,
+  type TodoItemData,
   type ThreadSummary,
   type ToolCall,
   type UsageData,
 } from "../api/types";
 
-export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry;
+export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry | RuntimeEntry;
 
 export interface MessageEntry {
   id: string;
@@ -30,6 +31,15 @@ export interface MessageEntry {
 export interface MessageImage {
   label: string;
   src?: string;
+  href?: string;
+}
+
+export interface RuntimeEntry {
+  id: string;
+  kind: "runtime";
+  source: string;
+  event: string;
+  content: string;
 }
 
 export interface ToolEntry {
@@ -64,7 +74,10 @@ export interface RuntimeState {
   agents: AgentInfo[];
   current: OpenSessionResponse | null;
   entries: TimelineEntry[];
+  historyCursor: string | null;
+  historyLoading: boolean;
   tasks: Record<string, TaskData>;
+  todos: TodoItemData[];
   interactions: InteractionRequest[];
   usage: UsageData;
   turnRunning: boolean;
@@ -82,9 +95,15 @@ export type RuntimeAction =
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "agents"; agents: AgentInfo[] }
   | { type: "opened"; session: OpenSessionResponse }
-  | { type: "history"; history: HistoryItem[] }
+  | { type: "session_deleted"; sessionId: string }
+  | { type: "thread_synced"; thread: ThreadSummary }
+  | { type: "history"; history: HistoryItem[]; nextCursor?: string | null }
+  | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null }
+  | { type: "history_loading"; value: boolean }
   | { type: "tasks"; tasks: TaskData[] }
-  | { type: "user_message"; content: string; images: MessageImage[] }
+  | { type: "todos"; todos: TodoItemData[] }
+  | { type: "user_message"; id: string; content: string; images: MessageImage[] }
+  | { type: "user_message_failed"; id: string }
   | { type: "event"; event: ServerEvent }
   | { type: "events"; events: ServerEvent[] }
   | { type: "turn_error"; message: string }
@@ -92,6 +111,7 @@ export type RuntimeAction =
   | { type: "remove_task"; taskId: string }
   | { type: "agent_selected"; agent: string; provider: string; model: string; modelMode: string; contextWindow: number }
   | { type: "provider_selected"; provider: string; model: string; modelMode: string }
+  | { type: "effort_selected"; modelMode: string }
   | { type: "error"; message: string }
   | { type: "clear_error" };
 
@@ -106,7 +126,10 @@ export const initialRuntimeState: RuntimeState = {
   agents: [],
   current: null,
   entries: [],
+  historyCursor: null,
+  historyLoading: false,
   tasks: {},
+  todos: [],
   interactions: [],
   usage: { ...EMPTY_USAGE },
   turnRunning: false,
@@ -139,15 +162,78 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         loading: false,
         current: action.session,
         entries: historyEntries(action.session.history),
+        historyCursor: action.session.history_cursor ?? null,
+        historyLoading: false,
         usage: normalizeUsage(action.session.usage),
         interactions: [],
         tasks: {},
+        todos: [],
         turnRunning: false,
         queuedMessages: 0,
         error: "",
       };
+    case "session_deleted":
+      if (state.current?.session_id !== action.sessionId) {
+        return {
+          ...state,
+          sessions: state.sessions.filter((session) => session.session_id !== action.sessionId),
+        };
+      }
+      return {
+        ...state,
+        loading: false,
+        sessionAttached: false,
+        eventStreamConnected: false,
+        sessions: state.sessions.filter((session) => session.session_id !== action.sessionId),
+        threads: [],
+        agents: [],
+        current: null,
+        entries: [],
+        historyCursor: null,
+        historyLoading: false,
+        tasks: {},
+        todos: [],
+        interactions: [],
+        usage: { ...EMPTY_USAGE },
+        turnRunning: false,
+        queuedMessages: 0,
+        error: "",
+      };
+    case "thread_synced":
+      return state.current ? {
+        ...state,
+        current: {
+          ...state.current,
+          agent_name: action.thread.agent,
+          provider: action.thread.provider,
+          model: action.thread.model,
+          model_mode: action.thread.model_mode,
+          context_window: action.thread.context_window,
+          usage: normalizeUsage(action.thread.usage),
+          status_slots: action.thread.status_slots,
+          workspace_root: action.thread.workspace_root || state.current.workspace_root,
+        },
+        usage: normalizeUsage(action.thread.usage),
+      } : state;
     case "history":
-      return { ...state, entries: historyEntries(action.history) };
+      return {
+        ...state,
+        current: state.current ? { ...state.current, history: action.history } : null,
+        entries: historyEntries(action.history),
+        historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
+      };
+    case "history_prepend": {
+      const history = [...action.history, ...(state.current?.history ?? [])];
+      return {
+        ...state,
+        current: state.current ? { ...state.current, history } : null,
+        entries: [...historyEntries(action.history), ...state.entries],
+        historyCursor: action.nextCursor,
+        historyLoading: false,
+      };
+    }
+    case "history_loading":
+      return { ...state, historyLoading: action.value };
     case "tasks":
       return {
         ...state,
@@ -157,10 +243,20 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
             .map((task) => [task.task_id, task]),
         ),
       };
+    case "todos":
+      return { ...state, todos: action.todos };
     case "user_message":
       return {
         ...state,
-        entries: [...state.entries, { ...messageEntry("user", action.content), images: action.images }],
+        entries: [
+          ...state.entries,
+          { ...messageEntry("user", action.content), id: action.id, images: action.images },
+        ],
+      };
+    case "user_message_failed":
+      return {
+        ...state,
+        entries: state.entries.filter((entry) => entry.id !== action.id),
       };
     case "event":
       return applyEvent(state, action.event);
@@ -205,6 +301,11 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
           model: action.model,
           model_mode: action.modelMode,
         },
+      } : state;
+    case "effort_selected":
+      return state.current ? {
+        ...state,
+        current: { ...state.current, model_mode: action.modelMode },
       } : state;
     case "error":
       return { ...state, error: action.message, loading: false };
@@ -276,11 +377,54 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       const task = data as unknown as TaskData;
       return { ...state, tasks: { ...state.tasks, [task.task_id]: task } };
     }
+    case "todo_updated":
+      return { ...state, todos: todoProjection(data) };
     case "client_message":
       return {
         ...state,
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
       };
+    case "message": {
+      const id = stringValue(data.id);
+      if (!id || stringValue(data.role) !== "user") return state;
+      const index = state.entries.findIndex((entry) => entry.id === id);
+      if (index >= 0) return state;
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          {
+            ...messageEntry("user", stringValue(data.content)),
+            id,
+            images: historyAttachments(
+              arrayValue(data.images) as ImageReference[],
+              arrayValue(data.artifacts).map(objectValue),
+            ),
+          },
+        ],
+      };
+    }
+    case "history_updated": {
+      const history = arrayValue(data.history) as HistoryItem[];
+      return {
+        ...state,
+        current: state.current ? { ...state.current, history } : null,
+        entries: historyEntries(history),
+        historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
+      };
+    }
+    case "agent_configured":
+      return state.current ? {
+        ...state,
+        current: {
+          ...state.current,
+          agent_name: stringValue(data.agent_name) || state.current.agent_name,
+          provider: stringValue(data.provider) || state.current.provider,
+          model: stringValue(data.model),
+          model_mode: stringValue(data.model_mode),
+          context_window: numberValue(data.context_window),
+        },
+      } : state;
     case "error":
       {
         const message = stringValue(data.message) || "XBot turn failed";
@@ -302,10 +446,13 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   for (const item of history) {
     if (item.role === "user") {
       if (item.runtime) {
-        entries.push(noticeEntry(
-          `${item.runtime.source ?? "runtime"}:${item.runtime.event ?? "message"}`,
-          "info",
-        ));
+        entries.push({
+          id: nextId("runtime"),
+          kind: "runtime",
+          source: item.runtime.source ?? "runtime",
+          event: item.runtime.event ?? "message",
+          content: item.content,
+        });
         continue;
       }
       entries.push({
@@ -366,8 +513,11 @@ function finalizeAssistant(entries: TimelineEntry[]): TimelineEntry[] {
 function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {
   return [...images.map((image) => ({
     label: `${image.media_type} · ${formatBytes(image.size)}`,
+    src: image.url,
+    href: image.url,
   })), ...artifacts.map((artifact) => ({
     label: String(artifact.name || artifact.id || "attachment"),
+    href: typeof artifact.url === "string" ? artifact.url : undefined,
   }))];
 }
 
@@ -533,4 +683,16 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function todoProjection(data: JsonObject): TodoItemData[] {
+  if (data.kind !== "todo_snapshot") return [];
+  return arrayValue(data.items).flatMap((value) => {
+    const item = objectValue(value);
+    const content = stringValue(item.content);
+    const status = stringValue(item.status);
+    return content && ["pending", "in_progress", "completed"].includes(status)
+      ? [{ content, status: status as TodoItemData["status"] }]
+      : [];
+  });
 }

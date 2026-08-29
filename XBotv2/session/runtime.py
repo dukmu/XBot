@@ -22,7 +22,7 @@ from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.session.history import display_history
+from XBotv2.session.history import display_history_page
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
@@ -102,10 +102,12 @@ class SessionRuntime:
 
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
+        history, cursor = display_history_page(event.messages, 160)
         self._publish_runtime_event(session_event(
             "history_updated",
             {
-                "history": display_history(event.messages),
+                "history": history,
+                "history_cursor": cursor,
                 "operation": event.operation,
                 "turns": event.turns,
             },
@@ -138,15 +140,38 @@ class SessionRuntime:
         self.touch()
         self._publish_runtime_event(event.client_event.to_dict())
 
-    def _publish_message_event(self, message_id: str, content: str) -> None:
+    def _message_event(
+        self,
+        message_id: str,
+        content: str,
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> dict[str, Any]:
+        return session_event(
+            "message",
+            {
+                "id": message_id,
+                "role": "user",
+                "content": content,
+                "images": [image.to_dict() for image in images or []],
+                "artifacts": [artifact.to_dict() for artifact in artifacts or []],
+            },
+        )
+
+    def _publish_message_event(
+        self,
+        message_id: str,
+        content: str,
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> None:
         """Broadcast one accepted user message on the shared event stream.
 
         Input ordering is owned by the agent inbox. This event is only the
         protocol projection used by clients to render accepted input.
         """
-        event = session_event(
-            "message",
-            {"id": message_id, "role": "user", "content": content},
+        event = self._message_event(
+            message_id, content, images, artifacts
         )
         if self.event_streams:
             self._publish_runtime_event(event)
@@ -167,7 +192,9 @@ class SessionRuntime:
         claimed by the same loop inbox between model/tool steps.
         """
         if not self.turn_lock.locked():
-            self._publish_message_event(request_id, content)
+            self._publish_message_event(
+                request_id, content, images, artifacts
+            )
             try:
                 async for event in run_turn_stream(
                     self,
@@ -197,7 +224,9 @@ class SessionRuntime:
             events=events,
         )
         self.pending_responses[item.message_id] = pending
-        self._publish_message_event(item.message_id, content)
+        self._publish_message_event(
+            item.message_id, content, images, artifacts
+        )
         completed = False
         try:
             while True:
@@ -468,63 +497,128 @@ async def run_turn_stream(
         raise SessionBusy(runtime.session_id)
 
     async with runtime.turn_lock:
-        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        disconnected = asyncio.Event()
-        stream_completed = False
-        handed_off = False
-        pump_task = asyncio.create_task(
-            _pump_turn(
-                runtime,
-                events,
-                content,
-                request_id,
-                images,
-                artifacts,
-            )
-        )
-        runtime.turn_task = pump_task
-        try:
-            interaction_sink = (
-                _live_interaction_sink(runtime, events, disconnected)
-                if (
-                    runtime.interactive
-                    if interactive is None
-                    else interactive
-                )
-                else nullcontext()
-            )
-            async with interaction_sink:
-                while True:
-                    event = await events.get()
-                    if event is None:
-                        stream_completed = True
-                        break
-                    if runtime.response_output is not None and handed_off:
-                        await runtime.response_output.put(event)
-                        continue
-                    if (
-                        event.get("type") == "_inbox_claimed"
-                        and runtime.claim_response_output(
-                            list(event.get("data", {}).get("message_ids") or [])
-                        )
-                    ):
-                        handed_off = True
-                        continue
-                    if event.get("type") == "_inbox_claimed":
-                        continue
-                    yield event
-        finally:
-            disconnected.set()
-            if not stream_completed and not pump_task.done():
-                pump_task.cancel()
-            await asyncio.gather(pump_task, return_exceptions=True)
-            runtime.turn_task = None
-            runtime.touch()
-            if runtime.response_output is not None:
-                await runtime.response_output.put(None)
-                runtime.response_output = None
+        async for event in _drive_turn_stream(
+            runtime,
+            content=content,
+            request_id=request_id,
+            images=images,
+            artifacts=artifacts,
+            interactive=interactive,
+        ):
+            yield event
     if runtime._wakeup_requested and runtime.wakeup_task is None:
         runtime._request_wakeup()
 
 
-__all__ = ["SessionBusy", "SessionRuntime", "run_turn_stream"]
+async def regenerate_turn_stream(
+    runtime: SessionRuntime,
+    *,
+    request_id: str,
+    interactive: bool | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Atomically replace the latest human turn and run it again."""
+    if runtime.turn_lock.locked():
+        raise SessionBusy(runtime.session_id)
+    async with runtime.turn_lock:
+        message = await runtime.application.history.regenerate_history()
+        artifacts = [
+            value
+            for value in message.artifact or []
+            if isinstance(value, ArtifactRef)
+        ]
+        history, cursor = display_history_page(runtime.engine.messages, 160)
+        yield session_event(
+            "history_updated",
+            {
+                "history": history,
+                "history_cursor": cursor,
+                "operation": "regenerate",
+                "turns": 1,
+            },
+        )
+        accepted = runtime._message_event(
+            request_id,
+            message.content,
+            list(message.images),
+            artifacts,
+        )
+        runtime._publish_runtime_event(accepted)
+        yield accepted
+        async for event in _drive_turn_stream(
+            runtime,
+            content=message.content,
+            request_id=request_id,
+            images=list(message.images),
+            artifacts=artifacts,
+            interactive=interactive,
+        ):
+            yield event
+    if runtime._wakeup_requested and runtime.wakeup_task is None:
+        runtime._request_wakeup()
+
+
+async def _drive_turn_stream(
+    runtime: SessionRuntime,
+    *,
+    content: str | None,
+    request_id: str,
+    images: list[ImageContent] | None,
+    artifacts: list[ArtifactRef] | None,
+    interactive: bool | None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Drive one stream while the caller owns ``runtime.turn_lock``."""
+    events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    disconnected = asyncio.Event()
+    stream_completed = False
+    handed_off = False
+    pump_task = asyncio.create_task(
+        _pump_turn(runtime, events, content, request_id, images, artifacts)
+    )
+    runtime.turn_task = pump_task
+    try:
+        live_interactive = (
+            runtime.interactive if interactive is None else interactive
+        )
+        interaction_sink = (
+            _live_interaction_sink(runtime, events, disconnected)
+            if live_interactive
+            else nullcontext()
+        )
+        async with interaction_sink:
+            while True:
+                event = await events.get()
+                if event is None:
+                    stream_completed = True
+                    break
+                if runtime.response_output is not None and handed_off:
+                    await runtime.response_output.put(event)
+                    continue
+                if (
+                    event.get("type") == "_inbox_claimed"
+                    and runtime.claim_response_output(
+                        list(event.get("data", {}).get("message_ids") or [])
+                    )
+                ):
+                    handed_off = True
+                    continue
+                if event.get("type") == "_inbox_claimed":
+                    continue
+                yield event
+    finally:
+        disconnected.set()
+        if not stream_completed and not pump_task.done():
+            pump_task.cancel()
+        await asyncio.gather(pump_task, return_exceptions=True)
+        runtime.turn_task = None
+        runtime.touch()
+        if runtime.response_output is not None:
+            await runtime.response_output.put(None)
+            runtime.response_output = None
+
+
+__all__ = [
+    "SessionBusy",
+    "SessionRuntime",
+    "regenerate_turn_stream",
+    "run_turn_stream",
+]

@@ -57,7 +57,10 @@ class AgentCommandHandler:
         if target is None:
             return command_usage("/agent [status|list|use <name>|<name>]")
         data = await self._runtime.select(target)
-        return CommandResult(f"Active Agent: {data['agent_name']}.")
+        return CommandResult(
+            f"Active Agent: {data['agent_name']}.",
+            effects=("thread", "agents", "commands"),
+        )
 
 
 __all__ = ["build_agent_commands"]

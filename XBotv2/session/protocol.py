@@ -14,8 +14,9 @@ from collections.abc import Awaitable
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import Field, model_validator
 from xcore import Context
@@ -30,7 +31,7 @@ from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
-from XBotv2.session.history import display_history
+from XBotv2.session.history import display_history, display_history_page
 from XBotv2.server import ModelOverride, ServerOptions, contribute_router
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
@@ -41,6 +42,7 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
+    RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionNotFound,
@@ -67,6 +69,7 @@ class OpenSessionRequest(WireModel):
     workspace_root: str | None = None
     mode: Literal["new", "resume"] = "new"
     agent: str | None = None
+    history_limit: int | None = Field(default=None, ge=1, le=500)
 
 
 class SessionHistoryItem(WireModel):
@@ -135,6 +138,7 @@ class OpenSessionResponse(WireModel):
     context_window: int = Field(default=0, ge=0)
     usage: UsageData = Field(default_factory=_empty_usage)
     history: list[SessionHistoryItem] = Field(default_factory=list)
+    history_cursor: str | None = None
     status_slots: dict[str, str] = Field(default_factory=dict)
 
 
@@ -144,16 +148,23 @@ class OpenThreadRequest(WireModel):
     workspace_root: str | None = None
     mode: Literal["new", "resume"] = "new"
     agent: str | None = None
+    history_limit: int | None = Field(default=None, ge=1, le=500)
 
 
 class ThreadMessagesResponse(WireModel):
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     messages: list[SessionHistoryItem] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 class UndoRequest(WireModel):
     count: int = Field(default=1, ge=1)
+    history_limit: int | None = Field(default=None, ge=1, le=500)
+
+
+class RegenerateRequest(WireModel):
+    request_id: str = ""
 
 
 class HistoryMutationResponse(WireModel):
@@ -161,12 +172,21 @@ class HistoryMutationResponse(WireModel):
     thread_id: str = Field(min_length=1)
     removed_turns: int = Field(ge=0)
     messages: list[SessionHistoryItem] = Field(default_factory=list)
+    history_cursor: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class ForkResponse(WireModel):
     session_id: str = Field(min_length=1)
     source_session_id: str = Field(min_length=1)
     status: Literal["forked"] = "forked"
+
+
+class DeleteSessionResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    status: Literal["deleted"] = "deleted"
 
 
 class ImageInput(WireModel):
@@ -182,14 +202,17 @@ class AttachmentInput(WireModel):
 
 class MessageData(WireModel):
     id: str
-    role: str
+    role: Literal["user"]
     content: str = ""
+    images: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HistoryUpdatedData(WireModel):
     history: list[SessionHistoryItem] = Field(default_factory=list)
     operation: str = Field(min_length=1)
     turns: int = Field(ge=0)
+    history_cursor: str | None = None
 
 
 class AgentConfiguredData(WireModel):
@@ -266,9 +289,22 @@ class CloseResponse(WireModel):
 SessionMode = Literal["new", "resume"]
 
 
-def _open_session_response(value: OpenedSession) -> OpenSessionResponse:
+def _open_session_response(
+    value: OpenedSession,
+    history_limit: int | None = None,
+) -> OpenSessionResponse:
+    history = value.history
+    projected, cursor = (
+        display_history_page(history, history_limit)
+        if history_limit
+        else (display_history(history), None)
+    )
     return OpenSessionResponse.model_validate(
-        {**_record_data(value), "history": display_history(value.history)}
+        {
+            **_record_data(value),
+            "history": projected,
+            "history_cursor": cursor,
+        }
     )
 
 
@@ -285,13 +321,22 @@ def _record_data(value: object) -> dict[str, Any]:
 
 
 def _history_response(
-    session_id: str, thread_id: str, result: HistoryMutation
+    session_id: str,
+    thread_id: str,
+    result: HistoryMutation,
+    history_limit: int | None = None,
 ) -> HistoryMutationResponse:
+    history, cursor = (
+        display_history_page(result.messages, history_limit)
+        if history_limit
+        else (display_history(result.messages), None)
+    )
     return HistoryMutationResponse(
         session_id=session_id,
         thread_id=thread_id,
         removed_turns=result.removed_turns,
-        messages=display_history(result.messages),
+        messages=history,
+        history_cursor=cursor,
     )
 
 
@@ -458,7 +503,7 @@ def build_session_router(
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return _open_session_response(opened)
+        return _open_session_response(opened, payload.history_limit)
 
     @router.get("/sessions", operation_id="list_sessions")
     async def list_sessions_endpoint() -> SessionListResponse:
@@ -480,6 +525,14 @@ def build_session_router(
             session_id=forked_id,
             source_session_id=session_id,
         )
+
+    @router.delete(
+        "/sessions/{session_id}",
+        operation_id="delete_session",
+    )
+    async def delete_session_endpoint(session_id: str) -> DeleteSessionResponse:
+        await sessions.delete_session(session_id)
+        return DeleteSessionResponse(session_id=session_id)
 
     @router.get(
         "/sessions/{session_id}/threads",
@@ -519,7 +572,7 @@ def build_session_router(
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        return _open_session_response(opened)
+        return _open_session_response(opened, payload.history_limit)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}",
@@ -540,12 +593,45 @@ def build_session_router(
     async def list_messages_endpoint(
         session_id: str,
         thread_id: str,
+        cursor: str | None = None,
+        limit: int | None = Query(default=None, ge=1, le=500),
     ) -> ThreadMessagesResponse:
-        messages = await sessions.messages(session_id, thread_id)
+        page = await sessions.message_page(
+            session_id,
+            thread_id,
+            cursor=cursor,
+            limit=limit,
+        )
         return ThreadMessagesResponse(
             session_id=session_id,
             thread_id=thread_id,
-            messages=display_history(messages),
+            messages=display_history(page.messages),
+            next_cursor=page.next_cursor,
+        )
+
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}",
+        operation_id="get_artifact",
+    )
+    async def get_artifact_endpoint(
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> Response:
+        artifact = await sessions.artifact(session_id, thread_id, artifact_id)
+        headers = (
+            {
+                "Content-Disposition": (
+                    "inline; filename*=UTF-8''" + quote(artifact.name)
+                )
+            }
+            if artifact.name
+            else None
+        )
+        return Response(
+            content=artifact.content,
+            media_type=artifact.media_type,
+            headers=headers,
         )
 
     @router.post(
@@ -569,7 +655,38 @@ def build_session_router(
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
         result = await sessions.undo_history(session_id, thread_id, payload.count)
-        return _history_response(session_id, thread_id, result)
+        return _history_response(
+            session_id,
+            thread_id,
+            result,
+            payload.history_limit,
+        )
+
+    @router.post(
+        "/sessions/{session_id}/threads/{thread_id}/history/regenerate",
+        operation_id="regenerate_message",
+        response_class=StreamingResponse,
+        responses=_SSE_RESPONSE,
+    )
+    async def regenerate_message_endpoint(
+        session_id: str,
+        thread_id: str,
+        payload: RegenerateRequest,
+    ) -> Response:
+        request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
+        events = await sessions.regenerate_message(RegenerateMessage(
+            session_id=session_id,
+            thread_id=thread_id,
+            request_id=request_id,
+        ))
+        return StreamingResponse(
+            _message_sse(events, session_id, thread_id, request_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/messages",
@@ -751,6 +868,7 @@ __all__ = [
     "AgentConfiguredData",
     "AttachmentInput",
     "CloseResponse",
+    "DeleteSessionResponse",
     "ForkResponse",
     "HistoryMutationResponse",
     "HistoryUpdatedData",

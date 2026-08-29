@@ -436,10 +436,12 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}",
         "/sessions/{session_id}/threads/{thread_id}/agent",
         "/sessions/{session_id}/threads/{thread_id}/agents",
+        "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id}",
         "/sessions/{session_id}/threads/{thread_id}/close",
         "/sessions/{session_id}/threads/{thread_id}/effort",
         "/sessions/{session_id}/threads/{thread_id}/events",
         "/sessions/{session_id}/threads/{thread_id}/history/clear",
+        "/sessions/{session_id}/threads/{thread_id}/history/regenerate",
         "/sessions/{session_id}/threads/{thread_id}/history/undo",
         "/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
         "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
@@ -450,6 +452,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
         "/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop",
         "/sessions/{session_id}/threads/{thread_id}/tools",
+        "/sessions/{session_id}/threads/{thread_id}/todos",
     }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
@@ -460,6 +463,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     assert not any(path.endswith("/commands") for path in paths)
     assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
     assert paths["/sessions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionListResponse")
+    assert paths["/sessions/{session_id}"]["delete"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DeleteSessionResponse")
     thread_path = "/sessions/{session_id}/threads/{thread_id}"
     assert paths[thread_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/ThreadSummary")
     assert paths[thread_path]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
@@ -475,6 +479,12 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     assert set(paths[event_path]["get"]["responses"]["200"]["content"]) == {
         "text/event-stream"
     }
+    regenerate_path = "/sessions/{session_id}/threads/{thread_id}/history/regenerate"
+    assert set(paths[regenerate_path]["post"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    todos_path = "/sessions/{session_id}/threads/{thread_id}/todos"
+    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TodoResponse")
 
     operation_ids = [
         operation["operationId"]

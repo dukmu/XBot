@@ -45,6 +45,7 @@ from XBotv2.protocol import (
 from XBotv2.session import (
     AttachmentInput,
     CloseResponse,
+    DeleteSessionResponse,
     ForkResponse,
     HistoryMutationResponse,
     ImageInput,
@@ -53,6 +54,7 @@ from XBotv2.session import (
     OpenSessionRequest,
     OpenSessionResponse,
     OpenThreadRequest,
+    RegenerateRequest,
     SessionListResponse,
     SessionMode,
     SessionSummary,
@@ -149,6 +151,7 @@ class XBotClient:
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
+        history_limit: int | None = None,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -160,6 +163,7 @@ class XBotClient:
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
+                history_limit=history_limit,
             ),
         )
 
@@ -201,6 +205,11 @@ class XBotClient:
             "POST", f"/sessions/{_segment(session_id)}/fork", ForkResponse
         )
 
+    async def delete_session(self, session_id: str) -> DeleteSessionResponse:
+        return await self._request(
+            "DELETE", f"/sessions/{_segment(session_id)}", DeleteSessionResponse
+        )
+
     async def close_session(self, session_id: str) -> CloseResponse:
         return await self._request(
             "POST", f"/sessions/{_segment(session_id)}/close", CloseResponse
@@ -220,6 +229,7 @@ class XBotClient:
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
+        history_limit: int | None = None,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -231,6 +241,7 @@ class XBotClient:
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
+                history_limit=history_limit,
             ),
         )
 
@@ -297,13 +308,36 @@ class XBotClient:
         )
 
     async def list_messages(
-        self, session_id: str, thread_id: str
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
     ) -> ThreadMessagesResponse:
         return await self._request(
             "GET",
             f"{_thread_path(session_id, thread_id)}/messages",
             ThreadMessagesResponse,
+            params={
+                key: value
+                for key, value in {"cursor": cursor, "limit": limit}.items()
+                if value is not None
+            },
         )
+
+    async def read_artifact(
+        self,
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> bytes:
+        response = await self._http.get(
+            f"{_thread_path(session_id, thread_id)}/artifacts/"
+            f"{quote(artifact_id, safe='/')}"
+        )
+        _raise_for_status(response)
+        return response.content
 
     async def clear_history(
         self, session_id: str, thread_id: str
@@ -422,6 +456,19 @@ class XBotClient:
             ),
         )
 
+    def regenerate_message(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str = "",
+    ) -> AsyncIterator[ServerEvent]:
+        return self._stream(
+            "POST",
+            f"{_thread_path(session_id, thread_id)}/history/regenerate",
+            RegenerateRequest(request_id=request_id),
+        )
+
     def stream_events(
         self, session_id: str, thread_id: str
     ) -> AsyncIterator[ServerEvent]:
@@ -435,11 +482,14 @@ class XBotClient:
         path: str,
         response_model: type[ResponseModel],
         payload: WireModel | None = None,
+        *,
+        params: Mapping[str, object] | None = None,
     ) -> ResponseModel:
         response = await self._http.request(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
+            params=params,
         )
         _raise_for_status(response)
         return response_model.model_validate(response.json())

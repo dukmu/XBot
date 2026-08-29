@@ -82,6 +82,262 @@ test("restores historical sessions and their workspaces", async ({ page }) => {
   await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
 });
 
+test("discovers and executes server commands without sending a chat message", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  let refreshReads = 0;
+  page.on("request", (request) => {
+    if (request.method() === "GET") refreshReads += 1;
+  });
+  await composer.fill("/st");
+  await expect(page.getByRole("option", { name: /status.*server/i })).toBeVisible();
+  await composer.press("Tab");
+  await expect(composer).toHaveValue("/status");
+  const commandRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/commands")
+  ));
+  await composer.press("Enter");
+  expect((await commandRequest).postDataJSON()).toMatchObject({ command: "status", raw: "/status", kind: "server" });
+  await expect(page.getByRole("region", { name: "/status result" })).toContainText("session_id=demo-session thread_id=agent");
+  await expect(page.locator(".notice-row")).toHaveCount(0);
+  expect(refreshReads).toBe(0);
+});
+
+test("shows help as a searchable command directory", async ({ page }, testInfo) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("/help");
+  await composer.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Commands" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("article")).toHaveCount(10);
+  await page.screenshot({ path: testInfo.outputPath("command-help.png"), fullPage: true });
+  await dialog.getByPlaceholder("Search name, description, or usage").fill("status");
+  await expect(dialog.locator("article")).toHaveCount(1);
+  await expect(dialog).toContainText("Show session status");
+  await dialog.locator("article").getByRole("button").click();
+  await expect(composer).toHaveValue("/status");
+  await expect(composer).toBeFocused();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator(".notice-row")).toHaveCount(0);
+});
+
+test("pastes a clipboard image directly into the composer", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([137, 80, 78, 71])], "clipboard.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
+  });
+  await expect(page.getByRole("img", { name: "clipboard.png" })).toBeVisible();
+  const messageRequest = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/messages"));
+  await page.getByRole("button", { name: "Send" }).click();
+  expect((await messageRequest).postDataJSON()).toMatchObject({
+    images: [{ media_type: "image/png" }],
+  });
+});
+
+test("regenerates the last turn through the authoritative history endpoint", async ({ page }) => {
+  await openDemoSession(page);
+  const regenerate = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/history/regenerate")
+  ));
+  await page.getByRole("button", { name: "Regenerate response" }).click();
+  await regenerate;
+  await expect(page.getByText("Regenerated from the persisted input.", { exact: true })).toBeVisible();
+  await expect(page.getByText("I will inspect the public SDK surface.", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toHaveCount(1);
+});
+
+test("does not rebuild history when a read-only command follows a turn", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Inspect the current state");
+  await composer.press("Enter");
+  await expect(page.getByText("The Web client remains behind the typed v3 API.", { exact: true })).toBeVisible();
+  let refreshReads = 0;
+  page.on("request", (request) => {
+    if (request.method() === "GET") refreshReads += 1;
+  });
+  await composer.fill("/status");
+  await composer.press("Enter");
+  await expect(page.getByRole("region", { name: "/status result" })).toBeVisible();
+  expect(refreshReads).toBe(0);
+});
+
+test("contains long command output in a collapsible result panel", async ({ page }, testInfo) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("/diagnostics");
+  await composer.press("Enter");
+  const result = page.getByRole("region", { name: "/diagnostics result" });
+  const output = result.locator("pre");
+  await expect(result).toContainText("120 lines");
+  await expect(output).toHaveCount(0);
+  await result.getByRole("button", { name: /diagnostics/i }).click();
+  await expect(output).toBeVisible();
+  expect(await output.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("command-output.png"), fullPage: true });
+  await result.getByRole("button", { name: /diagnostics/i }).click();
+  await expect(output).toHaveCount(0);
+  await expect(page.locator(".notice-row")).toHaveCount(0);
+});
+
+test("submits discovered prompt commands through the message stream", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  const messageRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/messages")
+  ));
+  await composer.fill("/review API boundaries");
+  await composer.press("Enter");
+  expect((await messageRequest).postDataJSON()).toMatchObject({ content: "/review API boundaries" });
+  await expect(page.getByText("The Web client remains behind the typed v3 API.", { exact: true })).toBeVisible();
+});
+
+test("uses client commands to resume a session with an explicit workspace", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  const openRequest = page.waitForRequest((request) => {
+    if (request.method() !== "POST" || !request.url().endsWith("/sessions")) return false;
+    return request.postDataJSON().session_id === "history-session";
+  });
+  await composer.fill('/session history-session "/workspace/override"');
+  await composer.press("Enter");
+  expect((await openRequest).postDataJSON()).toMatchObject({
+    session_id: "history-session",
+    thread_id: "history-main",
+    workspace_root: "/workspace/override",
+    mode: "resume",
+  });
+  if ((page.viewportSize()?.width || 0) <= 580) {
+    await page.getByRole("button", { name: "Runtime settings" }).click();
+    await expect(page.locator(".mobile-runtime-workspace")).toContainText("/workspace/override");
+  } else {
+    await expect(page.getByTitle("/workspace/override")).toBeVisible();
+  }
+  await expect(page.getByText("A persisted answer from history.", { exact: true })).toBeVisible();
+});
+
+test("forks through the native session API and opens the new session", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  const forkRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/sessions/demo-session/fork")
+  ));
+  const openRequest = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.url().endsWith("/sessions")
+    && request.postDataJSON().session_id === "fork-session"
+  ));
+  await composer.fill("/fork");
+  await composer.press("Enter");
+  await forkRequest;
+  expect((await openRequest).postDataJSON()).toMatchObject({ session_id: "fork-session", mode: "resume" });
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
+test("forks a session from its sidebar action menu", async ({ page }) => {
+  await openDemoSession(page);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  const forkRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/sessions/history-session/fork")
+  ));
+  await page.getByRole("button", { name: "More actions for Historical review" }).click();
+  await page.getByRole("menuitem", { name: "Fork" }).click();
+  await forkRequest;
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
+test("deletes a persisted session from its sidebar action menu", async ({ page }) => {
+  await openDemoSession(page);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "More actions for Historical review" }).click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete this session?" });
+  await expect(dialog).toContainText("history, artifacts, and plugin state will be permanently deleted");
+  const deleteRequest = page.waitForRequest((request) => (
+    request.method() === "DELETE" && request.url().endsWith("/sessions/history-session")
+  ));
+  await dialog.getByRole("button", { name: "Delete session" }).click();
+  await deleteRequest;
+  await expect(page.getByTitle("history-session")).toHaveCount(0);
+});
+
+test("detaches the workbench after deleting the current session", async ({ page }) => {
+  await openDemoSession(page);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "More actions for Demo session" }).click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  await page.getByRole("dialog", { name: "Delete this session?" }).getByRole("button", { name: "Delete session" }).click();
+  await expect(page.getByText("No session selected", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message XBot" })).toHaveCount(0);
+});
+
+test("confirms clear history in the application and replaces the transcript", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("/clear");
+  await composer.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Clear this thread?" });
+  await expect(dialog).toContainText("artifacts, and plugin state are preserved");
+  await dialog.getByRole("button", { name: "Clear history" }).click();
+  await expect(page.locator(".message-block, .tool-block")).toHaveCount(0);
+  await expect(dialog).toBeHidden();
+});
+
+test("does not navigate away while a message request is active", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Hold this turn open");
+  await composer.press("Enter");
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByTitle("history-session").click();
+  await expect(page.locator(".ui-notification")).toHaveText(/Finish or interrupt the active turn before switching sessions/);
+  await expect(page.locator(".notice-row")).toHaveCount(0);
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
+test("does not navigate away while a server command is active", async ({ page }) => {
+  await openDemoSession(page);
+  let releaseCommand!: () => void;
+  const commandGate = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  await page.route("**/commands", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST" && request.postDataJSON().command === "diagnostics") {
+      await commandGate;
+    }
+    await route.fallback();
+  });
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("/diagnostics");
+  await composer.press("Enter");
+  await expect(page.getByText("Running /diagnostics", { exact: true })).toBeVisible();
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByTitle("history-session").click();
+  await expect(page.locator(".ui-notification")).toHaveText(/Wait for the active command before switching sessions/);
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+  releaseCommand();
+  await expect(page.getByRole("region", { name: "/diagnostics result" })).toBeVisible();
+});
+
 test("keeps a long history bounded while allowing older messages", async ({ page }) => {
   await openLongSession(page);
   await expect(page.locator(".message-block")).toHaveCount(160);
@@ -108,6 +364,8 @@ async function openLongSession(page: Page) {
 }
 
 async function mockProtocol(page: Page) {
+  let demoMessageCount = 3;
+  const deletedSessions = new Set<string>();
   await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -120,10 +378,16 @@ async function mockProtocol(page: Page) {
       providers: [{
         name: "minimax",
         provider: "anthropic",
-        model: "Minimax-M3",
-        max_tokens: 32768,
-        reasoning_effort: "high",
-        thinking_enabled: true,
+        default_model: "Minimax-M3",
+        models: [{
+          model: "Minimax-M3",
+          max_context_tokens: 32768,
+          max_output_tokens: 8192,
+          reasoning_effort: "high",
+          effort: ["low", "high"],
+          thinking: "high",
+          input_modalities: ["text", "image"],
+        }],
       }],
     });
     if (path === "/sessions" && method === "GET") return json(route, {
@@ -131,11 +395,21 @@ async function mockProtocol(page: Page) {
         { session_id: "demo-session", title: "Demo session", workspace_root: "/workspace/XBot", status: "inactive", active_threads: 0, thread_count: 1 },
         { session_id: "history-session", title: "Historical review", workspace_root: "/workspace/history", status: "inactive", active_threads: 0, thread_count: 1 },
         { session_id: "long-session", title: "Long history", workspace_root: "/workspace/long", status: "inactive", active_threads: 0, thread_count: 1 },
-      ],
+      ].filter((session) => !deletedSessions.has(session.session_id)),
     });
+    if (path.startsWith("/sessions/") && method === "DELETE") {
+      const sessionId = path.split("/")[2];
+      deletedSessions.add(sessionId);
+      return json(route, { session_id: sessionId, status: "deleted" });
+    }
     if (path === "/sessions" && method === "POST") {
-      const sessionId = String(request.postDataJSON().session_id || "demo-session");
-      return json(route, openSession(sessionId));
+      const payload = request.postDataJSON();
+      const sessionId = String(payload.session_id || "demo-session");
+      return json(route, openSession(
+        sessionId,
+        String(payload.workspace_root || ""),
+        Number(payload.history_limit || 0),
+      ));
     }
     if (path === "/sessions/demo-session/threads") return json(route, {
       session_id: "demo-session",
@@ -151,7 +425,7 @@ async function mockProtocol(page: Page) {
         model: "Minimax-M3",
         model_mode: "high",
         context_window: 32000,
-        message_count: 3,
+        message_count: demoMessageCount,
         usage: usage(),
         pending_interactions: [],
         status_slots: { goal: "active" },
@@ -201,9 +475,87 @@ async function mockProtocol(page: Page) {
         title: "Long history",
       }],
     });
+    if (path === "/sessions/fork-session/threads") return json(route, {
+      session_id: "fork-session",
+      threads: [{
+        session_id: "fork-session",
+        thread_id: "agent",
+        status: "inactive",
+        kind: "main",
+        turn_status: "idle",
+        parent_thread_id: "",
+        agent: "default",
+        provider: "minimax",
+        model: "Minimax-M3",
+        model_mode: "high",
+        context_window: 32000,
+        message_count: 3,
+        usage: usage(),
+        pending_interactions: [],
+        status_slots: { goal: "active" },
+        workspace_root: "/workspace/XBot",
+      }],
+    });
+    if (path === "/sessions/demo-session/fork" && method === "POST") return json(route, {
+      session_id: "fork-session",
+      source_session_id: "demo-session",
+    });
+    if (path === "/sessions/history-session/fork" && method === "POST") return json(route, {
+      session_id: "fork-session",
+      source_session_id: "history-session",
+    });
     if (path.endsWith("/agents")) return json(route, {
       active: "default",
       agents: [{ name: "default", description: "Primary Agent", mode: "primary", provider: "", model: "", context_window: 32000 }],
+    });
+    if (path.endsWith("/commands") && method === "GET") return json(route, {
+      commands: [
+        { name: "status", slash: "/status", kind: "server", description: "Show session status", usage: "/status", examples: [], parameters: {} },
+        { name: "diagnostics", slash: "/diagnostics", kind: "server", description: "Show runtime diagnostics", usage: "/diagnostics", examples: [], parameters: {} },
+        { name: "review", slash: "/review", kind: "prompt", description: "Review the workspace", usage: "/review [focus]", examples: [], parameters: {} },
+      ],
+    });
+    if (path.endsWith("/commands") && method === "POST") {
+      const command = String(request.postDataJSON().command || "");
+      return json(route, {
+        type: "command_result",
+        data: {
+          command,
+          status: "ok",
+          effects: [],
+          message: command === "diagnostics"
+            ? Array.from({ length: 120 }, (_, index) => `diagnostic ${index + 1}`).join("\n")
+            : "session_id=demo-session thread_id=agent",
+        },
+      });
+    }
+    if (path.endsWith("/messages") && method === "GET") {
+      const sessionId = path.split("/")[2];
+      const all = openSession(sessionId).history;
+      const end = Number(url.searchParams.get("cursor") || all.length);
+      const limit = Number(url.searchParams.get("limit") || all.length);
+      const start = Math.max(0, end - limit);
+      return json(route, {
+        messages: all.slice(start, end),
+        next_cursor: start ? String(start) : null,
+      });
+    }
+    if (path.endsWith("/history/clear") && method === "POST") {
+      demoMessageCount = 0;
+      return json(route, { messages: [] });
+    }
+    if (path.endsWith("/history/regenerate") && method === "POST") {
+      return sse(route, [
+        { type: "history_updated", data: { operation: "regenerate", turns: 1, history: [] } },
+        { type: "message", data: { id: "regen-user", role: "user", content: "Inspect API boundaries", images: [], artifacts: [] } },
+        { type: "turn_started", data: { turn: 1 } },
+        { type: "assistant_message", data: { content: "Regenerated from the persisted input.", tool_calls: [] } },
+        { type: "turn_finished", data: { turn: 1 } },
+      ]);
+    }
+    if (path.endsWith("/todos") && method === "GET") return json(route, {
+      schema_version: 1,
+      items: [],
     });
     if (path.endsWith("/tasks") && method === "GET") return json(route, {
       session_id: "demo-session",
@@ -227,6 +579,15 @@ async function mockProtocol(page: Page) {
     if (path.endsWith("/events")) return sse(route, []);
     if (path.endsWith("/messages") && method === "POST") {
       const content = String(request.postDataJSON().content || "");
+      demoMessageCount += content.startsWith("Plan") ? 4 : content.startsWith("Write") ? 1 : 2;
+      if (content.startsWith("Hold")) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return sse(route, [
+          { type: "turn_started", data: { turn: 2 } },
+          { type: "assistant_message", data: { content: "The delayed turn completed.", tool_calls: [] } },
+          { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
+        ]);
+      }
       if (content.startsWith("Write")) {
         return sse(route, [{
           type: "permission_request",
@@ -281,32 +642,35 @@ async function mockProtocol(page: Page) {
   });
 }
 
-function openSession(sessionId = "demo-session") {
+function openSession(sessionId = "demo-session", workspaceOverride = "", historyLimit = 0) {
   const historical = sessionId === "history-session";
   const longHistory = sessionId === "long-session";
+  const history = historical ? [
+    { role: "user", content: "Review the persisted workspace", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+    { role: "assistant", content: "A persisted answer from history.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+  ] : longHistory ? Array.from({ length: 100 }, (_, index) => [
+    { role: "user", content: `Historical message ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+    { role: "assistant", content: `Historical answer ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+  ]).flat() : [
+    { role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+    { role: "assistant", content: "I will inspect the public SDK surface.", tool_calls: [{ id: "call-read", name: "filesystem_read", args: { path: "docs/sdk.md" } }], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+    { role: "tool", content: "Protocol v3 is the source contract.", tool_calls: [], tool_call_id: "call-read", status: "success", data: null, error: null, artifacts: [] },
+  ];
+  const start = historyLimit ? Math.max(0, history.length - historyLimit) : 0;
   return {
     session_id: sessionId,
     thread_id: historical ? "history-main" : longHistory ? "long-main" : "agent",
     status: "ready",
     agent_name: "default",
-    workspace_root: historical ? "/workspace/history" : longHistory ? "/workspace/long" : "/workspace/XBot",
+    workspace_root: workspaceOverride || (historical ? "/workspace/history" : longHistory ? "/workspace/long" : "/workspace/XBot"),
     provider: "minimax",
     model: "Minimax-M3",
     model_mode: "high",
     context_window: 32000,
     usage: usage(),
     status_slots: { goal: "active" },
-    history: historical ? [
-      { role: "user", content: "Review the persisted workspace", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-      { role: "assistant", content: "A persisted answer from history.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-    ] : longHistory ? Array.from({ length: 100 }, (_, index) => [
-      { role: "user", content: `Historical message ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-      { role: "assistant", content: `Historical answer ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-    ]).flat() : [
-      { role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-      { role: "assistant", content: "I will inspect the public SDK surface.", tool_calls: [{ id: "call-read", name: "filesystem_read", args: { path: "docs/sdk.md" } }], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-      { role: "tool", content: "Protocol v3 is the source contract.", tool_calls: [], tool_call_id: "call-read", status: "success", data: null, error: null, artifacts: [] },
-    ],
+    history: history.slice(start).map((item) => ({ images: [], ...item })),
+    history_cursor: start ? String(start) : null,
   };
 }
 

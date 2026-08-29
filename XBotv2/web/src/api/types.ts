@@ -15,6 +15,7 @@ export interface ImageReference {
   path: string;
   media_type: string;
   size: number;
+  url?: string;
 }
 
 export interface UsageData {
@@ -82,16 +83,30 @@ export interface OpenSessionResponse {
   context_window: number;
   usage: UsageData;
   history: HistoryItem[];
+  history_cursor?: string | null;
   status_slots: Record<string, string>;
+}
+
+export interface MessagePage {
+  messages: HistoryItem[];
+  next_cursor: string | null;
 }
 
 export interface ProviderInfo {
   name: string;
   provider: string;
+  default_model: string;
+  models: ModelInfo[];
+}
+
+export interface ModelInfo {
   model: string;
-  max_tokens: number;
+  max_context_tokens: number;
+  max_output_tokens: number | null;
   reasoning_effort: string;
-  thinking_enabled: boolean;
+  effort: string[];
+  thinking: string;
+  input_modalities: ("text" | "image")[];
 }
 
 export interface AgentInfo {
@@ -101,6 +116,30 @@ export interface AgentInfo {
   provider: string;
   model: string;
   context_window: number;
+}
+
+export interface CommandInfo {
+  name: string;
+  slash: string;
+  kind: "client" | "server" | "prompt";
+  description: string;
+  usage: string;
+  examples: string[];
+  parameters: Record<string, unknown>;
+}
+
+export type CommandEffect = "history" | "thread" | "agents" | "tasks" | "commands" | "sessions";
+
+export interface CommandResultData {
+  command: string;
+  status: "ok" | "error";
+  message: string;
+  effects: CommandEffect[];
+}
+
+export interface CommandResult {
+  type: "command_result";
+  data: CommandResultData;
 }
 
 export interface TaskData {
@@ -117,6 +156,11 @@ export interface TaskData {
   agent: string;
   thread_id: string;
   usage: Record<string, unknown>;
+}
+
+export interface TodoItemData {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
 }
 
 export interface ToolCall {

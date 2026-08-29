@@ -255,7 +255,7 @@
   profiles: [server, acp]
 
 - id: acp
-  name: acp
+  name: acp_plugin
   profiles: [acp]
 
 - id: server
@@ -292,4 +292,8 @@
 
 - id: server.routes.commands
   name: commands.protocol
+  profiles: [server]
+
+- id: server.routes.todolist
+  name: todolist.protocol
   profiles: [server]

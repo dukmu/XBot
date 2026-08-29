@@ -89,7 +89,10 @@ async def _start_background_shell(application: Any, command: str) -> str:
 @pytest.mark.asyncio
 async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
     assert client_module.XBotClient is XBotClient
-    set_llm_override(http_app, MockLLM(responses=[{"content": "sdk answer"}]))
+    set_llm_override(http_app, MockLLM(responses=[
+        {"content": "sdk answer"},
+        {"content": "sdk regenerated"},
+    ]))
     async with XBotClient(
         "http://test",
         transport=ASGITransport(app=http_app),
@@ -109,6 +112,17 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
             )
         ]
         messages = await sdk.list_messages("sdk-client", "main")
+        latest = await sdk.list_messages("sdk-client", "main", limit=1)
+        older = await sdk.list_messages(
+            "sdk-client", "main", limit=1, cursor=latest.next_cursor
+        )
+        regenerated = [
+            event
+            async for event in sdk.regenerate_message(
+                "sdk-client", "main", request_id="sdk-regenerate"
+            )
+        ]
+        regenerated_messages = await sdk.list_messages("sdk-client", "main")
         undone = await sdk.undo_history("sdk-client", "main")
 
         assert health.status == "ok"
@@ -122,6 +136,12 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         assert [item.content for item in messages.messages] == [
             "sdk question",
             "sdk answer",
+        ]
+        assert [item.content for item in latest.messages] == ["sdk answer"]
+        assert [item.content for item in older.messages] == ["sdk question"]
+        assert regenerated[-1].type == "end"
+        assert [item.content for item in regenerated_messages.messages] == [
+            "sdk question", "sdk regenerated",
         ]
         assert undone.removed_turns == 1
         assert undone.messages == []
@@ -157,13 +177,132 @@ async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> No
             )
         ]
         messages = await sdk.list_messages("sdk-attachment", "main")
+        downloaded = await sdk.read_artifact(
+            "sdk-attachment",
+            "main",
+            messages.messages[0].artifacts[0]["id"],
+        )
 
     assert events[-1].type == "end"
+    assert downloaded == b"binary"
     artifact = messages.messages[0].artifacts[0]
     assert artifact["name"] == "sample.bin"
     assert not str(artifact["id"]).startswith("/")
     user = next(message for message in llm.get_call_messages(0) if message.role == "user")
     assert [ref.to_dict() for ref in user.artifact] == [artifact]
+
+
+@pytest.mark.asyncio
+async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    llm = MockLLM(responses=[
+        {"content": "first answer"},
+        {"content": "second answer"},
+        {"content": "regenerated answer"},
+    ])
+    set_llm_override(http_app, llm)
+    await client.post(
+        "/sessions", json={"session_id": "message-api", "thread_id": "main"}
+    )
+    await client.post(
+        "/sessions/message-api/threads/main/messages",
+        json={
+            "content": "first question",
+            "attachments": [{
+                "name": "context.txt",
+                "media_type": "text/plain",
+                "data": "Y29udGV4dA==",
+            }],
+        },
+    )
+    await client.post(
+        "/sessions/message-api/threads/main/messages",
+        json={
+            "content": "second question",
+            "attachments": [{
+                "name": "latest.txt",
+                "media_type": "text/plain",
+                "data": "bGF0ZXN0",
+            }],
+        },
+    )
+
+    reopened = await client.post(
+        "/sessions",
+        json={
+            "session_id": "message-api",
+            "thread_id": "main",
+            "mode": "resume",
+            "history_limit": 2,
+        },
+    )
+    assert [item["content"] for item in reopened.json()["history"]] == [
+        "second question", "second answer",
+    ]
+    assert reopened.json()["history_cursor"] == "2"
+
+    latest = await client.get(
+        "/sessions/message-api/threads/main/messages", params={"limit": 2}
+    )
+    assert [item["content"] for item in latest.json()["messages"]] == [
+        "second question", "second answer",
+    ]
+    assert latest.json()["next_cursor"] == "2"
+
+    older = await client.get(
+        "/sessions/message-api/threads/main/messages",
+        params={"limit": 2, "cursor": latest.json()["next_cursor"]},
+    )
+    assert [item["content"] for item in older.json()["messages"]] == [
+        "first question", "first answer",
+    ]
+    assert older.json()["next_cursor"] is None
+
+    artifact = older.json()["messages"][0]["artifacts"][0]
+    downloaded = await client.get(
+        "/sessions/message-api/threads/main/artifacts/" + artifact["id"]
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"context"
+    assert downloaded.headers["content-type"].startswith("text/plain")
+    assert "context.txt" in downloaded.headers["content-disposition"]
+
+    regenerated = await client.post(
+        "/sessions/message-api/threads/main/history/regenerate",
+        json={"request_id": "regen-1"},
+    )
+    assert regenerated.status_code == 200
+    assert '"type": "end"' in regenerated.text
+
+    current = await client.get("/sessions/message-api/threads/main/messages")
+    assert [item["content"] for item in current.json()["messages"]] == [
+        "first question",
+        "first answer",
+        "second question",
+        "regenerated answer",
+    ]
+    assert llm.get_call_messages(2)[-1].content == "second question"
+    regenerated_input = llm.get_call_messages(2)[-1]
+    assert [artifact.name for artifact in regenerated_input.artifact] == [
+        "latest.txt"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_message_cursor_rejects_invalid_positions(
+    client: httpx.AsyncClient,
+) -> None:
+    await client.post(
+        "/sessions", json={"session_id": "bad-cursor", "thread_id": "main"}
+    )
+    response = await client.get(
+        "/sessions/bad-cursor/threads/main/messages",
+        params={"limit": 10, "cursor": "not-a-cursor"},
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_cursor"
 
 
 @pytest.mark.asyncio
@@ -802,6 +941,11 @@ async def test_todo_and_usage_survive_http_close_resume(
             {"content": "verify", "status": "pending"},
         ],
     }
+    todo_state = await client.get(
+        "/sessions/todo-recovery/threads/main/todos"
+    )
+    assert todo_state.status_code == 200
+    assert todo_state.json()["items"] == todo["items"]
 
     closed = await client.post(
         "/sessions/todo-recovery/threads/main/close"
@@ -827,6 +971,10 @@ async def test_todo_and_usage_survive_http_close_resume(
         for message in resumed.json()["history"]
         if message["role"] == "tool"
     )
+    resumed_todos = await client.get(
+        "/sessions/todo-recovery/threads/main/todos"
+    )
+    assert resumed_todos.json()["items"] == todo["items"]
 
     second_turn = await client.post(
         "/sessions/todo-recovery/threads/main/messages",
@@ -844,6 +992,9 @@ async def test_todo_and_usage_survive_http_close_resume(
         and message["data"].get("kind") == "todo_snapshot"
     ]
     assert projections[-1]["items"] == []
+    assert (
+        await client.get("/sessions/todo-recovery/threads/main/todos")
+    ).json()["items"] == []
 
 
 @pytest.mark.asyncio
@@ -1316,6 +1467,7 @@ async def test_http_command_plane_exposes_platform_builtins(
     body = result_response.json()
     assert body["type"] == "command_result"
     assert body["data"]["status"] == "ok"
+    assert body["data"]["effects"] == []
     assert "provider=" in body["data"]["message"]
     messages_response = await client.get("/sessions/cmds/threads/t/messages")
     assert messages_response.status_code == 200
@@ -1350,6 +1502,7 @@ async def test_http_builtin_commands_execute_through_command_plane(
     switched = await run("/model use test")
     assert switched["status"] == "ok"
     assert switched["message"] == "Model switched to default (test)."
+    assert switched["effects"] == ["thread"]
 
     effort = await run("/effort")
     assert effort["status"] == "ok"
@@ -1483,6 +1636,27 @@ async def test_undo_rejects_invalid_or_excessive_counts(client: httpx.AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_delete_session_closes_runtime_and_removes_persisted_state(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    opened = await client.post(
+        "/sessions",
+        json={"session_id": "delete-me", "thread_id": "agent"},
+    )
+    assert opened.status_code == 200
+    session_root = http_app.state.paths.session("delete-me").root
+    assert session_root.is_dir()
+
+    deleted = await client.delete("/sessions/delete-me")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"session_id": "delete-me", "status": "deleted"}
+    assert not session_root.exists()
+    assert (await client.get("/sessions/delete-me")).status_code == 404
+    assert (await client.delete("/sessions/delete-me")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_typed_history_mutations_validate_and_reject_busy_threads(
     client: httpx.AsyncClient,
     http_app,
@@ -1516,6 +1690,7 @@ async def test_typed_history_mutations_validate_and_reject_busy_threads(
             "/sessions/typed-history/threads/t/history/clear"
         )
         busy_fork = await client.post("/sessions/typed-history/fork")
+        busy_delete = await client.delete("/sessions/typed-history")
     finally:
         ctx.turn_lock.release()
     assert busy.status_code == 409
@@ -1523,6 +1698,9 @@ async def test_typed_history_mutations_validate_and_reject_busy_threads(
     assert busy.json()["retryable"] is True
     assert busy_fork.status_code == 409
     assert busy_fork.json()["code"] == "thread_busy"
+    assert busy_delete.status_code == 409
+    assert busy_delete.json()["code"] == "thread_busy"
+    assert http_app.state.paths.session("typed-history").root.is_dir()
 
     undone = await client.post(
         "/sessions/typed-history/threads/t/history/undo",

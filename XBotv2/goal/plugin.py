@@ -11,7 +11,7 @@ from xcore.state import StateService
 
 from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
-from XBotv2.commands import Command, CommandResult
+from XBotv2.commands import Command, CommandEffect, CommandResult
 from XBotv2.core import Tool, ToolResult
 from XBotv2.goal.models import GOAL_STATUSES, GoalSnapshot
 
@@ -107,7 +107,10 @@ class GoalService:
             result = await self._finish(action, value)
         if result.status == "success" and action in {"set", "resume"}:
             await self.start()
-        return _command_result(result)
+        effects: tuple[CommandEffect, ...] = (
+            ("thread",) if result.status == "success" and action != "get" else ()
+        )
+        return _command_result(result, effects=effects)
 
     async def contribute_status(self, slots: StatusSlots) -> None:
         goal = await self.snapshot()
@@ -353,10 +356,15 @@ def _parse_goal_command(raw_args: str) -> tuple[str, str | None, int | None]:
     return "set", text, token_budget
 
 
-def _command_result(result: ToolResult) -> CommandResult:
+def _command_result(
+    result: ToolResult,
+    *,
+    effects: tuple[CommandEffect, ...] = (),
+) -> CommandResult:
     return CommandResult(
         message=result.content,
         status="ok" if result.status == "success" else "error",
+        effects=effects,
     )
 
 

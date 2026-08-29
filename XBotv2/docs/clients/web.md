@@ -15,9 +15,12 @@ open.
 The browser does not:
 
 - execute Tools directly;
-- parse or invoke plugin command compatibility routes;
 - read session files or plugin state;
 - infer a provider `model_mode` when the API returns an empty value.
+
+It does discover human command metadata. UI-owned lifecycle commands use typed
+session resources; server-owned commands use the command compatibility route
+and refresh only the resources declared by the result.
 
 This keeps permission checks, sandboxing, caching, Hooks, and persistence in
 the Agent runtime.
@@ -28,7 +31,11 @@ The workbench exposes persisted sessions and threads, Agent/provider selection,
 conversation history, reasoning disclosure, Tool call details, background
 shell/subagent tasks, sequential permission and `ask_user` requests, history
 mutations, fork, interrupt, cumulative session tokens, current context use, and
-plugin status slots.
+plugin status slots. It opens a bounded newest history page and fetches older
+pages by cursor, renders injected context separately from human messages,
+downloads persisted images/files through the artifact resource, and performs
+regeneration through the atomic server operation. Todo is restored from the
+plugin's typed projection rather than inferred from old Tool arguments.
 
 Completed or stopped tasks remain briefly visible and are then removed from
 the task dock. Failed tasks remain available for diagnosis. The server remains

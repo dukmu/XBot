@@ -59,6 +59,13 @@ Thread status and history remain queryable after its runtime closes.
   and private provider metadata. Tool history retains structured `data`,
   `error`, and `artifacts` so resumed clients render the same Details content
   as the live event stream.
+- Clients may set `history_limit` while opening a session or thread. The
+  response then contains the newest page and `history_cursor`; older pages are
+  read with `GET .../messages?limit=<n>&cursor=<cursor>`. Cursors address the
+  persisted ordering and pages remain chronological.
+- Plugin/runtime inputs retain `runtime.source` and `runtime.event` in the
+  display projection. Clients must label these as injected context rather than
+  presenting them as human-authored messages.
 - `OpenSessionResponse.model`, `model_mode`, and `context_window` describe the
   active provider model, its explicitly configured reasoning/thinking mode, and
   the runtime context budget. An empty `model_mode` means the provider did not
@@ -93,6 +100,7 @@ Thread status and history remain queryable after its runtime closes.
 | POST | `/sessions` | Open session (new/resume) |
 | GET | `/sessions` | List persisted sessions and runtime status |
 | GET | `/sessions/{sid}` | Read one session summary |
+| DELETE | `/sessions/{sid}` | Close and permanently delete a persisted session |
 | POST | `/sessions/{sid}/fork` | Copy persisted session state to a new id |
 | GET | `/sessions/{sid}/policy` | Read session-local policy rules |
 | PATCH | `/sessions/{sid}/policy` | Update session-local permission and sandbox rules |
@@ -106,8 +114,11 @@ Thread status and history remain queryable after its runtime closes.
 | GET | `/sessions/{sid}/threads/{tid}/tools` | List model-visible Tool schemas |
 | GET | `/sessions/{sid}/threads/{tid}/messages` | Read display-safe history |
 | POST | `/sessions/{sid}/threads/{tid}/messages` | Send message, receive turn SSE |
+| GET | `/sessions/{sid}/threads/{tid}/artifacts/{artifact_id}` | Read a history-referenced thread artifact |
 | POST | `/sessions/{sid}/threads/{tid}/history/clear` | Clear conversation history |
 | POST | `/sessions/{sid}/threads/{tid}/history/undo` | Undo complete user turns |
+| POST | `/sessions/{sid}/threads/{tid}/history/regenerate` | Replace and rerun the latest human turn as SSE |
+| GET | `/sessions/{sid}/threads/{tid}/todos` | Read the Todo plugin's authoritative snapshot |
 | GET | `/sessions/{sid}/threads/{tid}/events` | Receive server-initiated events |
 | GET | `/sessions/{sid}/threads/{tid}/tasks` | List shell and subagent tasks |
 | POST | `/sessions/{sid}/threads/{tid}/tasks/{task_id}/stop` | Stop one task idempotently |
@@ -126,13 +137,15 @@ relative reference for filesystem or shell inspection. At least one of text,
 images, or attachments is required. Uploaded bytes are not embedded in history.
 
 `close` never deletes persisted history, artifacts, policy, or plugin state.
+`DELETE /sessions/{sid}` is the explicit destructive counterpart: it rejects a
+running turn, closes idle runtimes, and removes the complete persisted session.
 Slash command transport is not part of the OpenAPI/SDK resource contract.
 
 The session-open body may include `agent` to select a plugin-registered Primary
 Agent for a new thread. Resume reads the Agent identity from thread metadata.
 
 The typed history, session, Agent, provider, and task endpoints above are the
-machine API. Human slash commands remain TUI adapters:
+machine API. Human slash commands remain interactive-client adapters:
 
 - `/undo [count]` removes complete user turns from the persisted tail; `count`
   defaults to one.
@@ -153,6 +166,10 @@ Tool call.
 
 Typed history mutations return `HistoryMutationResponse.messages`, which is the
 same display-safe state the next provider request will use.
+Regeneration is not client-side resend: the session atomically removes the
+latest human-authored turn, retains its text, images, and artifact references,
+then runs that input again under the thread turn lock. Injected runtime inputs
+are not selected as the human turn.
 
 ## Unified input and response routing
 
@@ -207,11 +224,11 @@ same instruction text through its top-level `system` field and groups adjacent
 Tool results into one user content block. OpenAI's `developer` role is a
 provider capability, not a portable XBot history role.
 
-## TUI Command Compatibility
+## Human UI Command Compatibility
 
-The TUI owns built-in human commands and executes them through typed HTTP
-resources. A non-OpenAPI compatibility route discovers only plugin commands
-and prompt expansions with a `kind` field:
+The command catalog exposes registered server commands and prompt expansions
+with a `kind` field. It remains outside the generated OpenAPI SDK because it is
+a human-interface compatibility plane rather than a machine resource API:
 
 ```json
 [
@@ -220,21 +237,41 @@ and prompt expansions with a `kind` field:
 ]
 ```
 
-Kinds: `client` (local TUI only), `server`, and `prompt`.
+Kinds: `client` (owned by the interactive client), `server`, and `prompt`.
 
 Each server command registry entry contains human-facing discovery metadata and
 an async handler that receives the unparsed argument text. Human syntax belongs
 to that command's domain; the protocol does not derive a CLI from JSON Schema.
-Server commands execute deterministically outside model history. Plugin
-commands own plugin-specific business state. Built-ins such as `/undo`,
-`/provider`, and `/tasks` never enter this registry: the TUI parser calls the
-corresponding typed API through `XBotClient`.
+Server commands execute deterministically outside model history. The component
+that owns a command also owns its handler and business state. Interactive
+clients may shadow a catalog entry with a client command when the operation has
+client lifecycle consequences. In particular, WebUI handles `/session`,
+`/resume`, `/new`, `/fork`, `/undo`, and `/clear` through typed session/history
+resources so it can switch subscriptions and immediately replace its local
+projection. Other server commands use the command endpoint.
 
 A `prompt` entry has metadata but no command handler. The client submits its
 original slash text through the message endpoint, where the owning plugin
 expands it before the accepted user message enters history. Agent Tools keep
 structured JSON-schema inputs and use the Tool runtime. Ordinary Tools and MCP
 Tools are not slash commands and are not returned by command discovery.
+
+WebUI merges its client catalog with the server catalog after every session or
+thread switch. Client entries win name collisions. Typing `/` opens the
+keyboard-accessible command palette; unknown one-line slash commands become
+local errors rather than user messages. `/help` opens a searchable directory;
+selecting an entry closes the directory and inserts its command into the
+composer. Session rows expose fork and confirmed-delete actions without first
+resuming that session. Clipboard image items become visible composer
+attachments and can be sent without accompanying text. Command results use a
+separate bounded, collapsible panel and never enter or scroll the conversation
+timeline. A successful server command declares the
+resources it changed in `data.effects` (`history`, `thread`, `agents`, `tasks`,
+`commands`, or `sessions`). Clients refresh only those authoritative resources;
+read-only commands therefore do not rebuild the timeline. Session resume
+resolves the real main thread and its persisted workspace, with an optional
+explicit workspace override. Active turns cannot be navigated away from until
+they finish or are interrupted.
 
 ## Stream Events
 
@@ -304,7 +341,7 @@ capability rather than by a parallel server registry:
 |---|---|---|
 | `agent_configured` | `{agent_name?, provider?, model?, model_mode?, context_window?}` | Agent/session producer |
 | `client_message` | `{message, level, source, tool_call_id}` | Session producer |
-| `history_updated` | `{history, operation, turns}` | Session producer |
+| `history_updated` | `{history, operation, turns, history_cursor?}` | Session producer |
 | `compaction_started` | `{reason, messages_before, history_chars_before, context_tokens_before, context_limit}` | Compact producer |
 | `compaction_completed` | `{reason, metrics}` | Compact producer |
 | `compaction_failed` | `{reason, message}` | Compact producer |

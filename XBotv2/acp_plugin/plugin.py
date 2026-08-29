@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from xcore import Context
 
-from XBotv2.acp.xbot_agent import XBotACPAgent
+from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 
 
 class ACPComponent:

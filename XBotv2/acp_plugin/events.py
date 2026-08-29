@@ -77,11 +77,7 @@ class ACPEventMapper:
                     content=[
                         tool_content(text_block(_display_content(data.get("content"))))
                     ],
-                    raw_output=(
-                        data.get("data")
-                        if data.get("data") is not None
-                        else data.get("content")
-                    ),
+                    raw_output=_tool_output(data),
                 )
             ]
             return updates
@@ -158,8 +154,25 @@ class ACPEventMapper:
 def replay_history(messages: list[Any]) -> list[Any]:
     """Translate persisted conversation messages into ACP load updates."""
     updates: list[Any] = []
-    for message in messages:
+    for index, message in enumerate(messages):
         if message.role == "user" and message.content:
+            runtime = message.additional_kwargs.get("runtime_input")
+            if isinstance(runtime, dict):
+                source = str(runtime.get("source") or "runtime")
+                event = str(runtime.get("event") or "message")
+                updates.append(start_tool_call(
+                    message.input_id or f"runtime-input-{index}",
+                    f"Injected context · {source} / {event}",
+                    kind="other",
+                    status="completed",
+                    content=[tool_content(text_block(str(message.content)))],
+                    raw_output={
+                        "source": source,
+                        "event": event,
+                        "content": str(message.content),
+                    },
+                ))
+                continue
             updates.append(update_user_message_text(str(message.content)))
             continue
         if message.role == "assistant":
@@ -180,11 +193,22 @@ def replay_history(messages: list[Any]) -> list[Any]:
         if message.role != "tool" or not message.tool_call_id:
             continue
         content = str(message.content or "")
+        output = {
+            "content": content,
+            "data": message.data,
+            "error": message.error,
+            "artifacts": [
+                value.to_dict()
+                for value in message.artifact or []
+                if hasattr(value, "to_dict")
+            ],
+            "images": [image.to_dict() for image in message.images],
+        }
         updates.append(update_tool_call(
             message.tool_call_id,
             status="completed" if message.status == "success" else "failed",
             content=[tool_content(text_block(content))],
-            raw_output=content,
+            raw_output=_tool_output(output),
         ))
     return updates
 
@@ -195,6 +219,19 @@ def _display_content(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _tool_output(data: dict[str, Any]) -> Any:
+    structured = {
+        key: data.get(key)
+        for key in ("content", "data", "error", "artifacts", "images")
+    }
+    if any(
+        structured[key] not in (None, [], {})
+        for key in ("data", "error", "artifacts", "images")
+    ):
+        return structured
+    return data.get("content")
 
 
 def _task_status(status: str) -> str:

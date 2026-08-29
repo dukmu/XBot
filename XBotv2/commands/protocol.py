@@ -11,6 +11,7 @@ from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.server import contribute_router
 from XBotv2.commands.contracts import (
+    CommandEffect,
     EXECUTE_COMMAND,
     ExecuteCommand,
     LIST_COMMANDS,
@@ -44,6 +45,7 @@ class CommandResultData(WireModel):
     command: str
     status: Literal["ok", "error"]
     message: str
+    effects: list[CommandEffect] = Field(default_factory=list)
 
 
 class CommandResponse(WireModel):
@@ -136,6 +138,7 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
                 "command": result.command,
                 "status": result.status,
                 "message": result.message,
+                "effects": list(result.effects),
             },
         })
 

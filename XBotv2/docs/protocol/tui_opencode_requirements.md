@@ -68,23 +68,23 @@ Local commands:
 - `/session new [workspace]`: create and enter a new session in the selected
   workspace
 
-Built-in client commands backed by typed APIs:
+Registered server commands include:
 
 - `/status`
 - `/provider status|list|use <name>`
 - `/permission status|list|set <tool> <allow|deny|ask>|reset [tool]`
 - `/sandbox status|list|set <key> <allow|readwrite|readonly|deny|ask>|reset [key]`
 
-The command endpoint discovers and executes only plugin-owned commands such as
-`/goal`; prompt/Skill commands continue through the message endpoint.
+The command endpoint discovers and executes all registered server commands,
+including `/goal`; prompt/Skill commands continue through the message endpoint.
 
 Slash dispatch rules:
 
 - local commands execute locally
 - registered server commands call
   `POST /sessions/{sid}/threads/{tid}/commands`
-- discovered Tool, Skill, and MCP commands are sent as normal user messages;
-  the Agent invokes their registered tool when appropriate
+- discovered prompt/Skill commands are sent as normal user messages for prompt
+  expansion; Tools and MCP Tools are not slash commands
 - unknown slash commands render a local notice
 - normal text is sent as a user message
 

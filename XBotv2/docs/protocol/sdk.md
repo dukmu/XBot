@@ -63,10 +63,14 @@ Machine clients use explicit operations rather than constructing slash text:
 
 ```text
 POST /sessions/{session_id}/fork
+DELETE /sessions/{session_id}
 GET   /sessions/{session_id}/policy
 PATCH /sessions/{session_id}/policy
 POST /sessions/{session_id}/threads/{thread_id}/history/clear
 POST /sessions/{session_id}/threads/{thread_id}/history/undo
+POST /sessions/{session_id}/threads/{thread_id}/history/regenerate
+GET  /sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id}
+GET  /sessions/{session_id}/threads/{thread_id}/todos
 PUT  /sessions/{session_id}/threads/{thread_id}/agent
 PUT  /sessions/{session_id}/threads/{thread_id}/provider
 POST /sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop
@@ -92,10 +96,10 @@ status` and `/sandbox status` commands display the effective values. `/sandbox s
 enabled false` disables isolation between turns, but Tool permissions continue
 to apply.
 
-The TUI currently has a compatibility endpoint for discovery and execution of
-plugin-defined human slash commands. It is intentionally omitted from OpenAPI
-and generated SDKs. Built-in TUI commands parse human syntax in the client and
-call typed SDK methods. Only plugin-owned commands use the compatibility route.
+Interactive clients use a compatibility endpoint to discover and execute
+registered human slash commands. It is intentionally omitted from OpenAPI and
+generated SDKs. UI-local lifecycle commands may call typed resources directly;
+server-owned commands use the compatibility route.
 
 ## Streaming
 
@@ -107,6 +111,10 @@ present.
 `XBotClient.send_message(..., attachments=[...])` uploads arbitrary files.
 Each item contains base64 `data`, `media_type`, and `name`. History returns a
 session-relative artifact reference, not the original bytes.
+Use `XBotClient.read_artifact(...)` to retrieve referenced bytes and
+`XBotClient.regenerate_message(...)` to replace the latest human turn without
+duplicating it. `list_messages(..., limit=..., cursor=...)` reads newest-first
+pages while returning each page's messages in conversation order.
 `GET .../events` is the single-consumer stream for server-initiated turns and
 task notifications. Both streams carry validated `ServerEvent` envelopes.
 Compaction remains a foreground, session-busy operation. Its lifecycle is

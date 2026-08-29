@@ -56,7 +56,10 @@ async def run_compact_command(
             "Conversation history is too short to compact.",
         )
 
-    return CommandResult(compact_result_message(metrics))
+    return CommandResult(
+        compact_result_message(metrics),
+        effects=("history", "thread"),
+    )
 
 
 __all__ = ["compact_result_message", "run_compact_command"]

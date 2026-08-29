@@ -34,7 +34,8 @@ def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
             return command_usage("/clear")
         removed = await session.clear_history()
         return CommandResult(
-            f"Cleared {removed} conversation turns."
+            f"Cleared {removed} conversation turns.",
+            effects=("history", "thread", "sessions"),
         )
 
     async def undo_command(raw_args: str) -> CommandResult:
@@ -48,13 +49,19 @@ def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
         if count < 1:
             return CommandResult("Undo count must be a positive integer.", status="error")
         await session.undo_history(count)
-        return CommandResult(f"Removed {count} conversation turn(s).")
+        return CommandResult(
+            f"Removed {count} conversation turn(s).",
+            effects=("history", "thread", "sessions"),
+        )
 
     async def fork_command(raw_args: str) -> CommandResult:
         if raw_args.strip():
             return command_usage("/fork")
         session_id = await session.fork()
-        return CommandResult(f"Forked session to {session_id}.")
+        return CommandResult(
+            f"Forked session to {session_id}.",
+            effects=("sessions",),
+        )
 
     return (
         Command("status", "Show the current session and thread status", handler=guard_command(status_command), usage="/status"),

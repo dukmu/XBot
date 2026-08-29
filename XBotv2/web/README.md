@@ -1,8 +1,9 @@
 # XBot Web
 
 The Web client is an independent React/TypeScript application for the public
-XBot protocol v3 HTTP/SSE API. It does not import Python runtime code and does
-not use the plugin-command compatibility endpoints.
+XBot protocol v3 HTTP/SSE API. It does not import Python runtime code. Typed
+resources own machine operations; the separately discovered human command
+catalog is used only for server-owned slash commands.
 
 ## Development
 

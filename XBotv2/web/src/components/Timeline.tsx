@@ -7,7 +7,23 @@ import type { TimelineEntry, ToolEntry } from "../state/runtime";
 const TIMELINE_WINDOW = 160;
 const TIMELINE_BATCH = 80;
 
-export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineEntry[]; turnRunning: boolean; onRetry: () => Promise<void> }) {
+interface TimelineProps {
+  entries: TimelineEntry[];
+  turnRunning: boolean;
+  onRetry: () => Promise<void>;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => Promise<void>;
+}
+
+export const Timeline = memo(function Timeline({
+  entries,
+  turnRunning,
+  onRetry,
+  hasOlder,
+  loadingOlder,
+  onLoadOlder,
+}: TimelineProps) {
   const viewport = useRef<HTMLDivElement>(null);
   const shouldFollow = useRef(true);
   const previousLength = useRef(0);
@@ -55,14 +71,18 @@ export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineE
     if (previousHeight === null || !element) return;
     pendingPrependHeight.current = null;
     element.scrollTop += element.scrollHeight - previousHeight;
-  }, [range.start, range.end]);
+  }, [entries.length, range.start, range.end]);
 
   const loadEarlier = () => {
     const element = viewport.current;
-    if (!element || range.start <= 0) return;
+    if (!element || (range.start <= 0 && !hasOlder)) return;
     shouldFollow.current = false;
     setShowLatest(true);
     pendingPrependHeight.current = element.scrollHeight;
+    if (range.start <= 0) {
+      void onLoadOlder();
+      return;
+    }
     setWindowRange((current) => {
       const start = Math.max(0, current.start - TIMELINE_BATCH);
       return { start, end: Math.min(entries.length, start + TIMELINE_WINDOW) };
@@ -95,9 +115,9 @@ export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineE
       }}
     >
       <div className="timeline-inner">
-        {range.start > 0 && (
-          <button className="timeline-older" type="button" onClick={loadEarlier}>
-            <ChevronUp size={14} /> Older messages
+        {(range.start > 0 || hasOlder) && (
+          <button className="timeline-older" type="button" disabled={loadingOlder} onClick={loadEarlier}>
+            {loadingOlder ? <LoaderCircle size={14} className="spin" /> : <ChevronUp size={14} />} Older messages
           </button>
         )}
         {visibleEntries.map((entry) => {
@@ -105,6 +125,19 @@ export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineE
             return <MessageBlock key={entry.id} entry={entry} canRetry={!turnRunning && entry.role === "assistant" && entry.id === latestAssistant} onRetry={onRetry} />;
           }
           if (entry.kind === "tool") return <ToolBlock key={entry.id} tool={entry} />;
+          if (entry.kind === "runtime") {
+            return (
+              <details key={entry.id} className="runtime-context">
+                <summary>
+                  <Terminal size={14} />
+                  <span>Injected context</span>
+                  <code>{entry.source} · {entry.event}</code>
+                  <ChevronRight size={13} className="summary-chevron" />
+                </summary>
+                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
+              </details>
+            );
+          }
           return (
             <div key={entry.id} className={`notice-row ${entry.level}`}>
               {entry.level === "error" ? <CircleAlert size={14} /> : <Terminal size={14} />}
@@ -123,7 +156,12 @@ export function Timeline({ entries, turnRunning, onRetry }: { entries: TimelineE
       )}
     </div>
   );
-}
+}, (previous, next) => (
+  previous.entries === next.entries
+  && previous.turnRunning === next.turnRunning
+  && previous.hasOlder === next.hasOlder
+  && previous.loadingOlder === next.loadingOlder
+));
 
 const MessageBlock = memo(function MessageBlock({
   entry,
@@ -177,7 +215,11 @@ const MessageBlock = memo(function MessageBlock({
       {entry.images.length > 0 && (
         <div className="message-images">
           {entry.images.map((image, index) => image.src ? (
-            <img key={`${image.label}-${index}`} src={image.src} alt={image.label} loading="lazy" />
+            <a key={`${image.label}-${index}`} href={image.href || image.src} target="_blank" rel="noreferrer">
+              <img src={image.src} alt={image.label} loading="lazy" />
+            </a>
+          ) : image.href ? (
+            <a className="message-image-reference" key={`${image.label}-${index}`} href={image.href} target="_blank" rel="noreferrer">{image.label}</a>
           ) : (
             <div className="message-image-reference" key={`${image.label}-${index}`}>{image.label}</div>
           ))}
@@ -253,11 +295,7 @@ function todoItems(tool: ToolEntry): TodoItem[] | null {
   const projection = tool.data && typeof tool.data === "object" && !Array.isArray(tool.data)
     ? tool.data as Record<string, unknown>
     : null;
-  const raw = projection?.kind === "todo_snapshot"
-    ? projection.items
-    : tool.args && typeof tool.args === "object"
-      ? (tool.args as Record<string, unknown>).todos
-      : null;
+  const raw = projection?.kind === "todo_snapshot" ? projection.items : null;
   if (!Array.isArray(raw)) return null;
   const items: TodoItem[] = [];
   for (const value of raw) {
