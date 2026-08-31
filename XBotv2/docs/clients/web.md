@@ -67,8 +67,13 @@ timeline, and event subscription are restored.
 The React-free session-event connection owns cancellation and retries
 transient disconnects with bounded exponential backoff. HTTP failures that are
 not marked retryable stop the connection and remain visible to the user.
+The opened Session snapshot supplies its pre-read `event_cursor`; reconnects
+continue from the last delivered sequence so accepted inputs, interactions,
+jobs, and background continuation events are not silently lost. Cursor expiry
+is surfaced as an explicit error because it requires a new Session baseline.
+The main `POST /messages` turn stream remains request-owned and separate.
 
-Session and Workspace catalogs use a separate React-free Host connection.
+Session and Workspace catalogs use a separate React-free catalog connection.
 `GET /sessions` and `GET /workspaces` return baseline cursors; the client starts
 `GET /workspaces/events` from the older cursor and applies replayed changes over both
 baselines. Resource frames received while a manual refresh is in flight are
@@ -80,7 +85,7 @@ or delete a resource and the open sidebar updates without a page refresh.
 ## Hosting
 
 During development Vite proxies `/api` to the loopback HTTP server, including
-the long-lived Host and session SSE responses. Production
+the long-lived Workspace catalog and Session SSE responses. Production
 deployments serve the static build and reverse-proxy the same path. This avoids
 adding CORS or static hosting behavior to Core. Because the current protocol
 does not define authentication, the HTTP server remains loopback-only.

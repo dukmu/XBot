@@ -58,6 +58,7 @@ class TerminalSession:
             base_url, uds_path=uds_path, headers=headers
         )
         self._session_attached = False
+        self._event_cursor = 0
 
     @property
     def session_id(self) -> str:
@@ -95,6 +96,7 @@ class TerminalSession:
         self._session_id = server_session
         self._thread_id = server_thread
         self._session_attached = True
+        self._event_cursor = session.event_cursor
         return _dump(session)
 
     async def list_commands(self) -> dict[str, Any]:
@@ -141,6 +143,7 @@ class TerminalSession:
         self._workspace_root = target_workspace
         self._session_mode = mode
         self._session_attached = True
+        self._event_cursor = opened.event_cursor
         return _dump(opened)
 
     async def run_command(
@@ -201,8 +204,16 @@ class TerminalSession:
     async def session_events(self) -> AsyncIterator[dict[str, Any]]:
         """Yield turns initiated by runtime general messages."""
 
-        stream = self._client.stream_events(self._session_id, self._thread_id)
+        stream = self._client.stream_events(
+            self._session_id,
+            self._thread_id,
+            after=self._event_cursor,
+        )
         async for event in self._events(stream, "session_events"):
+            self._event_cursor = max(
+                self._event_cursor,
+                int(event.get("sequence") or 0),
+            )
             yield event
 
     async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:

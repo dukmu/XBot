@@ -17,7 +17,7 @@ describe("RuntimeEventController", () => {
     };
     const controller = new RuntimeEventController(api, listener({ onEvents: (batch) => batches.push(batch) }));
 
-    controller.start({ session_id: "s", thread_id: "t" } as OpenSessionResponse, 1);
+    controller.start({ session_id: "s", thread_id: "t", event_cursor: 0 } as OpenSessionResponse, 1);
     await vi.advanceTimersByTimeAsync(0);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     await vi.advanceTimersByTimeAsync(16);

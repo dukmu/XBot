@@ -132,7 +132,7 @@ Thread status and history remain queryable after its runtime closes.
 | POST | `/sessions/{sid}/threads/{tid}/history/undo` | Undo complete user turns |
 | POST | `/sessions/{sid}/threads/{tid}/history/regenerate` | Replace and rerun the latest human turn as SSE |
 | GET | `/sessions/{sid}/threads/{tid}/todos` | Read the Todo plugin's authoritative snapshot |
-| GET | `/sessions/{sid}/threads/{tid}/events` | Receive server-initiated events |
+| GET | `/sessions/{sid}/threads/{tid}/events?after={cursor}` | Replay and follow server-initiated runtime events |
 | GET | `/sessions/{sid}/threads/{tid}/tasks` | List shell and subagent tasks |
 | POST | `/sessions/{sid}/threads/{tid}/tasks/{task_id}/stop` | Stop one task idempotently |
 | POST | `/sessions/{sid}/threads/{tid}/tasks/stop` | Stop all running tasks |
@@ -237,6 +237,19 @@ Regeneration is not client-side resend: the session atomically removes the
 latest human-authored turn, retains its text, images, and artifact references,
 then runs that input again under the thread turn lock. Injected runtime inputs
 are not selected as the human turn.
+
+`OpenSessionResponse.event_cursor` is captured before the response snapshot.
+Clients subscribe to `GET .../events?after=<event_cursor>` so events committed
+while the snapshot is read are replayed. Each active runtime retains 512 shared
+events. Transport reconnect resumes from the last received sequence. A cursor
+older than that window returns retryable `session_event_cursor_expired`; a
+future cursor returns `invalid_session_event_cursor`.
+
+This shared stream owns accepted inputs, interactions, status/configuration
+changes, jobs, and background continuation events. The response for a turn
+started by `POST .../messages` remains on that request's SSE stream and the
+request connection still owns cancellation. Therefore this cursor is not yet a
+durable conversation-turn replay cursor.
 
 ## Unified input and response routing
 

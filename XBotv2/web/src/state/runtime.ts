@@ -686,6 +686,7 @@ function runtimeSession(session: OpenSessionResponse): RuntimeSession {
     model: session.model,
     model_mode: session.model_mode,
     context_window: session.context_window,
+    event_cursor: session.event_cursor,
     status_slots: session.status_slots,
   };
 }

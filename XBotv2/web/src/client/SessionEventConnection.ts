@@ -1,7 +1,7 @@
 import { XBotApi, XBotApiError } from "../api/client";
 import type { OpenSessionResponse, ServerEvent } from "../api/types";
 
-type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id">;
+type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
 
 export interface SessionEventListener {
   onEvent(event: ServerEvent): void;
@@ -39,23 +39,31 @@ export class SessionEventConnection {
     generation: number,
   ): Promise<void> {
     let attempt = 0;
+    let cursor = session.event_cursor;
     while (this.isCurrent(controller, generation)) {
       listener.onConnection(true);
       try {
         for await (const event of this.api.streamEvents(
           session.session_id,
           session.thread_id,
+          cursor,
           controller.signal,
         )) {
           if (!this.isCurrent(controller, generation)) return;
           attempt = 0;
           listener.onEvent(event);
+          cursor = Math.max(cursor, event.sequence);
         }
         if (!this.isCurrent(controller, generation)) return;
         listener.onConnection(false);
         listener.onDisconnect(new Error("Session event stream ended unexpectedly"), true);
       } catch (error) {
         if (!this.isCurrent(controller, generation)) return;
+        if (error instanceof XBotApiError && error.code === "session_event_cursor_expired") {
+          listener.onConnection(false);
+          listener.onDisconnect(error, false);
+          return;
+        }
         const retrying = isRetryable(error);
         listener.onConnection(false);
         listener.onDisconnect(error, retrying);

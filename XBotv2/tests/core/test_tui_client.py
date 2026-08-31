@@ -812,7 +812,8 @@ async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypa
 
             return Resp()
 
-        def stream(self, method, path, json=None, timeout=None):
+        def stream(self, method, path, json=None, params=None, timeout=None):
+            del params
             return self._stream
 
         async def aclose(self):

@@ -58,6 +58,7 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session.history import conversation_replay
+from XBotv2.session.event_stream import SessionEventFrame
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
 from XBotv2.commands import (
     EXECUTE_COMMAND,
@@ -176,7 +177,7 @@ class XBotACPAgent:
             ),
             model_override=self.llm_override,
         ))
-        await self._prepare_session(opened.session_id)
+        await self._prepare_session(opened.session_id, opened.event_cursor)
         self._log.info(
             "acp.session.created",
             session_id=opened.session_id,
@@ -461,7 +462,7 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
         try:
-            await self.sessions.open(OpenSession(
+            opened = await self.sessions.open(OpenSession(
                 session_id=session_id,
                 thread_id="agent",
                 provider_name=self.provider_name,
@@ -475,15 +476,19 @@ class XBotACPAgent:
             ))
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
-        await self._prepare_session(session_id)
+        await self._prepare_session(session_id, opened.event_cursor)
 
-    async def _prepare_session(self, session_id: str) -> None:
+    async def _prepare_session(self, session_id: str, event_cursor: int) -> None:
         existing = self._event_tasks.get(session_id)
         if existing is not None:
             if not existing.done():
                 existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
-        events = await self.sessions.stream_events(session_id, "agent")
+        events = await self.sessions.stream_events(
+            session_id,
+            "agent",
+            after=event_cursor,
+        )
         task = asyncio.create_task(
             self._forward_session_events(session_id, events),
             name=f"xbot-acp-events-{session_id}",
@@ -499,13 +504,13 @@ class XBotACPAgent:
     async def _forward_session_events(
         self,
         session_id: str,
-        events: AsyncIterator[SessionStreamEvent],
+        events: AsyncIterator[SessionEventFrame],
     ) -> None:
         try:
             summary = await self._thread(session_id)
             mapper = ACPEventMapper(context_size=summary.context_window)
-            async for event in events:
-                for update in mapper.updates(event.to_dict()):
+            async for frame in events:
+                for update in mapper.updates(frame.event.to_dict()):
                     await self._update(session_id, update)
         except asyncio.CancelledError:
             raise

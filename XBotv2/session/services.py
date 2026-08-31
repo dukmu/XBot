@@ -23,6 +23,7 @@ from XBotv2.session.types import (
     SessionSnapshot,
     ThreadSnapshot,
 )
+from XBotv2.session.event_stream import SessionEventFrame
 
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
@@ -125,7 +126,9 @@ class SessionsPort(Protocol):
         self,
         session_id: str,
         thread_id: str,
-    ) -> AsyncIterator[SessionStreamEvent]: ...
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[SessionEventFrame]: ...
 
     async def respond_permission(
         self,

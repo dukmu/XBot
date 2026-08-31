@@ -357,10 +357,15 @@ export class XBotApi {
     return `${this.baseUrl}${threadPath(sessionId, threadId)}/artifacts/${id}`;
   }
 
-  async *streamEvents(sessionId: string, threadId: string, signal?: AbortSignal) {
+  async *streamEvents(
+    sessionId: string,
+    threadId: string,
+    after: number,
+    signal?: AbortSignal,
+  ) {
     for await (const event of this.stream(
       "GET",
-      `${threadPath(sessionId, threadId)}/events`,
+      `${threadPath(sessionId, threadId)}/events?after=${encodeURIComponent(after)}`,
       undefined,
       signal,
     )) {

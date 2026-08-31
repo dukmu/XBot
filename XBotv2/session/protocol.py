@@ -30,6 +30,10 @@ from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
+from XBotv2.session.event_stream import (
+    SessionEventCursorExpired,
+    SessionEventFrame,
+)
 from XBotv2.session.history import display_history
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
@@ -150,6 +154,7 @@ class OpenSessionResponse(WireModel):
     usage: UsageData = Field(default_factory=_empty_usage)
     history: list[SessionHistoryItem] = Field(default_factory=list)
     history_cursor: str | None = None
+    event_cursor: int = Field(default=0, ge=0)
     status_slots: dict[str, str] = Field(default_factory=dict)
 
 
@@ -401,21 +406,18 @@ async def _message_sse(
 
 
 async def _session_sse(
-    events: AsyncIterator,
+    events: AsyncIterator[SessionEventFrame],
     session_id: str,
     thread_id: str,
 ) -> AsyncIterator[bytes]:
-    request_id = f"events-{uuid.uuid4().hex}"
-    sequence = 0
     try:
-        async for event in events:
-            sequence += 1
+        async for frame in events:
             yield _format_sse(
-                event={"type": event.type, "data": event.data},
-                seq=sequence,
+                event={"type": frame.event.type, "data": frame.event.data},
+                seq=frame.sequence,
                 session_id=session_id,
                 thread_id=thread_id,
-                request_id=request_id,
+                request_id=frame.request_id,
             )
     except asyncio.CancelledError:
         return
@@ -790,8 +792,31 @@ def build_session_router(
         response_class=StreamingResponse,
         responses=_SSE_RESPONSE,
     )
-    async def session_events(session_id: str, thread_id: str) -> Response:
-        events = await sessions.stream_events(session_id, thread_id)
+    async def session_events(
+        session_id: str,
+        thread_id: str,
+        after: int | None = Query(default=None, ge=0),
+    ) -> Response:
+        try:
+            events = await sessions.stream_events(
+                session_id,
+                thread_id,
+                after=after,
+            )
+        except SessionEventCursorExpired as exc:
+            raise HttpServerError(
+                "session_event_cursor_expired",
+                str(exc),
+                status=409,
+                details={"oldest_sequence": exc.oldest},
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise HttpServerError(
+                "invalid_session_event_cursor",
+                str(exc),
+                status=400,
+            ) from exc
 
         return StreamingResponse(
             _session_sse(events, session_id, thread_id),

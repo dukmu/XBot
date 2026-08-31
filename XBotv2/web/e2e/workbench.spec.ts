@@ -847,6 +847,7 @@ function openSession(sessionId = "demo-session", workspaceOverride = "", history
     status_slots: { goal: "active" },
     history: history.slice(start).map((item) => ({ images: [], ...item })),
     history_cursor: start ? String(start) : null,
+    event_cursor: 0,
   };
 }
 

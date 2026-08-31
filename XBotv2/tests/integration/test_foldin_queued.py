@@ -164,9 +164,7 @@ async def _run_foldin(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = await ev_stream.get()
-                if event is None:
-                    break
+                event = (await anext(ev_stream)).event.to_dict()
                 if event.get("type") == "message":
                     message_events.append(event)
     except TimeoutError:
@@ -288,9 +286,7 @@ async def _run_multi_queue(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = await ev_stream.get()
-                if event is None:
-                    break
+                event = (await anext(ev_stream)).event.to_dict()
                 if event.get("type") == "message":
                     message_events.append(event.get("data", {}).get("content"))
     except TimeoutError:
@@ -390,9 +386,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     task_updates = []
     async with asyncio.timeout(1):
         while True:
-            event = await events.get()
-            if event is None:
-                break
+            event = (await anext(events)).event.to_dict()
             if event.get("type") == "task_updated":
                 task_updates.append(event["data"].get("status"))
             if "completed" in task_updates:

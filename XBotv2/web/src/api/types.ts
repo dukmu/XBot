@@ -106,6 +106,7 @@ export interface OpenSessionResponse {
   usage: UsageData;
   history: HistoryItem[];
   history_cursor?: string | null;
+  event_cursor: number;
   status_slots: Record<string, string>;
 }
 

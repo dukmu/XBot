@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, AsyncIterator
@@ -27,6 +27,10 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.event_stream import (
+    SessionEventStream,
+    SessionEventSubscription,
+)
 from XBotv2.session.protocol import session_error_event, session_event
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
@@ -71,14 +75,9 @@ class SessionRuntime:
     # Protocol routing only. Input content lives exclusively in engine.inbox.
     pending_responses: dict[str, PendingResponse] = field(default_factory=dict)
     response_output: asyncio.Queue[dict[str, Any] | None] | None = None
-    event_streams: set[asyncio.Queue[dict[str, Any] | None]] = field(
-        default_factory=set
-    )
+    event_stream: SessionEventStream = field(default_factory=SessionEventStream)
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
-    # ``message`` events published before the event stream attaches; flushed
-    # on connect so early inputs are never lost.
-    _pending_message_events: list[dict[str, Any]] = field(default_factory=list)
     _wakeup_requested: bool = False
     _log: RuntimeLog = field(init=False)
 
@@ -136,8 +135,13 @@ class SessionRuntime:
             self._publish_runtime_event(session_event("agent_configured", data))
 
     def _publish_runtime_event(self, event: dict[str, Any]) -> None:
-        for stream in tuple(self.event_streams):
-            stream.put_nowait(event)
+        data = event.get("data")
+        request_id = (
+            str(data.get("request_id") or "")
+            if isinstance(data, dict)
+            else ""
+        )
+        self.event_stream.publish(event, request_id=request_id)
 
     def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
@@ -182,10 +186,7 @@ class SessionRuntime:
         event = self._message_event(
             message_id, content, images, artifacts
         )
-        if self.event_streams:
-            self._publish_runtime_event(event)
-        else:
-            self._pending_message_events.append(event)
+        self.event_stream.publish(event, request_id=message_id)
 
     async def stream_message(
         self,
@@ -263,26 +264,27 @@ class SessionRuntime:
         self.response_output = claimed[-1].events
         return True
 
-    def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
-        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        for event in self._pending_message_events:
-            events.put_nowait(event)
-        self._pending_message_events.clear()
-        self.event_streams.add(events)
+    def attach_event_stream(
+        self,
+        after: int | None = None,
+    ) -> SessionEventSubscription:
+        cursor = 0 if after is None else after
+        events = self.event_stream.subscribe(cursor)
         self._log.debug(
             "session.events.attached",
-            streams=len(self.event_streams),
+            streams=self.event_stream.subscriber_count,
+            after=cursor,
         )
         return events
 
     def detach_event_stream(
         self,
-        events: asyncio.Queue[dict[str, Any] | None],
+        events: SessionEventSubscription,
     ) -> None:
-        self.event_streams.discard(events)
+        events.close()
         self._log.debug(
             "session.events.detached",
-            streams=len(self.event_streams),
+            streams=self.event_stream.subscriber_count,
         )
 
     def request_interrupt(self) -> bool:
@@ -339,9 +341,6 @@ class SessionRuntime:
             await self.response_output.put(None)
             self.response_output = None
         await self.engine.discard_inputs()
-        for stream in tuple(self.event_streams):
-            stream.put_nowait(None)
-        self.event_streams.clear()
         try:
             await self.engine.close_session()
         except Exception as exc:
@@ -353,7 +352,10 @@ class SessionRuntime:
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
             # the surrounding application context.
-            await self.application.close()
+            try:
+                await self.application.close()
+            finally:
+                self.event_stream.close()
 
 
 async def _live_sink(
@@ -453,7 +455,6 @@ async def _pump_turn(
     images: list[ImageContent] | None = None,
     artifacts: list[ArtifactRef] | None = None,
 ) -> None:
-    turn_stream = None
     try:
         turn_stream = (
             runtime.engine.run_turn(
@@ -465,13 +466,14 @@ async def _pump_turn(
             if content is not None
             else runtime.engine.run_pending(request_id=request_id)
         )
-        async for event in turn_stream:
-            payload = _event_payload(event)
-            if payload["type"] in {"turn_finished", "turn_cancelled"}:
-                slots = await runtime.application.status_slots()
-                if slots:
-                    payload["data"]["status_slots"] = slots
-            await events.put(payload)
+        async with aclosing(turn_stream):
+            async for event in turn_stream:
+                payload = _event_payload(event)
+                if payload["type"] in {"turn_finished", "turn_cancelled"}:
+                    slots = await runtime.application.status_slots()
+                    if slots:
+                        payload["data"]["status_slots"] = slots
+                await events.put(payload)
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
@@ -487,9 +489,6 @@ async def _pump_turn(
             details={"exception_type": type(exc).__name__},
         ))
     finally:
-        close = getattr(turn_stream, "aclose", None)
-        if close is not None:
-            await close()
         await events.put(None)
 
 

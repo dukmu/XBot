@@ -89,6 +89,7 @@ class OpenedSession:
     usage: dict[str, int]
     history: tuple[Message, ...]
     status_slots: dict[str, str]
+    event_cursor: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -103,6 +104,7 @@ class OpenedSession:
             "usage": self.usage,
             "history": self.history,
             "status_slots": self.status_slots,
+            "event_cursor": self.event_cursor,
         }
 
 

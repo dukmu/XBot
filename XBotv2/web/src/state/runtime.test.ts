@@ -14,6 +14,7 @@ const opened: OpenSessionResponse = {
   context_window: 1000,
   usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10 },
   history: [],
+  event_cursor: 0,
   status_slots: {},
 };
 

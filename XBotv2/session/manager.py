@@ -41,6 +41,10 @@ from XBotv2.session.contracts import (
     SessionResourceChanged,
     SessionResourceRemoved,
 )
+from XBotv2.session.event_stream import (
+    SessionEventFrame,
+    SessionEventSubscription,
+)
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
 from XBotv2.core.history import HistoryCursorInvalid
 from XBotv2.session.types import (
@@ -107,14 +111,11 @@ async def _runtime_regenerate_events(
 
 async def _runtime_events(
     runtime: SessionRuntime,
-    events: asyncio.Queue[dict[str, Any] | None],
-) -> AsyncIterator[SessionStreamEvent]:
+    events: SessionEventSubscription,
+) -> AsyncIterator[SessionEventFrame]:
     try:
-        while True:
-            event = await events.get()
-            if event is None:
-                return
-            yield SessionStreamEvent.from_mapping(event)
+        async for event in events:
+            yield event
     finally:
         runtime.detach_event_stream(events)
 
@@ -203,7 +204,7 @@ class SessionManager:
                 and not ctx.turn_lock.locked()
                 and not ctx.pending_responses
                 and ctx.engine.pending_input_count == 0
-                and not ctx.event_streams
+                and ctx.event_stream.subscriber_count == 0
             ]
             for ctx in due:
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
@@ -930,9 +931,11 @@ class SessionManager:
         self,
         session_id: str,
         thread_id: str,
-    ) -> AsyncIterator[SessionStreamEvent]:
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[SessionEventFrame]:
         runtime = await self.get(session_id, thread_id)
-        events = runtime.attach_event_stream()
+        events = runtime.attach_event_stream(after)
         return _runtime_events(runtime, events)
 
     async def respond_permission(
@@ -1119,6 +1122,7 @@ def _has_persisted_session(
 
 
 async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
+    event_cursor = runtime.event_stream.sequence
     snapshot = await runtime.application.snapshot()
     return OpenedSession(
         session_id=runtime.session_id,
@@ -1132,6 +1136,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         usage=snapshot.usage,
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
+        event_cursor=event_cursor,
     )
 
 

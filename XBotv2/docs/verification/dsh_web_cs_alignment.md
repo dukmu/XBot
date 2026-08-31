@@ -67,11 +67,11 @@ correlation chain.
 
 ## Accepted runtime evidence
 
-The retained run at `/tmp/xbot-runtime-acceptance-20260831-27` was produced by:
+The retained run at `/tmp/xbot-runtime-acceptance-20260831-29` was produced by:
 
 ```console
 PYTHONPATH=. .venv/bin/python scripts/accept_runtime.py \
-  --root /tmp/xbot-runtime-acceptance-20260831-27
+  --root /tmp/xbot-runtime-acceptance-20260831-29
 ```
 
 Its `report.json` records six distinct process IDs, including one process that
@@ -120,12 +120,12 @@ which describes an older architecture. Relevant DSh owners include:
 | --- | --- | --- |
 | React-free client object layer owns sessions, event windows, reconnect, and paging | partial | A React-free event connection owns cancellation and bounded reconnect; session orchestration, paging, and projections remain in `useXBot` |
 | Typed unary operations are separate from session event streams | verified | FastAPI resources/operations and SSE are separate; retain this separation |
-| Generation-scoped reconnect rejects stale responses and frames | partial | Workspace catalog baselines use pre-read cursors, bounded replay, stale-refresh protection, and expired-cursor reset; conversation-stream projection still lacks a replay cursor |
+| Generation-scoped reconnect rejects stale responses and frames | partial | Workspace catalog and active Session shared events use pre-read cursors, bounded replay, and generation checks. Main turn SSE is still request-owned and lacks replay |
 | First-class Workspace registry and ordering | verified | Durable create/list/rename/delete/order and Session-event-driven membership share the Workspace service and survive process restart |
 | Incremental session/workspace list frames and multi-client synchronization | verified | Typed post-commit XCore events feed a bounded Workspace catalog SSE window; real HTTP and browser clients observe create/delete without refreshing |
 | Session search with ranked snippets | missing | Sidebar performs local metadata filtering only |
 | Archive, rename, ordering, and blank-session reuse | verified | Session rename, global archive/restore, Workspace and per-Workspace session order are durable; desktop/mobile browser tests prove New reuses only a Workspace-accounted, unarchived session whose server projection is blank |
-| Bounded event window plus history paging | partial | Persistence-owned backward paging now uses opaque revision-bound cursors across HTTP and ACP; the conversation live stream still has no replay window/cursor |
+| Bounded event window plus history paging | partial | Persistence-owned history paging and active Session shared-event replay are cursor-based; main turn events are not yet published through the replay window |
 | Durable domain projections independent of transcript | partial | Todo has a typed projection; usage/status/goal do not share one projection protocol |
 | Commands fail closed rather than degrading to prompts | verified | Known server/client commands use explicit paths; unknown slash input is rejected |
 | Pending interaction identity survives reconnect | partial | Active runtime exposes pending requests, but reconnect baseline and multi-client mux semantics need acceptance |
@@ -215,7 +215,7 @@ if it cannot, port the DSh client shell and adapt it to XBot's public protocol.
   frames. Workspace membership now subscribes to Session resource events
   through XCore instead of depending on a list request. Real socket and real
   browser tests proved multi-client create/delete updates and replay. Re-ran
-  the complete multi-process runtime acceptance at `-27` after this write-path
+  the complete multi-process runtime acceptance at `-28` after this write-path
   change.
 - 2026-08-30: Made persisted assistant reasoning part of the public history
   projection. HTTP close/resume, TUI widgets, and desktop/mobile browser tests
@@ -227,3 +227,8 @@ if it cannot, port the DSh client shell and adapt it to XBot's public protocol.
   conversation paging into the history stores with opaque revision-bound
   cursors, and made HTTP, runtime mutation events, and ACP consume one
   transport-neutral replay projection.
+- 2026-08-31: Added a per-runtime bounded replay window for accepted inputs,
+  interactions, jobs, configuration/status changes, and background
+  continuation events. Open responses provide the pre-snapshot cursor and
+  Web/TUI/ACP resume from it. Main `POST /messages` turn ownership remains a
+  documented gap rather than being mislabeled as reconnect-safe.

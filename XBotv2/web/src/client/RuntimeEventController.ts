@@ -2,7 +2,7 @@ import type { XBotApi } from "../api/client";
 import type { OpenSessionResponse, ServerEvent, ThreadSummary } from "../api/types";
 import { SessionEventConnection } from "./SessionEventConnection";
 
-type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id">;
+type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
 
 export interface RuntimeEventListener {
   isCurrent(generation: number): boolean;

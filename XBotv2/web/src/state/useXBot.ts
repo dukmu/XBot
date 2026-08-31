@@ -60,7 +60,7 @@ export function useXBot() {
 
   const resetStreamingState = useCallback(() => runtimeEvents.stop(), [runtimeEvents]);
 
-  const startEventStream = useCallback((session: Pick<OpenSessionResponse, "session_id" | "thread_id">, generation: number) => {
+  const startEventStream = useCallback((session: Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">, generation: number) => {
     runtimeEvents.start(session, generation);
   }, [runtimeEvents]);
 

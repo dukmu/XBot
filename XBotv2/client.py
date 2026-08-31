@@ -470,10 +470,16 @@ class XBotClient:
         )
 
     def stream_events(
-        self, session_id: str, thread_id: str
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        after: int | None = None,
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
-            "GET", f"{_thread_path(session_id, thread_id)}/events"
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/events",
+            params={"after": after} if after is not None else None,
         )
 
     async def _request(
@@ -499,11 +505,14 @@ class XBotClient:
         method: str,
         path: str,
         payload: WireModel | None = None,
+        *,
+        params: Mapping[str, object] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         async with self._http.stream(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
+            params=params,
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
             _raise_for_status(response)

@@ -142,7 +142,7 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     )))
 
     assert session.engine.inbox == []
-    notice = await asyncio.wait_for(events.get(), timeout=1)
+    notice = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
     assert notice["type"] == "completion_notice"
     assert session.turn_task is None
     await session.close()
@@ -175,14 +175,14 @@ async def test_runtime_events_are_broadcast_to_multiple_clients(tmp_path):
         {"task_id": "t1", "status": "completed"},
     )))
 
-    assert (await asyncio.wait_for(first.get(), timeout=1))["type"] == (
+    assert (await asyncio.wait_for(anext(first), timeout=1)).event.type == (
         "completion_notice"
     )
-    assert (await asyncio.wait_for(second.get(), timeout=1))["type"] == (
+    assert (await asyncio.wait_for(anext(second), timeout=1)).event.type == (
         "completion_notice"
     )
     session.detach_event_stream(first)
-    assert second in session.event_streams
+    assert session.event_stream.subscriber_count == 1
     await session.close()
 
 
@@ -199,7 +199,7 @@ async def test_history_change_is_projected_from_typed_session_event(tmp_path):
         turns=1,
     ))
 
-    event = await asyncio.wait_for(events.get(), timeout=1)
+    event = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
     assert event["type"] == "history_updated"
     assert event["data"]["operation"] == "undo"
     assert event["data"]["turns"] == 1
@@ -251,7 +251,7 @@ async def test_busy_turn_holds_input_for_fold_delivery(tmp_path):
         await asyncio.sleep(0)
         assert session.engine.steered == [("queued", "request")]
         assert len(session.pending_responses) == 1
-        msg = await asyncio.wait_for(events.get(), timeout=1)
+        msg = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
         assert msg["type"] == "message"
         assert msg["data"]["role"] == "user"
         assert msg["data"]["content"] == "queued"

@@ -37,20 +37,21 @@ from XBotv2.jobs import JobKind
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import ArtifactRef, Tool, ToolCall
+from XBotv2.core.tools import ArtifactRef, ClientEvent, Tool, ToolCall
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellRunner
 from XBotv2.agentloop.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
+from XBotv2.application import RuntimeEvent
 from XBotv2.application.server import start_server_application
 from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.server.http import (
     _format_sse,
     set_llm_override,
 )
-from XBotv2.session import InteractionReceipt, ThreadNotActive
+from XBotv2.session import InteractionReceipt, OpenSession, ThreadNotActive
 from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
 from XBotv2.protocol import ServerEvent
@@ -1100,6 +1101,68 @@ async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     # restore defaults so other tests are unaffected
     manager.idle_timeout = 3600.0
     manager.reap_interval = 60.0
+
+
+@pytest.mark.asyncio
+async def test_open_event_cursor_replays_later_shared_runtime_events(http_app) -> None:
+    manager = http_app.state.manager
+    opened = await manager.open(OpenSession(
+        session_id="runtime-event-replay",
+        thread_id="agent",
+        provider_name="default",
+        workspace_root=str(http_app.state.workspace_root),
+        mode="new",
+        no_plugins=True,
+        model_override=MockLLM(responses=[]),
+    ))
+    runtime = await manager.get(opened.session_id, opened.thread_id)
+    runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
+        "completion_notice",
+        {"task_id": "task-1", "status": "completed"},
+    )))
+
+    events = await manager.stream_events(
+        opened.session_id,
+        opened.thread_id,
+        after=opened.event_cursor,
+    )
+    frame = await asyncio.wait_for(anext(events), timeout=1)
+
+    assert frame.sequence == opened.event_cursor + 1
+    assert frame.event.type == "completion_notice"
+    await events.aclose()
+
+
+@pytest.mark.asyncio
+async def test_session_event_endpoint_rejects_expired_and_future_cursors(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    opened = await client.post(
+        "/sessions",
+        json={"session_id": "event-cursor-errors", "thread_id": "agent"},
+    )
+    runtime = await http_app.state.manager.get("event-cursor-errors", "agent")
+    for index in range(513):
+        runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
+            "completion_notice",
+            {"task_id": f"task-{index}", "status": "completed"},
+        )))
+
+    expired = await client.get(
+        "/sessions/event-cursor-errors/threads/agent/events",
+        params={"after": opened.json()["event_cursor"]},
+    )
+    future = await client.get(
+        "/sessions/event-cursor-errors/threads/agent/events",
+        params={"after": runtime.event_stream.sequence + 1},
+    )
+
+    assert expired.status_code == 409
+    assert expired.json()["code"] == "session_event_cursor_expired"
+    assert expired.json()["retryable"] is True
+    assert future.status_code == 400
+    assert future.json()["code"] == "invalid_session_event_cursor"
 
 
 @pytest.mark.asyncio
@@ -2747,7 +2810,7 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
     found = None
     async with asyncio.timeout(1):
         while found is None:
-            event = await ev_stream.get()
+            event = (await anext(ev_stream)).event.to_dict()
             if event.get("type") == "message" and event["data"].get("content") == "second":
                 found = event
     assert found["data"]["id"]
@@ -2820,9 +2883,16 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     # content) and owns the response events; the superseded active request
     # must not observe them.
     ev_stream = ctx.attach_event_stream()
-    msg = await asyncio.wait_for(ev_stream.get(), timeout=1)
-    if msg.get("type") == "message" and msg["data"].get("content") != "also include this":
-        msg = await asyncio.wait_for(ev_stream.get(), timeout=1)
+    while True:
+        msg = (
+            await asyncio.wait_for(anext(ev_stream), timeout=1)
+        ).event.to_dict()
+        if (
+            msg is not None
+            and msg.get("type") == "message"
+            and msg["data"].get("content") == "also include this"
+        ):
+            break
     assert msg["data"].get("content") == "also include this"
     assert msg["data"].get("id")
     assert any(
@@ -2902,7 +2972,7 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
     found = None
     async with asyncio.timeout(1):
         while found is None:
-            event = await ev_stream.get()
+            event = (await anext(ev_stream)).event.to_dict()
             if event.get("type") == "message" and event["data"].get("content") == "B":
                 found = event
     assert found["data"]["id"]
@@ -2946,7 +3016,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
             Events.INBOX_SPLICE,
             "completion_notice",
         }.issubset({event["type"] for event in observed}):
-            observed.append(await events.get())
+            observed.append((await anext(events)).event.to_dict())
     await asyncio.sleep(0.05)
     assert llm.call_count == 0, "general message must not wake a turn"
     assert len(ctx.engine.inbox) == 1
@@ -2998,7 +3068,9 @@ async def test_background_task_updates_and_completion_use_session_stream(
     # must NOT wake a turn on its own.
     notice = None
     while notice is None:
-        event = await asyncio.wait_for(events.get(), timeout=1)
+        event = (
+            await asyncio.wait_for(anext(events), timeout=1)
+        ).event.to_dict()
         if event and event["type"] == "completion_notice":
             notice = event
     assert notice["data"]["kind"] == "background_task"
@@ -3915,7 +3987,9 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     assert response.json()["data"]["message"] == "[active] ship the API\nToken budget: 2000"
     events = []
     while True:
-        event = await asyncio.wait_for(session_events.get(), timeout=2)
+        event = (
+            await asyncio.wait_for(anext(session_events), timeout=2)
+        ).event.to_dict()
         assert event is not None
         events.append(event)
         if event["type"] == "turn_finished":

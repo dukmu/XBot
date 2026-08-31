@@ -21,6 +21,7 @@ from acp.schema import (
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session.history import conversation_replay
+from XBotv2.session.event_stream import SessionEventFrame
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
@@ -74,6 +75,7 @@ class FakeSessions:
             usage={},
             history=tuple(self.messages),
             status_slots={},
+            event_cursor=0,
         )
 
     async def list_sessions(self):
@@ -107,13 +109,22 @@ class FakeSessions:
 
         return stream()
 
-    async def stream_events(self, session_id: str, thread_id: str):
+    async def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        after: int | None = None,
+    ):
+        del after
         async def stream():
+            sequence = 0
             while True:
                 event = await self.event_queue.get()
                 if event is None:
                     return
-                yield event
+                sequence += 1
+                yield SessionEventFrame(sequence, "", event)
 
         return stream()
 
