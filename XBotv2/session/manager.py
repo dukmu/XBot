@@ -1361,6 +1361,3 @@ class SessionManagerHandlers:
             threads=self._manager.thread_count,
             workspace_root=self._workspace_root,
         )
-
-
-plugin = SessionManagerComponent()

@@ -121,6 +121,3 @@ class AgentRuntimeComponent:
         engine = await service.create(ctx.agent_options)
         ctx.set("engine", engine)
         AgentRuntimeOperations(service, ctx.agent_catalog).register(ctx)
-
-
-plugin = AgentRuntimeComponent()

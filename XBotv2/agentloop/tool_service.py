@@ -203,6 +203,3 @@ class ToolsCatalogHandler:
             for entry in self._registry.registered_entries()
             if entry.model_visible and entry.registered_name in enabled
         ))
-
-
-plugin = ToolsComponent()

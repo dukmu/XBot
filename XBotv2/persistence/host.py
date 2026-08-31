@@ -42,6 +42,3 @@ class PersistenceHost:
 
     def apply(self, ctx: Context, config: object | None = None) -> None:
         ctx.set("thread_persistence_factory", thread_persistence_factory)
-
-
-plugin = PersistenceHost()

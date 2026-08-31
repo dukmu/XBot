@@ -34,6 +34,3 @@ class AgentLoopFactoryComponent:
 
     def apply(self, ctx: Context, config: object | None = None) -> None:
         ctx.set("agent_loop_factory", AgentLoopFactory(ctx.runtime_log))
-
-
-plugin = AgentLoopFactoryComponent()

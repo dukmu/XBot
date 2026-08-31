@@ -14,6 +14,3 @@ class LlmCommandsComponent:
     def apply(self, ctx: Any, config: Any = None) -> None:
         for command in build_llm_commands(ctx.agent_runtime, ctx.llm):
             ctx.commands.register(command)
-
-
-plugin = LlmCommandsComponent()

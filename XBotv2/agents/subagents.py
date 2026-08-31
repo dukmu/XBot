@@ -326,6 +326,3 @@ def _preview(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[:limit]}[truncated]"
-
-
-plugin = SubagentsPlugin()

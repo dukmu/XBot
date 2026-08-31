@@ -27,7 +27,7 @@
   name: usage
 
 - id: agent-catalog
-  name: agents.catalog_component
+  name: agents.catalog_provider
 
 - id: session
   name: session
@@ -138,16 +138,16 @@
             thinking: enabled
 
 - id: tools
-  name: agentloop.tool_service
+  name: agentloop.tools
 
 - id: agentloop
-  name: agentloop.factory
+  name: agentloop.runtime
 
 - id: agent-runtime
-  name: agents.service_component
+  name: agents.runtime
 
 - id: llm-commands
-  name: llm.commands_component
+  name: llm.runtime_commands
   profiles: [agent]
 
 - id: context_builder
@@ -213,7 +213,7 @@
     workspace_tools: []
 
 - id: subagents
-  name: agents.subagents
+  name: agents.subagent_tools
 
 - id: goal
   name: goal
@@ -247,11 +247,11 @@
 
 # Process-level Session services shared by carrier profiles.
 - id: process.persistence
-  name: persistence.host
+  name: persistence.process
   profiles: [server, acp]
 
 - id: process.sessions
-  name: session.manager
+  name: session.host
   profiles: [server, acp]
 
 - id: process.workspaces

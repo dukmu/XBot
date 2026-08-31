@@ -159,10 +159,12 @@ def test_core_contract_modules_do_not_import_plugin_implementations():
     assert violations == []
 
 
-def test_protocol_modules_do_not_register_xcore_plugins():
+def test_xcore_plugins_are_registered_only_in_plugin_modules():
     root = Path(__file__).parents[2]
     violations = []
-    for path in root.rglob("protocol.py"):
+    for path in root.rglob("*.py"):
+        if "tests" in path.parts or path.name == "plugin.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):

@@ -36,6 +36,3 @@ class AgentCatalogComponent:
             overlay=True,
         )
         ctx.set("agent_catalog", catalog)
-
-
-plugin = AgentCatalogComponent()
