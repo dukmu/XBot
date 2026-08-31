@@ -6,7 +6,8 @@ Compact owns the only automatic context threshold.
 
 ## Behavior
 
-At `BEFORE_MODEL_REQUEST`, after context externalization and Tool selection, the
+At `MODEL_REQUEST_READY`, after context externalization, compaction decisions,
+and Tool selection, the
 plugin records the runtime context window, provider-calibrated context estimate,
 raw estimate, estimate source, message count, Tool count, and utilization.
 

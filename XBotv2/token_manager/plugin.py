@@ -18,10 +18,10 @@ class TokenManagerPlugin:
         self._latest: dict[str, Any] = {}
 
     def apply(self, ctx, config=None) -> None:
-        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
+        ctx.on(Events.MODEL_REQUEST_READY, self._on_model_request_ready)
         ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 
-    async def _on_before_model_request(self, ctx: EventContext) -> None:
+    async def _on_model_request_ready(self, ctx: EventContext) -> None:
         request = ctx.model_request
         messages = list(request.messages) if request is not None else []
         tools = list(request.tools) if request is not None else []

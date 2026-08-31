@@ -287,12 +287,13 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
         return {}
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     reported_total = getattr(usage, "total_tokens", None)
-    cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read = getattr(details, "cached_tokens", None)
+    if cache_read is None:
+        cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
     if cache_read is None:
         cache_read = getattr(usage, "cache_read_input_tokens", 0)
-    cache_creation = getattr(usage, "prompt_cache_miss_tokens", None)
-    if cache_creation is None:
-        cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
     cache_read = int(cache_read or 0)
     cache_creation = int(cache_creation or 0)
     return usage_metadata(

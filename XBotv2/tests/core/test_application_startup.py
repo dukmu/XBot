@@ -78,7 +78,11 @@ class TestApplicationStartupBasics:
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
         _write_plugins(temp_data_dir, {"coretools": {"config": {
-            "tool_results": {"max_inline_chars": 2048, "preview_chars": 512},
+            "tool_results": {
+                "cache_threshold_chars": 2048,
+                "preview_chars": 512,
+                "tail_chars": 128,
+            },
         }}})
         captured = {}
 
@@ -100,7 +104,11 @@ class TestApplicationStartupBasics:
             llm_override=MockLLM(responses=[]),
         )
 
-        assert captured == {"max_inline_chars": 2048, "preview_chars": 512}
+        assert captured == {
+            "cache_threshold_chars": 2048,
+            "preview_chars": 512,
+            "tail_chars": 128,
+        }
 
     @pytest.mark.asyncio
     async def test_application_startup_rejects_unknown_provider(self, temp_data_dir):

@@ -39,6 +39,15 @@ class CompactEventsPort(Protocol):
     async def emit(self, event: str, *args: object) -> None: ...
 
 
+class UsagePort(Protocol):
+    async def add(
+        self,
+        usage: dict[str, object],
+        *,
+        update_context: bool = True,
+    ) -> dict[str, int] | None: ...
+
+
 class CompactService:
     """Own compaction runtime state, proposal generation, and commit semantics."""
 
@@ -48,11 +57,13 @@ class CompactService:
         events: CompactEventsPort,
         model: Any,
         state: Any,
+        usage: UsagePort,
         config: CompactConfig,
     ) -> None:
         self._events = events
         self.model = model
         self.state = state
+        self._usage = usage
         self._automatic = config.automatic
         self._output_reservation = config.output_reservation
         self._trigger_ratio = config.trigger_ratio
@@ -269,6 +280,7 @@ class CompactService:
             stable = tuple(stable_prefix)
         return await build_compaction_proposal(
             model=self.model,
+            record_usage=self._record_auxiliary_usage,
             publish_runtime_event=self._publish_runtime_event,
             session=ctx.session,
             messages=messages,
@@ -284,6 +296,12 @@ class CompactService:
             stable_prefix=stable,
             removable_estimate=removable_estimate,
         )
+
+    async def _record_auxiliary_usage(self, usage: dict[str, int]) -> None:
+        if usage:
+            event = await self._usage.add(usage, update_context=False)
+            if event is not None:
+                await self._publish_runtime_event(ClientEvent("usage", event))
 
     async def _publish_runtime_event(self, event: ClientEvent) -> None:
         await self._events.emit(

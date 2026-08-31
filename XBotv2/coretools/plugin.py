@@ -27,12 +27,17 @@ class CoreToolsComponent:
         config = config or {}
         artifacts = ctx.artifacts
         result_config = dict(config.get("tool_results") or {})
-        max_inline_chars = int(result_config.get("max_inline_chars", 12_000))
-        preview_chars = int(result_config.get("preview_chars", 4_000))
-        if max_inline_chars < 1 or preview_chars < 0:
+        cache_threshold_chars = int(
+            result_config.get("cache_threshold_chars", 12_000)
+        )
+        preview_chars = int(result_config.get("preview_chars", 8_000))
+        tail_chars = int(result_config.get("tail_chars", 2_000))
+        if cache_threshold_chars < 1 or preview_chars < 0 or tail_chars < 0:
             raise ValueError("Invalid tool result size limits")
-        if preview_chars > max_inline_chars:
-            raise ValueError("preview_chars cannot exceed max_inline_chars")
+        if preview_chars > cache_threshold_chars:
+            raise ValueError("preview_chars cannot exceed cache_threshold_chars")
+        if tail_chars > preview_chars:
+            raise ValueError("tail_chars cannot exceed preview_chars")
         workspace_xbot = Path(ctx.workspace_root) / ".xbot"
         hooks = [
             _declaration(item, workspace_xbot, hook=True)
@@ -59,8 +64,9 @@ class CoreToolsComponent:
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
                 artifacts,
-                max_inline_chars=max_inline_chars,
+                cache_threshold_chars=cache_threshold_chars,
                 preview_chars=preview_chars,
+                tail_chars=tail_chars,
             ),
         )
         for declaration in hooks:

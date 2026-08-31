@@ -71,7 +71,10 @@ def test_config_rejects_unknown_fields_and_invalid_tool_result_limits(
 ):
     paths = RuntimePaths.from_data_dir(temp_data_dir)
     _write_yaml(paths.config_file, {
-        "tool_results": {"max_inline_chars": 100, "preview_chars": 101},
+        "tool_results": {
+            "cache_threshold_chars": 100,
+            "preview_chars": 101,
+        },
     })
     with pytest.raises(ValueError, match="preview_chars"):
         load_runtime_config(paths, temp_workspace)

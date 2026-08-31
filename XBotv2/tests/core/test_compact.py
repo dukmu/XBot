@@ -230,6 +230,7 @@ async def test_human_command_compacts_and_persists_immediately(
     assert "30 input and 4 output tokens" in result.message
     assert [event["type"] for event in runtime_events] == [
         "compaction_started",
+        "usage",
         "compaction_completed",
     ]
     assert "context tokens" in result.message
@@ -239,6 +240,12 @@ async def test_human_command_compacts_and_persists_immediately(
         f"history_chars_after={history_chars_after}"
     ) in caplog.text
     assert "input_tokens=30 output_tokens=4 total_tokens=34" in caplog.text
+    assert setup.ctx.usage.records == [({
+        "input_tokens": 30,
+        "output_tokens": 4,
+        "total_tokens": 34,
+        "context_tokens": 30,
+    }, False)]
     assert llm.call_count == 1
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content

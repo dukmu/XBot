@@ -89,7 +89,7 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
         model_request=ModelRequest(messages, [], MockLLM(responses=[])),
     )
 
-    await plugin._on_before_model_request(ctx)
+    await plugin._on_model_request_ready(ctx)
     ctx.model_response = ModelResponse(usage_metadata={
         "input_tokens": 100,
         "output_tokens": 20,

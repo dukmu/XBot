@@ -48,7 +48,16 @@ async def test_usage_records_cache_only_request_and_explicit_zero_context(tmp_pa
         "prompt_cache_write_tokens": 2,
         "context_tokens": 0,
         "requests": 0,
-    }) is True
+    }) == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 17,
+        "requests": 0,
+        "context_tokens": 0,
+        "cache_read_input_tokens": 12,
+        "cache_creation_input_tokens": 3,
+        "prompt_cache_write_tokens": 2,
+    }
 
     assert usage.snapshot() == {
         "input_tokens": 0,
@@ -63,14 +72,50 @@ async def test_usage_records_cache_only_request_and_explicit_zero_context(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_auxiliary_usage_accumulates_without_replacing_main_context(tmp_path):
+    usage = UsageService(
+        StateService(path=tmp_path / "state.json").namespace("usage")
+    )
+    await usage.initialize([])
+    await usage.add({
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "context_tokens": 100,
+    })
+
+    event = await usage.add(
+        {
+            "input_tokens": 20,
+            "output_tokens": 5,
+            "context_tokens": 20,
+        },
+        update_context=False,
+    )
+
+    assert event is not None
+    assert event["context_tokens"] == 100
+    assert event["input_tokens"] == 20
+    assert usage.snapshot() == {
+        "input_tokens": 120,
+        "output_tokens": 15,
+        "total_tokens": 135,
+        "requests": 2,
+        "context_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_zero_token_and_total_only_requests_are_not_dropped(tmp_path):
     state_file = tmp_path / "state.json"
     usage = UsageService(StateService(path=state_file).namespace("usage"))
     await usage.initialize([])
 
     assert not state_file.exists()
-    assert await usage.add({"input_tokens": 0, "output_tokens": 0}) is True
-    assert await usage.add({"total_tokens": 9}) is True
+    assert await usage.add({"input_tokens": 0, "output_tokens": 0})
+    assert await usage.add({"total_tokens": 9})
 
     assert usage.snapshot()["requests"] == 2
     assert usage.snapshot()["total_tokens"] == 9

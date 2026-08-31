@@ -81,13 +81,16 @@ class SandboxConfig(StrictModel):
 
 
 class ToolResultConfig(StrictModel):
-    max_inline_chars: int = Field(default=12_000, ge=1)
-    preview_chars: int = Field(default=4_000, ge=0)
+    cache_threshold_chars: int = Field(default=12_000, ge=1)
+    preview_chars: int = Field(default=8_000, ge=0)
+    tail_chars: int = Field(default=2_000, ge=0)
 
     @model_validator(mode="after")
     def _validate_preview(self) -> "ToolResultConfig":
-        if self.preview_chars > self.max_inline_chars:
-            raise ValueError("preview_chars cannot exceed max_inline_chars")
+        if self.preview_chars > self.cache_threshold_chars:
+            raise ValueError("preview_chars cannot exceed cache_threshold_chars")
+        if self.tail_chars > self.preview_chars:
+            raise ValueError("tail_chars cannot exceed preview_chars")
         return self
 
 

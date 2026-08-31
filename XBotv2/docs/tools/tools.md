@@ -113,17 +113,23 @@ bytes are stored under `session/artifacts/media/` and sent to image-capable
 providers as a native image block. `read` (mode=stat) still reports recognized
 image dimensions for discovery.
 
-Tool results larger than `tool_results.max_inline_chars` (12,000 by default) are
+Tool results larger than `tool_results.cache_threshold_chars` (12,000 by
+default) are
 stored under the session's `state/artifacts/tool_results` directory before
 history persistence and SSE emission. `tool_results.preview_chars` controls the
-bounded beginning and ending preview (4,000 characters by default). Both are
+bounded beginning and ending preview (8,000 characters by default), and
+`tool_results.tail_chars` reserves 2,000 of those characters for the ending.
+All three values are
 configured in the `coretools` plugin entry of the plugin tree (`xcore.yaml` or
 a `plugins.yaml` overlay), and the preview may not exceed the inline
 threshold. The model receives the preview plus a `cache_path` relative to
 the current session state, such as `session/artifacts/tool_results/<file>`. That
 path is readable through the filesystem read, list, search, and find tools;
-callers should use `offset`, `char_offset`, `limit`, and `max_chars` to inspect
-only the required range, including long single-line artifacts.
+callers must pass that model path unchanged rather than construct an absolute
+host path. They should use `offset`, `char_offset`, `limit`, and `max_chars` to
+inspect only the required range, including long single-line artifacts.
+`inline_limit_chars` in the cache envelope is the actual preview length, while
+`cache_threshold_chars` is the configured threshold that triggered caching.
 Cached Tool results preserve their original representation. String results and
 explicit original text payloads, such as the `content` returned by
 `read`, are stored verbatim in a `.txt` artifact without JSON

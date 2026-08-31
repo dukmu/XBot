@@ -206,8 +206,9 @@
   name: coretools
   config:
     tool_results:
-      max_inline_chars: 12000
-      preview_chars: 4000
+      cache_threshold_chars: 12000
+      preview_chars: 8000
+      tail_chars: 2000
     hooks: []
     tools: null
     workspace_tools: []
@@ -227,6 +228,13 @@
 - id: mcp_plugin
   name: mcp_plugin
 
+- id: content_cache
+  name: content_cache
+  config:
+    cache_threshold_chars: 48000
+    preview_chars: 12000
+    tail_chars: 2000
+
 - id: compact
   name: compact
 
@@ -241,9 +249,6 @@
 
 - id: interactions
   name: interactions
-
-- id: content_cache
-  name: content_cache
 
 # Process-level Session services shared by carrier profiles.
 - id: process.persistence

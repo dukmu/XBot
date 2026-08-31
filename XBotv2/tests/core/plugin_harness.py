@@ -19,6 +19,21 @@ def mount_ctx(state_store):
         async def request_user_input(self, *_args, **_kwargs):
             raise AssertionError("test interaction was not configured")
 
+    class TestUsage:
+        def __init__(self) -> None:
+            self.records = []
+
+        async def add(self, usage, *, update_context=True):
+            self.records.append((dict(usage), update_context))
+            if not usage:
+                return None
+            from XBotv2.core.usage import UsageDelta
+
+            event = UsageDelta.from_mapping(usage).to_event_dict()
+            if not update_context:
+                event["context_tokens"] = 0
+            return event
+
     ctx = Context(
         data_dir=state_store.paths.plugin_state_dir,
         state_service=state_store.state,
@@ -29,6 +44,7 @@ def mount_ctx(state_store):
     ctx.set("agent_catalog", AgentCatalog())
     ctx.set("jobs", JobRegistry())
     ctx.set("interactions", TestInteractions())
+    ctx.set("usage", TestUsage())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", state_store.workspace_root)
     ctx.set("data_root", state_store.paths.runtime.data_dir)

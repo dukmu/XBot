@@ -74,18 +74,28 @@ history instead of exposing XML in the TUI.
 
 Both cache layers use `<cached_content>` with a relative `session/...` path,
 size metadata, escaped beginning/ending previews, and bounded-read guidance.
-Their lifecycles remain distinct:
+The read instruction identifies the path as an XBot model path that must be
+passed unchanged to `filesystem_read`; models must not search for or derive an
+absolute host path. Their lifecycles remain distinct:
 
 - Tool-result caching runs after Tool execution and before history persistence.
-- Context caching creates provider-only copies of oversized human input,
-  assistant text, reasoning, and Tool arguments without changing history.
+- Context caching runs at the start of the pre-model request chain and replaces only the
+  current oversized user message in the request copy. It retains the complete
+  persisted user message and reuses the same cached request copy across ReAct
+  iterations. It never scans or caches historical user messages, assistant
+  text, reasoning, system context, or Tool results.
 
 Tool-result caching stores raw Tool output before assembling its outer envelope.
-Provider-only caching may store a complete structured message as one atomic
-string, but its preview is escaped inside a fresh cache envelope, so it never
-splices partial markup into the request. The complete leading system context is
-never externalized as one unit; component-level system budgets must preserve
-the core instructions.
+The user-input preview is escaped inside a fresh cache envelope, so it never
+splices partial markup into the request. `inline_limit_chars` reports the
+actual inline preview length; `cache_threshold_chars` reports the size that
+triggered externalization.
+
+The `content_cache` plugin has three independently configurable character
+limits: `cache_threshold_chars` (48,000 by default), `preview_chars` (12,000),
+and `tail_chars` (2,000 of the preview). Configure them in the `content_cache`
+entry of `xcore.yaml` or a `plugins.yaml` overlay. The preview may not exceed
+the threshold, and its tail may not exceed the complete preview.
 
 ## Provider Conversion
 

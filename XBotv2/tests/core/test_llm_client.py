@@ -10,7 +10,11 @@ from XBotv2.llm.anthropic import (
     normalize_anthropic_usage,
 )
 from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
-from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
+from XBotv2.llm.openai import (
+    OpenAICompatibleProvider,
+    normalize_openai_usage,
+    openai_messages,
+)
 from XBotv2.llm.config import merge_request_extras, parse_provider_config
 from XBotv2.core.messages import (
     ImageContent,
@@ -264,6 +268,26 @@ def test_anthropic_usage_values_preserve_cache_context_tokens():
         "context_tokens": 850,
         "cache_read_input_tokens": 700,
         "cache_creation_input_tokens": 50,
+    }
+
+
+def test_deepseek_cache_miss_remains_uncached_input():
+    usage = SimpleNamespace(
+        prompt_tokens=283,
+        completion_tokens=69,
+        total_tokens=352,
+        prompt_cache_hit_tokens=256,
+        prompt_cache_miss_tokens=27,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=256),
+    )
+
+    assert normalize_openai_usage(usage) == {
+        "input_tokens": 27,
+        "output_tokens": 69,
+        "total_tokens": 352,
+        "requests": 1,
+        "context_tokens": 283,
+        "cache_read_input_tokens": 256,
     }
 
 

@@ -22,11 +22,13 @@ from XBotv2.compact.summary import (
 logger = logging.getLogger("xbotv2.compact")
 
 RuntimePublisher = Callable[[ClientEvent], Awaitable[None]]
+UsageRecorder = Callable[[dict[str, int]], Awaitable[None]]
 
 
 async def build_compaction_proposal(
     *,
     model: Any,
+    record_usage: UsageRecorder,
     publish_runtime_event: RuntimePublisher,
     session: Any,
     messages: list[Message],
@@ -105,6 +107,7 @@ async def build_compaction_proposal(
                 stable_prefix=stable_prefix,
             ),
         )
+        await record_usage(model_usage(response.usage_metadata))
         if response.tool_calls:
             raise RuntimeError("Compaction model must not call tools")
         summary, summary_truncated = normalize_summary(

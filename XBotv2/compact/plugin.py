@@ -24,7 +24,7 @@ from XBotv2.compact.tools import build_compact_tool
 
 
 class CompactPlugin:
-    inject = ["tools", "commands", "model", "loop_state"]
+    inject = ["tools", "commands", "model", "loop_state", "usage"]
     name = "compact"
     Config = CONFIG_SCHEMA
 
@@ -33,6 +33,7 @@ class CompactPlugin:
             events=ctx,
             model=ctx.model,
             state=ctx.loop_state,
+            usage=ctx.usage,
             config=parse_compact_config(config),
         )
 

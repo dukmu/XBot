@@ -856,8 +856,9 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
         Events.AFTER_TOOLS,
         make_tool_result_cache_hook(
             artifact_store,
-            max_inline_chars=100,
+            cache_threshold_chars=100,
             preview_chars=20,
+            tail_chars=5,
         ),
     )
     llm = MockLLM(responses=[
@@ -931,8 +932,9 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(
 ):
     hook = make_tool_result_cache_hook(
         artifact_store,
-        max_inline_chars=100,
+        cache_threshold_chars=100,
         preview_chars=20,
+        tail_chars=5,
     )
     original = "line 1\n" + "source text\n" * 20
     message = Message(
@@ -962,8 +964,9 @@ async def test_cache_hook_ignores_large_sidecar_data(
 ):
     hook = make_tool_result_cache_hook(
         artifact_store,
-        max_inline_chars=100,
+        cache_threshold_chars=100,
         preview_chars=20,
+        tail_chars=5,
     )
     message = Message(
         role="tool",
@@ -983,8 +986,9 @@ async def test_cache_hook_ignores_string_sidecar_data(
 ):
     hook = make_tool_result_cache_hook(
         artifact_store,
-        max_inline_chars=20,
+        cache_threshold_chars=20,
         preview_chars=10,
+        tail_chars=2,
     )
     message = Message(
         role="tool",

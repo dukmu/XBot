@@ -667,7 +667,7 @@ class Engine:
                 )
             response_metadata = dict(response.response_metadata)
             response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
-                context_messages,
+                model_request.messages,
                 model_request.tools,
             )
             response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.settings.context_window

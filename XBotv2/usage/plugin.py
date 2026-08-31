@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 from xcore import Context
 from xcore.state import StateService
@@ -59,20 +60,34 @@ class UsageService:
     def snapshot(self) -> dict[str, int]:
         return self._snapshot.totals()
 
-    async def add(self, usage: Mapping[str, object]) -> bool:
+    async def add(
+        self,
+        usage: Mapping[str, object],
+        *,
+        update_context: bool = True,
+    ) -> dict[str, int] | None:
         if not self._initialized:
             raise RuntimeError("UsageService must be initialized before recording usage")
         delta = UsageDelta.from_mapping(usage)
         if delta.is_empty():
-            return False
-        self._snapshot = self._snapshot.add(delta)
+            return None
+        updated = self._snapshot.add(delta)
+        self._snapshot = (
+            updated
+            if update_context
+            else replace(updated, context_tokens=self._snapshot.context_tokens)
+        )
         await self._store.set("snapshot", self._snapshot.to_snapshot())
         self._log.info(
             "usage.recorded",
             delta=delta.totals(),
+            context_updated=update_context,
             cumulative=self._snapshot.totals(),
         )
-        return True
+        event = delta.to_event_dict()
+        if not update_context:
+            event["context_tokens"] = self._snapshot.context_tokens
+        return event
 
 
 class UsageHandlers:

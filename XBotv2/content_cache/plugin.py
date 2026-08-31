@@ -1,87 +1,90 @@
-"""Content cache component: provider context externalization as a plugin.
-
-Provides ``ctx.content_cache`` — externalizing oversized provider context
-while preserving persisted messages (bound message copies for the model,
-plus one-off externalization of long strings).  The engine binds its model
-messages through this service.
-"""
+"""Cache only the current oversized user input at the provider boundary."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.content_cache.content_cache import (
-    MAX_INLINE_CHARS,
-    MAX_USER_INLINE_CHARS,
-    bound_context_messages,
-    externalize_content,
+from XBotv2.content_cache.content_cache import cache_user_message
+from XBotv2.content_cache.config import (
+    CONFIG_SCHEMA,
+    ContentCacheConfig,
+    parse_content_cache_config,
 )
+from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.messages import Message
 
 
 class ContentCacheService:
-    """Bound and externalize oversized provider context."""
+    """Create and reuse provider copies for oversized current user messages."""
 
-    def bound_context_messages(
+    def __init__(
         self,
-        messages: list[Any],
         artifacts: ArtifactStorePort,
-        *,
-        max_inline_chars: int = MAX_INLINE_CHARS,
-    ) -> list[Any]:
-        return bound_context_messages(
-            messages, artifacts, max_inline_chars=max_inline_chars
-        )
-
-    def externalize_content(
-        self,
-        content: str,
-        artifacts: ArtifactStorePort,
-        *,
-        max_inline_chars: int = MAX_INLINE_CHARS,
-        kind: str = "content",
-    ) -> str:
-        return externalize_content(
-            content,
-            artifacts,
-            max_inline_chars=max_inline_chars,
-            kind=kind,
-        )
-
-    async def bind_model_request(
-        self,
-        event: EventContext,
-        artifacts: ArtifactStorePort,
+        config: ContentCacheConfig,
     ) -> None:
+        self._artifacts = artifacts
+        self._config = config
+        self._cached: dict[int, tuple[Message, Message]] = {}
+
+    def bind_current_user_message(self, messages: list[Message]) -> list[Message]:
+        index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].role == "user"
+            ),
+            None,
+        )
+        if index is None:
+            return messages
+        source = messages[index]
+        cached = self._cached.get(id(source))
+        if cached is not None and cached[0] is source:
+            bounded = cached[1]
+        else:
+            bounded, artifact = cache_user_message(
+                source,
+                self._artifacts,
+                cache_threshold_chars=self._config.cache_threshold_chars,
+                preview_chars=self._config.preview_chars,
+                tail_chars=self._config.tail_chars,
+            )
+            if artifact is None:
+                return messages
+            self._cached[id(source)] = (source, bounded)
+        bound = list(messages)
+        bound[index] = bounded
+        return bound
+
+
+class ContentCacheHandler:
+    def __init__(self, service: ContentCacheService) -> None:
+        self._service = service
+
+    async def bind_model_request(self, event: EventContext) -> None:
         request = event.model_request
         if request is not None:
-            request.messages = self.bound_context_messages(
-                request.messages,
-                artifacts,
+            request.messages = self._service.bind_current_user_message(
+                request.messages
             )
 
 
 class ContentCacheComponent:
-    """Register the content cache service as ``ctx.content_cache``."""
-
     inject = ["artifacts"]
     name = "xbot.content_cache"
+    Config = CONFIG_SCHEMA
 
     def apply(self, ctx: Any, config: Any = None) -> None:
-        service = ContentCacheService()
+        service = ContentCacheService(
+            ctx.artifacts,
+            parse_content_cache_config(config),
+        )
         ctx.set("content_cache", service)
-        handler = ContentCacheHandler(service, ctx.artifacts)
-        ctx.on(Events.MODEL_REQUEST_READY, handler.bind_model_request)
-
-
-class ContentCacheHandler:
-    def __init__(self, service: ContentCacheService, artifacts: ArtifactStorePort) -> None:
-        self._service = service
-        self._artifacts = artifacts
-
-    async def bind_model_request(self, event: EventContext) -> None:
-        await self._service.bind_model_request(event, self._artifacts)
+        ctx.on(
+            Events.BEFORE_MODEL_REQUEST,
+            ContentCacheHandler(service).bind_model_request,
+        )
 
 
 plugin = ContentCacheComponent()
