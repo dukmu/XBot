@@ -8,7 +8,6 @@ import {
   type OpenSessionResponse,
   type ProviderInfo,
   type ServerEvent,
-  type SessionSummary,
   type TaskData,
   type TodoItemData,
   type ThreadSummary,
@@ -67,13 +66,14 @@ export interface RuntimeState {
   serverReachable: boolean;
   sessionAttached: boolean;
   eventStreamConnected: boolean;
+  catalogEventStreamConnected: boolean;
   loading: boolean;
-  sessions: SessionSummary[];
   threads: ThreadSummary[];
   providers: ProviderInfo[];
   agents: AgentInfo[];
-  current: OpenSessionResponse | null;
+  current: RuntimeSession | null;
   entries: TimelineEntry[];
+  assistantDraft: MessageEntry | null;
   historyCursor: string | null;
   historyLoading: boolean;
   tasks: Record<string, TaskData>;
@@ -85,12 +85,17 @@ export interface RuntimeState {
   error: string;
 }
 
+export type RuntimeSession = Omit<
+  OpenSessionResponse,
+  "history" | "history_cursor" | "status" | "usage"
+>;
+
 export type RuntimeAction =
   | { type: "loading"; value: boolean }
   | { type: "server_reachable"; value: boolean }
   | { type: "session_attached"; value: boolean }
   | { type: "event_stream"; value: boolean }
-  | { type: "sessions"; sessions: SessionSummary[] }
+  | { type: "catalog_event_stream"; value: boolean }
   | { type: "threads"; threads: ThreadSummary[] }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "agents"; agents: AgentInfo[] }
@@ -119,13 +124,14 @@ export const initialRuntimeState: RuntimeState = {
   serverReachable: false,
   sessionAttached: false,
   eventStreamConnected: false,
+  catalogEventStreamConnected: false,
   loading: true,
-  sessions: [],
   threads: [],
   providers: [],
   agents: [],
   current: null,
   entries: [],
+  assistantDraft: null,
   historyCursor: null,
   historyLoading: false,
   tasks: {},
@@ -147,8 +153,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, sessionAttached: action.value };
     case "event_stream":
       return { ...state, eventStreamConnected: action.value };
-    case "sessions":
-      return { ...state, sessions: action.sessions };
+    case "catalog_event_stream":
+      return { ...state, catalogEventStreamConnected: action.value };
     case "threads":
       return { ...state, threads: action.threads };
     case "providers":
@@ -160,8 +166,9 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         ...state,
         sessionAttached: true,
         loading: false,
-        current: action.session,
+        current: runtimeSession(action.session),
         entries: historyEntries(action.session.history),
+        assistantDraft: null,
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
         usage: normalizeUsage(action.session.usage),
@@ -174,21 +181,18 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       };
     case "session_deleted":
       if (state.current?.session_id !== action.sessionId) {
-        return {
-          ...state,
-          sessions: state.sessions.filter((session) => session.session_id !== action.sessionId),
-        };
+        return state;
       }
       return {
         ...state,
         loading: false,
         sessionAttached: false,
         eventStreamConnected: false,
-        sessions: state.sessions.filter((session) => session.session_id !== action.sessionId),
         threads: [],
         agents: [],
         current: null,
         entries: [],
+        assistantDraft: null,
         historyCursor: null,
         historyLoading: false,
         tasks: {},
@@ -209,7 +213,6 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
           model: action.thread.model,
           model_mode: action.thread.model_mode,
           context_window: action.thread.context_window,
-          usage: normalizeUsage(action.thread.usage),
           status_slots: action.thread.status_slots,
           workspace_root: action.thread.workspace_root || state.current.workspace_root,
         },
@@ -218,15 +221,13 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "history":
       return {
         ...state,
-        current: state.current ? { ...state.current, history: action.history } : null,
         entries: historyEntries(action.history),
+        assistantDraft: null,
         historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
       };
     case "history_prepend": {
-      const history = [...action.history, ...(state.current?.history ?? [])];
       return {
         ...state,
-        current: state.current ? { ...state.current, history } : null,
         entries: [...historyEntries(action.history), ...state.entries],
         historyCursor: action.nextCursor,
         historyLoading: false,
@@ -267,7 +268,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         ...state,
         turnRunning: false,
         queuedMessages: 0,
-        entries: finalizeAssistant(state.entries),
+        entries: commitAssistantDraft(state.entries, state.assistantDraft),
+        assistantDraft: null,
         error: action.message,
       };
     case "interaction_resolved":
@@ -324,14 +326,15 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         turnRunning: false,
-        entries: finalizeAssistant(state.entries),
+        entries: commitAssistantDraft(state.entries, state.assistantDraft),
+        assistantDraft: null,
         current: updateSlots(state.current, data.status_slots),
       };
     case "assistant_message_delta":
       return {
         ...state,
-        entries: updateAssistantDraft(
-          state.entries,
+        assistantDraft: updateAssistantDraft(
+          state.assistantDraft,
           stringValue(data.content),
           stringValue(data.reasoning),
         ),
@@ -341,9 +344,11 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ...state,
         entries: applyAssistantMessage(
           state.entries,
+          state.assistantDraft,
           stringValue(data.content),
           arrayValue(data.tool_calls),
         ),
+        assistantDraft: null,
       };
     case "tool_calls_started":
       return { ...state, entries: upsertToolCalls(state.entries, arrayValue(data.tool_calls)) };
@@ -408,8 +413,8 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       const history = arrayValue(data.history) as HistoryItem[];
       return {
         ...state,
-        current: state.current ? { ...state.current, history } : null,
         entries: historyEntries(history),
+        assistantDraft: null,
         historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
       };
     }
@@ -432,7 +437,11 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           ...state,
           turnRunning: false,
           queuedMessages: 0,
-          entries: [...finalizeAssistant(state.entries), noticeEntry(message, "error")],
+          entries: [
+            ...commitAssistantDraft(state.entries, state.assistantDraft),
+            noticeEntry(message, "error"),
+          ],
+          assistantDraft: null,
           error: message,
         };
       }
@@ -462,7 +471,12 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
       continue;
     }
     if (item.role === "assistant") {
-      if (item.content) entries.push(messageEntry("assistant", item.content));
+      if (item.content || item.reasoning) {
+        entries.push({
+          ...messageEntry("assistant", item.content),
+          reasoning: item.reasoning || "",
+        });
+      }
       entries = upsertToolCalls(entries, item.tool_calls);
       continue;
     }
@@ -479,35 +493,42 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   return entries;
 }
 
-function updateAssistantDraft(entries: TimelineEntry[], content: string, reasoning: string): TimelineEntry[] {
-  let copy = [...entries];
-  const last = copy.at(-1);
-  if (last?.kind === "message" && last.role === "assistant" && last.streaming) {
-    copy[copy.length - 1] = {
-      ...last,
-      content: last.content + content,
-      reasoning: last.reasoning + reasoning,
+function updateAssistantDraft(
+  draft: MessageEntry | null,
+  content: string,
+  reasoning: string,
+): MessageEntry {
+  if (draft) {
+    return {
+      ...draft,
+      content: draft.content + content,
+      reasoning: draft.reasoning + reasoning,
     };
-    return copy;
   }
-  copy.push({ ...messageEntry("assistant", content), reasoning, streaming: true });
-  return copy;
+  return { ...messageEntry("assistant", content), reasoning, streaming: true };
 }
 
-function applyAssistantMessage(entries: TimelineEntry[], content: string, calls: unknown[]): TimelineEntry[] {
-  let copy = [...entries];
-  const last = copy.at(-1);
-  if (last?.kind === "message" && last.role === "assistant" && last.streaming) {
-    copy[copy.length - 1] = { ...last, content: content || last.content, streaming: false };
+function applyAssistantMessage(
+  entries: TimelineEntry[],
+  draft: MessageEntry | null,
+  content: string,
+  calls: unknown[],
+): TimelineEntry[] {
+  let copy = entries;
+  if (draft) {
+    copy = [...copy, { ...draft, content: content || draft.content, streaming: false }];
   } else if (content) {
-    copy.push(messageEntry("assistant", content));
+    copy = [...copy, messageEntry("assistant", content)];
   }
   copy = upsertToolCalls(copy, calls);
   return copy;
 }
 
-function finalizeAssistant(entries: TimelineEntry[]): TimelineEntry[] {
-  return entries.map((entry) => entry.kind === "message" && entry.streaming ? { ...entry, streaming: false } : entry);
+function commitAssistantDraft(
+  entries: TimelineEntry[],
+  draft: MessageEntry | null,
+): TimelineEntry[] {
+  return draft ? [...entries, { ...draft, streaming: false }] : entries;
 }
 
 function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {
@@ -650,9 +671,23 @@ function normalizeUsage(usage: Partial<UsageData>): UsageData {
   };
 }
 
-function updateSlots(current: OpenSessionResponse | null, slots: unknown): OpenSessionResponse | null {
+function updateSlots(current: RuntimeSession | null, slots: unknown): RuntimeSession | null {
   if (!current || !slots || typeof slots !== "object" || Array.isArray(slots)) return current;
   return { ...current, status_slots: slots as Record<string, string> };
+}
+
+function runtimeSession(session: OpenSessionResponse): RuntimeSession {
+  return {
+    session_id: session.session_id,
+    thread_id: session.thread_id,
+    agent_name: session.agent_name,
+    workspace_root: session.workspace_root,
+    provider: session.provider,
+    model: session.model,
+    model_mode: session.model_mode,
+    context_window: session.context_window,
+    status_slots: session.status_slots,
+  };
 }
 
 function messageEntry(role: "user" | "assistant", content: string): MessageEntry {

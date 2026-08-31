@@ -7,6 +7,7 @@ from typing import Protocol
 
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.history import ConversationPage
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.persistence.models import ThreadLifecycleRecord, ThreadMetadata
@@ -20,6 +21,13 @@ class HistoryPort(Protocol):
     def replace(self, messages: Sequence[Message]) -> None: ...
 
     def count(self) -> int: ...
+
+    def page(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage: ...
 
 
 class MetadataPort(Protocol):

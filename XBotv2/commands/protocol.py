@@ -9,7 +9,6 @@ from fastapi import APIRouter
 from pydantic import Field
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
 from XBotv2.commands.contracts import (
     CommandEffect,
     EXECUTE_COMMAND,
@@ -143,23 +142,6 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
         })
 
     return router
-
-
-class CommandsProtocolPlugin:
-    """Contribute command-plane routes through the XCore route event."""
-
-    inject = ["server", "sessions"]
-    name = "xbot.protocol.commands"
-
-    async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_commands_router(sessions=ctx.sessions),
-        )
-
-
-plugin = CommandsProtocolPlugin()
 
 
 __all__ = [

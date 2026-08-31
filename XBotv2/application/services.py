@@ -11,6 +11,7 @@ from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message
+from XBotv2.core.history import ConversationHistory, ConversationPageReader
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
@@ -131,6 +132,7 @@ class UsageSnapshotPort(Protocol):
 
 class LoopStateView(Protocol):
     metadata: ThreadMetadataState
+    history: ConversationHistory
 
 
 class AgentApplicationPort(Protocol):
@@ -139,6 +141,7 @@ class AgentApplicationPort(Protocol):
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
+    history_pages: ConversationPageReader
     usage: UsageSnapshotPort
     persistence_available: bool
     parent_permissions: PermissionsPort

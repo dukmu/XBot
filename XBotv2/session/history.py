@@ -2,64 +2,103 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Literal
 
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
+from XBotv2.core.tools import JsonObject
 
 
-def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
-    history: list[dict[str, Any]] = []
+@dataclass(frozen=True, slots=True)
+class ConversationReplayItem:
+    """Transport-neutral projection of one visible conversation record."""
+
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    reasoning: str
+    tool_calls: tuple[JsonObject, ...]
+    tool_call_id: str
+    input_id: str
+    status: str
+    data: Any
+    images: tuple[JsonObject, ...]
+    artifacts: tuple[JsonObject, ...]
+    error: JsonObject | None
+    runtime: dict[str, str] | None
+
+    def to_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "role": self.role,
+            "content": self.content,
+            "tool_calls": list(self.tool_calls),
+            "tool_call_id": self.tool_call_id,
+            "status": self.status,
+            "data": self.data,
+            "images": list(self.images),
+            "artifacts": list(self.artifacts),
+        }
+        if self.reasoning:
+            value["reasoning"] = self.reasoning
+        if self.role == "tool":
+            value["error"] = self.error
+        if self.runtime is not None:
+            value["runtime"] = self.runtime
+        return value
+
+
+def conversation_replay(
+    messages: Iterable[Message],
+) -> tuple[ConversationReplayItem, ...]:
+    replay: list[ConversationReplayItem] = []
     for message in messages:
         if message.role not in {"user", "assistant", "tool"}:
             continue
         additional = message.additional_kwargs or {}
         content = str(message.content or "")
-        if (
-            message.role == "tool"
-            and additional.get(MESSAGE_FORMAT_KEY)
-        ):
+        if message.role == "tool" and additional.get(MESSAGE_FORMAT_KEY):
             content = tool_result_display_content(content)
-        item = {
-            "role": message.role,
-            "content": content,
-            "tool_calls": [call.to_dict() for call in message.tool_calls or []],
-            "tool_call_id": message.tool_call_id or "",
-            "status": message.status or "",
-            "data": message.data,
-            "images": [image.to_dict() for image in message.images],
-            "artifacts": [
+        runtime_value = additional.get("runtime_input")
+        runtime = (
+            {str(key): str(value) for key, value in runtime_value.items()}
+            if isinstance(runtime_value, dict)
+            else None
+        )
+        replay.append(ConversationReplayItem(
+            role=message.role,
+            content=content,
+            reasoning=message.reasoning if message.role == "assistant" else "",
+            tool_calls=tuple(call.to_dict() for call in message.tool_calls or []),
+            tool_call_id=message.tool_call_id or "",
+            input_id=message.input_id or "",
+            status=message.status or "",
+            data=message.data,
+            images=tuple(image.to_dict() for image in message.images),
+            artifacts=tuple(
                 data
                 for value in message.artifact or []
                 if (data := _artifact_data(value)) is not None
-            ],
-        }
-        if message.role == "tool":
-            item["error"] = message.error
-        runtime = additional.get("runtime_input")
-        if isinstance(runtime, dict):
-            item["runtime"] = {
-                str(key): str(value)
-                for key, value in runtime.items()
-            }
-        history.append(item)
-    return history
+            ),
+            error=message.error if message.role == "tool" else None,
+            runtime=runtime,
+        ))
+    return tuple(replay)
 
 
-def display_history_page(
-    messages: Iterable[Message],
-    limit: int,
-) -> tuple[list[dict[str, Any]], str | None]:
-    values = tuple(messages)
-    start = max(0, len(values) - limit)
-    return display_history(values[start:]), str(start) if start else None
+def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in conversation_replay(messages)]
 
 
 def _artifact_data(value: Any) -> dict[str, Any] | None:
-    if hasattr(value, "to_dict"):
+    if isinstance(value, ArtifactRef):
         return value.to_dict()
-    return dict(value) if isinstance(value, dict) else None
+    return dict(value) if isinstance(value, Mapping) else None
 
 
-__all__ = ["display_history", "display_history_page"]
+__all__ = [
+    "ConversationReplayItem",
+    "conversation_replay",
+    "display_history",
+]

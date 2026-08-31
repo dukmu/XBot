@@ -57,6 +57,34 @@ describe("runtimeReducer", () => {
     });
   });
 
+  it("restores persisted assistant reasoning with its visible response", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "history",
+      history: [{
+        role: "assistant",
+        content: "final answer",
+        reasoning: "inspect the state",
+        tool_calls: [],
+        tool_call_id: "",
+        status: "",
+        data: null,
+        error: null,
+        artifacts: [],
+        images: [],
+      }],
+      nextCursor: null,
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "message",
+      role: "assistant",
+      content: "final answer",
+      reasoning: "inspect the state",
+      streaming: false,
+    });
+  });
+
   it("uses authoritative history and message events without duplicating optimistic input", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, {
@@ -101,6 +129,7 @@ describe("runtimeReducer", () => {
     });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
     expect(state.historyCursor).toBeNull();
+    expect(state.current).not.toHaveProperty("history");
   });
 
   it("keeps live entries when an older persisted page is prepended", () => {
@@ -147,12 +176,6 @@ describe("runtimeReducer", () => {
       {
         ...runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
         loading: true,
-        sessions: [{
-          session_id: opened.session_id,
-          status: "active",
-          active_threads: 1,
-          thread_count: 1,
-        }],
       },
       { type: "session_deleted", sessionId: opened.session_id },
     );
@@ -162,7 +185,6 @@ describe("runtimeReducer", () => {
       sessionAttached: false,
       eventStreamConnected: false,
       current: null,
-      sessions: [],
       entries: [],
       threads: [],
     });
@@ -200,8 +222,13 @@ describe("runtimeReducer", () => {
 
   it("assembles streaming reasoning and assistant content once", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const committedEntries = state.entries;
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { reasoning: "inspect " }) });
+    expect(state.entries).toBe(committedEntries);
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "hello" }) });
+    expect(state.entries).toBe(committedEntries);
+    expect(state.entries).toEqual([]);
+    expect(state.assistantDraft).toMatchObject({ content: "hello", reasoning: "inspect " });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message", { content: "hello", tool_calls: [] }) });
 
     expect(state.entries).toHaveLength(1);
@@ -212,6 +239,7 @@ describe("runtimeReducer", () => {
       reasoning: "inspect ",
       streaming: false,
     });
+    expect(state.assistantDraft).toBeNull();
   });
 
   it("applies a streaming batch in wire order", () => {

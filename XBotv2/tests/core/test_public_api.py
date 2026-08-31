@@ -427,8 +427,14 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/health",
         "/hello",
         "/providers",
+        "/workspaces",
+        "/workspaces/events",
+        "/workspaces/{workspace_id}",
+        "/workspaces/{workspace_id}/order",
+        "/workspaces/{workspace_id}/sessions/{session_id}/order",
         "/sessions",
         "/sessions/{session_id}",
+        "/sessions/{session_id}/archive",
         "/sessions/{session_id}/close",
         "/sessions/{session_id}/fork",
         "/sessions/{session_id}/policy",
@@ -456,6 +462,8 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
+    assert paths["/sessions/{session_id}"]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionUpdateRequest")
+    assert paths["/workspaces"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/WorkspaceCreateRequest")
     policy_path = "/sessions/{session_id}/policy"
     assert paths[policy_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyPatch")
     assert paths[policy_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyResponse")
@@ -477,6 +485,9 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "text/event-stream"
     }
     assert set(paths[event_path]["get"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    assert set(paths["/workspaces/events"]["get"]["responses"]["200"]["content"]) == {
         "text/event-stream"
     }
     regenerate_path = "/sessions/{session_id}/threads/{thread_id}/history/regenerate"

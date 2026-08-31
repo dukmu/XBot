@@ -8,7 +8,6 @@ from fastapi import APIRouter
 from pydantic import Field
 
 from XBotv2.core.operations import EmptyRequest, dispatch_operation
-from XBotv2.server import contribute_router
 from XBotv2.llm.contracts import (
     LIST_PROVIDERS,
     SELECT_EFFORT,
@@ -158,21 +157,6 @@ def build_router(*, events: Any, sessions: SessionsPort) -> APIRouter:
         )
 
     return router
-
-
-class LlmProtocolPlugin:
-    name = "xbot.protocol.llm"
-    inject = ["server", "llm", "sessions"]
-
-    async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_router(events=ctx, sessions=ctx.sessions),
-        )
-
-
-plugin = LlmProtocolPlugin()
 
 
 __all__ = [

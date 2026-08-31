@@ -208,6 +208,95 @@ summary:focus-visible {
   overflow-y: auto;
 }
 
+.workspace-group {
+  margin: 2px 0 7px;
+}
+
+.workspace-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-toggle:hover { color: var(--text); background: #1c201c; }
+.workspace-toggle > svg { flex: none; }
+.workspace-toggle > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.workspace-toggle b,
+.workspace-toggle small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-toggle b { font-size: 11px; font-weight: 650; }
+.workspace-toggle small { color: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.workspace-row > .icon-button { width: 24px; height: 24px; flex: none; color: var(--faint); opacity: 0; }
+.workspace-row:hover > .icon-button,
+.workspace-row > .icon-button:focus { opacity: 1; }
+
+.workspace-group > .session-group { margin-left: 15px; }
+
+.workspace-inline-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 1px 4px 6px 20px;
+  padding: 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: #111411;
+}
+
+.workspace-inline-action input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 11px;
+}
+
+.workspace-remove-confirm { flex-wrap: wrap; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.workspace-remove-confirm span { width: 100%; }
+.workspace-empty,
+.ungrouped-label { padding: 5px 8px 6px 24px; color: var(--faint); font-size: 10px; }
+.ungrouped-label { padding-left: 8px; text-transform: uppercase; }
+
+.archived-sessions {
+  margin-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 5px;
+}
+
+.archived-sessions > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 7px;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.archived-sessions > summary::marker { display: none; content: ""; }
+.archived-sessions[open] > summary > svg { transform: rotate(90deg); }
+.archived-sessions > summary small { margin-left: auto; }
+
 .session-row,
 .thread-row {
   display: flex;
@@ -269,7 +358,10 @@ summary:focus-visible {
 }
 
 .session-action-menu button:hover { color: var(--text); background: #2a302a; }
+.session-action-menu button:disabled { color: var(--faint); cursor: default; opacity: .45; }
 .session-action-menu button.danger { color: #e5a09a; }
+
+.workspace-action-menu { width: 135px; margin-right: 3px; }
 
 .session-row {
   gap: 8px;

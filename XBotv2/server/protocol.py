@@ -6,7 +6,6 @@ import time
 from typing import Protocol
 
 from fastapi import APIRouter
-from xcore import Context
 
 from XBotv2.core.errors import OperationError
 from XBotv2.protocol.http_util import HttpServerError
@@ -20,7 +19,6 @@ from XBotv2.server.contracts import (
     QUERY_STATUS,
     ServerInfo,
     ServerStatus,
-    contribute_router,
 )
 
 
@@ -68,21 +66,6 @@ def build_core_router(
         )
 
     return router
-
-
-class ServerProtocolPlugin:
-    name = "xbot.protocol.core"
-    inject = ["server", "server_info"]
-
-    async def apply(self, ctx: Context, config: object = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_core_router(events=ctx, info=ctx.server_info),
-        )
-
-
-plugin = ServerProtocolPlugin()
 
 
 __all__ = ["build_core_router"]

@@ -7,10 +7,17 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from uuid import uuid4
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.atomic import write_text_atomic
+from XBotv2.core.history import (
+    ConversationPage,
+    HistoryCursorInvalid,
+    decode_history_cursor,
+    encode_history_cursor,
+)
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
@@ -33,6 +40,8 @@ class MessageHistoryStore:
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._path = paths.messages_file
+        self._revision_path = paths.history_revision_file
+        self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
         self._next_position = 1
 
@@ -60,6 +69,7 @@ class MessageHistoryStore:
     def append(self, messages: Sequence[Message]) -> None:
         if not messages:
             return
+        self._ensure_revision()
         self._ensure_loaded_id()
         records = [
             MessageRecord.from_message(message, self._next_position + index)
@@ -92,6 +102,7 @@ class MessageHistoryStore:
             json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
             for record in records
         )
+        write_text_atomic(self._revision_path, uuid4().hex + "\n")
         write_text_atomic(self._path, content)
         self._next_position = len(records) + 1
         self._log.info(
@@ -102,6 +113,37 @@ class MessageHistoryStore:
 
     def count(self) -> int:
         return len(self._records())
+
+    def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
+        if limit < 1:
+            raise ValueError("History page limit must be positive")
+        size = self._path.stat().st_size if self._path.exists() else 0
+        if not size:
+            if cursor is not None:
+                raise HistoryCursorInvalid(
+                    "History cursor is outside the current history"
+                )
+            return ConversationPage(())
+        revision = f"{self._cursor_scope}:{self._ensure_revision()}"
+        end = size if cursor is None else decode_history_cursor(cursor, revision)
+        if end < 0 or end > size:
+            raise HistoryCursorInvalid("History cursor is outside the current history")
+        if end == 0:
+            return ConversationPage(())
+        lines, start = self._read_page_lines(end, limit)
+        records = [MessageRecord.from_dict(_decode_json_line(line)) for line in lines]
+        positions = [record.position for record in records]
+        if positions != list(range(positions[0], positions[0] + len(positions))):
+            raise ValueError("MessageRecord page positions must be contiguous")
+        if start == 0 and positions[0] != 1:
+            raise ValueError("MessageRecord positions must start at 1")
+        messages = tuple(record.to_message() for record in records)
+        for message in messages:
+            message.seal()
+        return ConversationPage(
+            messages,
+            encode_history_cursor(revision, start) if start else None,
+        )
 
     def has_history(self) -> bool:
         return self._path.exists() and self._path.stat().st_size > 0
@@ -119,6 +161,47 @@ class MessageHistoryStore:
             MessageRecord.from_dict(raw)
             for raw in _read_jsonl(self._path, "messages.jsonl")
         ]
+
+    def _ensure_revision(self) -> str:
+        if not self._revision_path.exists():
+            write_text_atomic(self._revision_path, uuid4().hex + "\n")
+        revision = self._revision_path.read_text(encoding="utf-8").strip()
+        if len(revision) != 32 or any(
+            value not in "0123456789abcdef" for value in revision
+        ):
+            raise ValueError("Invalid message history revision")
+        return revision
+
+    def _read_page_lines(self, end: int, limit: int) -> tuple[list[bytes], int]:
+        with self._path.open("rb") as stream:
+            stream.seek(end - 1)
+            if stream.read(1) != b"\n":
+                raise ValueError("History cursor does not end at a record boundary")
+            position = end
+            chunks: list[bytes] = []
+            newline_count = 0
+            while position and newline_count <= limit:
+                chunk_size = min(65536, position)
+                position -= chunk_size
+                stream.seek(position)
+                chunk = stream.read(chunk_size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+        buffer = b"".join(reversed(chunks))
+        lines = buffer.splitlines()
+        selected = lines[-limit:]
+        start = end - sum(len(line) + 1 for line in selected)
+        return selected, start
+
+
+def _decode_json_line(line: bytes) -> Mapping[str, object]:
+    try:
+        value = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid messages.jsonl record") from exc
+    if not isinstance(value, Mapping):
+        raise TypeError("messages.jsonl record must be an object")
+    return value
 
 
 class ThreadMetadataStore:
@@ -279,7 +362,9 @@ class ThreadPersistence:
         )
         self.history = MessageHistoryStore(paths, runtime_log)
         self.artifacts: ArtifactStorePort = (
-            artifacts if artifacts is not None else ArtifactStore(paths)
+            artifacts
+            if artifacts is not None
+            else ArtifactStore(paths, runtime_log)
         )
         self.metadata = ThreadMetadataStore(paths, runtime_log)
         self.inbox = InboxStore(paths, runtime_log)

@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import Field
-from xcore import Context
 
 from XBotv2.agents.contracts import (
     LIST_AGENTS,
@@ -15,7 +14,6 @@ from XBotv2.agents.contracts import (
 )
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
 from XBotv2.session import SessionsPort
 
 
@@ -96,19 +94,6 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         )
 
     return router
-
-
-class AgentsProtocolPlugin:
-    name = "xbot.protocol.agents"
-    inject = ["server", "sessions"]
-
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
-        await contribute_router(
-            ctx, owner=self.name, router=build_router(sessions=ctx.sessions)
-        )
-
-
-plugin = AgentsProtocolPlugin()
 
 
 __all__ = [

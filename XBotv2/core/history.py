@@ -2,10 +2,34 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import Protocol, overload
+from uuid import uuid4
 
 from XBotv2.core.messages import Message
+
+
+class HistoryCursorInvalid(ValueError):
+    """The requested page does not belong to the current history revision."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationPage:
+    messages: tuple[Message, ...]
+    next_cursor: str | None = None
+
+
+class ConversationPageReader(Protocol):
+    def page(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage: ...
 
 
 class HistorySink(Protocol):
@@ -29,6 +53,7 @@ class ConversationHistory(Sequence[Message]):
         for message in self._messages:
             message.seal()
         self._sink = sink
+        self._revision = uuid4().hex
 
     def snapshot(self) -> tuple[Message, ...]:
         return tuple(self._messages)
@@ -53,6 +78,30 @@ class ConversationHistory(Sequence[Message]):
         for message in replacement:
             message.seal()
         self._messages = list(replacement)
+        self._revision = uuid4().hex
+
+    def page(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        if limit < 1:
+            raise ValueError("History page limit must be positive")
+        end = (
+            len(self._messages)
+            if cursor is None
+            else decode_history_cursor(cursor, self._revision)
+        )
+        if end < 0 or end > len(self._messages):
+            raise HistoryCursorInvalid(
+                "History cursor is outside the current history"
+            )
+        start = max(0, end - limit)
+        return ConversationPage(
+            tuple(self._messages[start:end]),
+            encode_history_cursor(self._revision, start) if start else None,
+        )
 
     def replace_last(self, message: Message) -> None:
         if not self._messages:
@@ -103,4 +152,41 @@ class ConversationHistory(Sequence[Message]):
         return repr(self._messages)
 
 
-__all__ = ["ConversationHistory", "HistorySink"]
+def encode_history_cursor(revision: str, offset: int) -> str:
+    value = json.dumps([1, revision, offset], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+
+def decode_history_cursor(cursor: str, revision: str) -> int:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        value = json.loads(base64.b64decode(
+            cursor + padding,
+            altchars=b"-_",
+            validate=True,
+        ))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HistoryCursorInvalid("History cursor is invalid") from exc
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or value[0] != 1
+        or value[1] != revision
+        or not isinstance(value[2], int)
+        or isinstance(value[2], bool)
+    ):
+        raise HistoryCursorInvalid(
+            "History cursor does not match the current history"
+        )
+    return value[2]
+
+
+__all__ = [
+    "ConversationHistory",
+    "ConversationPage",
+    "ConversationPageReader",
+    "HistoryCursorInvalid",
+    "HistorySink",
+    "decode_history_cursor",
+    "encode_history_cursor",
+]

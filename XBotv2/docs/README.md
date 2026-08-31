@@ -15,6 +15,7 @@ project discipline and verification.
 - [Agents](core/agents.md) — Agent and subagent definitions
 - [Configuration](core/workspace_config.md) — global / session / workspace YAML layers
 - [Runtime logging](core/logging.md) — levels, structured records, and plugin use
+- [DSh Web/C/S alignment](verification/dsh_web_cs_alignment.md) — acceptance ledger and implementation gaps
 
 ## API and Protocol
 

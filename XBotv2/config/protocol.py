@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import Field, StrictBool, field_validator, model_validator
-from xcore import Context
 
 from XBotv2.config.contracts import (
     GET_POLICY,
@@ -16,7 +15,6 @@ from XBotv2.config.contracts import (
 )
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
 from XBotv2.session import SessionsPort
 
 
@@ -128,21 +126,6 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         return _policy_response(session_id, snapshots[0])
 
     return router
-
-
-class ConfigProtocolPlugin:
-    name = "xbot.protocol.config"
-    inject = ["server", "sessions"]
-
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_router(sessions=ctx.sessions),
-        )
-
-
-plugin = ConfigProtocolPlugin()
 
 
 __all__ = [

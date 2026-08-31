@@ -21,6 +21,7 @@ from XBotv2.application.boot import boot_application
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.application.host import mounted_application
@@ -103,7 +104,14 @@ async def start_application(
     artifacts = (
         thread_persistence.artifacts
         if thread_persistence is not None
-        else ArtifactStore(thread_paths)
+        else ArtifactStore(
+            thread_paths,
+            DEFAULT_RUNTIME_LOG.bind(
+                "persistence",
+                session_id=session_id,
+                thread_id=thread_id,
+            ),
+        )
     )
 
     children = ChildApplications(

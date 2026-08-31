@@ -63,12 +63,15 @@ test("restores historical sessions and their workspaces", async ({ page }) => {
   if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
 
   await page.getByTitle("history-session").click();
+  await expect(page.getByText("Thinking", { exact: true })).toBeVisible();
+  await page.getByText("Thinking", { exact: true }).click();
+  await expect(page.getByText("I checked the persisted context.", { exact: true })).toBeVisible();
   if (mobile) {
     await expect(page.getByText("A persisted answer from history.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Open sessions" }).click();
     await expect(page.getByRole("button", { name: /Historical review.*workspace\/history/ })).toBeVisible();
   } else {
-    await expect(page.getByTitle("/workspace/history")).toBeVisible();
+    await expect(page.getByRole("main").getByTitle("/workspace/history")).toBeVisible();
   }
 
   await page.getByTitle("demo-session").click();
@@ -77,17 +80,115 @@ test("restores historical sessions and their workspaces", async ({ page }) => {
     await page.getByRole("button", { name: "Open sessions" }).click();
     await expect(page.getByRole("button", { name: /Demo session.*workspace\/XBot/ })).toBeVisible();
   } else {
-    await expect(page.getByTitle("/workspace/XBot")).toBeVisible();
+    await expect(page.getByRole("main").getByTitle("/workspace/XBot")).toBeVisible();
   }
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
+test("renames and removes a workspace without deleting its sessions", async ({ page }) => {
+  await openDemoSession(page);
+  const mobile = (page.viewportSize()?.width || 0) <= 820;
+  if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
+
+  await page.getByRole("button", { name: "More actions for workspace XBot" }).click();
+  await page.getByRole("menuitem", { name: "Move down" }).click();
+  const workspaceRows = page.locator(".workspace-toggle");
+  await expect(workspaceRows.nth(0)).toContainText("History");
+  await expect(workspaceRows.nth(1)).toContainText("XBot");
+
+  await page.getByRole("button", { name: "More actions for workspace XBot" }).click();
+  await page.getByRole("menuitem", { name: "Rename" }).click();
+  const title = page.getByRole("textbox", { name: "Workspace title" });
+  await title.fill("XBot core");
+  await page.getByRole("button", { name: "Save workspace title" }).click();
+  await expect(page.getByRole("button", { name: "More actions for workspace XBot core" })).toBeVisible();
+
+  await page.getByRole("button", { name: "More actions for workspace XBot core" }).click();
+  await page.getByRole("menuitem", { name: "Remove" }).click();
+  await expect(page.getByText("Sessions are kept.")).toBeVisible();
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(page.getByTitle("demo-session")).toBeVisible();
+});
+
+test("renames a session through its row menu without refreshing the catalog", async ({ page }) => {
+  await openDemoSession(page);
+  const mobile = (page.viewportSize()?.width || 0) <= 820;
+  if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
+
+  await page.getByRole("button", { name: "More actions for Demo session" }).click();
+  await page.getByRole("menuitem", { name: "Rename" }).click();
+  const title = page.getByRole("textbox", { name: "Session title" });
+  await title.fill("Renamed session");
+  const renameRequest = page.waitForRequest((request) => (
+    request.method() === "PATCH" && request.url().endsWith("/sessions/demo-session")
+  ));
+  await page.getByRole("button", { name: "Save session title" }).click();
+  await renameRequest;
+  await expect(page.getByRole("button", { name: /Renamed session.*workspace\/XBot/ })).toBeVisible();
+});
+
+test("persists manual session order within a workspace", async ({ page }) => {
+  await openDemoSession(page);
+  const mobile = (page.viewportSize()?.width || 0) <= 820;
+  if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
+
+  await page.getByRole("button", { name: "More actions for Demo session" }).click();
+  const request = page.waitForRequest((candidate) => (
+    candidate.method() === "POST"
+    && candidate.url().endsWith("/workspaces/ws-xbot/sessions/demo-session/order")
+  ));
+  await page.getByRole("menuitem", { name: "Move down" }).click();
+  await request;
+
+  const rows = page.locator(".workspace-group").filter({ hasText: "XBot" }).locator(".session-row");
+  await expect(rows.nth(0)).toContainText("Second session");
+  await expect(rows.nth(1)).toContainText("Demo session");
+});
+
+test("reuses an unarchived blank session in the current workspace", async ({ page }) => {
+  await openDemoSession(page);
+  const openRequest = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.url().endsWith("/sessions")
+    && request.postDataJSON().session_id === "second-session"
+  ));
+
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "New session" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
+
+  expect((await openRequest).postDataJSON()).toMatchObject({
+    session_id: "second-session",
+    workspace_root: "/workspace/XBot",
+    mode: "resume",
+  });
+  await expect(page.locator(".message-block, .tool-block")).toHaveCount(0);
+});
+
+test("archives and restores a session without deleting its history", async ({ page }) => {
+  await openDemoSession(page);
+  const mobile = (page.viewportSize()?.width || 0) <= 820;
+  if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
+
+  await page.getByRole("button", { name: "More actions for Demo session" }).click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
+  await page.locator(".archived-sessions > summary").click();
+  await expect(page.getByTitle("demo-session")).toBeVisible();
+  await page.getByRole("button", { name: "More actions for Demo session" }).click();
+  await page.getByRole("menuitem", { name: "Restore" }).click();
+  await expect(page.getByTitle("demo-session")).toBeVisible();
   await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
 });
 
 test("discovers and executes server commands without sending a chat message", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
-  let refreshReads = 0;
+  const resourceReads: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "GET") refreshReads += 1;
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && !path.endsWith("/events")) resourceReads.push(path);
   });
   await composer.fill("/st");
   await expect(page.getByRole("option", { name: /status.*server/i })).toBeVisible();
@@ -100,7 +201,7 @@ test("discovers and executes server commands without sending a chat message", as
   expect((await commandRequest).postDataJSON()).toMatchObject({ command: "status", raw: "/status", kind: "server" });
   await expect(page.getByRole("region", { name: "/status result" })).toContainText("session_id=demo-session thread_id=agent");
   await expect(page.locator(".notice-row")).toHaveCount(0);
-  expect(refreshReads).toBe(0);
+  expect(resourceReads).toEqual([]);
 });
 
 test("shows help as a searchable command directory", async ({ page }, testInfo) => {
@@ -160,14 +261,15 @@ test("does not rebuild history when a read-only command follows a turn", async (
   await composer.fill("Inspect the current state");
   await composer.press("Enter");
   await expect(page.getByText("The Web client remains behind the typed v3 API.", { exact: true })).toBeVisible();
-  let refreshReads = 0;
+  const resourceReads: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "GET") refreshReads += 1;
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && !path.endsWith("/events")) resourceReads.push(path);
   });
   await composer.fill("/status");
   await composer.press("Enter");
   await expect(page.getByRole("region", { name: "/status result" })).toBeVisible();
-  expect(refreshReads).toBe(0);
+  expect(resourceReads).toEqual([]);
 });
 
 test("contains long command output in a collapsible result panel", async ({ page }, testInfo) => {
@@ -366,6 +468,12 @@ async function openLongSession(page: Page) {
 async function mockProtocol(page: Page) {
   let demoMessageCount = 3;
   const deletedSessions = new Set<string>();
+  const removedWorkspaces = new Set<string>();
+  let xbotWorkspaceTitle = "XBot";
+  let workspaceOrder = ["ws-xbot", "ws-history"];
+  let xbotSessionOrder = ["demo-session", "second-session"];
+  let demoSessionTitle = "Demo session";
+  const archivedSessions = new Set<string>();
   await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -390,13 +498,58 @@ async function mockProtocol(page: Page) {
         }],
       }],
     });
+    if (path === "/workspaces" && method === "GET") return json(route, {
+      items: [
+        { workspace_id: "ws-xbot", path: "/workspace/XBot", title: xbotWorkspaceTitle, session_ids: xbotSessionOrder.filter((id) => !deletedSessions.has(id)), created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+        { workspace_id: "ws-history", path: "/workspace/history", title: "History", session_ids: deletedSessions.has("history-session") ? [] : ["history-session"], created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      ].filter((workspace) => !removedWorkspaces.has(workspace.workspace_id))
+        .sort((left, right) => workspaceOrder.indexOf(left.workspace_id) - workspaceOrder.indexOf(right.workspace_id)),
+      archived_session_ids: [...archivedSessions],
+      event_cursor: 0,
+    });
+    if (path === "/workspaces/ws-xbot" && method === "PATCH") {
+      xbotWorkspaceTitle = String(request.postDataJSON().title);
+      return json(route, { workspace: { workspace_id: "ws-xbot", path: "/workspace/XBot", title: xbotWorkspaceTitle, session_ids: ["demo-session"], created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:01Z" } });
+    }
+    if (path === "/workspaces/ws-xbot" && method === "DELETE") {
+      removedWorkspaces.add("ws-xbot");
+      return json(route, { workspace_id: "ws-xbot", status: "deleted" });
+    }
+    if (path === "/workspaces/ws-xbot/order" && method === "POST") {
+      const before = request.postDataJSON().before_workspace_id as string | null;
+      workspaceOrder = workspaceOrder.filter((workspaceId) => workspaceId !== "ws-xbot");
+      const index = before === null ? workspaceOrder.length : workspaceOrder.indexOf(before);
+      workspaceOrder.splice(index, 0, "ws-xbot");
+      return json(route, { workspace_ids: workspaceOrder });
+    }
+    if (path === "/workspaces/ws-xbot/sessions/demo-session/order" && method === "POST") {
+      const before = request.postDataJSON().before_session_id as string | null;
+      xbotSessionOrder = xbotSessionOrder.filter((sessionId) => sessionId !== "demo-session");
+      const index = before === null ? xbotSessionOrder.length : xbotSessionOrder.indexOf(before);
+      xbotSessionOrder.splice(index, 0, "demo-session");
+      return json(route, { workspace: { workspace_id: "ws-xbot", path: "/workspace/XBot", title: xbotWorkspaceTitle, session_ids: xbotSessionOrder, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:02Z" } });
+    }
     if (path === "/sessions" && method === "GET") return json(route, {
       sessions: [
-        { session_id: "demo-session", title: "Demo session", workspace_root: "/workspace/XBot", status: "inactive", active_threads: 0, thread_count: 1 },
-        { session_id: "history-session", title: "Historical review", workspace_root: "/workspace/history", status: "inactive", active_threads: 0, thread_count: 1 },
-        { session_id: "long-session", title: "Long history", workspace_root: "/workspace/long", status: "inactive", active_threads: 0, thread_count: 1 },
+        { session_id: "demo-session", title: demoSessionTitle, workspace_root: "/workspace/XBot", status: "inactive", active_threads: 0, thread_count: 1, blank: false },
+        { session_id: "second-session", title: "Second session", workspace_root: "/workspace/XBot", status: "inactive", active_threads: 0, thread_count: 1, blank: true },
+        { session_id: "history-session", title: "Historical review", workspace_root: "/workspace/history", status: "inactive", active_threads: 0, thread_count: 1, blank: false },
+        { session_id: "long-session", title: "Long history", workspace_root: "/workspace/long", status: "inactive", active_threads: 0, thread_count: 1, blank: false },
       ].filter((session) => !deletedSessions.has(session.session_id)),
+      event_cursor: 0,
     });
+    if (path === "/sessions/demo-session" && method === "PATCH") {
+      demoSessionTitle = String(request.postDataJSON().title);
+      return json(route, { session_id: "demo-session", title: demoSessionTitle, workspace_root: "/workspace/XBot", status: "active", active_threads: 1, thread_count: 1, blank: false });
+    }
+    if (path === "/sessions/demo-session/archive" && method === "PUT") {
+      archivedSessions.add("demo-session");
+      return json(route, { archived_session_ids: [...archivedSessions] });
+    }
+    if (path === "/sessions/demo-session/archive" && method === "DELETE") {
+      archivedSessions.delete("demo-session");
+      return json(route, { archived_session_ids: [...archivedSessions] });
+    }
     if (path.startsWith("/sessions/") && method === "DELETE") {
       const sessionId = path.split("/")[2];
       deletedSessions.add(sessionId);
@@ -451,6 +604,28 @@ async function mockProtocol(page: Page) {
         status_slots: { goal: "active" },
         workspace_root: "/workspace/history",
         title: "Historical review",
+      }],
+    });
+    if (path === "/sessions/second-session/threads") return json(route, {
+      session_id: "second-session",
+      threads: [{
+        session_id: "second-session",
+        thread_id: "agent",
+        status: "inactive",
+        kind: "main",
+        turn_status: "idle",
+        parent_thread_id: "",
+        agent: "default",
+        provider: "minimax",
+        model: "Minimax-M3",
+        model_mode: "high",
+        context_window: 32000,
+        message_count: 0,
+        usage: usage(),
+        pending_interactions: [],
+        status_slots: {},
+        workspace_root: "/workspace/XBot",
+        title: "Second session",
       }],
     });
     if (path === "/sessions/long-session/threads") return json(route, {
@@ -645,9 +820,10 @@ async function mockProtocol(page: Page) {
 function openSession(sessionId = "demo-session", workspaceOverride = "", historyLimit = 0) {
   const historical = sessionId === "history-session";
   const longHistory = sessionId === "long-session";
-  const history = historical ? [
+  const blank = sessionId === "second-session";
+  const history = blank ? [] : historical ? [
     { role: "user", content: "Review the persisted workspace", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
-    { role: "assistant", content: "A persisted answer from history.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
+    { role: "assistant", content: "A persisted answer from history.", reasoning: "I checked the persisted context.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
   ] : longHistory ? Array.from({ length: 100 }, (_, index) => [
     { role: "user", content: `Historical message ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },
     { role: "assistant", content: `Historical answer ${index + 1}`, tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [] },

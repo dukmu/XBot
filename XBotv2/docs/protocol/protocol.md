@@ -62,7 +62,10 @@ Thread status and history remain queryable after its runtime closes.
 - Clients may set `history_limit` while opening a session or thread. The
   response then contains the newest page and `history_cursor`; older pages are
   read with `GET .../messages?limit=<n>&cursor=<cursor>`. Cursors address the
-  persisted ordering and pages remain chronological.
+  persisted ordering and pages remain chronological. Clients treat cursors as
+  opaque. Appending messages does not disturb an existing backward traversal;
+  replacing history through clear, undo, regenerate, or compaction invalidates
+  old cursors with `invalid_cursor`.
 - Plugin/runtime inputs retain `runtime.source` and `runtime.event` in the
   display projection. Clients must label these as injected context rather than
   presenting them as human-authored messages.
@@ -97,9 +100,19 @@ Thread status and history remain queryable after its runtime closes.
 | GET | `/health` | Health check |
 | GET | `/providers` | List provider names and non-secret capabilities |
 | POST | `/hello` | Client handshake |
+| GET | `/workspaces/events?after={cursor}` | Replay and follow Workspace-owned Session/Workspace catalog changes |
+| GET | `/workspaces` | List durable Workspaces in user-defined order with current session membership |
+| POST | `/workspaces` | Register an existing filesystem directory as a Workspace |
+| PATCH | `/workspaces/{wid}` | Rename a Workspace without renaming its directory |
+| DELETE | `/workspaces/{wid}` | Remove the registry entry without deleting sessions or files |
+| POST | `/workspaces/{wid}/order` | Insert a Workspace before another id, or last when the anchor is null |
+| POST | `/workspaces/{wid}/sessions/{sid}/order` | Insert an accounted session before another session, or last when the anchor is null |
 | POST | `/sessions` | Open session (new/resume) |
 | GET | `/sessions` | List persisted sessions and runtime status |
 | GET | `/sessions/{sid}` | Read one session summary |
+| PATCH | `/sessions/{sid}` | Rename the session by updating its main-thread metadata |
+| PUT | `/sessions/{sid}/archive` | Hide a session from active Workspace groups without deleting it |
+| DELETE | `/sessions/{sid}/archive` | Restore an archived session to its Workspace group |
 | DELETE | `/sessions/{sid}` | Close and permanently delete a persisted session |
 | POST | `/sessions/{sid}/fork` | Copy persisted session state to a new id |
 | GET | `/sessions/{sid}/policy` | Read session-local policy rules |
@@ -135,14 +148,68 @@ visual input. Attachments additionally contain a file `name`; the server stores
 them under `session/artifacts/attachments/` and gives the Agent a structured
 relative reference for filesystem or shell inspection. At least one of text,
 images, or attachments is required. Uploaded bytes are not embedded in history.
+Assistant history items include persisted `reasoning` when the provider emitted
+it. The same field is returned by session resume, message paging, and history
+mutation snapshots, so clients render Thinking consistently before and after
+reconnect.
 
 `close` never deletes persisted history, artifacts, policy, or plugin state.
 `DELETE /sessions/{sid}` is the explicit destructive counterpart: it rejects a
 running turn, closes idle runtimes, and removes the complete persisted session.
 Slash command transport is not part of the OpenAPI/SDK resource contract.
 
+Workspace identity, order, archived ids, and ordered session membership are
+process-level durable state under the Workspace `StateService` namespace.
+Session `workspace_root` remains the authority for association. Committed
+Session resource events update the ordered Workspace projection immediately;
+listing reconciles it against persisted sessions after restart or repair.
+Removing a Workspace only removes that registry entry. Registering the same
+normalized path again is idempotent and makes its sessions visible under the
+new entry.
+
+### Workspace catalog stream
+
+`GET /sessions` and `GET /workspaces` include `event_cursor`. The cursor is
+captured before reading the corresponding baseline. A client reads both
+baselines, subscribes with `after=min(session_cursor, workspace_cursor)`, and
+applies duplicate frames idempotently. This ordering prevents a resource
+commit during a baseline query from being missed.
+
+Each `SessionSummary` includes `blank`. It is true only when the persisted main
+thread has no messages. Clients may reuse an unarchived blank session in the
+selected Workspace instead of creating another empty session. The server emits
+`catalog/session-changed` when the first turn makes it non-blank and when a history
+mutation makes it blank again.
+
+`GET /workspaces/events?after=N` first sends `catalog/connected` at sequence `N`, then
+replays retained frames with larger sequences and follows new commits. The
+process keeps a bounded 512-frame window shared by all subscribers. A cursor
+outside the current sequence returns `invalid_workspace_event_cursor`; a cursor
+older than the replay window returns retryable `workspace_event_cursor_expired`
+with `oldest_sequence`, after which the client must obtain new baselines.
+Process restart likewise requires new baselines because catalog sequences are not
+durable conversation state.
+
+Resource frame types and payloads are:
+
+| Type | Payload |
+|---|---|
+| `catalog/session-added`, `catalog/session-changed` | `{session: SessionSummary}` |
+| `catalog/session-removed` | `{session_id}` |
+| `catalog/workspace-changed` | `{workspace: WorkspaceData}` |
+| `catalog/workspace-removed` | `{workspace_id}` |
+| `catalog/workspace-order-changed` | `{workspace_ids}` |
+| `catalog/archived-sessions-changed` | `{archived_session_ids}` |
+
+Frames are emitted only after the owning durable commit. Workspace membership
+subscribes to typed Session resource events through XCore; it is not repaired
+by an HTTP handler callback or a client refresh side effect.
+
 The session-open body may include `agent` to select a plugin-registered Primary
 Agent for a new thread. Resume reads the Agent identity from thread metadata.
+Session rename updates the same persisted main-thread metadata used by list,
+thread, resume, fork, and ACP projections; no separate session-title index is
+maintained.
 
 The typed history, session, Agent, provider, and task endpoints above are the
 machine API. Human slash commands remain interactive-client adapters:

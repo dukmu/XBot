@@ -9,17 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from operator import not_
 import uuid
 from collections.abc import Awaitable
-from dataclasses import fields
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal, Protocol
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import Field, model_validator
-from xcore import Context
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     _error_payload,
@@ -31,8 +30,8 @@ from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
-from XBotv2.session.history import display_history, display_history_page
-from XBotv2.server import ModelOverride, ServerOptions, contribute_router
+from XBotv2.session.history import display_history
+from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
     AttachmentUpload,
@@ -75,6 +74,7 @@ class OpenSessionRequest(WireModel):
 class SessionHistoryItem(WireModel):
     role: Literal["user", "assistant", "tool"]
     content: str = ""
+    reasoning: str = Field(default="", exclude_if=not_)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     tool_call_id: str = ""
     status: str = ""
@@ -120,10 +120,21 @@ class SessionSummary(WireModel):
     thread_count: int = Field(default=0, ge=0)
     workspace_root: str = ""
     title: str = ""
+    blank: bool
 
 
 class SessionListResponse(WireModel):
     sessions: list[SessionSummary] = Field(default_factory=list)
+    event_cursor: int = Field(default=0, ge=0)
+
+
+class WorkspaceEventCursor(Protocol):
+    @property
+    def sequence(self) -> int: ...
+
+
+class SessionUpdateRequest(WireModel):
+    title: str = Field(min_length=1, max_length=200)
 
 
 class OpenSessionResponse(WireModel):
@@ -291,52 +302,39 @@ SessionMode = Literal["new", "resume"]
 
 def _open_session_response(
     value: OpenedSession,
-    history_limit: int | None = None,
+    page: MessagePage | None = None,
 ) -> OpenSessionResponse:
-    history = value.history
-    projected, cursor = (
-        display_history_page(history, history_limit)
-        if history_limit
-        else (display_history(history), None)
-    )
+    history = page.messages if page is not None else value.history
     return OpenSessionResponse.model_validate(
         {
-            **_record_data(value),
-            "history": projected,
-            "history_cursor": cursor,
+            **value.to_dict(),
+            "history": display_history(history),
+            "history_cursor": page.next_cursor if page is not None else None,
         }
     )
 
 
 def _session_summary(value: SessionSnapshot) -> SessionSummary:
-    return SessionSummary.model_validate(_record_data(value))
+    return SessionSummary.model_validate(value.to_dict())
 
 
 def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
-    return ThreadSummary.model_validate(_record_data(value))
-
-
-def _record_data(value: object) -> dict[str, Any]:
-    return {field.name: getattr(value, field.name) for field in fields(value)}
+    return ThreadSummary.model_validate(value.to_dict())
 
 
 def _history_response(
     session_id: str,
     thread_id: str,
     result: HistoryMutation,
-    history_limit: int | None = None,
+    page: MessagePage | None = None,
 ) -> HistoryMutationResponse:
-    history, cursor = (
-        display_history_page(result.messages, history_limit)
-        if history_limit
-        else (display_history(result.messages), None)
-    )
+    messages = page.messages if page is not None else result.messages
     return HistoryMutationResponse(
         session_id=session_id,
         thread_id=thread_id,
         removed_turns=result.removed_turns,
-        messages=history,
-        history_cursor=cursor,
+        messages=display_history(messages),
+        history_cursor=page.next_cursor if page is not None else None,
     )
 
 
@@ -445,6 +443,7 @@ def build_session_router(
     *,
     sessions: SessionsPort,
     options: ServerOptions,
+    workspace_events: WorkspaceEventCursor,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
 
@@ -503,17 +502,43 @@ def build_session_router(
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        return _open_session_response(opened, payload.history_limit)
+        page = (
+            await sessions.message_page(
+                opened.session_id,
+                opened.thread_id,
+                cursor=None,
+                limit=payload.history_limit,
+            )
+            if payload.history_limit is not None
+            else None
+        )
+        return _open_session_response(opened, page)
 
     @router.get("/sessions", operation_id="list_sessions")
     async def list_sessions_endpoint() -> SessionListResponse:
-        return SessionListResponse(sessions=[
-            _session_summary(value) for value in await sessions.list_sessions()
-        ])
+        event_cursor = workspace_events.sequence
+        return SessionListResponse(
+            sessions=[
+                _session_summary(value) for value in await sessions.list_sessions()
+            ],
+            event_cursor=event_cursor,
+        )
 
     @router.get("/sessions/{session_id}", operation_id="get_session")
     async def get_session_endpoint(session_id: str) -> SessionSummary:
         return _session_summary(await sessions.session_summary(session_id))
+
+    @router.patch("/sessions/{session_id}", operation_id="rename_session")
+    async def rename_session_endpoint(
+        session_id: str,
+        payload: SessionUpdateRequest,
+    ) -> SessionSummary:
+        try:
+            return _session_summary(
+                await sessions.rename_session(session_id, payload.title)
+            )
+        except ValueError as exc:
+            raise HttpServerError("invalid_session_title", str(exc), status=400) from exc
 
     @router.post(
         "/sessions/{session_id}/fork",
@@ -572,7 +597,17 @@ def build_session_router(
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        return _open_session_response(opened, payload.history_limit)
+        page = (
+            await sessions.message_page(
+                opened.session_id,
+                opened.thread_id,
+                cursor=None,
+                limit=payload.history_limit,
+            )
+            if payload.history_limit is not None
+            else None
+        )
+        return _open_session_response(opened, page)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}",
@@ -655,11 +690,21 @@ def build_session_router(
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
         result = await sessions.undo_history(session_id, thread_id, payload.count)
+        page = (
+            await sessions.message_page(
+                session_id,
+                thread_id,
+                cursor=None,
+                limit=payload.history_limit,
+            )
+            if payload.history_limit is not None
+            else None
+        )
         return _history_response(
             session_id,
             thread_id,
             result,
-            payload.history_limit,
+            page,
         )
 
     @router.post(
@@ -834,34 +879,6 @@ def build_session_router(
         )
 
     return router
-
-
-class SessionProtocolPlugin:
-    """Map the public Sessions API to HTTP and SSE."""
-
-    inject = [
-        'server',
-        'sessions',
-        'server_options',
-    ]
-    name = "xbot.protocol.session"
-
-    async def apply(self, ctx: Context, config: object = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_session_router(
-                sessions=ctx.sessions,
-                options=ctx.server_options,
-            ),
-            exception_handlers=(
-                (SessionNotFound, _session_not_found),
-                (ThreadNotActive, _thread_not_active),
-            ),
-        )
-
-
-plugin = SessionProtocolPlugin()
 
 
 __all__ = [

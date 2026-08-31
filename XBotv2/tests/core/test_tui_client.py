@@ -273,6 +273,7 @@ def test_tui_state_restores_resumed_message_and_tool_history():
         {
             "role": "assistant",
             "content": "reading",
+            "reasoning": "inspect the file first",
             "tool_calls": [
                 {"id": "call_1", "name": "filesystem_read", "args": {"path": "a.txt"}}
             ],
@@ -301,6 +302,7 @@ def test_tui_state_restores_resumed_message_and_tool_history():
         ("assistant", "reading"),
         ("assistant", "done"),
     ]
+    assert state.messages[1].reasoning == "inspect the file first"
     assert state.tools["call_1"].name == "filesystem_read"
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "contents"

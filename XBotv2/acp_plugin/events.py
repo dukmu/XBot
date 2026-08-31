@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from acp import (
@@ -14,6 +15,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
+from XBotv2.session.history import ConversationReplayItem
 
 
 class ACPEventMapper:
@@ -151,63 +153,57 @@ class ACPEventMapper:
         return []
 
 
-def replay_history(messages: list[Any]) -> list[Any]:
+def replay_history(items: Iterable[ConversationReplayItem]) -> list[Any]:
     """Translate persisted conversation messages into ACP load updates."""
     updates: list[Any] = []
-    for index, message in enumerate(messages):
-        if message.role == "user" and message.content:
-            runtime = message.additional_kwargs.get("runtime_input")
-            if isinstance(runtime, dict):
+    for index, item in enumerate(items):
+        if item.role == "user" and item.content:
+            if item.runtime is not None:
+                runtime = item.runtime
                 source = str(runtime.get("source") or "runtime")
                 event = str(runtime.get("event") or "message")
                 updates.append(start_tool_call(
-                    message.input_id or f"runtime-input-{index}",
+                    item.input_id or f"runtime-input-{index}",
                     f"Injected context · {source} / {event}",
                     kind="other",
                     status="completed",
-                    content=[tool_content(text_block(str(message.content)))],
+                    content=[tool_content(text_block(item.content))],
                     raw_output={
                         "source": source,
                         "event": event,
-                        "content": str(message.content),
+                        "content": item.content,
                     },
                 ))
                 continue
-            updates.append(update_user_message_text(str(message.content)))
+            updates.append(update_user_message_text(item.content))
             continue
-        if message.role == "assistant":
-            reasoning = message.reasoning
-            if reasoning:
-                updates.append(update_agent_thought_text(str(reasoning)))
-            if message.content:
-                updates.append(update_agent_message_text(str(message.content)))
-            for call in message.tool_calls:
+        if item.role == "assistant":
+            if item.reasoning:
+                updates.append(update_agent_thought_text(item.reasoning))
+            if item.content:
+                updates.append(update_agent_message_text(item.content))
+            for call in item.tool_calls:
                 updates.append(start_tool_call(
-                    call.id,
-                    call.name,
-                    kind=_tool_kind(call.name),
+                    str(call["id"]),
+                    str(call["name"]),
+                    kind=_tool_kind(str(call["name"])),
                     status="pending",
-                    raw_input=call.args,
+                    raw_input=call.get("args"),
                 ))
             continue
-        if message.role != "tool" or not message.tool_call_id:
+        if item.role != "tool" or not item.tool_call_id:
             continue
-        content = str(message.content or "")
         output = {
-            "content": content,
-            "data": message.data,
-            "error": message.error,
-            "artifacts": [
-                value.to_dict()
-                for value in message.artifact or []
-                if hasattr(value, "to_dict")
-            ],
-            "images": [image.to_dict() for image in message.images],
+            "content": item.content,
+            "data": item.data,
+            "error": item.error,
+            "artifacts": list(item.artifacts),
+            "images": list(item.images),
         }
         updates.append(update_tool_call(
-            message.tool_call_id,
-            status="completed" if message.status == "success" else "failed",
-            content=[tool_content(text_block(content))],
+            item.tool_call_id,
+            status="completed" if item.status == "success" else "failed",
+            content=[tool_content(text_block(item.content))],
             raw_output=_tool_output(output),
         ))
     return updates

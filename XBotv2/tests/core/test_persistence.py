@@ -6,10 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.tools import ToolCall
 from XBotv2.agentloop.inbox import InboxInput, InboxTarget
 from XBotv2.persistence.models import (
@@ -27,6 +29,28 @@ def thread_persistence(tmp_path, session_id="s1"):
         workspace_root="/workspace",
         provider="default",
     )
+
+
+def test_artifact_operations_log_metadata_without_content(tmp_path, caplog):
+    caplog.set_level("DEBUG", logger="xbotv2.persistence")
+    paths = RuntimePaths.from_data_dir(tmp_path).session("s1").thread("t1")
+    store = ArtifactStore(paths, RuntimeLog())
+    payload = b"artifact-secret-content"
+
+    artifact = store.put(
+        ArtifactKind.ATTACHMENT,
+        payload,
+        media_type="application/octet-stream",
+        name="private-name.bin",
+    )
+    assert store.read(artifact) == payload
+
+    text = caplog.text
+    assert "persistence.artifact.stored" in text
+    assert "persistence.artifact.read" in text
+    assert artifact.id in text
+    assert "artifact-secret-content" not in text
+    assert "private-name.bin" not in text
 
 
 class TestMessageRecord:
@@ -118,6 +142,64 @@ class TestMessageHistoryStore:
         assert [message.content for message in persistence.history.load()] == [
             "summary", "retained",
         ]
+
+    def test_pages_read_backwards_without_loading_the_full_history(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([
+            Message(role="user", content=f"message-{index}")
+            for index in range(5)
+        ])
+
+        latest = persistence.history.page(limit=2)
+        older = persistence.history.page(limit=2, cursor=latest.next_cursor)
+        oldest = persistence.history.page(limit=2, cursor=older.next_cursor)
+
+        assert [message.content for message in latest.messages] == [
+            "message-3", "message-4",
+        ]
+        assert [message.content for message in older.messages] == [
+            "message-1", "message-2",
+        ]
+        assert [message.content for message in oldest.messages] == ["message-0"]
+        assert oldest.next_cursor is None
+
+    def test_append_preserves_cursor_and_replace_invalidates_it(self, tmp_path):
+        from XBotv2.core.history import HistoryCursorInvalid
+
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="three"),
+        ])
+        latest = persistence.history.page(limit=1)
+
+        persistence.history.append([Message(role="assistant", content="four")])
+        older = persistence.history.page(limit=1, cursor=latest.next_cursor)
+        assert [message.content for message in older.messages] == ["two"]
+
+        persistence.history.replace([Message(role="user", content="replacement")])
+        with pytest.raises(HistoryCursorInvalid, match="current history"):
+            persistence.history.page(limit=1, cursor=latest.next_cursor)
+
+    def test_cursor_is_bound_to_one_thread_history(self, tmp_path):
+        from XBotv2.core.history import HistoryCursorInvalid
+
+        first = thread_persistence(tmp_path, "first")
+        second = thread_persistence(tmp_path, "second")
+        for persistence in (first, second):
+            persistence.history.append([
+                Message(role="user", content="one"),
+                Message(role="assistant", content="two"),
+            ])
+        second.paths.history_revision_file.write_text(
+            first.paths.history_revision_file.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        cursor = first.history.page(limit=1).next_cursor
+        with pytest.raises(HistoryCursorInvalid, match="current history"):
+            second.history.page(limit=1, cursor=cursor)
 
     def test_incomplete_record_is_an_explicit_error(self, tmp_path):
         persistence = thread_persistence(tmp_path)

@@ -4,10 +4,15 @@ export function StatusBar({ state }: { state: RuntimeState }) {
   const current = state.current;
   if (!current) {
     const reachable = state.serverReachable;
+    const ready = reachable && state.catalogEventStreamConnected;
     return (
       <footer className="status-bar">
-        <span className={`connection-state ${reachable ? "online" : "offline"}`} />
-        <span>{reachable ? "Server ready" : "Server unavailable"}</span>
+        <span className={`connection-state ${ready ? "online" : "offline"}`} />
+        <span>{
+          !reachable
+            ? "Server unavailable"
+            : ready ? "Server ready" : "Server ready · reconnecting session updates"
+        }</span>
       </footer>
     );
   }
@@ -19,10 +24,13 @@ export function StatusBar({ state }: { state: RuntimeState }) {
     + state.usage.cache_read_input_tokens
     + state.usage.cache_creation_input_tokens
     + state.usage.prompt_cache_write_tokens;
-  const live = state.serverReachable && state.sessionAttached && state.eventStreamConnected;
-  const connectionTitle = live
-    ? "Session attached · live events connected"
-    : state.sessionAttached ? "Session attached · live events disconnected" : "Session detached";
+  const sessionLive = state.serverReachable && state.sessionAttached && state.eventStreamConnected;
+  const live = sessionLive && state.catalogEventStreamConnected;
+  const connectionTitle = !state.sessionAttached
+    ? "Session detached"
+    : `${sessionLive ? "Session events connected" : "Session events disconnected"} · ${
+      state.catalogEventStreamConnected ? "session catalog connected" : "session catalog reconnecting"
+    }`;
   return (
     <footer className="status-bar">
       <span className={`connection-state ${live ? "online" : "offline"}`} title={connectionTitle} />

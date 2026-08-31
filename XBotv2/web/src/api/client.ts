@@ -11,10 +11,13 @@ import {
   type OpenSessionResponse,
   type ProviderInfo,
   type ServerEvent,
+  type SessionListData,
   type SessionSummary,
   type TaskData,
   type TodoItemData,
   type ThreadSummary,
+  type WorkspaceData,
+  type WorkspaceListData,
   type XBotErrorBody,
 } from "./types";
 
@@ -46,9 +49,68 @@ export class XBotApi {
     );
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
-    const result = await this.request<{ sessions: SessionSummary[] }>("GET", "/sessions");
-    return result.sessions;
+  listSessions(): Promise<SessionListData> {
+    return this.request("GET", "/sessions");
+  }
+
+  renameSession(sessionId: string, title: string): Promise<SessionSummary> {
+    return this.request("PATCH", `/sessions/${segment(sessionId)}`, { title });
+  }
+
+  listWorkspaces(): Promise<WorkspaceListData> {
+    return this.request("GET", "/workspaces");
+  }
+
+  async createWorkspace(path: string): Promise<WorkspaceData> {
+    const result = await this.request<{ workspace: WorkspaceData; created: boolean }>(
+      "POST",
+      "/workspaces",
+      { path },
+    );
+    return result.workspace;
+  }
+
+  async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceData> {
+    const result = await this.request<{ workspace: WorkspaceData }>(
+      "PATCH",
+      `/workspaces/${segment(workspaceId)}`,
+      { title },
+    );
+    return result.workspace;
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    await this.request("DELETE", `/workspaces/${segment(workspaceId)}`);
+  }
+
+  async reorderWorkspace(workspaceId: string, beforeWorkspaceId: string | null): Promise<string[]> {
+    const result = await this.request<{ workspace_ids: string[] }>(
+      "POST",
+      `/workspaces/${segment(workspaceId)}/order`,
+      { before_workspace_id: beforeWorkspaceId },
+    );
+    return result.workspace_ids;
+  }
+
+  async reorderWorkspaceSession(
+    workspaceId: string,
+    sessionId: string,
+    beforeSessionId: string | null,
+  ): Promise<WorkspaceData> {
+    const result = await this.request<{ workspace: WorkspaceData }>(
+      "POST",
+      `/workspaces/${segment(workspaceId)}/sessions/${segment(sessionId)}/order`,
+      { before_session_id: beforeSessionId },
+    );
+    return result.workspace;
+  }
+
+  async setSessionArchived(sessionId: string, archived: boolean): Promise<string[]> {
+    const result = await this.request<{ archived_session_ids: string[] }>(
+      archived ? "PUT" : "DELETE",
+      `/sessions/${segment(sessionId)}/archive`,
+    );
+    return result.archived_session_ids;
   }
 
   async listProviders(): Promise<{ default: string; providers: ProviderInfo[] }> {
@@ -304,6 +366,10 @@ export class XBotApi {
     )) {
       yield this.withEventArtifactUrls(sessionId, threadId, event);
     }
+  }
+
+  streamWorkspaceEvents(after: number, signal?: AbortSignal): AsyncGenerator<ServerEvent> {
+    return this.stream("GET", `/workspaces/events?after=${encodeURIComponent(after)}`, undefined, signal);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {

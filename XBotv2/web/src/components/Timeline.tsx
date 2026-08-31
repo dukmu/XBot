@@ -9,6 +9,7 @@ const TIMELINE_BATCH = 80;
 
 interface TimelineProps {
   entries: TimelineEntry[];
+  assistantDraft: Extract<TimelineEntry, { kind: "message" }> | null;
   turnRunning: boolean;
   onRetry: () => Promise<void>;
   hasOlder: boolean;
@@ -18,6 +19,7 @@ interface TimelineProps {
 
 export const Timeline = memo(function Timeline({
   entries,
+  assistantDraft,
   turnRunning,
   onRetry,
   hasOlder,
@@ -101,7 +103,7 @@ export const Timeline = memo(function Timeline({
 
   useEffect(() => {
     if (shouldFollow.current) viewport.current?.scrollTo({ top: viewport.current.scrollHeight });
-  }, [entries]);
+  }, [entries, assistantDraft?.content, assistantDraft?.reasoning]);
 
   return (
     <div
@@ -145,7 +147,10 @@ export const Timeline = memo(function Timeline({
             </div>
           );
         })}
-        {turnRunning && !entries.some((entry) => entry.kind === "message" && entry.streaming) && (
+        {assistantDraft && (
+          <MessageBlock entry={assistantDraft} canRetry={false} onRetry={onRetry} />
+        )}
+        {turnRunning && !assistantDraft && (
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
         )}
       </div>
@@ -158,6 +163,7 @@ export const Timeline = memo(function Timeline({
   );
 }, (previous, next) => (
   previous.entries === next.entries
+  && previous.assistantDraft === next.assistantDraft
   && previous.turnRunning === next.turnRunning
   && previous.hasOlder === next.hasOlder
   && previous.loadingOlder === next.loadingOlder

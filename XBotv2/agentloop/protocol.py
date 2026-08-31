@@ -160,25 +160,6 @@ def build_tools_router(*, sessions: Any) -> APIRouter:
     return router
 
 
-class ToolsProtocolPlugin:
-    """Contribute the tool catalog route through the XCore route event."""
-
-    inject = ["server", "sessions"]
-    name = "xbot.protocol.tools"
-
-    async def apply(self, ctx: Any, config: Any = None) -> None:
-        from XBotv2.server import contribute_router
-
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_tools_router(sessions=ctx.sessions),
-        )
-
-
-plugin = ToolsProtocolPlugin()
-
-
 __all__ = [
     "AgentLoopEventType",
     "AssistantMessageData",

@@ -10,6 +10,7 @@ from XBotv2.application import RuntimeEvent
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import EventContext
 from XBotv2.core import Message
+from XBotv2.core.history import ConversationHistory
 from XBotv2.core.tools import ClientEvent
 from XBotv2.session import HistoryChanged, SessionInfo
 from XBotv2.session.runtime import SessionRuntime
@@ -39,6 +40,19 @@ class FakeEngine:
 
     async def followup(self, content, **kwargs):
         return content
+
+    @property
+    def pending_input_count(self):
+        return len(self.inbox)
+
+    async def run_pending(self, *, request_id=""):
+        del request_id
+        if not self.inbox:
+            return
+        self.inbox.clear()
+        yield {"type": "turn_started", "data": {"turn": 1}}
+        yield {"type": "assistant_message", "data": {"content": "resumed"}}
+        yield {"type": "turn_finished", "data": {"turn": 1}}
 
     async def discard_inputs(self):
         self.inbox.clear()
@@ -76,6 +90,7 @@ class FakeApplication:
         self.driver = driver
         self.events = SimpleNamespace(on=lambda *_args, **_kwargs: None)
         self.client_events = FakeClientEvents()
+        self.history_pages = ConversationHistory()
         self.closed = False
 
     async def status_slots(self):
@@ -134,6 +149,22 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resume_pending_inputs_runs_after_runtime_registration(tmp_path):
+    session = runtime(tmp_path)
+    session.engine.inbox.append("persisted")
+
+    assert session.resume_pending_inputs() is True
+    for _ in range(20):
+        if session.engine.pending_input_count == 0 and session.wakeup_task is None:
+            break
+        await asyncio.sleep(0)
+
+    assert session.engine.pending_input_count == 0
+    assert session.resume_pending_inputs() is False
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_events_are_broadcast_to_multiple_clients(tmp_path):
     session = runtime(tmp_path)
     first = session.attach_event_stream()
@@ -159,9 +190,11 @@ async def test_runtime_events_are_broadcast_to_multiple_clients(tmp_path):
 async def test_history_change_is_projected_from_typed_session_event(tmp_path):
     session = runtime(tmp_path)
     events = session.attach_event_stream()
+    history = (Message(role="user", content="keep"),)
+    session.application.history_pages.replace(history)
 
     await session._on_history_changed(HistoryChanged(
-        messages=(Message(role="user", content="keep"),),
+        messages=history,
         operation="undo",
         turns=1,
     ))

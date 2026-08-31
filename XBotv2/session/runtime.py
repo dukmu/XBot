@@ -22,7 +22,7 @@ from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.session.history import display_history_page
+from XBotv2.session.history import display_history
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
@@ -100,14 +100,23 @@ class SessionRuntime:
         """Mark the runtime active; resets the idle-reaper deadline."""
         self.last_activity = time.monotonic()
 
+    def resume_pending_inputs(self) -> bool:
+        """Resume durable inbox work after the runtime is fully registered."""
+        pending = self.engine.pending_input_count
+        if not pending:
+            return False
+        self._log.info("session.inbox.resuming", pending_inputs=pending)
+        self._request_wakeup()
+        return True
+
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
-        history, cursor = display_history_page(event.messages, 160)
+        page = self.application.history_pages.page(limit=160)
         self._publish_runtime_event(session_event(
             "history_updated",
             {
-                "history": history,
-                "history_cursor": cursor,
+                "history": display_history(page.messages),
+                "history_cursor": page.next_cursor,
                 "operation": event.operation,
                 "turns": event.turns,
             },
@@ -526,12 +535,12 @@ async def regenerate_turn_stream(
             for value in message.artifact or []
             if isinstance(value, ArtifactRef)
         ]
-        history, cursor = display_history_page(runtime.engine.messages, 160)
+        page = runtime.application.history_pages.page(limit=160)
         yield session_event(
             "history_updated",
             {
-                "history": history,
-                "history_cursor": cursor,
+                "history": display_history(page.messages),
+                "history_cursor": page.next_cursor,
                 "operation": "regenerate",
                 "turns": 1,
             },

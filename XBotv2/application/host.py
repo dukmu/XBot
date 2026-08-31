@@ -19,6 +19,7 @@ from XBotv2.application.services import (
 )
 from XBotv2.permissions import PermissionsPort
 from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.history import ConversationPageReader
 
 
 @dataclass(slots=True)
@@ -31,6 +32,7 @@ class MountedAgentApplication:
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
+    history_pages: ConversationPageReader
     usage: UsageSnapshotPort
     loop_state: LoopStateView
     parent_permissions: PermissionsPort
@@ -68,6 +70,11 @@ def mounted_application(context: Context) -> MountedAgentApplication:
         artifacts=context.artifacts,
         client_events=context.client_events,
         history=context.session,
+        history_pages=(
+            context.thread_persistence.history
+            if context.has("thread_persistence")
+            else context.loop_state.history
+        ),
         usage=context.usage,
         loop_state=context.loop_state,
         parent_permissions=context.permissions,

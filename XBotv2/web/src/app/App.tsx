@@ -134,7 +134,9 @@ export function App() {
     <div className="app-shell">
       <SessionSidebar
         open={sidebarOpen}
-        sessions={state.sessions}
+        sessions={runtime.sessions}
+        workspaces={runtime.workspaces}
+        archivedSessionIds={runtime.archivedSessionIds}
         threads={state.threads}
         current={state.current}
         onClose={() => setSidebarOpen(false)}
@@ -157,6 +159,12 @@ export function App() {
           setSidebarOpen(false);
           setDeleteCandidate(session);
         }}
+        onRenameSession={(sessionId, title) => void runtime.renameSession(sessionId, title)}
+        onArchiveSession={(sessionId, archived) => void runtime.setSessionArchived(sessionId, archived)}
+        onRenameWorkspace={(workspaceId, title) => void runtime.renameWorkspace(workspaceId, title)}
+        onDeleteWorkspace={(workspaceId) => void runtime.deleteWorkspace(workspaceId)}
+        onMoveWorkspace={(workspaceId, direction) => void runtime.moveWorkspace(workspaceId, direction)}
+        onMoveSession={(workspaceId, sessionId, direction) => void runtime.moveSession(workspaceId, sessionId, direction)}
       />
       {sidebarOpen && <button className="sidebar-scrim" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />}
 
@@ -203,6 +211,7 @@ export function App() {
             <Timeline
               key={`${state.current.session_id}/${state.current.thread_id}`}
               entries={state.entries}
+              assistantDraft={state.assistantDraft}
               turnRunning={state.turnRunning}
               onRetry={runtime.retryLast}
               hasOlder={Boolean(state.historyCursor)}

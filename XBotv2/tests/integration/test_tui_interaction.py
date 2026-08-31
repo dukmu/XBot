@@ -1347,6 +1347,32 @@ async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
 
 
 @pytest.mark.asyncio
+async def test_resumed_reasoning_is_rendered_as_a_collapsible_block(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.restore_history([{
+            "role": "assistant",
+            "content": "Persisted answer",
+            "reasoning": "Persisted thought",
+            "tool_calls": [],
+        }])
+        await app._render_replay_window()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        assert block.collapsed is True
+        assert "Persisted thought" in str(
+            block.query_one(".reasoning", Static).content
+        )
+
+
+@pytest.mark.asyncio
 async def test_assistant_markdown_survives_streaming_updates(scripted_session) -> None:
     from rich.markdown import Markdown
     from textual.widgets import Static

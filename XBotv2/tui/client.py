@@ -187,19 +187,24 @@ class TuiState:
             self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
+            reasoning = str(data.get("reasoning") or "")
             tool_calls = data.get("tool_calls")
-            if content.strip():
+            if content.strip() or reasoning:
                 if self._streaming_assistant_index is not None:
                     index = self._streaming_assistant_index
                     self._streaming_assistant_index = None
                     try:
                         message = self.messages[index]
-                        message.content = content
+                        if content:
+                            message.content = content
+                        if reasoning:
+                            message.reasoning = reasoning
                         message.streaming = False
                     except IndexError:
                         pass
                 else:
                     self.append_message("assistant", content)
+                    self.messages[-1].reasoning = reasoning
             elif tool_calls:
                 self._streaming_assistant_index = None
             self._apply_tool_calls(tool_calls)
@@ -443,6 +448,7 @@ class TuiState:
                     "type": "assistant_message",
                     "data": {
                         "content": str(item.get("content") or ""),
+                        "reasoning": str(item.get("reasoning") or ""),
                         "tool_calls": item.get("tool_calls") or [],
                     },
                 })

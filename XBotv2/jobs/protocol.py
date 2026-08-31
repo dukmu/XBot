@@ -17,7 +17,6 @@ from XBotv2.jobs.contracts import (
     TaskSnapshot,
 )
 from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
 from XBotv2.session import SessionsPort
 
 
@@ -134,23 +133,6 @@ def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
         )
 
     return router
-
-
-class JobsProtocolPlugin:
-    """Contribute task routes through the XCore route event."""
-
-    inject = ["server", "sessions"]
-    name = "xbot.protocol.jobs"
-
-    async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_tasks_router(sessions=ctx.sessions),
-        )
-
-
-plugin = JobsProtocolPlugin()
 
 
 __all__ = [

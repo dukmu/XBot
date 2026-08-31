@@ -34,8 +34,29 @@ export interface SessionSummary {
   status: "active" | "inactive";
   active_threads: number;
   thread_count: number;
+  blank: boolean;
   workspace_root?: string;
   title?: string;
+}
+
+export interface SessionListData {
+  sessions: SessionSummary[];
+  event_cursor: number;
+}
+
+export interface WorkspaceData {
+  workspace_id: string;
+  path: string;
+  title: string;
+  session_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceListData {
+  items: WorkspaceData[];
+  archived_session_ids: string[];
+  event_cursor: number;
 }
 
 export interface ThreadSummary {
@@ -61,6 +82,7 @@ export interface ThreadSummary {
 export interface HistoryItem {
   role: "user" | "assistant" | "tool";
   content: string;
+  reasoning?: string;
   tool_calls: JsonObject[];
   tool_call_id: string;
   status: string;

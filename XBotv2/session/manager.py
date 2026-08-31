@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.core.runtime_logging import (
@@ -36,8 +36,13 @@ from XBotv2.session.contracts import (
     AgentApplicationOptions,
     PREPARE_FORK,
     PrepareFork,
+    SESSION_RESOURCE_CHANGED,
+    SESSION_RESOURCE_REMOVED,
+    SessionResourceChanged,
+    SessionResourceRemoved,
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
+from XBotv2.core.history import HistoryCursorInvalid
 from XBotv2.session.types import (
     ArtifactPayload,
     HistoryMutation,
@@ -65,28 +70,38 @@ from XBotv2.core.operations import (
 )
 
 async def _runtime_message_events(
+    manager: "SessionManager",
     runtime: SessionRuntime,
     request: SendMessage,
     images: list[ImageContent],
     attachments: list[ArtifactRef],
 ) -> AsyncIterator[SessionStreamEvent]:
+    announced = False
     async for event in runtime.stream_message(
         request.content,
         request.request_id,
         images=images,
         artifacts=attachments,
     ):
+        if not announced:
+            announced = True
+            await manager._emit_session_changed(runtime.session_id)
         yield SessionStreamEvent.from_mapping(event)
 
 
 async def _runtime_regenerate_events(
+    manager: "SessionManager",
     runtime: SessionRuntime,
     request: RegenerateMessage,
 ) -> AsyncIterator[SessionStreamEvent]:
+    announced = False
     async for event in regenerate_turn_stream(
         runtime,
         request_id=request.request_id,
     ):
+        if not announced:
+            announced = True
+            await manager._emit_session_changed(runtime.session_id)
         yield SessionStreamEvent.from_mapping(event)
 
 
@@ -104,12 +119,17 @@ async def _runtime_events(
         runtime.detach_event_stream(events)
 
 
+class ResourceEvents(Protocol):
+    async def emit(self, event: str, *args: object) -> None: ...
+
+
 class SessionManager:
     """Own active thread runtimes grouped by persistent session id."""
 
     def __init__(
         self,
         paths: RuntimePaths,
+        events: ResourceEvents,
         *,
         idle_timeout: float | None = 3600.0,
         reap_interval: float = 60.0,
@@ -118,6 +138,7 @@ class SessionManager:
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.paths = paths
+        self._events = events
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
         self.thread_persistence_factory = thread_persistence_factory
@@ -274,13 +295,19 @@ class SessionManager:
                     raise SessionExists(f"{session_id}/{thread_id}")
                 task = opening
             else:
+                workspace = Path(workspace_root).expanduser().resolve()
+                if not workspace.is_dir():
+                    raise OperationError(
+                        "workspace_not_found",
+                        f"Workspace path is not an existing directory: {workspace}",
+                    )
                 task = asyncio.create_task(
                     self._build_and_register(
                         key=key,
                         session_id=session_id,
                         thread_id=thread_id,
                         provider_name=provider_name,
-                        workspace_root=workspace_root,
+                        workspace_root=str(workspace),
                         selected_agent=selected_agent,
                         mode=mode,
                         no_plugins=no_plugins,
@@ -319,6 +346,7 @@ class SessionManager:
         )
         try:
             session_paths = self.paths.session(session_id)
+            session_preexisting = session_paths.root.is_dir()
             if mode == "resume" and not session_paths.has_thread(thread_id):
                 raise SessionNotFound(f"{session_id}/{thread_id}")
             had_persisted_session = (
@@ -377,12 +405,23 @@ class SessionManager:
                 raise
             async with self._lock:
                 self._sessions[key] = ctx
+            pending_resumed = (
+                ctx.resume_pending_inputs() if mode == "resume" else False
+            )
             self._log.info(
                 "session.opened",
                 mode=mode,
                 provider=ctx.provider_name,
                 resumed=had_persisted_session,
+                pending_resumed=pending_resumed,
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
+            await self._events.emit(
+                SESSION_RESOURCE_CHANGED,
+                SessionResourceChanged(
+                    await session_summary(self, session_id),
+                    added=not session_preexisting,
+                ),
             )
             return ctx
         except BaseException as exc:
@@ -431,6 +470,7 @@ class SessionManager:
                 thread_id=thread_id,
                 reason=reason,
             )
+            await self._emit_session_changed(session_id)
 
     async def close_session(
         self,
@@ -467,6 +507,16 @@ class SessionManager:
             threads=len(contexts),
             reason=reason,
         )
+        if contexts:
+            await self._emit_session_changed(session_id)
+
+    async def _emit_session_changed(self, session_id: str) -> None:
+        if not self.session_exists(session_id):
+            return
+        await self._events.emit(
+            SESSION_RESOURCE_CHANGED,
+            SessionResourceChanged(await session_summary(self, session_id)),
+        )
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -479,8 +529,25 @@ class SessionManager:
         async with self._lock:
             contexts = list(self._sessions.values())
             self._sessions.clear()
+        closed_sessions: dict[str, int] = {}
         for ctx in contexts:
             await self._close_runtime(ctx, "session_closed")
+            closed_sessions[ctx.session_id] = (
+                closed_sessions.get(ctx.session_id, 0) + 1
+            )
+            self._log.info(
+                "session.thread.closed",
+                session_id=ctx.session_id,
+                thread_id=ctx.thread_id,
+                reason="session_closed",
+            )
+        for session_id, thread_count in closed_sessions.items():
+            self._log.info(
+                "session.closed",
+                session_id=session_id,
+                threads=thread_count,
+                reason="session_closed",
+            )
         reaper = self._reaper
         self._reaper = None
         if reaper is not None and not reaper.done():
@@ -521,6 +588,49 @@ class SessionManager:
     async def session_summary(self, session_id: str) -> SessionSnapshot:
         return await session_summary(self, session_id)
 
+    async def rename_session(
+        self,
+        session_id: str,
+        title: str,
+    ) -> SessionSnapshot:
+        value = title.strip()
+        if not value:
+            raise ValueError("Session title must be non-empty")
+        if len(value) > 200:
+            raise ValueError("Session title must not exceed 200 characters")
+        summary = await session_summary(self, session_id)
+        thread_ids = persisted_thread_ids(self.paths, session_id)
+        main_id = "agent" if "agent" in thread_ids else ""
+        if not main_id:
+            for thread_id in thread_ids:
+                thread = await thread_summary(self, session_id, thread_id)
+                if not thread.parent_thread_id:
+                    main_id = thread_id
+                    break
+        if not main_id:
+            raise OperationError(
+                "main_thread_not_found",
+                f"Session {session_id!r} has no main thread",
+            )
+        active = (await self.active_threads()).get((session_id, main_id))
+        if active is not None:
+            active.application.loop_state.metadata.update(title=value)
+        else:
+            persistence = self._thread_persistence(
+                self.paths.session(session_id),
+                thread_id=main_id,
+                workspace_root=summary.workspace_root,
+            )
+            metadata = persistence.metadata.load()
+            persistence.metadata.save(metadata.model_copy(update={"title": value}))
+        self._log.info("session.renamed", session_id=session_id)
+        renamed = await session_summary(self, session_id)
+        await self._events.emit(
+            SESSION_RESOURCE_CHANGED,
+            SessionResourceChanged(renamed),
+        )
+        return renamed
+
     async def fork_session(self, session_id: str) -> str:
         await session_summary(self, session_id)
         active = await self.active_threads()
@@ -559,6 +669,13 @@ class SessionManager:
             forked_session_id=forked_id,
             threads=len(runtimes),
         )
+        await self._events.emit(
+            SESSION_RESOURCE_CHANGED,
+            SessionResourceChanged(
+                await session_summary(self, forked_id),
+                added=True,
+            ),
+        )
         return forked_id
 
     async def delete_session(self, session_id: str) -> None:
@@ -578,6 +695,10 @@ class SessionManager:
         await self.close_session(session_id, reason="session_deleted")
         delete_persisted_session(self.paths, session_id)
         self._log.info("session.deleted", session_id=session_id)
+        await self._events.emit(
+            SESSION_RESOURCE_REMOVED,
+            SessionResourceRemoved(session_id),
+        )
 
     async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]:
         await session_summary(self, session_id)
@@ -662,27 +783,25 @@ class SessionManager:
         cursor: str | None,
         limit: int | None,
     ) -> MessagePage:
-        messages = await self.messages(session_id, thread_id)
         if limit is None:
             if cursor is not None:
                 raise OperationError(
                     "invalid_cursor", "A message cursor requires a page limit."
                 )
-            return MessagePage(messages)
+            return MessagePage(await self.messages(session_id, thread_id))
+        session = self.paths.session(session_id)
+        if not session.has_thread(thread_id):
+            raise SessionNotFound(f"{session_id}/{thread_id}")
+        persistence = self._thread_persistence(session, thread_id=thread_id)
         try:
-            end = len(messages) if cursor is None else int(cursor)
-        except ValueError as exc:
+            page = persistence.history.page(limit=limit, cursor=cursor)
+        except HistoryCursorInvalid as exc:
             raise OperationError(
-                "invalid_cursor", "Message cursor is invalid."
+                "invalid_cursor", str(exc)
             ) from exc
-        if end < 0 or end > len(messages):
-            raise OperationError(
-                "invalid_cursor", "Message cursor is outside the history."
-            )
-        start = max(0, end - limit)
         return MessagePage(
-            messages=messages[start:end],
-            next_cursor=str(start) if start else None,
+            messages=page.messages,
+            next_cursor=page.next_cursor,
         )
 
     async def artifact(
@@ -733,6 +852,7 @@ class SessionManager:
             thread_id=thread_id,
             removed_turns=removed,
         )
+        await self._emit_session_changed(session_id)
         return HistoryMutation(removed_turns=removed, messages=())
 
     async def undo_history(
@@ -756,6 +876,7 @@ class SessionManager:
             removed_turns=count,
             remaining_messages=len(messages),
         )
+        await self._emit_session_changed(session_id)
         return HistoryMutation(removed_turns=count, messages=tuple(messages))
 
     async def stream_message(
@@ -789,7 +910,7 @@ class SessionManager:
             images=len(images),
             attachments=len(attachments),
         )
-        return _runtime_message_events(runtime, request, images, attachments)
+        return _runtime_message_events(self, runtime, request, images, attachments)
 
     async def regenerate_message(
         self,
@@ -803,7 +924,7 @@ class SessionManager:
             thread_id=request.thread_id,
             request_id=request.request_id,
         )
-        return _runtime_regenerate_events(runtime, request)
+        return _runtime_regenerate_events(self, runtime, request)
 
     async def stream_events(
         self,
@@ -1153,6 +1274,7 @@ async def session_summary(
         thread_count=len(thread_ids),
         workspace_root=main.workspace_root if main is not None else "",
         title=main.title if main is not None else session_id,
+        blank=main is None or main.message_count == 0,
     )
 
 
@@ -1206,6 +1328,7 @@ class SessionManagerComponent:
     def apply(self, ctx, config=None) -> None:
         manager = SessionManager(
             ctx.runtime_paths,
+            ctx,
             thread_persistence_factory=ctx.thread_persistence_factory,
             application_factory=ctx.agent_application_factory,
             runtime_log=ctx.runtime_log,

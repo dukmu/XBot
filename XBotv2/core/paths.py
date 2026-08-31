@@ -116,6 +116,10 @@ class ThreadPaths:
         return self.state_dir / "messages.jsonl"
 
     @property
+    def history_revision_file(self) -> Path:
+        return self.state_dir / "messages.revision"
+
+    @property
     def inbox_file(self) -> Path:
         return self.state_dir / "inbox.json"
 

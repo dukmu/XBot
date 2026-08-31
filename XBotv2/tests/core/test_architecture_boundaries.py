@@ -157,3 +157,23 @@ def test_core_contract_modules_do_not_import_plugin_implementations():
                 if not allowed:
                     violations.append(f"{path.name} imports {module}")
     assert violations == []
+
+
+def test_protocol_modules_do_not_register_xcore_plugins():
+    root = Path(__file__).parents[2]
+    violations = []
+    for path in root.rglob("protocol.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                if any(
+                    isinstance(target, ast.Name) and target.id == "plugin"
+                    for target in targets
+                ):
+                    violations.append(str(path.relative_to(root)))
+    assert violations == []

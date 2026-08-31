@@ -57,6 +57,7 @@ from acp.schema import (
 
 from XBotv2.main import __version__
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
+from XBotv2.session.history import conversation_replay
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
 from XBotv2.commands import (
     EXECUTE_COMMAND,
@@ -635,9 +636,36 @@ class XBotACPAgent:
         )
 
     async def _replay_history(self, session_id: str) -> None:
-        messages = await self.sessions.messages(session_id, "agent")
-        for update in replay_history(list(messages)):
-            await self._update(session_id, update)
+        cursors: list[str | None] = [None]
+        latest = await self.sessions.message_page(
+            session_id,
+            "agent",
+            cursor=None,
+            limit=200,
+        )
+        cursor = latest.next_cursor
+        while cursor is not None:
+            cursors.append(cursor)
+            page = await self.sessions.message_page(
+                session_id,
+                "agent",
+                cursor=cursor,
+                limit=200,
+            )
+            cursor = page.next_cursor
+        for cursor in reversed(cursors):
+            page = (
+                latest
+                if cursor is None
+                else await self.sessions.message_page(
+                    session_id,
+                    "agent",
+                    cursor=cursor,
+                    limit=200,
+                )
+            )
+            for update in replay_history(conversation_replay(page.messages)):
+                await self._update(session_id, update)
 
     async def _handle_interaction(
         self,

@@ -40,6 +40,23 @@ async def test_atomic_write_leaves_no_temp_file(tmp_path):
     assert files == ["state.json"]
 
 
+async def test_state_operations_emit_content_safe_metadata_logs(tmp_path, caplog):
+    caplog.set_level("DEBUG", logger="xcore.state")
+    state = StateService(path=_path(tmp_path)).namespace("todo")
+
+    await state.set("snapshot", {"secret": "must-not-be-logged"})
+    await state.delete("snapshot")
+    await state.clear()
+
+    text = caplog.text
+    assert "state.loaded" in text
+    assert "state.persisted operation=set" in text
+    assert "state.persisted operation=delete" in text
+    assert "state.persisted operation=clear" in text
+    assert "namespace=todo." in text
+    assert "must-not-be-logged" not in text
+
+
 async def test_rejects_non_json_values(tmp_path):
     state = StateService(path=_path(tmp_path))
     with pytest.raises(TypeError):

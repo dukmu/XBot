@@ -254,6 +254,10 @@
   name: session.manager
   profiles: [server, acp]
 
+- id: process.workspaces
+  name: workspaces
+  profiles: [server, acp]
+
 - id: acp
   name: acp_plugin
   profiles: [acp]
@@ -263,37 +267,41 @@
   profiles: [server]
 
 - id: server.routes.core
-  name: server.protocol
+  name: server.routes
   profiles: [server]
 
 - id: server.routes.session
-  name: session.protocol
+  name: session.http
+  profiles: [server]
+
+- id: server.routes.workspaces
+  name: workspaces.http
   profiles: [server]
 
 - id: server.routes.jobs
-  name: jobs.protocol
+  name: jobs.http
   profiles: [server]
 
 - id: server.routes.agents
-  name: agents.protocol
+  name: agents.http
   profiles: [server]
 
 - id: server.routes.llm
-  name: llm.protocol
+  name: llm.http
   profiles: [server]
 
 - id: server.routes.config
-  name: config.protocol
+  name: config.http
   profiles: [server]
 
 - id: server.routes.tools
-  name: agentloop.protocol
+  name: agentloop.http
   profiles: [server]
 
 - id: server.routes.commands
-  name: commands.protocol
+  name: commands.http
   profiles: [server]
 
 - id: server.routes.todolist
-  name: todolist.protocol
+  name: todolist.http
   profiles: [server]

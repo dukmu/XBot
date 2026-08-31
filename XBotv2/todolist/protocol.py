@@ -9,7 +9,6 @@ from pydantic import Field
 
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
-from XBotv2.server import contribute_router
 from XBotv2.session import SessionsPort
 from XBotv2.todolist.contracts import GET_TODOS
 
@@ -38,21 +37,6 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         return TodoResponse.model_validate(snapshot.to_dict())
 
     return router
-
-
-class TodolistProtocolPlugin:
-    inject = ["server", "sessions"]
-    name = "xbot.protocol.todolist"
-
-    async def apply(self, ctx: Any, config: Any = None) -> None:
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_router(sessions=ctx.sessions),
-        )
-
-
-plugin = TodolistProtocolPlugin()
 
 
 __all__ = ["TodoItemData", "TodoResponse", "build_router"]

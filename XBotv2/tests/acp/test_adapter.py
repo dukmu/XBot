@@ -20,6 +20,7 @@ from acp.schema import (
 
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
+from XBotv2.session.history import conversation_replay
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
@@ -230,7 +231,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     assert updates[-2].size == 200_000
     assert updates[-1].status == "completed"
 
-    replayed = replay_history([
+    replayed = replay_history(conversation_replay([
         Message(role="user", content="inspect"),
         Message(
             role="user",
@@ -253,7 +254,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
             data={"exit_code": 0},
             artifact=[ArtifactRef(id="tool_results/out.txt")],
         ),
-    ])
+    ]))
     assert [update.session_update for update in replayed] == [
         "user_message_chunk",
         "tool_call",

@@ -51,6 +51,7 @@ from XBotv2.server.http import (
     set_llm_override,
 )
 from XBotv2.session import InteractionReceipt, ThreadNotActive
+from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
 from XBotv2.protocol import ServerEvent
 from XBotv2.tui.terminal import TerminalSession
@@ -241,7 +242,7 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
     assert [item["content"] for item in reopened.json()["history"]] == [
         "second question", "second answer",
     ]
-    assert reopened.json()["history_cursor"] == "2"
+    assert reopened.json()["history_cursor"]
 
     latest = await client.get(
         "/sessions/message-api/threads/main/messages", params={"limit": 2}
@@ -249,7 +250,7 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
     assert [item["content"] for item in latest.json()["messages"]] == [
         "second question", "second answer",
     ]
-    assert latest.json()["next_cursor"] == "2"
+    assert latest.json()["next_cursor"] == reopened.json()["history_cursor"]
 
     older = await client.get(
         "/sessions/message-api/threads/main/messages",
@@ -275,6 +276,13 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
     )
     assert regenerated.status_code == 200
     assert '"type": "end"' in regenerated.text
+
+    stale_page = await client.get(
+        "/sessions/message-api/threads/main/messages",
+        params={"limit": 2, "cursor": latest.json()["next_cursor"]},
+    )
+    assert stale_page.status_code == 400
+    assert stale_page.json()["code"] == "invalid_cursor"
 
     current = await client.get("/sessions/message-api/threads/main/messages")
     assert [item["content"] for item in current.json()["messages"]] == [
@@ -700,6 +708,79 @@ async def test_http_health_returns_ok(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_blank_session_projection_tracks_turn_and_clear(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    opened = await client.post(
+        "/sessions",
+        json={"session_id": "blank-summary", "thread_id": "main"},
+    )
+    assert opened.status_code == 200
+    listed = (await client.get("/sessions")).json()["sessions"]
+    assert next(item for item in listed if item["session_id"] == "blank-summary")["blank"] is True
+
+    workspace_events = http_app.state.test_context.workspace_events
+    subscription = workspace_events.subscribe(workspace_events.sequence)
+    response = await client.post(
+        "/sessions/blank-summary/threads/main/messages",
+        json={"request_id": "blank-turn", "content": "engage this session"},
+    )
+    assert response.status_code == 200
+    engaged = await asyncio.wait_for(anext(subscription), timeout=1)
+    assert isinstance(engaged.change, SessionResourceChanged)
+    assert engaged.change.session.blank is False
+
+    cleared = await client.post(
+        "/sessions/blank-summary/threads/main/history/clear",
+    )
+    assert cleared.status_code == 200
+    blank_again = await asyncio.wait_for(anext(subscription), timeout=1)
+    assert isinstance(blank_again.change, SessionResourceChanged)
+    assert blank_again.change.session.blank is True
+    await subscription.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resumed_history_preserves_assistant_reasoning(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    set_llm_override(http_app, MockLLM(responses=[{
+        "reasoning": "inspect persisted context",
+        "content": "restored answer",
+    }]))
+    await client.post(
+        "/sessions",
+        json={"session_id": "reasoning-resume", "thread_id": "main"},
+    )
+    streamed = await client.post(
+        "/sessions/reasoning-resume/threads/main/messages",
+        json={"request_id": "reasoning-turn", "content": "reason first"},
+    )
+    assert streamed.status_code == 200
+    closed = await client.post("/sessions/reasoning-resume/close")
+    assert closed.status_code == 200
+
+    resumed = await client.post(
+        "/sessions",
+        json={
+            "session_id": "reasoning-resume",
+            "thread_id": "main",
+            "mode": "resume",
+        },
+    )
+
+    assert resumed.status_code == 200
+    assistant = next(
+        item for item in resumed.json()["history"]
+        if item["role"] == "assistant"
+    )
+    assert assistant["content"] == "restored answer"
+    assert assistant["reasoning"] == "inspect persisted context"
+
+
+@pytest.mark.asyncio
 async def test_http_hello_returns_protocol_info(client: httpx.AsyncClient) -> None:
     response = await client.post("/hello", json={"session_id": "s1", "thread_id": "t1"})
     assert response.status_code == 200
@@ -798,6 +879,7 @@ async def test_http_session_exposes_independent_thread_resources(
         "thread_count": 2,
         "workspace_root": str(http_app.state.workspace_root),
         "title": "thread-resources",
+        "blank": True,
     }
     threads = (
         await client.get("/sessions/thread-resources/threads")
@@ -1000,7 +1082,7 @@ async def test_todo_and_usage_survive_http_close_resume(
 @pytest.mark.asyncio
 async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     manager = http_app.state.manager
-    tmp = http_app.state.paths
+    workspace_root = http_app.state.workspace_root
     await manager.close_all()
     # give the shared app manager a short idle timeout
     manager.idle_timeout = 0.05
@@ -1008,7 +1090,7 @@ async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     manager.start_reaper()
     await manager.open_session(
         session_id="idle-reap", thread_id="agent", provider_name="default",
-        workspace_root=str(tmp), no_plugins=True,
+        workspace_root=str(workspace_root), no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
     assert await manager.get("idle-reap", "agent") is not None
@@ -1018,6 +1100,27 @@ async def test_idle_runtime_is_reaped_after_timeout(http_app) -> None:
     # restore defaults so other tests are unaffected
     manager.idle_timeout = 3600.0
     manager.reap_interval = 60.0
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_a_missing_workspace_before_registration(
+    client: httpx.AsyncClient,
+    http_app,
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-workspace"
+    response = await client.post(
+        "/sessions",
+        json={
+            "session_id": "missing-workspace",
+            "thread_id": "agent",
+            "workspace_root": str(missing),
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "workspace_not_found"
+    assert not http_app.state.manager.session_exists("missing-workspace")
 
 
 @pytest.mark.asyncio
@@ -3174,6 +3277,103 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
     # The engine is allowed to call the LLM at most once before the
     # cancellation lands.
     assert gated.calls <= 1, f"LLM was called {gated.calls} times after interrupt"
+
+
+@pytest.mark.asyncio
+async def test_workspace_sse_updates_and_replays_across_http_clients(http_app) -> None:
+    """A resource commit reaches another client and remains cursor-replayable."""
+    import socket
+    import threading
+
+    import uvicorn
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(
+        http_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        ws="none",
+    ))
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+
+    async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
+        for _ in range(50):
+            try:
+                if (await probe.get("/health")).status_code == 200:
+                    break
+            except httpx.RequestError:
+                await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("uvicorn server failed to start")
+
+    try:
+        async with (
+            httpx.AsyncClient(base_url=base_url, timeout=5.0) as stream_client,
+            httpx.AsyncClient(base_url=base_url, timeout=5.0) as mutation_client,
+        ):
+            cursor = (await mutation_client.get("/sessions")).json()["event_cursor"]
+            async with stream_client.stream(
+                "GET", f"/workspaces/events?after={cursor}"
+            ) as response:
+                assert response.status_code == 200
+                created = await mutation_client.post(
+                    "/sessions",
+                    json={"session_id": "host-sync", "thread_id": "main"},
+                )
+                assert created.status_code == 200
+                live = await _read_workspace_frames(
+                    response,
+                    {"catalog/session-added", "catalog/workspace-changed"},
+                )
+
+            async with stream_client.stream(
+                "GET", f"/workspaces/events?after={cursor}"
+            ) as response:
+                replayed = await _read_workspace_frames(
+                    response,
+                    {"catalog/session-added", "catalog/workspace-changed"},
+                )
+
+            workspaces = (await mutation_client.get("/workspaces")).json()["items"]
+            workspace = next(
+                item for item in workspaces
+                if item["workspace_id"]
+                == live["catalog/workspace-changed"]["data"]["workspace"]["workspace_id"]
+            )
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=3.0)
+
+    assert live["catalog/session-added"]["data"]["session"]["session_id"] == "host-sync"
+    assert workspace["session_ids"][0] == "host-sync"
+    assert {
+        event_type: frame["sequence"] for event_type, frame in replayed.items()
+    } == {
+        event_type: frame["sequence"] for event_type, frame in live.items()
+    }
+
+
+async def _read_workspace_frames(
+    response: httpx.Response,
+    expected_types: set[str],
+) -> dict[str, dict[str, Any]]:
+    frames: dict[str, dict[str, Any]] = {}
+    async for line in response.aiter_lines():
+        if not line.startswith("data:"):
+            continue
+        frame = json.loads(line.removeprefix("data:").strip())
+        if frame["type"] in expected_types:
+            frames[frame["type"]] = frame
+        if frames.keys() >= expected_types:
+            return frames
+    raise AssertionError(
+        f"Workspace stream ended before frames arrived: {sorted(frames)}"
+    )
 
 
 @pytest.mark.asyncio

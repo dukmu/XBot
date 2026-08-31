@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from XBotv2.core.messages import Message
+from XBotv2.core.history import ConversationPage
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.tools import JsonObject, json_object
 
@@ -89,6 +90,21 @@ class OpenedSession:
     history: tuple[Message, ...]
     status_slots: dict[str, str]
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "agent_name": self.agent_name,
+            "workspace_root": self.workspace_root,
+            "provider": self.provider,
+            "model": self.model,
+            "model_mode": self.model_mode,
+            "context_window": self.context_window,
+            "usage": self.usage,
+            "history": self.history,
+            "status_slots": self.status_slots,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
@@ -98,6 +114,18 @@ class SessionSnapshot:
     thread_count: int = 0
     workspace_root: str = ""
     title: str = ""
+    blank: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "active_threads": self.active_threads,
+            "thread_count": self.thread_count,
+            "workspace_root": self.workspace_root,
+            "title": self.title,
+            "blank": self.blank,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +148,27 @@ class ThreadSnapshot:
     workspace_root: str = ""
     title: str = ""
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "status": self.status,
+            "kind": self.kind,
+            "turn_status": self.turn_status,
+            "parent_thread_id": self.parent_thread_id,
+            "agent": self.agent,
+            "provider": self.provider,
+            "model": self.model,
+            "model_mode": self.model_mode,
+            "context_window": self.context_window,
+            "message_count": self.message_count,
+            "usage": self.usage,
+            "pending_interactions": self.pending_interactions,
+            "status_slots": self.status_slots,
+            "workspace_root": self.workspace_root,
+            "title": self.title,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class HistoryMutation:
@@ -127,10 +176,7 @@ class HistoryMutation:
     messages: tuple[Message, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class MessagePage:
-    messages: tuple[Message, ...]
-    next_cursor: str | None = None
+MessagePage = ConversationPage
 
 
 @dataclass(frozen=True, slots=True)
