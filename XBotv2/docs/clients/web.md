@@ -71,7 +71,10 @@ The opened Session snapshot supplies its pre-read `event_cursor`; reconnects
 continue from the last delivered sequence so accepted inputs, interactions,
 jobs, and background continuation events are not silently lost. Cursor expiry
 is surfaced as an explicit error because it requires a new Session baseline.
-The main `POST /messages` turn stream remains request-owned and separate.
+Main turns are Session-owned. The browser drains `POST /messages` as a command
+response but renders its reasoning, tools, interactions, usage, and terminal
+state only from the resumable Session event connection. Reconnecting therefore
+does not duplicate the POST response or cancel the running turn.
 
 Session and Workspace catalogs use a separate React-free catalog connection.
 `GET /sessions` and `GET /workspaces` return baseline cursors; the client starts

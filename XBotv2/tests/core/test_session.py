@@ -13,7 +13,7 @@ from XBotv2.core import Message
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.tools import ClientEvent
 from XBotv2.session import HistoryChanged, SessionInfo
-from XBotv2.session.runtime import SessionRuntime
+from XBotv2.session.runtime import SessionRuntime, TurnResponse
 
 
 class FakeEngine:
@@ -75,6 +75,23 @@ class FakeEngine:
         self.close_count += 1
 
 
+class BlockingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.completed = False
+
+    async def run_turn(self, content, **kwargs):
+        del content, kwargs
+        self.started.set()
+        yield {"type": "turn_started", "data": {"turn": 1}}
+        await self.release.wait()
+        yield {"type": "assistant_message", "data": {"content": "recovered"}}
+        yield {"type": "turn_finished", "data": {"turn": 1}}
+        self.completed = True
+
+
 class FakeClientEvents:
     def __init__(self) -> None:
         self.sink = None
@@ -114,6 +131,20 @@ def runtime(tmp_path) -> SessionRuntime:
     )
 
 
+def blocking_runtime(tmp_path) -> SessionRuntime:
+    engine = BlockingEngine()
+    return SessionRuntime(
+        session_id="session",
+        thread_id="agent",
+        provider_name="mock",
+        paths=RuntimePaths.from_data_dir(tmp_path),
+        workspace_root=str(tmp_path),
+        no_plugins=True,
+        application=FakeApplication(engine),
+        engine=engine,
+    )
+
+
 @pytest.mark.asyncio
 async def test_idle_user_turn_runs_directly(tmp_path):
     session = runtime(tmp_path)
@@ -129,6 +160,52 @@ async def test_idle_user_turn_runs_directly(tmp_path):
     await session.close()
     assert session.engine.closed is True
     assert session.engine.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_turn_survives_response_stream_disconnect_and_replays(tmp_path):
+    session = blocking_runtime(tmp_path)
+    shared = session.attach_event_stream()
+    response = session.stream_message("start", "request")
+
+    assert (await anext(response))["type"] == "turn_started"
+    await response.aclose()
+    session.engine.release.set()
+
+    recovered = []
+    async with asyncio.timeout(1):
+        async for frame in shared:
+            recovered.append(frame.event.to_dict())
+            if frame.event.type == "turn_finished":
+                break
+
+    assert session.engine.completed is True
+    assert [event["type"] for event in recovered] == [
+        "message",
+        "turn_started",
+        "assistant_message",
+        "turn_finished",
+    ]
+    await session.close()
+
+
+def test_slow_compatibility_response_does_not_backpressure_turn() -> None:
+    response = TurnResponse(
+        "message",
+        "request",
+    )
+
+    for index in range(513):
+        response.emit({
+            "type": "assistant_message_delta",
+            "data": {"content": str(index)},
+        })
+
+    assert response.attached is False
+    error = response.events.get_nowait()
+    assert error["type"] == "error"
+    assert error["data"]["code"] == "response_stream_overflow"
+    assert response.events.get_nowait() is None
 
 
 @pytest.mark.asyncio

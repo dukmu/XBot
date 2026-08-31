@@ -833,7 +833,19 @@ async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypa
 
     session = TerminalSession(client=client, session_id="s", thread_id="t")
     events: list[dict[str, Any]] = []
-    async for event in session.send_message("当前磁盘用了多少"):
+    async for _event in session.send_message("当前磁盘用了多少"):
+        pass
+    client._http._stream = FakeStream([
+        "event: assistant_message",
+        "id: 1",
+        "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",
+        "",
+        "event: end",
+        "id: 2",
+        "data: {\"type\":\"end\",\"data\":{\"status\":\"ok\"}}",
+        "",
+    ])
+    async for event in session.session_events():
         events.append(event)
     await session.disconnect()
 
@@ -2205,7 +2217,7 @@ def test_permission_decision_parser_supports_scopes():
 
 
 @pytest.mark.asyncio
-async def test_terminal_session_only_yields_live_interaction_events():
+async def test_terminal_session_uses_shared_events_for_turn_delivery():
     class FakeClient:
         async def hello(self, *, client_name, session_id, thread_id):
             del client_name
@@ -2253,12 +2265,7 @@ async def test_terminal_session_only_yields_live_interaction_events():
 
     events = [event async for event in session.send_message("run")]
 
-    assert [event["type"] for event in events] == [
-        "turn_started",
-        "permission_request",
-        "user_input_required",
-        "turn_finished",
-    ]
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -2359,10 +2366,7 @@ async def test_terminal_session_consumes_transport_end_sentinel():
 
     events = [event async for event in session.send_message("run")]
 
-    assert [event["type"] for event in events] == [
-        "turn_started",
-        "turn_finished",
-    ]
+    assert events == []
 
 
 def test_tui_modules_do_not_import_core():

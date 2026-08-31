@@ -51,9 +51,20 @@ from XBotv2.server.http import (
     _format_sse,
     set_llm_override,
 )
-from XBotv2.session import InteractionReceipt, OpenSession, ThreadNotActive
+from XBotv2.session import (
+    InteractionReceipt,
+    OpenSession,
+    SendMessage,
+    ThreadNotActive,
+)
 from XBotv2.session.contracts import SessionResourceChanged
-from XBotv2.session.runtime import SessionRuntime, _live_sink, run_turn_stream
+from XBotv2.session.runtime import (
+    SessionRuntime,
+    TurnEventRouter,
+    TurnResponse,
+    run_turn_stream,
+)
+from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.protocol import ServerEvent
 from XBotv2.tui.terminal import TerminalSession
 
@@ -445,7 +456,7 @@ async def test_session_close_cancels_turn_before_closing_engine(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
+async def test_closing_turn_stream_keeps_session_owned_turn_running(tmp_path) -> None:
     cancelled = asyncio.Event()
 
     class HangingEngine:
@@ -462,6 +473,12 @@ async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
             previous = self.client_event_sink
             self.client_event_sink = sink
             return previous
+
+        async def discard_inputs(self) -> None:
+            pass
+
+        async def close_session(self) -> None:
+            pass
 
         async def run_turn(
             self,
@@ -504,6 +521,12 @@ async def test_closing_turn_stream_cancels_background_turn(tmp_path) -> None:
         if not close_task.done():
             close_task.cancel()
             await asyncio.gather(close_task, return_exceptions=True)
+
+    assert cancelled.is_set() is False
+    assert ctx.turn_task is not None
+    assert ctx.turn_lock.locked()
+
+    await ctx.close()
 
     assert cancelled.is_set()
     assert ctx.turn_task is None
@@ -1134,6 +1157,63 @@ async def test_open_event_cursor_replays_later_shared_runtime_events(http_app) -
 
 
 @pytest.mark.asyncio
+async def test_main_turn_uses_the_resumable_session_event_sequence(http_app) -> None:
+    manager = http_app.state.manager
+    opened = await manager.open(OpenSession(
+        session_id="main-turn-replay",
+        thread_id="agent",
+        provider_name="default",
+        workspace_root=str(http_app.state.workspace_root),
+        mode="new",
+        no_plugins=True,
+        model_override=MockLLM(responses=[{"content": "shared reply"}]),
+    ))
+    shared = await manager.stream_events(
+        opened.session_id,
+        opened.thread_id,
+        after=opened.event_cursor,
+    )
+    response = await manager.stream_message(SendMessage(
+        session_id=opened.session_id,
+        thread_id=opened.thread_id,
+        content="hello",
+        request_id="shared-request",
+    ))
+    await _drain_stream(response)
+
+    frames = []
+    async with asyncio.timeout(1):
+        async for frame in shared:
+            frames.append(frame)
+            if frame.event.type == "turn_finished":
+                break
+
+    turn_frames = [
+        frame for frame in frames
+        if frame.event.type in {
+            "message",
+            "turn_started",
+            "assistant_message",
+            "turn_finished",
+        }
+    ]
+    assert [frame.event.type for frame in turn_frames] == [
+        "message",
+        "turn_started",
+        "assistant_message",
+        "turn_finished",
+    ]
+    assert all(
+        frame.request_id == "shared-request" for frame in turn_frames
+    )
+    assert [frame.sequence for frame in frames] == list(range(
+        opened.event_cursor + 1,
+        opened.event_cursor + len(frames) + 1,
+    ))
+    await shared.aclose()
+
+
+@pytest.mark.asyncio
 async def test_session_event_endpoint_rejects_expired_and_future_cursors(
     client: httpx.AsyncClient,
     http_app,
@@ -1536,68 +1616,72 @@ async def test_http_session_listing_and_resume_preserve_main_thread_workspace(
 
 @pytest.mark.asyncio
 async def test_real_tui_session_command_resumes_history_and_continues_chat(
-    http_app: Any,
     tmp_path: Path,
 ) -> None:
-    """The TUI session switch uses real listing/resume/history/message paths."""
+    """The TUI switch and shared event stream work over a real socket."""
     from XBotv2.tui.textual_client import XBotTextualApp
 
     workspace = tmp_path / "persisted-workspace"
     workspace.mkdir()
-    set_llm_override(http_app, MockLLM(responses=[
+    llm = MockLLM(responses=[
         {"content": "historical reply"},
         {"content": "continued reply"},
-    ]))
-    setup_client = XBotClient("http://test", transport=ASGITransport(app=http_app))
-    await setup_client.open_session(
-        session_id="persisted-session",
-        thread_id="main",
-        workspace_root=str(workspace),
-    )
-    await _drain_stream(setup_client.send_message(
-        "persisted-session", "main", "historical question", request_id="history"
-    ))
-    await setup_client.close()
+    ])
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=False,
+    ) as session:
+        await session.client.open_session(
+            session_id="persisted-session",
+            thread_id="main",
+            workspace_root=str(workspace),
+        )
+        await _drain_stream(session.client.send_message(
+            "persisted-session",
+            "main",
+            "historical question",
+            request_id="history",
+        ))
 
-    client = XBotClient("http://test", transport=ASGITransport(app=http_app))
-    session = TerminalSession(
-        session_id="tui-current",
-        thread_id="agent",
-        workspace_root=str(tmp_path),
-        client=client,
-    )
-    app = XBotTextualApp(session_id="tui-current", thread_id="agent")
-    app.session = session
+        app = XBotTextualApp(session_id="default", thread_id="agent")
+        app.session = session
+        async with app.run_test(headless=True, size=(120, 40)) as pilot:
+            for _ in range(60):
+                await pilot.pause()
+                if app._session_attached:
+                    break
+            assert app._session_attached
+            composer = app.query_one("#input")
+            composer.load_text("/session persisted-session")
+            await app.submit_composer()
+            for _ in range(100):
+                await pilot.pause()
+                if (
+                    app.state.session_id == "persisted-session"
+                    and app.state.status == "Ready"
+                ):
+                    break
+            assert app.state.session_id == "persisted-session"
+            assert app.state.thread_id == "main"
+            assert app.state.workspace_root == str(workspace.resolve())
+            assert [message.content for message in app.state.messages] == [
+                "historical question", "historical reply"
+            ]
 
-    async with app.run_test(headless=True, size=(120, 40)) as pilot:
-        for _ in range(60):
-            await pilot.pause()
-            if app._session_attached:
-                break
-        assert app._session_attached
-        composer = app.query_one("#input")
-        composer.load_text("/session persisted-session")
-        await app.submit_composer()
-        for _ in range(100):
-            await pilot.pause()
-            if app.state.session_id == "persisted-session" and app.state.status == "Ready":
-                break
-        assert app.state.session_id == "persisted-session"
-        assert app.state.thread_id == "main"
-        assert app.state.workspace_root == str(workspace.resolve())
-        assert [message.content for message in app.state.messages] == [
-            "historical question", "historical reply"
-        ]
-
-        composer.load_text("continue")
-        await app.submit_composer()
-        for _ in range(160):
-            await pilot.pause()
-            if any(message.content == "continued reply" for message in app.state.messages):
-                break
-        assert any(message.content == "continued reply" for message in app.state.messages)
-
-    await client.close()
+            composer.load_text("continue")
+            await app.submit_composer()
+            for _ in range(160):
+                await pilot.pause()
+                if any(
+                    message.content == "continued reply"
+                    for message in app.state.messages
+                ):
+                    break
+            assert any(
+                message.content == "continued reply"
+                for message in app.state.messages
+            )
 
 
 @pytest.mark.asyncio
@@ -2210,37 +2294,31 @@ async def test_live_interaction_is_pending_before_event_is_published(
         if event_type == "permission_request"
         else user_input_waiter
     )
-    events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    disconnected = asyncio.Event()
-    disconnect_task = asyncio.create_task(disconnected.wait())
     router = ClientEventRouter()
     router.register_waiter(event_type, waiter)
+    response = TurnResponse(request_id, request_id)
+    runtime = SimpleNamespace(
+        application=SimpleNamespace(client_events=router),
+        event_stream=SessionEventStream(),
+    )
+    turn_events = TurnEventRouter(runtime, response)
     sink_task = asyncio.create_task(
-        _live_sink(
+        turn_events.live_sink(
             ClientEvent(event_type, {"request_id": request_id}),
-            client_events=router,
-            events=events,
-            disconnect_task=disconnect_task,
         )
     )
 
-    try:
-        event = await events.get()
-        assert event == {
-            "type": event_type,
-            "data": {"request_id": request_id},
-        }
-        assert request_id in waiter.pending_request_ids()
+    event = await response.events.get()
+    assert event == {
+        "type": event_type,
+        "data": {"request_id": request_id},
+    }
+    assert request_id in waiter.pending_request_ids()
 
-        waiter.answer(request_id, **answer)
-        result = await sink_task
-        assert result["status"] == "answered"
-        assert result[expected_field] == expected_value
-    finally:
-        disconnected.set()
-        if not disconnect_task.done():
-            disconnect_task.cancel()
-        await asyncio.gather(disconnect_task, return_exceptions=True)
+    waiter.answer(request_id, **answer)
+    result = await sink_task
+    assert result["status"] == "answered"
+    assert result[expected_field] == expected_value
 
 
 @pytest.mark.asyncio
@@ -3637,7 +3715,10 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         (workspace / "hello.txt").write_text("hello", encoding="utf-8")
 
         events = []
-        async for event in session.send_message("list workspace"):
+        submitted = asyncio.create_task(_drain_stream(
+            session.send_message("list workspace")
+        ))
+        async for event in session.session_events():
             events.append(event)
             if event.get("type") == "permission_request":
                 await asyncio.sleep(0.2)
@@ -3645,6 +3726,9 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
                     event["data"]["request_id"],
                     "allow",
                 )
+            if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                break
+        await submitted
 
     assert "permission_request" in [event.get("type") for event in events]
     assert any(
@@ -3674,11 +3758,17 @@ async def test_real_http_interrupt_while_permission_waits(
     ) as session:
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
-            async for event in session.send_message("list workspace"):
+            submitted = asyncio.create_task(_drain_stream(
+                session.send_message("list workspace")
+            ))
+            async for event in session.session_events():
                 collected.append(event)
                 if event.get("type") == "permission_request":
                     response = await session.interrupt()
                     assert response["cancelled"] is True
+                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                    break
+            await submitted
             return collected
 
         events = await asyncio.wait_for(collect_events(), timeout=5.0)
@@ -3724,7 +3814,10 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
         sandbox_enabled=False,
     ) as session:
         events = []
-        async for event in session.send_message("ask before continuing"):
+        submitted = asyncio.create_task(_drain_stream(
+            session.send_message("ask before continuing")
+        ))
+        async for event in session.session_events():
             events.append(event)
             if event.get("type") == "permission_request":
                 await session.respond_permission(
@@ -3734,6 +3827,9 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
             elif event.get("type") == "user_input_required":
                 response = await session.interrupt()
                 assert response["cancelled"] is True
+            if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                break
+        await submitted
 
         request = next(
             event for event in events if event.get("type") == "user_input_required"
@@ -3783,7 +3879,10 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
 
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
-            async for event in session.send_message("ask before continuing"):
+            submitted = asyncio.create_task(_drain_stream(
+                session.send_message("ask before continuing")
+            ))
+            async for event in session.session_events():
                 collected.append(event)
                 if event.get("type") == "permission_request":
                     seen_permissions.append(event["data"])
@@ -3798,6 +3897,9 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
                         event["data"]["request_id"],
                         "continue",
                     )
+                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                    break
+            await submitted
             return collected
 
         try:
@@ -4226,15 +4328,19 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
     second queued message never drained and the transcript did not update).
     """
 
-    from XBotv2.tui.textual_client import XBotTextualApp
-    from XBotv2.permissions.system import PermissionSystem
+    import socket
+    import threading
 
-    tool_started = asyncio.Event()
-    release_tool = asyncio.Event()
+    import uvicorn
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    tool_started = threading.Event()
+    release_tool = threading.Event()
 
     async def blocker(value: str) -> str:
         tool_started.set()
-        await release_tool.wait()
+        await asyncio.to_thread(release_tool.wait)
         return value
 
     set_llm_override(http_app, MockLLM(responses=[
@@ -4242,7 +4348,30 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
         {"content": "handled A B and C"},
     ]))
 
-    client = XBotClient("http://test", transport=ASGITransport(app=http_app))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(
+        http_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        ws="none",
+    ))
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
+        for _ in range(50):
+            try:
+                if (await probe.get("/health")).status_code == 200:
+                    break
+            except httpx.RequestError:
+                await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError("uvicorn server failed to start")
+
+    client = XBotClient(base_url)
     session = TerminalSession(
         session_id="tui-q",
         thread_id="t",
@@ -4252,52 +4381,56 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
     app = XBotTextualApp(session_id="tui-q", thread_id="t", workspace_root=str(tmp_path))
     app.session = session
 
-    async with app.run_test(headless=True, size=(120, 40)) as pilot:
-        await pilot.pause()
-        for _ in range(60):
+    try:
+        async with app.run_test(headless=True, size=(120, 40)) as pilot:
             await pilot.pause()
-            if app._session_attached:
-                break
-        assert app._session_attached, "TUI did not connect to the server"
+            for _ in range(60):
+                await pilot.pause()
+                if app._session_attached:
+                    break
+            assert app._session_attached, "TUI did not connect to the server"
 
-        ctx = await http_app.state.manager.get("tui-q", "t")
-        ctx.application._context.permissions.replace_rules({"allow": [{"tool": ".*"}]})
-        ctx.application._context.tools._registry.register(Tool.from_function(blocker))
-        ctx.application._context.tools._registry.restrict(None)
+            ctx = await http_app.state.manager.get("tui-q", "t")
+            ctx.application._context.permissions.replace_rules(
+                {"allow": [{"tool": ".*"}]}
+            )
+            ctx.application._context.tools._registry.register(
+                Tool.from_function(blocker)
+            )
+            ctx.application._context.tools._registry.restrict(None)
 
-        composer = app.query_one("#input")
-        composer.load_text("A")
-        await app.submit_composer()
-        await asyncio.wait_for(tool_started.wait(), timeout=5)
+            composer = app.query_one("#input")
+            composer.load_text("A")
+            await app.submit_composer()
+            assert await asyncio.to_thread(tool_started.wait, 5)
 
-        composer.load_text("B")
-        await app.submit_composer()
-        await pilot.pause()
-        composer.load_text("C")
-        await app.submit_composer()
-        await pilot.pause()
-
-        # While the tool runs, B and C are held server-side (pending fold) and
-        # are not yet in the transcript; they are injected mid-turn at the
-        # fold via the ``message`` event.
-        assert ctx.engine.pending_input_count == 2, "B and C must be queued"
-        assert not any(
-            message.content in {"B", "C"} for message in app.state.messages
-        ), "held inputs must not appear before the fold"
-
-        release_tool.set()
-        for _ in range(200):
+            composer.load_text("B")
+            await app.submit_composer()
             await pilot.pause()
-            if not app.state.turn_active and not app._pending_messages:
-                break
+            composer.load_text("C")
+            await app.submit_composer()
+            await pilot.pause()
 
-        text = "\n".join(message.content for message in app.state.messages)
-        assert "handled A B and C" in text, text
-        # All three user messages were injected into the transcript.
-        # The TUI submits and the kernel holds all three; ordered message
-        # events are verified at the session level (foldin tests) because
-        # ASGI cannot stream the GET /events response.
-        assert not app._pending_messages
+            # B and C remain in the Agent inbox until the tool boundary, while
+            # their accepted-input events render immediately and exactly once.
+            assert ctx.engine.pending_input_count == 2, "B and C must be queued"
+            contents = [message.content for message in app.state.messages]
+            assert contents.count("B") == 1
+            assert contents.count("C") == 1
+
+            release_tool.set()
+            for _ in range(200):
+                await pilot.pause()
+                if not app.state.turn_active and not app._pending_messages:
+                    break
+
+            text = "\n".join(message.content for message in app.state.messages)
+            assert "handled A B and C" in text, text
+            assert not app._pending_messages
+    finally:
+        await client.close()
+        server.should_exit = True
+        server_thread.join(timeout=3.0)
 
 
 @pytest.mark.asyncio

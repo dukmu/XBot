@@ -19,6 +19,10 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await expect(page.getByText("Thinking", { exact: true })).toBeVisible();
   await page.getByText("Thinking", { exact: true }).click();
   await expect(page.getByText("I am checking the public resources.")).toBeVisible();
+  await expect(page.getByText(
+    "The Web client remains behind the typed v3 API.",
+    { exact: true },
+  )).toHaveCount(1);
   await expect(page.getByText("filesystem_read", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-details")).toHaveCount(0);
   await page.getByText("filesystem_read", { exact: true }).click();
@@ -38,6 +42,7 @@ test("answers a permission request through the interaction endpoint", async ({ p
   await composer.press("Enter");
 
   await expect(page.getByRole("heading", { name: "Approval required" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Approval required" })).toHaveCount(1);
   await expect(page.getByText("filesystem_write", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Allow once" }).click();
   await expect(page.getByRole("heading", { name: "Approval required" })).toBeHidden();
@@ -474,6 +479,24 @@ async function mockProtocol(page: Page) {
   let xbotSessionOrder = ["demo-session", "second-session"];
   let demoSessionTitle = "Demo session";
   const archivedSessions = new Set<string>();
+  const runtimeEvents: Array<{
+    type: string;
+    data: Record<string, unknown>;
+    requestId: string;
+    sequence: number;
+  }> = [];
+  const publishRuntime = (
+    events: Array<{ type: string; data: Record<string, unknown> }>,
+    requestId: string,
+  ) => {
+    for (const event of events) {
+      runtimeEvents.push({
+        ...event,
+        requestId,
+        sequence: runtimeEvents.length + 1,
+      });
+    }
+  };
   await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -720,13 +743,16 @@ async function mockProtocol(page: Page) {
       return json(route, { messages: [] });
     }
     if (path.endsWith("/history/regenerate") && method === "POST") {
-      return sse(route, [
+      const events = [
         { type: "history_updated", data: { operation: "regenerate", turns: 1, history: [] } },
         { type: "message", data: { id: "regen-user", role: "user", content: "Inspect API boundaries", images: [], artifacts: [] } },
         { type: "turn_started", data: { turn: 1 } },
         { type: "assistant_message", data: { content: "Regenerated from the persisted input.", tool_calls: [] } },
         { type: "turn_finished", data: { turn: 1 } },
-      ]);
+      ];
+      const requestId = String(request.postDataJSON().request_id || "request-1");
+      publishRuntime(events, requestId);
+      return sse(route, events);
     }
     if (path.endsWith("/todos") && method === "GET") return json(route, {
       schema_version: 1,
@@ -751,20 +777,30 @@ async function mockProtocol(page: Page) {
         usage: { total_tokens: 240 },
       }],
     });
-    if (path.endsWith("/events")) return sse(route, []);
+    if (path.endsWith("/events")) {
+      const after = Number(url.searchParams.get("after") || 0);
+      return runtimeSse(
+        route,
+        runtimeEvents.filter((event) => event.sequence > after),
+        after,
+      );
+    }
     if (path.endsWith("/messages") && method === "POST") {
       const content = String(request.postDataJSON().content || "");
+      const requestId = String(request.postDataJSON().request_id || "request-1");
       demoMessageCount += content.startsWith("Plan") ? 4 : content.startsWith("Write") ? 1 : 2;
       if (content.startsWith("Hold")) {
         await new Promise((resolve) => setTimeout(resolve, 400));
-        return sse(route, [
+        const events = [
           { type: "turn_started", data: { turn: 2 } },
           { type: "assistant_message", data: { content: "The delayed turn completed.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
-        ]);
+        ];
+        publishRuntime(events, requestId);
+        return sse(route, events);
       }
       if (content.startsWith("Write")) {
-        return sse(route, [{
+        const events = [{
           type: "permission_request",
           data: {
             request_id: "permission-1",
@@ -774,7 +810,9 @@ async function mockProtocol(page: Page) {
             decision: "ask",
             resume_supported: true,
           },
-        }]);
+        }];
+        publishRuntime(events, requestId);
+        return sse(route, events);
       }
       if (content.startsWith("Plan")) {
         const todos = [
@@ -785,7 +823,7 @@ async function mockProtocol(page: Page) {
           { content: "Inspect the bug", status: "completed" },
           { content: "Verify the fix", status: "in_progress" },
         ];
-        return sse(route, [
+        const events = [
           { type: "turn_started", data: { turn: 2 } },
           { type: "tool_calls_started", data: { tool_calls: [{ id: "todo-1", name: "update_todos", args: { todos } }] } },
           { type: "tool_result", data: {
@@ -797,16 +835,20 @@ async function mockProtocol(page: Page) {
           } },
           { type: "assistant_message", data: { content: "I will work through the checklist.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
-        ]);
+        ];
+        publishRuntime(events, requestId);
+        return sse(route, events);
       }
-      return sse(route, [
+      const events = [
         { type: "turn_started", data: { turn: 2 } },
         { type: "assistant_message_delta", data: { reasoning: "I am checking the public resources." } },
         { type: "assistant_message_delta", data: { content: "The Web client remains behind the typed v3 API." } },
         { type: "assistant_message", data: { content: "The Web client remains behind the typed v3 API.", tool_calls: [] } },
         { type: "usage", data: { input_tokens: 280, output_tokens: 90, total_tokens: 370, requests: 1, context_tokens: 1200 } },
         { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
-      ]);
+      ];
+      publishRuntime(events, requestId);
+      return sse(route, events);
     }
     if (path.endsWith("/interactions/permission-response")) return json(route, {
       request_id: "permission-1",
@@ -881,5 +923,40 @@ function sse(route: Route, events: Array<{ type: string; data: Record<string, un
     };
     return `event: ${event.type}\nid: ${index + 1}\ndata: ${JSON.stringify(payload)}\n\n`;
   }).join("");
+  return route.fulfill({ status: 200, contentType: "text/event-stream", body });
+}
+
+function runtimeSse(
+  route: Route,
+  events: Array<{
+    type: string;
+    data: Record<string, unknown>;
+    requestId: string;
+    sequence: number;
+  }>,
+  after: number,
+) {
+  const body = [
+    ...events.map((event) => ({
+      protocol_version: "xbotv2.v3",
+      session_id: "demo-session",
+      thread_id: "agent",
+      request_id: event.requestId,
+      sequence: event.sequence,
+      type: event.type,
+      data: event.data,
+    })),
+    {
+      protocol_version: "xbotv2.v3",
+      session_id: "demo-session",
+      thread_id: "agent",
+      request_id: "",
+      sequence: events.at(-1)?.sequence ?? after,
+      type: "end",
+      data: { status: "ok" },
+    },
+  ].map((event) => (
+    `event: ${event.type}\nid: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`
+  )).join("");
   return route.fulfill({ status: 200, contentType: "text/event-stream", body });
 }

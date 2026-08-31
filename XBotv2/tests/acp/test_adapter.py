@@ -59,7 +59,8 @@ class FakeSessions:
         self.last_open = None
         self.messages: list[Message] = []
         self.interaction_responses: list[tuple[str, tuple[Any, ...]]] = []
-        self.event_queue: asyncio.Queue[SessionStreamEvent | None] = asyncio.Queue()
+        self.event_queue: asyncio.Queue[SessionEventFrame | None] = asyncio.Queue()
+        self.event_sequence = 0
 
     async def open(self, request):
         self.last_open = request
@@ -105,7 +106,14 @@ class FakeSessions:
 
         async def stream():
             for event in self.events:
-                yield SessionStreamEvent.from_mapping(event)
+                value = SessionStreamEvent.from_mapping(event)
+                self.event_sequence += 1
+                await self.event_queue.put(SessionEventFrame(
+                    self.event_sequence,
+                    request.request_id,
+                    value,
+                ))
+                yield value
 
         return stream()
 
@@ -118,13 +126,11 @@ class FakeSessions:
     ):
         del after
         async def stream():
-            sequence = 0
             while True:
                 event = await self.event_queue.get()
                 if event is None:
                     return
-                sequence += 1
-                yield SessionEventFrame(sequence, "", event)
+                yield event
 
         return stream()
 

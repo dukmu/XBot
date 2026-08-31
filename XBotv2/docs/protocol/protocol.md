@@ -245,11 +245,13 @@ events. Transport reconnect resumes from the last received sequence. A cursor
 older than that window returns retryable `session_event_cursor_expired`; a
 future cursor returns `invalid_session_event_cursor`.
 
-This shared stream owns accepted inputs, interactions, status/configuration
-changes, jobs, and background continuation events. The response for a turn
-started by `POST .../messages` remains on that request's SSE stream and the
-request connection still owns cancellation. Therefore this cursor is not yet a
-durable conversation-turn replay cursor.
+This shared stream owns accepted inputs, main-turn output, interactions,
+status/configuration changes, jobs, and background continuation events. A turn
+runs in a Session-owned task and survives loss of its originating POST
+response. The POST SSE remains a compatibility view of the same events;
+official Web, TUI, and ACP clients render only the resumable session stream.
+Explicit interrupt or Session close cancels the task. The 512-frame window is
+runtime replay, not a durable event archive across process restart.
 
 ## Unified input and response routing
 
@@ -390,7 +392,9 @@ Both sides use `protocol.sse` for the wire format. The server encodes a
 validated `ServerEvent`; the client incrementally decodes SSE messages and then
 validates their JSON payload as `ServerEvent`. UI code only receives validated
 event dictionaries and does not parse SSE lines itself. `TerminalSession`
-consumes the final `end` sentinel, so UI reducers receive domain events only.
+consumes the final `end` sentinel. The TUI renders turn events only from the
+resumable `session_events` channel; its message POST is drained as a command
+response and never sends the same turn events through the reducer twice.
 
 | Event | Data |
 |---|---|

@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
@@ -85,6 +86,14 @@ from XBotv2.session import (
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+@dataclass(slots=True)
+class ActivePrompt:
+    request_id: str
+    mapper: ACPEventMapper
+    completed: asyncio.Event
+    failure: Exception | None = None
+
+
 class XBotACPAgent:
     """Expose XBot as a stable ACP v1 Agent."""
 
@@ -108,6 +117,7 @@ class XBotACPAgent:
         self.client_capabilities: ClientCapabilities | None = None
         self._commands_announced: set[str] = set()
         self._event_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active_prompts: dict[str, ActivePrompt] = {}
 
     def on_connect(self, connection: Any) -> None:
         self.connection = connection
@@ -321,38 +331,53 @@ class XBotACPAgent:
             await self._announce_commands(session_id)
             self._commands_announced.add(session_id)
 
-        mapper = ACPEventMapper(context_size=summary.context_window)
-        stream = await self.sessions.stream_message(SendMessage(
-            session_id=session_id,
-            thread_id="agent",
-            content=content,
-            request_id=f"acp:{session_id}",
-            images=tuple(images),
-        ))
-        async for event in stream:
-            await self._resolve_interaction(session_id, event)
-            for update in mapper.updates(event.to_dict()):
-                await self._update(session_id, update)
-        if mapper.error is not None:
+        if session_id in self._active_prompts:
+            raise RequestError.invalid_request({
+                "sessionId": session_id,
+                "reason": "a prompt is already running",
+            })
+        request_id = f"acp:{session_id}"
+        prompt = ActivePrompt(
+            request_id,
+            ACPEventMapper(context_size=summary.context_window),
+            asyncio.Event(),
+        )
+        self._active_prompts[session_id] = prompt
+        try:
+            stream = await self.sessions.stream_message(SendMessage(
+                session_id=session_id,
+                thread_id="agent",
+                content=content,
+                request_id=request_id,
+                images=tuple(images),
+            ))
+            async for _event in stream:
+                pass
+            await prompt.completed.wait()
+        finally:
+            self._active_prompts.pop(session_id, None)
+        if prompt.failure is not None:
+            raise prompt.failure
+        if prompt.mapper.error is not None:
             self._log.error(
                 "acp.prompt.failed",
                 session_id=session_id,
                 error_type="mapped_runtime_error",
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
             )
-            raise RequestError.internal_error(mapper.error)
+            raise RequestError.internal_error(prompt.mapper.error)
         self._log.info(
             "acp.prompt.finished",
             session_id=session_id,
             content_chars=len(content),
             images=len(images),
-            stop_reason=mapper.stop_reason,
-            usage=mapper.usage,
+            stop_reason=prompt.mapper.stop_reason,
+            usage=prompt.mapper.usage,
             duration_ms=round((time.perf_counter() - started) * 1000, 3),
         )
         return PromptResponse(
-            stop_reason=mapper.stop_reason,
-            usage=_usage(mapper.usage),
+            stop_reason=prompt.mapper.stop_reason,
+            usage=_usage(prompt.mapper.usage),
         )
 
     async def cancel(self, session_id: str, **_: Any) -> None:
@@ -434,6 +459,9 @@ class XBotACPAgent:
         del method, params
 
     async def close(self) -> None:
+        for prompt in self._active_prompts.values():
+            prompt.failure = RuntimeError("ACP event delivery stopped")
+            prompt.completed.set()
         for task in self._event_tasks.values():
             if not task.done():
                 task.cancel()
@@ -510,11 +538,27 @@ class XBotACPAgent:
             summary = await self._thread(session_id)
             mapper = ACPEventMapper(context_size=summary.context_window)
             async for frame in events:
+                await self._resolve_interaction(session_id, frame.event)
+                active = self._active_prompts.get(session_id)
+                if active is not None and frame.request_id == active.request_id:
+                    for update in active.mapper.updates(frame.event.to_dict()):
+                        await self._update(session_id, update)
+                    if frame.event.type in {
+                        "turn_finished",
+                        "turn_cancelled",
+                        "error",
+                    }:
+                        active.completed.set()
+                    continue
                 for update in mapper.updates(frame.event.to_dict()):
                     await self._update(session_id, update)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            active = self._active_prompts.get(session_id)
+            if active is not None:
+                active.failure = exc
+                active.completed.set()
             self._log.error(
                 "acp.events.failed",
                 session_id=session_id,

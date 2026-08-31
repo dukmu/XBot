@@ -67,11 +67,11 @@ correlation chain.
 
 ## Accepted runtime evidence
 
-The retained run at `/tmp/xbot-runtime-acceptance-20260831-29` was produced by:
+The retained run at `/tmp/xbot-runtime-acceptance-20260831-31` was produced by:
 
 ```console
 PYTHONPATH=. .venv/bin/python scripts/accept_runtime.py \
-  --root /tmp/xbot-runtime-acceptance-20260831-29
+  --root /tmp/xbot-runtime-acceptance-20260831-31
 ```
 
 Its `report.json` records six distinct process IDs, including one process that
@@ -120,16 +120,16 @@ which describes an older architecture. Relevant DSh owners include:
 | --- | --- | --- |
 | React-free client object layer owns sessions, event windows, reconnect, and paging | partial | A React-free event connection owns cancellation and bounded reconnect; session orchestration, paging, and projections remain in `useXBot` |
 | Typed unary operations are separate from session event streams | verified | FastAPI resources/operations and SSE are separate; retain this separation |
-| Generation-scoped reconnect rejects stale responses and frames | partial | Workspace catalog and active Session shared events use pre-read cursors, bounded replay, and generation checks. Main turn SSE is still request-owned and lacks replay |
+| Generation-scoped reconnect rejects stale responses and frames | verified | Workspace catalog and active Session events use pre-read cursors, bounded replay, and generation checks; main turns are Session-owned and replay through the same sequence |
 | First-class Workspace registry and ordering | verified | Durable create/list/rename/delete/order and Session-event-driven membership share the Workspace service and survive process restart |
 | Incremental session/workspace list frames and multi-client synchronization | verified | Typed post-commit XCore events feed a bounded Workspace catalog SSE window; real HTTP and browser clients observe create/delete without refreshing |
 | Session search with ranked snippets | missing | Sidebar performs local metadata filtering only |
 | Archive, rename, ordering, and blank-session reuse | verified | Session rename, global archive/restore, Workspace and per-Workspace session order are durable; desktop/mobile browser tests prove New reuses only a Workspace-accounted, unarchived session whose server projection is blank |
-| Bounded event window plus history paging | partial | Persistence-owned history paging and active Session shared-event replay are cursor-based; main turn events are not yet published through the replay window |
+| Bounded event window plus history paging | partial | Persistence-owned history paging and the complete active Session stream are cursor-based; the runtime window is not yet a durable event query/export store |
 | Durable domain projections independent of transcript | partial | Todo has a typed projection; usage/status/goal do not share one projection protocol |
 | Commands fail closed rather than degrading to prompts | verified | Known server/client commands use explicit paths; unknown slash input is rejected |
-| Pending interaction identity survives reconnect | partial | Active runtime exposes pending requests, but reconnect baseline and multi-client mux semantics need acceptance |
-| Cancellation and stale handle behavior | partial | HTTP abort/interrupt exist; withdrawn capabilities and reconnect generations need stronger semantics |
+| Pending interaction identity survives reconnect | partial | Interaction events and waiters now outlive the POST response and replay by cursor; multi-client arbitration still needs acceptance |
+| Cancellation and stale handle behavior | partial | POST loss no longer cancels a turn and explicit interrupt does; withdrawn capability handles still need stronger semantics |
 | Export/query over durable session events | missing | Message history endpoint is not a general session-event query/export surface |
 
 ## Web alignment matrix
@@ -230,5 +230,9 @@ if it cannot, port the DSh client shell and adapt it to XBot's public protocol.
 - 2026-08-31: Added a per-runtime bounded replay window for accepted inputs,
   interactions, jobs, configuration/status changes, and background
   continuation events. Open responses provide the pre-snapshot cursor and
-  Web/TUI/ACP resume from it. Main `POST /messages` turn ownership remains a
-  documented gap rather than being mislabeled as reconnect-safe.
+  Web/TUI/ACP resume from it.
+- 2026-08-31: Moved main-turn ownership out of the POST response into the
+  Session runtime. Main reasoning, tools, usage, interactions, and terminal
+  events now share that replay sequence; official clients drain the POST view
+  without feeding it into their UI mapper, so disconnect recovery is neither a
+  duplicate delivery path nor an implicit interrupt.

@@ -26,9 +26,13 @@ class TerminalSession:
 
         session = TerminalSession(base_url="http://127.0.0.1:4096")
         await session.connect()
-        async for event in session.send_message("hi"):
-            ...
+        events = asyncio.create_task(consume(session.session_events()))
+        await drain(session.send_message("hi"))
         await session.disconnect()
+
+    ``session_events`` is the authoritative resumable event channel.
+    ``send_message`` drains the compatibility POST stream and only exposes an
+    immediate ``input_rejected`` control result to the TUI submitter.
     """
 
     def __init__(
@@ -180,7 +184,7 @@ class TerminalSession:
         *,
         images: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Send one user message and yield every non-transport SSE event."""
+        """Submit input while runtime events arrive through ``session_events``."""
 
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
         request = {
@@ -199,7 +203,8 @@ class TerminalSession:
             images=images,
         )
         async for event in self._events(stream, "messages", request):
-            yield event
+            if event.get("type") == "input_rejected":
+                yield event
 
     async def session_events(self) -> AsyncIterator[dict[str, Any]]:
         """Yield turns initiated by runtime general messages."""

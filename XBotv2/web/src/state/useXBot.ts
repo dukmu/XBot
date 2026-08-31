@@ -297,7 +297,7 @@ export function useXBot() {
     const controller = new AbortController();
     messageControllers.current.add(controller);
     try {
-      for await (const event of api.sendMessage(
+      for await (const _event of api.sendMessage(
         current.session_id,
         current.thread_id,
         content,
@@ -310,7 +310,9 @@ export function useXBot() {
         controller.signal,
         requestId,
       )) {
-        runtimeEvents.handle(event, generation);
+        // The session event connection is the authoritative, resumable
+        // delivery path. The POST stream is drained only for compatibility
+        // with older clients and to surface transport-level failures.
       }
       return true;
     } catch (error) {
@@ -331,12 +333,12 @@ export function useXBot() {
     const controller = new AbortController();
     messageControllers.current.add(controller);
     try {
-      for await (const event of api.regenerateMessage(
+      for await (const _event of api.regenerateMessage(
         current.session_id,
         current.thread_id,
         controller.signal,
       )) {
-        runtimeEvents.handle(event, generation);
+        // Runtime events arrive through the resumable session stream.
       }
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error, true);

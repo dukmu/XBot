@@ -6,7 +6,6 @@ import asyncio
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Any, AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
@@ -14,7 +13,6 @@ from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
-    ClientEventsPort,
     RuntimeEvent,
 )
 from XBotv2.core.artifacts import ArtifactRef
@@ -47,12 +45,46 @@ def require_idle(ctx: Any, action: str) -> None:
 
 
 @dataclass
-class PendingResponse:
-    """Transport-only reply waiter keyed by an agent-inbox message id."""
+class TurnResponse:
+    """A detachable compatibility view of the authoritative event stream."""
 
     message_id: str
     request_id: str
-    events: asyncio.Queue[dict[str, Any] | None]
+    events: asyncio.Queue[dict[str, Any] | None] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=512),
+        init=False,
+    )
+    attached: bool = True
+
+    def emit(self, event: dict[str, Any]) -> None:
+        if not self.attached:
+            return
+        try:
+            self.events.put_nowait(event)
+        except asyncio.QueueFull:
+            self._overflow()
+
+    def finish(self) -> None:
+        if not self.attached:
+            return
+        try:
+            self.events.put_nowait(None)
+        except asyncio.QueueFull:
+            self._overflow()
+
+    def detach(self) -> None:
+        self.attached = False
+        while not self.events.empty():
+            self.events.get_nowait()
+
+    def _overflow(self) -> None:
+        self.detach()
+        self.events.put_nowait(session_error_event(
+            "response_stream_overflow",
+            "The POST response consumer fell behind; resume from the "
+            "Session event cursor.",
+        ))
+        self.events.put_nowait(None)
 
 
 @dataclass
@@ -73,8 +105,7 @@ class SessionRuntime:
     turn_task: asyncio.Task | None = None
     wakeup_task: asyncio.Task | None = None
     # Protocol routing only. Input content lives exclusively in engine.inbox.
-    pending_responses: dict[str, PendingResponse] = field(default_factory=dict)
-    response_output: asyncio.Queue[dict[str, Any] | None] | None = None
+    pending_responses: dict[str, TurnResponse] = field(default_factory=dict)
     event_stream: SessionEventStream = field(default_factory=SessionEventStream)
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
@@ -202,9 +233,6 @@ class SessionRuntime:
         claimed by the same loop inbox between model/tool steps.
         """
         if not self.turn_lock.locked():
-            self._publish_message_event(
-                request_id, content, images, artifacts
-            )
             try:
                 async for event in run_turn_stream(
                     self,
@@ -212,6 +240,12 @@ class SessionRuntime:
                     request_id=request_id,
                     images=images,
                     artifacts=artifacts,
+                    accepted_event=self._message_event(
+                        request_id,
+                        content,
+                        images,
+                        artifacts,
+                    ),
                 ):
                     yield event
                 return
@@ -220,7 +254,6 @@ class SessionRuntime:
                 # next-step through the same inbox.
                 pass
 
-        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         item = await self.engine.steer(
             content,
             source="user",
@@ -228,10 +261,9 @@ class SessionRuntime:
             images=images,
             artifacts=artifacts,
         )
-        pending = PendingResponse(
+        pending = TurnResponse(
             message_id=item.message_id,
             request_id=request_id,
-            events=events,
         )
         self.pending_responses[item.message_id] = pending
         self._publish_message_event(
@@ -240,7 +272,7 @@ class SessionRuntime:
         completed = False
         try:
             while True:
-                event = await events.get()
+                event = await pending.events.get()
                 if event is None:
                     completed = True
                     return
@@ -250,7 +282,10 @@ class SessionRuntime:
                 self.pending_responses.pop(item.message_id, None)
             self.touch()
 
-    def claim_response_output(self, message_ids: list[str]) -> bool:
+    def claim_response(
+        self,
+        message_ids: list[str],
+    ) -> TurnResponse | None:
         """Hand the reply to the final claimed input without storing content."""
         claimed = [
             self.pending_responses.pop(message_id)
@@ -258,11 +293,10 @@ class SessionRuntime:
             if message_id in self.pending_responses
         ]
         if not claimed:
-            return False
+            return None
         for pending in claimed[:-1]:
-            pending.events.put_nowait(None)
-        self.response_output = claimed[-1].events
-        return True
+            pending.finish()
+        return claimed[-1]
 
     def attach_event_stream(
         self,
@@ -306,11 +340,11 @@ class SessionRuntime:
             if self.turn_lock.locked():
                 return
             self._wakeup_requested = False
-            async for event in run_turn_stream(
+            async for _event in run_turn_stream(
                 self,
                 content=None,
             ):
-                self._publish_runtime_event(event)
+                pass
         except SessionBusy:
             pass
         finally:
@@ -335,11 +369,8 @@ class SessionRuntime:
             await asyncio.gather(continuation, return_exceptions=True)
         self.wakeup_task = None
         for item in self.pending_responses.values():
-            item.events.put_nowait(None)
+            item.finish()
         self.pending_responses.clear()
-        if self.response_output is not None:
-            await self.response_output.put(None)
-            self.response_output = None
         await self.engine.discard_inputs()
         try:
             await self.engine.close_session()
@@ -358,122 +389,141 @@ class SessionRuntime:
                 self.event_stream.close()
 
 
-async def _live_sink(
-    client_event: ClientEvent,
-    *,
-    client_events: ClientEventsPort,
-    events: asyncio.Queue[dict[str, Any] | None],
-    disconnect_task: asyncio.Task[Any],
-    timeout_seconds: float | None = None,
-    tool_call_id: str = "",
-) -> JsonObject:
-    del tool_call_id
-    event_type = client_event.type
-    event_data = client_event.data
-    request_id = str(event_data.get("request_id") or "")
-    waiter = client_events.waiter(event_type)
-    if waiter is None:
-        raise RuntimeError(f"No waiter registered for client event {event_type!r}")
-    pending = waiter.register(request_id)
-    wait_task = asyncio.create_task(
-        waiter.wait_registered(request_id, pending, timeout_seconds)
-    )
-    try:
-        await events.put(client_event.to_dict())
-        done, _ = await asyncio.wait(
-            {wait_task, disconnect_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    except BaseException:
-        wait_task.cancel()
-        await asyncio.gather(wait_task, return_exceptions=True)
-        raise
-    if wait_task not in done:
-        wait_task.cancel()
-        await asyncio.gather(wait_task, return_exceptions=True)
-        return {
-            "request_id": request_id,
-            "status": "disconnected",
-            "reason": "client_disconnected",
-        }
-    try:
-        result = wait_task.result()
-    except Exception as exc:
-        return {"request_id": request_id, "status": "error", "reason": str(exc)}
-    await events.put(interaction_recorded_event(
-        (
-            "permission_response_recorded"
-            if event_type == "permission_request"
-            else "user_input_recorded"
-        ),
-        {
-            "request_id": request_id,
-            "status": result.status,
-            "decision": result.decision,
-            "scope": result.scope,
-            "answer": result.answer,
-            "pending_interactions": [],
-        },
-    ))
-    return json_object(result.__dict__)
-
-
-@asynccontextmanager
-async def _live_interaction_sink(
-    runtime: SessionRuntime,
-    events: asyncio.Queue[dict[str, Any] | None],
-    disconnected: asyncio.Event,
-) -> AsyncIterator[None]:
-    disconnect_task = asyncio.create_task(disconnected.wait())
-    client_events = runtime.application.client_events
-    sink = partial(
-        _live_sink,
-        client_events=client_events,
-        events=events,
-        disconnect_task=disconnect_task,
-    )
-    previous = client_events.set_sink(sink)
-    try:
-        yield
-    finally:
-        client_events.set_sink(previous)
-        if not disconnect_task.done():
-            disconnect_task.cancel()
-            await asyncio.gather(disconnect_task, return_exceptions=True)
-
-
 def _event_payload(event: dict[str, Any]) -> JsonObject:
     """Validate a loop event before projecting it onto the session stream."""
     return ClientEvent.from_mapping(event).to_dict()
 
 
-async def _pump_turn(
+class TurnEventRouter:
+    """Publish a turn once, with detachable transport response views."""
+
+    def __init__(self, runtime: SessionRuntime, response: TurnResponse) -> None:
+        self._runtime = runtime
+        self._response = response
+        self._responses = [response]
+
+    def emit(self, event: dict[str, Any]) -> None:
+        self._runtime.event_stream.publish(
+            event,
+            request_id=self._response.request_id,
+        )
+        self._response.emit(event)
+
+    def claim(self, message_ids: list[str]) -> None:
+        response = self._runtime.claim_response(message_ids)
+        if response is None:
+            return
+        self._response = response
+        self._responses.append(response)
+
+    def finish(self) -> None:
+        for response in self._responses:
+            response.finish()
+
+    async def live_sink(
+        self,
+        client_event: ClientEvent,
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> JsonObject:
+        del tool_call_id
+        event_type = client_event.type
+        request_id = str(client_event.data.get("request_id") or "")
+        waiter = self._runtime.application.client_events.waiter(event_type)
+        if waiter is None:
+            raise RuntimeError(
+                f"No waiter registered for client event {event_type!r}"
+            )
+        pending = waiter.register(request_id)
+        self.emit(client_event.to_dict())
+        try:
+            result = await waiter.wait_registered(
+                request_id,
+                pending,
+                timeout_seconds,
+            )
+        except Exception as exc:
+            return {
+                "request_id": request_id,
+                "status": "error",
+                "reason": str(exc),
+            }
+        self.emit(interaction_recorded_event(
+            (
+                "permission_response_recorded"
+                if event_type == "permission_request"
+                else "user_input_recorded"
+            ),
+            {
+                "request_id": request_id,
+                "status": result.status,
+                "decision": result.decision,
+                "scope": result.scope,
+                "answer": result.answer,
+                "pending_interactions": [],
+            },
+        ))
+        return json_object(result.__dict__)
+
+
+@asynccontextmanager
+async def _live_interaction_sink(
     runtime: SessionRuntime,
-    events: asyncio.Queue[dict[str, Any] | None],
+    router: TurnEventRouter,
+) -> AsyncIterator[None]:
+    client_events = runtime.application.client_events
+    previous = client_events.set_sink(router.live_sink)
+    try:
+        yield
+    finally:
+        client_events.set_sink(previous)
+
+
+async def _execute_turn(
+    runtime: SessionRuntime,
+    router: TurnEventRouter,
+    *,
     content: str | None,
     request_id: str,
-    images: list[ImageContent] | None = None,
-    artifacts: list[ArtifactRef] | None = None,
+    images: list[ImageContent] | None,
+    artifacts: list[ArtifactRef] | None,
+    interactive: bool | None,
 ) -> None:
+    """Run one turn independently of any transport response consumer."""
     try:
-        turn_stream = (
-            runtime.engine.run_turn(
-                content,
-                request_id=request_id,
-                images=images,
-                artifacts=artifacts,
-            )
-            if content is not None
-            else runtime.engine.run_pending(request_id=request_id)
+        live_interactive = (
+            runtime.interactive if interactive is None else interactive
         )
-        async with aclosing(turn_stream):
-            async for event in turn_stream:
-                payload = _event_payload(event)
-                if payload["type"] in {"turn_finished", "turn_cancelled"}:
-                    slots = await runtime.application.status_slots()
-                    if slots:
-                        payload["data"]["status_slots"] = slots
-                await events.put(payload)
+        interaction_sink = (
+            _live_interaction_sink(runtime, router)
+            if live_interactive
+            else nullcontext()
+        )
+        async with interaction_sink:
+            turn_stream = (
+                runtime.engine.run_turn(
+                    content,
+                    request_id=request_id,
+                    images=images,
+                    artifacts=artifacts,
+                )
+                if content is not None
+                else runtime.engine.run_pending(request_id=request_id)
+            )
+            async with aclosing(turn_stream):
+                async for event in turn_stream:
+                    payload = _event_payload(event)
+                    if payload["type"] == "_inbox_claimed":
+                        router.claim(list(
+                            payload["data"].get("message_ids") or []
+                        ))
+                        continue
+                    if payload["type"] in {"turn_finished", "turn_cancelled"}:
+                        slots = await runtime.application.status_slots()
+                        if slots:
+                            payload["data"]["status_slots"] = slots
+                    router.emit(payload)
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
@@ -483,13 +533,18 @@ async def _pump_turn(
             request_id=request_id,
             error_type=type(exc).__name__,
         )
-        await events.put(session_error_event(
+        router.emit(session_error_event(
             "turn_failed",
             str(exc),
             details={"exception_type": type(exc).__name__},
         ))
     finally:
-        await events.put(None)
+        router.finish()
+        runtime.turn_task = None
+        runtime.turn_lock.release()
+        runtime.touch()
+        if runtime._wakeup_requested and runtime.wakeup_task is None:
+            runtime._request_wakeup()
 
 
 async def run_turn_stream(
@@ -500,22 +555,37 @@ async def run_turn_stream(
     images: list[ImageContent] | None = None,
     artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
+    accepted_event: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
-
-    async with runtime.turn_lock:
-        async for event in _drive_turn_stream(
+    await runtime.turn_lock.acquire()
+    try:
+        response = TurnResponse(request_id, request_id)
+        router = TurnEventRouter(runtime, response)
+        if accepted_event is not None:
+            runtime.event_stream.publish(accepted_event, request_id=request_id)
+        task = asyncio.create_task(_execute_turn(
             runtime,
+            router,
             content=content,
             request_id=request_id,
             images=images,
             artifacts=artifacts,
             interactive=interactive,
-        ):
+        ))
+    except BaseException:
+        runtime.turn_lock.release()
+        raise
+    runtime.turn_task = task
+    try:
+        while True:
+            event = await response.events.get()
+            if event is None:
+                return
             yield event
-    if runtime._wakeup_requested and runtime.wakeup_task is None:
-        runtime._request_wakeup()
+    finally:
+        response.detach()
 
 
 async def regenerate_turn_stream(
@@ -527,7 +597,8 @@ async def regenerate_turn_stream(
     """Atomically replace the latest human turn and run it again."""
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
-    async with runtime.turn_lock:
+    await runtime.turn_lock.acquire()
+    try:
         message = await runtime.application.history.regenerate_history()
         artifacts = [
             value
@@ -535,7 +606,9 @@ async def regenerate_turn_stream(
             if isinstance(value, ArtifactRef)
         ]
         page = runtime.application.history_pages.page(limit=160)
-        yield session_event(
+        response = TurnResponse(request_id, request_id)
+        router = TurnEventRouter(runtime, response)
+        router.emit(session_event(
             "history_updated",
             {
                 "history": display_history(page.messages),
@@ -543,85 +616,35 @@ async def regenerate_turn_stream(
                 "operation": "regenerate",
                 "turns": 1,
             },
-        )
+        ))
         accepted = runtime._message_event(
             request_id,
             message.content,
             list(message.images),
             artifacts,
         )
-        runtime._publish_runtime_event(accepted)
-        yield accepted
-        async for event in _drive_turn_stream(
-            runtime,
-            content=message.content,
-            request_id=request_id,
-            images=list(message.images),
-            artifacts=artifacts,
-            interactive=interactive,
-        ):
-            yield event
-    if runtime._wakeup_requested and runtime.wakeup_task is None:
-        runtime._request_wakeup()
-
-
-async def _drive_turn_stream(
-    runtime: SessionRuntime,
-    *,
-    content: str | None,
-    request_id: str,
-    images: list[ImageContent] | None,
-    artifacts: list[ArtifactRef] | None,
-    interactive: bool | None,
-) -> AsyncIterator[dict[str, Any]]:
-    """Drive one stream while the caller owns ``runtime.turn_lock``."""
-    events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    disconnected = asyncio.Event()
-    stream_completed = False
-    handed_off = False
-    pump_task = asyncio.create_task(
-        _pump_turn(runtime, events, content, request_id, images, artifacts)
-    )
-    runtime.turn_task = pump_task
+        router.emit(accepted)
+    except BaseException:
+        runtime.turn_lock.release()
+        raise
+    task = asyncio.create_task(_execute_turn(
+        runtime,
+        router,
+        content=message.content,
+        request_id=request_id,
+        images=list(message.images),
+        artifacts=artifacts,
+        interactive=interactive,
+    ))
+    runtime.turn_task = task
     try:
-        live_interactive = (
-            runtime.interactive if interactive is None else interactive
-        )
-        interaction_sink = (
-            _live_interaction_sink(runtime, events, disconnected)
-            if live_interactive
-            else nullcontext()
-        )
-        async with interaction_sink:
-            while True:
-                event = await events.get()
-                if event is None:
-                    stream_completed = True
-                    break
-                if runtime.response_output is not None and handed_off:
-                    await runtime.response_output.put(event)
-                    continue
-                if (
-                    event.get("type") == "_inbox_claimed"
-                    and runtime.claim_response_output(
-                        list(event.get("data", {}).get("message_ids") or [])
-                    )
-                ):
-                    handed_off = True
-                    continue
-                if event.get("type") == "_inbox_claimed":
-                    continue
-                yield event
+        while True:
+            event = await response.events.get()
+            if event is None:
+                return
+            yield event
     finally:
-        disconnected.set()
-        if not stream_completed and not pump_task.done():
-            pump_task.cancel()
-        await asyncio.gather(pump_task, return_exceptions=True)
-        runtime.turn_task = None
-        runtime.touch()
-        if runtime.response_output is not None:
-            await runtime.response_output.put(None)
-            runtime.response_output = None
+        response.detach()
 
 
 __all__ = [
