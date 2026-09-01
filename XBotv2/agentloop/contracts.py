@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from XBotv2.core.history import ConversationHistory, HistoryCheckpoint
+from XBotv2.core.history import ConversationHistory
 from XBotv2.agentloop.inbox import InboxInput, InboxSink
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
@@ -56,31 +56,6 @@ class LoopState:
     def replace_messages(self, messages: list[Message]) -> None:
         self.history.replace(messages)
         self._update_turn_count()
-
-    def replace_messages_recoverable(
-        self,
-        messages: list[Message],
-        *,
-        operation: str,
-        reason: str,
-    ) -> HistoryCheckpoint | None:
-        checkpoint = self.history.replace_recoverable(
-            messages,
-            operation=operation,
-            reason=reason,
-        )
-        self._update_turn_count()
-        return checkpoint
-
-    def restore_history(
-        self,
-        checkpoint_id: str,
-        *,
-        operation: str,
-    ) -> HistoryCheckpoint:
-        checkpoint = self.history.restore(checkpoint_id, operation=operation)
-        self._update_turn_count()
-        return checkpoint
 
     def _update_turn_count(self) -> None:
         self.turn_count = sum(message.role == "user" for message in self.history)

@@ -5,20 +5,12 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from XBotv2.commands import CommandResult
-from XBotv2.core import HistoryCheckpoint
 
 
 class _CompactCommandOwner(Protocol):
     async def _compact_current_history(
         self,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]: ...
-
-    def _compaction_checkpoints(self) -> tuple[HistoryCheckpoint, ...]: ...
-
-    async def _restore_compaction(
-        self,
-        checkpoint_id: str = "",
-    ) -> HistoryCheckpoint: ...
 
 
 def compact_result_message(metrics: dict[str, Any]) -> str:
@@ -38,33 +30,9 @@ async def run_compact_command(
     owner: _CompactCommandOwner,
     raw_args: str,
 ) -> CommandResult:
-    args = raw_args.split()
-    if args and args[0] == "list" and len(args) == 1:
-        checkpoints = owner._compaction_checkpoints()
-        if not checkpoints:
-            return CommandResult("No compaction checkpoints.")
-        return CommandResult("\n".join(
-            f"{item.checkpoint_id}  {item.status}  {item.reason}  "
-            f"{item.messages_before} -> {item.messages_after}"
-            for item in checkpoints
-        ))
-    if args and args[0] == "restore" and len(args) <= 2:
-        try:
-            checkpoint = await owner._restore_compaction(
-                args[1] if len(args) == 2 else ""
-            )
-        except Exception as exc:
-            return CommandResult(
-                f"Conversation compaction restore failed: {exc}",
-                status="error",
-            )
+    if raw_args.strip():
         return CommandResult(
-            f"Restored compaction checkpoint {checkpoint.checkpoint_id}.",
-            effects=("history", "thread"),
-        )
-    if args:
-        return CommandResult(
-            "Usage: /compact | /compact list | /compact restore [checkpoint-id]",
+            "Usage: /compact",
             status="error",
         )
 

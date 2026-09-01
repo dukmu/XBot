@@ -251,23 +251,6 @@ async def test_human_command_compacts_and_persists_immediately(
     assert "Earlier requirements." in engine.messages[0].content
     assert state_store.history.load() == engine.messages
 
-    checkpoints = engine.state.history.checkpoints(operation="compact")
-    assert len(checkpoints) == 1
-    checkpoint = checkpoints[0]
-    assert checkpoint.status == "active"
-    assert state_store.paths.history_checkpoint_messages(
-        checkpoint.checkpoint_id
-    ).read_text(encoding="utf-8").count("\n") == len(original)
-    listed = await setup.commands["compact"].handler("list")
-    assert checkpoint.checkpoint_id in listed.message
-
-    after_compact = Message(role="user", content="new work")
-    engine.messages.append(after_compact)
-    restored = await setup.commands["compact"].handler("restore")
-    assert restored.status == "ok"
-    assert list(engine.messages) == [*original, after_compact]
-    assert state_store.history.load() == list(engine.messages)
-
 
 @pytest.mark.asyncio
 async def test_compaction_does_not_append_duplicate_human_directives():

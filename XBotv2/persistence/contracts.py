@@ -7,7 +7,7 @@ from typing import Protocol
 
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import ConversationPage, HistoryCheckpoint
+from XBotv2.core.history import ConversationPage
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.persistence.models import ThreadLifecycleRecord, ThreadMetadata
@@ -19,23 +19,6 @@ class HistoryPort(Protocol):
     def append(self, messages: Sequence[Message]) -> None: ...
 
     def replace(self, messages: Sequence[Message]) -> None: ...
-
-    def replace_recoverable(
-        self,
-        messages: Sequence[Message],
-        *,
-        operation: str,
-        reason: str,
-    ) -> HistoryCheckpoint: ...
-
-    def checkpoints(self, *, operation: str) -> tuple[HistoryCheckpoint, ...]: ...
-
-    def restore(
-        self,
-        checkpoint_id: str,
-        *,
-        operation: str,
-    ) -> tuple[list[Message], HistoryCheckpoint]: ...
 
     def count(self) -> int: ...
 

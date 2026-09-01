@@ -9,7 +9,6 @@ from typing import Any, Protocol, Sequence
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core import (
     ClientEvent,
-    HistoryCheckpoint,
     Message,
     calibrated_context_tokens,
     context_token_limit,
@@ -74,14 +73,12 @@ class CompactService:
         self._compactions = 0
         self._last_reason = ""
         self._last_compaction: dict[str, Any] = {}
-        self._last_checkpoint_id = ""
 
     async def _dispose(self) -> None:
         self._manual_requested = False
         self._compactions = 0
         self._last_reason = ""
         self._last_compaction = {}
-        self._last_checkpoint_id = ""
 
     def request_manual_compaction(self) -> None:
         self._manual_requested = True
@@ -121,37 +118,6 @@ class CompactService:
             else {}
         )
         return result, metrics
-
-    def _compaction_checkpoints(self) -> tuple[HistoryCheckpoint, ...]:
-        return self.state.history.checkpoints(operation="compact")
-
-    async def _restore_compaction(
-        self,
-        checkpoint_id: str = "",
-    ) -> HistoryCheckpoint:
-        checkpoints = self._compaction_checkpoints()
-        if not checkpoint_id:
-            checkpoint = next(
-                (item for item in reversed(checkpoints) if item.status == "active"),
-                None,
-            )
-            if checkpoint is None:
-                raise ValueError("No active compaction checkpoint can be restored")
-            checkpoint_id = checkpoint.checkpoint_id
-        checkpoint = self.state.restore_history(
-            checkpoint_id,
-            operation="compact",
-        )
-        messages = tuple(self.state.messages)
-        await self._events.emit(
-            HISTORY_CHANGED,
-            HistoryChanged(messages, operation=f"compact:restore:{checkpoint_id}"),
-        )
-        await self._publish_runtime_event(compact_event(
-            "compaction_restored",
-            {"checkpoint_id": checkpoint_id, "messages": len(messages)},
-        ))
-        return checkpoint
 
     async def _on_before_context(self, ctx: EventContext):
         if not self._consume_manual_request(ctx.session):
@@ -265,14 +231,7 @@ class CompactService:
         proposal["compact_metrics"] = metrics
 
         previous_count = len(original_messages)
-        checkpoint = self.state.replace_messages_recoverable(
-            messages,
-            operation="compact",
-            reason=reason,
-        )
-        self._last_checkpoint_id = (
-            checkpoint.checkpoint_id if checkpoint is not None else ""
-        )
+        self.state.replace_messages(messages)
         ctx.messages = list(self.state.messages)
         committed = AfterCompact(
             messages=tuple(ctx.messages),
@@ -294,11 +253,7 @@ class CompactService:
         self._record_committed(reason, metrics, ctx.session)
         await self._publish_runtime_event(compact_event(
             "compaction_completed",
-            {
-                "reason": reason,
-                "metrics": metrics,
-                "checkpoint_id": self._last_checkpoint_id or None,
-            },
+            {"reason": reason, "metrics": metrics},
         ))
         return {"rebuild": True}
 
@@ -393,7 +348,6 @@ class CompactService:
             "compactions": self._compactions,
             "last_reason": self._last_reason,
             "last_compaction": dict(self._last_compaction),
-            "last_checkpoint_id": self._last_checkpoint_id,
         }
 
 

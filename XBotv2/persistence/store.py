@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -12,10 +11,9 @@ from uuid import uuid4
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.filesystem.atomic import write_bytes_atomic, write_text_atomic
+from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
     ConversationPage,
-    HistoryCheckpoint,
     HistoryCursorInvalid,
     decode_history_cursor,
     encode_history_cursor,
@@ -25,13 +23,10 @@ from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.persistence.models import (
-    HistoryCheckpointRecord,
-    HistoryRestoreRecord,
     InboxSnapshot,
     MessageRecord,
     ThreadLifecycleRecord,
     ThreadMetadata,
-    utc_now,
 )
 from xcore.state import StateService
 
@@ -44,7 +39,6 @@ class MessageHistoryStore:
         paths: ThreadPaths,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
-        self._paths = paths
         self._path = paths.messages_file
         self._revision_path = paths.history_revision_file
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
@@ -100,121 +94,22 @@ class MessageHistoryStore:
         )
 
     def replace(self, messages: Sequence[Message]) -> None:
-        content = self._serialize(messages)
-        write_text_atomic(self._revision_path, uuid4().hex + "\n")
-        write_text_atomic(self._path, content)
-        self._next_position = len(messages) + 1
-        self._log.info(
-            "persistence.history.replaced",
-            messages=len(messages),
-            bytes=len(content.encode("utf-8")),
-        )
-
-    def replace_recoverable(
-        self,
-        messages: Sequence[Message],
-        *,
-        operation: str,
-        reason: str,
-    ) -> HistoryCheckpoint:
-        """Preserve the exact current JSONL before atomically replacing it."""
-        self._ensure_loaded_id()
-        before = self._path.read_bytes() if self._path.exists() else b""
-        after_text = self._serialize(messages)
-        after = after_text.encode("utf-8")
-        checkpoint_id = f"{int(time.time() * 1_000_000)}-{uuid4().hex[:12]}"
-        archive = self._paths.history_checkpoint_messages(checkpoint_id)
-        metadata_path = self._paths.history_checkpoint_metadata(checkpoint_id)
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        if self._path.exists():
-            os.link(self._path, archive)
-        else:
-            write_bytes_atomic(archive, b"")
-        record = HistoryCheckpointRecord(
-            checkpoint_id=checkpoint_id,
-            operation=operation,
-            reason=reason,
-            created_at=utc_now(),
-            messages_before=self._record_count(before),
-            messages_after=len(messages),
-            before_sha256=hashlib.sha256(before).hexdigest(),
-            after_sha256=hashlib.sha256(after).hexdigest(),
-        )
-        write_text_atomic(
-            metadata_path,
-            json.dumps(record.to_dict(), ensure_ascii=False, indent=2) + "\n",
-        )
-        self.replace(messages)
-        self._log.info(
-            "persistence.history.checkpointed",
-            checkpoint_id=checkpoint_id,
-            operation=operation,
-            messages_before=record.messages_before,
-            messages_after=record.messages_after,
-        )
-        return record.to_checkpoint()
-
-    def checkpoints(self, *, operation: str) -> tuple[HistoryCheckpoint, ...]:
-        current = self._path.read_bytes() if self._path.exists() else b""
-        records = sorted(
-            self._checkpoint_records(operation),
-            key=lambda record: record.created_at,
-        )
-        return tuple(
-            record.to_checkpoint(status=self._checkpoint_status(record, current))
+        records = [
+            MessageRecord.from_message(message, index)
+            for index, message in enumerate(messages, start=1)
+        ]
+        content = "".join(
+            json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
             for record in records
         )
-
-    def restore(
-        self,
-        checkpoint_id: str,
-        *,
-        operation: str,
-    ) -> tuple[list[Message], HistoryCheckpoint]:
-        record = self._checkpoint_record(checkpoint_id)
-        if record.operation != operation:
-            raise ValueError(
-                f"Checkpoint {checkpoint_id!r} belongs to {record.operation!r}"
-            )
-        current = self._path.read_bytes() if self._path.exists() else b""
-        status = self._checkpoint_status(record, current)
-        if status != "active":
-            raise ValueError(
-                f"Checkpoint {checkpoint_id!r} is {status}; restore the latest "
-                "active checkpoint first"
-            )
-        current_records = self._records_from_bytes(current, "messages.jsonl")
-        archived = self._paths.history_checkpoint_messages(checkpoint_id).read_bytes()
-        if hashlib.sha256(archived).hexdigest() != record.before_sha256:
-            raise ValueError(
-                f"History checkpoint {checkpoint_id!r} content hash does not match"
-            )
-        before_records = self._records_from_bytes(
-            archived,
-            f"history checkpoint {checkpoint_id}",
-        )
-        tail = current_records[record.messages_after:]
-        restored = [
-            item.to_message()
-            for item in (*before_records, *tail)
-        ]
-        self.replace(restored)
-        restore = HistoryRestoreRecord(
-            checkpoint_id=checkpoint_id,
-            restored_at=utc_now(),
-            messages_restored=len(restored),
-        )
-        write_text_atomic(
-            self._paths.history_checkpoint_restore(checkpoint_id),
-            json.dumps(restore.to_dict(), ensure_ascii=False, indent=2) + "\n",
-        )
+        write_text_atomic(self._revision_path, uuid4().hex + "\n")
+        write_text_atomic(self._path, content)
+        self._next_position = len(records) + 1
         self._log.info(
-            "persistence.history.restored",
-            checkpoint_id=checkpoint_id,
-            operation=operation,
-            messages=len(restored),
+            "persistence.history.replaced",
+            messages=len(records),
+            bytes=len(content.encode("utf-8")),
         )
-        return restored, record.to_checkpoint(status="restored")
 
     def count(self) -> int:
         return len(self._records())
@@ -266,82 +161,6 @@ class MessageHistoryStore:
             MessageRecord.from_dict(raw)
             for raw in _read_jsonl(self._path, "messages.jsonl")
         ]
-
-    def _checkpoint_records(self, operation: str) -> list[HistoryCheckpointRecord]:
-        directory = self._paths.history_checkpoints_dir
-        if not directory.exists():
-            return []
-        records: list[HistoryCheckpointRecord] = []
-        for path in directory.glob("*.json"):
-            if path.name.endswith(".restored.json"):
-                continue
-            record = HistoryCheckpointRecord.from_dict(
-                _read_json(path, "history checkpoint") or {}
-            )
-            if record.operation == operation:
-                records.append(record)
-        return records
-
-    def _checkpoint_record(self, checkpoint_id: str) -> HistoryCheckpointRecord:
-        raw = _read_json(
-            self._paths.history_checkpoint_metadata(checkpoint_id),
-            "history checkpoint",
-        )
-        if raw is None:
-            raise ValueError(f"Unknown history checkpoint: {checkpoint_id!r}")
-        return HistoryCheckpointRecord.from_dict(raw)
-
-    def _checkpoint_status(
-        self,
-        record: HistoryCheckpointRecord,
-        current: bytes,
-    ) -> str:
-        restored = _read_json(
-            self._paths.history_checkpoint_restore(record.checkpoint_id),
-            "history checkpoint restore",
-        )
-        if restored is not None:
-            restore_record = HistoryRestoreRecord.from_dict(restored)
-            if restore_record.checkpoint_id != record.checkpoint_id:
-                raise ValueError("History restore record checkpoint does not match")
-            return "restored"
-        lines = current.splitlines(keepends=True)
-        after = b"".join(lines[:record.messages_after])
-        if hashlib.sha256(after).hexdigest() == record.after_sha256:
-            return "active"
-        before = b"".join(lines[:record.messages_before])
-        if hashlib.sha256(before).hexdigest() == record.before_sha256:
-            return "prepared"
-        return "superseded"
-
-    @staticmethod
-    def _serialize(messages: Sequence[Message]) -> str:
-        return "".join(
-            json.dumps(
-                MessageRecord.from_message(message, index).to_dict(),
-                ensure_ascii=False,
-            ) + "\n"
-            for index, message in enumerate(messages, start=1)
-        )
-
-    @staticmethod
-    def _record_count(content: bytes) -> int:
-        if content and not content.endswith(b"\n"):
-            raise ValueError("messages.jsonl ends with an incomplete record")
-        return len(content.splitlines())
-
-    @staticmethod
-    def _records_from_bytes(content: bytes, name: str) -> list[MessageRecord]:
-        if content and not content.endswith(b"\n"):
-            raise ValueError(f"{name} ends with an incomplete record")
-        records = [
-            MessageRecord.from_dict(_decode_json_line(line))
-            for line in content.splitlines()
-        ]
-        positions = [record.position for record in records]
-        if positions != list(range(1, len(records) + 1)):
-            raise ValueError(f"{name} positions must be contiguous and start at 1")
-        return records
 
     def _ensure_revision(self) -> str:
         if not self._revision_path.exists():

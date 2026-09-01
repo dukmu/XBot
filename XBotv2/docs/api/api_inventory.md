@@ -48,7 +48,6 @@ plugin implementations.
 | `JsonObject` | type alias | JSON object carried by generic core envelopes. |
 | `JsonValue` | type alias |  |
 | `HistorySink` | protocol | Durable append/replace boundary used by ConversationHistory. |
-| `HistoryCheckpoint` | dataclass | Traceable durable history-replacement checkpoint. |
 | `MESSAGE_FORMAT_KEY` | constant |  |
 | `Message` | dataclass |  |
 | `ModelChunk` | dataclass |  |

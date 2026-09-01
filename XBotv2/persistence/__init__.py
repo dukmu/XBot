@@ -9,8 +9,6 @@ from XBotv2.persistence.contracts import (
     ThreadLifecyclePort,
 )
 from XBotv2.persistence.models import (
-    HistoryCheckpointRecord,
-    HistoryRestoreRecord,
     InboxItemRecord,
     InboxSnapshot,
     MessageRecord,
@@ -20,8 +18,6 @@ from XBotv2.persistence.models import (
 
 __all__ = [
     "HistoryPort",
-    "HistoryCheckpointRecord",
-    "HistoryRestoreRecord",
     "InboxPort",
     "InboxItemRecord",
     "InboxSnapshot",
