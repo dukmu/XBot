@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from XBotv2.agentloop.contracts import LoopSettings, LoopState, ToolRegistration
 from XBotv2.agentloop.events import EventContext, EventPort
+from XBotv2.agentloop.inbox import InboxInput, InboxTarget
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import GuardDecision, JsonObject, Tool, ToolCall
@@ -33,6 +34,7 @@ class AgentLoopDriverPort(Protocol):
     messages: Sequence[Message]
     context_window: int
     pending_input_count: int
+    pending_inputs: Sequence[InboxInput]
 
     def set_wake_driver(self, callback: Callable[[], None]) -> None: ...
 
@@ -47,6 +49,16 @@ class AgentLoopDriverPort(Protocol):
     async def inject(self, content: str, **kwargs: Any) -> object: ...
 
     async def steer(self, content: str, **kwargs: Any) -> object: ...
+
+    async def edit_input(self, message_id: str, content: str) -> InboxInput: ...
+
+    async def remove_input(self, message_id: str) -> InboxInput: ...
+
+    async def retarget_input(
+        self,
+        message_id: str,
+        target: InboxTarget,
+    ) -> InboxInput: ...
 
     def run_turn(
         self,

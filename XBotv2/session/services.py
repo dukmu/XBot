@@ -17,6 +17,8 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
+    PendingInputSnapshot,
+    PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionStreamEvent,
@@ -116,6 +118,17 @@ class SessionsPort(Protocol):
         self,
         request: SendMessage,
     ) -> AsyncIterator[SessionStreamEvent]: ...
+
+    async def pending_inputs(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> tuple[PendingInputSnapshot, ...]: ...
+
+    async def update_pending_input(
+        self,
+        request: PendingInputUpdate,
+    ) -> tuple[PendingInputSnapshot, ...]: ...
 
     async def regenerate_message(
         self,

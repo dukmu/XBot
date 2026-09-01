@@ -108,6 +108,16 @@ export interface OpenSessionResponse {
   history_cursor?: string | null;
   event_cursor: number;
   status_slots: Record<string, string>;
+  pending_inputs: PendingInput[];
+}
+
+export interface PendingInput {
+  message_id: string;
+  content: string;
+  target: "next-turn" | "next-step";
+  source: string;
+  image_count: number;
+  artifact_count: number;
 }
 
 export interface MessagePage {

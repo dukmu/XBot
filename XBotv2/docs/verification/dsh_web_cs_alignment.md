@@ -139,16 +139,41 @@ which describes an older architecture. Relevant DSh owners include:
 | Workspace/session sidebar with search and row actions | partial | Durable grouping, ordering, rename/removal, archive/restore, fork/delete, and multi-client updates exist; ranked content snippets do not |
 | Command trigger owns fuzzy discovery, exact dispatch, argument and popup flows | partial | Directory and exact dispatch exist; popup-select decorations and caret-aware trigger ownership do not |
 | Conversation nodes isolate domains and streaming tail | partial | Timeline entries are typed, but one reducer/component still owns all domains and reparses growing Markdown |
-| Queue shows, edits, deletes, and strictly steers pending messages | partial | Queue count/steer transport exists; message-level queue management UI is absent |
-| Paste and whole-page drop share bounded attachment intake | partial | Paste works; drop, count/byte limits, aggregate validation, and actionable rejection copy are absent |
-| Tool-specific presentation with generic fallback | partial | Generic collapsible cards exist; terminal/diff/location presentations and details navigation are absent |
+| Queue shows, edits, deletes, and strictly steers pending messages | verified | The Agent inbox is the sole durable authority; typed list/update resources, replayed snapshots, resume projection, and the desktop/mobile QueueDock cover edit, remove, and next-step retarget without premature transcript insertion |
+| Paste and whole-page drop share bounded attachment intake | partial | Paste and whole-window drop share one intake path, and message images open in a focus-restoring lightbox; count/byte limits, aggregate validation, and server-advertised rejection copy remain absent |
+| Tool-specific presentation with generic fallback | partial | File, terminal, search, Todo, and generic cards use lazy details; long values use a 16-line/20K-character head-tail preview with full copy/expand. Diff/location presentations and details navigation remain absent |
 | Subagent hierarchy, running state, and read-only replay | partial | Threads are selectable; descendant tree, counts, and specialized replay are absent |
 | Model selection, context pressure, cache, timing, and throughput | partial | Provider/model/effort and usage exist; context breakdown, TTFT, throughput, and cache presentation are absent |
 | Settings, theme, locale, plugin inventory, and permission presets | missing | No composed settings surface or host-backed preference model |
 | Goal, Todo, plan, user questions, jobs, deliverables, and trajectory compose independently | partial | Several fixed panels exist; there is no replaceable UI composition seam or trajectory/deliverables view |
 | Message actions: copy, feedback, branch/regenerate, produced files | partial | Regenerate exists; copy/feedback/per-message fork and produced-file summary are incomplete |
-| Long histories and long single messages stay responsive | partial | History/DOM are bounded; accumulated Markdown and large Tool content still require full-value parsing |
+| Long histories and long single messages stay responsive | partial | History/DOM and collapsed Tool output are bounded; accumulated streaming Markdown and explicitly expanded large values still require full-value parsing |
 | Keyboard, focus, reduced motion, mobile, and screen-reader flows | partial | Mobile E2E exists; focus trapping, full keyboard flows, reduced motion, and accessibility acceptance remain |
+
+## Frontend port ledger
+
+This ledger distinguishes source-level adoption from visual approximation.
+`ported` means the DSh component's ownership and interaction model is present
+in XBot behind a protocol adapter; a token or selector override alone remains
+`partial`.
+
+| DSh owner | Status | XBot owner and remaining work |
+| --- | --- | --- |
+| `ui-layout/AppFrame` | ported | `DshAppFrame` owns responsive sidebar concession, the 56 px rail, persisted width, pointer-captured resize, and center-column clipping; the unused DSh details column is intentionally absent until XBot exposes a trajectory/details surface |
+| `ui-sidebar/SidebarRoot` | partial | XBot uses DSh wide/rail geometry, frozen-width settle/crossfade, rail search/refresh, pointer-scoped scrollbars, and the Workspace/Session region; each Workspace mounts at most five session rows until explicitly expanded. The footer settings seat and ranked search snippets remain |
+| `ui-conversation/ConversationRoot` | ported | Conversation and sticky composer now share one vertical scroll owner; the transcript no longer scrolls independently from its footer |
+| `ui-conversation/ChatView` | partial | Bounded paging and follow-bottom exist; node rendering still uses XBot's central Timeline instead of DSh-style domain seats |
+| `ui-conversation/InputBar` | partial | DSh capsule geometry, 14-line growth cap, context occupancy/details, attachment rail, slash popup, send/interrupt, paste, whole-window drop, and an authoritative editable QueueDock are present; mirror/backdrop caret ownership and server-advertised bounded intake are missing |
+| `ui-jobs/JobListAction` | ported | Background jobs moved from the composer stack into a header trigger and bounded popover with stop controls |
+| `ui-tool` | partial | Tool rendering is separated from Timeline and has DSh disclosure rows plus file, terminal, search, Todo, and generic cards. The ported head/tail output surface keeps long values out of the DOM until explicit expansion and copies the original; diff rendering and trajectory inspection remain |
+| `ui-primitives/Modal`, command and interaction overlays | ported | Command discovery, permission/user questions, clear, delete, and new-session dialogs share the DSh light menu surface, mask, controls, and responsive bounds; selecting a command returns its editable invocation to the composer |
+| `ui-settings-*`, locale, theme | missing | No settings document or host-backed preference resource yet |
+
+The port keeps XBot's typed HTTP resources and Session/Workspace event streams.
+DSh's Cordis runtime, remote-call protocol, and projection stores are not copied:
+doing so would introduce a second C/S authority. Presentation components are
+ported at their existing ownership boundaries and receive data from XBot's
+React-free client controllers.
 
 ## Frontend replacement gate
 
@@ -167,9 +192,11 @@ A replacement may reuse DSh source and structure subject to its license. It
 must adapt to XBot's public C/S protocol rather than importing XBot server
 internals or emulating missing server state in the browser.
 
-The gate is currently triggered. The measured production surface is 5,165
-lines (`useXBot.ts` 730, reducer 728, `App.tsx` 436, global CSS 2,030, API
-client 504, and six React-free owners totaling 737). XBot will therefore
+The gate is currently triggered. The selected production surface is 5,902
+lines (`useXBot.ts` 745, reducer 736, `App.tsx` 446, legacy global CSS 1,710,
+DSh presentation CSS 978, API client 509, and six React-free owners totaling
+778). The DSh port has removed 320 lines from the legacy stylesheet, but the
+combined client surface has not yet contracted. XBot will therefore
 port DSh's ownership boundaries incrementally and delete the displaced React
 logic. Copying the DSh runtime wholesale is not the selected path: its Cordis,
 remote-call, and event-log contracts are not XBot's public protocol, so a
@@ -236,3 +263,26 @@ if it cannot, port the DSh client shell and adapt it to XBot's public protocol.
   events now share that replay sequence; official clients drain the POST view
   without feeding it into their UI mapper, so disconnect recovery is neither a
   duplicate delivery path nor an implicit interrupt.
+- 2026-09-01: Began source-level frontend replacement rather than CSS-only
+  approximation. Ported DSh's AppFrame geometry/resize owner, converted the
+  conversation and composer to one scroll owner, and moved background jobs to
+  a DSh-style header action. Added the frontend port ledger so source adoption,
+  protocol adaptation, and remaining gaps cannot be reported as equivalent.
+- 2026-09-01: Ported the DSh sidebar settle/rail, reasoning and Tool rows,
+  header Jobs action, context meter, whole-window attachment drop, and image
+  lightbox. The browser now enters a local submitting turn state before the
+  first Session event, closing the navigation race between POST completion and
+  `turn_started`; the mobile race probe passed five consecutive runs.
+- 2026-09-01: Ported the shared DSh modal surface across command discovery,
+  permissions, user questions, and destructive confirmations, then removed
+  the displaced dark-theme dialog rules instead of retaining an override
+  stack. Workspace groups now mount only five session rows until expanded and
+  sidebar scrollbars remain quiet outside pointer interaction.
+- 2026-09-01: Replaced the browser's synthetic queue counter with the durable
+  Agent inbox projection. Busy Web submissions now explicitly choose
+  next-turn delivery, remain absent from transcript until claimed, and can be
+  edited, removed, or retargeted to next-step through typed resources. Session
+  resume, shared events, Python SDK, desktop, and mobile consume the same state.
+- 2026-09-01: Ported DSh's bounded head/tail Tool-output behavior. Opening a
+  long Tool card now mounts at most 16 lines and 20K characters by default,
+  while explicit expansion and copy still operate on the complete result.

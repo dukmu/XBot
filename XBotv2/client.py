@@ -54,6 +54,8 @@ from XBotv2.session import (
     OpenSessionRequest,
     OpenSessionResponse,
     OpenThreadRequest,
+    PendingInputListResponse,
+    PendingInputUpdateRequest,
     RegenerateRequest,
     SessionListResponse,
     SessionMode,
@@ -425,6 +427,33 @@ class XBotClient:
             UserInputResponseRequest(request_id=request_id, answer=answer),
         )
 
+    async def list_pending_inputs(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> PendingInputListResponse:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/queue",
+            PendingInputListResponse,
+        )
+
+    async def update_pending_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        message_id: str,
+        *,
+        action: Literal["edit", "remove", "steer"],
+        content: str = "",
+    ) -> PendingInputListResponse:
+        return await self._request(
+            "PATCH",
+            f"{_thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
+            PendingInputListResponse,
+            PendingInputUpdateRequest(action=action, content=content),
+        )
+
     def send_message(
         self,
         session_id: str,
@@ -432,6 +461,7 @@ class XBotClient:
         content: str,
         *,
         request_id: str = "",
+        delivery: Literal["queue", "steer"] = "steer",
         images: list[ImageInput | dict[str, Any]] | None = None,
         attachments: list[AttachmentInput | dict[str, Any]] | None = None,
     ) -> AsyncIterator[ServerEvent]:
@@ -441,6 +471,7 @@ class XBotClient:
             MessageRequest(
                 content=content,
                 request_id=request_id,
+                delivery=delivery,
                 images=[
                     image
                     if isinstance(image, ImageInput)

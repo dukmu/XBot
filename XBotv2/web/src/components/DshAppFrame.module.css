@@ -1,0 +1,104 @@
+/*
+ * Adapted from DeepSeek Harness AppFrame.module.css (MIT).
+ * XBot currently has no details column, so this keeps DSh's sidebar/center
+ * ownership and resize behavior without importing its Cordis runtime.
+ */
+
+.frame {
+  position: relative;
+  display: grid;
+  grid-template-rows: 100%;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+  transition: grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+.frame[data-dragging] {
+  transition: none;
+}
+
+.sidebar {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--dsw-specific-sidebar-fill);
+  border-right: 1px solid var(--dsw-alias-border-l1);
+}
+
+.center {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 21;
+  width: 8px;
+  margin-left: -4px;
+  cursor: col-resize;
+  touch-action: none;
+  transition: left var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+.frame[data-dragging] .handle {
+  transition: none;
+}
+
+.handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 32px;
+  border-radius: 4px;
+  background: var(--dsw-alias-border-l3);
+  content: "";
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+.handle:hover::after,
+.handle[data-dragging]::after {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame,
+  .handle {
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .frame {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    width: min(86vw, 320px);
+    transform: translateX(-102%);
+    transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+  }
+
+  .frame[data-sidebar-open] .sidebar {
+    transform: translateX(0);
+  }
+
+  .center {
+    width: 100%;
+    height: 100%;
+  }
+
+  .handle {
+    display: none;
+  }
+}

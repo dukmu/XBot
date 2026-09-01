@@ -7,7 +7,7 @@ from typing import Protocol
 
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import ConversationPage
+from XBotv2.core.history import ConversationPage, HistoryNode
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.persistence.models import ThreadLifecycleRecord, ThreadMetadata
@@ -16,13 +16,35 @@ from XBotv2.persistence.models import ThreadLifecycleRecord, ThreadMetadata
 class HistoryPort(Protocol):
     def load(self) -> list[Message]: ...
 
-    def append(self, messages: Sequence[Message]) -> None: ...
+    def load_surface(self) -> tuple[HistoryNode, ...]: ...
+
+    def load_transcript(self) -> list[Message]: ...
+
+    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]: ...
 
     def replace(self, messages: Sequence[Message]) -> None: ...
+
+    def replace_surface(
+        self,
+        source_node_ids: Sequence[str],
+        messages: Sequence[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool,
+    ) -> tuple[HistoryNode, ...]: ...
+
+    def record(self, event: str, data: dict[str, object]) -> None: ...
 
     def count(self) -> int: ...
 
     def page(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage: ...
+
+    def page_transcript(
         self,
         *,
         limit: int,

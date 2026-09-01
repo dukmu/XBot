@@ -45,6 +45,8 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
+    PendingInputSnapshot,
+    PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
@@ -156,6 +158,7 @@ class OpenSessionResponse(WireModel):
     history_cursor: str | None = None
     event_cursor: int = Field(default=0, ge=0)
     status_slots: dict[str, str] = Field(default_factory=dict)
+    pending_inputs: list["PendingInputData"] = Field(default_factory=list)
 
 
 class OpenThreadRequest(WireModel):
@@ -239,16 +242,48 @@ class AgentConfiguredData(WireModel):
     context_window: int = Field(default=0, ge=0)
 
 
+class PendingInputData(WireModel):
+    message_id: str = Field(min_length=1)
+    content: str = ""
+    target: Literal["next-turn", "next-step"]
+    source: str = "user"
+    image_count: int = Field(default=0, ge=0)
+    artifact_count: int = Field(default=0, ge=0)
+
+
+class PendingInputListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    items: list[PendingInputData] = Field(default_factory=list)
+
+
+class PendingInputUpdateRequest(WireModel):
+    action: Literal["edit", "remove", "steer"]
+    content: str = ""
+
+    @model_validator(mode="after")
+    def _validate_edit(self) -> "PendingInputUpdateRequest":
+        if self.action == "edit" and not self.content.strip():
+            raise ValueError("queue edit requires non-empty content")
+        return self
+
+
+class QueueUpdatedData(WireModel):
+    items: list[PendingInputData] = Field(default_factory=list)
+
+
 SessionEventType = Literal[
     "agent_configured",
     "history_updated",
     "message",
+    "queue_updated",
 ]
 
 _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
     "agent_configured": AgentConfiguredData,
     "history_updated": HistoryUpdatedData,
     "message": MessageData,
+    "queue_updated": QueueUpdatedData,
 }
 
 
@@ -279,6 +314,7 @@ def session_error_event(
 class MessageRequest(WireModel):
     content: str = ""
     request_id: str = ""
+    delivery: Literal["queue", "steer"] = "steer"
     images: list[ImageInput] = Field(default_factory=list)
     attachments: list[AttachmentInput] = Field(default_factory=list)
 
@@ -753,6 +789,7 @@ def build_session_router(
             thread_id=thread_id,
             content=content,
             request_id=client_request_id,
+            delivery=payload.delivery,
             images=tuple(
                 ImageUpload(image.data, image.media_type)
                 for image in payload.images
@@ -784,6 +821,47 @@ def build_session_router(
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
             },
+        )
+
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/queue",
+        operation_id="list_pending_inputs",
+    )
+    async def list_pending_inputs_endpoint(
+        session_id: str,
+        thread_id: str,
+    ) -> PendingInputListResponse:
+        items = await sessions.pending_inputs(session_id, thread_id)
+        return PendingInputListResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            items=[PendingInputData.model_validate(item.to_dict()) for item in items],
+        )
+
+    @router.patch(
+        "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}",
+        operation_id="update_pending_input",
+    )
+    async def update_pending_input_endpoint(
+        session_id: str,
+        thread_id: str,
+        message_id: str,
+        payload: PendingInputUpdateRequest,
+    ) -> PendingInputListResponse:
+        try:
+            items = await sessions.update_pending_input(PendingInputUpdate(
+                session_id=session_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                action=payload.action,
+                content=payload.content,
+            ))
+        except OperationError as exc:
+            raise HttpServerError(exc.code, exc.message, status=404) from exc
+        return PendingInputListResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            items=[PendingInputData.model_validate(item.to_dict()) for item in items],
         )
 
     @router.get(

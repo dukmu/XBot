@@ -1,6 +1,9 @@
 import { FileText, Paperclip, Square, Send, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { CommandInfo, ImageInput } from "../api/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CommandInfo, ImageInput, UsageData } from "../api/types";
+import { ContextMeter } from "./ContextMeter";
+import { DropOverlay } from "./DropOverlay";
+import { ImageLightbox } from "./ImageLightbox";
 import { matchingCommands } from "../commands";
 
 export interface PendingAttachment extends ImageInput {
@@ -11,29 +14,34 @@ export interface PendingAttachment extends ImageInput {
 interface ComposerProps {
   running: boolean;
   disabled: boolean;
-  queued: number;
   commands: CommandInfo[];
   draft: { id: number; value: string } | null;
   allowImages: boolean;
+  usage: UsageData;
+  contextWindow: number;
   onSend: (content: string, attachments: PendingAttachment[]) => Promise<boolean>;
   onInterrupt: () => Promise<void>;
 }
 
-export function Composer({ running, disabled, queued, commands, draft, allowImages, onSend, onInterrupt }: ComposerProps) {
+export function Composer({ running, disabled, commands, draft, allowImages, usage, contextWindow, onSend, onInterrupt }: ComposerProps) {
   const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandMenuOpen, setCommandMenuOpen] = useState(true);
+  const [dragActive, setDragActive] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<PendingAttachment | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const closeAttachmentPreview = useCallback(() => setAttachmentPreview(null), []);
   const suggestions = commandMenuOpen ? matchingCommands(commands, content).slice(0, 9) : [];
 
   useEffect(() => {
     const element = textarea.current;
     if (!element) return;
     element.style.height = "0px";
-    element.style.height = `${Math.min(180, Math.max(46, element.scrollHeight))}px`;
+    element.style.height = `${Math.min(336, Math.max(46, element.scrollHeight))}px`;
   }, [content]);
 
   useEffect(() => setCommandIndex(0), [content]);
@@ -65,7 +73,7 @@ export function Composer({ running, disabled, queued, commands, draft, allowImag
     requestAnimationFrame(() => textarea.current?.focus());
   };
 
-  const addFiles = async (files: FileList | File[]) => {
+  const addFiles = useCallback(async (files: FileList | File[]) => {
     setAttachmentError("");
     const accepted: PendingAttachment[] = [];
     for (const file of Array.from(files)) {
@@ -88,11 +96,60 @@ export function Composer({ running, disabled, queued, commands, draft, allowImag
     if (accepted.length) {
       setAttachments((current) => [...current, ...accepted]);
     }
-  };
+  }, [allowImages]);
+
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) => event.dataTransfer?.types.includes("Files") ?? false;
+    const reset = () => {
+      dragDepth.current = 0;
+      setDragActive(false);
+    };
+    const onDragEnter = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragActive(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!hasFiles(event) || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = disabled ? "none" : "copy";
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      reset();
+      if (!disabled && event.dataTransfer) void addFiles(event.dataTransfer.files);
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", reset);
+    return () => {
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", reset);
+    };
+  }, [addFiles, disabled]);
 
   return (
     <div className="composer-wrap">
-      {queued > 0 && <div className="queue-indicator">{queued} queued</div>}
+      {dragActive && <DropOverlay disabled={disabled} />}
+      {attachmentPreview?.preview && (
+        <ImageLightbox
+          src={attachmentPreview.preview}
+          alt={attachmentPreview.name}
+          onClose={closeAttachmentPreview}
+        />
+      )}
       <div className="composer">
         {suggestions.length > 0 && (
           <div className="command-menu" role="listbox" aria-label="Commands">
@@ -117,7 +174,11 @@ export function Composer({ running, disabled, queued, commands, draft, allowImag
           <div className="composer-images">
             {attachments.map((attachment, index) => (
               <div className="composer-image" key={`${attachment.name}-${index}`} title={attachment.name}>
-                {attachment.preview ? <img src={attachment.preview} alt={attachment.name} /> : <FileText size={24} />}
+                {attachment.preview ? (
+                  <button type="button" className="composer-image-preview" aria-label={`Preview ${attachment.name}`} onClick={() => setAttachmentPreview(attachment)}>
+                    <img src={attachment.preview} alt={attachment.name} />
+                  </button>
+                ) : <FileText size={24} />}
                 <button title={`Remove ${attachment.name}`} aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((_, item) => item !== index))}>
                   <X size={12} />
                 </button>
@@ -187,6 +248,7 @@ export function Composer({ running, disabled, queued, commands, draft, allowImag
             <Paperclip size={15} />
           </button>
           <span className="composer-spacer" />
+          <ContextMeter usage={usage} contextWindow={contextWindow} />
           {running ? (
             <button className="composer-action stop" title="Interrupt" aria-label="Interrupt" onClick={() => void onInterrupt()}>
               <Square size={14} fill="currentColor" />

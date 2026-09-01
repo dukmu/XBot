@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort
+from XBotv2.agentloop.inbox import InboxInput, InboxTarget
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
@@ -30,6 +31,9 @@ from XBotv2.session.event_stream import (
     SessionEventSubscription,
 )
 from XBotv2.session.protocol import session_error_event, session_event
+from XBotv2.session.types import PendingInputSnapshot
+
+
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
 
@@ -42,6 +46,17 @@ def require_idle(ctx: Any, action: str) -> None:
             f"Cannot {action} while a turn is active.",
             retryable=True,
         )
+
+
+def _pending_input_snapshot(item: InboxInput) -> PendingInputSnapshot:
+    return PendingInputSnapshot(
+        message_id=item.message_id,
+        content=item.content,
+        target=item.target.value,
+        source=item.source,
+        image_count=len(item.images),
+        artifact_count=len(item.artifacts),
+    )
 
 
 @dataclass
@@ -177,8 +192,35 @@ class SessionRuntime:
     def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
         payload = event.client_event
-        if payload is not None:
-            self._publish_runtime_event(payload.to_dict())
+        if payload is None:
+            return
+        raw = payload.to_dict()
+        # Preserve the canonical Agent event for protocol consumers while the
+        # queue projection gives UI clients the current editable snapshot.
+        self._publish_runtime_event(raw)
+        data = raw.get("data")
+        self._publish_runtime_event(session_event(
+            "queue_updated",
+            {"items": [item.to_dict() for item in self.pending_inputs()]},
+        ))
+        if not isinstance(data, dict) or data.get("operation") != "claim":
+            return
+        for item in data.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict) or not metadata.get("defer_message_event"):
+                continue
+            self._publish_runtime_event(session_event(
+                "message",
+                {
+                    "id": str(item.get("message_id") or ""),
+                    "role": "user",
+                    "content": str(item.get("content") or ""),
+                    "images": item.get("images") if isinstance(item.get("images"), list) else [],
+                    "artifacts": item.get("artifacts") if isinstance(item.get("artifacts"), list) else [],
+                },
+            ))
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
@@ -219,19 +261,52 @@ class SessionRuntime:
         )
         self.event_stream.publish(event, request_id=message_id)
 
+    def pending_inputs(self) -> tuple[PendingInputSnapshot, ...]:
+        return tuple(_pending_input_snapshot(item) for item in self.engine.pending_inputs)
+
+    async def update_pending_input(
+        self,
+        message_id: str,
+        action: str,
+        content: str = "",
+    ) -> tuple[PendingInputSnapshot, ...]:
+        try:
+            if action == "edit":
+                await self.engine.edit_input(message_id, content)
+            elif action == "remove":
+                await self.engine.remove_input(message_id)
+                response = self.pending_responses.pop(message_id, None)
+                if response is not None:
+                    response.finish()
+            elif action == "steer":
+                await self.engine.retarget_input(message_id, InboxTarget.NEXT_STEP)
+                self._request_wakeup()
+            else:
+                raise ValueError(f"Unsupported pending input action: {action}")
+        except KeyError as exc:
+            raise OperationError(
+                "queue_item_not_found",
+                f"Pending input {message_id!r} is no longer available.",
+            ) from exc
+        return self.pending_inputs()
+
     async def stream_message(
         self,
         content: str,
         request_id: str,
         *,
+        delivery: str = "steer",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Deliver one user input.
 
-        Idle input enters ``next-turn``. Busy input enters ``next-step`` and is
-        claimed by the same loop inbox between model/tool steps.
+        Idle input starts directly. Busy ``queue`` input enters ``next-turn``;
+        busy ``steer`` input enters ``next-step``. Both remain owned by the
+        same loop inbox until claimed at their respective boundary.
         """
+        if delivery not in {"queue", "steer"}:
+            raise ValueError(f"Unsupported input delivery mode: {delivery}")
         if not self.turn_lock.locked():
             try:
                 async for event in run_turn_stream(
@@ -254,21 +329,25 @@ class SessionRuntime:
                 # next-step through the same inbox.
                 pass
 
-        item = await self.engine.steer(
+        queued = delivery == "queue"
+        enqueue = self.engine.followup if queued else self.engine.steer
+        item = await enqueue(
             content,
             source="user",
             message_id=request_id,
             images=images,
             artifacts=artifacts,
+            metadata={"defer_message_event": True} if queued else None,
         )
         pending = TurnResponse(
             message_id=item.message_id,
             request_id=request_id,
         )
         self.pending_responses[item.message_id] = pending
-        self._publish_message_event(
-            item.message_id, content, images, artifacts
-        )
+        if not queued:
+            self._publish_message_event(
+                item.message_id, content, images, artifacts
+            )
         completed = False
         try:
             while True:

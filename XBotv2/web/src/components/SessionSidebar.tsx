@@ -1,15 +1,18 @@
-import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, Pencil, Plus, RefreshCw, Search, TerminalSquare, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, TerminalSquare, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenSessionResponse, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
 
 interface SessionSidebarProps {
   open: boolean;
+  collapsed: boolean;
+  width: number;
   sessions: readonly SessionSummary[];
   workspaces: readonly WorkspaceData[];
   archivedSessionIds: readonly string[];
   threads: ThreadSummary[];
   current: Pick<OpenSessionResponse, "session_id" | "thread_id"> | null;
   onClose: () => void;
+  onToggle: () => void;
   onNew: () => void;
   onRefresh: () => Promise<void>;
   refreshing: boolean;
@@ -25,13 +28,30 @@ interface SessionSidebarProps {
   onMoveSession: (workspaceId: string, sessionId: string, direction: -1 | 1) => void;
 }
 
+const COLLAPSED_SESSION_LIMIT = 5;
+
 export function SessionSidebar(props: SessionSidebarProps) {
+  const [wideMounted, setWideMounted] = useState(!props.collapsed);
   const [query, setQuery] = useState("");
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(new Set());
+  const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(new Set());
   const [editingWorkspace, setEditingWorkspace] = useState("");
   const [workspaceTitle, setWorkspaceTitle] = useState("");
   const [confirmWorkspaceDelete, setConfirmWorkspaceDelete] = useState("");
   const [menuWorkspace, setMenuWorkspace] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
+  const lastWideWidth = useRef(props.width);
+  if (!props.collapsed) lastWideWidth.current = props.width;
+  useEffect(() => {
+    if (!props.collapsed) {
+      setWideMounted(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setWideMounted(false), 150);
+    return () => window.clearTimeout(timer);
+  }, [props.collapsed]);
+  const wide = !props.collapsed || wideMounted;
+  const rail = !wide;
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const matches = (values: unknown[]) => !needle || values.some(
@@ -75,21 +95,39 @@ export function SessionSidebar(props: SessionSidebarProps) {
   };
 
   return (
-    <aside className={`session-sidebar ${props.open ? "open" : ""}`}>
+    <aside
+      className={`session-sidebar ${props.open ? "open" : ""} ${rail ? "collapsed" : ""} ${props.collapsed && wide ? "fading" : ""}`}
+      style={{ width: wide && props.collapsed ? lastWideWidth.current : props.width }}
+    >
       <div className="brand-row">
         <span className="brand-mark"><TerminalSquare size={19} /></span>
-        <strong>XBot</strong>
+        <strong className="sidebar-wide">XBot</strong>
+        <button className="icon-button sidebar-toggle" title={props.collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-label={props.collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={props.onToggle}>
+          {rail ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={17} />}
+        </button>
         <button className="icon-button sidebar-close" title="Close sidebar" aria-label="Close sidebar" onClick={props.onClose}>
           <PanelLeftClose size={17} />
         </button>
       </div>
-      <button className="new-session-button" onClick={props.onNew}>
-        <Plus size={16} /> New session
+      <button className="new-session-button" title="New session" aria-label="New session" onClick={props.onNew}>
+        <Plus size={rail ? 18 : 16} /> <span className="sidebar-wide">New session</span>
       </button>
-      <div className="sidebar-tools">
+      {rail && (
+        <div className="sidebar-rail-actions">
+          <button type="button" title="Search sessions" aria-label="Search sessions" onClick={() => {
+            props.onToggle();
+            window.setTimeout(() => searchInput.current?.focus(), 310);
+          }}><Search size={18} /></button>
+          <button type="button" title="Refresh sessions" aria-label="Refresh sessions" disabled={props.refreshing} onClick={() => void props.onRefresh()}>
+            <RefreshCw size={18} className={props.refreshing ? "spin" : ""} />
+          </button>
+        </div>
+      )}
+      <div className="sidebar-tools sidebar-wide">
         <div className="session-search">
           <Search size={14} />
           <input
+            ref={searchInput}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search sessions"
@@ -102,7 +140,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
           )}
         </div>
       </div>
-      <div className="sidebar-section-label">
+      <div className="sidebar-section-label sidebar-wide">
         <span>Sessions <b>{visibleCount}</b></span>
         <button
           className="icon-button small"
@@ -115,9 +153,13 @@ export function SessionSidebar(props: SessionSidebarProps) {
           <RefreshCw size={13} className={props.refreshing ? "spin" : ""} />
         </button>
       </div>
-      <nav className="session-list" aria-label="Sessions">
+      <nav className="session-list sidebar-wide" aria-label="Sessions">
         {visible.groups.map(({ workspace, sessions }, workspaceIndex) => {
           const collapsed = collapsedWorkspaces.has(workspace.workspace_id) && !query;
+          const sessionRows = query || expandedSessionGroups.has(workspace.workspace_id)
+            ? sessions
+            : sessions.slice(0, COLLAPSED_SESSION_LIMIT);
+          const hiddenSessionCount = sessions.length - sessionRows.length;
           return (
             <section className="workspace-group" key={workspace.workspace_id} onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) setMenuWorkspace("");
@@ -177,7 +219,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
                   <button type="button" className="text-button" onClick={() => setConfirmWorkspaceDelete("")}>Cancel</button>
                 </div>
               )}
-              {!collapsed && sessions.map((session, sessionIndex) => (
+              {!collapsed && sessionRows.map((session, sessionIndex) => (
                 <SessionItem
                   key={session.session_id}
                   session={session}
@@ -187,6 +229,24 @@ export function SessionSidebar(props: SessionSidebarProps) {
                   sessionIndex={sessionIndex}
                 />
               ))}
+              {!collapsed && hiddenSessionCount > 0 && (
+                <button
+                  type="button"
+                  className="workspace-show-more"
+                  onClick={() => setExpandedSessionGroups((current) => new Set(current).add(workspace.workspace_id))}
+                >Show {hiddenSessionCount} more</button>
+              )}
+              {!collapsed && sessions.length > COLLAPSED_SESSION_LIMIT && hiddenSessionCount === 0 && !query && (
+                <button
+                  type="button"
+                  className="workspace-show-more"
+                  onClick={() => setExpandedSessionGroups((current) => {
+                    const next = new Set(current);
+                    next.delete(workspace.workspace_id);
+                    return next;
+                  })}
+                >Show less</button>
+              )}
               {!collapsed && !sessions.length && <div className="workspace-empty">No matching sessions</div>}
             </section>
           );

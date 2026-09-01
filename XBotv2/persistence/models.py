@@ -14,6 +14,7 @@ from XBotv2.core.messages import ImageContent, Message, part_from_dict
 from XBotv2.core.tools import JsonObject, JsonValue, json_object, json_value
 
 MESSAGE_SCHEMA_VERSION = 1
+TRAJECTORY_SCHEMA_VERSION = 1
 THREAD_LIFECYCLE_SCHEMA_VERSION = 1
 INBOX_SCHEMA_VERSION = 1
 
@@ -44,9 +45,10 @@ class PersistenceRecord(BaseModel):
         }
 
 
-class MessageRecord(PersistenceRecord):
+class MessagePayloadRecord(PersistenceRecord):
+    """The single persistence codec for a provider-neutral Message."""
+
     schema_version: Literal[1] = MESSAGE_SCHEMA_VERSION
-    position: int = Field(ge=1)
     role: Literal["system", "user", "assistant", "tool"]
     status: str
     data: Any
@@ -61,9 +63,8 @@ class MessageRecord(PersistenceRecord):
     error: dict[str, Any] | None
 
     @classmethod
-    def from_message(cls, message: Message, position: int) -> "MessageRecord":
+    def from_message(cls, message: Message) -> "MessagePayloadRecord":
         return cls(
-            position=position,
             role=message.role,
             status=message.status,
             data=message.data,
@@ -117,6 +118,90 @@ class MessageRecord(PersistenceRecord):
             artifact=_restore_artifacts(self.artifact),
             error=self.error,
         )
+
+
+class MessageRecord(MessagePayloadRecord):
+    """One append-origin message in the trajectory."""
+
+    position: int = Field(ge=1)
+
+    @classmethod
+    def from_message(cls, message: Message, position: int) -> "MessageRecord":
+        return cls(
+            **MessagePayloadRecord.from_message(message).model_dump(),
+            position=position,
+        )
+
+
+class SurfaceReplaceRecord(PersistenceRecord):
+    """One deterministic replacement of current contiguous surface nodes."""
+
+    schema_version: Literal[1] = TRAJECTORY_SCHEMA_VERSION
+    position: int = Field(ge=1)
+    record_type: Literal["surface_replace"] = "surface_replace"
+    operation: str
+    transcript: Literal["preserve", "replace"] = "replace"
+    source_node_ids: tuple[str, ...]
+    messages: tuple[MessagePayloadRecord, ...]
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _validate_operation(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Surface operation must be a non-empty string")
+        return value
+
+    @field_validator("source_node_ids", mode="before")
+    @classmethod
+    def _validate_source_nodes(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)) or not value:
+            raise ValueError("Surface replacement requires source node ids")
+        nodes = tuple(value)
+        if any(not isinstance(node, str) or not node for node in nodes):
+            raise ValueError("Surface source node ids must be non-empty strings")
+        if len(set(nodes)) != len(nodes):
+            raise ValueError("Surface source node ids must be unique")
+        return nodes
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def _validate_messages(cls, value: object) -> tuple[MessagePayloadRecord, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("Surface replacement messages must be a list")
+        return tuple(
+            item
+            if isinstance(item, MessagePayloadRecord)
+            else MessagePayloadRecord.from_dict(_mapping(item, "surface message"))
+            for item in value
+        )
+
+
+class TrajectoryEventRecord(PersistenceRecord):
+    """One plugin-owned, log-only event that never enters the surface."""
+
+    schema_version: Literal[1] = TRAJECTORY_SCHEMA_VERSION
+    position: int = Field(ge=1)
+    record_type: Literal["event"] = "event"
+    event: str
+    data: dict[str, Any]
+    timestamp: str
+
+    @field_validator("event", mode="before")
+    @classmethod
+    def _validate_event(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Trajectory event must be a non-empty string")
+        return value
+
+    @field_validator("data", mode="before")
+    @classmethod
+    def _validate_data(cls, value: object) -> JsonObject:
+        return _object(value, "trajectory event data")
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _validate_timestamp(cls, value: object) -> str:
+        return _timestamp(value, "timestamp")
 
 
 class ThreadLifecycleRecord(PersistenceRecord):
@@ -364,7 +449,10 @@ def _mapping(value: object, name: str) -> Mapping[str, object]:
 __all__ = [
     "InboxItemRecord",
     "InboxSnapshot",
+    "MessagePayloadRecord",
     "MessageRecord",
+    "SurfaceReplaceRecord",
+    "TrajectoryEventRecord",
     "ThreadLifecycleRecord",
     "ThreadMetadata",
 ]

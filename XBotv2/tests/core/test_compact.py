@@ -15,6 +15,7 @@ from XBotv2.compact.plugin import (
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.compact import POST_COMPACT, PRE_COMPACT
 from XBotv2.core import (
+    ConversationHistory,
     Message,
     ModelResponse,
     ToolCall,
@@ -78,6 +79,10 @@ def history(turns: int, *, content: str = "message") -> list[Message]:
     return messages
 
 
+def set_history(plugin, messages: list[Message]) -> None:
+    plugin.state.set_history(ConversationHistory(messages))
+
+
 class FailingModel:
     """Provider whose streaming summary call raises the given error."""
 
@@ -132,6 +137,7 @@ async def test_commit_dispatches_pre_and_post_compact_bracket():
     setup.ctx.on(POST_COMPACT, post_compact)
     plugin._manual_requested = True
     original = history(3)
+    set_history(plugin, original)
     ctx = EventContext(messages=original, session=make_session(3))
     result = await plugin._on_before_context(ctx)
 
@@ -150,6 +156,7 @@ async def test_manual_tool_requests_compaction_below_threshold():
     tool_result = await setup.tool.ainvoke({})
 
     original = history(3)
+    set_history(plugin, original)
     ctx = EventContext(
         messages=original,
         session=make_session(3),
@@ -179,6 +186,9 @@ async def test_human_command_compacts_and_persists_immediately(
     state_store.history.replace(original)
     llm = MockLLM(responses=[{
         "content": "Earlier requirements.",
+        "reasoning": "Selected durable facts.",
+        "response_metadata": {"request_id": "compact-request"},
+        "additional_kwargs": {"finish_reason": "stop"},
         "usage_metadata": {
             "input_tokens": 30,
             "output_tokens": 4,
@@ -200,6 +210,7 @@ async def test_human_command_compacts_and_persists_immediately(
     )
     setup.ctx.model.replace(llm)
     plugin.state = engine.state
+    engine.state.metadata.update(provider="trace-provider", model="trace-model")
     engine.state.session.turn_count = 3
     await engine.start_session()
     runtime_events = []
@@ -216,9 +227,22 @@ async def test_human_command_compacts_and_persists_immediately(
         for line in state_store.history.path.read_text(encoding="utf-8").splitlines()
     ]
     assert all(record["schema_version"] == 1 for record in records)
-    assert "user 0 message" not in state_store.history.path.read_text(
-        encoding="utf-8"
+    trajectory = state_store.history.path.read_text(encoding="utf-8")
+    assert "user 0 message" in trajectory
+    assert '"record_type": "surface_replace"' in trajectory
+    assert '"event": "compaction/summary"' in trajectory
+    summary_record = next(
+        record for record in records
+        if record.get("event") == "compaction/summary"
     )
+    assert summary_record["data"]["raw_output"] == {
+        "content": "Earlier requirements.",
+        "reasoning": "Selected durable facts.",
+        "response_metadata": {"request_id": "compact-request"},
+        "additional_kwargs": {"finish_reason": "stop"},
+    }
+    assert summary_record["data"]["provider"] == "trace-provider"
+    assert summary_record["data"]["model"] == "trace-model"
 
     assert result.status == "ok"
     history_chars_before = _history_chars(original)
@@ -230,6 +254,7 @@ async def test_human_command_compacts_and_persists_immediately(
     assert "30 input and 4 output tokens" in result.message
     assert [event["type"] for event in runtime_events] == [
         "compaction_started",
+        "usage",
         "usage",
         "compaction_completed",
     ]
@@ -246,10 +271,16 @@ async def test_human_command_compacts_and_persists_immediately(
         "total_tokens": 34,
         "context_tokens": 30,
     }, False)]
+    assert setup.ctx.usage.context_updates == [
+        plugin._last_compaction["context_tokens_after_estimate"]
+    ]
     assert llm.call_count == 1
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content
     assert state_store.history.load() == engine.messages
+    assert [message.content for message in state_store.history.load_transcript()] == [
+        message.content for message in original
+    ]
 
 
 @pytest.mark.asyncio
@@ -258,6 +289,7 @@ async def test_compaction_does_not_append_duplicate_human_directives():
     plugin._manual_requested = True
     original = history(3)
     original[2].content = "Do not ask me again; decide the safest option."
+    set_history(plugin, original)
 
     plugin.model = MockLLM(responses=[{
         "content": "## Conversation Summary\n\nOlder context only."
@@ -282,6 +314,7 @@ async def test_compaction_does_not_append_duplicate_human_directives():
 async def test_large_context_does_not_use_fixed_character_threshold():
     plugin = make_plugin({"keep_recent_turns": 1})
     original = history(3, content="x" * 13_500)
+    set_history(plugin, original)
     context = [Message(role="system", content="x" * 80_000), *original]
 
     result = await plugin._on_before_model_request(EventContext(
@@ -307,6 +340,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
     original[-1].response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = 200_000
     original[-1].response_metadata[REQUEST_PROVIDER_KEY] = "test"
     original[-1].usage_metadata["context_tokens"] = 136_000
+    set_history(plugin, original)
 
     plugin.model = MockLLM(responses=[{"content": (
         "## Requirements\nKeep constraints.\n\n"
@@ -370,6 +404,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
         ),
         session=make_session(1),
     )
+    set_history(plugin, original)
     result = await plugin._on_before_model_request(ctx)
 
     assert [message.role for message in ctx.messages[1:]] == [

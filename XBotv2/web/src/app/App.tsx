@@ -4,8 +4,10 @@ import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
 import { CommandHelpDialog } from "../components/CommandHelpDialog";
 import { CommandOutput } from "../components/CommandOutput";
+import { DshAppFrame } from "../components/DshAppFrame";
 import { InteractionDialog } from "../components/InteractionDialog";
 import { RuntimeHeader } from "../components/RuntimeHeader";
+import { QueueDock } from "../components/QueueDock";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { StatusBar } from "../components/StatusBar";
 import { TaskDock } from "../components/TaskDock";
@@ -131,15 +133,19 @@ export function App() {
   }, [clearConfirmOpen, deleteCandidate, helpQuery, runtime, state.interactions.length, state.turnRunning]);
 
   return (
-    <div className="app-shell">
-      <SessionSidebar
+    <DshAppFrame
+      mobileSidebarOpen={sidebarOpen}
+      sidebar={({ collapsed, width, toggle }) => <SessionSidebar
         open={sidebarOpen}
+        collapsed={collapsed}
+        width={width}
         sessions={runtime.sessions}
         workspaces={runtime.workspaces}
         archivedSessionIds={runtime.archivedSessionIds}
         threads={state.threads}
         current={state.current}
         onClose={() => setSidebarOpen(false)}
+        onToggle={toggle}
         onNew={() => setNewSessionOpen(true)}
         onRefresh={runtime.refreshSessions}
         refreshing={state.loading}
@@ -165,7 +171,8 @@ export function App() {
         onDeleteWorkspace={(workspaceId) => void runtime.deleteWorkspace(workspaceId)}
         onMoveWorkspace={(workspaceId, direction) => void runtime.moveWorkspace(workspaceId, direction)}
         onMoveSession={(workspaceId, sessionId, direction) => void runtime.moveSession(workspaceId, sessionId, direction)}
-      />
+      />}
+    >
       {sidebarOpen && <button className="sidebar-scrim" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />}
 
       <main className="workbench">
@@ -179,6 +186,13 @@ export function App() {
           onUndo={runtime.undo}
           onFork={runtime.fork}
           onClear={async () => setClearConfirmOpen(true)}
+          utilities={(
+            <TaskDock
+              tasks={Object.values(state.tasks)}
+              onStop={runtime.stopTask}
+              onStopAll={runtime.stopAllTasks}
+            />
+          )}
         />
 
         {state.error && (
@@ -207,7 +221,7 @@ export function App() {
         )}
 
         {state.current ? (
-          <>
+          <div className="conversation-scroll" data-conversation-scroll>
             <Timeline
               key={`${state.current.session_id}/${state.current.thread_id}`}
               entries={state.entries}
@@ -231,27 +245,28 @@ export function App() {
                   onClose={() => setCommandOutput(null)}
                 />
               )}
-              <TaskDock
-                tasks={Object.values(state.tasks)}
-                onStop={runtime.stopTask}
-                onStopAll={runtime.stopAllTasks}
-              />
               <TodoDock items={state.todos} />
+              <QueueDock
+                items={state.pendingInputs}
+                running={state.turnRunning}
+                onUpdate={runtime.updatePendingInput}
+              />
               <Composer
                 running={state.turnRunning}
                 disabled={state.loading || runtime.commandRunning}
-                queued={state.queuedMessages}
                 commands={commands}
                 draft={composerDraft}
                 allowImages={Boolean(state.providers
                   .find((provider) => provider.name === state.current?.provider)
                   ?.models.find((model) => model.model === state.current?.model)
                   ?.input_modalities.includes("image"))}
+                usage={state.usage}
+                contextWindow={state.current.context_window}
                 onSend={sendComposerInput}
                 onInterrupt={runtime.interrupt}
               />
             </div>
-          </>
+          </div>
         ) : (
           <section className="empty-workbench">
             <TerminalSquare size={42} strokeWidth={1.5} />
@@ -357,7 +372,7 @@ export function App() {
       )}
 
       {state.loading && <div className="loading-line" aria-label="Loading" />}
-    </div>
+    </DshAppFrame>
   );
 }
 

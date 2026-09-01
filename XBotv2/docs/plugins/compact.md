@@ -30,11 +30,17 @@ the resulting core-state mutation for persistence observers.
   allowing provider prefix caches to be reused. The summary instruction retains
   requirements, decisions, feedback, verified results, current state, remaining
   work, and known unknowns while distinguishing evidence from plans.
-- The summary becomes a system history message. The plugin runs
-  `PRE_COMPACT` and `POST_COMPACT`, then publishes the typed session
-  `HISTORY_CHANGED` event. It commits exactly one atomic
-  `ConversationHistory.replace()`; the persisted current history no longer
-  retains or replays the removed raw prefix.
+- The summary becomes a system message on the current model surface. The plugin
+  appends `compaction/start`, `compaction/summary`, one surface replacement,
+  and `compaction/end` to the thread trajectory. Original messages remain in
+  the append-only JSONL and deterministic replay shadows only the selected
+  prefix. The plugin runs `PRE_COMPACT` and `POST_COMPACT`, then publishes the
+  typed session `HISTORY_CHANGED` event.
+- The summary record cites every shadowed surface node and records the normalized
+  summary, provider-neutral raw response fields, provider/model, usage, trigger
+  reason, and metrics.
+  After the replacement commits, Usage immediately publishes the new effective
+  context size without counting another request or discarding summary-call cost.
 - The summary instruction explicitly requires preservation of human directives;
   the plugin does not append the same directives a second time after summarizing.
 - A cancelled summary propagates cancellation. A failed manual request reports
@@ -46,7 +52,9 @@ the resulting core-state mutation for persistence observers.
   remain part of cumulative session usage, but do not replace the latest
   main-Agent `context_tokens`.
 
-`context_tokens` means the input size of the latest main-Agent provider request.
+`context_tokens` means the best current effective-context size: normally the
+input size of the latest main-Agent provider request, and immediately after
+compaction the replacement surface's calibrated estimate.
 Session input/output/total fields are cumulative. Character counts are
 diagnostic only and never trigger compaction.
 

@@ -41,7 +41,6 @@ export function useXBot() {
   }, []);
 
   const runtimeEvents = useMemo(() => new RuntimeEventController(api, {
-    isCurrent: (generation) => generation === navigationGeneration.current,
     onEvents: (events) => dispatch({ type: "events", events }),
     onThreads: (threads) => dispatch({ type: "threads", threads }),
     onTaskExpired: (taskId) => dispatch({ type: "remove_task", taskId }),
@@ -128,7 +127,10 @@ export function useXBot() {
   }, [api, workspaceCatalog, reportError, runtimeEvents]);
 
   const openExistingSession = useCallback(async (sessionId?: string, workspaceRoot?: string) => {
-    if (navigationBlocked) {
+    // Refs close the render-to-event gap: a message or command can acquire its
+    // request handle before React commits the state update that recomputes
+    // navigationBlocked.
+    if (navigationBlocked || messageControllers.current.size > 0 || commandInFlight.current) {
       notify(navigationBlockMessage);
       return;
     }
@@ -288,12 +290,17 @@ export function useXBot() {
     const content = rawContent.trim();
     if (!current || state.loading || (!content && attachments.length === 0)) return false;
     const requestId = crypto.randomUUID();
-    dispatch({
-      type: "user_message",
-      id: requestId,
-      content,
-      images: attachments.map((attachment) => ({ label: attachment.name, src: attachment.preview })),
-    });
+    const delivery = (
+      state.turnRunning || messageControllers.current.size > 0
+    ) ? "queue" : "steer";
+    if (delivery === "steer") {
+      dispatch({
+        type: "user_message",
+        id: requestId,
+        content,
+        images: attachments.map((attachment) => ({ label: attachment.name, src: attachment.preview })),
+      });
+    }
     const controller = new AbortController();
     messageControllers.current.add(controller);
     try {
@@ -309,6 +316,7 @@ export function useXBot() {
           .map(({ data, media_type, name }) => ({ data, media_type, name })),
         controller.signal,
         requestId,
+        delivery,
       )) {
         // The session event connection is the authoritative, resumable
         // delivery path. The POST stream is drained only for compatibility
@@ -316,15 +324,36 @@ export function useXBot() {
       }
       return true;
     } catch (error) {
-      if (generation === navigationGeneration.current) {
+      if (generation === navigationGeneration.current && delivery === "steer") {
         dispatch({ type: "user_message_failed", id: requestId });
-        reportError(error, true);
       }
+      reportError(error, delivery === "steer");
       return false;
     } finally {
       messageControllers.current.delete(controller);
     }
-  }, [api, reportError, runtimeEvents, state.current, state.loading]);
+  }, [api, reportError, state.current, state.loading, state.turnRunning]);
+
+  const updatePendingInput = useCallback(async (
+    messageId: string,
+    action: { action: "edit"; content: string } | { action: "remove" | "steer" },
+  ): Promise<boolean> => {
+    const current = state.current;
+    if (!current) return false;
+    try {
+      const result = await api.updatePendingInput(
+        current.session_id,
+        current.thread_id,
+        messageId,
+        action,
+      );
+      dispatch({ type: "pending_inputs", items: result.items });
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
+    }
+  }, [api, reportError, state.current]);
 
   const retryLast = useCallback(async () => {
     if (state.turnRunning || !state.current) return;
@@ -703,6 +732,7 @@ export function useXBot() {
     resumeSession,
     selectThread,
     sendMessage,
+    updatePendingInput,
     retryLast,
     loadEarlier,
     interrupt,

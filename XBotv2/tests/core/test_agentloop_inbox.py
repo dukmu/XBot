@@ -102,3 +102,48 @@ async def test_failed_sink_write_does_not_change_pending_or_claimed_state():
     sink.fail = False
     restored = AgentInbox(items=sink.items, sink=sink)
     assert [item.message_id for item in restored.pending] == ["durable"]
+
+
+@pytest.mark.asyncio
+async def test_pending_input_mutations_replace_the_authoritative_snapshot():
+    sink = MemoryInboxSink()
+    splices = []
+
+    async def record(event):
+        splices.append(event)
+
+    inbox = AgentInbox(sink=sink, record_splice=record)
+    await inbox.followup("draft", message_id="edit-me")
+    await inbox.followup("remove", message_id="remove-me")
+
+    edited = await inbox.edit("edit-me", "edited")
+    steered = await inbox.retarget("edit-me", InboxTarget.NEXT_STEP)
+    removed = await inbox.remove("remove-me")
+
+    assert edited.content == "edited"
+    assert steered.target is InboxTarget.NEXT_STEP
+    assert removed.message_id == "remove-me"
+    assert [(item.message_id, item.content, item.target) for item in inbox.pending] == [
+        ("edit-me", "edited", InboxTarget.NEXT_STEP),
+    ]
+    assert [(item.message_id, item.content, item.target) for item in sink.items] == [
+        ("edit-me", "edited", InboxTarget.NEXT_STEP),
+    ]
+    assert [event["data"]["operation"] for event in splices] == [
+        "insert", "insert", "edit", "retarget", "remove",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_claimed_or_unknown_input_cannot_be_mutated():
+    inbox = AgentInbox()
+    await inbox.followup("claimed", message_id="claimed")
+    await inbox.claim_turn()
+
+    for operation in (
+        lambda: inbox.edit("claimed", "changed"),
+        lambda: inbox.remove("claimed"),
+        lambda: inbox.retarget("missing", InboxTarget.NEXT_STEP),
+    ):
+        with pytest.raises(KeyError):
+            await operation()

@@ -49,7 +49,7 @@ because Core has immutable runtime variables for them.
 Slash-invoked Skills use `<skill_invocation>` with separate
 `skill_instructions` and `user_arguments` children. Model-invoked Skills remain
 normal Tools. General Mailbox delivery uses `<runtime_event>` with explicit
-source, event, and encoded payload fields. Compact checkpoints use
+source, event, and encoded payload fields. Compacted surface summaries use
 `<historical_context source="compaction">` around `<conversation_summary>` and
 preserve their structured marker across resume.
 

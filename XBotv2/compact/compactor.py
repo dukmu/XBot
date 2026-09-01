@@ -6,8 +6,15 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
+from uuid import uuid4
 
-from XBotv2.core import ClientEvent, Message, estimate_messages_tokens
+from XBotv2.core import (
+    ClientEvent,
+    Message,
+    ModelResponse,
+    estimate_messages_tokens,
+    json_object,
+)
 
 from XBotv2.compact.history import compact_prefix_end, history_chars
 from XBotv2.compact.protocol import compact_event
@@ -23,6 +30,17 @@ logger = logging.getLogger("xbotv2.compact")
 
 RuntimePublisher = Callable[[ClientEvent], Awaitable[None]]
 UsageRecorder = Callable[[dict[str, int]], Awaitable[None]]
+TrajectoryRecorder = Callable[[str, dict[str, Any]], None]
+
+
+def _response_trace(response: ModelResponse) -> dict[str, Any]:
+    """Return the complete provider-neutral response fields as JSON."""
+    return json_object({
+        "content": response.content,
+        "reasoning": response.reasoning,
+        "response_metadata": response.response_metadata,
+        "additional_kwargs": response.additional_kwargs,
+    })
 
 
 async def build_compaction_proposal(
@@ -43,10 +61,13 @@ async def build_compaction_proposal(
     output_reservation: int | None = None,
     stable_prefix: Sequence[Any] = (),
     removable_estimate: int | None = None,
+    record_trajectory: TrajectoryRecorder | None = None,
 ) -> dict[str, Any] | None:
     split = compact_prefix_end(messages, keep_recent_turns)
     if split == 0:
         return None
+
+    compaction_id = uuid4().hex
 
     prefix_messages = messages[:split]
     removed_estimate = (
@@ -87,6 +108,14 @@ async def build_compaction_proposal(
             "context_limit": context_limit,
         },
     ))
+    if record_trajectory is not None:
+        record_trajectory("compaction/start", {
+            "compaction_id": compaction_id,
+            "reason": reason,
+            "messages_before": len(messages),
+            "prefix_messages": split,
+            "context_tokens_before": context_tokens_before,
+        })
 
     try:
         summary_messages = prefix_messages
@@ -115,12 +144,22 @@ async def build_compaction_proposal(
             summary_max_chars,
         )
     except asyncio.CancelledError:
+        if record_trajectory is not None:
+            record_trajectory("compaction/end", {
+                "compaction_id": compaction_id,
+                "error": "cancelled",
+            })
         await publish_runtime_event(compact_event(
             "compaction_failed",
             {"reason": reason, "message": "Compaction cancelled."},
         ))
         raise
     except Exception as exc:
+        if record_trajectory is not None:
+            record_trajectory("compaction/end", {
+                "compaction_id": compaction_id,
+                "error": str(exc),
+            })
         await publish_runtime_event(compact_event(
             "compaction_failed",
             {"reason": reason, "message": str(exc)},
@@ -150,6 +189,11 @@ async def build_compaction_proposal(
             "compaction_failed",
             {"reason": reason, "message": message},
         ))
+        if record_trajectory is not None:
+            record_trajectory("compaction/end", {
+                "compaction_id": compaction_id,
+                "error": message,
+            })
         return None
 
     metrics = {
@@ -175,6 +219,10 @@ async def build_compaction_proposal(
     }
     return {
         "messages": compacted_messages,
+        "prefix_end": split,
+        "compaction_id": compaction_id,
+        "summary": summary,
+        "raw_output": _response_trace(response),
         "compact_reason": reason,
         "compact_metrics": metrics,
     }

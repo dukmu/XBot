@@ -1,0 +1,42 @@
+/* Adapted from DeepSeek Harness ContextMeter.module.css (MIT). */
+.root { position: relative; display: inline-flex; }
+.trigger {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.trigger:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.track { fill: none; stroke: var(--dsw-alias-border-l3); stroke-width: 2; }
+.fill { fill: none; stroke: var(--dsw-alias-label-tertiary); stroke-width: 2; stroke-linecap: round; }
+.panel {
+  position: absolute;
+  z-index: 100;
+  right: 0;
+  bottom: calc(100% + 8px);
+  box-sizing: border-box;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv2);
+  font-size: 12px;
+  line-height: 20px;
+}
+.header { display: flex; align-items: center; gap: 6px; }
+.percent, .figures { color: var(--dsw-alias-label-primary); font-weight: 500; }
+.figures { margin-left: auto; font-variant-numeric: tabular-nums; }
+.bar { height: 4px; margin: 10px 0 12px; overflow: hidden; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); }
+.bar > i { display: block; min-width: 2px; height: 100%; border-radius: inherit; background: var(--dsw-alias-state-business-primary); }
+.rows { display: grid; gap: 4px; margin: 0; }
+.rows > div { display: flex; justify-content: space-between; gap: 12px; }
+.rows dt { color: var(--dsw-alias-label-tertiary); }
+.rows dd { margin: 0; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }

@@ -255,9 +255,13 @@ runtime replay, not a durable event archive across process restart.
 
 ## Unified input and response routing
 
-There is no protocol-owned message queue or pending-fold content buffer.
-Idle user input uses `followup`; busy user input uses `steer`; background
-completion notices use non-waking `inject`. The loop atomically claims
+There is no second protocol-owned message queue or pending-fold content buffer.
+The Agent inbox remains authoritative. `MessageRequest.delivery="steer"`
+targets the running turn's next step, while `delivery="queue"` targets the next
+turn. The typed queue resource exposes that same inbox projection for listing,
+editing, removing, or retargeting an unclaimed input; it never copies content
+into transport state. Background completion notices use non-waking `inject`.
+The loop atomically claims
 `next-step` input between steps and claims pending `next-step` plus one
 `next-turn` input at a turn boundary. The protocol retains only SSE response
 waiters keyed by the inbox message ID. Durable `agent/inbox/spliced` records
@@ -276,20 +280,21 @@ sequenceDiagram
     Note over TUI,Ev: Submitting while idle runs a fresh turn directly
     TUI->>Core: send_message(A) POST /messages
     Core->>Ev: publish message(A) {id, role:user, content:A}
-    Core->>Inbox: followup(A)
-    Inbox->>Turn: wake + claim turn
+    Core->>Turn: start directly under the Session turn lock
     Turn-->>TUI: turn_started, assistant_message, turn_finished
     Note over TUI: renders A from message(A) on the event stream
 
-    Note over TUI,Inbox: Submitting while busy steers the running loop
-    TUI->>Core: send_message(B), send_message(C)
-    Core->>Inbox: steer(B), steer(C)
+    Note over TUI,Inbox: Busy input explicitly chooses steer or next-turn queue
+    TUI->>Core: send_message(B, delivery=steer)
+    TUI->>Core: send_message(C, delivery=queue)
+    Core->>Inbox: steer(B), followup(C)
     Turn->>Inbox: claim next-step FIFO
-    Inbox-->>Turn: B, C
-    Turn->>Turn: append each as user input, save
+    Inbox-->>Turn: B
+    Turn->>Turn: append B as user input, save
     Turn-->>TUI: merged reply routed by claimed message IDs
     Ev-->>TUI: message events → pop queue + append transcript (in order)
-    Turn-->>TUI: assistant_message (merged reply), turn_finished
+    Turn-->>TUI: assistant_message (steered reply), turn_finished
+    Inbox->>Turn: wake + claim C at the next turn boundary
 ```
 
 

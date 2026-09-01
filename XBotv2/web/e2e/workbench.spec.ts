@@ -5,6 +5,15 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
+test("collapses to the DSh rail and expands into focused session search", async ({ page }) => {
+  test.skip((page.viewportSize()?.width || 0) <= 760, "mobile uses the overlay sidebar");
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+  const railSearch = page.getByRole("button", { name: "Search sessions" });
+  await expect(railSearch).toBeVisible();
+  await railSearch.click();
+  await expect(page.getByRole("textbox", { name: "Search sessions" })).toBeFocused();
+});
+
 test("renders an active workbench without overflow", async ({ page }, testInfo) => {
   await openDemoSession(page);
   if ((page.viewportSize()?.width || 0) <= 580) {
@@ -16,9 +25,9 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await composer.fill("Review the API boundary");
   await composer.press("Enter");
 
-  await expect(page.getByText("Thinking", { exact: true })).toBeVisible();
-  await page.getByText("Thinking", { exact: true }).click();
-  await expect(page.getByText("I am checking the public resources.")).toBeVisible();
+  await expect(page.getByText("Think", { exact: true })).toBeVisible();
+  await page.getByText("Think", { exact: true }).click();
+  await expect(page.locator(".reasoning-content").getByText("I am checking the public resources.", { exact: true })).toBeVisible();
   await expect(page.getByText(
     "The Web client remains behind the typed v3 API.",
     { exact: true },
@@ -26,8 +35,13 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await expect(page.getByText("filesystem_read", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-details")).toHaveCount(0);
   await page.getByText("filesystem_read", { exact: true }).click();
-  await expect(page.getByText("Arguments", { exact: true })).toBeVisible();
+  await expect(page.getByText("Path", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Background tasks" }).click();
   await expect(page.getByText("Explorer", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Background tasks" }).click();
+  await page.getByRole("button", { name: /Context \d+% used/ }).click();
+  await expect(page.getByRole("dialog", { name: "Context usage" })).toContainText("Cumulative input");
+  await page.keyboard.press("Escape");
   await expect(page.locator(".status-bar")).toContainText("tokens:1.4k");
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -68,9 +82,9 @@ test("restores historical sessions and their workspaces", async ({ page }) => {
   if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
 
   await page.getByTitle("history-session").click();
-  await expect(page.getByText("Thinking", { exact: true })).toBeVisible();
-  await page.getByText("Thinking", { exact: true }).click();
-  await expect(page.getByText("I checked the persisted context.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Think", { exact: true })).toBeVisible();
+  await page.getByText("Think", { exact: true }).click();
+  await expect(page.locator(".reasoning-content").getByText("I checked the persisted context.", { exact: true })).toBeVisible();
   if (mobile) {
     await expect(page.getByText("A persisted answer from history.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Open sessions" }).click();
@@ -240,11 +254,38 @@ test("pastes a clipboard image directly into the composer", async ({ page }) => 
       clipboardData: transfer,
     }));
   });
-  await expect(page.getByRole("img", { name: "clipboard.png" })).toBeVisible();
+  const thumbnail = page.getByRole("img", { name: "clipboard.png" });
+  await expect(thumbnail).toBeVisible();
+  await thumbnail.click();
+  await expect(page.getByRole("dialog", { name: "Preview clipboard.png" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Preview clipboard.png" })).toBeHidden();
   const messageRequest = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/messages"));
   await page.getByRole("button", { name: "Send" }).click();
   expect((await messageRequest).postDataJSON()).toMatchObject({
     images: [{ media_type: "image/png" }],
+  });
+});
+
+test("accepts a file through the DSh whole-window drop surface", async ({ page }) => {
+  await openDemoSession(page);
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["report"], "drop.txt", { type: "text/plain" }));
+    document.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    (window as typeof window & { __xbotDrop?: DataTransfer }).__xbotDrop = transfer;
+  });
+  await expect(page.getByText("Drop files to attach", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const holder = window as typeof window & { __xbotDrop?: DataTransfer };
+    document.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: holder.__xbotDrop }));
+    delete holder.__xbotDrop;
+  });
+  await expect(page.locator('.composer-image[title="drop.txt"]')).toBeVisible();
+  const messageRequest = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/messages"));
+  await page.getByRole("button", { name: "Send" }).click();
+  expect((await messageRequest).postDataJSON()).toMatchObject({
+    attachments: [{ media_type: "text/plain", name: "drop.txt" }],
   });
 });
 
@@ -293,6 +334,19 @@ test("contains long command output in a collapsible result panel", async ({ page
   await result.getByRole("button", { name: /diagnostics/i }).click();
   await expect(output).toHaveCount(0);
   await expect(page.locator(".notice-row")).toHaveCount(0);
+});
+
+test("keeps long tool output head-tail bounded until explicitly expanded", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Long tool output");
+  await composer.press("Enter");
+
+  await page.getByText("shell", { exact: true }).click();
+  const details = page.locator(".tool-details");
+  await expect(details).not.toContainText("line-20");
+  await details.getByRole("button", { name: "Show 24 hidden lines" }).click();
+  await expect(details).toContainText("line-20");
 });
 
 test("submits discovered prompt commands through the message stream", async ({ page }) => {
@@ -445,6 +499,28 @@ test("does not navigate away while a server command is active", async ({ page })
   await expect(page.getByRole("region", { name: "/diagnostics result" })).toBeVisible();
 });
 
+test("manages the authoritative DSh queue while a turn is running", async ({ page }, testInfo) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Hold queue turn");
+  await composer.press("Enter");
+  await expect(page.getByRole("button", { name: "Interrupt" })).toBeVisible();
+
+  await composer.fill("Queued follow-up");
+  await composer.press("Enter");
+  const dock = page.getByRole("region", { name: "Queued messages" });
+  await expect(dock).toContainText("Queued follow-up");
+  await dock.getByRole("button", { name: "Edit queued message" }).click();
+  const editor = dock.getByRole("textbox", { name: "Edit queued message" });
+  await editor.fill("Edited follow-up");
+  await dock.getByRole("button", { name: "Save queued message" }).click();
+  await expect(dock).toContainText("Edited follow-up");
+  await page.screenshot({ path: testInfo.outputPath("queue-dock.png"), fullPage: true });
+  await dock.getByRole("button", { name: "Remove queued message" }).click();
+  await expect(dock).toBeHidden();
+  await expect(page.getByText("The delayed turn completed.", { exact: true })).toBeVisible();
+});
+
 test("keeps a long history bounded while allowing older messages", async ({ page }) => {
   await openLongSession(page);
   await expect(page.locator(".message-block")).toHaveCount(160);
@@ -479,6 +555,14 @@ async function mockProtocol(page: Page) {
   let xbotSessionOrder = ["demo-session", "second-session"];
   let demoSessionTitle = "Demo session";
   const archivedSessions = new Set<string>();
+  let pendingInputs: Array<{
+    message_id: string;
+    content: string;
+    target: "next-turn" | "next-step";
+    source: string;
+    image_count: number;
+    artifact_count: number;
+  }> = [];
   const runtimeEvents: Array<{
     type: string;
     data: Record<string, unknown>;
@@ -785,12 +869,38 @@ async function mockProtocol(page: Page) {
         after,
       );
     }
+    const queueMatch = path.match(/^\/sessions\/[^/]+\/threads\/[^/]+\/queue\/([^/]+)$/);
+    if (queueMatch && method === "PATCH") {
+      const messageId = decodeURIComponent(queueMatch[1]);
+      const payload = request.postDataJSON() as { action: "edit" | "remove" | "steer"; content?: string };
+      if (payload.action === "remove") pendingInputs = pendingInputs.filter((item) => item.message_id !== messageId);
+      else pendingInputs = pendingInputs.map((item) => item.message_id !== messageId ? item : {
+        ...item,
+        content: payload.action === "edit" ? String(payload.content || "") : item.content,
+        target: payload.action === "steer" ? "next-step" : item.target,
+      });
+      publishRuntime([{ type: "queue_updated", data: { items: pendingInputs } }], messageId);
+      return json(route, { items: pendingInputs });
+    }
     if (path.endsWith("/messages") && method === "POST") {
-      const content = String(request.postDataJSON().content || "");
-      const requestId = String(request.postDataJSON().request_id || "request-1");
+      const payload = request.postDataJSON();
+      const content = String(payload.content || "");
+      const requestId = String(payload.request_id || "request-1");
+      if (payload.delivery === "queue") {
+        pendingInputs.push({
+          message_id: requestId,
+          content,
+          target: "next-turn",
+          source: "user",
+          image_count: Array.isArray(payload.images) ? payload.images.length : 0,
+          artifact_count: Array.isArray(payload.attachments) ? payload.attachments.length : 0,
+        });
+        publishRuntime([{ type: "queue_updated", data: { items: pendingInputs } }], requestId);
+        return sse(route, []);
+      }
       demoMessageCount += content.startsWith("Plan") ? 4 : content.startsWith("Write") ? 1 : 2;
       if (content.startsWith("Hold")) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        await new Promise((resolve) => setTimeout(resolve, content.startsWith("Hold queue") ? 1600 : 400));
         const events = [
           { type: "turn_started", data: { turn: 2 } },
           { type: "assistant_message", data: { content: "The delayed turn completed.", tool_calls: [] } },
@@ -834,6 +944,18 @@ async function mockProtocol(page: Page) {
             data: { kind: "todo_snapshot", schema_version: 1, items: current },
           } },
           { type: "assistant_message", data: { content: "I will work through the checklist.", tool_calls: [] } },
+          { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
+        ];
+        publishRuntime(events, requestId);
+        return sse(route, events);
+      }
+      if (content.startsWith("Long tool")) {
+        const output = Array.from({ length: 40 }, (_, index) => `line-${index}`).join("\n");
+        const events = [
+          { type: "turn_started", data: { turn: 2 } },
+          { type: "tool_calls_started", data: { tool_calls: [{ id: "shell-long", name: "shell", args: { command: "emit-lines" } }] } },
+          { type: "tool_result", data: { tool_call_id: "shell-long", name: "shell", content: output, status: "success" } },
+          { type: "assistant_message", data: { content: "Long output inspected.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ];
         publishRuntime(events, requestId);
@@ -887,6 +1009,7 @@ function openSession(sessionId = "demo-session", workspaceOverride = "", history
     context_window: 32000,
     usage: usage(),
     status_slots: { goal: "active" },
+    pending_inputs: [],
     history: history.slice(start).map((item) => ({ images: [], ...item })),
     history_cursor: start ? String(start) : null,
     event_cursor: 0,

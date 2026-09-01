@@ -47,6 +47,8 @@ class UsagePort(Protocol):
         update_context: bool = True,
     ) -> dict[str, int] | None: ...
 
+    async def update_context(self, context_tokens: int) -> dict[str, int]: ...
+
 
 class CompactService:
     """Own compaction runtime state, proposal generation, and commit semantics."""
@@ -198,12 +200,17 @@ class CompactService:
             session=ctx.session,
             reason=reason,
         )
-        pre_result = await self._events.serial(PRE_COMPACT, pre)
+        try:
+            pre_result = await self._events.serial(PRE_COMPACT, pre)
+        except BaseException as exc:
+            self._record_end(proposal, error=_exception_text(exc))
+            raise
 
         messages = list(pre.messages)
         reason = pre.reason
         if pre_result is not None:
             message = "Compaction was rejected before commit."
+            self._record_end(proposal, error=message)
             await self._publish_runtime_event(compact_event(
                 "compaction_failed",
                 {"reason": reason, "message": message},
@@ -230,25 +237,62 @@ class CompactService:
         proposal["messages"] = messages
         proposal["compact_metrics"] = metrics
 
+        prefix_end = int(proposal["prefix_end"])
+        retained = original_messages[prefix_end:]
+        if retained and (
+            len(messages) < len(retained)
+            or messages[-len(retained):] != retained
+        ):
+            message = "PRE_COMPACT may only change the summary replacement."
+            self._record_end(proposal, error=message)
+            raise RuntimeError(message)
+        replacement = messages[:len(messages) - len(retained)] if retained else messages
         previous_count = len(original_messages)
-        self.state.replace_messages(messages)
-        ctx.messages = list(self.state.messages)
-        committed = AfterCompact(
-            messages=tuple(ctx.messages),
-            session=ctx.session,
-            reason=reason,
-            metrics=metrics,
-            previous_message_count=previous_count,
-            current_message_count=len(ctx.messages),
-        )
-        await self._events.emit(POST_COMPACT, committed)
-        await self._events.emit(
-            HISTORY_CHANGED,
-            HistoryChanged(
-                tuple(ctx.messages),
-                operation=f"compact:{reason}",
-            ),
-        )
+        compaction_id = str(proposal["compaction_id"])
+        self.state.history.record("compaction/summary", {
+            "compaction_id": compaction_id,
+            "reason": reason,
+            "summary": "\n".join(message.content for message in replacement),
+            "raw_output": proposal["raw_output"],
+            "source_node_ids": list(proposal["source_node_ids"]),
+            "provider": self._provider(ctx),
+            "model": self._model(ctx),
+            "usage": dict(metrics.get("model_usage") or {}),
+            "metrics": metrics,
+        })
+        try:
+            self.state.replace_message_range(
+                0,
+                prefix_end,
+                list(replacement),
+                operation=f"compact:{compaction_id}",
+                preserve_transcript=True,
+            )
+            ctx.messages = list(self.state.messages)
+            usage_event = await self._usage.update_context(
+                int(metrics["context_tokens_after_estimate"])
+            )
+            await self._publish_runtime_event(ClientEvent("usage", usage_event))
+            committed = AfterCompact(
+                messages=tuple(ctx.messages),
+                session=ctx.session,
+                reason=reason,
+                metrics=metrics,
+                previous_message_count=previous_count,
+                current_message_count=len(ctx.messages),
+            )
+            await self._events.emit(POST_COMPACT, committed)
+            await self._events.emit(
+                HISTORY_CHANGED,
+                HistoryChanged(
+                    tuple(ctx.messages),
+                    operation=f"compact:{reason}",
+                ),
+            )
+        except BaseException as exc:
+            self._record_end(proposal, error=_exception_text(exc))
+            raise
+        self._record_end(proposal)
 
         self._record_committed(reason, metrics, ctx.session)
         await self._publish_runtime_event(compact_event(
@@ -256,6 +300,32 @@ class CompactService:
             {"reason": reason, "metrics": metrics},
         ))
         return {"rebuild": True}
+
+    def _provider(self, ctx: EventContext) -> str:
+        metadata = self.state.metadata.value
+        return str(
+            metadata.provider
+            or (ctx.settings.provider if ctx.settings is not None else "")
+            or (ctx.session.provider if ctx.session is not None else "")
+        )
+
+    def _model(self, ctx: EventContext) -> str:
+        metadata = self.state.metadata.value
+        return str(
+            metadata.model
+            or (ctx.settings.model if ctx.settings is not None else "")
+        )
+
+    def _record_end(
+        self,
+        proposal: dict[str, Any],
+        *,
+        error: str = "",
+    ) -> None:
+        data = {"compaction_id": str(proposal["compaction_id"])}
+        if error:
+            data["error"] = error
+        self.state.history.record("compaction/end", data)
 
     async def _compact(
         self,
@@ -278,7 +348,8 @@ class CompactService:
             stable = (stable_prefix,)
         else:
             stable = tuple(stable_prefix)
-        return await build_compaction_proposal(
+        source_node_ids = self.state.history.node_ids()
+        proposal = await build_compaction_proposal(
             model=self.model,
             record_usage=self._record_auxiliary_usage,
             publish_runtime_event=self._publish_runtime_event,
@@ -295,7 +366,19 @@ class CompactService:
             output_reservation=output_reservation,
             stable_prefix=stable,
             removable_estimate=removable_estimate,
+            record_trajectory=self.state.history.record,
         )
+        if proposal is not None:
+            prefix_end = int(proposal["prefix_end"])
+            proposal["source_node_ids"] = source_node_ids[:prefix_end]
+            if self.state.history.node_ids()[:prefix_end] != source_node_ids[:prefix_end]:
+                compaction_id = str(proposal["compaction_id"])
+                self.state.history.record("compaction/end", {
+                    "compaction_id": compaction_id,
+                    "error": "selected history changed while summarizing",
+                })
+                raise RuntimeError("Selected history changed while compacting")
+        return proposal
 
     async def _record_auxiliary_usage(self, usage: dict[str, int]) -> None:
         if usage:
@@ -355,6 +438,10 @@ def _context_window(settings: LoopSettings | None) -> int:
     value = settings.context_window if settings is not None else 32_000
     result = int(value)
     return result if result > 0 else 32_000
+
+
+def _exception_text(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__
 
 
 def _finalize_metrics(

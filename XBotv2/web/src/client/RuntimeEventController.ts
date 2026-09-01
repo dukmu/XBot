@@ -5,7 +5,6 @@ import { SessionEventConnection } from "./SessionEventConnection";
 type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
 
 export interface RuntimeEventListener {
-  isCurrent(generation: number): boolean;
   onEvents(events: ServerEvent[]): void;
   onThreads(threads: ThreadSummary[]): void;
   onTaskExpired(taskId: string): void;
@@ -19,6 +18,7 @@ export class RuntimeEventController {
   private flushTimer: number | null = null;
   private threadRefreshTimer: number | null = null;
   private readonly taskTimers = new Map<string, number>();
+  private generation: number | null = null;
 
   constructor(
     private readonly api: Pick<XBotApi, "streamEvents" | "listThreads">,
@@ -28,18 +28,20 @@ export class RuntimeEventController {
   }
 
   start(session: SessionAddress, generation: number): void {
+    this.generation = generation;
     this.connection.start(session, {
       onEvent: (event) => this.handle(event, generation),
       onConnection: (connected) => {
-        if (this.listener.isCurrent(generation)) this.listener.onConnection(connected);
+        if (this.isCurrent(generation)) this.listener.onConnection(connected);
       },
       onDisconnect: (error, retrying) => {
-        if (this.listener.isCurrent(generation) && !retrying) this.listener.onError(error);
+        if (this.isCurrent(generation) && !retrying) this.listener.onError(error);
       },
     });
   }
 
   stop(): void {
+    this.generation = null;
     this.connection.stop();
     if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
     if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
@@ -51,7 +53,7 @@ export class RuntimeEventController {
   }
 
   handle(event: ServerEvent, generation: number): void {
-    if (!this.listener.isCurrent(generation)) return;
+    if (!this.isCurrent(generation)) return;
     if (event.type === "assistant_message_delta" || event.type === "tool_call_delta") {
       this.events.push(event);
       if (this.flushTimer === null) {
@@ -70,7 +72,7 @@ export class RuntimeEventController {
     if (!this.events.length) return;
     const events = this.events;
     this.events = [];
-    if (this.listener.isCurrent(generation)) this.listener.onEvents(events);
+    if (this.isCurrent(generation)) this.listener.onEvents(events);
   }
 
   private handleTask(event: ServerEvent, generation: number): void {
@@ -80,7 +82,7 @@ export class RuntimeEventController {
     if (existing !== undefined) window.clearTimeout(existing);
     if (taskId && (status === "completed" || status === "stopped")) {
       this.taskTimers.set(taskId, window.setTimeout(() => {
-        if (this.listener.isCurrent(generation)) this.listener.onTaskExpired(taskId);
+        if (this.isCurrent(generation)) this.listener.onTaskExpired(taskId);
         this.taskTimers.delete(taskId);
       }, 4000));
     }
@@ -88,12 +90,16 @@ export class RuntimeEventController {
     if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
     this.threadRefreshTimer = window.setTimeout(() => {
       this.threadRefreshTimer = null;
-      if (!this.listener.isCurrent(generation)) return;
+      if (!this.isCurrent(generation)) return;
       void this.api.listThreads(event.session_id)
         .then((threads) => {
-          if (this.listener.isCurrent(generation)) this.listener.onThreads(threads);
+          if (this.isCurrent(generation)) this.listener.onThreads(threads);
         })
         .catch((error) => this.listener.onError(error));
     }, 250);
+  }
+
+  private isCurrent(generation: number): boolean {
+    return generation === this.generation;
   }
 }

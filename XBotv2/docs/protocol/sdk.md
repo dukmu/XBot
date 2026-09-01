@@ -69,6 +69,8 @@ PATCH /sessions/{session_id}/policy
 POST /sessions/{session_id}/threads/{thread_id}/history/clear
 POST /sessions/{session_id}/threads/{thread_id}/history/undo
 POST /sessions/{session_id}/threads/{thread_id}/history/regenerate
+GET  /sessions/{session_id}/threads/{thread_id}/queue
+PATCH /sessions/{session_id}/threads/{thread_id}/queue/{message_id}
 GET  /sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id}
 GET  /sessions/{session_id}/threads/{thread_id}/todos
 PUT  /sessions/{session_id}/threads/{thread_id}/agent
@@ -115,11 +117,16 @@ Use `XBotClient.read_artifact(...)` to retrieve referenced bytes and
 `XBotClient.regenerate_message(...)` to replace the latest human turn without
 duplicating it. `list_messages(..., limit=..., cursor=...)` reads newest-first
 pages while returning each page's messages in conversation order.
+During a running turn, `send_message(..., delivery="queue")` keeps the input
+out of the transcript until the next turn claims it; `delivery="steer"` folds
+it into the current turn at the next step boundary. `list_pending_inputs()` and
+`update_pending_input(..., action="edit" | "remove" | "steer")` operate on the
+same durable Agent inbox projection.
 `GET .../events` is the single-consumer stream for server-initiated turns and
 task notifications. Both streams carry validated `ServerEvent` envelopes.
 Compaction remains a foreground, session-busy operation. Its lifecycle is
-reported through `compaction_started`, `compaction_completed`, and
-`compaction_failed`; completion carries metrics and updated session usage.
+reported through `compaction_started`, `compaction_completed`,
+and `compaction_failed`; completion carries metrics and updated session usage.
 
 Generated clients may need a small transport adapter for SSE because OpenAPI
 describes the endpoint but not incremental event iteration. Clients should use

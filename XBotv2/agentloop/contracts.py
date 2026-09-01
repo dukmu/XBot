@@ -54,7 +54,25 @@ class LoopState:
         self._update_turn_count()
 
     def replace_messages(self, messages: list[Message]) -> None:
-        self.history.replace(messages)
+        self.history.replace(messages, operation="replace")
+        self._update_turn_count()
+
+    def replace_message_range(
+        self,
+        start: int,
+        end: int,
+        messages: list[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool = False,
+    ) -> None:
+        self.history.replace_range(
+            start,
+            end,
+            messages,
+            operation=operation,
+            preserve_transcript=preserve_transcript,
+        )
         self._update_turn_count()
 
     def _update_turn_count(self) -> None:

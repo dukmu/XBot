@@ -22,6 +22,7 @@ def mount_ctx(state_store):
     class TestUsage:
         def __init__(self) -> None:
             self.records = []
+            self.context_updates = []
 
         async def add(self, usage, *, update_context=True):
             self.records.append((dict(usage), update_context))
@@ -33,6 +34,16 @@ def mount_ctx(state_store):
             if not update_context:
                 event["context_tokens"] = 0
             return event
+
+        async def update_context(self, context_tokens):
+            self.context_updates.append(context_tokens)
+            return {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "requests": 0,
+                "context_tokens": context_tokens,
+            }
 
     ctx = Context(
         data_dir=state_store.paths.plugin_state_dir,

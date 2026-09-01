@@ -1,5 +1,5 @@
 import { GitFork, Menu, RotateCcw, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { RuntimeState } from "../state/runtime";
 
 interface RuntimeHeaderProps {
@@ -12,9 +12,10 @@ interface RuntimeHeaderProps {
   onUndo: (count?: number) => Promise<void>;
   onFork: () => Promise<void>;
   onClear: () => Promise<void>;
+  utilities?: ReactNode;
 }
 
-export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffort, onUndo, onFork, onClear }: RuntimeHeaderProps) {
+export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffort, onUndo, onFork, onClear, utilities }: RuntimeHeaderProps) {
   const current = state.current;
   const [mobileSettings, setMobileSettings] = useState(false);
   const selectedModel = state.providers
@@ -32,6 +33,7 @@ export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffo
         <strong>{current ? threadTitle(current.thread_id, current.agent_name) : "XBot"}</strong>
         {current && <span title={current.workspace_root}>{current.workspace_root}</span>}
       </div>
+      {current && utilities && <div className="header-utilities">{utilities}</div>}
       {current && (
         <div className="runtime-selectors">
           <select

@@ -7,32 +7,37 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from uuid import uuid4
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
     ConversationPage,
+    HistoryNode,
     HistoryCursorInvalid,
     decode_history_cursor,
     encode_history_cursor,
 )
 from XBotv2.core.messages import Message
+from XBotv2.core.tools import JsonObject
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.inbox import InboxInput
 from XBotv2.persistence.models import (
     InboxSnapshot,
+    MessagePayloadRecord,
     MessageRecord,
+    SurfaceReplaceRecord,
+    TrajectoryEventRecord,
     ThreadLifecycleRecord,
     ThreadMetadata,
+    utc_now,
 )
 from xcore.state import StateService
 
 
 class MessageHistoryStore:
-    """Durable current-history store implementing the HistorySink contract."""
+    """Append-only trajectory store with one deterministic message surface."""
 
     def __init__(
         self,
@@ -40,7 +45,6 @@ class MessageHistoryStore:
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._path = paths.messages_file
-        self._revision_path = paths.history_revision_file
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
         self._next_position = 1
@@ -51,14 +55,8 @@ class MessageHistoryStore:
 
     def load(self) -> list[Message]:
         started = time.perf_counter()
-        records = self._records()
-        positions = [record.position for record in records]
-        if positions != list(range(1, len(positions) + 1)):
-            raise ValueError("MessageRecord positions must be contiguous and start at 1")
-        self._next_position = len(records) + 1
-        messages = [record.to_message() for record in records]
-        for message in messages:
-            message.seal()
+        nodes = self.load_surface()
+        messages = [node.message for node in nodes]
         self._log.debug(
             "persistence.history.loaded",
             messages=len(messages),
@@ -66,80 +64,153 @@ class MessageHistoryStore:
         )
         return messages
 
-    def append(self, messages: Sequence[Message]) -> None:
+    def load_transcript(self) -> list[Message]:
+        """Derive the human transcript without hiding compacted conversation."""
+        return [node.message for node in _fold_transcript(self._records())]
+
+    def load_surface(self) -> tuple[HistoryNode, ...]:
+        records = self._records()
+        self._next_position = len(records) + 1
+        return _fold_surface(records)
+
+    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
         if not messages:
-            return
-        self._ensure_revision()
+            return ()
         self._ensure_loaded_id()
         records = [
             MessageRecord.from_message(message, self._next_position + index)
             for index, message in enumerate(messages)
         ]
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        if self._path.exists() and self._path.stat().st_size:
-            with self._path.open("rb") as stream:
-                stream.seek(-1, os.SEEK_END)
-                if stream.read(1) != b"\n":
-                    raise ValueError("messages.jsonl ends with an incomplete record")
-        with self._path.open("a", encoding="utf-8") as stream:
-            for record in records:
-                stream.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        self._append_records(records)
         self._next_position += len(records)
         self._log.debug(
             "persistence.history.appended",
             messages=len(records),
             next_position=self._next_position,
         )
+        return tuple(
+            HistoryNode(str(record.position), message)
+            for record, message in zip(records, messages, strict=True)
+        )
 
     def replace(self, messages: Sequence[Message]) -> None:
-        records = [
-            MessageRecord.from_message(message, index)
-            for index, message in enumerate(messages, start=1)
-        ]
-        content = "".join(
-            json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
-            for record in records
+        surface = self.load_surface()
+        if not surface:
+            self.append(messages)
+            return
+        self.replace_surface(
+            tuple(node.node_id for node in surface),
+            messages,
+            operation="replace",
+            preserve_transcript=False,
         )
-        write_text_atomic(self._revision_path, uuid4().hex + "\n")
-        write_text_atomic(self._path, content)
+
+    def replace_surface(
+        self,
+        source_node_ids: Sequence[str],
+        messages: Sequence[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool,
+    ) -> tuple[HistoryNode, ...]:
+        records = self._records()
         self._next_position = len(records) + 1
-        self._log.info(
-            "persistence.history.replaced",
-            messages=len(records),
-            bytes=len(content.encode("utf-8")),
+        record = SurfaceReplaceRecord(
+            position=self._next_position,
+            operation=operation,
+            transcript="preserve" if preserve_transcript else "replace",
+            source_node_ids=tuple(source_node_ids),
+            messages=tuple(
+                MessagePayloadRecord.from_message(message) for message in messages
+            ),
         )
+        # Both projections must accept the transition before it becomes durable.
+        prospective = [*records, record]
+        _fold_surface(prospective)
+        _fold_transcript(prospective)
+        self._append_records((record,))
+        self._next_position = record.position + 1
+        self._log.info(
+            "persistence.surface.replaced",
+            operation=operation,
+            source_nodes=len(source_node_ids),
+            replacement_nodes=len(messages),
+        )
+        return tuple(
+            HistoryNode(f"{record.position}:{index}", message)
+            for index, message in enumerate(messages)
+        )
+
+    def record(self, event: str, data: JsonObject) -> None:
+        self.load_surface()
+        record = TrajectoryEventRecord(
+            position=self._next_position,
+            event=event,
+            data=data,
+            timestamp=utc_now(),
+        )
+        self._append_records((record,))
+        self._next_position += 1
+        self._log.debug("persistence.trajectory.event", trajectory_event=event)
 
     def count(self) -> int:
-        return len(self._records())
+        return len(self.load_surface())
 
     def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
+        return self._page_nodes(
+            _fold_surface(self._records()),
+            limit=limit,
+            cursor=cursor,
+            projection="surface",
+        )
+
+    def page_transcript(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        return self._page_nodes(
+            _fold_transcript(self._records()),
+            limit=limit,
+            cursor=cursor,
+            projection="transcript",
+        )
+
+    def _page_nodes(
+        self,
+        nodes: Sequence[HistoryNode],
+        *,
+        limit: int,
+        cursor: str | None,
+        projection: str,
+    ) -> ConversationPage:
         if limit < 1:
             raise ValueError("History page limit must be positive")
-        size = self._path.stat().st_size if self._path.exists() else 0
-        if not size:
+        records = self._records()
+        if not nodes:
             if cursor is not None:
                 raise HistoryCursorInvalid(
                     "History cursor is outside the current history"
                 )
             return ConversationPage(())
-        revision = f"{self._cursor_scope}:{self._ensure_revision()}"
-        end = size if cursor is None else decode_history_cursor(cursor, revision)
-        if end < 0 or end > size:
+        generation = max((
+            record.position
+            for record in records
+            if isinstance(record, SurfaceReplaceRecord)
+            and (
+                projection == "surface"
+                or record.transcript == "replace"
+            )
+        ), default=0)
+        revision = f"{self._cursor_scope}:{projection}:{generation}"
+        end = len(nodes) if cursor is None else decode_history_cursor(cursor, revision)
+        if end < 0 or end > len(nodes):
             raise HistoryCursorInvalid("History cursor is outside the current history")
         if end == 0:
             return ConversationPage(())
-        lines, start = self._read_page_lines(end, limit)
-        records = [MessageRecord.from_dict(_decode_json_line(line)) for line in lines]
-        positions = [record.position for record in records]
-        if positions != list(range(positions[0], positions[0] + len(positions))):
-            raise ValueError("MessageRecord page positions must be contiguous")
-        if start == 0 and positions[0] != 1:
-            raise ValueError("MessageRecord positions must start at 1")
-        messages = tuple(record.to_message() for record in records)
-        for message in messages:
-            message.seal()
+        start = max(0, end - limit)
+        messages = tuple(node.message for node in nodes[start:end])
         return ConversationPage(
             messages,
             encode_history_cursor(revision, start) if start else None,
@@ -154,54 +225,161 @@ class MessageHistoryStore:
             and self._path.exists()
             and self._path.stat().st_size
         ):
-            self.load()
+            self.load_surface()
 
-    def _records(self) -> list[MessageRecord]:
-        return [
-            MessageRecord.from_dict(raw)
+    def _records(self) -> list[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord]:
+        records = [
+            _trajectory_record(raw)
             for raw in _read_jsonl(self._path, "messages.jsonl")
         ]
+        positions = [record.position for record in records]
+        if positions != list(range(1, len(records) + 1)):
+            raise ValueError("Trajectory positions must be contiguous and start at 1")
+        return records
 
-    def _ensure_revision(self) -> str:
-        if not self._revision_path.exists():
-            write_text_atomic(self._revision_path, uuid4().hex + "\n")
-        revision = self._revision_path.read_text(encoding="utf-8").strip()
-        if len(revision) != 32 or any(
-            value not in "0123456789abcdef" for value in revision
-        ):
-            raise ValueError("Invalid message history revision")
-        return revision
+    def _append_records(
+        self,
+        records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
+    ) -> None:
+        payload = "".join(
+            json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
+            for record in records
+        ).encode("utf-8")
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self._path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+        original_size = os.fstat(descriptor).st_size
+        try:
+            if original_size:
+                with self._path.open("rb") as stream:
+                    stream.seek(-1, os.SEEK_END)
+                    if stream.read(1) != b"\n":
+                        raise ValueError("messages.jsonl ends with an incomplete record")
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                if written == 0:
+                    raise OSError("Trajectory append made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        except BaseException:
+            os.ftruncate(descriptor, original_size)
+            os.fsync(descriptor)
+            raise
+        finally:
+            os.close(descriptor)
 
-    def _read_page_lines(self, end: int, limit: int) -> tuple[list[bytes], int]:
-        with self._path.open("rb") as stream:
-            stream.seek(end - 1)
-            if stream.read(1) != b"\n":
-                raise ValueError("History cursor does not end at a record boundary")
-            position = end
-            chunks: list[bytes] = []
-            newline_count = 0
-            while position and newline_count <= limit:
-                chunk_size = min(65536, position)
-                position -= chunk_size
-                stream.seek(position)
-                chunk = stream.read(chunk_size)
-                chunks.append(chunk)
-                newline_count += chunk.count(b"\n")
-        buffer = b"".join(reversed(chunks))
-        lines = buffer.splitlines()
-        selected = lines[-limit:]
-        start = end - sum(len(line) + 1 for line in selected)
-        return selected, start
+
+TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
 
 
-def _decode_json_line(line: bytes) -> Mapping[str, object]:
+def _trajectory_record(value: Mapping[str, object]) -> TrajectoryRecord:
+    record_type = value.get("record_type")
+    if record_type is None:
+        return MessageRecord.from_dict(value)
+    if record_type == "surface_replace":
+        return SurfaceReplaceRecord.from_dict(value)
+    if record_type == "event":
+        return TrajectoryEventRecord.from_dict(value)
+    raise ValueError(f"Unknown trajectory record type: {record_type!r}")
+
+
+def _fold_surface(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
+    surface: list[HistoryNode] = []
+    for record in records:
+        if isinstance(record, MessageRecord):
+            surface.append(HistoryNode(str(record.position), record.to_message()))
+        elif isinstance(record, SurfaceReplaceRecord):
+            _apply_surface_record(surface, record)
+    for node in surface:
+        node.message.seal()
+    return tuple(surface)
+
+
+def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
+    """Fold only explicit user history edits; compaction remains model-only."""
+    transcript: list[HistoryNode] = []
+    lineage: dict[str, tuple[str, ...]] = {}
+    for record in records:
+        if isinstance(record, MessageRecord):
+            node_id = str(record.position)
+            transcript.append(HistoryNode(node_id, record.to_message()))
+            lineage[node_id] = (node_id,)
+        elif isinstance(record, SurfaceReplaceRecord):
+            sources = tuple(
+                origin
+                for source in record.source_node_ids
+                for origin in lineage.get(source, (source,))
+            )
+            replacements = [
+                HistoryNode(f"{record.position}:{index}", payload.to_message())
+                for index, payload in enumerate(record.messages)
+            ]
+            if record.transcript == "preserve":
+                if len(replacements) != 1:
+                    raise ValueError(
+                        "Transcript-preserving replacement must produce one surface node"
+                    )
+                lineage[replacements[0].node_id] = sources
+                continue
+            _replace_transcript_nodes(transcript, sources, replacements, record.position)
+            for node in replacements:
+                lineage[node.node_id] = (node.node_id,)
+    for node in transcript:
+        node.message.seal()
+    return tuple(transcript)
+
+
+def _replace_transcript_nodes(
+    transcript: list[HistoryNode],
+    source_ids: Sequence[str],
+    replacements: Sequence[HistoryNode],
+    position: int,
+) -> None:
+    if not source_ids:
+        raise ValueError(f"Transcript replacement at {position} has no sources")
     try:
-        value = json.loads(line)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("Invalid messages.jsonl record") from exc
-    if not isinstance(value, Mapping):
-        raise TypeError("messages.jsonl record must be an object")
-    return value
+        start = next(
+            index
+            for index, node in enumerate(transcript)
+            if node.node_id == source_ids[0]
+        )
+    except StopIteration as exc:
+        raise ValueError(
+            f"Transcript replacement at {position} sources are not current"
+        ) from exc
+    current = [node.node_id for node in transcript[start:start + len(source_ids)]]
+    if current != list(source_ids):
+        raise ValueError(f"Transcript replacement at {position} sources are not current")
+    transcript[start:start + len(source_ids)] = replacements
+
+
+def _apply_surface_record(
+    surface: list[HistoryNode],
+    record: SurfaceReplaceRecord,
+) -> None:
+    source_ids = list(record.source_node_ids)
+    try:
+        start = next(
+            index
+            for index, node in enumerate(surface)
+            if node.node_id == source_ids[0]
+        )
+    except StopIteration as exc:
+        raise ValueError(
+            f"Surface replacement at {record.position} source nodes are not current"
+        ) from exc
+    current = [
+        node.node_id for node in surface[start:start + len(source_ids)]
+    ]
+    if current != source_ids:
+        raise ValueError(
+            f"Surface replacement at {record.position} source nodes are not current"
+        )
+    replacements = [
+        HistoryNode(f"{record.position}:{index}", payload.to_message())
+        for index, payload in enumerate(record.messages)
+    ]
+    surface[start:start + len(source_ids)] = replacements
 
 
 class ThreadMetadataStore:

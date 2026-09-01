@@ -89,6 +89,27 @@ class UsageService:
             event["context_tokens"] = self._snapshot.context_tokens
         return event
 
+    async def update_context(self, context_tokens: int) -> dict[str, int]:
+        """Persist and publish a new effective-context size without a request."""
+        if not self._initialized:
+            raise RuntimeError("UsageService must be initialized before updating context")
+        if isinstance(context_tokens, bool) or context_tokens < 0:
+            raise ValueError("context_tokens must be a non-negative integer")
+        self._snapshot = replace(self._snapshot, context_tokens=context_tokens)
+        await self._store.set("snapshot", self._snapshot.to_snapshot())
+        self._log.info(
+            "usage.context_updated",
+            context_tokens=context_tokens,
+            cumulative=self._snapshot.totals(),
+        )
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "requests": 0,
+            "context_tokens": context_tokens,
+        }
+
 
 class UsageHandlers:
     def __init__(self, service: UsageService, state: LoopState) -> None:

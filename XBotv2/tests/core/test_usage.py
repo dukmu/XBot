@@ -108,6 +108,26 @@ async def test_auxiliary_usage_accumulates_without_replacing_main_context(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_context_projection_updates_without_counting_a_request(tmp_path):
+    usage = UsageService(StateService(path=tmp_path / "state.json"))
+    await usage.initialize([])
+    await usage.add({"input_tokens": 100, "output_tokens": 5})
+
+    event = await usage.update_context(24)
+
+    assert event == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+        "context_tokens": 24,
+    }
+    assert usage.snapshot()["requests"] == 1
+    assert usage.snapshot()["total_tokens"] == 105
+    assert usage.snapshot()["context_tokens"] == 24
+
+
+@pytest.mark.asyncio
 async def test_zero_token_and_total_only_requests_are_not_dropped(tmp_path):
     state_file = tmp_path / "state.json"
     usage = UsageService(StateService(path=state_file).namespace("usage"))

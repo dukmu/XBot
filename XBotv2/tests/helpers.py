@@ -125,8 +125,8 @@ def make_engine(
         ),
     )
     state.set_history(ConversationHistory(
-        state_store.history.load(),
         sink=state_store.history,
+        nodes=state_store.history.load_surface(),
     ))
     settings = LoopSettings(
         provider="default",

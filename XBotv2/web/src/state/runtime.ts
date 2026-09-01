@@ -6,6 +6,7 @@ import {
   type InteractionRequest,
   type JsonObject,
   type OpenSessionResponse,
+  type PendingInput,
   type ProviderInfo,
   type ServerEvent,
   type TaskData,
@@ -81,13 +82,13 @@ export interface RuntimeState {
   interactions: InteractionRequest[];
   usage: UsageData;
   turnRunning: boolean;
-  queuedMessages: number;
+  pendingInputs: PendingInput[];
   error: string;
 }
 
 export type RuntimeSession = Omit<
   OpenSessionResponse,
-  "history" | "history_cursor" | "status" | "usage"
+  "history" | "history_cursor" | "status" | "usage" | "pending_inputs"
 >;
 
 export type RuntimeAction =
@@ -107,6 +108,7 @@ export type RuntimeAction =
   | { type: "history_loading"; value: boolean }
   | { type: "tasks"; tasks: TaskData[] }
   | { type: "todos"; todos: TodoItemData[] }
+  | { type: "pending_inputs"; items: PendingInput[] }
   | { type: "user_message"; id: string; content: string; images: MessageImage[] }
   | { type: "user_message_failed"; id: string }
   | { type: "event"; event: ServerEvent }
@@ -139,7 +141,7 @@ export const initialRuntimeState: RuntimeState = {
   interactions: [],
   usage: { ...EMPTY_USAGE },
   turnRunning: false,
-  queuedMessages: 0,
+  pendingInputs: [],
   error: "",
 };
 
@@ -176,7 +178,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         tasks: {},
         todos: [],
         turnRunning: false,
-        queuedMessages: 0,
+        pendingInputs: action.session.pending_inputs || [],
         error: "",
       };
     case "session_deleted":
@@ -200,7 +202,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         interactions: [],
         usage: { ...EMPTY_USAGE },
         turnRunning: false,
-        queuedMessages: 0,
+        pendingInputs: [],
         error: "",
       };
     case "thread_synced":
@@ -246,9 +248,12 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       };
     case "todos":
       return { ...state, todos: action.todos };
+    case "pending_inputs":
+      return { ...state, pendingInputs: action.items };
     case "user_message":
       return {
         ...state,
+        turnRunning: true,
         entries: [
           ...state.entries,
           { ...messageEntry("user", action.content), id: action.id, images: action.images },
@@ -257,6 +262,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "user_message_failed":
       return {
         ...state,
+        turnRunning: false,
         entries: state.entries.filter((entry) => entry.id !== action.id),
       };
     case "event":
@@ -267,7 +273,6 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return {
         ...state,
         turnRunning: false,
-        queuedMessages: 0,
         entries: commitAssistantDraft(state.entries, state.assistantDraft),
         assistantDraft: null,
         error: action.message,
@@ -320,7 +325,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
   const data = event.data;
   switch (event.type) {
     case "turn_started":
-      return { ...state, turnRunning: true, queuedMessages: Math.max(0, state.queuedMessages - 1) };
+      return { ...state, turnRunning: true };
     case "turn_finished":
     case "turn_cancelled":
       return {
@@ -373,11 +378,8 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       };
     case "usage":
       return { ...state, usage: addUsage(state.usage, data) };
-    case "message_queued":
-      return {
-        ...state,
-        queuedMessages: Math.max(state.queuedMessages + 1, numberValue(data.position)),
-      };
+    case "queue_updated":
+      return { ...state, pendingInputs: pendingInputs(data.items) };
     case "task_updated": {
       const task = data as unknown as TaskData;
       return { ...state, tasks: { ...state.tasks, [task.task_id]: task } };
@@ -436,7 +438,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         return {
           ...state,
           turnRunning: false,
-          queuedMessages: 0,
           entries: [
             ...commitAssistantDraft(state.entries, state.assistantDraft),
             noticeEntry(message, "error"),
@@ -719,6 +720,23 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function pendingInputs(value: unknown): PendingInput[] {
+  return arrayValue(value).flatMap((raw) => {
+    const item = objectValue(raw);
+    const messageId = stringValue(item.message_id);
+    const target = stringValue(item.target);
+    if (!messageId || (target !== "next-turn" && target !== "next-step")) return [];
+    return [{
+      message_id: messageId,
+      content: stringValue(item.content),
+      target,
+      source: stringValue(item.source) || "user",
+      image_count: numberValue(item.image_count),
+      artifact_count: numberValue(item.artifact_count),
+    }];
+  });
 }
 
 function todoProjection(data: JsonObject): TodoItemData[] {

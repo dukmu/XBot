@@ -12,7 +12,7 @@ import asyncio
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
 
@@ -227,6 +227,56 @@ class AgentInbox:
                 self._ids.difference_update(durable)
             self._claimed_ids.difference_update(active)
 
+    async def edit(self, message_id: str, content: str) -> InboxInput:
+        """Replace the text of one unclaimed input without changing its order."""
+        if not content.strip():
+            raise ValueError("Inbox input content cannot be empty")
+        async with self._lock:
+            current = self._pending_item(message_id)
+            updated = replace(current, content=content)
+            items = [
+                updated if item.message_id == message_id else item
+                for item in self._items()
+            ]
+            self._persist(items)
+            queue = self._queue(current.target)
+            queue[queue.index(current)] = updated
+            await self._record("edit", updated.target, [updated])
+            return updated
+
+    async def remove(self, message_id: str) -> InboxInput:
+        """Remove one unclaimed input from the durable and live queue."""
+        async with self._lock:
+            current = self._pending_item(message_id)
+            items = [item for item in self._items() if item.message_id != message_id]
+            self._persist(items)
+            self._queue(current.target).remove(current)
+            self._ids.remove(message_id)
+            await self._record("remove", current.target, [current])
+            return current
+
+    async def retarget(
+        self,
+        message_id: str,
+        target: InboxTarget | str,
+    ) -> InboxInput:
+        """Move one unclaimed input to the tail of another delivery target."""
+        target = InboxTarget(target)
+        async with self._lock:
+            current = self._pending_item(message_id)
+            if current.target is target:
+                return current
+            updated = replace(current, target=target)
+            remaining = [item for item in self._items() if item.message_id != message_id]
+            next_step = [item for item in remaining if item.target is InboxTarget.NEXT_STEP]
+            next_turn = [item for item in remaining if item.target is InboxTarget.NEXT_TURN]
+            (next_step if target is InboxTarget.NEXT_STEP else next_turn).append(updated)
+            self._persist([*next_step, *next_turn])
+            self._queue(current.target).remove(current)
+            self._queue(target).append(updated)
+            await self._record("retarget", target, [updated])
+            return updated
+
     async def discard(self) -> list[InboxInput]:
         async with self._lock:
             items = [*self._next_step, *self._next_turn]
@@ -245,6 +295,17 @@ class AgentInbox:
 
     def _items(self) -> list[InboxInput]:
         return [*self._next_step, *self._next_turn]
+
+    def _pending_item(self, message_id: str) -> InboxInput:
+        if message_id in self._claimed_ids:
+            raise KeyError(message_id)
+        item = next(
+            (item for item in self._items() if item.message_id == message_id),
+            None,
+        )
+        if item is None:
+            raise KeyError(message_id)
+        return item
 
     def _persist(self, items: Sequence[InboxInput]) -> None:
         if self._sink is not None:
@@ -277,7 +338,7 @@ class AgentInbox:
                         "metadata": item.metadata,
                     }
                     for item in items
-                ] if operation == "insert" else [],
+                ],
             },
         })
 

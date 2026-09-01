@@ -71,15 +71,25 @@ def mounted_application(context: Context) -> MountedAgentApplication:
         client_events=context.client_events,
         history=context.session,
         history_pages=(
-            context.thread_persistence.history
+            _TranscriptPages(context.thread_persistence.history)
             if context.has("thread_persistence")
-            else context.loop_state.history
+            else _TranscriptPages(context.loop_state.history)
         ),
         usage=context.usage,
         loop_state=context.loop_state,
         parent_permissions=context.permissions,
         persistence_available=context.has("thread_persistence"),
     )
+
+
+class _TranscriptPages:
+    """Host projection adapter; model-surface reads remain persistence-internal."""
+
+    def __init__(self, history: object) -> None:
+        self._history = history
+
+    def page(self, *, limit: int, cursor: str | None = None):
+        return self._history.page_transcript(limit=limit, cursor=cursor)
 
 
 __all__ = ["MountedAgentApplication", "mounted_application"]

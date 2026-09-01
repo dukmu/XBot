@@ -258,7 +258,7 @@ class JobRegistry:
                 id=job_id, status=job.status.value, cancelled=False
             )
         if job.status is JobStatus.PENDING:
-            self._finish(job, JobStatus.CANCELLED)
+            await self._finish(job, JobStatus.CANCELLED)
             return CancelResult(id=job_id, status=job.status.value, cancelled=True)
 
         runner_task = self._tasks.get(job.id)
@@ -336,19 +336,18 @@ class JobRegistry:
                 semaphore.release()
             if job.result is None and ctx.primary_output is not None:
                 job.result = JobResult(output_store=ctx.primary_output)
-            self._finish(job, job.status)
+            await self._finish(job, job.status)
 
-    def _finish(self, job: Job, status: JobStatus) -> None:
+    async def _finish(self, job: Job, status: JobStatus) -> None:
         job.status = status
         job.finished_at = time.time()
+        # A completion waiter observes the fully published terminal transition,
+        # not merely the runner having stopped.
+        await self._notify_update(job)
+        await self._notify_complete(job)
         event = self._completion_events.get(job.id)
         if event is not None:
             event.set()
-        # Publish the terminal state so live clients (e.g. the TUI task panel)
-        # see the task leave "running"; ``on_complete`` alone only produces a
-        # completion notice that the TUI does not apply to its task map.
-        asyncio.create_task(self._notify_update(job))
-        asyncio.create_task(self._notify_complete(job))
 
     # ------------------------------------------------------------------
     # Notification

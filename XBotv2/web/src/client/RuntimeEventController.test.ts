@@ -34,7 +34,6 @@ function event(type: ServerEvent["type"]): ServerEvent {
 
 function listener(overrides: Partial<RuntimeEventListener>): RuntimeEventListener {
   return {
-    isCurrent: () => true,
     onEvents: () => undefined,
     onThreads: () => undefined,
     onTaskExpired: () => undefined,

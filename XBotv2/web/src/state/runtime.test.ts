@@ -16,6 +16,7 @@ const opened: OpenSessionResponse = {
   history: [],
   event_cursor: 0,
   status_slots: {},
+  pending_inputs: [],
 };
 
 function event(type: string, data: Record<string, unknown>): ServerEvent {
@@ -94,6 +95,7 @@ describe("runtimeReducer", () => {
       content: "hello",
       images: [],
     });
+    expect(state.turnRunning).toBe(true);
     state = runtimeReducer(state, {
       type: "event",
       event: event("message", { id: "request-1", role: "user", content: "hello" }),
@@ -170,6 +172,27 @@ describe("runtimeReducer", () => {
       { content: "implement", status: "in_progress" },
       { content: "verify", status: "pending" },
     ]);
+  });
+
+  it("keeps pending input authoritative across queue events and turn failure", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("queue_updated", { items: [{
+        message_id: "queued-1",
+        content: "continue later",
+        target: "next-turn",
+        source: "user",
+        image_count: 0,
+        artifact_count: 0,
+      }] }),
+    });
+    expect(state.pendingInputs).toHaveLength(1);
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("turn_failed", { message: "provider unavailable" }),
+    });
+    expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-1"]);
   });
 
   it("detaches all thread projections when the current session is deleted", () => {

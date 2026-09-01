@@ -122,8 +122,10 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
                 "main",
                 "sdk question",
                 request_id="sdk-request",
+                delivery="queue",
             )
         ]
+        pending = await sdk.list_pending_inputs("sdk-client", "main")
         messages = await sdk.list_messages("sdk-client", "main")
         latest = await sdk.list_messages("sdk-client", "main", limit=1)
         older = await sdk.list_messages(
@@ -139,6 +141,7 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         undone = await sdk.undo_history("sdk-client", "main")
 
         assert health.status == "ok"
+        assert pending.items == []
         assert opened.session_id == "sdk-client"
         assert any(
             event.type == "assistant_message"
@@ -1823,10 +1826,12 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert not any(
-        any(part.get("text") == "second" for part in record["parts"])
+    assert any(
+        any(part.get("text") == "second" for part in record.get("parts", []))
         for record in source_records
     )
+    assert source_records[-1]["record_type"] == "surface_replace"
+    assert source_records[-1]["operation"] == "undo"
     assert all(record["schema_version"] == 1 for record in source_records)
     source.plugin_state_dir.mkdir(exist_ok=True)
     (source.plugin_state_dir / "state.json").write_text(
@@ -1865,7 +1870,9 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         json.loads(line)
         for line in source.messages_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert cleared_records == []
+    assert cleared_records[:len(source_records)] == source_records
+    assert cleared_records[-1]["record_type"] == "surface_replace"
+    assert cleared_records[-1]["operation"] == "clear"
 
     await client.post("/sessions/history/close")
     inactive_fork = await client.post("/sessions/history/fork")
@@ -2900,6 +2907,155 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
     assert [m.content for m in ctx.engine.messages if m.role == "user"] == [
         "first", "second",
     ]
+
+
+@pytest.mark.asyncio
+async def test_pending_queue_is_authoritative_editable_and_removable_over_http(
+    http_app,
+    client: httpx.AsyncClient,
+) -> None:
+    release = asyncio.Event()
+    llm = _GatedMockLLM(release, responses=[{"content": "first reply"}])
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="queue-resource",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    first_task = asyncio.create_task(
+        _drain_stream(ctx.stream_message("first", "req-first"))
+    )
+    await asyncio.sleep(0)
+    queued_stream = await http_app.state.manager.stream_message(SendMessage(
+        session_id="queue-resource",
+        thread_id="t",
+        content="queued draft",
+        request_id="req-queued",
+        delivery="queue",
+    ))
+    queued_task = asyncio.create_task(_drain_stream(queued_stream))
+    await asyncio.sleep(0)
+
+    queue_url = "/sessions/queue-resource/threads/t/queue"
+    listed = await client.get(queue_url)
+    assert listed.status_code == 200
+    assert listed.json()["items"] == [{
+        "message_id": "req-queued",
+        "content": "queued draft",
+        "target": "next-turn",
+        "source": "user",
+        "image_count": 0,
+        "artifact_count": 0,
+    }]
+    resumed = await client.post("/sessions", json={
+        "session_id": "queue-resource",
+        "thread_id": "t",
+        "mode": "resume",
+    })
+    assert resumed.status_code == 200
+    assert resumed.json()["pending_inputs"] == listed.json()["items"]
+
+    edited = await client.patch(
+        f"{queue_url}/req-queued",
+        json={"action": "edit", "content": "edited draft"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["items"][0]["content"] == "edited draft"
+
+    steered = await client.patch(
+        f"{queue_url}/req-queued",
+        json={"action": "steer"},
+    )
+    assert steered.status_code == 200
+    assert steered.json()["items"][0]["target"] == "next-step"
+
+    removed = await client.patch(
+        f"{queue_url}/req-queued",
+        json={"action": "remove"},
+    )
+    assert removed.status_code == 200
+    assert removed.json()["items"] == []
+    assert await asyncio.wait_for(queued_task, timeout=1) == []
+
+    missing = await client.patch(
+        f"{queue_url}/req-queued",
+        json={"action": "remove"},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "queue_item_not_found"
+
+    release.set()
+    await asyncio.wait_for(first_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
+    http_app,
+) -> None:
+    release = asyncio.Event()
+    llm = _GatedMockLLM(
+        release,
+        responses=[{"content": "first reply"}, {"content": "queued reply"}],
+    )
+    set_llm_override(http_app, llm)
+    ctx = await http_app.state.manager.open_session(
+        session_id="queue-claim",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    shared = ctx.attach_event_stream()
+    first_task = asyncio.create_task(
+        _drain_stream(ctx.stream_message("first", "req-first"))
+    )
+    await asyncio.sleep(0)
+    queued_task = asyncio.create_task(_drain_stream(ctx.stream_message(
+        "second",
+        "req-second",
+        delivery="queue",
+    )))
+
+    observed = []
+    async with asyncio.timeout(1):
+        while not any(
+            event["type"] == "queue_updated" and event["data"]["items"]
+            for event in observed
+        ):
+            observed.append((await anext(shared)).event.to_dict())
+    assert not any(
+        event["type"] == "message" and event["data"].get("content") == "second"
+        for event in observed
+    )
+    assert ctx.pending_inputs()[0].target == "next-turn"
+
+    release.set()
+    first_events, queued_events = await asyncio.gather(first_task, queued_task)
+    async with asyncio.timeout(1):
+        while not any(
+            event["type"] == "message" and event["data"].get("content") == "second"
+            for event in observed
+        ):
+            observed.append((await anext(shared)).event.to_dict())
+    queue_drained_at = next(
+        index for index, event in enumerate(observed)
+        if event["type"] == "queue_updated" and event["data"]["items"] == []
+    )
+    message_at = next(
+        index for index, event in enumerate(observed)
+        if event["type"] == "message" and event["data"].get("content") == "second"
+    )
+    assert queue_drained_at < message_at
+    assert any(event["type"] == "assistant_message" for event in queued_events)
+    assert not any(
+        event["type"] == "assistant_message"
+        and event["data"].get("content") == "queued reply"
+        for event in first_events
+    )
 
 
 @pytest.mark.asyncio

@@ -124,24 +124,110 @@ class TestMessageHistoryStore:
             "one", "two",
         ]
 
-    def test_replace_stores_only_effective_history(self, tmp_path):
+    def test_replace_appends_surface_operation_without_destroying_trajectory(
+        self,
+        tmp_path,
+    ):
         persistence = thread_persistence(tmp_path)
         persistence.history.append([
             Message(role="user", content="discarded input"),
             Message(role="assistant", content="discarded answer"),
         ])
+        before = persistence.history.path.read_bytes()
 
-        persistence.history.replace([
-            Message(role="system", content="summary"),
-            Message(role="user", content="retained"),
+        surface = persistence.history.load_surface()
+        persistence.history.replace_surface(
+            tuple(node.node_id for node in surface),
+            [Message(role="system", content="summary")],
+            operation="compact:first",
+            preserve_transcript=True,
+        )
+
+        trajectory = persistence.history.path.read_bytes()
+        assert trajectory.startswith(before)
+        assert b"discarded input" in trajectory
+        assert b"discarded answer" in trajectory
+        assert b'"record_type": "surface_replace"' in trajectory
+        assert [message.content for message in persistence.history.load()] == [
+            "summary",
+        ]
+        assert [
+            message.content for message in persistence.history.load_transcript()
+        ] == ["discarded input", "discarded answer"]
+
+    def test_nested_surface_replacements_replay_deterministically(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        history.extend([
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="two"),
+            Message(role="assistant", content="answer two"),
         ])
 
-        text = persistence.history.path.read_text(encoding="utf-8")
-        assert "discarded input" not in text
-        assert "discarded answer" not in text
-        assert [message.content for message in persistence.history.load()] == [
-            "summary", "retained",
+        history.replace_range(
+            0,
+            2,
+            [Message(role="system", content="summary one")],
+            operation="compact:first",
+            preserve_transcript=True,
+        )
+        history.replace_range(
+            0,
+            2,
+            [Message(role="system", content="summary two")],
+            operation="compact:second",
+            preserve_transcript=True,
+        )
+
+        assert [message.content for message in history] == [
+            "summary two", "answer two",
         ]
+        assert persistence.history.load() == history
+        assert [
+            message.content for message in persistence.history.load_transcript()
+        ] == ["one", "answer one", "two", "answer two"]
+        records = _raw_records(persistence)
+        assert [record.get("record_type", "message") for record in records] == [
+            "message", "message", "message", "message",
+            "surface_replace", "surface_replace",
+        ]
+
+    def test_surface_replay_rejects_non_current_source_nodes(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="one")])
+        with persistence.history.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({
+                "schema_version": 1,
+                "position": 2,
+                "record_type": "surface_replace",
+                "operation": "compact",
+                "transcript": "preserve",
+                "source_node_ids": ["missing"],
+                "messages": [],
+            }) + "\n")
+
+        with pytest.raises(ValueError, match="source nodes are not current"):
+            persistence.history.load()
+
+    def test_invalid_transcript_preserving_replace_writes_nothing(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="one")])
+        before = persistence.history.path.read_bytes()
+        source = persistence.history.load_surface()
+
+        with pytest.raises(ValueError, match="must produce one surface node"):
+            persistence.history.replace_surface(
+                [source[0].node_id],
+                [
+                    Message(role="system", content="first"),
+                    Message(role="system", content="second"),
+                ],
+                operation="compact:invalid",
+                preserve_transcript=True,
+            )
+
+        assert persistence.history.path.read_bytes() == before
 
     def test_pages_read_backwards_without_loading_the_full_history(self, tmp_path):
         persistence = thread_persistence(tmp_path)
@@ -163,7 +249,7 @@ class TestMessageHistoryStore:
         assert [message.content for message in oldest.messages] == ["message-0"]
         assert oldest.next_cursor is None
 
-    def test_append_preserves_cursor_and_replace_invalidates_it(self, tmp_path):
+    def test_append_preserves_cursor_and_surface_replace_invalidates_it(self, tmp_path):
         from XBotv2.core.history import HistoryCursorInvalid
 
         persistence = thread_persistence(tmp_path)
@@ -182,6 +268,68 @@ class TestMessageHistoryStore:
         with pytest.raises(HistoryCursorInvalid, match="current history"):
             persistence.history.page(limit=1, cursor=latest.next_cursor)
 
+    def test_compact_preserves_transcript_cursor_but_invalidates_surface_cursor(
+        self,
+        tmp_path,
+    ):
+        from XBotv2.core.history import HistoryCursorInvalid
+
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        history.extend([
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="two"),
+            Message(role="assistant", content="answer two"),
+        ])
+        surface_cursor = persistence.history.page(limit=1).next_cursor
+        transcript_cursor = persistence.history.page_transcript(limit=1).next_cursor
+
+        history.replace_range(
+            0,
+            2,
+            [Message(role="system", content="summary")],
+            operation="compact:test",
+            preserve_transcript=True,
+        )
+
+        with pytest.raises(HistoryCursorInvalid, match="current history"):
+            persistence.history.page(limit=1, cursor=surface_cursor)
+        transcript_page = persistence.history.page_transcript(
+            limit=1,
+            cursor=transcript_cursor,
+        )
+        assert [message.content for message in transcript_page.messages] == ["two"]
+
+        history.undo(1)
+        with pytest.raises(HistoryCursorInvalid, match="current history"):
+            persistence.history.page_transcript(limit=1, cursor=transcript_cursor)
+        assert [
+            message.content for message in persistence.history.load_transcript()
+        ] == ["one", "answer one"]
+
+    def test_clear_after_compact_removes_original_transcript_lineage(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        history.extend([
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="two"),
+            Message(role="assistant", content="answer two"),
+        ])
+        history.replace_range(
+            0,
+            2,
+            [Message(role="system", content="summary")],
+            operation="compact:test",
+            preserve_transcript=True,
+        )
+
+        history.clear()
+
+        assert persistence.history.load() == []
+        assert persistence.history.load_transcript() == []
+
     def test_cursor_is_bound_to_one_thread_history(self, tmp_path):
         from XBotv2.core.history import HistoryCursorInvalid
 
@@ -192,11 +340,6 @@ class TestMessageHistoryStore:
                 Message(role="user", content="one"),
                 Message(role="assistant", content="two"),
             ])
-        second.paths.history_revision_file.write_text(
-            first.paths.history_revision_file.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-
         cursor = first.history.page(limit=1).next_cursor
         with pytest.raises(HistoryCursorInvalid, match="current history"):
             second.history.page(limit=1, cursor=cursor)
@@ -243,6 +386,27 @@ class TestMessageHistoryStore:
 
 
 class TestConversationHistory:
+    def test_in_memory_compaction_preserves_human_transcript(self):
+        messages = [
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer"),
+            Message(role="user", content="two"),
+        ]
+        history = ConversationHistory(messages)
+
+        history.replace_range(
+            0,
+            2,
+            [Message(role="system", content="summary")],
+            operation="compact:test",
+            preserve_transcript=True,
+        )
+
+        assert [message.content for message in history] == ["summary", "two"]
+        assert [
+            message.content for message in history.page_transcript(limit=10).messages
+        ] == ["one", "answer", "two"]
+
     def test_append_and_extend_are_durable_before_visible(self, tmp_path):
         persistence = thread_persistence(tmp_path)
         history = ConversationHistory(sink=persistence.history)
@@ -253,7 +417,7 @@ class TestConversationHistory:
         assert [message.content for message in history] == ["one", "two"]
         assert persistence.history.load() == history
 
-    def test_undo_and_clear_replace_current_history(self, tmp_path):
+    def test_undo_and_clear_append_surface_operations(self, tmp_path):
         persistence = thread_persistence(tmp_path)
         history = ConversationHistory(sink=persistence.history)
         history.extend([
@@ -266,14 +430,17 @@ class TestConversationHistory:
         assert [message.content for message in history.undo(1)] == [
             "one", "answer one",
         ]
-        assert "answer two" not in persistence.history.path.read_text(
-            encoding="utf-8"
-        )
+        trajectory_after_undo = persistence.history.path.read_text(encoding="utf-8")
+        assert "answer two" in trajectory_after_undo
+        assert '"operation": "undo"' in trajectory_after_undo
 
         history.clear()
 
         assert history.snapshot() == ()
         assert persistence.history.load() == []
+        trajectory_after_clear = persistence.history.path.read_text(encoding="utf-8")
+        assert trajectory_after_clear.startswith(trajectory_after_undo)
+        assert '"operation": "clear"' in trajectory_after_clear
 
     def test_persisted_message_nested_fields_are_immutable(self, tmp_path):
         history = ConversationHistory(sink=thread_persistence(tmp_path).history)
@@ -298,7 +465,18 @@ class TestConversationHistory:
             def append(self, _messages):
                 raise OSError("disk full")
 
-            def replace(self, _messages):
+            def replace_surface(
+                self,
+                _source_node_ids,
+                _messages,
+                *,
+                operation,
+                preserve_transcript,
+            ):
+                del operation, preserve_transcript
+                raise OSError("disk full")
+
+            def record(self, _event, _data):
                 raise OSError("disk full")
 
         original = Message(role="user", content="stable")

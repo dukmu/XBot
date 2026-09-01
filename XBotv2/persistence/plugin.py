@@ -15,12 +15,13 @@ class PersistenceComponent:
     def apply(self, ctx: Context, config: object | None = None) -> None:
         state = ctx.loop_state
         persistence = ctx.thread_persistence
-        messages = persistence.history.load()
+        nodes = persistence.history.load_surface()
+        messages = [node.message for node in nodes]
         committed_input_ids = {
             message.input_id for message in messages if message.input_id
         }
         pending_inputs = persistence.inbox.reconcile(committed_input_ids)
-        state.set_history(ConversationHistory(messages, sink=persistence.history))
+        state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
         state.resumed = persistence.has_persisted_state()
         state.metadata = ThreadMetadataState(
             persistence.metadata.load(),

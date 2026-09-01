@@ -453,6 +453,8 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
         "/sessions/{session_id}/threads/{thread_id}/interrupt",
         "/sessions/{session_id}/threads/{thread_id}/messages",
+        "/sessions/{session_id}/threads/{thread_id}/queue",
+        "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}",
         "/sessions/{session_id}/threads/{thread_id}/provider",
         "/sessions/{session_id}/threads/{thread_id}/tasks",
         "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
@@ -462,6 +464,8 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
+    queue_path = "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}"
+    assert paths[queue_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PendingInputUpdateRequest")
     assert paths["/sessions/{session_id}"]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionUpdateRequest")
     assert paths["/workspaces"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/WorkspaceCreateRequest")
     policy_path = "/sessions/{session_id}/policy"

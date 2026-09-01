@@ -360,6 +360,23 @@ class Engine:
     def pending_input_count(self) -> int:
         return len(self.inbox)
 
+    @property
+    def pending_inputs(self) -> tuple[InboxInput, ...]:
+        return tuple(self.inbox.pending)
+
+    async def edit_input(self, message_id: str, content: str) -> InboxInput:
+        return await self.inbox.edit(message_id, content)
+
+    async def remove_input(self, message_id: str) -> InboxInput:
+        return await self.inbox.remove(message_id)
+
+    async def retarget_input(
+        self,
+        message_id: str,
+        target: InboxTarget,
+    ) -> InboxInput:
+        return await self.inbox.retarget(message_id, target)
+
     async def discard_inputs(self) -> None:
         await self.inbox.discard()
 

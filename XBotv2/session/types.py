@@ -90,6 +90,7 @@ class OpenedSession:
     history: tuple[Message, ...]
     status_slots: dict[str, str]
     event_cursor: int
+    pending_inputs: tuple["PendingInputSnapshot", ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -105,6 +106,7 @@ class OpenedSession:
             "history": self.history,
             "status_slots": self.status_slots,
             "event_cursor": self.event_cursor,
+            "pending_inputs": [item.to_dict() for item in self.pending_inputs],
         }
 
 
@@ -189,11 +191,41 @@ class ArtifactPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingInputSnapshot:
+    message_id: str
+    content: str
+    target: Literal["next-turn", "next-step"]
+    source: str = "user"
+    image_count: int = 0
+    artifact_count: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "message_id": self.message_id,
+            "content": self.content,
+            "target": self.target,
+            "source": self.source,
+            "image_count": self.image_count,
+            "artifact_count": self.artifact_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PendingInputUpdate:
+    session_id: str
+    thread_id: str
+    message_id: str
+    action: Literal["edit", "remove", "steer"]
+    content: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SendMessage:
     session_id: str
     thread_id: str
     content: str
     request_id: str
+    delivery: Literal["queue", "steer"] = "steer"
     images: tuple[ImageUpload, ...] = ()
     attachments: tuple[AttachmentUpload, ...] = ()
 
@@ -245,6 +277,8 @@ __all__ = [
     "OpenedSession",
     "OpenSession",
     "OpenThread",
+    "PendingInputSnapshot",
+    "PendingInputUpdate",
     "MessagePage",
     "RegenerateMessage",
     "SendMessage",

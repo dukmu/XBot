@@ -149,7 +149,12 @@ class Session:
                 "History has no human-authored turn to regenerate.",
             )
         message = history[index]
-        history.replace(history[:index])
+        history.replace_range(
+            index,
+            len(history),
+            (),
+            operation="regenerate",
+        )
         self.state._update_turn_count()
         await self._announce_history_change("regenerate", 1)
         return message

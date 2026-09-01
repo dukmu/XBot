@@ -11,6 +11,7 @@ from typing import Protocol, overload
 from uuid import uuid4
 
 from XBotv2.core.messages import Message
+from XBotv2.core.tools import JsonObject
 
 
 class HistoryCursorInvalid(ValueError):
@@ -23,6 +24,14 @@ class ConversationPage:
     next_cursor: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryNode:
+    """One message-producing node on the derived conversation surface."""
+
+    node_id: str
+    message: Message
+
+
 class ConversationPageReader(Protocol):
     def page(
         self,
@@ -33,11 +42,20 @@ class ConversationPageReader(Protocol):
 
 
 class HistorySink(Protocol):
-    """Durability boundary used by one conversation history."""
+    """Append-only trajectory boundary used by one conversation history."""
 
-    def append(self, messages: Sequence[Message]) -> None: ...
+    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]: ...
 
-    def replace(self, messages: Sequence[Message]) -> None: ...
+    def replace_surface(
+        self,
+        source_node_ids: Sequence[str],
+        messages: Sequence[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool,
+    ) -> tuple[HistoryNode, ...]: ...
+
+    def record(self, event: str, data: JsonObject) -> None: ...
 
 
 class ConversationHistory(Sequence[Message]):
@@ -48,15 +66,30 @@ class ConversationHistory(Sequence[Message]):
         messages: Iterable[Message] = (),
         *,
         sink: HistorySink | None = None,
+        nodes: Iterable[HistoryNode] | None = None,
     ) -> None:
-        self._messages = list(messages)
+        initial = list(nodes) if nodes is not None else [
+            HistoryNode(f"memory:{uuid4().hex}", message)
+            for message in messages
+        ]
+        self._nodes = initial
+        self._transcript = list(initial)
+        self._lineage = {node.node_id: (node.node_id,) for node in initial}
+        for node in self._nodes:
+            node.message.seal()
+        self._messages = [node.message for node in self._nodes]
         for message in self._messages:
             message.seal()
         self._sink = sink
-        self._revision = uuid4().hex
+        self._surface_revision = uuid4().hex
+        self._transcript_revision = uuid4().hex
 
     def snapshot(self) -> tuple[Message, ...]:
         return tuple(self._messages)
+
+    def node_ids(self) -> tuple[str, ...]:
+        """Return stable identities for the current derived surface."""
+        return tuple(node.node_id for node in self._nodes)
 
     def append(self, message: Message) -> None:
         self.extend((message,))
@@ -65,20 +98,115 @@ class ConversationHistory(Sequence[Message]):
         added = tuple(messages)
         if not added:
             return
-        if self._sink is not None:
+        nodes = (
             self._sink.append(added)
-        for message in added:
-            message.seal()
-        self._messages.extend(added)
+            if self._sink is not None
+            else tuple(
+                HistoryNode(f"memory:{uuid4().hex}", message)
+                for message in added
+            )
+        )
+        self._admit(nodes)
+        self._nodes.extend(nodes)
+        self._messages.extend(node.message for node in nodes)
+        self._transcript.extend(nodes)
+        self._lineage.update({node.node_id: (node.node_id,) for node in nodes})
 
-    def replace(self, messages: Iterable[Message]) -> None:
+    def replace(
+        self,
+        messages: Iterable[Message],
+        *,
+        operation: str = "replace",
+    ) -> None:
         replacement = tuple(messages)
+        if not self._nodes:
+            self.extend(replacement)
+            return
+        self.replace_range(0, len(self._nodes), replacement, operation=operation)
+
+    def replace_range(
+        self,
+        start: int,
+        end: int,
+        messages: Iterable[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool = False,
+    ) -> None:
+        """Replace one current contiguous surface span by appending an operation."""
+        if start < 0 or end > len(self._nodes) or start >= end:
+            raise ValueError("History replacement range must be non-empty and current")
+        replacement = tuple(messages)
+        if preserve_transcript and len(replacement) != 1:
+            raise ValueError(
+                "Transcript-preserving replacement must produce one surface node"
+            )
+        source = self._nodes[start:end]
+        origins = tuple(
+            origin
+            for node in source
+            for origin in self._lineage.get(node.node_id, (node.node_id,))
+        )
+        transcript = list(self._transcript)
+        transcript_start = None
+        if not preserve_transcript:
+            transcript_start = self._transcript_span(transcript, origins)
+        nodes = (
+            self._sink.replace_surface(
+                tuple(node.node_id for node in source),
+                replacement,
+                operation=operation,
+                preserve_transcript=preserve_transcript,
+            )
+            if self._sink is not None
+            else tuple(
+                HistoryNode(f"memory:{uuid4().hex}", message)
+                for message in replacement
+            )
+        )
+        self._admit(nodes)
+        if preserve_transcript:
+            self._lineage[nodes[0].node_id] = origins
+        else:
+            assert transcript_start is not None
+            transcript[transcript_start:transcript_start + len(origins)] = nodes
+            self._lineage.update({node.node_id: (node.node_id,) for node in nodes})
+            self._transcript = transcript
+            self._transcript_revision = uuid4().hex
+        self._nodes[start:end] = nodes
+        self._messages[start:end] = [node.message for node in nodes]
+        self._surface_revision = uuid4().hex
+
+    @staticmethod
+    def _transcript_span(
+        transcript: list[HistoryNode],
+        source_node_ids: Sequence[str],
+    ) -> int:
+        try:
+            start = next(
+                index
+                for index, node in enumerate(transcript)
+                if node.node_id == source_node_ids[0]
+            )
+        except StopIteration as exc:
+            raise RuntimeError("History transcript sources are not current") from exc
+        current = [
+            node.node_id
+            for node in transcript[start:start + len(source_node_ids)]
+        ]
+        if current != list(source_node_ids):
+            raise RuntimeError("History transcript sources are not current")
+        return start
+
+    def record(self, event: str, data: JsonObject) -> None:
+        """Append a log-only trajectory event without changing the surface."""
         if self._sink is not None:
-            self._sink.replace(replacement)
-        for message in replacement:
-            message.seal()
-        self._messages = list(replacement)
-        self._revision = uuid4().hex
+            self._sink.record(event, data)
+
+    @staticmethod
+    def _admit(nodes: Sequence[HistoryNode]) -> None:
+        for node in nodes:
+            node.message.seal()
 
     def page(
         self,
@@ -91,7 +219,7 @@ class ConversationHistory(Sequence[Message]):
         end = (
             len(self._messages)
             if cursor is None
-            else decode_history_cursor(cursor, self._revision)
+            else decode_history_cursor(cursor, self._surface_revision)
         )
         if end < 0 or end > len(self._messages):
             raise HistoryCursorInvalid(
@@ -100,13 +228,39 @@ class ConversationHistory(Sequence[Message]):
         start = max(0, end - limit)
         return ConversationPage(
             tuple(self._messages[start:end]),
-            encode_history_cursor(self._revision, start) if start else None,
+            encode_history_cursor(self._surface_revision, start) if start else None,
+        )
+
+    def page_transcript(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        if limit < 1:
+            raise ValueError("History page limit must be positive")
+        end = (
+            len(self._transcript)
+            if cursor is None
+            else decode_history_cursor(cursor, self._transcript_revision)
+        )
+        if end < 0 or end > len(self._transcript):
+            raise HistoryCursorInvalid("History cursor is outside the transcript")
+        start = max(0, end - limit)
+        return ConversationPage(
+            tuple(node.message for node in self._transcript[start:end]),
+            encode_history_cursor(self._transcript_revision, start) if start else None,
         )
 
     def replace_last(self, message: Message) -> None:
         if not self._messages:
             raise IndexError("Cannot replace the last message of empty history")
-        self.replace((*self._messages[:-1], message))
+        self.replace_range(
+            len(self._messages) - 1,
+            len(self._messages),
+            (message,),
+            operation="replace_last",
+        )
 
     def undo(self, turns: int) -> tuple[Message, ...]:
         if turns < 1:
@@ -120,11 +274,17 @@ class ConversationHistory(Sequence[Message]):
             raise ValueError(
                 f"Cannot undo {turns} turns; history has {len(user_indexes)}."
             )
-        self.replace(self._messages[:user_indexes[-turns]])
+        self.replace_range(
+            user_indexes[-turns],
+            len(self._messages),
+            (),
+            operation="undo",
+        )
         return self.snapshot()
 
     def clear(self) -> None:
-        self.replace(())
+        if self._nodes:
+            self.replace_range(0, len(self._nodes), (), operation="clear")
 
     @overload
     def __getitem__(self, index: int) -> Message: ...

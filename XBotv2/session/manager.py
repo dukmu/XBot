@@ -56,6 +56,8 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
+    PendingInputSnapshot,
+    PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
@@ -84,6 +86,7 @@ async def _runtime_message_events(
     async for event in runtime.stream_message(
         request.content,
         request.request_id,
+        delivery=request.delivery,
         images=images,
         artifacts=attachments,
     ):
@@ -774,7 +777,7 @@ class SessionManager:
         if not session.has_thread(thread_id):
             raise SessionNotFound(f"{session_id}/{thread_id}")
         persistence = self._thread_persistence(session, thread_id=thread_id)
-        return tuple(persistence.history.load())
+        return tuple(persistence.history.load_transcript())
 
     async def message_page(
         self,
@@ -795,7 +798,7 @@ class SessionManager:
             raise SessionNotFound(f"{session_id}/{thread_id}")
         persistence = self._thread_persistence(session, thread_id=thread_id)
         try:
-            page = persistence.history.page(limit=limit, cursor=cursor)
+            page = persistence.history.page_transcript(limit=limit, cursor=cursor)
         except HistoryCursorInvalid as exc:
             raise OperationError(
                 "invalid_cursor", str(exc)
@@ -907,11 +910,40 @@ class SessionManager:
             session_id=request.session_id,
             thread_id=request.thread_id,
             request_id=request.request_id,
+            delivery=request.delivery,
             content_chars=len(request.content),
             images=len(images),
             attachments=len(attachments),
         )
         return _runtime_message_events(self, runtime, request, images, attachments)
+
+    async def pending_inputs(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> tuple[PendingInputSnapshot, ...]:
+        runtime = await self.get(session_id, thread_id)
+        return runtime.pending_inputs()
+
+    async def update_pending_input(
+        self,
+        request: PendingInputUpdate,
+    ) -> tuple[PendingInputSnapshot, ...]:
+        runtime = await self.get(request.session_id, request.thread_id)
+        items = await runtime.update_pending_input(
+            request.message_id,
+            request.action,
+            request.content,
+        )
+        self._log.info(
+            "session.queue.updated",
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            request_id=request.message_id,
+            action=request.action,
+            pending_inputs=len(items),
+        )
+        return items
 
     async def regenerate_message(
         self,
@@ -1137,6 +1169,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
+        pending_inputs=runtime.pending_inputs(),
     )
 
 

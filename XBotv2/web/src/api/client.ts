@@ -9,6 +9,7 @@ import {
   type ImageInput,
   type MessagePage,
   type OpenSessionResponse,
+  type PendingInput,
   type ProviderInfo,
   type ServerEvent,
   type SessionListData,
@@ -317,6 +318,19 @@ export class XBotApi {
     });
   }
 
+  updatePendingInput(
+    sessionId: string,
+    threadId: string,
+    messageId: string,
+    action: { action: "edit"; content: string } | { action: "remove" | "steer" },
+  ) {
+    return this.request<{ items: PendingInput[] }>(
+      "PATCH",
+      `${threadPath(sessionId, threadId)}/queue/${encodeURIComponent(messageId)}`,
+      action,
+    );
+  }
+
   async *sendMessage(
     sessionId: string,
     threadId: string,
@@ -325,12 +339,14 @@ export class XBotApi {
     attachments: AttachmentInput[],
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
+    delivery: "queue" | "steer" = "steer",
   ): AsyncGenerator<ServerEvent> {
     for await (const event of this.stream("POST", `${threadPath(sessionId, threadId)}/messages`, {
       content,
       images,
       attachments,
       request_id: requestId,
+      delivery,
     }, signal)) {
       yield this.withEventArtifactUrls(sessionId, threadId, event);
     }

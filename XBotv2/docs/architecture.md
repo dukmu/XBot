@@ -181,7 +181,7 @@ orchestrator and never cross the C/S event boundary.
 Key hooks: `BEFORE_USER_MESSAGE_ACCEPT`, `AFTER_CONTEXT`, `BEFORE_MODEL_REQUEST`,
 `AFTER_AGENT`, `BEFORE_TOOLS`, `ON_STOP`, and `ON_STOP_FAILURE`. Compact owns
 its own `PRE_COMPACT`/`POST_COMPACT` transaction and is the only caller of
-`ConversationHistory.replace()`. Engine only appends accepted conversation
+an append-only surface replacement. Engine only appends accepted conversation
 messages; Session owns undo and clear.
 
 ### Tool System (`agentloop/tool_*.py`)
@@ -451,17 +451,19 @@ data/sessions/<sid>/
 └── threads/<thread-id>/
     ├── thread.json         # strict ThreadMetadata
     └── state/
-        ├── messages.jsonl  # current effective MessageRecords only
+        ├── messages.jsonl  # append-only trajectory and surface operations
         ├── inbox.json      # pending InboxSnapshot
         ├── plugin_state/
         │   └── state.json  # namespaced Goal/Todo/Usage/plugin state
         └── artifacts/      # content-addressed typed artifacts
 ```
 
-`ThreadPersistence` is the composition boundary. `messages.jsonl` contains only
-the current effective history: normal turns append records, while Compact,
-Undo, and Clear atomically replace it. It contains no checkpoints, stack
-operations, runtime events, inbox payloads, or artifact bytes. Pending input is
+`ThreadPersistence` is the composition boundary. `messages.jsonl` is the
+append-only trajectory: normal messages append records, general surface
+replacement records shadow a cited contiguous set of current nodes, and
+plugin-owned log-only records capture operations such as compaction without
+entering model context. One deterministic fold derives the current model
+surface; the original records remain readable for audit and replay. Pending input is
 stored once in `inbox.json` until its stable `input_id` is committed to history.
 Each Message record stores one ordered `parts` list containing text, reasoning,
 image references, and Tool calls. Derived `content` and `tool_calls` fields are
