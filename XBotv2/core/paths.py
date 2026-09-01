@@ -120,6 +120,25 @@ class ThreadPaths:
         return self.state_dir / "messages.revision"
 
     @property
+    def history_checkpoints_dir(self) -> Path:
+        return self.state_dir / "history_checkpoints"
+
+    def history_checkpoint_messages(self, checkpoint_id: str) -> Path:
+        return self.history_checkpoints_dir / (
+            _identifier("checkpoint_id", checkpoint_id) + ".jsonl"
+        )
+
+    def history_checkpoint_metadata(self, checkpoint_id: str) -> Path:
+        return self.history_checkpoints_dir / (
+            _identifier("checkpoint_id", checkpoint_id) + ".json"
+        )
+
+    def history_checkpoint_restore(self, checkpoint_id: str) -> Path:
+        return self.history_checkpoints_dir / (
+            _identifier("checkpoint_id", checkpoint_id) + ".restored.json"
+        )
+
+    @property
     def inbox_file(self) -> Path:
         return self.state_dir / "inbox.json"
 

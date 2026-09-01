@@ -11,6 +11,7 @@ from XBotv2.compact.protocol import (
     CompactionCompletedData,
     CompactionFailedData,
     CompactionMetrics,
+    CompactionRestoredData,
     CompactionStartedData,
     compact_event,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "CompactionCompletedData",
     "CompactionFailedData",
     "CompactionMetrics",
+    "CompactionRestoredData",
     "CompactionStartedData",
     "POST_COMPACT",
     "PRE_COMPACT",

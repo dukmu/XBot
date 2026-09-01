@@ -32,9 +32,14 @@ the resulting core-state mutation for persistence observers.
   work, and known unknowns while distinguishing evidence from plans.
 - The summary becomes a system history message. The plugin runs
   `PRE_COMPACT` and `POST_COMPACT`, then publishes the typed session
-  `HISTORY_CHANGED` event. It commits exactly one atomic
-  `ConversationHistory.replace()`; the persisted current history no longer
-  retains or replays the removed raw prefix.
+  `HISTORY_CHANGED` event. It commits through
+  `ConversationHistory.replace_recoverable()`: persistence preserves the exact
+  pre-compaction JSONL as an immutable checkpoint before atomically replacing
+  the current effective history. The compact plugin never resolves persistence
+  paths or serializes messages itself.
+- `/compact list` shows the checkpoint chain. `/compact restore [checkpoint-id]`
+  restores the latest active checkpoint (or the named one) and keeps messages
+  appended after compaction. Nested compactions are restored newest first.
 - The summary instruction explicitly requires preservation of human directives;
   the plugin does not append the same directives a second time after summarizing.
 - A cancelled summary propagates cancellation. A failed manual request reports
@@ -81,3 +86,21 @@ and `POST_COMPACT` path without starting a model turn. If
 another turn owns the lock, the command runs as soon as that turn ends.
 Automatic requests are evaluated at `BEFORE_MODEL_REQUEST`; a successful replacement
 causes Core to rebuild context before issuing any provider request.
+
+## Recovery and traceability
+
+Each successful compaction creates two immutable persistence-owned files under
+the thread's `state/history_checkpoints/` directory: the exact pre-compaction
+`<checkpoint-id>.jsonl` and strict `<checkpoint-id>.json` metadata. On a normal
+local filesystem the JSONL is a hard link to the prior `messages.jsonl` inode,
+so preserving a large history does not copy or reserialize it. Atomic history
+replacement moves `messages.jsonl` to a new inode, leaving the checkpoint
+unchanged. A `<checkpoint-id>.restored.json` record traces an explicit restore.
+
+Checkpoint metadata records the operation, reason, timestamp, before/after
+message counts, and SHA-256 hashes. Persistence derives whether a checkpoint is
+`prepared`, `active`, `superseded`, or `restored` from those hashes and the
+restore record. The creation order is archive, metadata, then effective-history
+replacement: a crash cannot destroy the original JSONL before a recovery path
+exists. Restore verifies the recorded post-compaction prefix, replaces it with
+the archived JSONL, and preserves the subsequently appended tail.

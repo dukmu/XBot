@@ -45,8 +45,8 @@ class CompactPlugin:
             name="compact",
             description="Compact conversation history immediately while idle.",
             handler=service._compact_command,
-            usage="/compact",
-            examples=("/compact",),
+            usage="/compact | /compact list | /compact restore [checkpoint-id]",
+            examples=("/compact", "/compact list", "/compact restore"),
         ))
         ctx.set("compact", service)
 

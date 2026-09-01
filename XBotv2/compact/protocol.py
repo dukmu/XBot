@@ -40,6 +40,12 @@ class CompactionMetrics(WireModel):
 class CompactionCompletedData(WireModel):
     reason: str = Field(min_length=1)
     metrics: CompactionMetrics
+    checkpoint_id: str | None = None
+
+
+class CompactionRestoredData(WireModel):
+    checkpoint_id: str = Field(min_length=1)
+    messages: int = Field(ge=0)
 
 
 class CompactionFailedData(WireModel):
@@ -51,12 +57,14 @@ CompactEventType = Literal[
     "compaction_started",
     "compaction_completed",
     "compaction_failed",
+    "compaction_restored",
 ]
 
 _EVENT_MODELS: dict[str, type[WireModel]] = {
     "compaction_started": CompactionStartedData,
     "compaction_completed": CompactionCompletedData,
     "compaction_failed": CompactionFailedData,
+    "compaction_restored": CompactionRestoredData,
 }
 
 
@@ -71,6 +79,7 @@ __all__ = [
     "CompactionCompletedData",
     "CompactionFailedData",
     "CompactionMetrics",
+    "CompactionRestoredData",
     "CompactionStartedData",
     "compact_event",
 ]

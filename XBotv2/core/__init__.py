@@ -6,7 +6,7 @@ engine internals remain implementation details.
 """
 
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
-from XBotv2.core.history import ConversationHistory, HistorySink
+from XBotv2.core.history import ConversationHistory, HistoryCheckpoint, HistorySink
 from XBotv2.core.messages import (
     ContentPart,
     ImageContent,
@@ -68,6 +68,7 @@ __all__ = [
     "JsonObject",
     "JsonValue",
     "HistorySink",
+    "HistoryCheckpoint",
     "MESSAGE_FORMAT_KEY",
     "Message",
     "ModelChunk",

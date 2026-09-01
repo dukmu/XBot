@@ -452,6 +452,7 @@ data/sessions/<sid>/
     ├── thread.json         # strict ThreadMetadata
     └── state/
         ├── messages.jsonl  # current effective MessageRecords only
+        ├── history_checkpoints/ # compact snapshots and typed metadata
         ├── inbox.json      # pending InboxSnapshot
         ├── plugin_state/
         │   └── state.json  # namespaced Goal/Todo/Usage/plugin state
@@ -460,8 +461,11 @@ data/sessions/<sid>/
 
 `ThreadPersistence` is the composition boundary. `messages.jsonl` contains only
 the current effective history: normal turns append records, while Compact,
-Undo, and Clear atomically replace it. It contains no checkpoints, stack
-operations, runtime events, inbox payloads, or artifact bytes. Pending input is
+Undo, and Clear atomically replace it. Compact uses the persistence-owned
+recoverable-replacement protocol; immutable snapshots and typed hash metadata
+remain adjacent to, rather than embedded in, the effective message stream.
+`messages.jsonl` contains no checkpoint records, stack operations, runtime
+events, inbox payloads, or artifact bytes. Pending input is
 stored once in `inbox.json` until its stable `input_id` is committed to history.
 Each Message record stores one ordered `parts` list containing text, reasoning,
 image references, and Tool calls. Derived `content` and `tool_calls` fields are

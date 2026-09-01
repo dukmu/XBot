@@ -312,6 +312,126 @@ class TestConversationHistory:
             history.clear()
         assert history.snapshot() == (original,)
 
+    def test_recoverable_replace_preserves_exact_jsonl_and_post_replace_tail(
+        self,
+        tmp_path,
+    ):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        original = [
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="two"),
+            Message(role="assistant", content="answer two"),
+        ]
+        history.extend(original)
+        original_jsonl = persistence.paths.messages_file.read_bytes()
+
+        checkpoint = history.replace_recoverable(
+            [Message(role="system", content="summary"), *original[-2:]],
+            operation="compact",
+            reason="manual",
+        )
+        assert checkpoint is not None
+        archive = persistence.paths.history_checkpoint_messages(
+            checkpoint.checkpoint_id
+        )
+        assert archive.read_bytes() == original_jsonl
+        assert archive.stat().st_ino != persistence.paths.messages_file.stat().st_ino
+        assert history.checkpoints(operation="compact") == (checkpoint,)
+
+        tail = Message(role="user", content="after compact")
+        history.append(tail)
+        restored = history.restore(
+            checkpoint.checkpoint_id,
+            operation="compact",
+        )
+
+        assert restored.status == "restored"
+        assert list(history) == [*original, tail]
+        assert persistence.history.load() == list(history)
+        assert history.checkpoints(operation="compact")[0].status == "restored"
+
+    def test_nested_recoverable_replacements_restore_in_reverse_order(
+        self,
+        tmp_path,
+    ):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        original = [
+            Message(role="user", content="one"),
+            Message(role="assistant", content="answer one"),
+            Message(role="user", content="two"),
+            Message(role="assistant", content="answer two"),
+        ]
+        history.extend(original)
+        first = history.replace_recoverable(
+            [Message(role="system", content="summary one"), *original[-2:]],
+            operation="compact",
+            reason="automatic",
+        )
+        history.append(Message(role="user", content="between"))
+        before_second = list(history)
+        second = history.replace_recoverable(
+            [Message(role="system", content="summary two"), before_second[-1]],
+            operation="compact",
+            reason="automatic",
+        )
+        history.append(Message(role="assistant", content="after"))
+        assert first is not None and second is not None
+        assert [item.status for item in history.checkpoints(operation="compact")] == [
+            "superseded",
+            "active",
+        ]
+
+        history.restore(second.checkpoint_id, operation="compact")
+        assert list(history) == [
+            *before_second,
+            Message(role="assistant", content="after"),
+        ]
+        assert history.checkpoints(operation="compact")[0].status == "active"
+
+        history.restore(first.checkpoint_id, operation="compact")
+        assert [message.content for message in history] == [
+            "one",
+            "answer one",
+            "two",
+            "answer two",
+            "between",
+            "after",
+        ]
+
+    def test_failed_recoverable_replace_leaves_original_and_prepared_checkpoint(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        persistence = thread_persistence(tmp_path)
+        history = ConversationHistory(sink=persistence.history)
+        original = Message(role="user", content="do not lose")
+        history.append(original)
+        original_jsonl = persistence.paths.messages_file.read_bytes()
+
+        def fail_replace(_messages):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(persistence.history, "replace", fail_replace)
+        with pytest.raises(OSError, match="disk full"):
+            history.replace_recoverable(
+                [Message(role="system", content="summary")],
+                operation="compact",
+                reason="automatic",
+            )
+
+        assert history.snapshot() == (original,)
+        assert persistence.paths.messages_file.read_bytes() == original_jsonl
+        checkpoints = persistence.history.checkpoints(operation="compact")
+        assert len(checkpoints) == 1
+        assert checkpoints[0].status == "prepared"
+        assert persistence.paths.history_checkpoint_messages(
+            checkpoints[0].checkpoint_id
+        ).read_bytes() == original_jsonl
+
 
 class TestThreadMetadataStore:
     def test_typed_metadata_roundtrip(self, tmp_path):

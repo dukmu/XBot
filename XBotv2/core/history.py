@@ -7,7 +7,7 @@ import binascii
 import json
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Protocol, overload
+from typing import Literal, Protocol, overload
 from uuid import uuid4
 
 from XBotv2.core.messages import Message
@@ -21,6 +21,19 @@ class HistoryCursorInvalid(ValueError):
 class ConversationPage:
     messages: tuple[Message, ...]
     next_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryCheckpoint:
+    """One durable, reversible replacement of effective history."""
+
+    checkpoint_id: str
+    operation: str
+    reason: str
+    created_at: str
+    messages_before: int
+    messages_after: int
+    status: Literal["prepared", "active", "superseded", "restored"] = "active"
 
 
 class ConversationPageReader(Protocol):
@@ -38,6 +51,23 @@ class HistorySink(Protocol):
     def append(self, messages: Sequence[Message]) -> None: ...
 
     def replace(self, messages: Sequence[Message]) -> None: ...
+
+    def replace_recoverable(
+        self,
+        messages: Sequence[Message],
+        *,
+        operation: str,
+        reason: str,
+    ) -> HistoryCheckpoint: ...
+
+    def checkpoints(self, *, operation: str) -> tuple[HistoryCheckpoint, ...]: ...
+
+    def restore(
+        self,
+        checkpoint_id: str,
+        *,
+        operation: str,
+    ) -> tuple[list[Message], HistoryCheckpoint]: ...
 
 
 class ConversationHistory(Sequence[Message]):
@@ -79,6 +109,52 @@ class ConversationHistory(Sequence[Message]):
             message.seal()
         self._messages = list(replacement)
         self._revision = uuid4().hex
+
+    def replace_recoverable(
+        self,
+        messages: Iterable[Message],
+        *,
+        operation: str,
+        reason: str,
+    ) -> HistoryCheckpoint | None:
+        replacement = tuple(messages)
+        checkpoint = (
+            self._sink.replace_recoverable(
+                replacement,
+                operation=operation,
+                reason=reason,
+            )
+            if self._sink is not None
+            else None
+        )
+        for message in replacement:
+            message.seal()
+        self._messages = list(replacement)
+        self._revision = uuid4().hex
+        return checkpoint
+
+    def checkpoints(self, *, operation: str) -> tuple[HistoryCheckpoint, ...]:
+        if self._sink is None:
+            return ()
+        return self._sink.checkpoints(operation=operation)
+
+    def restore(
+        self,
+        checkpoint_id: str,
+        *,
+        operation: str,
+    ) -> HistoryCheckpoint:
+        if self._sink is None:
+            raise RuntimeError("History recovery requires durable persistence")
+        messages, checkpoint = self._sink.restore(
+            checkpoint_id,
+            operation=operation,
+        )
+        for message in messages:
+            message.seal()
+        self._messages = messages
+        self._revision = uuid4().hex
+        return checkpoint
 
     def page(
         self,
@@ -185,6 +261,7 @@ __all__ = [
     "ConversationHistory",
     "ConversationPage",
     "ConversationPageReader",
+    "HistoryCheckpoint",
     "HistoryCursorInvalid",
     "HistorySink",
     "decode_history_cursor",

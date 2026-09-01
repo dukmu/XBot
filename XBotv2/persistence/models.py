@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.history import HistoryCheckpoint
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.messages import ImageContent, Message, part_from_dict
 from XBotv2.core.tools import JsonObject, JsonValue, json_object, json_value
@@ -16,6 +17,7 @@ from XBotv2.core.tools import JsonObject, JsonValue, json_object, json_value
 MESSAGE_SCHEMA_VERSION = 1
 THREAD_LIFECYCLE_SCHEMA_VERSION = 1
 INBOX_SCHEMA_VERSION = 1
+HISTORY_CHECKPOINT_SCHEMA_VERSION = 1
 
 if TYPE_CHECKING:
     from XBotv2.agentloop.inbox import InboxInput
@@ -117,6 +119,79 @@ class MessageRecord(PersistenceRecord):
             artifact=_restore_artifacts(self.artifact),
             error=self.error,
         )
+
+
+class HistoryCheckpointRecord(PersistenceRecord):
+    """Metadata for an immutable pre-replacement JSONL snapshot."""
+
+    schema_version: Literal[1] = HISTORY_CHECKPOINT_SCHEMA_VERSION
+    checkpoint_id: str
+    operation: str
+    reason: str
+    created_at: str
+    messages_before: int = Field(ge=0)
+    messages_after: int = Field(ge=0)
+    before_sha256: str
+    after_sha256: str
+
+    def to_checkpoint(
+        self,
+        *,
+        status: Literal[
+            "prepared", "active", "superseded", "restored"
+        ] = "active",
+    ) -> HistoryCheckpoint:
+        return HistoryCheckpoint(
+            checkpoint_id=self.checkpoint_id,
+            operation=self.operation,
+            reason=self.reason,
+            created_at=self.created_at,
+            messages_before=self.messages_before,
+            messages_after=self.messages_after,
+            status=status,
+        )
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _validate_created_at(cls, value: object) -> str:
+        return _timestamp(value, "created_at")
+
+    @field_validator("checkpoint_id", "operation", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Checkpoint identifiers must be non-empty strings")
+        return value
+
+    @field_validator("before_sha256", "after_sha256", mode="before")
+    @classmethod
+    def _validate_hash(cls, value: object) -> str:
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("Checkpoint hashes must be lowercase SHA-256 values")
+        return value
+
+
+class HistoryRestoreRecord(PersistenceRecord):
+    schema_version: Literal[1] = HISTORY_CHECKPOINT_SCHEMA_VERSION
+    checkpoint_id: str
+    restored_at: str
+    messages_restored: int = Field(ge=0)
+
+    @field_validator("checkpoint_id", mode="before")
+    @classmethod
+    def _validate_checkpoint_id(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("checkpoint_id must be a non-empty string")
+        return value
+
+    @field_validator("restored_at", mode="before")
+    @classmethod
+    def _validate_restored_at(cls, value: object) -> str:
+        return _timestamp(value, "restored_at")
 
 
 class ThreadLifecycleRecord(PersistenceRecord):
@@ -362,6 +437,8 @@ def _mapping(value: object, name: str) -> Mapping[str, object]:
 
 
 __all__ = [
+    "HistoryCheckpointRecord",
+    "HistoryRestoreRecord",
     "InboxItemRecord",
     "InboxSnapshot",
     "MessageRecord",
