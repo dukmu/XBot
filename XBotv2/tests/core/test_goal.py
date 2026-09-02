@@ -314,7 +314,7 @@ async def test_goal_survives_state_store_recreation(state_store):
 
     goal = await restored.service.snapshot()
     assert goal is not None
-    assert goal.to_dict() == {
+    assert goal.model_dump(mode="json") == {
         "schema_version": 1,
         "objective": "survive restart",
         "status": "complete",
@@ -335,7 +335,7 @@ async def test_goal_rejects_invalid_persisted_state(state_store):
     }
     await plugin.store.set("snapshot", invalid)
 
-    with pytest.raises(ValueError, match="Unsupported Goal status"):
+    with pytest.raises(ValueError, match="Input should be"):
         await plugin.service.get_goal()
 
     assert await plugin.store.get("snapshot") == invalid

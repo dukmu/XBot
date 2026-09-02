@@ -116,7 +116,7 @@ class SessionEventStream:
         value = (
             event
             if isinstance(event, SessionStreamEvent)
-            else SessionStreamEvent.from_mapping(event)
+            else SessionStreamEvent.model_validate(event)
         )
         self._sequence += 1
         frame = SessionEventFrame(self._sequence, request_id, value)

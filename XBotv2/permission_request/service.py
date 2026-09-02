@@ -35,7 +35,7 @@ class ApprovalService:
 
     async def request(self, client_event: dict[str, Any]) -> dict[str, Any]:
         """Publish a request and return the client's raw decision record."""
-        envelope = ClientEvent.from_mapping(client_event)
+        envelope = ClientEvent(**client_event)
         await self._events.emit(
             Events.CLIENT_EVENT,
             EventContext(client_event=envelope),

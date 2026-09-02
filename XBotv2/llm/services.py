@@ -7,7 +7,7 @@ from typing import Protocol
 
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.core.providers import BaseProvider
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 from XBotv2.llm.contracts import ProviderCatalog
 
 
@@ -20,7 +20,7 @@ class ModelPort(Protocol):
 
     def bind_tools(
         self,
-        tools: list[JsonObject],
+        tools: list[dict[str, JsonValue]],
         **kwargs: object,
     ) -> BaseProvider: ...
 

@@ -331,9 +331,11 @@ class AgentInbox:
                         "content": item.content,
                         "target": item.target.value,
                         "source": item.source,
-                        "images": [image.to_dict() for image in item.images],
+                        "images": [
+                            image.model_dump(mode="json") for image in item.images
+                        ],
                         "artifacts": [
-                            artifact.to_dict() for artifact in item.artifacts
+                            artifact.model_dump(mode="json") for artifact in item.artifacts
                         ],
                         "metadata": item.metadata,
                     }

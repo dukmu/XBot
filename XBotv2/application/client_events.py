@@ -11,7 +11,9 @@ from collections.abc import Callable
 from functools import partial
 
 from XBotv2.application.services import ClientEventSink, InteractionWaiterPort
-from XBotv2.core.tools import ClientEvent, JsonObject
+from pydantic import JsonValue
+
+from XBotv2.core.tools import ClientEvent
 
 
 class ClientEventRouter:
@@ -33,7 +35,7 @@ class ClientEventRouter:
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> JsonObject | None:
+    ) -> dict[str, JsonValue] | None:
         if self._sink is not None:
             return await self._sink(
                 event,

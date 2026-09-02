@@ -67,7 +67,9 @@ from XBotv2.commands import (
     CommandCatalog,
     ExecuteCommand,
 )
-from XBotv2.core import EmptyRequest, JsonObject
+from pydantic import JsonValue
+
+from XBotv2.core import EmptyRequest
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
@@ -541,7 +543,7 @@ class XBotACPAgent:
                 await self._resolve_interaction(session_id, frame.event)
                 active = self._active_prompts.get(session_id)
                 if active is not None and frame.request_id == active.request_id:
-                    for update in active.mapper.updates(frame.event.to_dict()):
+                    for update in active.mapper.updates(frame.event.model_dump()):
                         await self._update(session_id, update)
                     if frame.event.type in {
                         "turn_finished",
@@ -550,7 +552,7 @@ class XBotACPAgent:
                     }:
                         active.completed.set()
                     continue
-                for update in mapper.updates(frame.event.to_dict()):
+                for update in mapper.updates(frame.event.model_dump()):
                     await self._update(session_id, update)
         except asyncio.CancelledError:
             raise
@@ -723,7 +725,7 @@ class XBotACPAgent:
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> JsonObject:
+    ) -> dict[str, JsonValue]:
         del timeout_seconds
         data = event.data
         request_id = str(data.get("request_id") or "")
@@ -882,7 +884,7 @@ class XBotACPAgent:
         workspace: str,
         session_id: str | None,
         mcp_servers: list[Any] | None,
-    ) -> dict[str, JsonObject] | None:
+    ) -> dict[str, dict[str, JsonValue]] | None:
         if not mcp_servers:
             return None
         if self.no_plugins:
@@ -891,7 +893,7 @@ class XBotACPAgent:
             })
         # Plugin enablement is decided by the plugin tree (xcore.yaml /
         # plugins.yaml); requested servers are injected directly.
-        servers: JsonObject = {}
+        servers: dict[str, JsonValue] = {}
         for server in mcp_servers:
             name = str(getattr(server, "name", ""))
             if not _MCP_NAME.fullmatch(name):

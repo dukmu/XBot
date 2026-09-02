@@ -52,7 +52,7 @@ def cache_user_message(
         cache_threshold_chars=cache_threshold_chars,
     )
     parts = [
-        TextPart(rendered) if isinstance(part, TextPart) else part
+        TextPart(text=rendered) if isinstance(part, TextPart) else part
         for part in message.parts
     ]
     return replace(message, parts=parts), artifact

@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
-from XBotv2.core.artifacts import ArtifactRef
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic.dataclasses import dataclass as validated_dataclass
 
-if TYPE_CHECKING:
-    from XBotv2.core.messages import ImageContent
-
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject = dict[str, JsonValue]
+from XBotv2.core.artifacts import ArtifactRef, ImageContent
 
 
 @dataclass(frozen=True)
@@ -31,114 +27,46 @@ class GuardDecision:
     client_events: tuple[dict[str, Any], ...] = ()
 
 
-@dataclass(frozen=True)
-class ToolCall:
-    id: str
-    name: str
-    args: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any], *, default_id: str = "") -> "ToolCall":
-        return cls(
-            id=str(value.get("id") or default_id),
-            name=str(value.get("name") or ""),
-            args=dict(value.get("args") or {}),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "args": self.args, "type": "tool_call"}
+class ToolCall(BaseModel):
+    id: str = ""
+    name: str = ""
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+    type: Literal["tool_call"] = "tool_call"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True)
-class ToolCallDelta:
+class ToolCallDelta(BaseModel):
     index: int
     id: str = ""
     name: str = ""
     args: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "index": self.index,
-            "id": self.id,
-            "name": self.name,
-            "args": self.args,
-            "type": "tool_call_chunk",
-        }
+    type: Literal["tool_call_chunk"] = "tool_call_chunk"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True)
+@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
 class ToolError:
     code: str
     message: str
     retryable: bool = False
     details: dict[str, JsonValue] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, JsonValue]:
-        return {
-            "code": self.code,
-            "message": self.message,
-            "retryable": self.retryable,
-            "details": self.details,
-        }
-
-
-@dataclass(frozen=True)
+@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
 class ClientEvent:
-    type: str
-    data: JsonObject = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not self.type:
-            raise ValueError("client event type must not be empty")
-        object.__setattr__(self, "data", json_object(self.data))
-
-    @classmethod
-    def from_mapping(cls, event: Mapping[str, object]) -> "ClientEvent":
-        event_type = event.get("type")
-        data = event.get("data")
-        if not isinstance(event_type, str) or not event_type:
-            raise TypeError("client event requires a non-empty string type")
-        if not isinstance(data, Mapping):
-            raise TypeError("client event data must be an object")
-        return cls(type=event_type, data=json_object(data))
-
-    def to_dict(self) -> JsonObject:
-        return {"type": self.type, "data": json_object(self.data)}
+    type: str = Field(min_length=1)
+    data: dict[str, JsonValue] = field(default_factory=dict)
 
 
-def json_object(value: Mapping[object, object]) -> JsonObject:
-    """Copy one mapping while enforcing the core JSON value contract."""
-    result: JsonObject = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise TypeError("JSON object keys must be strings")
-        result[key] = json_value(item)
-    return result
-
-
-def json_value(value: object) -> JsonValue:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [json_value(item) for item in value]
-    if isinstance(value, Mapping):
-        return json_object(value)
-    raise TypeError(f"value must be JSON-compatible, got {type(value).__name__}")
-
-
-@dataclass(frozen=True)
+@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
 class ToolResult:
     status: Literal["success", "error", "denied", "cancelled"] = "success"
     content: str = ""
     data: JsonValue = None
     error: ToolError | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
-    images: tuple["ImageContent", ...] = ()
+    images: tuple[ImageContent, ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
     turn_complete: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "data", json_value(self.data))
 
     @classmethod
     def success(
@@ -146,9 +74,9 @@ class ToolResult:
         content: str = "",
         *,
         data: JsonValue = None,
-        images: tuple["ImageContent", ...] = (),
+        images: tuple[ImageContent, ...] = (),
     ) -> "ToolResult":
-        return cls(content=content, data=json_value(data), images=images)
+        return cls(content=content, data=data, images=images)
 
     @classmethod
     def failure(
@@ -349,15 +277,11 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
 __all__ = [
     "ArtifactRef",
     "ClientEvent",
-    "JsonObject",
-    "JsonValue",
     "Tool",
     "ToolCall",
     "ToolCallDelta",
     "ToolError",
     "ToolResult",
-    "json_object",
-    "json_value",
     "tool_parameters_schema",
     "provider_tool_schema",
 ]

@@ -33,7 +33,7 @@ class GoalService:
             return None
         if not isinstance(stored, Mapping):
             raise TypeError("Persisted Goal snapshot must be an object")
-        return GoalSnapshot.from_dict(stored)
+        return GoalSnapshot.model_validate(stored)
 
     async def create_goal(
         self,
@@ -236,7 +236,7 @@ class GoalService:
         return goal
 
     async def _write(self, goal: GoalSnapshot) -> None:
-        await self._store.set("snapshot", goal.to_dict())
+        await self._store.set("snapshot", goal.model_dump(mode="json"))
 
 
 class GoalPlugin:

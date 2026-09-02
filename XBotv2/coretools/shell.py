@@ -249,7 +249,12 @@ async def list_shells(
         )
     status_filter = _parse_status(status)
     summaries = job_registry.list(kind=JobKind.SHELL, status=status_filter)
-    payload = {"shells": [summary.to_dict() for summary in summaries]}
+    payload = {
+        "shells": [
+            summary.model_dump(mode="json", exclude_none=True)
+            for summary in summaries
+        ]
+    }
     return ToolResult.success(
         json.dumps(payload, ensure_ascii=False)
     )
@@ -387,7 +392,7 @@ def shell_tools(
 def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, Any]:
     ready: list[dict[str, Any]] = []
     for summary in result.ready:
-        item = summary.to_dict()
+        item = summary.model_dump(mode="json", exclude_none=True)
         if summary.kind == JobKind.SHELL.value:
             job = registry.get_or_none(summary.id)
             if job is not None and job.result is not None and "exit_code" in job.result.data:

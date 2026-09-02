@@ -23,7 +23,7 @@ from XBotv2.core.runtime_logging import (
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.core.usage import UsageDelta
 from XBotv2.core.timing import conversation_stats
@@ -94,7 +94,7 @@ async def _runtime_message_events(
         if not announced:
             announced = True
             await manager._emit_session_changed(runtime.session_id)
-        yield SessionStreamEvent.from_mapping(event)
+        yield SessionStreamEvent.model_validate(event)
 
 
 async def _runtime_regenerate_events(
@@ -110,7 +110,7 @@ async def _runtime_regenerate_events(
         if not announced:
             announced = True
             await manager._emit_session_changed(runtime.session_id)
-        yield SessionStreamEvent.from_mapping(event)
+        yield SessionStreamEvent.model_validate(event)
 
 
 async def _runtime_events(
@@ -256,7 +256,7 @@ class SessionManager:
         selected_agent: str | None = None,
         mode: str = "new",
         no_plugins: bool,
-        plugin_configs: dict[str, JsonObject] | None = None,
+        plugin_configs: dict[str, dict[str, JsonValue]] | None = None,
         llm_override: Any | None = None,
         parent_thread_id: str = "",
         parent_permission_system: Any | None = None,
@@ -338,7 +338,7 @@ class SessionManager:
         selected_agent: str | None,
         mode: str,
         no_plugins: bool,
-        plugin_configs: dict[str, JsonObject] | None,
+        plugin_configs: dict[str, dict[str, JsonValue]] | None,
         llm_override: Any | None,
         parent_thread_id: str,
         parent_permission_system: Any | None,
@@ -896,7 +896,9 @@ class SessionManager:
                 _upload_bytes(item.data),
                 media_type=item.media_type,
             )
-            images.append(ImageContent(ref.id, ref.media_type, ref.size))
+            images.append(
+                ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
+            )
         attachments = [
             runtime.application.artifacts.put(
                 ArtifactKind.ATTACHMENT,
@@ -1167,7 +1169,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         model_mode=snapshot.model_mode,
         context_window=snapshot.context_window,
         usage=snapshot.usage,
-        session_stats=conversation_stats(snapshot.messages).to_dict(),
+        session_stats=conversation_stats(snapshot.messages).model_dump(mode="json"),
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
@@ -1209,7 +1211,7 @@ async def thread_summary(
             context_window=snapshot.context_window,
             message_count=len(snapshot.messages),
             usage=snapshot.usage,
-            session_stats=conversation_stats(snapshot.messages).to_dict(),
+            session_stats=conversation_stats(snapshot.messages).model_dump(mode="json"),
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
@@ -1239,7 +1241,7 @@ async def thread_summary(
         context_window=metadata.context_window,
         message_count=persistence.history.count(),
         usage=await _read_usage(persistence),
-        session_stats=conversation_stats(messages).to_dict(),
+        session_stats=conversation_stats(messages).model_dump(mode="json"),
         workspace_root=metadata.workspace_root,
         title=metadata.title or session_id,
     )

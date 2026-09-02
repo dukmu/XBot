@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.usage import UsageDelta
@@ -12,9 +14,14 @@ def attachment_prompt(message: Message) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
     for value in message.artifact or []:
-        item = value.to_dict() if hasattr(value, "to_dict") else value
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
+        if isinstance(value, ArtifactRef):
+            item = value.model_dump(mode="json")
+        elif isinstance(value, Mapping):
+            item = dict(value)
+        else:
+            raise TypeError(f"Unsupported attachment reference: {type(value).__name__}")
+        if not item.get("id"):
+            raise ValueError("Attachment reference requires an id")
         path = str(item["id"])
         if not path.startswith("session/"):
             path = f"session/{path}"
@@ -54,4 +61,4 @@ def usage_metadata(
         values["total_tokens"] = total_tokens
     if context_tokens is not None:
         values["context_tokens"] = context_tokens
-    return UsageDelta.from_mapping(values).to_event_dict()
+    return UsageDelta.from_provider(values).to_event_dict()

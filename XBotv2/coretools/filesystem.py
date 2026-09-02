@@ -225,7 +225,7 @@ async def _read_media(
             payload,
             media_type=selected,
         )
-        image = ImageContent(ref.id, ref.media_type, ref.size)
+        image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
     except _ImageError as exc:
         return ToolResult.failure(exc.code, exc.message)
 

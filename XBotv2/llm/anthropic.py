@@ -303,7 +303,7 @@ def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
     for block in (blocks[index] for index in sorted(blocks)):
         block_type = block.get("type")
         if block_type == "text":
-            parts.append(TextPart(str(block.get("text") or "")))
+            parts.append(TextPart(text=str(block.get("text") or "")))
         elif block_type == "thinking":
             provider_data = {}
             if block.get("signature"):
@@ -311,20 +311,22 @@ def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
                     "anthropic": {"signature": block["signature"]}
                 }
             parts.append(ReasoningPart(
-                str(block.get("thinking") or ""),
-                provider_data,
+                text=str(block.get("thinking") or ""),
+                provider_data=provider_data,
             ))
         elif block_type == "redacted_thinking":
             parts.append(ReasoningPart(
-                "",
-                {"anthropic": {"redacted_data": block.get("data", "")}},
+                text="",
+                provider_data={
+                    "anthropic": {"redacted_data": block.get("data", "")}
+                },
             ))
         elif block_type == "tool_use":
-            parts.append(ToolCallPart(ToolCall(
+            parts.append(ToolCallPart(
                 id=str(block.get("id") or ""),
                 name=str(block.get("name") or ""),
                 args=dict(block.get("input") or {}),
-            )))
+            ))
     return parts
 
 
@@ -340,28 +342,28 @@ def _parts_to_anthropic(
         elif isinstance(part, ToolCallPart):
             blocks.append({
                 "type": "tool_use",
-                "id": part.call.id,
-                "name": part.call.name,
-                "input": part.call.args,
+                "id": part.id,
+                "name": part.name,
+                "input": part.args,
             })
         elif isinstance(part, ImagePart):
             if image_loader is None:
                 raise ValueError("Image loader is required for image content")
-            if part.image.media_type not in {
+            if part.media_type not in {
                 "image/gif",
                 "image/jpeg",
                 "image/png",
                 "image/webp",
             }:
                 raise ValueError(
-                    f"Unsupported Anthropic image type: {part.image.media_type}"
+                    f"Unsupported Anthropic image type: {part.media_type}"
                 )
             blocks.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": part.image.media_type,
-                    "data": image_loader(part.image.path),
+                    "media_type": part.media_type,
+                    "data": image_loader(part.path),
                 },
             })
         elif isinstance(part, ReasoningPart):

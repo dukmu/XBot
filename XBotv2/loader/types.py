@@ -193,13 +193,13 @@ class PluginOverlay:
         self.patches = list(patches)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "PluginOverlay":
+    def parse(cls, data: Any) -> "PluginOverlay":
         return cls([_patch_from_dict(item) for item in _raw_entries(data)])
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "PluginOverlay":
         with open(path, encoding="utf-8") as stream:
-            return cls.from_dict(yaml.safe_load(stream))
+            return cls.parse(yaml.safe_load(stream))
 
 
 class PluginTree:
@@ -214,13 +214,13 @@ class PluginTree:
         self.entries = list(entries)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "PluginTree":
+    def parse(cls, data: Any) -> "PluginTree":
         return cls([_entry_from_dict(item) for item in _raw_entries(data)])
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "PluginTree":
         with open(path, encoding="utf-8") as stream:
-            return cls.from_dict(yaml.safe_load(stream))
+            return cls.parse(yaml.safe_load(stream))
 
     def patched_with(
         self,

@@ -129,10 +129,12 @@ class MockLLM(BaseProvider):
 def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
     normalized: list[ToolCall] = []
     for tool_call in tool_calls:
-        normalized.append(ToolCall.from_dict(
-            tool_call,
-            default_id=f"call_{len(normalized)}",
-        ))
+        normalized.append(ToolCall.model_validate({
+            "id": tool_call.get("id") or f"call_{len(normalized)}",
+            "name": tool_call.get("name") or "",
+            "args": tool_call.get("args") or {},
+            "type": tool_call.get("type") or "tool_call",
+        }))
     return normalized
 
 

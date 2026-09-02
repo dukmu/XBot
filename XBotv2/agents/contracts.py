@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 
 AgentMode = Literal["primary", "subagent", "all"]
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -26,7 +26,7 @@ class AgentDefinition:
     max_output_tokens: int | None = None
     context_window: int | None = None
     max_iterations: int | None = None
-    permissions: JsonObject = field(default_factory=dict)
+    permissions: dict[str, JsonValue] = field(default_factory=dict)
     tools: tuple[str, ...] | None = None
     disabled_tools: tuple[str, ...] = ()
     hidden: bool = False

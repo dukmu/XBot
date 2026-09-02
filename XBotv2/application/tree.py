@@ -61,7 +61,7 @@ def load_agent_tree(
         )
     if extra_plugins:
         tree = tree.patched_with(
-            PluginOverlay.from_dict(extra_plugins),
+            PluginOverlay.parse(extra_plugins),
             excluded=excluded,
             allow_new=False,
         )

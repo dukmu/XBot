@@ -31,7 +31,6 @@ from XBotv2.config import RuntimeConfig
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.metadata import ThreadMetadata
-from XBotv2.core.tools import json_object
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.llm import ModelConfig, ProviderConfig
 from XBotv2.agents.services import AgentCatalogPort
@@ -104,7 +103,7 @@ class AgentsService:
         state.metadata.replace(ThreadMetadata(
             agent=definition.name if definition is not None else "",
             agent_definition=(
-                json_object(asdict(definition)) if definition is not None else None
+                asdict(definition) if definition is not None else None
             ),
             provider=provider_name,
             parent_thread_id=options.parent_thread_id,
@@ -273,7 +272,7 @@ class AgentsService:
         state.session.provider = provider_name
         state.metadata.update(
             agent=definition.name,
-            agent_definition=json_object(asdict(definition)),
+            agent_definition=asdict(definition),
             provider=provider_name,
             model=model_config.model,
             model_mode=model_config.model_mode,

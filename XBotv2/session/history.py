@@ -3,60 +3,47 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from operator import not_
 from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
-from XBotv2.core.tools import JsonObject
 from XBotv2.core.timing import TIMING_METADATA_KEY
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationReplayItem:
+class SessionHistoryItem(BaseModel):
     """Transport-neutral projection of one visible conversation record."""
 
     role: Literal["user", "assistant", "tool"]
     content: str
-    reasoning: str
-    tool_calls: tuple[JsonObject, ...]
-    tool_call_id: str
-    input_id: str
-    status: str
-    data: Any
-    images: tuple[JsonObject, ...]
-    artifacts: tuple[JsonObject, ...]
-    error: JsonObject | None
-    runtime: dict[str, str] | None
-    timing: JsonObject | None
-
-    def to_dict(self) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "role": self.role,
-            "content": self.content,
-            "tool_calls": list(self.tool_calls),
-            "tool_call_id": self.tool_call_id,
-            "status": self.status,
-            "data": self.data,
-            "images": list(self.images),
-            "artifacts": list(self.artifacts),
-        }
-        if self.reasoning:
-            value["reasoning"] = self.reasoning
-        if self.role == "tool":
-            value["error"] = self.error
-        if self.runtime is not None:
-            value["runtime"] = self.runtime
-        if self.timing is not None:
-            value["timing"] = self.timing
-        return value
+    content: str = ""
+    reasoning: str = Field(default="", exclude_if=not_)
+    tool_calls: tuple[dict[str, JsonValue], ...] = ()
+    tool_call_id: str = ""
+    input_id: str = Field(default="", exclude=True)
+    status: str = ""
+    data: JsonValue = None
+    images: tuple[dict[str, JsonValue], ...] = ()
+    artifacts: tuple[dict[str, JsonValue], ...] = ()
+    error: dict[str, JsonValue] | None = None
+    runtime: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    timing: dict[str, JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 def conversation_replay(
     messages: Iterable[Message],
-) -> tuple[ConversationReplayItem, ...]:
-    replay: list[ConversationReplayItem] = []
+) -> tuple[SessionHistoryItem, ...]:
+    replay: list[SessionHistoryItem] = []
     for message in messages:
         if message.role not in {"user", "assistant", "tool"}:
             continue
@@ -70,16 +57,18 @@ def conversation_replay(
             if isinstance(runtime_value, dict)
             else None
         )
-        replay.append(ConversationReplayItem(
+        replay.append(SessionHistoryItem(
             role=message.role,
             content=content,
             reasoning=message.reasoning if message.role == "assistant" else "",
-            tool_calls=tuple(call.to_dict() for call in message.tool_calls or []),
+            tool_calls=tuple(
+                call.model_dump(mode="json") for call in message.tool_calls or []
+            ),
             tool_call_id=message.tool_call_id or "",
             input_id=message.input_id or "",
             status=message.status or "",
             data=message.data,
-            images=tuple(image.to_dict() for image in message.images),
+            images=tuple(image.model_dump(mode="json") for image in message.images),
             artifacts=tuple(
                 data
                 for value in message.artifact or []
@@ -100,17 +89,23 @@ def conversation_replay(
 
 
 def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
-    return [item.to_dict() for item in conversation_replay(messages)]
+    return [
+        item.model_dump(
+            mode="json",
+            exclude={"error"} if item.role != "tool" else None,
+        )
+        for item in conversation_replay(messages)
+    ]
 
 
 def _artifact_data(value: Any) -> dict[str, Any] | None:
     if isinstance(value, ArtifactRef):
-        return value.to_dict()
+        return value.model_dump(mode="json")
     return dict(value) if isinstance(value, Mapping) else None
 
 
 __all__ = [
-    "ConversationReplayItem",
+    "SessionHistoryItem",
     "conversation_replay",
     "display_history",
 ]

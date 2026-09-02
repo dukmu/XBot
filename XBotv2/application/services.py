@@ -15,7 +15,9 @@ from XBotv2.core.history import ConversationHistory, ConversationPageReader
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
-from XBotv2.core.tools import ClientEvent, JsonObject
+from pydantic import JsonValue
+
+from XBotv2.core.tools import ClientEvent
 from XBotv2.permissions import PermissionsPort
 from XBotv2.persistence import ThreadLifecycleWriterPort
 
@@ -90,7 +92,7 @@ class ClientEventSink(Protocol):
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> JsonObject: ...
+    ) -> dict[str, JsonValue]: ...
 
 
 class ClientEventsPort(Protocol):
@@ -105,7 +107,7 @@ class ClientEventsPort(Protocol):
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> JsonObject | None: ...
+    ) -> dict[str, JsonValue] | None: ...
 
     def register_waiter(
         self,

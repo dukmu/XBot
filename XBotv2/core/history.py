@@ -11,7 +11,7 @@ from typing import Protocol, overload
 from uuid import uuid4
 
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 
 
 class HistoryCursorInvalid(ValueError):
@@ -55,7 +55,7 @@ class HistorySink(Protocol):
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]: ...
 
-    def record(self, event: str, data: JsonObject) -> None: ...
+    def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
 
 
 class ConversationHistory(Sequence[Message]):
@@ -198,7 +198,7 @@ class ConversationHistory(Sequence[Message]):
             raise RuntimeError("History transcript sources are not current")
         return start
 
-    def record(self, event: str, data: JsonObject) -> None:
+    def record(self, event: str, data: dict[str, JsonValue]) -> None:
         """Append a log-only trajectory event without changing the surface."""
         if self._sink is not None:
             self._sink.record(event, data)

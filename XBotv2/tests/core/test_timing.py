@@ -45,8 +45,12 @@ async def test_tool_timing_covers_success_and_dispatch_failure() -> None:
     registry = ToolRegistry()
     registry.register(Tool.from_function(ready, name="ready"))
 
-    success = (await execute_tools([ToolCall("one", "ready", {})], registry))[0]
-    failure = (await execute_tools([ToolCall("two", "missing", {})], registry))[0]
+    success = (
+        await execute_tools([ToolCall(id="one", name="ready", args={})], registry)
+    )[0]
+    failure = (
+        await execute_tools([ToolCall(id="two", name="missing", args={})], registry)
+    )[0]
 
     for message in (success, failure):
         assert message.response_metadata[TIMING_METADATA_KEY]["duration_ms"] >= 0
@@ -77,7 +81,9 @@ def test_conversation_stats_survive_compacted_prefix_and_replay_timing() -> None
     compacted = Message(
         role="system",
         content="summary",
-        response_metadata={SESSION_STATS_METADATA_KEY: expected.to_dict()},
+        response_metadata={
+            SESSION_STATS_METADATA_KEY: expected.model_dump(mode="json")
+        },
     )
 
     assert conversation_stats([compacted]) == SessionStats(

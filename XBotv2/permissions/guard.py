@@ -34,7 +34,7 @@ class PermissionGuard:
         payload = PermissionRequestData(
             request_id=f"permission:{tool_call.id}",
             source="permission_system",
-            tool_call=tool_call.to_dict(),
+            tool_call=tool_call.model_dump(mode="json"),
             decision="ask",
             reason=reason,
             resume_supported=False,
@@ -47,7 +47,7 @@ class PermissionGuard:
             PERMISSION_REQUESTED,
             PermissionRequested(
                 tool_call=tool_call,
-                client_event=ClientEvent.from_mapping(event),
+                client_event=ClientEvent(**event),
             ),
         )
         result = await self._approval.request(event)

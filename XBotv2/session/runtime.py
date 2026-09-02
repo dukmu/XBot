@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -24,7 +25,9 @@ from XBotv2.agentloop import EventContext, Events
 from XBotv2.session.history import display_history
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ClientEvent, JsonObject, json_object
+from pydantic import JsonValue
+
+from XBotv2.core.tools import ClientEvent
 from XBotv2.interactions import interaction_recorded_event
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.session.event_stream import (
@@ -165,7 +168,9 @@ class SessionRuntime:
                 "history_cursor": page.next_cursor,
                 "operation": event.operation,
                 "turns": event.turns,
-                "session_stats": conversation_stats(event.messages).to_dict(),
+                "session_stats": conversation_stats(event.messages).model_dump(
+                    mode="json"
+                ),
             },
         ))
 
@@ -196,14 +201,18 @@ class SessionRuntime:
         payload = event.client_event
         if payload is None:
             return
-        raw = payload.to_dict()
+        raw = asdict(payload)
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
         self._publish_runtime_event(raw)
         data = raw.get("data")
         self._publish_runtime_event(session_event(
             "queue_updated",
-            {"items": [item.to_dict() for item in self.pending_inputs()]},
+            {
+                "items": [
+                    item.model_dump(mode="json") for item in self.pending_inputs()
+                ]
+            },
         ))
         if not isinstance(data, dict) or data.get("operation") != "claim":
             return
@@ -226,7 +235,7 @@ class SessionRuntime:
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
-        self._publish_runtime_event(event.client_event.to_dict())
+        self._publish_runtime_event(asdict(event.client_event))
 
     def _message_event(
         self,
@@ -241,8 +250,8 @@ class SessionRuntime:
                 "id": message_id,
                 "role": "user",
                 "content": content,
-                "images": [image.to_dict() for image in images or []],
-                "artifacts": [artifact.to_dict() for artifact in artifacts or []],
+                "images": [image.model_dump(mode="json") for image in images or []],
+                "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts or []],
             },
         )
 
@@ -470,9 +479,9 @@ class SessionRuntime:
                 self.event_stream.close()
 
 
-def _event_payload(event: dict[str, Any]) -> JsonObject:
+def _event_payload(event: dict[str, Any]) -> dict[str, JsonValue]:
     """Validate a loop event before projecting it onto the session stream."""
-    return ClientEvent.from_mapping(event).to_dict()
+    return asdict(ClientEvent(**event))
 
 
 class TurnEventRouter:
@@ -507,7 +516,7 @@ class TurnEventRouter:
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> JsonObject:
+    ) -> dict[str, JsonValue]:
         del tool_call_id
         event_type = client_event.type
         request_id = str(client_event.data.get("request_id") or "")
@@ -517,7 +526,7 @@ class TurnEventRouter:
                 f"No waiter registered for client event {event_type!r}"
             )
         pending = waiter.register(request_id)
-        self.emit(client_event.to_dict())
+        self.emit(asdict(client_event))
         try:
             result = await waiter.wait_registered(
                 request_id,
@@ -545,7 +554,7 @@ class TurnEventRouter:
                 "pending_interactions": [],
             },
         ))
-        return json_object(result.__dict__)
+        return dict(result.__dict__)
 
 
 @asynccontextmanager
@@ -607,7 +616,7 @@ async def _execute_turn(
                         snapshot = await runtime.application.snapshot()
                         payload["data"]["session_stats"] = conversation_stats(
                             snapshot.messages
-                        ).to_dict()
+                        ).model_dump(mode="json")
                     router.emit(payload)
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
@@ -701,7 +710,9 @@ async def regenerate_turn_stream(
                 "history_cursor": page.next_cursor,
                 "operation": "regenerate",
                 "turns": 1,
-                "session_stats": conversation_stats(snapshot.messages).to_dict(),
+                "session_stats": conversation_stats(snapshot.messages).model_dump(
+                    mode="json"
+                ),
             },
         ))
         accepted = runtime._message_event(

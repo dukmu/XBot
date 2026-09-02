@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from XBotv2.core import JsonObject, Message
+from pydantic import JsonValue
+
+from XBotv2.core import Message
 from XBotv2.session import SessionInfo
 
 
@@ -27,7 +29,7 @@ class AfterCompact:
 
     messages: tuple[Message, ...]
     reason: str
-    metrics: JsonObject
+    metrics: dict[str, JsonValue]
     previous_message_count: int
     current_message_count: int
     session: SessionInfo | None = None

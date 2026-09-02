@@ -11,7 +11,7 @@ from XBotv2.agents import AgentDefinition
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 from XBotv2.permissions import PermissionsPort
 from XBotv2.session.types import SessionSnapshot
 
@@ -64,7 +64,7 @@ class AgentApplicationOptions:
     thread_id: str
     workspace_root: Path
     no_plugins: bool
-    plugin_configs: dict[str, JsonObject] | None = None
+    plugin_configs: dict[str, dict[str, JsonValue]] | None = None
     model_override: BaseProvider | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None

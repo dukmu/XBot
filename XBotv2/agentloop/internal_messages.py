@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
@@ -74,9 +76,11 @@ def _artifacts(value: Any) -> list[Any]:
 
 
 def _artifact_value(value: Any) -> Any:
-    if hasattr(value, "to_dict"):
-        return value.to_dict()
-    return value if isinstance(value, dict) else str(value)
+    if isinstance(value, ArtifactRef):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"Unsupported artifact reference: {type(value).__name__}")
 
 
 __all__ = [

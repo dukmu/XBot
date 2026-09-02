@@ -38,7 +38,7 @@ class UsageService:
             for message in messages:
                 usage = message.usage_metadata
                 if usage:
-                    delta = UsageDelta.from_mapping(usage)
+                    delta = UsageDelta.from_provider(usage)
                     if not delta.is_empty():
                         snapshot = snapshot.add(delta)
             self._snapshot = snapshot
@@ -68,7 +68,7 @@ class UsageService:
     ) -> dict[str, int] | None:
         if not self._initialized:
             raise RuntimeError("UsageService must be initialized before recording usage")
-        delta = UsageDelta.from_mapping(usage)
+        delta = UsageDelta.from_provider(usage)
         if delta.is_empty():
             return None
         updated = self._snapshot.add(delta)

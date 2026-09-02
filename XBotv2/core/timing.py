@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from XBotv2.core.messages import Message
 
@@ -12,34 +13,26 @@ TIMING_METADATA_KEY = "xbot_timing"
 SESSION_STATS_METADATA_KEY = "xbot_session_stats"
 
 
-@dataclass(frozen=True, slots=True)
-class SessionStats:
-    turns: int = 0
-    steps: int = 0
-    llm_ms: float = 0.0
-    tool_ms: float = 0.0
-    ttft_ms: float = 0.0
-    ttft_steps: int = 0
-    decode_ms: float = 0.0
-    decode_tokens: int = 0
+class SessionStats(BaseModel):
+    turns: int = Field(default=0, ge=0)
+    steps: int = Field(default=0, ge=0)
+    llm_ms: float = Field(default=0.0, ge=0)
+    tool_ms: float = Field(default=0.0, ge=0)
+    ttft_ms: float = Field(default=0.0, ge=0)
+    ttft_steps: int = Field(default=0, ge=0)
+    decode_ms: float = Field(default=0.0, ge=0)
+    decode_tokens: int = Field(default=0, ge=0)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     def add(self, other: "SessionStats") -> "SessionStats":
         return SessionStats(**{
-            field.name: getattr(self, field.name) + getattr(other, field.name)
-            for field in fields(self)
+            name: getattr(self, name) + getattr(other, name)
+            for name in type(self).model_fields
         })
 
-    def to_dict(self) -> dict[str, int | float]:
-        return {
-            "turns": self.turns,
-            "steps": self.steps,
-            "llm_ms": round(self.llm_ms, 3),
-            "tool_ms": round(self.tool_ms, 3),
-            "ttft_ms": round(self.ttft_ms, 3),
-            "ttft_steps": self.ttft_steps,
-            "decode_ms": round(self.decode_ms, 3),
-            "decode_tokens": self.decode_tokens,
-        }
+    @field_serializer("llm_ms", "tool_ms", "ttft_ms", "decode_ms")
+    def _round_milliseconds(self, value: float) -> float:
+        return round(value, 3)
 
 
 def conversation_stats(messages: Iterable[Message]) -> SessionStats:
@@ -92,31 +85,7 @@ def _timing(value: Any) -> dict[str, float] | None:
 def _stats(value: Any) -> SessionStats | None:
     if not isinstance(value, Mapping):
         return None
-    expected = {field.name for field in fields(SessionStats)}
-    if set(value) != expected:
-        raise ValueError("Persisted session statistics fields are malformed")
-    return SessionStats(
-        turns=_required_int(value["turns"]),
-        steps=_required_int(value["steps"]),
-        llm_ms=_required_float(value["llm_ms"]),
-        tool_ms=_required_float(value["tool_ms"]),
-        ttft_ms=_required_float(value["ttft_ms"]),
-        ttft_steps=_required_int(value["ttft_steps"]),
-        decode_ms=_required_float(value["decode_ms"]),
-        decode_tokens=_required_int(value["decode_tokens"]),
-    )
-
-
-def _required_float(value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        raise ValueError("Persisted session timing must be non-negative")
-    return float(value)
-
-
-def _required_int(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError("Persisted session counts must be non-negative integers")
-    return value
+    return SessionStats.model_validate(value)
 
 
 def _nonnegative_int(value: Any) -> int:

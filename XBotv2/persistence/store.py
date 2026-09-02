@@ -19,7 +19,7 @@ from XBotv2.core.history import (
     encode_history_cursor,
 )
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.inbox import InboxInput
@@ -141,7 +141,7 @@ class MessageHistoryStore:
             for index, message in enumerate(messages)
         )
 
-    def record(self, event: str, data: JsonObject) -> None:
+    def record(self, event: str, data: dict[str, JsonValue]) -> None:
         self.load_surface()
         record = TrajectoryEventRecord(
             position=self._next_position,
@@ -242,7 +242,7 @@ class MessageHistoryStore:
         records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
     ) -> None:
         payload = "".join(
-            json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
             for record in records
         ).encode("utf-8")
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,11 +275,11 @@ TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
 def _trajectory_record(value: Mapping[str, object]) -> TrajectoryRecord:
     record_type = value.get("record_type")
     if record_type is None:
-        return MessageRecord.from_dict(value)
+        return MessageRecord.model_validate(value)
     if record_type == "surface_replace":
-        return SurfaceReplaceRecord.from_dict(value)
+        return SurfaceReplaceRecord.model_validate(value)
     if record_type == "event":
-        return TrajectoryEventRecord.from_dict(value)
+        return TrajectoryEventRecord.model_validate(value)
     raise ValueError(f"Unknown trajectory record type: {record_type!r}")
 
 
@@ -395,12 +395,12 @@ class ThreadMetadataStore:
         raw = _read_json(self._path, "thread metadata")
         if raw is None:
             return ThreadMetadata()
-        return ThreadMetadata.from_dict(raw)
+        return ThreadMetadata.model_validate(raw)
 
     def save(self, metadata: ThreadMetadata) -> None:
         write_text_atomic(
             self._path,
-            json.dumps(metadata.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(metadata.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
         )
         self._log.debug("persistence.metadata.saved")
 
@@ -420,13 +420,13 @@ class InboxStore:
         raw = _read_json(self._path, "inbox snapshot")
         if raw is None:
             return []
-        return InboxSnapshot.from_dict(raw).to_inputs()
+        return InboxSnapshot.model_validate(raw).to_inputs()
 
     def replace(self, items: Sequence[InboxInput]) -> None:
         snapshot = InboxSnapshot.from_inputs(items)
         write_text_atomic(
             self._path,
-            json.dumps(snapshot.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
         )
         self._log.debug("persistence.inbox.replaced", items=len(items))
 
@@ -458,7 +458,7 @@ class ThreadLifecycleStore:
     def append(self, record: ThreadLifecycleRecord) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = (
-            json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
         ).encode("utf-8")
         descriptor = os.open(
             self._path,
@@ -481,7 +481,7 @@ class ThreadLifecycleStore:
 
     def load(self) -> list[ThreadLifecycleRecord]:
         return [
-            ThreadLifecycleRecord.from_dict(raw)
+            ThreadLifecycleRecord.model_validate(raw)
             for raw in _read_jsonl(self._path, "thread lifecycle")
         ]
 

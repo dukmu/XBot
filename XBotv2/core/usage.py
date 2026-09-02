@@ -29,7 +29,7 @@ class UsageDelta:
     prompt_cache_write_tokens: int = 0
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "UsageDelta":
+    def from_provider(cls, value: Mapping[str, object]) -> "UsageDelta":
         unknown = set(value) - set(USAGE_FIELDS)
         if unknown:
             raise ValueError("Unknown usage fields: " + ", ".join(sorted(unknown)))
@@ -101,7 +101,7 @@ class UsageDelta:
 
 
 def normalize_usage(value: Mapping[str, object]) -> dict[str, int]:
-    return UsageDelta.from_mapping(value).to_event_dict() if value else {}
+    return UsageDelta.from_provider(value).to_event_dict() if value else {}
 
 
 def _tokens(value: Mapping[str, object], field: str) -> int:

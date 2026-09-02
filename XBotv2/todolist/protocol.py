@@ -34,7 +34,7 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         snapshot = await sessions.dispatch(
             session_id, thread_id, GET_TODOS, EmptyRequest()
         )
-        return TodoResponse.model_validate(snapshot.to_dict())
+        return TodoResponse.model_validate(snapshot)
 
     return router
 

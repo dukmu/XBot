@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ValidationInfo, field_validator
-
-from XBotv2.core.state import JsonStateModel
+from pydantic import BaseModel, ConfigDict
 
 
-class WorkspaceRecord(JsonStateModel):
+class WorkspaceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     id: str
     path: str
     title: str
@@ -17,32 +17,16 @@ class WorkspaceRecord(JsonStateModel):
     created_at: str
     updated_at: str
 
-    @field_validator("session_ids", mode="before")
-    @classmethod
-    def _session_ids(cls, value: object) -> tuple[object, ...]:
-        if not isinstance(value, (list, tuple)):
-            raise TypeError("WorkspaceRecord.session_ids must be a list")
-        return tuple(value)
+class WorkspaceSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-
-class WorkspaceSnapshot(JsonStateModel):
     schema_version: Literal[1] = 1
     items: tuple[WorkspaceRecord, ...] = ()
     archived_session_ids: tuple[str, ...] = ()
 
-    @field_validator("items", "archived_session_ids", mode="before")
-    @classmethod
-    def _tuple_fields(
-        cls,
-        value: object,
-        info: ValidationInfo,
-    ) -> tuple[object, ...]:
-        if not isinstance(value, (list, tuple)):
-            raise TypeError(f"WorkspaceSnapshot.{info.field_name} must be a list")
-        return tuple(value)
+class WorkspaceView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-
-class WorkspaceView(JsonStateModel):
     workspace_id: str
     path: str
     title: str
@@ -51,7 +35,9 @@ class WorkspaceView(JsonStateModel):
     updated_at: str
 
 
-class WorkspaceListing(JsonStateModel):
+class WorkspaceListing(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     items: tuple[WorkspaceView, ...] = ()
     archived_session_ids: tuple[str, ...] = ()
 

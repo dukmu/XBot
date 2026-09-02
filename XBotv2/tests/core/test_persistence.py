@@ -58,7 +58,9 @@ class TestMessageRecord:
         message = Message(
             role="assistant",
             content="calling",
-            tool_calls=[ToolCall("call-1", "echo", {"value": "hello"})],
+            tool_calls=[
+                ToolCall(id="call-1", name="echo", args={"value": "hello"})
+            ],
             name="assistant",
             status="success",
             additional_kwargs={"provider_note": {"a": 1}},
@@ -67,7 +69,9 @@ class TestMessageRecord:
         )
 
         record = MessageRecord.from_message(message, 1)
-        restored = MessageRecord.from_dict(record.to_dict()).to_message()
+        restored = MessageRecord.model_validate(
+            record.model_dump(mode="json")
+        ).to_message()
 
         assert restored.role == message.role
         assert restored.content == message.content
@@ -78,11 +82,11 @@ class TestMessageRecord:
 
     def test_rejects_unknown_record_fields(self):
         record = MessageRecord.from_message(Message(role="user", content="x"), 1)
-        raw = record.to_dict()
+        raw = record.model_dump(mode="json")
         raw["surprise"] = True
 
-        with pytest.raises(ValueError, match="unknown"):
-            MessageRecord.from_dict(raw)
+        with pytest.raises(ValueError, match="Extra inputs"):
+            MessageRecord.model_validate(raw)
 
     def test_rejects_non_json_provider_metadata(self):
         message = Message(
@@ -91,7 +95,7 @@ class TestMessageRecord:
             response_metadata={"bad": object()},
         )
 
-        with pytest.raises(TypeError, match="JSON-compatible"):
+        with pytest.raises(ValueError, match="valid JSON"):
             MessageRecord.from_message(message, 1)
 
     def test_runtime_only_fields_are_not_persisted(self):
@@ -361,7 +365,7 @@ class TestMessageHistoryStore:
             payload,
             media_type="image/png",
         )
-        image = ImageContent(ref.id, ref.media_type, ref.size)
+        image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
 
         persistence.history.append([
             Message(role="user", images=[image], artifact=[ref])
@@ -446,7 +450,13 @@ class TestConversationHistory:
         history = ConversationHistory(sink=thread_persistence(tmp_path).history)
         message = Message(
             role="assistant",
-            tool_calls=[ToolCall("call-1", "echo", {"nested": {"value": 1}})],
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="echo",
+                    args={"nested": {"value": 1}},
+                )
+            ],
             usage_metadata={"input_tokens": 1},
             data={"items": [{"status": "pending"}]},
         )
@@ -513,7 +523,7 @@ class TestThreadMetadataStore:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="fields mismatch"):
+        with pytest.raises(ValueError, match="Extra inputs"):
             persistence.metadata.load()
 
     def test_metadata_state_persists_each_typed_replacement(self, tmp_path):
@@ -566,7 +576,7 @@ class TestInboxStore:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="fields mismatch"):
+        with pytest.raises(ValueError, match="Extra inputs"):
             persistence.inbox.load()
 
 
@@ -591,7 +601,7 @@ class TestThreadLifecycleStore:
             thread_id="child",
             parent_thread_id="t1",
             agent="builder",
-        ).to_dict()
+        ).model_dump(mode="json")
         raw["timestamp"] = "not-a-time"
         persistence.paths.session.threads_log.parent.mkdir(parents=True, exist_ok=True)
         persistence.paths.session.threads_log.write_text(

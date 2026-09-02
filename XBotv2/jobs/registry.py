@@ -33,7 +33,7 @@ from XBotv2.jobs.contracts import (
     TaskSnapshot,
 )
 from XBotv2.jobs.runner import JobContext
-from XBotv2.core.tools import JsonObject
+from pydantic import JsonValue
 
 logger = logging.getLogger("xbotv2.jobs")
 
@@ -92,7 +92,7 @@ class JobRegistry:
         self,
         *,
         kind: JobKind,
-        metadata: JsonObject | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         parent_job_id: JobId | None = None,
         name: str | None = None,
     ) -> Job:

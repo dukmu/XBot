@@ -177,7 +177,7 @@ class PermissionHandlers:
             rule = requested_permission_rule(data.get("permission"))
         else:
             rule = permission_rule_for_tool_call(
-                ToolCall.from_dict(dict(data.get("tool_call") or {}))
+                ToolCall.model_validate(data.get("tool_call") or {})
             )
         if not rule:
             return

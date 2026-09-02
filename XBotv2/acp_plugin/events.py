@@ -15,7 +15,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
-from XBotv2.session.history import ConversationReplayItem
+from XBotv2.session.history import SessionHistoryItem
 
 
 class ACPEventMapper:
@@ -153,7 +153,7 @@ class ACPEventMapper:
         return []
 
 
-def replay_history(items: Iterable[ConversationReplayItem]) -> list[Any]:
+def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
     """Translate persisted conversation messages into ACP load updates."""
     updates: list[Any] = []
     for index, item in enumerate(items):

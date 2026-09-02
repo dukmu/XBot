@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from operator import not_
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
@@ -34,7 +33,7 @@ from XBotv2.session.event_stream import (
     SessionEventCursorExpired,
     SessionEventFrame,
 )
-from XBotv2.session.history import display_history
+from XBotv2.session.history import SessionHistoryItem, display_history
 from XBotv2.core.timing import conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
@@ -76,27 +75,6 @@ class OpenSessionRequest(WireModel):
     mode: Literal["new", "resume"] = "new"
     agent: str | None = None
     history_limit: int | None = Field(default=None, ge=1, le=500)
-
-
-class SessionHistoryItem(WireModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str = ""
-    reasoning: str = Field(default="", exclude_if=not_)
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-    tool_call_id: str = ""
-    status: str = ""
-    data: Any = None
-    error: dict[str, Any] | None = None
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    images: list[dict[str, Any]] = Field(default_factory=list)
-    runtime: dict[str, str] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    timing: dict[str, float] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
 
 
 class SessionStatsData(WireModel):
@@ -313,7 +291,10 @@ def session_event(
 ) -> dict[str, Any]:
     """Validate one Session-owned event at its producer boundary."""
     payload = _SESSION_EVENT_MODELS[type].model_validate(data)
-    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+    return {
+        "type": type,
+        "data": payload.model_dump(mode="json", exclude_unset=True),
+    }
 
 
 def session_error_event(
@@ -328,7 +309,10 @@ def session_error_event(
         message=message,
         details=details or {},
     )
-    return {"type": "error", "data": payload.model_dump(exclude_unset=True)}
+    return {
+        "type": "error",
+        "data": payload.model_dump(mode="json", exclude_unset=True),
+    }
 
 
 class MessageRequest(WireModel):
@@ -368,7 +352,7 @@ def _open_session_response(
     history = page.messages if page is not None else value.history
     return OpenSessionResponse.model_validate(
         {
-            **value.to_dict(),
+            **value.model_dump(mode="json", exclude={"history"}),
             "history": display_history(history),
             "history_cursor": page.next_cursor if page is not None else None,
         }
@@ -376,11 +360,11 @@ def _open_session_response(
 
 
 def _session_summary(value: SessionSnapshot) -> SessionSummary:
-    return SessionSummary.model_validate(value.to_dict())
+    return SessionSummary.model_validate(value, from_attributes=True)
 
 
 def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
-    return ThreadSummary.model_validate(value.to_dict())
+    return ThreadSummary.model_validate(value, from_attributes=True)
 
 
 def _history_response(
@@ -395,7 +379,7 @@ def _history_response(
         thread_id=thread_id,
         removed_turns=result.removed_turns,
         messages=display_history(messages),
-        session_stats=conversation_stats(result.messages).to_dict(),
+        session_stats=conversation_stats(result.messages).model_dump(mode="json"),
         history_cursor=page.next_cursor if page is not None else None,
     )
 
@@ -856,7 +840,7 @@ def build_session_router(
         return PendingInputListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            items=[PendingInputData.model_validate(item.to_dict()) for item in items],
+            items=[PendingInputData.model_validate(item, from_attributes=True) for item in items],
         )
 
     @router.patch(
@@ -882,7 +866,7 @@ def build_session_router(
         return PendingInputListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            items=[PendingInputData.model_validate(item.to_dict()) for item in items],
+            items=[PendingInputData.model_validate(item, from_attributes=True) for item in items],
         )
 
     @router.get(

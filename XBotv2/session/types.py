@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from collections.abc import Mapping
 from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from XBotv2.core.messages import Message
 from XBotv2.core.history import ConversationPage
 from XBotv2.core.providers import BaseProvider
-from XBotv2.core.tools import JsonObject, json_object
+from pydantic import JsonValue
 
 
 class SessionNotFound(KeyError):
@@ -60,7 +61,7 @@ class OpenSession:
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
-    plugin_configs: dict[str, JsonObject] | None = None
+    plugin_configs: dict[str, dict[str, JsonValue]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +77,7 @@ class OpenThread:
     model_override: BaseProvider | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class OpenedSession:
+class OpenedSession(BaseModel):
     session_id: str
     thread_id: str
     agent_name: str
@@ -90,30 +90,16 @@ class OpenedSession:
     history: tuple[Message, ...]
     status_slots: dict[str, str]
     event_cursor: int
-    session_stats: dict[str, int | float] = field(default_factory=dict)
+    session_stats: dict[str, int | float] = Field(default_factory=dict)
     pending_inputs: tuple["PendingInputSnapshot", ...] = ()
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "session_id": self.session_id,
-            "thread_id": self.thread_id,
-            "agent_name": self.agent_name,
-            "workspace_root": self.workspace_root,
-            "provider": self.provider,
-            "model": self.model,
-            "model_mode": self.model_mode,
-            "context_window": self.context_window,
-            "usage": self.usage,
-            "session_stats": self.session_stats,
-            "history": self.history,
-            "status_slots": self.status_slots,
-            "event_cursor": self.event_cursor,
-            "pending_inputs": [item.to_dict() for item in self.pending_inputs],
-        }
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="forbid",
+        frozen=True,
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class SessionSnapshot:
+class SessionSnapshot(BaseModel):
     session_id: str
     status: Literal["active", "inactive"]
     active_threads: int = 0
@@ -121,21 +107,9 @@ class SessionSnapshot:
     workspace_root: str = ""
     title: str = ""
     blank: bool = True
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "session_id": self.session_id,
-            "status": self.status,
-            "active_threads": self.active_threads,
-            "thread_count": self.thread_count,
-            "workspace_root": self.workspace_root,
-            "title": self.title,
-            "blank": self.blank,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ThreadSnapshot:
+class ThreadSnapshot(BaseModel):
     session_id: str
     thread_id: str
     status: Literal["active", "inactive"]
@@ -148,35 +122,13 @@ class ThreadSnapshot:
     model_mode: str = ""
     context_window: int = 0
     message_count: int = 0
-    usage: dict[str, int] = field(default_factory=dict)
-    session_stats: dict[str, int | float] = field(default_factory=dict)
+    usage: dict[str, int] = Field(default_factory=dict)
+    session_stats: dict[str, int | float] = Field(default_factory=dict)
     pending_interactions: tuple[str, ...] = ()
-    status_slots: dict[str, str] = field(default_factory=dict)
+    status_slots: dict[str, str] = Field(default_factory=dict)
     workspace_root: str = ""
     title: str = ""
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "session_id": self.session_id,
-            "thread_id": self.thread_id,
-            "status": self.status,
-            "kind": self.kind,
-            "turn_status": self.turn_status,
-            "parent_thread_id": self.parent_thread_id,
-            "agent": self.agent,
-            "provider": self.provider,
-            "model": self.model,
-            "model_mode": self.model_mode,
-            "context_window": self.context_window,
-            "message_count": self.message_count,
-            "usage": self.usage,
-            "session_stats": self.session_stats,
-            "pending_interactions": self.pending_interactions,
-            "status_slots": self.status_slots,
-            "workspace_root": self.workspace_root,
-            "title": self.title,
-        }
-
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 @dataclass(frozen=True, slots=True)
 class HistoryMutation:
@@ -194,25 +146,14 @@ class ArtifactPayload:
     name: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class PendingInputSnapshot:
+class PendingInputSnapshot(BaseModel):
     message_id: str
     content: str
     target: Literal["next-turn", "next-step"]
     source: str = "user"
     image_count: int = 0
     artifact_count: int = 0
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "message_id": self.message_id,
-            "content": self.content,
-            "target": self.target,
-            "source": self.source,
-            "image_count": self.image_count,
-            "artifact_count": self.artifact_count,
-        }
-
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 @dataclass(frozen=True, slots=True)
 class PendingInputUpdate:
@@ -241,23 +182,10 @@ class RegenerateMessage:
     request_id: str
 
 
-@dataclass(frozen=True, slots=True)
-class SessionStreamEvent:
-    type: str
-    data: JsonObject
-
-    @classmethod
-    def from_mapping(cls, event: Mapping[str, object]) -> "SessionStreamEvent":
-        event_type = event.get("type")
-        data = event.get("data")
-        if not isinstance(event_type, str) or not event_type:
-            raise TypeError("session stream event requires a non-empty string type")
-        if not isinstance(data, dict):
-            raise TypeError("session stream event data must be an object")
-        return cls(type=event_type, data=json_object(data))
-
-    def to_dict(self) -> JsonObject:
-        return {"type": self.type, "data": json_object(self.data)}
+class SessionStreamEvent(BaseModel):
+    type: str = Field(min_length=1)
+    data: dict[str, JsonValue]
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 @dataclass(frozen=True, slots=True)

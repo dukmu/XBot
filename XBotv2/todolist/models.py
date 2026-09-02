@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
-from pydantic import field_validator
-from XBotv2.core.state import JsonStateModel
-from XBotv2.core.tools import JsonObject
+from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
 TODO_SCHEMA_VERSION = 1
 TodoStatus = Literal["pending", "in_progress", "completed"]
@@ -20,12 +18,14 @@ class TodoValidationError(ValueError):
         self.code = code
 
 
-class TodoItem(JsonStateModel):
+class TodoItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     content: str
     status: TodoStatus
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "TodoItem":
+    def parse_input(cls, value: Mapping[str, object]) -> "TodoItem":
         if set(value) != {"content", "status"}:
             raise TodoValidationError(
                 "invalid_todos", "Todo items must contain only content and status"
@@ -42,13 +42,15 @@ class TodoItem(JsonStateModel):
             )
         return cls(content=content.strip(), status=cast(TodoStatus, status))
 
-class TodoSnapshot(JsonStateModel):
+class TodoSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     schema_version: Literal[1] = TODO_SCHEMA_VERSION
     items: tuple[TodoItem, ...] = ()
 
     @classmethod
     def from_items(cls, items: Sequence[Mapping[str, object]]) -> "TodoSnapshot":
-        return cls(items=tuple(TodoItem.from_mapping(item) for item in items))
+        return cls(items=tuple(TodoItem.parse_input(item) for item in items))
 
     @field_validator("items", mode="before")
     @classmethod
@@ -56,12 +58,12 @@ class TodoSnapshot(JsonStateModel):
         if not isinstance(value, (list, tuple)):
             raise TypeError("TodoSnapshot.items must be a list")
         return tuple(
-            item if isinstance(item, TodoItem) else TodoItem.from_mapping(item)
+            item if isinstance(item, TodoItem) else TodoItem.parse_input(item)
             for item in value
         )
 
-    def projection(self) -> JsonObject:
-        return {"kind": "todo_snapshot", **self.to_dict()}
+    def projection(self) -> dict[str, JsonValue]:
+        return {"kind": "todo_snapshot", **self.model_dump(mode="json")}
 
 
 __all__ = [

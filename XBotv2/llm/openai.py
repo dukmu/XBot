@@ -173,10 +173,13 @@ class OpenAICompatibleProvider(BaseProvider):
         ]
         parts = []
         if reasoning:
-            parts.append(ReasoningPart(reasoning))
+            parts.append(ReasoningPart(text=reasoning))
         if content:
-            parts.append(TextPart(content))
-        parts.extend(ToolCallPart(call) for call in tool_calls)
+            parts.append(TextPart(text=content))
+        parts.extend(
+            ToolCallPart.model_validate(call, from_attributes=True)
+            for call in tool_calls
+        )
         yield ModelResponse(
             parts=parts,
             response_metadata={
@@ -231,7 +234,7 @@ def openai_messages(
             ),
         }
         tool_calls = [
-            part.call for part in parts if isinstance(part, ToolCallPart)
+            part for part in parts if isinstance(part, ToolCallPart)
         ]
         if tool_calls:
             item["tool_calls"] = [
@@ -251,7 +254,7 @@ def _openai_content(
     )
     if attachment_text:
         text = f"{text}\n\n{attachment_text}".strip()
-    images = [part.image for part in parts if isinstance(part, ImagePart)]
+    images = [part for part in parts if isinstance(part, ImagePart)]
     if not images:
         return text
     if image_loader is None:

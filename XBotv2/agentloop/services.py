@@ -11,7 +11,9 @@ from XBotv2.agentloop.events import EventContext, EventPort
 from XBotv2.agentloop.inbox import InboxInput, InboxTarget
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.tools import GuardDecision, JsonObject, Tool, ToolCall
+from pydantic import JsonValue
+
+from XBotv2.core.tools import GuardDecision, Tool, ToolCall
 from XBotv2.llm import ModelPort
 
 
@@ -67,13 +69,13 @@ class AgentLoopDriverPort(Protocol):
         request_id: str = "",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-    ) -> AsyncIterator[JsonObject]: ...
+    ) -> AsyncIterator[dict[str, JsonValue]]: ...
 
     def run_pending(
         self,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[JsonObject]: ...
+    ) -> AsyncIterator[dict[str, JsonValue]]: ...
 
 
 ToolGuard = Callable[

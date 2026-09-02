@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Literal
-from pydantic import Field, field_validator
 
-from XBotv2.core.state import JsonStateModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 GOAL_SCHEMA_VERSION = 1
 GoalStatus = Literal["active", "complete", "blocked", "paused"]
 GOAL_STATUSES = frozenset({"active", "complete", "blocked", "paused"})
 
 
-class GoalSnapshot(JsonStateModel):
+class GoalSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     objective: str = Field(min_length=1)
     status: GoalStatus = "active"
     summary: str = ""
@@ -27,13 +27,5 @@ class GoalSnapshot(JsonStateModel):
         if not value:
             raise ValueError("Goal objective must be a non-empty string")
         return value
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def _validate_status(cls, value: object) -> object:
-        if value not in GOAL_STATUSES:
-            raise ValueError(f"Unsupported Goal status: {value!r}")
-        return value
-
 
 __all__ = ["GOAL_SCHEMA_VERSION", "GOAL_STATUSES", "GoalSnapshot", "GoalStatus"]

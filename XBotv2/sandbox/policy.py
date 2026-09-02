@@ -43,8 +43,6 @@ class SandboxPolicy:
         workspace_write: str = "allow",
         variables: RuntimeVariables | None = None,
     ) -> None:
-        if hasattr(config, "model_dump"):
-            config = config.model_dump()
         self.config: dict[str, Any] | None = config
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
@@ -392,7 +390,7 @@ class SandboxPolicy:
             access = rule_data.get("access", "readonly")
             self._rules.append(SandboxResourceRule(path=path, access=access))
 
-    def to_dict(self) -> dict[str, Any]:
+    def export_config(self) -> dict[str, Any]:
         """Serialize the live sandbox config back to the format
         used by global, session, and workspace configuration."""
         d: dict[str, Any] = {
@@ -429,7 +427,10 @@ class SandboxPolicy:
 
         target = Path(path)
         content = yaml.safe_dump(
-            self.to_dict(), allow_unicode=True, sort_keys=False, default_flow_style=False
+            self.export_config(),
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
         )
         fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".sandbox-", suffix=".tmp")
         try:

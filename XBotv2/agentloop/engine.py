@@ -20,7 +20,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any
@@ -170,20 +170,21 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
             if isinstance(message.artifact, (list, tuple))
             else [message.artifact]
         )
-        data["artifacts"] = [
-            artifact.to_dict()
-            if hasattr(artifact, "to_dict")
-            else dict(artifact)
-            if isinstance(artifact, dict)
-            else {"id": str(artifact)}
-            for artifact in artifacts
-        ]
+        data["artifacts"] = [_artifact_event_data(artifact) for artifact in artifacts]
     if message.images:
-        data["images"] = [image.to_dict() for image in message.images]
+        data["images"] = [image.model_dump(mode="json") for image in message.images]
     timing = message.response_metadata.get(TIMING_METADATA_KEY)
     if isinstance(timing, dict):
         data["timing"] = timing
     return data
+
+
+def _artifact_event_data(artifact: object) -> dict[str, Any]:
+    if isinstance(artifact, ArtifactRef):
+        return artifact.model_dump(mode="json")
+    if isinstance(artifact, Mapping):
+        return dict(artifact)
+    raise TypeError(f"Unsupported artifact reference: {type(artifact).__name__}")
 
 
 class Engine:
@@ -344,7 +345,7 @@ class Engine:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
             Events.INBOX_SPLICE,
-            self._make_event_context(client_event=ClientEvent.from_mapping(event)),
+            self._make_event_context(client_event=ClientEvent(**event)),
             short_circuit=False,
         )
 
@@ -707,7 +708,9 @@ class Engine:
                 "assistant_message",
                 {
                     "content": content,
-                    "tool_calls": [call.to_dict() for call in response.tool_calls],
+                    "tool_calls": [
+                        call.model_dump(mode="json") for call in response.tool_calls
+                    ],
                     "timing": response_metadata.get(TIMING_METADATA_KEY),
                 },
             )
@@ -811,7 +814,11 @@ class Engine:
         )
         yield agentloop_event(
             "tool_calls_started",
-            {"tool_calls": [call.to_dict() for call in tool_calls]},
+            {
+                "tool_calls": [
+                    call.model_dump(mode="json") for call in tool_calls
+                ]
+            },
         )
         tool_names_by_id = {
             call.id: call.name or "tool" for call in tool_calls
@@ -856,7 +863,7 @@ class Engine:
             client_events = message.client_events
             for client_event in client_events:
                 event_ctx = self._make_event_context(tool_result=message,
-                    client_event=ClientEvent.from_mapping(client_event),
+                    client_event=ClientEvent(**client_event),
                 )
                 await self._dispatch(Events.CLIENT_EVENT, event_ctx,
                     short_circuit=False,

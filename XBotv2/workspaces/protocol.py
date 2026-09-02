@@ -364,12 +364,14 @@ def _workspace_event(frame: WorkspaceEventFrame) -> tuple[str, dict[str, object]
     if isinstance(change, SessionResourceChanged):
         return (
             "catalog/session-added" if change.added else "catalog/session-changed",
-            {"session": change.session.to_dict()},
+            {"session": change.session.model_dump(mode="json")},
         )
     if isinstance(change, SessionResourceRemoved):
         return "catalog/session-removed", {"session_id": change.session_id}
     if isinstance(change, WorkspaceResourceChanged):
-        return "catalog/workspace-changed", {"workspace": change.workspace.to_dict()}
+        return "catalog/workspace-changed", {
+            "workspace": change.workspace.model_dump(mode="json")
+        }
     if isinstance(change, WorkspaceResourceRemoved):
         return "catalog/workspace-removed", {"workspace_id": change.workspace_id}
     if isinstance(change, WorkspaceOrderChanged):

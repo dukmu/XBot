@@ -51,7 +51,7 @@ class TodolistService:
             return TodoSnapshot()
         if not isinstance(stored, Mapping):
             raise TypeError("Persisted Todo snapshot must be an object")
-        return TodoSnapshot.from_dict(stored)
+        return TodoSnapshot.model_validate(stored)
 
     async def update_todos(self, todos: list[dict[str, str]]) -> ToolResult:
         """Replace the current Todo checklist with one complete list.
@@ -88,7 +88,7 @@ class TodolistService:
         active = TodoSnapshot(items=() if cleared else requested.items)
         changed = current != active
         if changed:
-            await self._store.set("snapshot", active.to_dict())
+            await self._store.set("snapshot", active.model_dump(mode="json"))
 
         if cleared:
             content = "All todos completed; the active checklist was cleared."

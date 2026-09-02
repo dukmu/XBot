@@ -404,10 +404,10 @@ class WorkspaceRegistry:
             return WorkspaceSnapshot()
         if not isinstance(stored, Mapping):
             raise TypeError("Persisted Workspace snapshot must be an object")
-        return WorkspaceSnapshot.from_dict(stored)
+        return WorkspaceSnapshot.model_validate(stored)
 
     async def _write(self, snapshot: WorkspaceSnapshot) -> None:
-        await self._state.set("snapshot", snapshot.to_dict())
+        await self._state.set("snapshot", snapshot.model_dump(mode="json"))
 
 
 def _views(records: tuple[WorkspaceRecord, ...]) -> tuple[WorkspaceView, ...]:

@@ -9,7 +9,9 @@ from XBotv2.agentloop.inbox import InboxInput, InboxSink
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from XBotv2.core.tools import JsonObject, Tool
+from pydantic import JsonValue
+
+from XBotv2.core.tools import Tool
 from XBotv2.llm import ModelPort
 from XBotv2.session import SessionInfo
 
@@ -25,7 +27,7 @@ class LoopState:
         messages: list[Message] | ConversationHistory | None = None,
         turn_count: int = 0,
         resumed: bool = False,
-        metadata: ThreadMetadata | JsonObject | None = None,
+        metadata: ThreadMetadata | dict[str, JsonValue] | None = None,
         inbox_items: list[InboxInput] | None = None,
         inbox_sink: InboxSink | None = None,
     ) -> None:

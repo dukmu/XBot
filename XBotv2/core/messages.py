@@ -4,70 +4,34 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.tools import JsonValue, ToolCall, ToolCallDelta
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-
-@dataclass(frozen=True, slots=True)
-class ImageContent:
-    """A session-relative image artifact attached to a message."""
-
-    path: str
-    media_type: str
-    size: int
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "ImageContent":
-        return cls(
-            path=str(value.get("path") or ""),
-            media_type=str(value.get("media_type") or "application/octet-stream"),
-            size=int(value.get("size") or 0),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "media_type": self.media_type,
-            "size": self.size,
-        }
+from XBotv2.core.artifacts import ArtifactRef, ImageContent
+from XBotv2.core.tools import ToolCall, ToolCallDelta
 
 
-@dataclass(frozen=True, slots=True)
-class TextPart:
+class TextPart(BaseModel):
+    type: Literal["text"] = "text"
     text: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": "text", "text": self.text}
-
-
-@dataclass(frozen=True, slots=True)
-class ReasoningPart:
+class ReasoningPart(BaseModel):
+    type: Literal["reasoning"] = "reasoning"
     text: str
-    provider_data: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"type": "reasoning", "text": self.text}
-        if self.provider_data:
-            data["provider_data"] = self.provider_data
-        return data
+    provider_data: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True, slots=True)
-class ImagePart:
-    image: ImageContent
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": "image", **self.image.to_dict()}
+class ImagePart(ImageContent):
+    type: Literal["image"] = "image"
 
 
-@dataclass(frozen=True, slots=True)
-class ToolCallPart:
-    call: ToolCall
-
-    def to_dict(self) -> dict[str, Any]:
-        return self.call.to_dict()
+ToolCallPart = ToolCall
 
 
 ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart
@@ -96,16 +60,13 @@ def merge_model_chunk(
 def part_from_dict(value: dict[str, Any]) -> ContentPart:
     part_type = value.get("type")
     if part_type == "text":
-        return TextPart(str(value.get("text") or ""))
+        return TextPart.model_validate(value)
     if part_type == "reasoning":
-        return ReasoningPart(
-            str(value.get("text") or ""),
-            dict(value.get("provider_data") or {}),
-        )
+        return ReasoningPart.model_validate(value)
     if part_type == "image":
-        return ImagePart(ImageContent.from_dict(value))
+        return ImagePart.model_validate(value)
     if part_type == "tool_call":
-        return ToolCallPart(ToolCall.from_dict(value))
+        return ToolCallPart.model_validate(value)
     raise ValueError(f"Unknown message content part: {part_type!r}")
 
 
@@ -118,11 +79,16 @@ def _content_parts(
 ) -> list[ContentPart]:
     parts: list[ContentPart] = []
     if reasoning:
-        parts.append(ReasoningPart(reasoning))
+        parts.append(ReasoningPart(text=reasoning))
     if content:
-        parts.append(TextPart(content))
-    parts.extend(ImagePart(image) for image in images or [])
-    parts.extend(ToolCallPart(call) for call in tool_calls or [])
+        parts.append(TextPart(text=content))
+    parts.extend(
+        ImagePart.model_validate(image, from_attributes=True) for image in images or []
+    )
+    parts.extend(
+        ToolCallPart.model_validate(call, from_attributes=True)
+        for call in tool_calls or []
+    )
     return parts
 
 
@@ -145,7 +111,7 @@ class _PartBacked:
             part for part in self.parts if not isinstance(part, TextPart)
         ]
         if value:
-            self.parts.insert(min(index, len(self.parts)), TextPart(value))
+            self.parts.insert(min(index, len(self.parts)), TextPart(text=value))
 
     @property
     def reasoning(self) -> str:
@@ -159,12 +125,12 @@ class _PartBacked:
             part for part in self.parts if not isinstance(part, ReasoningPart)
         ]
         if value:
-            self.parts.insert(0, ReasoningPart(value))
+            self.parts.insert(0, ReasoningPart(text=value))
 
     @property
     def tool_calls(self) -> list[ToolCall]:
         return [
-            part.call for part in self.parts if isinstance(part, ToolCallPart)
+            part for part in self.parts if isinstance(part, ToolCallPart)
         ]
 
     @tool_calls.setter
@@ -172,11 +138,17 @@ class _PartBacked:
         self.parts = [
             part for part in self.parts if not isinstance(part, ToolCallPart)
         ]
-        self.parts.extend(ToolCallPart(call) for call in value)
+        self.parts.extend(
+            ToolCallPart.model_validate(call, from_attributes=True) for call in value
+        )
 
     @property
     def images(self) -> list[ImageContent]:
-        return [part.image for part in self.parts if isinstance(part, ImagePart)]
+        return [
+            ImageContent(path=part.path, media_type=part.media_type, size=part.size)
+            for part in self.parts
+            if isinstance(part, ImagePart)
+        ]
 
 
 @dataclass(init=False)
@@ -303,13 +275,18 @@ class _FrozenList(list[Any]):
 
 def _freeze_part(part: ContentPart) -> ContentPart:
     if isinstance(part, ReasoningPart):
-        return ReasoningPart(part.text, _freeze_object(part.provider_data))
+        return ReasoningPart.model_construct(
+            type="reasoning",
+            text=part.text,
+            provider_data=_freeze_object(part.provider_data),
+        )
     if isinstance(part, ToolCallPart):
-        return ToolCallPart(ToolCall(
-            part.call.id,
-            part.call.name,
-            _freeze_object(part.call.args),
-        ))
+        return ToolCallPart.model_construct(
+            id=part.id,
+            name=part.name,
+            args=_freeze_object(part.args),
+            type="tool_call",
+        )
     return part
 
 

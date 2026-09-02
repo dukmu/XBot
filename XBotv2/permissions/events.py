@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from XBotv2.core import ClientEvent, JsonObject, ToolCall
+from pydantic import JsonValue
+
+from XBotv2.core import ClientEvent, ToolCall
 
 
 PERMISSION_DECIDED = "permissions/decided"
@@ -16,7 +18,7 @@ PERMISSION_REQUESTED = "permission/request"
 class PermissionDecided:
     decision: Literal["allow", "deny"]
     scope: str
-    rule: JsonObject
+    rule: dict[str, JsonValue]
 
 
 @dataclass(frozen=True, slots=True)

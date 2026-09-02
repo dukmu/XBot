@@ -8,9 +8,7 @@ from enum import Enum
 from typing import Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.state import JsonStateModel
-from XBotv2.core.tools import JsonObject
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 JobId = str
 MAX_SUMMARY_CHARS = 256
@@ -69,20 +67,18 @@ class JobRunnerContext(Protocol):
     primary_output: OutputStore | None
 
 
-class JobError(JsonStateModel):
+class JobError(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     code: str
     message: str
     detail: str | None = None
-
-    def to_dict(self) -> JsonObject:
-        return self.model_dump(mode="json", exclude_none=True)
-
 
 @dataclass(slots=True)
 class JobResult:
     summary: str | None = None
     output_store: OutputStore | None = None
-    data: JsonObject = field(default_factory=dict)
+    data: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -95,7 +91,7 @@ class Job:
     finished_at: float | None = None
     parent_job_id: JobId | None = None
     name: str | None = None
-    metadata: JsonObject = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
     result: JobResult | None = None
     error: JobError | None = None
 
@@ -116,7 +112,9 @@ class JobRunner(Protocol):
     async def cancel(self, job: Job) -> None: ...
 
 
-class JobSummary(JsonStateModel):
+class JobSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     id: JobId
     kind: str
     status: str
@@ -125,16 +123,17 @@ class JobSummary(JsonStateModel):
     parent_job_id: JobId | None = None
     summary: str | None = None
 
-    def to_dict(self) -> JsonObject:
-        return self.model_dump(mode="json", exclude_none=True)
+class WaitResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-class WaitResult(JsonStateModel):
     ready: list[JobSummary] = Field(default_factory=list)
     pending: list[JobId] = Field(default_factory=list)
     timed_out: bool = False
 
 
-class CancelResult(JsonStateModel):
+class CancelResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     id: JobId
     status: str
     cancelled: bool = False
@@ -156,7 +155,7 @@ class JobsPort(Protocol):
         self,
         *,
         kind: JobKind,
-        metadata: JsonObject | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         parent_job_id: JobId | None = None,
         name: str | None = None,
     ) -> Job: ...

@@ -178,7 +178,7 @@ async def test_turn_survives_response_stream_disconnect_and_replays(tmp_path):
     recovered = []
     async with asyncio.timeout(1):
         async for frame in shared:
-            recovered.append(frame.event.to_dict())
+            recovered.append(frame.event.model_dump(mode="json"))
             if frame.event.type == "turn_finished":
                 break
 
@@ -222,7 +222,9 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     )))
 
     assert session.engine.inbox == []
-    notice = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
+    notice = (
+        await asyncio.wait_for(anext(events), timeout=1)
+    ).event.model_dump(mode="json")
     assert notice["type"] == "completion_notice"
     assert session.turn_task is None
     await session.close()
@@ -279,7 +281,9 @@ async def test_history_change_is_projected_from_typed_session_event(tmp_path):
         turns=1,
     ))
 
-    event = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
+    event = (
+        await asyncio.wait_for(anext(events), timeout=1)
+    ).event.model_dump(mode="json")
     assert event["type"] == "history_updated"
     assert event["data"]["operation"] == "undo"
     assert event["data"]["turns"] == 1
@@ -331,7 +335,9 @@ async def test_busy_turn_holds_input_for_fold_delivery(tmp_path):
         await asyncio.sleep(0)
         assert session.engine.steered == [("queued", "request")]
         assert len(session.pending_responses) == 1
-        msg = (await asyncio.wait_for(anext(events), timeout=1)).event.to_dict()
+        msg = (
+            await asyncio.wait_for(anext(events), timeout=1)
+        ).event.model_dump(mode="json")
         assert msg["type"] == "message"
         assert msg["data"]["role"] == "user"
         assert msg["data"]["content"] == "queued"

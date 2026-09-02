@@ -60,7 +60,7 @@ def todo(content: str, status: str) -> dict[str, str]:
 
 async def plugin_snapshot(plugin: TodolistService) -> list[dict[str, str]]:
     snapshot = await plugin.snapshot()
-    return [item.to_dict() for item in snapshot.items]
+    return [item.model_dump(mode="json") for item in snapshot.items]
 
 
 def test_todolist_registers_one_atomic_tool(state_store):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import inspect
 import json
 import logging
@@ -206,7 +207,7 @@ def _error_message(
         tool_call_id=call.id,
         status="error",
         client_events=events,
-        error=error.to_dict() if error is not None else None,
+        error=asdict(error) if error is not None else None,
     )
 
 
@@ -243,7 +244,7 @@ async def _execute_one_tool(
     tool = entry.tool
     args = dict(call.args)
     before_ctx = (
-        context_factory(tool_call=ToolCall(tool_id, tool_name, args))
+        context_factory(tool_call=ToolCall(id=tool_id, name=tool_name, args=args))
         if context_factory is not None
         else None
     )
@@ -292,7 +293,7 @@ async def _execute_one_tool(
                 raise TypeError("BEFORE_TOOL_CALL args must be a dict")
             args = dict(rewritten_args)
 
-    call = ToolCall(tool_id, tool_name, args)
+    call = ToolCall(id=tool_id, name=tool_name, args=args)
     try:
         Draft202012Validator(tool_parameters_schema(tool)).validate(args)
     except ValidationError as exc:
@@ -359,7 +360,7 @@ async def _execute_one_tool(
         )
 
         message = _coerce_tool_message(result, tool_id)
-        observed_call = ToolCall(tool_id, tool_name, args)
+        observed_call = ToolCall(id=tool_id, name=tool_name, args=args)
         observed_tool_calls.append(observed_call)
         _append_timed_result(results, message, started)
         _log_tool_finish(
@@ -389,7 +390,7 @@ async def _execute_one_tool(
             level=logging.WARNING,
             timeout_seconds=exc.timeout_seconds,
         )
-        observed_call = ToolCall(tool_id, tool_name, args)
+        observed_call = ToolCall(id=tool_id, name=tool_name, args=args)
         timeout = exc.timeout_seconds
         reason = f"Tool {tool_name} timed out after {timeout}s"
         message = _error_message(
@@ -432,7 +433,7 @@ async def _execute_one_tool(
             level=logging.ERROR,
             error_type=type(exc).__name__,
         )
-        observed_call = ToolCall(tool_id, tool_name, args)
+        observed_call = ToolCall(id=tool_id, name=tool_name, args=args)
         message = _error_message(observed_call, f"Error executing {tool_name}: {exc}")
         observed_tool_calls.append(observed_call)
         _append_timed_result(results, message, started)
@@ -470,9 +471,9 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             status=value.status,
             artifact=list(value.artifacts),
             images=list(value.images),
-            error=value.error.to_dict() if value.error is not None else None,
+            error=asdict(value.error) if value.error is not None else None,
             client_events=[
-                _normalize_client_event(event.to_dict(), tool_call_id)
+                _normalize_client_event(asdict(event), tool_call_id)
                 for event in value.client_events
             ],
             turn_complete=value.turn_complete,

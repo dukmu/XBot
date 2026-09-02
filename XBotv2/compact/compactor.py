@@ -13,7 +13,6 @@ from XBotv2.core import (
     Message,
     ModelResponse,
     estimate_messages_tokens,
-    json_object,
 )
 from XBotv2.core.timing import SESSION_STATS_METADATA_KEY, conversation_stats
 
@@ -36,12 +35,12 @@ TrajectoryRecorder = Callable[[str, dict[str, Any]], None]
 
 def _response_trace(response: ModelResponse) -> dict[str, Any]:
     """Return the complete provider-neutral response fields as JSON."""
-    return json_object({
+    return {
         "content": response.content,
         "reasoning": response.reasoning,
         "response_metadata": response.response_metadata,
         "additional_kwargs": response.additional_kwargs,
-    })
+    }
 
 
 async def build_compaction_proposal(
@@ -174,7 +173,7 @@ async def build_compaction_proposal(
 
     compacted = compacted_message(summary, reason=reason)
     compacted.response_metadata[SESSION_STATS_METADATA_KEY] = (
-        conversation_stats(prefix_messages).to_dict()
+        conversation_stats(prefix_messages).model_dump(mode="json")
     )
     compacted_messages = [compacted, *messages[split:]]
     usage = model_usage(response.usage_metadata)
