@@ -15,6 +15,7 @@ from XBotv2.core import (
     estimate_messages_tokens,
     json_object,
 )
+from XBotv2.core.timing import SESSION_STATS_METADATA_KEY, conversation_stats
 
 from XBotv2.compact.history import compact_prefix_end, history_chars
 from XBotv2.compact.protocol import compact_event
@@ -172,6 +173,9 @@ async def build_compaction_proposal(
         return None
 
     compacted = compacted_message(summary, reason=reason)
+    compacted.response_metadata[SESSION_STATS_METADATA_KEY] = (
+        conversation_stats(prefix_messages).to_dict()
+    )
     compacted_messages = [compacted, *messages[split:]]
     usage = model_usage(response.usage_metadata)
     summary_estimate = estimate_messages_tokens([compacted])

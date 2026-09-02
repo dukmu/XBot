@@ -1,5 +1,6 @@
 import {
   EMPTY_USAGE,
+  EMPTY_SESSION_STATS,
   type AgentInfo,
   type HistoryItem,
   type ImageReference,
@@ -14,6 +15,7 @@ import {
   type ThreadSummary,
   type ToolCall,
   type UsageData,
+  type SessionStatsData,
 } from "../api/types";
 
 export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry | RuntimeEntry;
@@ -81,6 +83,7 @@ export interface RuntimeState {
   todos: TodoItemData[];
   interactions: InteractionRequest[];
   usage: UsageData;
+  sessionStats: SessionStatsData;
   turnRunning: boolean;
   pendingInputs: PendingInput[];
   error: string;
@@ -88,7 +91,7 @@ export interface RuntimeState {
 
 export type RuntimeSession = Omit<
   OpenSessionResponse,
-  "history" | "history_cursor" | "status" | "usage" | "pending_inputs"
+  "history" | "history_cursor" | "status" | "usage" | "session_stats" | "pending_inputs"
 >;
 
 export type RuntimeAction =
@@ -140,6 +143,7 @@ export const initialRuntimeState: RuntimeState = {
   todos: [],
   interactions: [],
   usage: { ...EMPTY_USAGE },
+  sessionStats: { ...EMPTY_SESSION_STATS },
   turnRunning: false,
   pendingInputs: [],
   error: "",
@@ -174,6 +178,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
         usage: normalizeUsage(action.session.usage),
+        sessionStats: normalizeSessionStats(action.session.session_stats),
         interactions: [],
         tasks: {},
         todos: [],
@@ -201,6 +206,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         todos: [],
         interactions: [],
         usage: { ...EMPTY_USAGE },
+        sessionStats: { ...EMPTY_SESSION_STATS },
         turnRunning: false,
         pendingInputs: [],
         error: "",
@@ -219,6 +225,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
           workspace_root: action.thread.workspace_root || state.current.workspace_root,
         },
         usage: normalizeUsage(action.thread.usage),
+        sessionStats: normalizeSessionStats(action.thread.session_stats),
       } : state;
     case "history":
       return {
@@ -334,6 +341,9 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: commitAssistantDraft(state.entries, state.assistantDraft),
         assistantDraft: null,
         current: updateSlots(state.current, data.status_slots),
+        sessionStats: Object.hasOwn(data, "session_stats")
+          ? normalizeSessionStats(data.session_stats)
+          : state.sessionStats,
       };
     case "assistant_message_delta":
       return {
@@ -418,6 +428,9 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: historyEntries(history),
         assistantDraft: null,
         historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
+        sessionStats: Object.hasOwn(data, "session_stats")
+          ? normalizeSessionStats(data.session_stats)
+          : state.sessionStats,
       };
     }
     case "agent_configured":
@@ -669,6 +682,20 @@ function normalizeUsage(usage: Partial<UsageData>): UsageData {
     cache_read_input_tokens: numberValue(usage.cache_read_input_tokens),
     cache_creation_input_tokens: numberValue(usage.cache_creation_input_tokens),
     prompt_cache_write_tokens: numberValue(usage.prompt_cache_write_tokens),
+  };
+}
+
+function normalizeSessionStats(value: unknown): SessionStatsData {
+  const stats = objectValue(value);
+  return {
+    turns: numberValue(stats.turns),
+    steps: numberValue(stats.steps),
+    llm_ms: numberValue(stats.llm_ms),
+    tool_ms: numberValue(stats.tool_ms),
+    ttft_ms: numberValue(stats.ttft_ms),
+    ttft_steps: numberValue(stats.ttft_steps),
+    decode_ms: numberValue(stats.decode_ms),
+    decode_tokens: numberValue(stats.decode_tokens),
   };
 }
 

@@ -22,6 +22,7 @@ from XBotv2.core.tools import (
 )
 from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.timing import TIMING_METADATA_KEY
 
 _DEFAULT_TOOL_LOG = DEFAULT_RUNTIME_LOG.bind("tools")
 
@@ -115,7 +116,11 @@ async def execute_tools(
                 call,
                 f"Tool not registered: {tool_name}",
             )
-            results.append(_error_message(call, f"Tool not registered: {tool_name}"))
+            _append_timed_result(
+                results,
+                _error_message(call, f"Tool not registered: {tool_name}"),
+                started,
+            )
             observed_tool_calls.append(call)
             continue
 
@@ -205,6 +210,17 @@ def _error_message(
     )
 
 
+def _append_timed_result(
+    results: list[Message],
+    message: Message,
+    started: float,
+) -> None:
+    message.response_metadata[TIMING_METADATA_KEY] = {
+        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
+    results.append(message)
+
+
 async def _execute_one_tool(
     call: ToolCall, entry: Any, registry: Any,
     *,
@@ -257,7 +273,7 @@ async def _execute_one_tool(
             if entry is None:
                 msg = _error_message(call, f"Tool not registered: {tool_name}")
                 observed_tool_calls.append(call)
-                results.append(msg)
+                _append_timed_result(results, msg, started)
                 _log_tool_finish(
                     runtime_log,
                     started,
@@ -284,7 +300,7 @@ async def _execute_one_tool(
         location = f" at {path}" if path else ""
         reason = f"Invalid arguments for {tool_name}{location}: {exc.message}"
         observed_tool_calls.append(call)
-        results.append(_error_message(call, reason))
+        _append_timed_result(results, _error_message(call, reason), started)
         _log_tool_finish(
             runtime_log,
             started,
@@ -327,7 +343,11 @@ async def _execute_one_tool(
             level=logging.WARNING,
         )
         await _emit_tool_denied(events, context_factory, call, reason)
-        results.append(_error_message(call, reason, events=client_events))
+        _append_timed_result(
+            results,
+            _error_message(call, reason, events=client_events),
+            started,
+        )
         observed_tool_calls.append(call)
         return
     try:
@@ -341,7 +361,7 @@ async def _execute_one_tool(
         message = _coerce_tool_message(result, tool_id)
         observed_call = ToolCall(tool_id, tool_name, args)
         observed_tool_calls.append(observed_call)
-        results.append(message)
+        _append_timed_result(results, message, started)
         _log_tool_finish(
             runtime_log,
             started,
@@ -383,7 +403,7 @@ async def _execute_one_tool(
             ),
         )
         observed_tool_calls.append(observed_call)
-        results.append(message)
+        _append_timed_result(results, message, started)
         await _run_tool_event(
             events,
             context_factory,
@@ -415,7 +435,7 @@ async def _execute_one_tool(
         observed_call = ToolCall(tool_id, tool_name, args)
         message = _error_message(observed_call, f"Error executing {tool_name}: {exc}")
         observed_tool_calls.append(observed_call)
-        results.append(message)
+        _append_timed_result(results, message, started)
         await _run_tool_event(
             events,
             context_factory,

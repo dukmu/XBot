@@ -26,6 +26,7 @@ from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import JsonObject
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.core.usage import UsageDelta
+from XBotv2.core.timing import conversation_stats
 from XBotv2.session.runtime import (
     SessionRuntime,
     regenerate_turn_stream,
@@ -1166,6 +1167,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         model_mode=snapshot.model_mode,
         context_window=snapshot.context_window,
         usage=snapshot.usage,
+        session_stats=conversation_stats(snapshot.messages).to_dict(),
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
@@ -1207,6 +1209,7 @@ async def thread_summary(
             context_window=snapshot.context_window,
             message_count=len(snapshot.messages),
             usage=snapshot.usage,
+            session_stats=conversation_stats(snapshot.messages).to_dict(),
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
@@ -1222,6 +1225,7 @@ async def thread_summary(
     )
     metadata = persistence.metadata.load()
     parent_thread_id = metadata.parent_thread_id
+    messages = persistence.history.load()
     return ThreadSnapshot(
         session_id=session_id,
         thread_id=thread_id,
@@ -1235,6 +1239,7 @@ async def thread_summary(
         context_window=metadata.context_window,
         message_count=persistence.history.count(),
         usage=await _read_usage(persistence),
+        session_stats=conversation_stats(messages).to_dict(),
         workspace_root=metadata.workspace_root,
         title=metadata.title or session_id,
     )

@@ -29,6 +29,17 @@ export interface UsageData {
   prompt_cache_write_tokens: number;
 }
 
+export interface SessionStatsData {
+  turns: number;
+  steps: number;
+  llm_ms: number;
+  tool_ms: number;
+  ttft_ms: number;
+  ttft_steps: number;
+  decode_ms: number;
+  decode_tokens: number;
+}
+
 export interface SessionSummary {
   session_id: string;
   status: "active" | "inactive";
@@ -73,6 +84,7 @@ export interface ThreadSummary {
   context_window: number;
   message_count: number;
   usage: UsageData;
+  session_stats: SessionStatsData;
   pending_interactions: string[];
   status_slots: Record<string, string>;
   workspace_root?: string;
@@ -91,6 +103,7 @@ export interface HistoryItem {
   artifacts: JsonObject[];
   images: ImageReference[];
   runtime?: Record<string, string> | null;
+  timing?: Record<string, number> | null;
 }
 
 export interface OpenSessionResponse {
@@ -104,6 +117,7 @@ export interface OpenSessionResponse {
   model_mode: string;
   context_window: number;
   usage: UsageData;
+  session_stats: SessionStatsData;
   history: HistoryItem[];
   history_cursor?: string | null;
   event_cursor: number;
@@ -256,4 +270,15 @@ export const EMPTY_USAGE: UsageData = {
   cache_read_input_tokens: 0,
   cache_creation_input_tokens: 0,
   prompt_cache_write_tokens: 0,
+};
+
+export const EMPTY_SESSION_STATS: SessionStatsData = {
+  turns: 0,
+  steps: 0,
+  llm_ms: 0,
+  tool_ms: 0,
+  ttft_ms: 0,
+  ttft_steps: 0,
+  decode_ms: 0,
+  decode_tokens: 0,
 };

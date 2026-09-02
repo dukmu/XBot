@@ -1,7 +1,9 @@
 /* Presentation adapted from DeepSeek Harness ui-tool (MIT). */
 import { Check, ChevronRight, Circle, CircleDot, FileText, LoaderCircle, Search, Terminal, X } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import type { ToolEntry } from "../state/runtime";
+import { DiffBlock, type DiffHunk } from "./DiffBlock";
+import { ToolArtifacts } from "./ToolArtifacts";
 import { ToolOutput } from "./ToolOutput";
 
 export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
@@ -30,47 +32,73 @@ export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
 });
 
 function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItem[] | null }) {
-  if (todos) return <div className="tool-details"><TodoChecklist items={todos} /></div>;
+  if (todos) return <ToolDetails tool={tool}><TodoChecklist items={todos} /></ToolDetails>;
+  const diff = appliedDiff(tool);
+  if (diff) return <ToolDetails tool={tool}><DiffBlock diffs={[diff]} maxLines={8} /></ToolDetails>;
   const args = recordOf(tool.args);
   const command = stringOf(args.command);
   const path = stringOf(args.path);
   const query = stringOf(args.query);
   if (command && /(?:shell|bash|exec|terminal|command)/i.test(tool.name)) {
     return (
-      <div className="tool-details"><section className="tool-specialized-card tool-terminal-card">
+      <ToolDetails tool={tool}><section className="tool-specialized-card tool-terminal-card">
         <header><Terminal size={14} /><code>{command}</code></header>
         {tool.result !== null && tool.result !== "" && <ToolOutput value={tool.result} />}
         {tool.error && <ToolOutput value={tool.error} label="Error" />}
-      </section></div>
+      </section></ToolDetails>
     );
   }
   if (path && /(?:file|read|write|edit|patch)/i.test(tool.name)) {
     return (
-      <div className="tool-details"><section className="tool-specialized-card tool-file-card">
+      <ToolDetails tool={tool}><section className="tool-specialized-card tool-file-card">
         <header><FileText size={14} /><span>Path</span><code>{path}</code></header>
         {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
         {tool.error && <Detail label="Error" value={tool.error} />}
-      </section></div>
+      </section></ToolDetails>
     );
   }
   if (query && /search/i.test(tool.name)) {
     return (
-      <div className="tool-details"><section className="tool-specialized-card tool-search-card">
+      <ToolDetails tool={tool}><section className="tool-specialized-card tool-search-card">
         <header><Search size={14} /><span>Query</span><code>{query}</code></header>
         {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
         {tool.error && <Detail label="Error" value={tool.error} />}
-      </section></div>
+      </section></ToolDetails>
     );
   }
   return (
-    <div className="tool-details">
+    <ToolDetails tool={tool}>
       <Detail label="Arguments" value={tool.args} />
       {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
       {tool.data !== null && <Detail label="Data" value={tool.data} />}
       {tool.error && <Detail label="Error" value={tool.error} />}
       {tool.images.length > 0 && <Detail label="Images" value={tool.images} />}
-    </div>
+    </ToolDetails>
   );
+}
+
+function ToolDetails({ tool, children }: { tool: ToolEntry; children: ReactNode }) {
+  return <div className="tool-details">{children}<ToolArtifacts artifacts={tool.artifacts} /></div>;
+}
+
+function appliedDiff(tool: ToolEntry): DiffHunk | null {
+  if (tool.name !== "edit" || tool.status !== "success") return null;
+  const data = recordOf(tool.data);
+  if (data.changed !== true) return null;
+  const args = recordOf(tool.args);
+  const path = stringOf(args.path);
+  if (!path.trim()) return null;
+  if (args.mode === "write" && typeof args.content === "string") {
+    return { path, oldText: null, newText: args.content };
+  }
+  if (
+    args.mode === "replace"
+    && typeof args.old_text === "string"
+    && typeof args.new_text === "string"
+  ) {
+    return { path, oldText: args.old_text, newText: args.new_text };
+  }
+  return null;
 }
 
 function Detail({ label, value }: { label: string; value: unknown }) {

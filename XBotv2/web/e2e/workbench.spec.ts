@@ -40,9 +40,10 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await expect(page.getByText("Explorer", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Background tasks" }).click();
   await page.getByRole("button", { name: /Context \d+% used/ }).click();
-  await expect(page.getByRole("dialog", { name: "Context usage" })).toContainText("Cumulative input");
+  await expect(page.getByRole("dialog", { name: "Context usage" })).toContainText("1.2k / 32k");
   await page.keyboard.press("Escape");
-  await expect(page.locator(".status-bar")).toContainText("tokens:1.4k");
+  await expect(page.getByRole("status", { name: "Session usage" })).toContainText("2 turns · 2 steps");
+  await expect(page.getByRole("status", { name: "Session usage" })).toContainText("Input 1.1K · Output 290");
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
@@ -74,6 +75,29 @@ test("renders Todo state as a checklist", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Inspect the bug");
   await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("In progress");
   await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Done");
+});
+
+test("renders an applied file edit as a bounded DSh diff", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Edit file with a long replacement");
+  await composer.press("Enter");
+
+  await expect(page.getByText("edit", { exact: true })).toBeVisible();
+  await page.getByText("edit", { exact: true }).click();
+  const diff = page.locator("[data-diff]");
+  await expect(diff.getByText("src/app.py", { exact: true })).toBeVisible();
+  await expect(diff.getByText("old implementation", { exact: true })).toBeVisible();
+  await expect(diff.getByText("replacement-10", { exact: true })).toHaveCount(0);
+  await diff.getByRole("button", { name: /Show \d+ hidden diff lines/ }).click();
+  await expect(diff.getByText("replacement-10", { exact: true })).toBeVisible();
+  await expect(diff).toContainText("└ +20 -1 · 1 file");
+  const artifact = page.getByRole("link", { name: "Open artifact edit-report.txt" });
+  await expect(artifact).toBeVisible();
+  await expect(artifact).toHaveAttribute(
+    "href",
+    /\/sessions\/demo-session\/threads\/agent\/artifacts\/tool_results\/edit-report\.txt$/,
+  );
 });
 
 test("restores historical sessions and their workspaces", async ({ page }) => {
@@ -974,13 +998,55 @@ async function mockProtocol(page: Page) {
         publishRuntime(events, requestId);
         return sse(route, events);
       }
+      if (content.startsWith("Edit file")) {
+        const replacement = Array.from({ length: 20 }, (_, index) => `replacement-${index}`).join("\n");
+        const events = [
+          { type: "turn_started", data: { turn: 2 } },
+          { type: "tool_calls_started", data: { tool_calls: [{
+            id: "edit-long",
+            name: "edit",
+            args: {
+              mode: "replace",
+              path: "src/app.py",
+              old_text: "old implementation",
+              new_text: replacement,
+            },
+          }] } },
+          { type: "tool_result", data: {
+            tool_call_id: "edit-long",
+            name: "edit",
+            content: "Updated src/app.py",
+            status: "success",
+            data: { changed: true, resolved_path: "/workspace/XBot/src/app.py" },
+            artifacts: [{
+              id: "tool_results/edit-report.txt",
+              kind: "tool_results",
+              media_type: "text/plain",
+              name: "edit-report.txt",
+              size: 1536,
+              sha256: "mock-sha256",
+            }],
+          } },
+          { type: "assistant_message", data: { content: "The file was updated.", tool_calls: [] } },
+          { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
+        ];
+        publishRuntime(events, requestId);
+        return sse(route, events);
+      }
       const events = [
         { type: "turn_started", data: { turn: 2 } },
         { type: "assistant_message_delta", data: { reasoning: "I am checking the public resources." } },
         { type: "assistant_message_delta", data: { content: "The Web client remains behind the typed v3 API." } },
         { type: "assistant_message", data: { content: "The Web client remains behind the typed v3 API.", tool_calls: [] } },
         { type: "usage", data: { input_tokens: 280, output_tokens: 90, total_tokens: 370, requests: 1, context_tokens: 1200 } },
-        { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
+        { type: "turn_finished", data: {
+          turn: 2,
+          status_slots: { goal: "active" },
+          session_stats: {
+            turns: 2, steps: 2, llm_ms: 2400, tool_ms: 300,
+            ttft_ms: 420, ttft_steps: 2, decode_ms: 1980, decode_tokens: 290,
+          },
+        } },
       ];
       publishRuntime(events, requestId);
       return sse(route, events);
@@ -1021,6 +1087,10 @@ function openSession(sessionId = "demo-session", workspaceOverride = "", history
     model_mode: "high",
     context_window: 32000,
     usage: usage(),
+    session_stats: {
+      turns: 1, steps: 1, llm_ms: 1000, tool_ms: 300,
+      ttft_ms: 200, ttft_steps: 1, decode_ms: 800, decode_tokens: 200,
+    },
     status_slots: { goal: "active" },
     pending_inputs: [],
     history: history.slice(start).map((item) => ({ images: [], ...item })),

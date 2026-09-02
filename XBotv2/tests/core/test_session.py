@@ -113,6 +113,9 @@ class FakeApplication:
     async def status_slots(self):
         return {}
 
+    async def snapshot(self):
+        return SimpleNamespace(messages=tuple(self.history_pages))
+
     async def close(self):
         self.closed = True
 

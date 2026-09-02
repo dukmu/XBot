@@ -10,6 +10,7 @@ from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
 from XBotv2.core.tools import JsonObject
+from XBotv2.core.timing import TIMING_METADATA_KEY
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class ConversationReplayItem:
     artifacts: tuple[JsonObject, ...]
     error: JsonObject | None
     runtime: dict[str, str] | None
+    timing: JsonObject | None
 
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -46,6 +48,8 @@ class ConversationReplayItem:
             value["error"] = self.error
         if self.runtime is not None:
             value["runtime"] = self.runtime
+        if self.timing is not None:
+            value["timing"] = self.timing
         return value
 
 
@@ -83,6 +87,14 @@ def conversation_replay(
             ),
             error=message.error if message.role == "tool" else None,
             runtime=runtime,
+            timing=(
+                dict(timing)
+                if isinstance(
+                    timing := message.response_metadata.get(TIMING_METADATA_KEY),
+                    Mapping,
+                )
+                else None
+            ),
         ))
     return tuple(replay)
 

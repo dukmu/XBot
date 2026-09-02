@@ -22,6 +22,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.session.history import display_history
+from XBotv2.core.timing import conversation_stats
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ClientEvent, JsonObject, json_object
 from XBotv2.interactions import interaction_recorded_event
@@ -164,6 +165,7 @@ class SessionRuntime:
                 "history_cursor": page.next_cursor,
                 "operation": event.operation,
                 "turns": event.turns,
+                "session_stats": conversation_stats(event.messages).to_dict(),
             },
         ))
 
@@ -602,6 +604,10 @@ async def _execute_turn(
                         slots = await runtime.application.status_slots()
                         if slots:
                             payload["data"]["status_slots"] = slots
+                        snapshot = await runtime.application.snapshot()
+                        payload["data"]["session_stats"] = conversation_stats(
+                            snapshot.messages
+                        ).to_dict()
                     router.emit(payload)
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
@@ -685,6 +691,7 @@ async def regenerate_turn_stream(
             if isinstance(value, ArtifactRef)
         ]
         page = runtime.application.history_pages.page(limit=160)
+        snapshot = await runtime.application.snapshot()
         response = TurnResponse(request_id, request_id)
         router = TurnEventRouter(runtime, response)
         router.emit(session_event(
@@ -694,6 +701,7 @@ async def regenerate_turn_stream(
                 "history_cursor": page.next_cursor,
                 "operation": "regenerate",
                 "turns": 1,
+                "session_stats": conversation_stats(snapshot.messages).to_dict(),
             },
         ))
         accepted = runtime._message_event(

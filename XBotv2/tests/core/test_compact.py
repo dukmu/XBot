@@ -27,6 +27,7 @@ from XBotv2.core.tokens import (
     REQUEST_ESTIMATE_KEY,
     REQUEST_PROVIDER_KEY,
 )
+from XBotv2.core.timing import TIMING_METADATA_KEY, conversation_stats
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.config.models import RuntimeConfig
 from XBotv2.agentloop.engine import Engine
@@ -183,6 +184,13 @@ async def test_human_command_compacts_and_persists_immediately(
     plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
     setup = SetupContext(plugin)
     original = history(3)
+    original[1].response_metadata[TIMING_METADATA_KEY] = {
+        "llm_ms": 1200,
+        "ttft_ms": 200,
+        "decode_ms": 1000,
+    }
+    original[1].usage_metadata["output_tokens"] = 25
+    stats_before = conversation_stats(original)
     state_store.history.replace(original)
     llm = MockLLM(responses=[{
         "content": "Earlier requirements.",
@@ -278,6 +286,7 @@ async def test_human_command_compacts_and_persists_immediately(
     assert engine.messages[0].role == "system"
     assert "Earlier requirements." in engine.messages[0].content
     assert state_store.history.load() == engine.messages
+    assert conversation_stats(engine.messages) == stats_before
     assert [message.content for message in state_store.history.load_transcript()] == [
         message.content for message in original
     ]

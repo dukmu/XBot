@@ -13,7 +13,6 @@ export function ContextMeter({ usage, contextWindow }: { usage: UsageData; conte
   const percent = available
     ? Math.max(0, Math.min(100, Math.round(usage.context_tokens / contextWindow * 100)))
     : 0;
-  const cache = usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.prompt_cache_write_tokens;
 
   useEffect(() => {
     if (!open || !available) return;
@@ -57,12 +56,6 @@ export function ContextMeter({ usage, contextWindow }: { usage: UsageData; conte
             <span className={css.figures}>{formatTokens(usage.context_tokens)} / {formatTokens(contextWindow)}</span>
           </div>
           <div className={css.bar}><i style={{ width: `${percent}%` }} /></div>
-          <dl className={css.rows}>
-            <div><dt>Cumulative input</dt><dd>{formatTokens(usage.input_tokens)}</dd></div>
-            <div><dt>Cache</dt><dd>{formatTokens(cache)}</dd></div>
-            <div><dt>Cumulative output</dt><dd>{formatTokens(usage.output_tokens)}</dd></div>
-            <div><dt>Requests</dt><dd>{usage.requests}</dd></div>
-          </dl>
         </div>
       )}
     </span>

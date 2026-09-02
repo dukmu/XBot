@@ -90,6 +90,7 @@ class OpenedSession:
     history: tuple[Message, ...]
     status_slots: dict[str, str]
     event_cursor: int
+    session_stats: dict[str, int | float] = field(default_factory=dict)
     pending_inputs: tuple["PendingInputSnapshot", ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -103,6 +104,7 @@ class OpenedSession:
             "model_mode": self.model_mode,
             "context_window": self.context_window,
             "usage": self.usage,
+            "session_stats": self.session_stats,
             "history": self.history,
             "status_slots": self.status_slots,
             "event_cursor": self.event_cursor,
@@ -147,6 +149,7 @@ class ThreadSnapshot:
     context_window: int = 0
     message_count: int = 0
     usage: dict[str, int] = field(default_factory=dict)
+    session_stats: dict[str, int | float] = field(default_factory=dict)
     pending_interactions: tuple[str, ...] = ()
     status_slots: dict[str, str] = field(default_factory=dict)
     workspace_root: str = ""
@@ -167,6 +170,7 @@ class ThreadSnapshot:
             "context_window": self.context_window,
             "message_count": self.message_count,
             "usage": self.usage,
+            "session_stats": self.session_stats,
             "pending_interactions": self.pending_interactions,
             "status_slots": self.status_slots,
             "workspace_root": self.workspace_root,

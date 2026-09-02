@@ -68,6 +68,7 @@ from XBotv2.core.tokens import (
     REQUEST_PROVIDER_KEY,
     estimate_request_tokens,
 )
+from XBotv2.core.timing import TIMING_METADATA_KEY
 from XBotv2.llm import ModelPort
 from XBotv2.session import SessionInfo
 from XBotv2.core.tools import (
@@ -179,6 +180,9 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
         ]
     if message.images:
         data["images"] = [image.to_dict() for image in message.images]
+    timing = message.response_metadata.get(TIMING_METADATA_KEY)
+    if isinstance(timing, dict):
+        data["timing"] = timing
     return data
 
 
@@ -704,6 +708,7 @@ class Engine:
                 {
                     "content": content,
                     "tool_calls": [call.to_dict() for call in response.tool_calls],
+                    "timing": response_metadata.get(TIMING_METADATA_KEY),
                 },
             )
             if response_msg.usage_metadata:
@@ -1258,10 +1263,15 @@ class Engine:
         aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
         started = time.perf_counter()
+        first_delta_at: float | None = None
         chunk_count = 0
         async for chunk in llm.astream(context_messages):
             chunk_count += 1
             if isinstance(chunk, ModelChunk):
+                if first_delta_at is None and (
+                    chunk.content or chunk.reasoning or chunk.tool_calls
+                ):
+                    first_delta_at = time.perf_counter()
                 aggregate = merge_model_chunk(aggregate, chunk)
                 if chunk.content:
                     yield agentloop_event(
@@ -1287,6 +1297,18 @@ class Engine:
             )
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")
+        finished = time.perf_counter()
+        llm_ms = (finished - started) * 1000
+        ttft_ms = (
+            (first_delta_at - started) * 1000
+            if first_delta_at is not None
+            else None
+        )
+        timing: dict[str, float] = {"llm_ms": round(llm_ms, 3)}
+        if ttft_ms is not None:
+            timing["ttft_ms"] = round(ttft_ms, 3)
+            timing["decode_ms"] = round(max(0.0, llm_ms - ttft_ms), 3)
+        aggregate.response_metadata[TIMING_METADATA_KEY] = timing
         usage = aggregate.usage_metadata
         self._log.info(
             "llm.response",
@@ -1302,7 +1324,7 @@ class Engine:
             cache_read_tokens=usage.get("cache_read_input_tokens", 0),
             cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
             stop_reason=aggregate.response_metadata.get("stop_reason", "unknown"),
-            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+            duration_ms=round(llm_ms, 3),
         )
         yield {"type": "_model_response", "data": {"response": aggregate}}
 

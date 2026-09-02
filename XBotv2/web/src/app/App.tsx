@@ -10,6 +10,7 @@ import { RuntimeHeader } from "../components/RuntimeHeader";
 import { QueueDock } from "../components/QueueDock";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { StatusBar } from "../components/StatusBar";
+import { UsageStatsLine } from "../components/UsageStatsLine";
 import { TaskDock } from "../components/TaskDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
@@ -252,6 +253,7 @@ export function App() {
                 running={state.turnRunning}
                 onUpdate={runtime.updatePendingInput}
               />
+              <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
               <Composer
                 running={state.turnRunning}
                 disabled={state.loading || runtime.commandRunning}

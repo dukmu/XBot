@@ -36,7 +36,3 @@
 .figures { margin-left: auto; font-variant-numeric: tabular-nums; }
 .bar { height: 4px; margin: 10px 0 12px; overflow: hidden; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); }
 .bar > i { display: block; min-width: 2px; height: 100%; border-radius: inherit; background: var(--dsw-alias-state-business-primary); }
-.rows { display: grid; gap: 4px; margin: 0; }
-.rows > div { display: flex; justify-content: space-between; gap: 12px; }
-.rows dt { color: var(--dsw-alias-label-tertiary); }
-.rows dd { margin: 0; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }

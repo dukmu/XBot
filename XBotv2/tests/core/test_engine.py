@@ -309,6 +309,8 @@ class TestEngineBasics:
         assert tool_delta_events[0]["data"]["tool_calls"][0]["tool_call_id"] == "tool_0"
         assert tool_delta_events[1]["data"]["tool_calls"][0]["tool_call_id"] == "call_shell"
         assert tool_delta_events[1]["data"]["tool_calls"][0]["replaces_tool_call_id"] == "tool_0"
+        timing = tool_results[0]["data"].pop("timing")
+        assert timing["duration_ms"] >= 0
         assert tool_results == [
             {
                 "type": "tool_result",
@@ -402,6 +404,8 @@ class TestEngineBasics:
         events = [event async for event in engine.run_turn("test result")]
 
         result = next(event for event in events if event["type"] == "tool_result")
+        timing = result["data"].pop("timing")
+        assert timing["duration_ms"] >= 0
         assert result["data"] == {
             "tool_call_id": "c1",
             "name": "structured_failure",

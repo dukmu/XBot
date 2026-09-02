@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
+import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
 const opened: OpenSessionResponse = {
@@ -13,6 +13,7 @@ const opened: OpenSessionResponse = {
   model_mode: "",
   context_window: 1000,
   usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10 },
+  session_stats: { ...EMPTY_SESSION_STATS },
   history: [],
   event_cursor: 0,
   status_slots: {},
@@ -32,6 +33,27 @@ function event(type: string, data: Record<string, unknown>): ServerEvent {
 }
 
 describe("runtimeReducer", () => {
+  it("replaces session timing from authoritative terminal events", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("turn_finished", {
+        turn: 1,
+        session_stats: {
+          turns: 1, steps: 2, llm_ms: 1200, tool_ms: 300,
+          ttft_ms: 200, ttft_steps: 1, decode_ms: 1000, decode_tokens: 25,
+        },
+      }) },
+    );
+
+    expect(state.sessionStats).toMatchObject({
+      turns: 1,
+      steps: 2,
+      llm_ms: 1200,
+      tool_ms: 300,
+      decode_tokens: 25,
+    });
+  });
+
   it("renders injected model context with provenance and content, not as a user", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "history",
@@ -229,6 +251,7 @@ describe("runtimeReducer", () => {
       context_window: 2000,
       message_count: 4,
       usage: { ...EMPTY_USAGE, total_tokens: 25, context_tokens: 20 },
+      session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: { goal: "active" },
       workspace_root: "/updated",

@@ -35,6 +35,7 @@ from XBotv2.session.event_stream import (
     SessionEventFrame,
 )
 from XBotv2.session.history import display_history
+from XBotv2.core.timing import conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
@@ -92,6 +93,21 @@ class SessionHistoryItem(WireModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    timing: dict[str, float] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+
+class SessionStatsData(WireModel):
+    turns: int = Field(default=0, ge=0)
+    steps: int = Field(default=0, ge=0)
+    llm_ms: float = Field(default=0, ge=0)
+    tool_ms: float = Field(default=0, ge=0)
+    ttft_ms: float = Field(default=0, ge=0)
+    ttft_steps: int = Field(default=0, ge=0)
+    decode_ms: float = Field(default=0, ge=0)
+    decode_tokens: int = Field(default=0, ge=0)
 
 
 class ThreadSummary(WireModel):
@@ -108,6 +124,7 @@ class ThreadSummary(WireModel):
     context_window: int = Field(default=0, ge=0)
     message_count: int = Field(default=0, ge=0)
     usage: UsageData = Field(default_factory=_empty_usage)
+    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
     pending_interactions: list[str] = Field(default_factory=list)
     status_slots: dict[str, str] = Field(default_factory=dict)
     workspace_root: str = ""
@@ -154,6 +171,7 @@ class OpenSessionResponse(WireModel):
     model_mode: str = ""
     context_window: int = Field(default=0, ge=0)
     usage: UsageData = Field(default_factory=_empty_usage)
+    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
     history: list[SessionHistoryItem] = Field(default_factory=list)
     history_cursor: str | None = None
     event_cursor: int = Field(default=0, ge=0)
@@ -191,6 +209,7 @@ class HistoryMutationResponse(WireModel):
     thread_id: str = Field(min_length=1)
     removed_turns: int = Field(ge=0)
     messages: list[SessionHistoryItem] = Field(default_factory=list)
+    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
     history_cursor: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -232,6 +251,7 @@ class HistoryUpdatedData(WireModel):
     operation: str = Field(min_length=1)
     turns: int = Field(ge=0)
     history_cursor: str | None = None
+    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
 
 
 class AgentConfiguredData(WireModel):
@@ -375,6 +395,7 @@ def _history_response(
         thread_id=thread_id,
         removed_turns=result.removed_turns,
         messages=display_history(messages),
+        session_stats=conversation_stats(result.messages).to_dict(),
         history_cursor=page.next_cursor if page is not None else None,
     )
 

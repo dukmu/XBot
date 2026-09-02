@@ -1802,7 +1802,13 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     )
 
     assert undone.status_code == 200
-    assert undone.json()["messages"] == [
+    payload = undone.json()
+    timing = payload["messages"][1].pop("timing")
+    assert timing["llm_ms"] >= timing["ttft_ms"] >= 0
+    assert timing["decode_ms"] >= 0
+    assert payload["session_stats"]["turns"] == 1
+    assert payload["session_stats"]["steps"] == 1
+    assert payload["messages"] == [
         {
             "role": "user", "content": "first", "tool_calls": [],
             "tool_call_id": "", "status": "",
@@ -2654,9 +2660,17 @@ async def test_http_messages_sse_stream_turn_events(
     assert all(event["thread_id"] == "t" for event in events)
     assert all(event["request_id"] == "req-1" for event in events)
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assistant = next(e for e in events if e.get("type") == "assistant_message")
+    timing = assistant["data"].pop("timing")
+    assert timing["llm_ms"] >= timing["ttft_ms"] >= 0
+    assert timing["decode_ms"] >= 0
+    finished = next(e for e in events if e.get("type") == "turn_finished")
+    session_stats = finished["data"].pop("session_stats")
+    assert session_stats["turns"] == 1
+    assert session_stats["steps"] == 1
+    assert session_stats["llm_ms"] >= session_stats["ttft_ms"] >= 0
     assert events == _load_jsonl_fixture("sse/basic_turn_events.jsonl")
 
-    assistant = next(e for e in events if e.get("type") == "assistant_message")
     assert assistant["data"]["content"] == "hello from mock"
 
 

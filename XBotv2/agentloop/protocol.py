@@ -28,6 +28,17 @@ class ToolListResponse(WireModel):
 class AssistantMessageData(WireModel):
     content: str
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    timing: "ModelTimingData | None" = None
+
+
+class ModelTimingData(WireModel):
+    llm_ms: float = Field(ge=0)
+    ttft_ms: float | None = Field(default=None, ge=0)
+    decode_ms: float | None = Field(default=None, ge=0)
+
+
+class ToolTimingData(WireModel):
+    duration_ms: float = Field(ge=0)
 
 
 class AssistantMessageDeltaData(WireModel):
@@ -80,6 +91,7 @@ class ToolResultData(WireModel):
     error: dict[str, Any] | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     images: list[dict[str, Any]] = Field(default_factory=list)
+    timing: ToolTimingData | None = None
 
 
 class TurnData(WireModel):

@@ -9,14 +9,18 @@ Web UI. The background-task header interaction is adapted from its
 `ui-jobs/JobListAction` component, and the reasoning disclosure from its
 `ui-conversation/ReasoningRow` component. The sidebar settle/crossfade and rail
 interaction are adapted from `ui-sidebar/SidebarRoot` and
-`ui-workspace/WorkspaceBrowser`. The context occupancy control is adapted from
-`ui-conversation/ContextMeter`.
+`ui-workspace/WorkspaceBrowser`. The context occupancy control and durable
+timing/token row are adapted from `ui-conversation/ContextMeter` and
+`ui-conversation/StatsLine`.
 The whole-window attachment invitation is adapted from
 `ui-attachment/DropOverlay` and DSh InputBar's document-level drag ownership.
 The document-level image preview is adapted from `ui-attachment/ImageLightbox`.
 Tool disclosure rows and file/terminal/search cards are adapted from DSh
 `ui-tool` components. Bounded head/tail Tool output is adapted from the
-`ui-primitives/TerminalBlock` output treatment.
+`ui-primitives/TerminalBlock` output treatment. Applied file mutation diffs
+are adapted from `ui-primitives/DiffBlock` and `ui-tool` diff-card derivation.
+The Tool artifact lane is adapted from `ui-deliverables/ProducedFiles`, using
+XBot artifact URLs instead of DSh Host file-opening capabilities.
 Conversation node seats, context-injection rows, the shared message action
 strip, and the caret-aware slash candidate menu are adapted from DSh
 `ui-conversation` and `ui-input-trigger`.
