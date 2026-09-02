@@ -137,8 +137,8 @@ which describes an older architecture. Relevant DSh owners include:
 | DSh behavior | XBot status | Gap or acceptance condition |
 | --- | --- | --- |
 | Workspace/session sidebar with search and row actions | partial | Durable grouping, ordering, rename/removal, archive/restore, fork/delete, and multi-client updates exist; ranked content snippets do not |
-| Command trigger owns fuzzy discovery, exact dispatch, argument and popup flows | partial | Directory and exact dispatch exist; popup-select decorations and caret-aware trigger ownership do not |
-| Conversation nodes isolate domains and streaming tail | partial | Timeline entries are typed, but one reducer/component still owns all domains and reparses growing Markdown |
+| Command trigger owns fuzzy discovery, exact dispatch, argument and popup flows | partial | Caret/span detection, fuzzy discovery, menu pick, and exact dispatch are owned explicitly; popup-select decorations remain absent |
+| Conversation nodes isolate domains and streaming tail | partial | Message, Tool, context-injection, and notice seats are separate and the streaming tail stays isolated; the central reducer still assembles every domain |
 | Queue shows, edits, deletes, and strictly steers pending messages | verified | The Agent inbox is the sole durable authority; typed list/update resources, replayed snapshots, resume projection, and the desktop/mobile QueueDock cover edit, remove, and next-step retarget without premature transcript insertion |
 | Paste and whole-page drop share bounded attachment intake | partial | Paste and whole-window drop share one intake path, and message images open in a focus-restoring lightbox; count/byte limits, aggregate validation, and server-advertised rejection copy remain absent |
 | Tool-specific presentation with generic fallback | partial | File, terminal, search, Todo, and generic cards use lazy details; long values use a 16-line/20K-character head-tail preview with full copy/expand. Diff/location presentations and details navigation remain absent |
@@ -146,7 +146,7 @@ which describes an older architecture. Relevant DSh owners include:
 | Model selection, context pressure, cache, timing, and throughput | partial | Provider/model/effort and usage exist; context breakdown, TTFT, throughput, and cache presentation are absent |
 | Settings, theme, locale, plugin inventory, and permission presets | missing | No composed settings surface or host-backed preference model |
 | Goal, Todo, plan, user questions, jobs, deliverables, and trajectory compose independently | partial | Several fixed panels exist; there is no replaceable UI composition seam or trajectory/deliverables view |
-| Message actions: copy, feedback, branch/regenerate, produced files | partial | Regenerate exists; copy/feedback/per-message fork and produced-file summary are incomplete |
+| Message actions: copy, feedback, branch/regenerate, produced files | partial | A DSh action strip owns copy, regenerate, and finalized-tail session fork; feedback, arbitrary historical-point fork, and produced-file summary remain absent |
 | Long histories and long single messages stay responsive | partial | History/DOM and collapsed Tool output are bounded; accumulated streaming Markdown and explicitly expanded large values still require full-value parsing |
 | Keyboard, focus, reduced motion, mobile, and screen-reader flows | partial | Mobile E2E exists; focus trapping, full keyboard flows, reduced motion, and accessibility acceptance remain |
 
@@ -162,10 +162,12 @@ in XBot behind a protocol adapter; a token or selector override alone remains
 | `ui-layout/AppFrame` | ported | `DshAppFrame` owns responsive sidebar concession, the 56 px rail, persisted width, pointer-captured resize, and center-column clipping; the unused DSh details column is intentionally absent until XBot exposes a trajectory/details surface |
 | `ui-sidebar/SidebarRoot` | partial | XBot uses DSh wide/rail geometry, frozen-width settle/crossfade, rail search/refresh, pointer-scoped scrollbars, and the Workspace/Session region; each Workspace mounts at most five session rows until explicitly expanded. The footer settings seat and ranked search snippets remain |
 | `ui-conversation/ConversationRoot` | ported | Conversation and sticky composer now share one vertical scroll owner; the transcript no longer scrolls independently from its footer |
-| `ui-conversation/ChatView` | partial | Bounded paging and follow-bottom exist; node rendering still uses XBot's central Timeline instead of DSh-style domain seats |
-| `ui-conversation/InputBar` | partial | DSh capsule geometry, 14-line growth cap, context occupancy/details, attachment rail, slash popup, send/interrupt, paste, whole-window drop, and an authoritative editable QueueDock are present; mirror/backdrop caret ownership and server-advertised bounded intake are missing |
+| `ui-conversation/ChatView` | partial | Bounded paging and follow-bottom exist; Timeline now owns only the window and scroll while Message, Tool, context-injection, and notice domain seats render independently. The reducer still assembles the node sequence |
+| `ui-conversation/InputBar` | partial | DSh capsule geometry, 14-line growth cap, context occupancy/details, attachment rail, caret/span-aware fuzzy slash popup, send/interrupt, paste, whole-window drop, and an authoritative editable QueueDock are present; mirror/backdrop reference decoration and server-advertised bounded intake are missing |
 | `ui-jobs/JobListAction` | ported | Background jobs moved from the composer stack into a header trigger and bounded popover with stop controls |
 | `ui-tool` | partial | Tool rendering is separated from Timeline and has DSh disclosure rows plus file, terminal, search, Todo, and generic cards. The ported head/tail output surface keeps long values out of the DOM until explicit expansion and copies the original; diff rendering and trajectory inspection remain |
+| `ui-conversation/MessageIconActions` | partial | Shared copy/regenerate/branch chrome is ported. XBot's current fork API branches only the current finalized tail, so arbitrary historical-point branch remains a server capability gap |
+| `ui-input-trigger/MenuView` | partial | The menu and caret/span detector own fuzzy leading-slash discovery and focus-preserving picks outside `Composer`; popup-select command decorations and other trigger sources remain |
 | `ui-primitives/Modal`, command and interaction overlays | ported | Command discovery, permission/user questions, clear, delete, and new-session dialogs share the DSh light menu surface, mask, controls, and responsive bounds; selecting a command returns its editable invocation to the composer |
 | `ui-settings-*`, locale, theme | missing | No settings document or host-backed preference resource yet |
 
@@ -278,6 +280,12 @@ if it cannot, port the DSh client shell and adapt it to XBot's public protocol.
   the displaced dark-theme dialog rules instead of retaining an override
   stack. Workspace groups now mount only five session rows until expanded and
   sidebar scrollbars remain quiet outside pointer interaction.
+- 2026-09-02: Replaced Timeline's domain switch with independent conversation
+  node seats, ported the shared message IconActions strip, and exposed branch
+  on the finalized assistant tail through XBot's authoritative Session fork.
+  Moved slash-menu presentation out of Composer and adopted DSh caret/span
+  detection plus fuzzy ranking, eliminating URL/body false triggers and the
+  displaced global menu/context-injection CSS.
 - 2026-09-01: Replaced the browser's synthetic queue counter with the durable
   Agent inbox projection. Busy Web submissions now explicitly choose
   next-turn delivery, remain absent from transcript until claimed, and can be

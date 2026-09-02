@@ -17,6 +17,9 @@ The document-level image preview is adapted from `ui-attachment/ImageLightbox`.
 Tool disclosure rows and file/terminal/search cards are adapted from DSh
 `ui-tool` components. Bounded head/tail Tool output is adapted from the
 `ui-primitives/TerminalBlock` output treatment.
+Conversation node seats, context-injection rows, the shared message action
+strip, and the caret-aware slash candidate menu are adapted from DSh
+`ui-conversation` and `ui-input-trigger`.
 
 MIT License
 

@@ -1,10 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, CircleAlert, ChevronUp, LoaderCircle, Terminal } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { ChevronRight, ChevronUp, LoaderCircle } from "lucide-react";
 import type { TimelineEntry } from "../state/runtime";
+import { ConversationNode } from "./ConversationNode";
 import { MessageItem } from "./MessageItem";
-import { ToolCall } from "./ToolCall";
 
 const TIMELINE_WINDOW = 160;
 const TIMELINE_BATCH = 80;
@@ -14,6 +12,7 @@ interface TimelineProps {
   assistantDraft: Extract<TimelineEntry, { kind: "message" }> | null;
   turnRunning: boolean;
   onRetry: () => Promise<void>;
+  onBranch: () => Promise<void>;
   hasOlder: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => Promise<void>;
@@ -24,6 +23,7 @@ export const Timeline = memo(function Timeline({
   assistantDraft,
   turnRunning,
   onRetry,
+  onBranch,
   hasOlder,
   loadingOlder,
   onLoadOlder,
@@ -132,33 +132,18 @@ export const Timeline = memo(function Timeline({
             {loadingOlder ? <LoaderCircle size={14} className="spin" /> : <ChevronUp size={14} />} Older messages
           </button>
         )}
-        {visibleEntries.map((entry) => {
-          if (entry.kind === "message") {
-            return <MessageItem key={entry.id} entry={entry} canRetry={!turnRunning && entry.role === "assistant" && entry.id === latestAssistant} onRetry={onRetry} />;
-          }
-          if (entry.kind === "tool") return <ToolCall key={entry.id} tool={entry} />;
-          if (entry.kind === "runtime") {
-            return (
-              <details key={entry.id} className="runtime-context">
-                <summary>
-                  <Terminal size={14} />
-                  <span>Injected context</span>
-                  <code>{entry.source} · {entry.event}</code>
-                  <ChevronRight size={13} className="summary-chevron" />
-                </summary>
-                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
-              </details>
-            );
-          }
-          return (
-            <div key={entry.id} className={`notice-row ${entry.level}`}>
-              {entry.level === "error" ? <CircleAlert size={14} /> : <Terminal size={14} />}
-              <span>{entry.content}</span>
-            </div>
-          );
-        })}
+        {visibleEntries.map((entry) => (
+          <ConversationNode
+            key={entry.id}
+            entry={entry}
+            latestAssistantId={latestAssistant}
+            turnRunning={turnRunning}
+            onRegenerate={onRetry}
+            onBranch={onBranch}
+          />
+        ))}
         {assistantDraft && (
-          <MessageItem entry={assistantDraft} canRetry={false} onRetry={onRetry} />
+          <MessageItem entry={assistantDraft} />
         )}
         {turnRunning && !assistantDraft && (
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
@@ -177,6 +162,9 @@ export const Timeline = memo(function Timeline({
   && previous.turnRunning === next.turnRunning
   && previous.hasOlder === next.hasOlder
   && previous.loadingOlder === next.loadingOlder
+  && previous.onRetry === next.onRetry
+  && previous.onBranch === next.onBranch
+  && previous.onLoadOlder === next.onLoadOlder
 ));
 
 function scrollerOf(list: HTMLDivElement | null): HTMLElement | null {

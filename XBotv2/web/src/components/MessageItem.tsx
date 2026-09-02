@@ -1,10 +1,10 @@
 /* Message chrome adapted from DeepSeek Harness MessageItem/IconActions (MIT). */
-import { Clipboard, ClipboardCheck, RotateCcw } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TimelineEntry } from "../state/runtime";
 import { ImageLightbox } from "./ImageLightbox";
+import { MessageIconActions } from "./MessageIconActions";
 import { ReasoningRow } from "./ReasoningRow";
 import styles from "./MessageItem.module.css";
 
@@ -12,12 +12,14 @@ type MessageEntry = Extract<TimelineEntry, { kind: "message" }>;
 
 export const MessageItem = memo(function MessageItem({
   entry,
-  canRetry,
-  onRetry,
+  onRegenerate,
+  onBranch,
+  branchUnavailable,
 }: {
   entry: MessageEntry;
-  canRetry: boolean;
-  onRetry: () => Promise<void>;
+  onRegenerate?: () => Promise<void>;
+  onBranch?: () => Promise<void>;
+  branchUnavailable?: boolean;
 }) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null);
   const closePreview = useCallback(() => setPreview(null), []);
@@ -35,10 +37,12 @@ export const MessageItem = memo(function MessageItem({
           : <div className={`${styles.content} markdown-body`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
       )}
       {!entry.streaming && entry.content && (
-        <MessageActions
+        <MessageIconActions
           text={entry.content}
-          align={user ? "end" : "start"}
-          onRetry={entry.role === "assistant" && canRetry ? onRetry : undefined}
+          className={user ? styles.actionsEnd : styles.actionsStart}
+          onRegenerate={onRegenerate}
+          onBranch={onBranch}
+          branchUnavailable={branchUnavailable}
         />
       )}
       {!user && <MessageImages entry={entry} onPreview={setPreview} />}
@@ -48,60 +52,12 @@ export const MessageItem = memo(function MessageItem({
       )}
     </article>
   );
-}, (previous, next) => previous.entry === next.entry && previous.canRetry === next.canRetry);
-
-function MessageActions({
-  text,
-  align,
-  onRetry,
-}: {
-  text: string;
-  align: "start" | "end";
-  onRetry?: () => Promise<void>;
-}) {
-  const [copied, setCopied] = useState(false);
-  const pending = useRef(false);
-  const timer = useRef<number | null>(null);
-  const epoch = useRef(0);
-
-  useEffect(() => () => {
-    epoch.current += 1;
-    pending.current = false;
-    if (timer.current !== null) window.clearTimeout(timer.current);
-  }, []);
-
-  const copy = useCallback(async () => {
-    if (copied || pending.current || !navigator.clipboard) return;
-    const currentEpoch = epoch.current;
-    pending.current = true;
-    try {
-      await navigator.clipboard.writeText(text);
-      if (currentEpoch !== epoch.current) return;
-      setCopied(true);
-      timer.current = window.setTimeout(() => {
-        timer.current = null;
-        setCopied(false);
-      }, 1000);
-    } catch {
-      // Clipboard access can be denied by the browser; leave the action retryable.
-    } finally {
-      if (currentEpoch === epoch.current) pending.current = false;
-    }
-  }, [copied, text]);
-
-  return (
-    <div className={styles.actions} data-align={align}>
-      <button type="button" aria-label={copied ? "Copied" : "Copy message"} title={copied ? "Copied" : "Copy message"} onClick={() => void copy()}>
-        {copied ? <ClipboardCheck size={16} /> : <Clipboard size={16} />}
-      </button>
-      {onRetry && (
-        <button type="button" aria-label="Regenerate response" title="Regenerate response" onClick={() => void onRetry()}>
-          <RotateCcw size={16} />
-        </button>
-      )}
-    </div>
-  );
-}
+}, (previous, next) => (
+  previous.entry === next.entry
+  && previous.onRegenerate === next.onRegenerate
+  && previous.onBranch === next.onBranch
+  && previous.branchUnavailable === next.branchUnavailable
+));
 
 function MessageImages({
   entry,

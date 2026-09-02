@@ -685,35 +685,6 @@ summary:focus-visible {
   background: var(--panel-raised);
 }
 
-.runtime-context {
-  margin: 0 0 18px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #181c18;
-  color: var(--muted);
-  content-visibility: auto;
-  contain-intrinsic-size: 0 42px;
-}
-
-.runtime-context > summary {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 11px;
-  cursor: pointer;
-  list-style: none;
-  font-size: 11px;
-}
-
-.runtime-context > summary::-webkit-details-marker { display: none; }
-.runtime-context > summary code { margin-left: auto; color: var(--faint); }
-.runtime-context[open] .summary-chevron { transform: rotate(90deg); }
-.runtime-context > .markdown-body {
-  padding: 0 12px 12px 32px;
-  color: #b8beb6;
-  font-size: 12px;
-}
-
 .markdown-body {
   min-width: 0;
   color: #dfe2dd;
@@ -1169,66 +1140,6 @@ details[open] > summary .summary-chevron {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.command-menu {
-  position: absolute;
-  z-index: 12;
-  right: -1px;
-  bottom: calc(100% + 7px);
-  left: -1px;
-  display: grid;
-  max-height: min(390px, 48vh);
-  padding: 5px;
-  overflow-y: auto;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #181c18;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
-}
-
-.command-menu button {
-  display: grid;
-  grid-template-columns: minmax(110px, 0.75fr) minmax(180px, 1.4fr) minmax(120px, 1fr);
-  align-items: center;
-  gap: 12px;
-  min-height: 43px;
-  padding: 6px 9px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--muted);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.command-menu button:hover,
-.command-menu button.selected {
-  color: var(--text);
-  background: #252b25;
-}
-
-.command-menu button > span:first-child {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.command-menu b { color: var(--green); font-size: 12px; }
-.command-menu small {
-  padding: 1px 4px;
-  border: 1px solid #3a433a;
-  border-radius: 3px;
-  color: var(--faint);
-  font-size: 8px;
-  text-transform: uppercase;
-}
-.command-menu code {
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .composer:focus-within {
   border-color: #5b705f;
   box-shadow: 0 0 0 1px rgba(101, 193, 140, 0.1), 0 8px 24px rgba(0, 0, 0, 0.18);
@@ -1537,11 +1448,6 @@ details[open] > summary .summary-chevron {
   .task-dock,
   .command-output,
   .command-progress { width: calc(100% - 16px); }
-  .command-menu button {
-    grid-template-columns: minmax(90px, 0.6fr) minmax(0, 1.4fr);
-    gap: 8px;
-  }
-  .command-menu code { display: none; }
   .command-help-list article > button {
     grid-template-columns: minmax(0, 1fr);
     gap: 7px;

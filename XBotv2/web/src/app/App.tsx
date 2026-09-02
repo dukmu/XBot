@@ -228,6 +228,7 @@ export function App() {
               assistantDraft={state.assistantDraft}
               turnRunning={state.turnRunning}
               onRetry={runtime.retryLast}
+              onBranch={runtime.fork}
               hasOlder={Boolean(state.historyCursor)}
               loadingOlder={state.historyLoading}
               onLoadOlder={runtime.loadEarlier}

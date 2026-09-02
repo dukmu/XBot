@@ -301,6 +301,19 @@ test("regenerates the last turn through the authoritative history endpoint", asy
   await expect(page.getByText("Inspect API boundaries", { exact: true })).toHaveCount(1);
 });
 
+test("branches from the finalized assistant action strip", async ({ page }) => {
+  await openDemoSession(page);
+  const branch = page.getByRole("button", { name: "Branch into a new conversation" });
+  await expect(branch).toHaveCount(1);
+  await expect(branch).not.toHaveAttribute("aria-disabled", "true");
+  const forkRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/sessions/demo-session/fork")
+  ));
+  await branch.click();
+  await forkRequest;
+  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
 test("does not rebuild history when a read-only command follows a turn", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });

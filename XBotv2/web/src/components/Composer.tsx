@@ -2,9 +2,10 @@ import { FileText, Paperclip, Square, Send, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CommandInfo, ImageInput, UsageData } from "../api/types";
 import { ContextMeter } from "./ContextMeter";
+import { CommandTriggerMenu } from "./CommandTriggerMenu";
 import { DropOverlay } from "./DropOverlay";
 import { ImageLightbox } from "./ImageLightbox";
-import { matchingCommands } from "../commands";
+import { commandSuggestions } from "../commands";
 
 export interface PendingAttachment extends ImageInput {
   name: string;
@@ -29,13 +30,15 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   const [attachmentError, setAttachmentError] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
   const [commandMenuOpen, setCommandMenuOpen] = useState(true);
+  const [caret, setCaret] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<PendingAttachment | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const closeAttachmentPreview = useCallback(() => setAttachmentPreview(null), []);
-  const suggestions = commandMenuOpen ? matchingCommands(commands, content).slice(0, 9) : [];
+  const commandState = commandMenuOpen ? commandSuggestions(commands, content, caret) : null;
+  const suggestions = commandState?.commands.slice(0, 9) ?? [];
 
   useEffect(() => {
     const element = textarea.current;
@@ -49,6 +52,7 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   useEffect(() => {
     if (!draft) return;
     setContent(draft.value);
+    setCaret(draft.value.length);
     setCommandMenuOpen(false);
     requestAnimationFrame(() => textarea.current?.focus());
   }, [draft]);
@@ -68,9 +72,21 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   };
 
   const completeCommand = (command: CommandInfo) => {
-    setContent(`${command.slash}${command.usage === command.slash ? "" : " "}`);
+    if (!commandState) return;
+    const insert = `${command.slash}${command.usage === command.slash ? "" : " "}`;
+    const next = content.slice(0, commandState.trigger.start)
+      + insert
+      + content.slice(commandState.trigger.end);
+    setContent(next);
+    setCaret(commandState.trigger.start + insert.length);
     setCommandMenuOpen(false);
-    requestAnimationFrame(() => textarea.current?.focus());
+    requestAnimationFrame(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(
+        commandState.trigger.start + insert.length,
+        commandState.trigger.start + insert.length,
+      );
+    });
   };
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
@@ -151,25 +167,11 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
         />
       )}
       <div className="composer">
-        {suggestions.length > 0 && (
-          <div className="command-menu" role="listbox" aria-label="Commands">
-            {suggestions.map((command, index) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={index === commandIndex}
-                className={index === commandIndex ? "selected" : ""}
-                key={`${command.kind}:${command.name}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => completeCommand(command)}
-              >
-                <span><b>{command.slash}</b><small>{command.kind}</small></span>
-                <span>{command.description}</span>
-                <code>{command.usage}</code>
-              </button>
-            ))}
-          </div>
-        )}
+        <CommandTriggerMenu
+          commands={suggestions}
+          selectedIndex={commandIndex}
+          onPick={completeCommand}
+        />
         {attachments.length > 0 && (
           <div className="composer-images">
             {attachments.map((attachment, index) => (
@@ -196,6 +198,11 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
           aria-label="Message XBot"
           onChange={(event) => {
             setContent(event.target.value);
+            setCaret(event.target.selectionStart);
+            setCommandMenuOpen(true);
+          }}
+          onSelect={(event) => {
+            setCaret(event.currentTarget.selectionStart);
             setCommandMenuOpen(true);
           }}
           onPaste={(event) => {

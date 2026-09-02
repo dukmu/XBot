@@ -31,30 +31,8 @@
 
 .streaming { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.actions {
-  display: flex;
-  height: 28px;
-  align-items: center;
-  gap: 10px;
-}
-
-.actions[data-align="end"] { justify-content: flex-end; }
-
-.actions button {
-  display: inline-grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  padding: 6px;
-  border: 0;
-  border-radius: 50%;
-  color: var(--dsw-alias-label-tertiary);
-  background: transparent;
-  cursor: pointer;
-}
-
-.actions button:hover { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); }
-.actions button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+.actionsStart { justify-content: flex-start; }
+.actionsEnd { justify-content: flex-end; }
 
 .images {
   display: flex;
