@@ -10,6 +10,7 @@ from xcore.state import StateService
 from XBotv2.workspaces import WorkspaceNotFound, WorkspaceRegistry
 from XBotv2.workspaces.contracts import WORKSPACE_RESOURCE_CHANGED
 from XBotv2.workspaces.protocol import build_router
+from XBotv2.workspaces.directories import DirectoryBrowser
 
 
 class Sessions:
@@ -200,6 +201,9 @@ async def test_workspace_archive_uses_the_same_snapshot_and_validates_session(tm
 async def test_workspace_http_resources_use_stable_wire_fields(tmp_path):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
+    (workspace_path / "project").mkdir()
+    (workspace_path / ".hidden").mkdir()
+    (workspace_path / "README.md").write_text("not a directory", encoding="utf-8")
     registry = WorkspaceRegistry(
         StateService(path=tmp_path / "state.json"),
         Sessions([SimpleNamespace(
@@ -212,6 +216,7 @@ async def test_workspace_http_resources_use_stable_wire_fields(tmp_path):
     app.include_router(build_router(
         workspaces=registry,
         workspace_events=SimpleNamespace(sequence=0, subscribe=lambda _after: None),
+        directories=DirectoryBrowser(tmp_path),
     ))
 
     async with httpx.AsyncClient(
@@ -230,6 +235,10 @@ async def test_workspace_http_resources_use_stable_wire_fields(tmp_path):
             f"/workspaces/{workspace['workspace_id']}/sessions/session-1/order",
             json={"before_session_id": None},
         )
+        directories = await client.get(
+            "/directories",
+            params={"path": str(workspace_path)},
+        )
 
     assert created.status_code == 200
     assert created.json()["created"] is True
@@ -238,6 +247,13 @@ async def test_workspace_http_resources_use_stable_wire_fields(tmp_path):
     assert renamed.json()["workspace"]["session_ids"] == ["session-1"]
     assert archived.json()["archived_session_ids"] == ["session-1"]
     assert reordered.json()["workspace"]["session_ids"] == ["session-1"]
+    assert directories.status_code == 200
+    assert directories.json()["path"] == str(workspace_path.resolve())
+    assert [entry["name"] for entry in directories.json()["entries"]] == [
+        ".hidden",
+        "project",
+    ]
+    assert directories.json()["entries"][0]["hidden"] is True
 
 
 @pytest.mark.asyncio
@@ -255,6 +271,7 @@ async def test_workspace_baseline_cursor_precedes_the_snapshot_read(tmp_path):
     app.include_router(build_router(
         workspaces=RacingWorkspaces(),
         workspace_events=workspace_events,
+        directories=DirectoryBrowser(tmp_path),
     ))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

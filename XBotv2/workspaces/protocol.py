@@ -36,6 +36,11 @@ from XBotv2.workspaces.events import (
     WorkspaceCursorExpired,
     WorkspaceEventFrame,
 )
+from XBotv2.workspaces.directories import (
+    DirectoryListing,
+    DirectoryNotFound,
+    DirectoryNotReadable,
+)
 
 
 class WorkspacesPort(Protocol):
@@ -78,6 +83,25 @@ class WorkspaceEventsPort(Protocol):
     def sequence(self) -> int: ...
 
     def subscribe(self, after: int) -> WorkspaceEventSubscription: ...
+
+
+class DirectoriesPort(Protocol):
+    def list(self, path: str | None = None) -> DirectoryListing: ...
+
+
+class DirectoryEntryData(WireModel):
+    name: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    hidden: bool = False
+
+
+class DirectoryListingResponse(WireModel):
+    path: str = Field(min_length=1)
+    parent: str | None = None
+    home: str = Field(min_length=1)
+    separator: Literal["/", "\\"]
+    entries: list[DirectoryEntryData] = Field(default_factory=list)
+    truncated: bool = False
 
 
 class WorkspaceData(WireModel):
@@ -137,8 +161,21 @@ def build_router(
     *,
     workspaces: WorkspacesPort,
     workspace_events: WorkspaceEventsPort,
+    directories: DirectoriesPort,
 ) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/directories", operation_id="list_workspace_directories")
+    async def list_workspace_directories(
+        path: str | None = Query(default=None),
+    ) -> DirectoryListingResponse:
+        try:
+            listing = directories.list(path)
+        except DirectoryNotFound as exc:
+            raise HttpServerError("directory_not_found", str(exc), status=404) from exc
+        except DirectoryNotReadable as exc:
+            raise HttpServerError("directory_not_readable", str(exc), status=403) from exc
+        return DirectoryListingResponse.model_validate(listing, from_attributes=True)
 
     @router.get("/workspaces", operation_id="list_workspaces")
     async def list_workspaces() -> WorkspaceListResponse:
@@ -366,5 +403,8 @@ __all__ = [
     "WorkspaceRenameRequest",
     "WorkspaceResponse",
     "WorkspaceEventsPort",
+    "DirectoriesPort",
+    "DirectoryEntryData",
+    "DirectoryListingResponse",
     "build_router",
 ]

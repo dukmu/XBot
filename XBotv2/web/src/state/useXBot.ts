@@ -20,16 +20,16 @@ export function useXBot() {
   const sessionCatalog = useMemo(() => new SessionCatalog(api), [api]);
   const workspaces = useSyncExternalStore(workspaceManager.subscribe, workspaceManager.getSnapshot);
   const sessions = useSyncExternalStore(sessionCatalog.subscribe, sessionCatalog.getSnapshot);
-  const messageControllers = useRef(new Set<AbortController>());
+  const messageControllers = useRef(new Map<AbortController, string>());
   const navigationGeneration = useRef(0);
   const commandInFlight = useRef(false);
   const sessionMutationInFlight = useRef(false);
-  const navigationBlocked = state.loading || state.turnRunning || commandRunning || messageControllers.current.size > 0;
+  const navigationBlocked = state.loading || commandRunning;
   const navigationBlockMessage = state.loading
     ? "Wait for the active session operation before switching sessions."
     : commandRunning
       ? "Wait for the active command before switching sessions."
-      : "Finish or interrupt the active turn before switching sessions.";
+      : "Wait for the active command before switching sessions.";
   const notify = useCallback((message: string) => setNotification(message), []);
 
   const reportError = useCallback((error: unknown, turnFailed = false) => {
@@ -85,6 +85,8 @@ export function useXBot() {
     resetStreamingState();
     dispatch({ type: "opened", session });
     dispatch({ type: "threads", threads });
+    const activeThread = threads.find((thread) => thread.thread_id === session.thread_id);
+    if (activeThread) dispatch({ type: "thread_synced", thread: activeThread });
     dispatch({ type: "agents", agents });
     dispatch({ type: "tasks", tasks });
     dispatch({ type: "todos", todos });
@@ -122,15 +124,12 @@ export function useXBot() {
       alive = false;
       workspaceCatalog.stop();
       runtimeEvents.stop();
-      for (const controller of messageControllers.current) controller.abort();
+      for (const controller of messageControllers.current.keys()) controller.abort();
     };
   }, [api, workspaceCatalog, reportError, runtimeEvents]);
 
   const openExistingSession = useCallback(async (sessionId?: string, workspaceRoot?: string) => {
-    // Refs close the render-to-event gap: a message or command can acquire its
-    // request handle before React commits the state update that recomputes
-    // navigationBlocked.
-    if (navigationBlocked || messageControllers.current.size > 0 || commandInFlight.current) {
+    if (navigationBlocked || commandInFlight.current) {
       notify(navigationBlockMessage);
       return;
     }
@@ -247,6 +246,10 @@ export function useXBot() {
 
   const resumeSession = openExistingSession;
 
+  const listDirectories = useCallback((path?: string, signal?: AbortSignal) => (
+    api.listDirectories(path, signal)
+  ), [api]);
+
   const selectThread = useCallback(async (thread: ThreadSummary) => {
     if (!state.current || thread.thread_id === state.current.thread_id) return;
     if (navigationBlocked) {
@@ -290,8 +293,9 @@ export function useXBot() {
     const content = rawContent.trim();
     if (!current || state.loading || (!content && attachments.length === 0)) return false;
     const requestId = crypto.randomUUID();
+    const requestTarget = `${current.session_id}\n${current.thread_id}`;
     const delivery = (
-      state.turnRunning || messageControllers.current.size > 0
+      state.turnRunning || [...messageControllers.current.values()].includes(requestTarget)
     ) ? "queue" : "steer";
     if (delivery === "steer") {
       dispatch({
@@ -302,7 +306,7 @@ export function useXBot() {
       });
     }
     const controller = new AbortController();
-    messageControllers.current.add(controller);
+    messageControllers.current.set(controller, requestTarget);
     try {
       for await (const _event of api.sendMessage(
         current.session_id,
@@ -327,7 +331,7 @@ export function useXBot() {
       if (generation === navigationGeneration.current && delivery === "steer") {
         dispatch({ type: "user_message_failed", id: requestId });
       }
-      reportError(error, delivery === "steer");
+      if (generation === navigationGeneration.current) reportError(error, delivery === "steer");
       return false;
     } finally {
       messageControllers.current.delete(controller);
@@ -360,7 +364,7 @@ export function useXBot() {
     const current = state.current;
     const generation = navigationGeneration.current;
     const controller = new AbortController();
-    messageControllers.current.add(controller);
+    messageControllers.current.set(controller, `${current.session_id}\n${current.thread_id}`);
     try {
       for await (const _event of api.regenerateMessage(
         current.session_id,
@@ -755,6 +759,7 @@ export function useXBot() {
     stopTask,
     stopAllTasks,
     refreshSessions,
+    listDirectories,
     clearNotification: () => setNotification(""),
     clearError: () => dispatch({ type: "clear_error" }),
   };

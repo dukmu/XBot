@@ -46,6 +46,10 @@ from active groups without deleting its history or order slot; removing a
 Workspace likewise does not delete its sessions. A session created with an
 explicit directory first registers that existing directory so it does not
 silently fall into an unmanaged path group.
+The new-session dialog accepts an absolute server path, offers registered
+Workspace shortcuts, and can browse server directories without exposing file
+contents. Directory enumeration is a read-only Workspace capability; it does
+not execute an Agent Tool or grant the Agent filesystem access.
 
 New first reuses an unarchived blank session already accounted to the selected
 Workspace. It creates a persisted session only when no such session exists.
@@ -60,7 +64,12 @@ the source of truth and tasks stay queryable through its API.
 Navigation is non-destructive. Opening an active session attaches to its
 existing runtime; switching the visible session aborts only the old event
 subscription, not an in-flight message request or another client's turn. The
-client tracks server reachability, session attachment, event-stream health,
+browser may therefore keep turns active in multiple sessions, submit an
+independent turn in the currently visible idle session, and recover completion
+events when returning to a previously running session. In-flight request
+ownership is scoped by session and thread rather than treated as global UI
+state. The client tracks server reachability, session attachment,
+event-stream health,
 and turn activity separately. If navigation fails, the previous identity,
 timeline, and event subscription are restored.
 

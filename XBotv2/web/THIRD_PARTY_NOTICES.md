@@ -12,6 +12,8 @@ interaction are adapted from `ui-sidebar/SidebarRoot` and
 `ui-workspace/WorkspaceBrowser`. The context occupancy control and durable
 timing/token row are adapted from `ui-conversation/ContextMeter` and
 `ui-conversation/StatsLine`.
+The new-session folder picker is adapted from
+`ui-workspace/DirectoryBrowser`, behind XBot's Workspace HTTP resource.
 The whole-window attachment invitation is adapted from
 `ui-attachment/DropOverlay` and DSh InputBar's document-level drag ownership.
 The document-level image preview is adapted from `ui-attachment/ImageLightbox`.

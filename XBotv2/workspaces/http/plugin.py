@@ -10,7 +10,7 @@ from XBotv2.workspaces.protocol import build_router
 
 class WorkspacesHttpPlugin:
     name = "xbot.http.workspaces"
-    inject = ["server", "workspaces", "workspace_events"]
+    inject = ["server", "workspaces", "workspace_events", "workspace_directories"]
 
     async def apply(self, ctx: Context, config: object | None = None) -> None:
         await contribute_router(
@@ -19,6 +19,7 @@ class WorkspacesHttpPlugin:
             router=build_router(
                 workspaces=ctx.workspaces,
                 workspace_events=ctx.workspace_events,
+                directories=ctx.workspace_directories,
             ),
         )
 

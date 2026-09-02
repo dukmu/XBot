@@ -651,6 +651,16 @@ body {
   margin-top: 18px;
 }
 
+.workspace-path-control { display: flex; align-items: center; gap: 6px; }
+.workspace-path-control input { flex: 1; min-width: 0; }
+.workspace-quick-list { display: grid; gap: 4px; max-height: 176px; margin-top: 12px; overflow-y: auto; }
+.workspace-quick-list > button { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 7px 9px; border: 0; border-radius: 7px; color: var(--dsw-alias-label-primary); background: transparent; text-align: left; }
+.workspace-quick-list > button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.workspace-quick-list > button.selected { background: var(--dsw-alias-interactive-bg-active); }
+.workspace-quick-list span,
+.workspace-quick-list small { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-quick-list small { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+
 .primary-button,
 .secondary-button,
 .mobile-session-button {

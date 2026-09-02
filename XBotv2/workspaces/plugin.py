@@ -18,6 +18,7 @@ from XBotv2.workspaces.contracts import (
     WORKSPACE_RESOURCE_REMOVED,
 )
 from XBotv2.workspaces.events import WorkspaceCatalogChange, WorkspaceEventStream
+from XBotv2.workspaces.directories import DirectoryBrowser
 
 
 class WorkspaceSessionHandlers:
@@ -67,6 +68,7 @@ class WorkspacesPlugin:
         ctx.on(ARCHIVED_SESSIONS_CHANGED, catalog.publish)
         ctx.set("workspaces", registry)
         ctx.set("workspace_events", stream)
+        ctx.set("workspace_directories", DirectoryBrowser(ctx.workspace_root))
 
 
 plugin = WorkspacesPlugin()

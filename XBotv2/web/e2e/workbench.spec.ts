@@ -495,7 +495,7 @@ test("confirms clear history in the application and replaces the transcript", as
   await expect(dialog).toBeHidden();
 });
 
-test("does not navigate away while a message request is active", async ({ page }) => {
+test("switches away from a running session and replays its result on return", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
   await composer.fill("Hold this turn open");
@@ -504,9 +504,32 @@ test("does not navigate away while a message request is active", async ({ page }
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByTitle("history-session").click();
-  await expect(page.locator(".ui-notification")).toHaveText(/Finish or interrupt the active turn before switching sessions/);
-  await expect(page.locator(".notice-row")).toHaveCount(0);
-  await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+  await expect(page.getByText("Review the persisted workspace", { exact: true })).toBeVisible();
+  await expect(page.locator(".ui-notification")).toHaveCount(0);
+  const historyRequest = page.waitForRequest((request) => (
+    request.method() === "POST"
+    && request.url().endsWith("/sessions/history-session/threads/history-main/messages")
+  ));
+  await composer.fill("Continue this session independently");
+  await composer.press("Enter");
+  expect((await historyRequest).postDataJSON().delivery).toBe("steer");
+  await page.waitForTimeout(500);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByTitle("demo-session").click();
+  await expect(page.getByText("The delayed turn completed.", { exact: true })).toBeVisible();
+});
+
+test("selects a new-session workspace with the directory browser", async ({ page }) => {
+  await page.getByRole("main").getByRole("button", { name: "New session" }).click();
+  const create = page.getByRole("dialog", { name: "New workspace" });
+  await create.getByRole("button", { name: "Browse folders" }).click();
+  const browser = page.getByRole("dialog", { name: "Select workspace folder" });
+  await browser.getByRole("button", { name: "Open src" }).click();
+  await expect(browser.getByRole("textbox", { name: "Directory path" })).toHaveValue("/workspace/XBot/src");
+  await browser.getByRole("button", { name: "Select" }).click();
+  await expect(page.getByRole("dialog", { name: "New workspace" }).getByLabel("Workspace path")).toHaveValue("/workspace/XBot/src");
 });
 
 test("does not navigate away while a server command is active", async ({ page }) => {
@@ -600,31 +623,50 @@ async function mockProtocol(page: Page) {
     image_count: number;
     artifact_count: number;
   }> = [];
-  const runtimeEvents: Array<{
+  type MockRuntimeEvent = {
     type: string;
     data: Record<string, unknown>;
     requestId: string;
     sequence: number;
-  }> = [];
+  };
+  const runtimeEvents = new Map<string, MockRuntimeEvent[]>();
   const publishRuntime = (
+    sessionId: string,
     events: Array<{ type: string; data: Record<string, unknown> }>,
     requestId: string,
   ) => {
+    const published = runtimeEvents.get(sessionId) || [];
     for (const event of events) {
-      runtimeEvents.push({
+      published.push({
         ...event,
         requestId,
-        sequence: runtimeEvents.length + 1,
+        sequence: published.length + 1,
       });
     }
+    runtimeEvents.set(sessionId, published);
   };
   await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname.replace(/^\/api/, "");
     const method = request.method();
+    const routeSessionId = path.match(/^\/sessions\/([^/]+)/)?.[1] || "";
 
     if (path === "/hello") return json(route, { server_name: "xbotv2", protocol_version: "xbotv2.v3" });
+    if (path === "/directories" && method === "GET") {
+      const directory = url.searchParams.get("path") || "/workspace/XBot";
+      const entries = directory === "/workspace/XBot"
+        ? ["src", "tests"]
+        : directory === "/workspace/XBot/src" ? ["components"] : [];
+      return json(route, {
+        path: directory,
+        parent: directory === "/" ? null : directory.slice(0, directory.lastIndexOf("/")) || "/",
+        home: "/home/test",
+        separator: "/",
+        entries: entries.map((name) => ({ name, path: `${directory}/${name}`, hidden: false })),
+        truncated: false,
+      });
+    }
     if (path === "/providers") return json(route, {
       default: "minimax",
       providers: [{
@@ -872,7 +914,7 @@ async function mockProtocol(page: Page) {
         { type: "turn_finished", data: { turn: 1 } },
       ];
       const requestId = String(request.postDataJSON().request_id || "request-1");
-      publishRuntime(events, requestId);
+      publishRuntime(routeSessionId, events, requestId);
       return sse(route, events);
     }
     if (path.endsWith("/todos") && method === "GET") return json(route, {
@@ -902,7 +944,7 @@ async function mockProtocol(page: Page) {
       const after = Number(url.searchParams.get("after") || 0);
       return runtimeSse(
         route,
-        runtimeEvents.filter((event) => event.sequence > after),
+        (runtimeEvents.get(routeSessionId) || []).filter((event) => event.sequence > after),
         after,
       );
     }
@@ -916,7 +958,7 @@ async function mockProtocol(page: Page) {
         content: payload.action === "edit" ? String(payload.content || "") : item.content,
         target: payload.action === "steer" ? "next-step" : item.target,
       });
-      publishRuntime([{ type: "queue_updated", data: { items: pendingInputs } }], messageId);
+      publishRuntime(routeSessionId, [{ type: "queue_updated", data: { items: pendingInputs } }], messageId);
       return json(route, { items: pendingInputs });
     }
     if (path.endsWith("/messages") && method === "POST") {
@@ -932,7 +974,7 @@ async function mockProtocol(page: Page) {
           image_count: Array.isArray(payload.images) ? payload.images.length : 0,
           artifact_count: Array.isArray(payload.attachments) ? payload.attachments.length : 0,
         });
-        publishRuntime([{ type: "queue_updated", data: { items: pendingInputs } }], requestId);
+        publishRuntime(routeSessionId, [{ type: "queue_updated", data: { items: pendingInputs } }], requestId);
         return sse(route, []);
       }
       demoMessageCount += content.startsWith("Plan") ? 4 : content.startsWith("Write") ? 1 : 2;
@@ -943,7 +985,7 @@ async function mockProtocol(page: Page) {
           { type: "assistant_message", data: { content: "The delayed turn completed.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ];
-        publishRuntime(events, requestId);
+        publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }
       if (content.startsWith("Write")) {
@@ -958,7 +1000,7 @@ async function mockProtocol(page: Page) {
             resume_supported: true,
           },
         }];
-        publishRuntime(events, requestId);
+        publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }
       if (content.startsWith("Plan")) {
@@ -983,7 +1025,7 @@ async function mockProtocol(page: Page) {
           { type: "assistant_message", data: { content: "I will work through the checklist.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ];
-        publishRuntime(events, requestId);
+        publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }
       if (content.startsWith("Long tool")) {
@@ -995,7 +1037,7 @@ async function mockProtocol(page: Page) {
           { type: "assistant_message", data: { content: "Long output inspected.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ];
-        publishRuntime(events, requestId);
+        publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }
       if (content.startsWith("Edit file")) {
@@ -1030,7 +1072,7 @@ async function mockProtocol(page: Page) {
           { type: "assistant_message", data: { content: "The file was updated.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
         ];
-        publishRuntime(events, requestId);
+        publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }
       const events = [
@@ -1048,7 +1090,7 @@ async function mockProtocol(page: Page) {
           },
         } },
       ];
-      publishRuntime(events, requestId);
+      publishRuntime(routeSessionId, events, requestId);
       return sse(route, events);
     }
     if (path.endsWith("/interactions/permission-response")) return json(route, {

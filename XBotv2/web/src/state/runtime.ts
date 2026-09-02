@@ -222,10 +222,10 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
           model_mode: action.thread.model_mode,
           context_window: action.thread.context_window,
           status_slots: action.thread.status_slots,
-          workspace_root: action.thread.workspace_root || state.current.workspace_root,
         },
         usage: normalizeUsage(action.thread.usage),
         sessionStats: normalizeSessionStats(action.thread.session_stats),
+        turnRunning: action.thread.turn_status === "running",
       } : state;
     case "history":
       return {

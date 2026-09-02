@@ -136,14 +136,14 @@ which describes an older architecture. Relevant DSh owners include:
 
 | DSh behavior | XBot status | Gap or acceptance condition |
 | --- | --- | --- |
-| Workspace/session sidebar with search and row actions | partial | Durable grouping, ordering, rename/removal, archive/restore, fork/delete, and multi-client updates exist; ranked content snippets do not |
+| Workspace/session sidebar with search and row actions | partial | Durable grouping, ordering, rename/removal, archive/restore, fork/delete, multi-client updates, concurrent active-session navigation, and server-directory selection for New exist; ranked content snippets do not |
 | Command trigger owns fuzzy discovery, exact dispatch, argument and popup flows | partial | Caret/span detection, fuzzy discovery, menu pick, and exact dispatch are owned explicitly; popup-select decorations remain absent |
 | Conversation nodes isolate domains and streaming tail | partial | Message, Tool, context-injection, and notice seats are separate and the streaming tail stays isolated; the central reducer still assembles every domain |
 | Queue shows, edits, deletes, and strictly steers pending messages | verified | The Agent inbox is the sole durable authority; typed list/update resources, replayed snapshots, resume projection, and the desktop/mobile QueueDock cover edit, remove, and next-step retarget without premature transcript insertion |
 | Paste and whole-page drop share bounded attachment intake | partial | Paste and whole-window drop share one intake path, and message images open in a focus-restoring lightbox; count/byte limits, aggregate validation, and server-advertised rejection copy remain absent |
 | Tool-specific presentation with generic fallback | partial | File, terminal, search, Todo, applied write/replace DiffBlock, downloadable Tool artifacts, and generic cards use lazy details. Long values and diffs use bounded head-tail previews with full copy/expand; patch before/after, location opening, and details navigation remain absent |
 | Subagent hierarchy, running state, and read-only replay | partial | Threads are selectable; descendant tree, counts, and specialized replay are absent |
-| Model selection, context pressure, cache, timing, and throughput | partial | Provider/model/effort and usage exist; context breakdown, TTFT, throughput, and cache presentation are absent |
+| Model selection, context pressure, cache, timing, and throughput | partial | Provider/model/effort, cumulative usage/cache counts, context occupancy, LLM/Tool wall time, TTFT, decode time, and decode throughput are durable and visible; detailed context-section breakdown is absent |
 | Settings, theme, locale, plugin inventory, and permission presets | missing | No composed settings surface or host-backed preference model |
 | Goal, Todo, plan, user questions, jobs, deliverables, and trajectory compose independently | partial | Several fixed panels exist; there is no replaceable UI composition seam or trajectory/deliverables view |
 | Message actions: copy, feedback, branch/regenerate, produced files | partial | A DSh action strip owns copy, regenerate, and finalized-tail session fork; feedback, arbitrary historical-point fork, and produced-file summary remain absent |
@@ -168,7 +168,8 @@ in XBot behind a protocol adapter; a token or selector override alone remains
 | `ui-tool` | partial | Tool rendering is separated from Timeline and has DSh disclosure rows plus file, terminal, search, Todo, applied write/replace DiffBlock, downloadable result artifacts, and generic cards. Bounded output and diff surfaces keep long middles out of the DOM until explicit expansion and copy the complete source. Patch before/after, host-backed file opening, turn-level ProducedFiles, and trajectory inspection remain |
 | `ui-conversation/MessageIconActions` | partial | Shared copy/regenerate/branch chrome is ported. XBot's current fork API branches only the current finalized tail, so arbitrary historical-point branch remains a server capability gap |
 | `ui-input-trigger/MenuView` | partial | The menu and caret/span detector own fuzzy leading-slash discovery and focus-preserving picks outside `Composer`; popup-select command decorations and other trigger sources remain |
-| `ui-primitives/Modal`, command and interaction overlays | ported | Command discovery, permission/user questions, clear, delete, and new-session dialogs share the DSh light menu surface, mask, controls, and responsive bounds; selecting a command returns its editable invocation to the composer |
+| `ui-workspace/DirectoryBrowser` | ported | The new-session flow has editable absolute paths, registered Workspace shortcuts, parent/home/hidden navigation, bounded directory results, cancellation, and desktop/mobile selection backed by XBot's read-only Workspace resource |
+| `ui-primitives/Modal`, command and interaction overlays | ported | Command discovery, permission/user questions, clear, delete, new-session, and directory dialogs share the DSh light menu surface, mask, controls, and responsive bounds; selecting a command returns its editable invocation to the composer |
 | `ui-settings-*`, locale, theme | missing | No settings document or host-backed preference resource yet |
 
 The port keeps XBot's typed HTTP resources and Session/Workspace event streams.
@@ -176,6 +177,28 @@ DSh's Cordis runtime, remote-call protocol, and projection stores are not copied
 doing so would introduce a second C/S authority. Presentation components are
 ported at their existing ownership boundaries and receive data from XBot's
 React-free client controllers.
+
+## Remaining Web gaps
+
+The current browser is usable for the primary session workflow, but these
+known gaps remain and must not be represented as DSh parity:
+
+1. Move session activation, paging, and resource projection out of `useXBot`
+   into a React-free session client with explicit per-session identities.
+2. Add ranked session-history search, arbitrary historical-point branch, and
+   complete subagent hierarchy/replay rather than metadata-only filtering and
+   finalized-tail fork.
+3. Add composed settings for theme, locale, plugin inventory, and permission
+   presets; Todo labels and the remaining UI copy are not localized.
+4. Add server-advertised attachment limits, detailed context-section
+   accounting, patch before/after views, file-location opening, and a
+   turn-level produced-files summary.
+5. Complete keyboard/focus trapping, screen-reader, reduced-motion, and real
+   browser/provider acceptance. Explicitly expanded very large Markdown or
+   Tool values can still create high parse and DOM cost.
+6. Add multi-client interaction arbitration and a durable event query/export
+   surface; the current bounded process event window is for reconnect, not a
+   general trajectory store.
 
 ## Frontend replacement gate
 

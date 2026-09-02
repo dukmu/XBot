@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
+import { AlertCircle, FolderSearch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
 import { CommandHelpDialog } from "../components/CommandHelpDialog";
@@ -11,11 +11,12 @@ import { QueueDock } from "../components/QueueDock";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { StatusBar } from "../components/StatusBar";
 import { UsageStatsLine } from "../components/UsageStatsLine";
+import { DirectoryBrowser } from "../components/DirectoryBrowser";
 import { TaskDock } from "../components/TaskDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
 import { commandCatalog, parseCommand } from "../commands";
-import type { CommandInfo, CommandResultData, SessionSummary } from "../api/types";
+import type { CommandInfo, CommandResultData, DirectoryListingData, SessionSummary } from "../api/types";
 
 export function App() {
   const runtime = useXBot();
@@ -297,6 +298,9 @@ export function App() {
 
       {newSessionOpen && (
         <NewSessionDialog
+          defaultWorkspace={state.current?.workspace_root || runtime.workspaces[0]?.path || ""}
+          workspaces={runtime.workspaces}
+          listDirectory={runtime.listDirectories}
           onClose={() => setNewSessionOpen(false)}
           onCreate={(workspace) => {
             setNewSessionOpen(false);
@@ -403,13 +407,26 @@ function unquote(value: string): string {
 }
 
 function NewSessionDialog({
+  defaultWorkspace,
+  workspaces,
+  listDirectory,
   onClose,
   onCreate,
 }: {
+  defaultWorkspace: string;
+  workspaces: readonly { workspace_id: string; path: string; title: string }[];
+  listDirectory: (path?: string, signal?: AbortSignal) => Promise<DirectoryListingData>;
   onClose: () => void;
   onCreate: (workspace: string) => void;
 }) {
-  const [workspace, setWorkspace] = useState("");
+  const [workspace, setWorkspace] = useState(defaultWorkspace);
+  const [browsing, setBrowsing] = useState(false);
+  if (browsing) return <DirectoryBrowser
+    initialPath={workspace || undefined}
+    listDirectory={listDirectory}
+    onClose={() => setBrowsing(false)}
+    onOpen={(path) => { setWorkspace(path); setBrowsing(false); }}
+  />;
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose();
@@ -437,13 +454,13 @@ function NewSessionDialog({
           </button>
         </div>
         <label className="field-label" htmlFor="workspace-root">Workspace path</label>
-        <input
-          id="workspace-root"
-          autoFocus
-          value={workspace}
-          onChange={(event) => setWorkspace(event.target.value)}
-          placeholder="Server default"
-        />
+        <div className="workspace-path-control">
+          <input id="workspace-root" autoFocus value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Server default" />
+          <button type="button" className="icon-button" aria-label="Browse folders" title="Browse folders" onClick={() => setBrowsing(true)}><FolderSearch size={17} /></button>
+        </div>
+        {workspaces.length > 0 && <div className="workspace-quick-list" aria-label="Recent workspaces">
+          {workspaces.slice(0, 5).map((item) => <button type="button" key={item.workspace_id} className={item.path === workspace ? "selected" : ""} onClick={() => setWorkspace(item.path)}><span>{item.title}</span><small>{item.path}</small></button>)}
+        </div>}
         <div className="dialog-actions">
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
           <button type="submit" className="primary-button"><Plus size={16} /> Create</button>

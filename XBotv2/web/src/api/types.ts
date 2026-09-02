@@ -70,6 +70,21 @@ export interface WorkspaceListData {
   event_cursor: number;
 }
 
+export interface DirectoryEntryData {
+  name: string;
+  path: string;
+  hidden: boolean;
+}
+
+export interface DirectoryListingData {
+  path: string;
+  parent: string | null;
+  home: string;
+  separator: "/" | "\\";
+  entries: DirectoryEntryData[];
+  truncated: boolean;
+}
+
 export interface ThreadSummary {
   session_id: string;
   thread_id: string;

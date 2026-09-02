@@ -236,7 +236,7 @@ describe("runtimeReducer", () => {
     });
   });
 
-  it("synchronizes current runtime metadata from the active thread", () => {
+  it("synchronizes thread metadata without replacing the attached workspace", () => {
     const thread: ThreadSummary = {
       session_id: "session-1",
       thread_id: "agent",
@@ -262,9 +262,22 @@ describe("runtimeReducer", () => {
     );
 
     expect(state.current).toMatchObject({
-      agent_name: "reviewer", provider: "openai", model: "gpt", workspace_root: "/updated",
+      agent_name: "reviewer", provider: "openai", model: "gpt", workspace_root: "/workspace",
     });
     expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 20 });
+  });
+
+  it("adopts the running state of a session selected mid-turn", () => {
+    const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const thread = {
+      session_id: "session-1", thread_id: "agent", status: "active" as const,
+      kind: "main" as const, turn_status: "running" as const, parent_thread_id: "",
+      agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+      context_window: 1000, message_count: 2, usage: opened.usage,
+      session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+    };
+
+    expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
   });
 
   it("assembles streaming reasoning and assistant content once", () => {

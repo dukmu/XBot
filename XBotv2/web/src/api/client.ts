@@ -5,6 +5,7 @@ import {
   type AttachmentInput,
   type CommandInfo,
   type CommandResult,
+  type DirectoryListingData,
   type HistoryItem,
   type ImageInput,
   type MessagePage,
@@ -60,6 +61,11 @@ export class XBotApi {
 
   listWorkspaces(): Promise<WorkspaceListData> {
     return this.request("GET", "/workspaces");
+  }
+
+  listDirectories(path?: string, signal?: AbortSignal): Promise<DirectoryListingData> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return this.request("GET", `/directories${query}`, undefined, signal);
   }
 
   async createWorkspace(path: string): Promise<WorkspaceData> {
@@ -393,9 +399,15 @@ export class XBotApi {
     return this.stream("GET", `/workspaces/events?after=${encodeURIComponent(after)}`, undefined, signal);
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
+      signal,
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
