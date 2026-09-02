@@ -98,7 +98,7 @@ class FailingModel:
 
 def test_compact_prefix_preserves_recent_complete_turns():
     messages = history(3)
-    messages[3].tool_calls = [ToolCall("call-1", "shell", {"command": "pwd"})]
+    messages[3].tool_calls = [ToolCall(id="call-1", name="shell", args={"command": "pwd"})]
     messages.insert(
         4,
         Message(role="tool", content="/tmp", tool_call_id="call-1"),
@@ -225,7 +225,7 @@ async def test_human_command_compacts_and_persists_immediately(
 
     def record_runtime_event(event: EventContext) -> None:
         if event.client_event is not None:
-            runtime_events.append(event.client_event.to_dict())
+            runtime_events.append(event.client_event.model_dump(mode="json"))
 
     setup.ctx.on(RUNTIME_EVENT, record_runtime_event)
     result = await setup.commands["compact"].handler("")
@@ -388,7 +388,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
             Message(
                 role="assistant",
                 content=f"step {index}",
-                tool_calls=[ToolCall(call_id, "echo", {"value": index})],
+                tool_calls=[ToolCall(id=call_id, name="echo", args={"value": index})],
             ),
             Message(role="tool", content=f"result {index}", tool_call_id=call_id),
         ])

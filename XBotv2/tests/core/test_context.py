@@ -41,12 +41,12 @@ class TestContextBuilderBasics:
         user = Message(
             role="user",
             content="inspect",
-            images=[ImageContent("artifacts/media/image", "image/png", 3)],
+            images=[ImageContent(path="artifacts/media/image", media_type="image/png", size=3)],
         )
         assistant = Message(
             role="assistant",
             reasoning="checking",
-            tool_calls=[ToolCall("call-1", "filesystem_read", {"path": "a"})],
+            tool_calls=[ToolCall(id="call-1", name="filesystem_read", args={"path": "a"})],
         )
 
         messages = context_builder.build(messages=[user, assistant])
@@ -340,7 +340,7 @@ class TestSanitization:
             Message(
                 role="assistant",
                 content="test",
-                tool_calls=[ToolCall("call_1", "shell", {})],
+                tool_calls=[ToolCall(id="call_1", name="shell", args={})],
             ),
             Message(role="tool", content="result", tool_call_id="call_2"),
         ]
@@ -353,7 +353,7 @@ class TestSanitization:
             Message(
                 role="assistant",
                 content="test",
-                tool_calls=[ToolCall("call_1", "shell", {})],
+                tool_calls=[ToolCall(id="call_1", name="shell", args={})],
             ),
             Message(role="tool", content="result", tool_call_id="call_1"),
         ]

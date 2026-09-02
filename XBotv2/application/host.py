@@ -52,7 +52,7 @@ class MountedAgentApplication:
             model_mode=settings.model_mode,
             context_window=self.driver.context_window,
             messages=tuple(self.driver.messages),
-            usage=dict(self.usage.snapshot()),
+            usage=self.usage.snapshot(),
             metadata=self.loop_state.metadata.value,
             status_slots=await self.status_slots(),
         )

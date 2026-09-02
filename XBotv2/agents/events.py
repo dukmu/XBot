@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from XBotv2.agents.contracts import AgentDefinition
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 
 AGENT_CONFIGURED = "agent/configured"

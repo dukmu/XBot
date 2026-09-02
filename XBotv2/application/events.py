@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from XBotv2.agentloop import LoopSettings
 from XBotv2.agents import AgentDefinition
 from XBotv2.core import ClientEvent
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 
 APPLICATION_INITIALIZED = "session/init"

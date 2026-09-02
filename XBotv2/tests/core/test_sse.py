@@ -33,7 +33,7 @@ from XBotv2.protocol import (
     server_event,
 )
 from XBotv2.usage import UsageData
-from XBotv2.session import SessionStreamEvent, session_event
+from XBotv2.session import session_event
 from XBotv2.protocol.sse import (
     SseDecoder,
     SseMessage,
@@ -203,7 +203,7 @@ def test_plugin_event_builders_validate_at_the_producer_boundary() -> None:
     )
 
     assert started == {"type": "turn_started", "data": {"turn": 1}}
-    assert message["data"]["id"] == "request-1"
+    assert message.data["id"] == "request-1"
 
     with pytest.raises(ValidationError):
         agentloop_event("turn_started", {"turn": 0})
@@ -219,14 +219,14 @@ def test_plugin_event_builders_validate_at_the_producer_boundary() -> None:
 
 
 def test_session_stream_event_rejects_non_json_payloads() -> None:
-    with pytest.raises(TypeError, match="JSON-compatible"):
-        SessionStreamEvent.from_mapping({
+    with pytest.raises(ValidationError):
+        ClientEvent.model_validate({
             "type": "message",
             "data": {"invalid": object()},
         })
 
-    with pytest.raises(TypeError, match="JSON-compatible"):
-        ClientEvent.from_mapping({
+    with pytest.raises(ValidationError):
+        ClientEvent.model_validate({
             "type": "plugin_event",
             "data": {"invalid": object()},
         })

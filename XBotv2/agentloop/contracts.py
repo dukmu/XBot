@@ -13,7 +13,7 @@ from pydantic import JsonValue
 
 from XBotv2.core.tools import Tool
 from XBotv2.llm import ModelPort
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 DEFAULT_MAX_ITERATIONS = 200
 

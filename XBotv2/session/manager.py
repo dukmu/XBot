@@ -23,6 +23,7 @@ from XBotv2.core.runtime_logging import (
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
+from XBotv2.core.tools import ClientEvent
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.core.usage import UsageData
@@ -47,13 +48,12 @@ from XBotv2.session.event_stream import (
     SessionEventSubscription,
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
-from XBotv2.core.history import HistoryCursorInvalid
+from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
 from XBotv2.session.types import (
     ArtifactPayload,
     HistoryMutation,
     InteractionReceipt,
     InterruptResult,
-    MessagePage,
     OpenedSession,
     OpenSession,
     OpenThread,
@@ -63,7 +63,6 @@ from XBotv2.session.types import (
     SendMessage,
     SessionExists,
     SessionNotFound,
-    SessionStreamEvent,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
@@ -82,7 +81,7 @@ async def _runtime_message_events(
     request: SendMessage,
     images: list[ImageContent],
     attachments: list[ArtifactRef],
-) -> AsyncIterator[SessionStreamEvent]:
+) -> AsyncIterator[ClientEvent]:
     announced = False
     async for event in runtime.stream_message(
         request.content,
@@ -94,14 +93,14 @@ async def _runtime_message_events(
         if not announced:
             announced = True
             await manager._emit_session_changed(runtime.session_id)
-        yield SessionStreamEvent.model_validate(event)
+        yield event
 
 
 async def _runtime_regenerate_events(
     manager: "SessionManager",
     runtime: SessionRuntime,
     request: RegenerateMessage,
-) -> AsyncIterator[SessionStreamEvent]:
+) -> AsyncIterator[ClientEvent]:
     announced = False
     async for event in regenerate_turn_stream(
         runtime,
@@ -110,7 +109,7 @@ async def _runtime_regenerate_events(
         if not announced:
             announced = True
             await manager._emit_session_changed(runtime.session_id)
-        yield SessionStreamEvent.model_validate(event)
+        yield event
 
 
 async def _runtime_events(
@@ -787,13 +786,13 @@ class SessionManager:
         *,
         cursor: str | None,
         limit: int | None,
-    ) -> MessagePage:
+    ) -> ConversationPage:
         if limit is None:
             if cursor is not None:
                 raise OperationError(
                     "invalid_cursor", "A message cursor requires a page limit."
                 )
-            return MessagePage(await self.messages(session_id, thread_id))
+            return ConversationPage(await self.messages(session_id, thread_id))
         session = self.paths.session(session_id)
         if not session.has_thread(thread_id):
             raise SessionNotFound(f"{session_id}/{thread_id}")
@@ -804,7 +803,7 @@ class SessionManager:
             raise OperationError(
                 "invalid_cursor", str(exc)
             ) from exc
-        return MessagePage(
+        return ConversationPage(
             messages=page.messages,
             next_cursor=page.next_cursor,
         )
@@ -887,7 +886,7 @@ class SessionManager:
     async def stream_message(
         self,
         request: SendMessage,
-    ) -> AsyncIterator[SessionStreamEvent]:
+    ) -> AsyncIterator[ClientEvent]:
         runtime = await self.get(request.session_id, request.thread_id)
         images = []
         for item in request.images:
@@ -951,7 +950,7 @@ class SessionManager:
     async def regenerate_message(
         self,
         request: RegenerateMessage,
-    ) -> AsyncIterator[SessionStreamEvent]:
+    ) -> AsyncIterator[ClientEvent]:
         runtime = await self.get(request.session_id, request.thread_id)
         require_idle(runtime, "regenerate a response")
         self._log.info(

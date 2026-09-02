@@ -336,7 +336,7 @@ Body
             settings=LoopSettings(provider="test"),
         ))
         results = await plugin.ctx.tools.execute_all(
-            [ToolCall("manual", "manual-only", {})],
+            [ToolCall(id="manual", name="manual-only", args={})],
         )
 
         assert results[0].status == "error"
@@ -386,11 +386,11 @@ Body
         plugin._permission_scope.add(disallowed=["shell(rm *)"])
 
         allowed = await plugin._guard_tool_scope(
-            ToolCall("call_1", "shell", {"command": "git status"}),
+            ToolCall(id="call_1", name="shell", args={"command": "git status"}),
             None,
         )
         denied = await plugin._guard_tool_scope(
-            ToolCall("call_2", "shell", {"command": "rm -rf build"}),
+            ToolCall(id="call_2", name="shell", args={"command": "rm -rf build"}),
             None,
         )
 

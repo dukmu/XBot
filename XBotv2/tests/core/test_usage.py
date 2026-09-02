@@ -21,7 +21,7 @@ async def test_usage_owns_typed_snapshot_in_state_namespace(tmp_path):
 
     restored = UsageService(state)
     await restored.initialize([])
-    assert restored.snapshot() == {
+    assert restored.snapshot().model_dump() == {
         "input_tokens": 13,
         "output_tokens": 6,
         "total_tokens": 19,
@@ -59,7 +59,7 @@ async def test_usage_records_cache_only_request_and_explicit_zero_context(tmp_pa
         "prompt_cache_write_tokens": 2,
     }
 
-    assert usage.snapshot() == {
+    assert usage.snapshot().model_dump() == {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 17,
@@ -95,7 +95,7 @@ async def test_auxiliary_usage_accumulates_without_replacing_main_context(tmp_pa
     assert event is not None
     assert event["context_tokens"] == 100
     assert event["input_tokens"] == 20
-    assert usage.snapshot() == {
+    assert usage.snapshot().model_dump() == {
         "input_tokens": 120,
         "output_tokens": 15,
         "total_tokens": 135,
@@ -122,9 +122,9 @@ async def test_context_projection_updates_without_counting_a_request(tmp_path):
         "requests": 0,
         "context_tokens": 24,
     }
-    assert usage.snapshot()["requests"] == 1
-    assert usage.snapshot()["total_tokens"] == 105
-    assert usage.snapshot()["context_tokens"] == 24
+    assert usage.snapshot().requests == 1
+    assert usage.snapshot().total_tokens == 105
+    assert usage.snapshot().context_tokens == 24
 
 
 @pytest.mark.asyncio
@@ -137,8 +137,8 @@ async def test_zero_token_and_total_only_requests_are_not_dropped(tmp_path):
     assert await usage.add({"input_tokens": 0, "output_tokens": 0})
     assert await usage.add({"total_tokens": 9})
 
-    assert usage.snapshot()["requests"] == 2
-    assert usage.snapshot()["total_tokens"] == 9
+    assert usage.snapshot().requests == 2
+    assert usage.snapshot().total_tokens == 9
 
 
 @pytest.mark.parametrize(

@@ -31,10 +31,7 @@ class ImagePart(ImageContent):
     type: Literal["image"] = "image"
 
 
-ToolCallPart = ToolCall
-
-
-ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart
+ContentPart = TextPart | ReasoningPart | ImagePart | ToolCall
 
 
 def merge_model_chunk(
@@ -57,19 +54,6 @@ def merge_model_chunk(
     return aggregate
 
 
-def part_from_dict(value: dict[str, Any]) -> ContentPart:
-    part_type = value.get("type")
-    if part_type == "text":
-        return TextPart.model_validate(value)
-    if part_type == "reasoning":
-        return ReasoningPart.model_validate(value)
-    if part_type == "image":
-        return ImagePart.model_validate(value)
-    if part_type == "tool_call":
-        return ToolCallPart.model_validate(value)
-    raise ValueError(f"Unknown message content part: {part_type!r}")
-
-
 def _content_parts(
     *,
     content: str = "",
@@ -86,7 +70,7 @@ def _content_parts(
         ImagePart.model_validate(image, from_attributes=True) for image in images or []
     )
     parts.extend(
-        ToolCallPart.model_validate(call, from_attributes=True)
+        ToolCall.model_validate(call, from_attributes=True)
         for call in tool_calls or []
     )
     return parts
@@ -130,16 +114,16 @@ class _PartBacked:
     @property
     def tool_calls(self) -> list[ToolCall]:
         return [
-            part for part in self.parts if isinstance(part, ToolCallPart)
+            part for part in self.parts if isinstance(part, ToolCall)
         ]
 
     @tool_calls.setter
     def tool_calls(self, value: list[ToolCall]) -> None:
         self.parts = [
-            part for part in self.parts if not isinstance(part, ToolCallPart)
+            part for part in self.parts if not isinstance(part, ToolCall)
         ]
         self.parts.extend(
-            ToolCallPart.model_validate(call, from_attributes=True) for call in value
+            ToolCall.model_validate(call, from_attributes=True) for call in value
         )
 
     @property
@@ -280,8 +264,8 @@ def _freeze_part(part: ContentPart) -> ContentPart:
             text=part.text,
             provider_data=_freeze_object(part.provider_data),
         )
-    if isinstance(part, ToolCallPart):
-        return ToolCallPart.model_construct(
+    if isinstance(part, ToolCall):
+        return ToolCall.model_construct(
             id=part.id,
             name=part.name,
             args=_freeze_object(part.args),
@@ -370,6 +354,4 @@ __all__ = [
     "ModelResponse",
     "ReasoningPart",
     "TextPart",
-    "ToolCallPart",
-    "part_from_dict",
 ]

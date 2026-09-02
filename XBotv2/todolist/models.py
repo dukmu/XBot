@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 TODO_SCHEMA_VERSION = 1
 TodoStatus = Literal["pending", "in_progress", "completed"]
@@ -21,7 +21,7 @@ class TodoValidationError(ValueError):
 class TodoItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    content: str
+    content: str = Field(min_length=1)
     status: TodoStatus
 
     @classmethod

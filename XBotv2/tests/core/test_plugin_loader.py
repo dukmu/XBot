@@ -68,7 +68,7 @@ async def start_plugin_tree(ctx, tree: PluginTree):
 
 class TestPluginTree:
     def test_from_dict_list_and_nested(self):
-        tree = PluginTree.from_dict([
+        tree = PluginTree.parse([
             {"id": "a", "name": "mod.a"},
             {"id": "b", "name": "mod.b", "config": {"x": 1}, "disabled": True},
         ])
@@ -77,7 +77,7 @@ class TestPluginTree:
         assert tree.entries[1].disabled is True
 
     def test_from_dict_plugins_key(self):
-        tree = PluginTree.from_dict({"plugins": [{"id": "a", "name": "m"}]})
+        tree = PluginTree.parse({"plugins": [{"id": "a", "name": "m"}]})
         assert tree.entries[0].id == "a"
 
     def test_from_yaml(self, tmp_path):
@@ -93,13 +93,13 @@ class TestPluginTree:
 
     def test_duplicate_ids_rejected(self):
         with pytest.raises(ValueError, match="duplicate"):
-            PluginTree.from_dict([
+            PluginTree.parse([
                 {"id": "a", "name": "m1"},
                 {"id": "a", "name": "m2"},
             ])
 
     def test_overlay_preserves_omitted_fields_and_merges_config(self):
-        base = PluginTree.from_dict([{
+        base = PluginTree.parse([{
             "id": "a",
             "name": "m1",
             "config": {"policy": {"allow": ["base"], "ask": []}},
@@ -107,7 +107,7 @@ class TestPluginTree:
             "isolate": {"tools": "private"},
             "profiles": ["agent"],
         }])
-        overlay = PluginOverlay.from_dict([
+        overlay = PluginOverlay.parse([
             {
                 "id": "a",
                 "config": {"policy": {"ask": ["overlay"]}},
@@ -126,12 +126,12 @@ class TestPluginTree:
 
     def test_overlay_new_entry_requires_name(self):
         with pytest.raises(ValueError, match="requires a name"):
-            PluginTree([]).patched_with(PluginOverlay.from_dict([{"id": "new"}]))
+            PluginTree([]).patched_with(PluginOverlay.parse([{"id": "new"}]))
 
     def test_session_style_overlay_rejects_unknown_id(self):
         with pytest.raises(ValueError, match="unknown plugin patch id"):
             PluginTree([]).patched_with(
-                PluginOverlay.from_dict([{"id": "typo", "config": {}}]),
+                PluginOverlay.parse([{"id": "typo", "config": {}}]),
                 allow_new=False,
             )
 
@@ -151,29 +151,29 @@ class TestPluginTree:
     )
     def test_complete_tree_rejects_malformed_documents(self, document, error):
         with pytest.raises(error):
-            PluginTree.from_dict(document)
+            PluginTree.parse(document)
 
     def test_overlay_rejects_unresolved_non_boolean_disabled(self):
         overlay = [{"id": "a", "disabled": "${flag}"}]
         with pytest.raises(TypeError, match="boolean"):
-            PluginOverlay.from_dict(overlay)
+            PluginOverlay.parse(overlay)
 
     def test_environment_references_resolve_without_runtime_values(self, monkeypatch):
         monkeypatch.setenv("XBOT_TEST_PLUGIN_DISABLED", "false")
         with pytest.raises(TypeError, match="boolean"):
-            PluginOverlay.from_dict([{
+            PluginOverlay.parse([{
                 "id": "a",
                 "disabled": "${env:XBOT_TEST_PLUGIN_DISABLED}",
             }])
 
     def test_overlay_can_explicitly_clear_isolate_and_profiles(self):
-        base = PluginTree.from_dict([{
+        base = PluginTree.parse([{
             "id": "a",
             "name": "m",
             "isolate": {"tools": True},
             "profiles": ["agent"],
         }])
-        patched = base.patched_with(PluginOverlay.from_dict([{
+        patched = base.patched_with(PluginOverlay.parse([{
             "id": "a",
             "isolate": None,
             "profiles": None,
@@ -257,7 +257,7 @@ class BetaPlugin:
         plugin = BetaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        handles = await start_plugin_tree(ctx, PluginTree.from_dict([
+        handles = await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "alpha", "name": "alpha"},
             {"id": "beta", "name": "beta", "disabled": True},
         ]))
@@ -277,7 +277,7 @@ class GammaPlugin:
 plugin = GammaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        await start_plugin_tree(ctx, PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "gamma", "name": "gamma"},
         ]))
         tools = ctx.tools
@@ -296,7 +296,7 @@ class DeltaPlugin:
 plugin = DeltaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        await start_plugin_tree(ctx, PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "delta", "name": "delta", "config": {"value": 42}},
         ]))
         assert ctx.delta_value == 42
@@ -325,7 +325,7 @@ class TwoPlugin:
 plugin = TwoPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        await start_plugin_tree(ctx, PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "one", "name": "one"},
             {"id": "two", "name": "two"},
         ]))
@@ -353,7 +353,7 @@ class ScopedProviderPlugin:
 plugin = ScopedProviderPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        await start_plugin_tree(ctx, PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "provider", "name": "provider"},
             {
                 "id": "scoped",

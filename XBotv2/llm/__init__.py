@@ -24,13 +24,10 @@ __all__ = [
     "LlmCatalogPort",
     "ModelDescription",
     "ModelConfig",
-    "ModelInfo",
     "ModelPort",
     "ProviderCatalog",
     "ProviderConfig",
     "ProviderDescription",
-    "ProviderInfo",
-    "ProviderListResponse",
     "ProviderSelection",
     "ProviderSelectionRequest",
     "ProviderSelectionResponse",
@@ -44,9 +41,6 @@ __all__ = [
 _PROTOCOL_EXPORTS = {
     "EffortSelectionRequest",
     "EffortSelectionResponse",
-    "ModelInfo",
-    "ProviderInfo",
-    "ProviderListResponse",
     "ProviderSelectionRequest",
     "ProviderSelectionResponse",
 }

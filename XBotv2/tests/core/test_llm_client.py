@@ -21,7 +21,6 @@ from XBotv2.core.messages import (
     Message,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
 from XBotv2.agentloop.internal_messages import structure_tool_message
@@ -73,7 +72,7 @@ def test_generic_openai_messages_do_not_invent_reasoning_extensions():
     msg = Message(
         role="assistant",
         content="",
-        tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
+        tool_calls=[ToolCall(id="c1", name="shell", args={"command": "ls"})],
         reasoning="private reasoning",
     )
     out = openai_messages([msg])
@@ -101,8 +100,8 @@ def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
         Message(
             role="assistant",
             tool_calls=[
-                ToolCall("c1", "first", {}),
-                ToolCall("c2", "second", {}),
+                ToolCall(id="c1", name="first", args={}),
+                ToolCall(id="c2", name="second", args={}),
             ],
         ),
         Message(role="tool", tool_call_id="c1", content="one"),
@@ -165,7 +164,7 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
     _system, messages = anthropic_request_messages([
         Message(
             role="assistant",
-            tool_calls=[ToolCall("call-1", "sample", {})],
+            tool_calls=[ToolCall(id="call-1", name="sample", args={})],
         ),
         Message(role="tool", tool_call_id="call-1", content="result"),
         Message(role="assistant", content=""),
@@ -194,7 +193,7 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
 
 
 def test_provider_adapters_encode_canonical_image_content():
-    image = ImageContent("artifacts/media/image", "image/png", 3)
+    image = ImageContent(path="artifacts/media/image", media_type="image/png", size=3)
     message = Message(role="user", content="inspect", images=[image])
 
     openai = openai_messages(
@@ -231,7 +230,7 @@ def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
         role="tool",
         content="image loaded",
         tool_call_id="call-1",
-        images=[ImageContent("artifacts/media/image", "image/png", 3)],
+        images=[ImageContent(path="artifacts/media/image", media_type="image/png", size=3)],
     )
 
     _system, anthropic = anthropic_request_messages(
@@ -388,17 +387,17 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     }
     assert final.content == ""
     assert final.tool_calls == [
-        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
     ]
     assert final.additional_kwargs == {}
     assert final.parts == [
         ReasoningPart(
-            "check",
-            {"anthropic": {"signature": "signed"}},
+            text="check",
+            provider_data={"anthropic": {"signature": "signed"}},
         ),
-        ToolCallPart(ToolCall(
-            "call-1", "filesystem_read", {"path": "notes.md"}
-        )),
+        ToolCall(
+            id="call-1", name="filesystem_read", args={"path": "notes.md"}
+        ),
     ]
     assert final.usage_metadata == {
         "input_tokens": 10,
@@ -510,14 +509,14 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     assert final.content == "done"
     assert final.additional_kwargs == {}
     assert final.parts == [
-        ReasoningPart("check"),
-        TextPart("done"),
-        ToolCallPart(ToolCall(
-            "call-1", "filesystem_read", {"path": "notes.md"}
-        )),
+        ReasoningPart(text="check"),
+        TextPart(text="done"),
+        ToolCall(
+            id="call-1", name="filesystem_read", args={"path": "notes.md"}
+        ),
     ]
     assert final.tool_calls == [
-        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
     ]
     assert final.usage_metadata == {
         "input_tokens": 4,

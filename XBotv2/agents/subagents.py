@@ -34,7 +34,7 @@ from XBotv2.jobs import (
     JobStatus,
 )
 from XBotv2.persistence import ThreadLifecycleWriterPort
-from XBotv2.session import SessionPort
+from XBotv2.session.services import SessionPort
 from xcore import S
 
 _MAX_PROMPT_PREVIEW = 100
@@ -121,7 +121,7 @@ class SubagentRunner:
             output_store=output,
             data={
                 "agent": self.agent,
-                "usage": dict(result.usage),
+                "usage": result.usage.model_dump(mode="json"),
             },
         )
 

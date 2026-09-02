@@ -89,32 +89,8 @@ class DirectoriesPort(Protocol):
     def list(self, path: str | None = None) -> DirectoryListing: ...
 
 
-class DirectoryEntryData(WireModel):
-    name: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    hidden: bool = False
-
-
-class DirectoryListingResponse(WireModel):
-    path: str = Field(min_length=1)
-    parent: str | None = None
-    home: str = Field(min_length=1)
-    separator: Literal["/", "\\"]
-    entries: list[DirectoryEntryData] = Field(default_factory=list)
-    truncated: bool = False
-
-
-class WorkspaceData(WireModel):
-    workspace_id: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    session_ids: list[str] = Field(default_factory=list)
-    created_at: str = Field(min_length=1)
-    updated_at: str = Field(min_length=1)
-
-
 class WorkspaceListResponse(WireModel):
-    items: list[WorkspaceData] = Field(default_factory=list)
+    items: list[WorkspaceView] = Field(default_factory=list)
     archived_session_ids: list[str] = Field(default_factory=list)
     event_cursor: int = Field(default=0, ge=0)
 
@@ -124,7 +100,7 @@ class WorkspaceCreateRequest(WireModel):
 
 
 class WorkspaceCreateResponse(WireModel):
-    workspace: WorkspaceData
+    workspace: WorkspaceView
     created: bool
 
 
@@ -133,7 +109,7 @@ class WorkspaceRenameRequest(WireModel):
 
 
 class WorkspaceResponse(WireModel):
-    workspace: WorkspaceData
+    workspace: WorkspaceView
 
 
 class WorkspaceOrderRequest(WireModel):
@@ -168,21 +144,21 @@ def build_router(
     @router.get("/directories", operation_id="list_workspace_directories")
     async def list_workspace_directories(
         path: str | None = Query(default=None),
-    ) -> DirectoryListingResponse:
+    ) -> DirectoryListing:
         try:
             listing = directories.list(path)
         except DirectoryNotFound as exc:
             raise HttpServerError("directory_not_found", str(exc), status=404) from exc
         except DirectoryNotReadable as exc:
             raise HttpServerError("directory_not_readable", str(exc), status=403) from exc
-        return DirectoryListingResponse.model_validate(listing, from_attributes=True)
+        return listing
 
     @router.get("/workspaces", operation_id="list_workspaces")
     async def list_workspaces() -> WorkspaceListResponse:
         event_cursor = workspace_events.sequence
         listing = await workspaces.list()
         return WorkspaceListResponse(
-            items=[_workspace_data(item) for item in listing.items],
+            items=list(listing.items),
             archived_session_ids=list(listing.archived_session_ids),
             event_cursor=event_cursor,
         )
@@ -230,7 +206,7 @@ def build_router(
         except ValueError as exc:
             raise HttpServerError("invalid_workspace", str(exc), status=400) from exc
         return WorkspaceCreateResponse(
-            workspace=_workspace_data(workspace),
+            workspace=workspace,
             created=created,
         )
 
@@ -245,7 +221,7 @@ def build_router(
             raise _not_found(exc) from exc
         except ValueError as exc:
             raise HttpServerError("workspace_conflict", str(exc), status=409) from exc
-        return WorkspaceResponse(workspace=_workspace_data(workspace))
+        return WorkspaceResponse(workspace=workspace)
 
     @router.delete(
         "/workspaces/{workspace_id}",
@@ -296,7 +272,7 @@ def build_router(
                 str(exc),
                 status=409,
             ) from exc
-        return WorkspaceResponse(workspace=_workspace_data(workspace))
+        return WorkspaceResponse(workspace=workspace)
 
     @router.put(
         "/sessions/{session_id}/archive",
@@ -325,17 +301,6 @@ async def _archive_response(
     except WorkspaceSessionNotFound as exc:
         raise HttpServerError("session_not_found", str(exc), status=404) from exc
     return ArchivedSessionsResponse(archived_session_ids=list(session_ids))
-
-
-def _workspace_data(workspace: WorkspaceView) -> WorkspaceData:
-    return WorkspaceData(
-        workspace_id=workspace.workspace_id,
-        path=workspace.path,
-        title=workspace.title,
-        session_ids=list(workspace.session_ids),
-        created_at=workspace.created_at,
-        updated_at=workspace.updated_at,
-    )
 
 
 async def _workspace_sse(
@@ -397,7 +362,6 @@ __all__ = [
     "ArchivedSessionsResponse",
     "WorkspaceCreateRequest",
     "WorkspaceCreateResponse",
-    "WorkspaceData",
     "WorkspaceListResponse",
     "WorkspaceOrderRequest",
     "WorkspaceOrderResponse",
@@ -406,7 +370,5 @@ __all__ = [
     "WorkspaceResponse",
     "WorkspaceEventsPort",
     "DirectoriesPort",
-    "DirectoryEntryData",
-    "DirectoryListingResponse",
     "build_router",
 ]

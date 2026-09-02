@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from XBotv2.session.types import SessionStreamEvent
+from XBotv2.core.tools import ClientEvent
 
 
 class SessionEventCursorExpired(LookupError):
@@ -24,7 +24,7 @@ class SessionEventCursorExpired(LookupError):
 class SessionEventFrame:
     sequence: int
     request_id: str
-    event: SessionStreamEvent
+    event: ClientEvent
 
 
 @dataclass(slots=True, eq=False)
@@ -107,19 +107,14 @@ class SessionEventStream:
 
     def publish(
         self,
-        event: SessionStreamEvent | Mapping[str, object],
+        event: ClientEvent,
         *,
         request_id: str = "",
     ) -> SessionEventFrame:
         if self._closed:
             raise RuntimeError("Session event stream is closed")
-        value = (
-            event
-            if isinstance(event, SessionStreamEvent)
-            else SessionStreamEvent.model_validate(event)
-        )
         self._sequence += 1
-        frame = SessionEventFrame(self._sequence, request_id, value)
+        frame = SessionEventFrame(self._sequence, request_id, event)
         self._frames.append(frame)
         for subscriber in tuple(self._subscribers):
             try:

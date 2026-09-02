@@ -358,7 +358,7 @@ async def test_plugin_dispose_removes_goal_resources_but_retains_state(
     ctx = mount_ctx(state_store)
     ctx.set("engine", object())
     tools = ctx.tools
-    handles = mount_plugin_tree(ctx, PluginTree.from_dict([
+    handles = mount_plugin_tree(ctx, PluginTree.parse([
         {"id": "goal", "name": "goal"},
     ]))
 

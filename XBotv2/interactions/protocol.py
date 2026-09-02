@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from XBotv2.protocol import WireModel
+from XBotv2.core import ClientEvent
 
 
 class UserInputOption(WireModel):
@@ -64,10 +65,10 @@ InteractionEventType = Literal[
 def interaction_recorded_event(
     type: InteractionEventType,
     data: dict[str, Any],
-) -> dict[str, Any]:
+) -> ClientEvent:
     """Validate a recorded interaction before publishing it."""
     payload = InteractionRecordedData.model_validate(data)
-    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+    return ClientEvent(type=type, data=payload.model_dump(exclude_unset=True))
 
 
 __all__ = [

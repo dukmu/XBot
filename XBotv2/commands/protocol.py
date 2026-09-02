@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import shlex
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import Field
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.commands.contracts import (
-    CommandEffect,
+    CommandDescription,
+    CommandExecution,
     EXECUTE_COMMAND,
     ExecuteCommand,
     LIST_COMMANDS,
 )
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.session import SessionsPort
+from XBotv2.session.services import SessionsPort
 
 
 class CommandRequest(WireModel):
@@ -26,30 +26,13 @@ class CommandRequest(WireModel):
     kind: Literal["server", "prompt"] = "server"
 
 
-class CommandInfo(WireModel):
-    name: str
-    slash: str
-    kind: Literal["client", "server", "prompt"]
-    description: str
-    usage: str = ""
-    examples: list[str] = Field(default_factory=list)
-    parameters: dict[str, Any] = Field(default_factory=dict)
-
-
 class CommandListResponse(WireModel):
-    commands: list[CommandInfo]
-
-
-class CommandResultData(WireModel):
-    command: str
-    status: Literal["ok", "error"]
-    message: str
-    effects: list[CommandEffect] = Field(default_factory=list)
+    commands: list[CommandDescription]
 
 
 class CommandResponse(WireModel):
     type: Literal["command_result"] = "command_result"
-    data: CommandResultData
+    data: CommandExecution
 
 
 def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
@@ -69,17 +52,7 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
         catalog = await sessions.dispatch(
             session_id, thread_id, LIST_COMMANDS, EmptyRequest()
         )
-        return CommandListResponse(
-            commands=[{
-                "name": command.name,
-                "slash": command.slash,
-                "kind": command.kind,
-                "description": command.description,
-                "usage": command.usage,
-                "examples": list(command.examples),
-                "parameters": command.parameters,
-            } for command in catalog.commands]
-        )
+        return CommandListResponse(commands=list(catalog.commands))
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/commands",
@@ -131,24 +104,14 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
                 exclusive=declared.exclusive if declared is not None else True,
             ),
         )
-        return CommandResponse.model_validate({
-            "type": "command_result",
-            "data": {
-                "command": result.command,
-                "status": result.status,
-                "message": result.message,
-                "effects": list(result.effects),
-            },
-        })
+        return CommandResponse(data=result)
 
     return router
 
 
 __all__ = [
-    "CommandInfo",
     "CommandListResponse",
     "CommandRequest",
     "CommandResponse",
-    "CommandResultData",
     "build_commands_router",
 ]

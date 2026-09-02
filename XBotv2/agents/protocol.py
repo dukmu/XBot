@@ -14,7 +14,7 @@ from XBotv2.agents.contracts import (
 )
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
-from XBotv2.session import SessionsPort
+from XBotv2.session.services import SessionsPort
 
 
 class AgentInfo(WireModel):

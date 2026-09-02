@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -29,7 +28,7 @@ from pydantic import JsonValue
 
 from XBotv2.core.tools import ClientEvent
 from XBotv2.interactions import interaction_recorded_event
-from XBotv2.session import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
 from XBotv2.session.event_stream import (
     SessionEventStream,
     SessionEventSubscription,
@@ -69,13 +68,13 @@ class TurnResponse:
 
     message_id: str
     request_id: str
-    events: asyncio.Queue[dict[str, Any] | None] = field(
+    events: asyncio.Queue[ClientEvent | None] = field(
         default_factory=lambda: asyncio.Queue(maxsize=512),
         init=False,
     )
     attached: bool = True
 
-    def emit(self, event: dict[str, Any]) -> None:
+    def emit(self, event: ClientEvent) -> None:
         if not self.attached:
             return
         try:
@@ -185,13 +184,8 @@ class SessionRuntime:
         if data:
             self._publish_runtime_event(session_event("agent_configured", data))
 
-    def _publish_runtime_event(self, event: dict[str, Any]) -> None:
-        data = event.get("data")
-        request_id = (
-            str(data.get("request_id") or "")
-            if isinstance(data, dict)
-            else ""
-        )
+    def _publish_runtime_event(self, event: ClientEvent) -> None:
+        request_id = str(event.data.get("request_id") or "")
         self.event_stream.publish(event, request_id=request_id)
 
     def _on_inbox_splice(self, event: EventContext) -> None:
@@ -199,11 +193,10 @@ class SessionRuntime:
         payload = event.client_event
         if payload is None:
             return
-        raw = asdict(payload)
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
-        self._publish_runtime_event(raw)
-        data = raw.get("data")
+        self._publish_runtime_event(payload)
+        data = payload.data
         self._publish_runtime_event(session_event(
             "queue_updated",
             {
@@ -233,7 +226,7 @@ class SessionRuntime:
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
-        self._publish_runtime_event(asdict(event.client_event))
+        self._publish_runtime_event(event.client_event)
 
     def _message_event(
         self,
@@ -241,7 +234,7 @@ class SessionRuntime:
         content: str,
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ClientEvent:
         return session_event(
             "message",
             {
@@ -307,7 +300,7 @@ class SessionRuntime:
         delivery: str = "steer",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[ClientEvent]:
         """Deliver one user input.
 
         Idle input starts directly. Busy ``queue`` input enters ``next-turn``;
@@ -477,9 +470,9 @@ class SessionRuntime:
                 self.event_stream.close()
 
 
-def _event_payload(event: dict[str, Any]) -> dict[str, JsonValue]:
+def _event_payload(event: dict[str, Any]) -> ClientEvent:
     """Validate a loop event before projecting it onto the session stream."""
-    return asdict(ClientEvent(**event))
+    return ClientEvent.model_validate(event)
 
 
 class TurnEventRouter:
@@ -490,7 +483,7 @@ class TurnEventRouter:
         self._response = response
         self._responses = [response]
 
-    def emit(self, event: dict[str, Any]) -> None:
+    def emit(self, event: ClientEvent) -> None:
         self._runtime.event_stream.publish(
             event,
             request_id=self._response.request_id,
@@ -524,7 +517,7 @@ class TurnEventRouter:
                 f"No waiter registered for client event {event_type!r}"
             )
         pending = waiter.register(request_id)
-        self.emit(asdict(client_event))
+        self.emit(client_event)
         try:
             result = await waiter.wait_registered(
                 request_id,
@@ -552,7 +545,14 @@ class TurnEventRouter:
                 "pending_interactions": [],
             },
         ))
-        return dict(result.__dict__)
+        return {
+            "request_id": result.request_id,
+            "status": result.status,
+            "answer": result.answer,
+            "decision": result.decision,
+            "scope": result.scope,
+            "reason": result.reason,
+        }
 
 
 @asynccontextmanager
@@ -602,17 +602,17 @@ async def _execute_turn(
             async with aclosing(turn_stream):
                 async for event in turn_stream:
                     payload = _event_payload(event)
-                    if payload["type"] == "_inbox_claimed":
+                    if payload.type == "_inbox_claimed":
                         router.claim(list(
-                            payload["data"].get("message_ids") or []
+                            payload.data.get("message_ids") or []
                         ))
                         continue
-                    if payload["type"] in {"turn_finished", "turn_cancelled"}:
+                    if payload.type in {"turn_finished", "turn_cancelled"}:
                         slots = await runtime.application.status_slots()
                         if slots:
-                            payload["data"]["status_slots"] = slots
+                            payload.data["status_slots"] = slots
                         snapshot = await runtime.application.snapshot()
-                        payload["data"]["session_stats"] = conversation_stats(
+                        payload.data["session_stats"] = conversation_stats(
                             snapshot.messages
                         ).model_dump(mode="json")
                     router.emit(payload)
@@ -647,8 +647,8 @@ async def run_turn_stream(
     images: list[ImageContent] | None = None,
     artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
-    accepted_event: dict[str, Any] | None = None,
-) -> AsyncIterator[dict[str, Any]]:
+    accepted_event: ClientEvent | None = None,
+) -> AsyncIterator[ClientEvent]:
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
     await runtime.turn_lock.acquire()
@@ -685,7 +685,7 @@ async def regenerate_turn_stream(
     *,
     request_id: str,
     interactive: bool | None = None,
-) -> AsyncIterator[dict[str, Any]]:
+) -> AsyncIterator[ClientEvent]:
     """Atomically replace the latest human turn and run it again."""
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 import inspect
 import json
 import logging
@@ -207,7 +206,7 @@ def _error_message(
         tool_call_id=call.id,
         status="error",
         client_events=events,
-        error=asdict(error) if error is not None else None,
+        error=error.model_dump(mode="json") if error is not None else None,
     )
 
 
@@ -471,9 +470,9 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             status=value.status,
             artifact=list(value.artifacts),
             images=list(value.images),
-            error=asdict(value.error) if value.error is not None else None,
+            error=value.error.model_dump(mode="json") if value.error is not None else None,
             client_events=[
-                _normalize_client_event(asdict(event), tool_call_id)
+                _normalize_client_event(event.model_dump(mode="json"), tool_call_id)
                 for event in value.client_events
             ],
             turn_complete=value.turn_complete,

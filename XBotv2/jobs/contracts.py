@@ -187,21 +187,21 @@ class JobsPort(Protocol):
     async def cancel(self, job_id: JobId) -> CancelResult: ...
 
 
-@dataclass(frozen=True, slots=True)
-class TaskSnapshot:
-    task_id: str
-    kind: Literal["shell", "agent"]
-    command: str
+class TaskSnapshot(BaseModel):
+    task_id: str = Field(min_length=1)
+    kind: Literal["shell", "agent"] = "shell"
+    command: str = ""
     cwd: str
     status: Literal["pending", "running", "completed", "failed", "stopped"]
-    created_at: float
-    started_at: float
-    finished_at: float
+    created_at: float = Field(ge=0)
+    started_at: float = Field(ge=0)
+    finished_at: float = Field(ge=0)
     output: str = ""
     error: str = ""
     agent: str = ""
     thread_id: str = ""
-    usage: dict[str, object] = field(default_factory=dict)
+    usage: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 @dataclass(frozen=True, slots=True)

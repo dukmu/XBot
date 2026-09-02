@@ -286,7 +286,7 @@ def test_tool_from_function_reserves_keyword_only_tool_call_metadata():
         return value
 
     tool = Tool.from_function(inspect)
-    call = ToolCall("call-1", "inspect", {"value": "ok"})
+    call = ToolCall(id="call-1", name="inspect", args={"value": "ok"})
 
     assert tool.parameters == {
         "type": "object",
@@ -424,6 +424,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
     assert set(paths) == {
+        "/directories",
         "/health",
         "/hello",
         "/providers",
@@ -499,7 +500,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "text/event-stream"
     }
     todos_path = "/sessions/{session_id}/threads/{thread_id}/todos"
-    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TodoResponse")
+    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TodoSnapshot")
 
     operation_ids = [
         operation["operationId"]

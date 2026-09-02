@@ -56,8 +56,8 @@ class UsageService:
             **self._snapshot.totals(),
         )
 
-    def snapshot(self) -> dict[str, int]:
-        return self._snapshot.totals()
+    def snapshot(self) -> UsageData:
+        return self._snapshot
 
     async def add(
         self,

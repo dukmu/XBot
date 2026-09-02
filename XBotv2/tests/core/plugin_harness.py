@@ -14,6 +14,7 @@ def mount_ctx(state_store):
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
+    from XBotv2.config.models import SandboxConfig
 
     class TestInteractions:
         async def request_user_input(self, *_args, **_kwargs):
@@ -82,7 +83,7 @@ def mount_ctx(state_store):
     ))
     ctx.set("session", ctx.loop_state.session)
     ctx.set("sandbox", SandboxPolicy(
-        {"enabled": False, "resources": []},
+        SandboxConfig(enabled=False),
         data_root=state_store.paths.runtime.data_dir,
         workspace_root=state_store.workspace_root,
         session_root=state_store.paths.state_dir,

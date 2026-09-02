@@ -10,6 +10,7 @@ from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.agentloop.contracts import LIST_TOOLS
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.tools import ToolCall
 
 
 class ToolInfo(WireModel):
@@ -57,15 +58,8 @@ class InputRejectedData(WireModel):
     request_id: str = ""
 
 
-class ToolCallData(WireModel):
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    args: dict[str, Any]
-    type: Literal["tool_call"] = "tool_call"
-
-
 class ToolCallsStartedData(WireModel):
-    tool_calls: list[ToolCallData] = Field(min_length=1)
+    tool_calls: list[ToolCall] = Field(min_length=1)
 
 
 class ToolCallDeltaItemData(WireModel):
@@ -177,7 +171,6 @@ __all__ = [
     "AssistantMessageData",
     "AssistantMessageDeltaData",
     "InputRejectedData",
-    "ToolCallData",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",
     "ToolCallsStartedData",

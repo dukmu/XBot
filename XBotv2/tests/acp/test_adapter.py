@@ -28,7 +28,8 @@ from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ToolCall
 from XBotv2.llm.mock import MockLLM
-from XBotv2.session import OpenedSession, SessionSummary, SessionStreamEvent, ThreadSummary
+from XBotv2.core import ClientEvent
+from XBotv2.session import OpenedSession, SessionSummary, ThreadSummary
 
 
 class FakeConnection:
@@ -92,9 +93,9 @@ class FakeSessions:
 
     async def thread_summary(self, session_id: str, thread_id: str):
         return ThreadSummary(
-            session_id,
-            thread_id,
-            "active",
+            session_id = session_id,
+            thread_id = thread_id,
+            status = "active",
             provider="default",
             context_window=200_000,
         )
@@ -106,7 +107,7 @@ class FakeSessions:
 
         async def stream():
             for event in self.events:
-                value = SessionStreamEvent.from_mapping(event)
+                value = ClientEvent.model_validate(event)
                 self.event_sequence += 1
                 await self.event_queue.put(SessionEventFrame(
                     self.event_sequence,
@@ -295,7 +296,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
 
 async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None:
     agent, _ = _agent(tmp_path, [])
-    permission_event = SessionStreamEvent.model_validate({
+    permission_event = ClientEvent.model_validate({
             "type": "permission_request",
             "data": {
                 "request_id": "permission-1",
@@ -306,7 +307,7 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
                 },
             },
         })
-    user_input_event = SessionStreamEvent.model_validate({
+    user_input_event = ClientEvent.model_validate({
             "type": "user_input_required",
             "data": {
                 "request_id": "question-1",

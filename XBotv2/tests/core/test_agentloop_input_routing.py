@@ -73,8 +73,8 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
     ]
     assert not runtime.pending_responses
     assert engine.pending_input_count == 0
-    assert first_events[-1]["type"] == "tool_result"
-    assert second_events[-1]["type"] == "turn_finished"
+    assert first_events[-1].type == "tool_result"
+    assert second_events[-1].type == "turn_finished"
 
 
 @pytest.mark.asyncio

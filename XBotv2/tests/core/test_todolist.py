@@ -199,7 +199,7 @@ async def test_plugin_dispose_removes_tool_but_retains_todos(tmp_path, state_sto
 
     ctx = mount_ctx(state_store)
     registry = ctx.tools._registry
-    handles = mount_plugin_tree(ctx, PluginTree.from_dict([
+    handles = mount_plugin_tree(ctx, PluginTree.parse([
         {"id": "todolist", "name": "todolist"},
     ]))
 

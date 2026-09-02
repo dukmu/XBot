@@ -29,7 +29,7 @@ from XBotv2.jobs import TaskListResponse, TaskStopResponse
 from XBotv2.llm import (
     EffortSelectionRequest,
     EffortSelectionResponse,
-    ProviderListResponse,
+    ProviderCatalog,
     ProviderSelectionRequest,
     ProviderSelectionResponse,
 )
@@ -139,8 +139,8 @@ class XBotClient:
             ),
         )
 
-    async def list_providers(self) -> ProviderListResponse:
-        return await self._request("GET", "/providers", ProviderListResponse)
+    async def list_providers(self) -> ProviderCatalog:
+        return await self._request("GET", "/providers", ProviderCatalog)
 
     async def list_sessions(self) -> SessionListResponse:
         return await self._request("GET", "/sessions", SessionListResponse)
@@ -472,18 +472,8 @@ class XBotClient:
                 content=content,
                 request_id=request_id,
                 delivery=delivery,
-                images=[
-                    image
-                    if isinstance(image, ImageInput)
-                    else ImageInput.model_validate(image)
-                    for image in images or []
-                ],
-                attachments=[
-                    attachment
-                    if isinstance(attachment, AttachmentInput)
-                    else AttachmentInput.model_validate(attachment)
-                    for attachment in attachments or []
-                ],
+                images=images or [],
+                attachments=attachments or [],
             ),
         )
 

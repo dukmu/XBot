@@ -88,9 +88,9 @@ class TestPermissionSystemBasics:
 
     def test_filesystem_write_session_rule_records_only_path(self):
         rule = permission_rule_for_tool_call(ToolCall(
-            "call-1",
-            "edit",
-            {"path": "notes.md", "mode": "write", "content": "large private document"},
+            id="call-1",
+            name="edit",
+            args={"path": "notes.md", "mode": "write", "content": "large private document"},
         ))
 
         assert rule == {
@@ -109,9 +109,9 @@ class TestPermissionSystemBasics:
 
     def test_filesystem_move_rule_records_both_paths_and_overwrite(self):
         rule = permission_rule_for_tool_call(ToolCall(
-            "call-1",
-            "path",
-            {"operation": "move", "source": "a.txt", "destination": "b.txt", "overwrite": True},
+            id="call-1",
+            name="path",
+            args={"operation": "move", "source": "a.txt", "destination": "b.txt", "overwrite": True},
         ))
 
         assert rule == {

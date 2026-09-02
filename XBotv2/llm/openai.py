@@ -15,7 +15,6 @@ from XBotv2.core.messages import (
     ModelResponse,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall, ToolCallDelta
 from XBotv2.core.providers import BaseProvider
@@ -177,7 +176,7 @@ class OpenAICompatibleProvider(BaseProvider):
         if content:
             parts.append(TextPart(text=content))
         parts.extend(
-            ToolCallPart.model_validate(call, from_attributes=True)
+            ToolCall.model_validate(call, from_attributes=True)
             for call in tool_calls
         )
         yield ModelResponse(
@@ -234,7 +233,7 @@ def openai_messages(
             ),
         }
         tool_calls = [
-            part for part in parts if isinstance(part, ToolCallPart)
+            part for part in parts if isinstance(part, ToolCall)
         ]
         if tool_calls:
             item["tool_calls"] = [

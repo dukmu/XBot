@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest, Operation
+from pydantic import BaseModel, ConfigDict, Field
 
 CommandHandler = Callable[[str], Awaitable["CommandResult"]]
 CommandEffect = Literal["history", "thread", "agents", "tasks", "commands", "sessions"]
@@ -74,16 +75,16 @@ def guard_command(handler: CommandHandler) -> CommandHandler:
     return wrapped
 
 
-@dataclass(frozen=True, slots=True)
-class CommandDescription:
+class CommandDescription(BaseModel):
     name: str
     slash: str
     kind: Literal["client", "server", "prompt"]
     description: str
     usage: str
-    examples: tuple[str, ...]
-    parameters: dict[str, str]
+    examples: tuple[str, ...] = ()
+    parameters: dict[str, str] = Field(default_factory=dict)
     exclusive: bool
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,12 +100,12 @@ class ExecuteCommand:
     exclusive: bool = True
 
 
-@dataclass(frozen=True, slots=True)
-class CommandExecution:
+class CommandExecution(BaseModel):
     command: str
     status: Literal["ok", "error"]
     message: str
     effects: tuple[CommandEffect, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 LIST_COMMANDS = Operation("commands/list", EmptyRequest, CommandCatalog)

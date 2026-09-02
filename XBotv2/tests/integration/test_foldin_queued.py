@@ -146,7 +146,7 @@ async def _run_foldin(app, llm):
     ev_stream = ctx.attach_event_stream()
 
     async def _collect_events(stream):
-        events = [event async for event in stream]
+        events = [event.model_dump(mode="json") async for event in stream]
         return events
 
     first_task = asyncio.create_task(
@@ -164,7 +164,7 @@ async def _run_foldin(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = (await anext(ev_stream)).event.to_dict()
+                event = (await anext(ev_stream)).event.model_dump(mode="json")
                 if event.get("type") == "message":
                     message_events.append(event)
     except TimeoutError:
@@ -268,7 +268,7 @@ async def _run_multi_queue(app, llm):
     async def collect(stream):
         events = []
         async for event in stream:
-            events.append(event)
+            events.append(event.model_dump(mode="json"))
         return events
 
     ev_stream = ctx.attach_event_stream()
@@ -286,7 +286,7 @@ async def _run_multi_queue(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = (await anext(ev_stream)).event.to_dict()
+                event = (await anext(ev_stream)).event.model_dump(mode="json")
                 if event.get("type") == "message":
                     message_events.append(event.get("data", {}).get("content"))
     except TimeoutError:
@@ -386,7 +386,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     task_updates = []
     async with asyncio.timeout(1):
         while True:
-            event = (await anext(events)).event.to_dict()
+            event = (await anext(events)).event.model_dump(mode="json")
             if event.get("type") == "task_updated":
                 task_updates.append(event["data"].get("status"))
             if "completed" in task_updates:

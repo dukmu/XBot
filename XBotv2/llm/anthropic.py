@@ -14,7 +14,6 @@ from XBotv2.core.messages import (
     ModelResponse,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
 from XBotv2.core.providers import BaseProvider
@@ -322,7 +321,7 @@ def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
                 },
             ))
         elif block_type == "tool_use":
-            parts.append(ToolCallPart(
+            parts.append(ToolCall(
                 id=str(block.get("id") or ""),
                 name=str(block.get("name") or ""),
                 args=dict(block.get("input") or {}),
@@ -339,7 +338,7 @@ def _parts_to_anthropic(
     for part in parts:
         if isinstance(part, TextPart):
             blocks.append({"type": "text", "text": part.text})
-        elif isinstance(part, ToolCallPart):
+        elif isinstance(part, ToolCall):
             blocks.append({
                 "type": "tool_use",
                 "id": part.id,

@@ -69,21 +69,20 @@ from XBotv2.commands import (
 )
 from pydantic import JsonValue
 
-from XBotv2.core import EmptyRequest
+from XBotv2.core import ClientEvent, EmptyRequest
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin import MCP_PLUGIN_ID
-from XBotv2.session import (
-    ImageUpload,
+from XBotv2.session.types import (
+    ImageInput,
     OpenSession,
     SendMessage,
-    SessionsPort,
     SessionNotFound,
-    SessionStreamEvent,
     ThreadSummary,
     ThreadNotActive,
 )
+from XBotv2.session.services import SessionsPort
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -721,7 +720,7 @@ class XBotACPAgent:
     async def _handle_interaction(
         self,
         session_id: str,
-        event: SessionStreamEvent,
+        event: ClientEvent,
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
@@ -839,7 +838,7 @@ class XBotACPAgent:
     async def _resolve_interaction(
         self,
         session_id: str,
-        event: SessionStreamEvent,
+        event: ClientEvent,
     ) -> None:
         if event.type not in {"permission_request", "user_input_required"}:
             return
@@ -939,15 +938,15 @@ def _workspace(cwd: str) -> str:
     return str(path.resolve())
 
 
-def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageUpload]]:
+def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
     parts: list[str] = []
-    images: list[ImageUpload] = []
+    images: list[ImageInput] = []
     for block in blocks:
         block_type = getattr(block, "type", "")
         if block_type == "text":
             parts.append(str(block.text))
         elif block_type == "image":
-            images.append(ImageUpload(
+            images.append(ImageInput(
                 data=str(block.data),
                 media_type=str(block.mime_type),
             ))

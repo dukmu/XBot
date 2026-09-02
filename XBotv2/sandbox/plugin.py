@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
+from XBotv2.config.models import SandboxConfig
 from XBotv2.context_builder import BEFORE_CONTEXT_BUILD, ContextBuildRequest
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.sandbox.commands import build_sandbox_commands
@@ -29,7 +30,7 @@ class SandboxComponent:
 
     def apply(self, ctx: Any, config: Any = None) -> None:
         policy = SandboxPolicy(
-            (config or {}).get("sandbox"),
+            SandboxConfig.model_validate((config or {}).get("sandbox") or {}),
             data_root=ctx.data_root,
             workspace_root=ctx.workspace_root,
             session_root=ctx.thread_paths.state_dir,

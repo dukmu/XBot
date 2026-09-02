@@ -33,7 +33,7 @@ from XBotv2.application.services import (
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
-from XBotv2.session import AgentApplicationOptions
+from XBotv2.session.contracts import AgentApplicationOptions
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 

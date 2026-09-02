@@ -61,7 +61,6 @@ __all__ = [
     "TaskListResponse",
     "TaskSnapshot",
     "TaskStopResponse",
-    "TaskUpdatedData",
     "TERMINAL_STATES",
     "TextOutputStorePort",
     "WaitMode",
@@ -75,7 +74,6 @@ _PROTOCOL_EXPORTS = {
     "TaskCompletionData",
     "TaskListResponse",
     "TaskStopResponse",
-    "TaskUpdatedData",
     "task_completion_event",
     "task_updated_event",
 }

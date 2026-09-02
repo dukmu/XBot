@@ -30,6 +30,6 @@ class MCPTool:
             return ToolResult(
                 status="error",
                 content=result.content,
-                error=ToolError("mcp_tool_error", result.content),
+                error=ToolError(code="mcp_tool_error", message=result.content),
             )
         return ToolResult.success(result.content)

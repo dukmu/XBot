@@ -81,7 +81,7 @@ class LlmService:
             providers=tuple(
                 ProviderDescription(
                     name=name,
-                    protocol=provider.protocol,
+                    provider=provider.protocol,
                     default_model=provider.default_model,
                     models=tuple(
                         ModelDescription(

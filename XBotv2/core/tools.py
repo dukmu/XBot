@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from pydantic.dataclasses import dataclass as validated_dataclass
 
 from XBotv2.core.artifacts import ArtifactRef, ImageContent
 
@@ -28,8 +27,8 @@ class GuardDecision:
 
 
 class ToolCall(BaseModel):
-    id: str = ""
-    name: str = ""
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     args: dict[str, JsonValue] = Field(default_factory=dict)
     type: Literal["tool_call"] = "tool_call"
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -44,21 +43,20 @@ class ToolCallDelta(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
-class ToolError:
+class ToolError(BaseModel):
     code: str
     message: str
     retryable: bool = False
-    details: dict[str, JsonValue] = field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
-class ClientEvent:
+class ClientEvent(BaseModel):
     type: str = Field(min_length=1)
-    data: dict[str, JsonValue] = field(default_factory=dict)
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@validated_dataclass(frozen=True, config=ConfigDict(extra="forbid"))
-class ToolResult:
+class ToolResult(BaseModel):
     status: Literal["success", "error", "denied", "cancelled"] = "success"
     content: str = ""
     data: JsonValue = None
@@ -67,6 +65,7 @@ class ToolResult:
     images: tuple[ImageContent, ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
     turn_complete: bool = False
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
     def success(
@@ -85,7 +84,7 @@ class ToolResult:
         return cls(
             status="error",
             content=message,
-            error=ToolError(code, message, retryable),
+            error=ToolError(code=code, message=message, retryable=retryable),
         )
 
 

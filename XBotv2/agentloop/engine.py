@@ -70,7 +70,7 @@ from XBotv2.core.tokens import (
 )
 from XBotv2.core.timing import TIMING_METADATA_KEY
 from XBotv2.llm import ModelPort
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 from XBotv2.core.tools import (
     ClientEvent,
     Tool,

@@ -155,9 +155,9 @@ async def test_idle_user_turn_runs_directly(tmp_path):
     events = [event async for event in session.stream_message("start", "request")]
 
     assert [
-        event["data"]["content"]
+        event.data["content"]
         for event in events
-        if event["type"] == "assistant_message"
+        if event.type == "assistant_message"
     ] == ["reply"]
     assert session.turn_task is None
     await session.close()
@@ -171,7 +171,7 @@ async def test_turn_survives_response_stream_disconnect_and_replays(tmp_path):
     shared = session.attach_event_stream()
     response = session.stream_message("start", "request")
 
-    assert (await anext(response))["type"] == "turn_started"
+    assert (await anext(response)).type == "turn_started"
     await response.aclose()
     session.engine.release.set()
 
@@ -199,15 +199,15 @@ def test_slow_compatibility_response_does_not_backpressure_turn() -> None:
     )
 
     for index in range(513):
-        response.emit({
-            "type": "assistant_message_delta",
-            "data": {"content": str(index)},
-        })
+        response.emit(ClientEvent(
+            type="assistant_message_delta",
+            data={"content": str(index)},
+        ))
 
     assert response.attached is False
     error = response.events.get_nowait()
-    assert error["type"] == "error"
-    assert error["data"]["code"] == "response_stream_overflow"
+    assert error.type == "error"
+    assert error.data["code"] == "response_stream_overflow"
     assert response.events.get_nowait() is None
 
 
@@ -217,8 +217,8 @@ async def test_runtime_event_is_forwarded_without_starting_a_turn(tmp_path):
     events = session.attach_event_stream()
 
     session._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
-        "completion_notice",
-        {"task_id": "t1", "status": "completed"},
+        type="completion_notice",
+        data={"task_id": "t1", "status": "completed"},
     )))
 
     assert session.engine.inbox == []
@@ -253,8 +253,8 @@ async def test_runtime_events_are_broadcast_to_multiple_clients(tmp_path):
     second = session.attach_event_stream()
 
     session._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
-        "completion_notice",
-        {"task_id": "t1", "status": "completed"},
+        type="completion_notice",
+        data={"task_id": "t1", "status": "completed"},
     )))
 
     assert (await asyncio.wait_for(anext(first), timeout=1)).event.type == (

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from XBotv2.context_builder.contracts import ContextComponent
 from XBotv2.core import Message
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 
 BEFORE_CONTEXT_BUILD = "before/context-build"

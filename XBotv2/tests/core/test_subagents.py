@@ -14,6 +14,7 @@ from xcore import Context
 
 from XBotv2.agents import AgentDefinition, AgentSessionResult
 from XBotv2.core import RuntimePaths
+from XBotv2.core.usage import UsageData
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.plugin import JobsComponent
 from XBotv2.jobs.registry import JobRegistry
@@ -278,15 +279,15 @@ async def test_subagent_can_ask_user_through_parent_session(
     events = []
     async for event in runtime.stream_message("Clarify this", "request-1"):
         events.append(event)
-        if event["type"] == "user_input_required":
+        if event.type == "user_input_required":
             application.client_events.waiter("user_input_required").answer(
-                event["data"]["request_id"], answer="A"
+                event.data["request_id"], answer="A"
             )
 
-    assert any(event["type"] == "user_input_required" for event in events)
+    assert any(event.type == "user_input_required" for event in events)
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "Parent received the clarification"
+        event.type == "assistant_message"
+        and event.data["content"] == "Parent received the clarification"
         for event in events
     )
     await runtime.close()
@@ -375,17 +376,17 @@ async def test_subagent_can_request_permission_through_parent_session(
     events = []
     async for event in runtime.stream_message("Read this", "request-1"):
         events.append(event)
-        if event["type"] == "permission_request":
+        if event.type == "permission_request":
             application.client_events.waiter("permission_request").answer(
-                event["data"]["request_id"],
+                event.data["request_id"],
                 decision="allow",
                 scope="once",
             )
 
-    assert any(event["type"] == "permission_request" for event in events)
+    assert any(event.type == "permission_request" for event in events)
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "Parent received the file result"
+        event.type == "assistant_message"
+        and event.data["content"] == "Parent received the file result"
         for event in events
     )
     await runtime.close()
@@ -679,7 +680,7 @@ class _ChildSession:
         self.closed = True
         return AgentSessionResult(
             final_response=self.output,
-            usage={"total_tokens": 12},
+            usage=UsageData(total_tokens=12),
         )
 
     async def cancel(self) -> None:

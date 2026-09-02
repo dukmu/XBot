@@ -103,7 +103,7 @@ class TodolistService:
         return ToolResult(
             content=content,
             data=projection,
-            client_events=(ClientEvent("todo_updated", projection),),
+            client_events=(ClientEvent(type="todo_updated", data=projection),),
         )
 
     async def get_snapshot(self, _request: EmptyRequest) -> TodoSnapshot:

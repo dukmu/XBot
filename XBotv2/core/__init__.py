@@ -16,7 +16,6 @@ from XBotv2.core.messages import (
     ModelResponse,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.operations import (
     EmptyRequest,
@@ -78,7 +77,6 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolCallDelta",
-    "ToolCallPart",
     "ToolError",
     "ToolResult",
     "calibrated_context_tokens",

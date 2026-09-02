@@ -196,16 +196,18 @@ async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> No
         downloaded = await sdk.read_artifact(
             "sdk-attachment",
             "main",
-            messages.messages[0].artifacts[0]["id"],
+            messages.messages[0].artifacts[0].id,
         )
 
     assert events[-1].type == "end"
     assert downloaded == b"binary"
     artifact = messages.messages[0].artifacts[0]
-    assert artifact["name"] == "sample.bin"
-    assert not str(artifact["id"]).startswith("/")
+    assert artifact.name == "sample.bin"
+    assert not artifact.id.startswith("/")
     user = next(message for message in llm.get_call_messages(0) if message.role == "user")
-    assert [ref.to_dict() for ref in user.artifact] == [artifact]
+    assert [ref.model_dump(mode="json") for ref in user.artifact] == [
+        artifact.model_dump(mode="json")
+    ]
 
 
 @pytest.mark.asyncio
@@ -514,7 +516,7 @@ async def test_closing_turn_stream_keeps_session_owned_turn_running(tmp_path) ->
     )
     stream = run_turn_stream(ctx, content="wait", request_id="request")
 
-    assert (await anext(stream))["type"] == "turn_started"
+    assert (await anext(stream)).type == "turn_started"
     close_task = asyncio.create_task(stream.aclose())
     await asyncio.sleep(0.05)
     try:
@@ -1143,8 +1145,8 @@ async def test_open_event_cursor_replays_later_shared_runtime_events(http_app) -
     ))
     runtime = await manager.get(opened.session_id, opened.thread_id)
     runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
-        "completion_notice",
-        {"task_id": "task-1", "status": "completed"},
+        type="completion_notice",
+        data={"task_id": "task-1", "status": "completed"},
     )))
 
     events = await manager.stream_events(
@@ -1228,8 +1230,8 @@ async def test_session_event_endpoint_rejects_expired_and_future_cursors(
     runtime = await http_app.state.manager.get("event-cursor-errors", "agent")
     for index in range(513):
         runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
-            "completion_notice",
-            {"task_id": f"task-{index}", "status": "completed"},
+            type="completion_notice",
+            data={"task_id": f"task-{index}", "status": "completed"},
         )))
 
     expired = await client.get(
@@ -2221,9 +2223,9 @@ async def test_http_policy_api_updates_live_session_policy(
     cached_path.write_text("cached after policy update", encoding="utf-8")
     [cached_result] = await ctx.application._context.tools.execute_all([
         ToolCall(
-            "read-cached-policy",
-            "read",
-            {"path": "session/artifacts/tool_results/cached.txt"},
+            id="read-cached-policy",
+            name="read",
+            args={"path": "session/artifacts/tool_results/cached.txt"},
         ),
     ])
     status_response = await client.get("/sessions/policy/policy")
@@ -2317,15 +2319,15 @@ async def test_live_interaction_is_pending_before_event_is_published(
     turn_events = TurnEventRouter(runtime, response)
     sink_task = asyncio.create_task(
         turn_events.live_sink(
-            ClientEvent(event_type, {"request_id": request_id}),
+            ClientEvent(type=event_type, data={"request_id": request_id}),
         )
     )
 
     event = await response.events.get()
-    assert event == {
-        "type": event_type,
-        "data": {"request_id": request_id},
-    }
+    assert event == ClientEvent(
+        type=event_type,
+        data={"request_id": request_id},
+    )
     assert request_id in waiter.pending_request_ids()
 
     waiter.answer(request_id, **answer)
@@ -2900,23 +2902,23 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
     first_events = await asyncio.wait_for(first_task, timeout=3)
     second_events = await asyncio.wait_for(second_task, timeout=3)
     assert [
-        event["data"]["content"]
+        event.data["content"]
         for event in first_events
-        if event["type"] == "assistant_message"
+        if event.type == "assistant_message"
     ] == ["first reply"]
     # With no tool boundary, the turn-end fold still fuses the held input into
     # the same turn and notifies it in order on the event stream.
     found = None
     async with asyncio.timeout(1):
         while found is None:
-            event = (await anext(ev_stream)).event.to_dict()
+            event = (await anext(ev_stream)).event.model_dump(mode="json")
             if event.get("type") == "message" and event["data"].get("content") == "second":
                 found = event
     assert found["data"]["id"]
     assert [
-        event["data"]["content"]
+        event.data["content"]
         for event in second_events
-        if event["type"] == "assistant_message"
+        if event.type == "assistant_message"
     ] == ["second reply"]
     assert [m.content for m in ctx.engine.messages if m.role == "user"] == [
         "first", "second",
@@ -3040,7 +3042,7 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
             event["type"] == "queue_updated" and event["data"]["items"]
             for event in observed
         ):
-            observed.append((await anext(shared)).event.to_dict())
+            observed.append((await anext(shared)).event.model_dump(mode="json"))
     assert not any(
         event["type"] == "message" and event["data"].get("content") == "second"
         for event in observed
@@ -3054,7 +3056,7 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
             event["type"] == "message" and event["data"].get("content") == "second"
             for event in observed
         ):
-            observed.append((await anext(shared)).event.to_dict())
+            observed.append((await anext(shared)).event.model_dump(mode="json"))
     queue_drained_at = next(
         index for index, event in enumerate(observed)
         if event["type"] == "queue_updated" and event["data"]["items"] == []
@@ -3064,10 +3066,10 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         if event["type"] == "message" and event["data"].get("content") == "second"
     )
     assert queue_drained_at < message_at
-    assert any(event["type"] == "assistant_message" for event in queued_events)
+    assert any(event.type == "assistant_message" for event in queued_events)
     assert not any(
-        event["type"] == "assistant_message"
-        and event["data"].get("content") == "queued reply"
+        event.type == "assistant_message"
+        and event.data.get("content") == "queued reply"
         for event in first_events
     )
 
@@ -3134,7 +3136,7 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     while True:
         msg = (
             await asyncio.wait_for(anext(ev_stream), timeout=1)
-        ).event.to_dict()
+        ).event.model_dump(mode="json")
         if (
             msg is not None
             and msg.get("type") == "message"
@@ -3144,13 +3146,13 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     assert msg["data"].get("content") == "also include this"
     assert msg["data"].get("id")
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "handled both requests"
+        event.type == "assistant_message"
+        and event.data["content"] == "handled both requests"
         for event in second_events
     )
     assert not any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "handled both requests"
+        event.type == "assistant_message"
+        and event.data["content"] == "handled both requests"
         for event in first_events
     )
 
@@ -3220,13 +3222,13 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
     found = None
     async with asyncio.timeout(1):
         while found is None:
-            event = (await anext(ev_stream)).event.to_dict()
+            event = (await anext(ev_stream)).event.model_dump(mode="json")
             if event.get("type") == "message" and event["data"].get("content") == "B":
                 found = event
     assert found["data"]["id"]
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "merged reply"
+        event.type == "assistant_message"
+        and event.data["content"] == "merged reply"
         for event in third_events
     )
     assert llm.call_count == 2
@@ -3264,7 +3266,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
             Events.INBOX_SPLICE,
             "completion_notice",
         }.issubset({event["type"] for event in observed}):
-            observed.append((await anext(events)).event.to_dict())
+            observed.append((await anext(events)).event.model_dump(mode="json"))
     await asyncio.sleep(0.05)
     assert llm.call_count == 0, "general message must not wake a turn"
     assert len(ctx.engine.inbox) == 1
@@ -3318,7 +3320,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
     while notice is None:
         event = (
             await asyncio.wait_for(anext(events), timeout=1)
-        ).event.to_dict()
+        ).event.model_dump(mode="json")
         if event and event["type"] == "completion_notice":
             notice = event
     assert notice["data"]["kind"] == "background_task"
@@ -4261,7 +4263,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     while True:
         event = (
             await asyncio.wait_for(anext(session_events), timeout=2)
-        ).event.to_dict()
+        ).event.model_dump(mode="json")
         assert event is not None
         events.append(event)
         if event["type"] == "turn_finished":

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import Field
@@ -17,23 +16,7 @@ from XBotv2.jobs.contracts import (
     TaskSnapshot,
 )
 from XBotv2.protocol import WireModel
-from XBotv2.session import SessionsPort
-
-
-class TaskUpdatedData(WireModel):
-    task_id: str = Field(min_length=1)
-    kind: Literal["shell", "agent"] = "shell"
-    command: str = Field(min_length=1)
-    cwd: str
-    status: Literal["pending", "running", "completed", "failed", "stopped"]
-    created_at: float = Field(ge=0)
-    started_at: float = Field(ge=0)
-    finished_at: float = Field(ge=0)
-    output: str = ""
-    error: str = ""
-    agent: str = ""
-    thread_id: str = ""
-    usage: dict[str, Any] = Field(default_factory=dict)
+from XBotv2.session.services import SessionsPort
 
 
 class TaskCompletionData(WireModel):
@@ -46,8 +29,7 @@ class TaskCompletionData(WireModel):
 
 
 def task_updated_event(task: TaskSnapshot) -> ClientEvent:
-    payload = TaskUpdatedData.model_validate(asdict(task))
-    return ClientEvent("task_updated", payload.model_dump())
+    return ClientEvent(type="task_updated", data=task.model_dump(mode="json"))
 
 
 def task_completion_event(task: TaskSnapshot) -> ClientEvent:
@@ -60,13 +42,13 @@ def task_completion_event(task: TaskSnapshot) -> ClientEvent:
         command=task.command,
         agent=task.agent,
     )
-    return ClientEvent("completion_notice", payload.model_dump())
+    return ClientEvent(type="completion_notice", data=payload.model_dump())
 
 
 class TaskListResponse(WireModel):
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
-    tasks: list[TaskUpdatedData] = Field(default_factory=list)
+    tasks: list[TaskSnapshot] = Field(default_factory=list)
 
 
 class TaskStopResponse(TaskListResponse):
@@ -92,7 +74,7 @@ def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
         return TaskListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            tasks=[asdict(task) for task in result.tasks],
+            tasks=list(result.tasks),
         )
 
     @router.post(
@@ -111,7 +93,7 @@ def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
             session_id=session_id,
             thread_id=thread_id,
             matched_count=1,
-            tasks=[asdict(task) for task in result.tasks],
+            tasks=list(result.tasks),
         )
 
     @router.post(
@@ -129,7 +111,7 @@ def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
             session_id=session_id,
             thread_id=thread_id,
             matched_count=len(result.tasks),
-            tasks=[asdict(task) for task in result.tasks],
+            tasks=list(result.tasks),
         )
 
     return router
@@ -139,7 +121,6 @@ __all__ = [
     "TaskCompletionData",
     "TaskListResponse",
     "TaskStopResponse",
-    "TaskUpdatedData",
     "build_tasks_router",
     "task_completion_event",
     "task_updated_event",

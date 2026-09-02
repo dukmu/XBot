@@ -55,7 +55,7 @@ shout_tool = Tool.from_function(shout, name="shout")
 def send_notice(message: str) -> ToolResult:
     return ToolResult(
         content="notice sent",
-        client_events=(ClientEvent("client_message", {"message": message}),),
+        client_events=(ClientEvent(type="client_message", data={"message": message}),),
     )
 send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 
@@ -64,8 +64,8 @@ def request_input(question: str) -> ToolResult:
     return ToolResult(
         content="waiting for user",
         client_events=(ClientEvent(
-            "user_input_required",
-            {
+            type="user_input_required",
+            data={
                 "question": question,
                 "options": [
                     {"label": "continue", "description": "Continue the work."},

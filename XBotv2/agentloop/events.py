@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from XBotv2.agentloop.contracts import LoopSettings, ModelRequest
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 
 class Events:

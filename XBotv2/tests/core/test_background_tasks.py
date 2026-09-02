@@ -17,6 +17,7 @@ from XBotv2.agentloop import Events
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.permission_request.service import ApprovalService
 from XBotv2.application.client_events import ClientEventRouter
+from XBotv2.config.models import SandboxConfig
 from XBotv2.tests.helpers import make_tool_ctx
 import xcore
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -266,7 +267,7 @@ async def test_escalated_background_shell_requires_approval(
 
     patch_shell_executor(monkeypatch, run)
     sandbox = SandboxPolicy(
-        {"enabled": True, "external_write": "ask"},
+        SandboxConfig(enabled=True, external_write="deny"),
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
@@ -279,7 +280,7 @@ async def test_escalated_background_shell_requires_approval(
     events = []
 
     async def approve(event, **_kwargs):
-        events.append(event.to_dict())
+        events.append(event.model_dump(mode="json"))
         return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
@@ -294,7 +295,7 @@ async def test_escalated_background_shell_requires_approval(
         base=service_ctx,
     )
     results = await ctx.tools.execute_all(
-        [ToolCall("c1", "shell", {
+        [ToolCall(id="c1", name="shell", args={
             "command": "pwd",
             "background": True,
             "sandbox_permissions": "require_escalated",
@@ -316,7 +317,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
     temp_workspace,
 ):
     sandbox = SandboxPolicy(
-        {"enabled": True, "external_write": "ask"},
+        SandboxConfig(enabled=True, external_write="deny"),
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
@@ -343,7 +344,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
         base=service_ctx,
     )
     results = await ctx.tools.execute_all(
-        [ToolCall("c1", "shell", {
+        [ToolCall(id="c1", name="shell", args={
             "command": "pwd",
             "background": True,
             "sandbox_permissions": "require_escalated",

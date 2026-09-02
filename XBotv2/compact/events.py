@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 
 from XBotv2.core import Message
-from XBotv2.session import SessionInfo
+from XBotv2.session.types import SessionInfo
 
 
 PRE_COMPACT = "before/compact"

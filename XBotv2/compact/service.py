@@ -16,7 +16,7 @@ from XBotv2.core import (
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings
 from XBotv2.commands import CommandResult
-from XBotv2.session import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
@@ -272,7 +272,7 @@ class CompactService:
             usage_event = await self._usage.update_context(
                 int(metrics["context_tokens_after_estimate"])
             )
-            await self._publish_runtime_event(ClientEvent("usage", usage_event))
+            await self._publish_runtime_event(ClientEvent(type="usage", data=usage_event))
             committed = AfterCompact(
                 messages=tuple(ctx.messages),
                 session=ctx.session,
@@ -384,7 +384,7 @@ class CompactService:
         if usage:
             event = await self._usage.add(usage, update_context=False)
             if event is not None:
-                await self._publish_runtime_event(ClientEvent("usage", event))
+                await self._publish_runtime_event(ClientEvent(type="usage", data=event))
 
     async def _publish_runtime_event(self, event: ClientEvent) -> None:
         await self._events.emit(

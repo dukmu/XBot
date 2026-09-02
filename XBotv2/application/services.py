@@ -11,6 +11,7 @@ from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.agents import AgentDefinition, AgentSession
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message
+from XBotv2.core.usage import UsageData
 from XBotv2.core.history import ConversationHistory, ConversationPageReader
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
@@ -44,7 +45,7 @@ class AgentApplicationSnapshot:
     model_mode: str
     context_window: int
     messages: tuple[Message, ...]
-    usage: dict[str, int]
+    usage: UsageData
     metadata: ThreadMetadata
     status_slots: dict[str, str]
 
@@ -129,7 +130,7 @@ class SessionHistoryPort(Protocol):
 
 
 class UsageSnapshotPort(Protocol):
-    def snapshot(self) -> dict[str, int]: ...
+    def snapshot(self) -> UsageData: ...
 
 
 class LoopStateView(Protocol):

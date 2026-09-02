@@ -36,7 +36,7 @@ plugin implementations.
 | `ArtifactRef` | dataclass |  |
 | `ArtifactKind` | enum | Logical artifact category independent of filesystem layout. |
 | `ArtifactStorePort` | protocol | Typed artifact write, read, existence, and model-reference contract. |
-| `ClientEvent` | dataclass |  |
+| `ClientEvent` | model |  |
 | `ContentPart` | type alias |  |
 | `ConversationHistory` | class | Single owner of the effective conversation history. |
 | `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
@@ -62,7 +62,6 @@ plugin implementations.
 | `Tool` | class |  |
 | `ToolCall` | pydantic model |  |
 | `ToolCallDelta` | pydantic model |  |
-| `ToolCallPart` | pydantic model |  |
 | `ToolError` | exception |  |
 | `ToolResult` | pydantic dataclass |  |
 | `calibrated_context_tokens` | function |  |

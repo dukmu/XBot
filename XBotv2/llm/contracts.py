@@ -3,33 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from XBotv2.core.operations import EmptyRequest, Operation
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass(frozen=True, slots=True)
-class ModelDescription:
-    model: str
-    max_context_tokens: int
-    max_output_tokens: int | None
-    reasoning_effort: str
-    effort: tuple[str, ...]
-    thinking: str
-    input_modalities: tuple[str, ...]
+class ModelDescription(BaseModel):
+    model: str = Field(min_length=1)
+    max_context_tokens: int = Field(ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    reasoning_effort: str = ""
+    effort: tuple[str, ...] = ()
+    thinking: str = ""
+    input_modalities: tuple[Literal["text", "image"], ...] = ("text",)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderDescription:
-    name: str
-    protocol: str
-    default_model: str
-    models: tuple[ModelDescription, ...]
+class ProviderDescription(BaseModel):
+    name: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    default_model: str = Field(min_length=1)
+    models: tuple[ModelDescription, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderCatalog:
+class ProviderCatalog(BaseModel):
     default: str
-    providers: tuple[ProviderDescription, ...]
+    providers: tuple[ProviderDescription, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 @dataclass(frozen=True, slots=True)

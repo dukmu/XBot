@@ -100,7 +100,7 @@ async def test_read_image_url_requires_network(tmp_path):
 
 
 def test_provider_encoding_preserves_image_content():
-    image = ImageContent("artifacts/media/pixel.png", "image/png", 3)
+    image = ImageContent(path="artifacts/media/pixel.png", media_type="image/png", size=3)
 
     tool_message = Message(
         role="tool",
@@ -130,7 +130,7 @@ def test_provider_encoding_preserves_image_content():
 @pytest.mark.asyncio
 async def test_provider_rejects_image_without_image_modality(tmp_path):
     llm = MockLLM(input_modalities=["text"])
-    image = ImageContent("artifacts/media/pixel.png", "image/png", 3)
+    image = ImageContent(path="artifacts/media/pixel.png", media_type="image/png", size=3)
     message = Message(role="user", content="describe", images=[image])
 
     with pytest.raises(ValueError, match="does not support image"):
@@ -162,7 +162,7 @@ async def test_engine_smoke_persists_user_image_attachment(
         payload,
         media_type="image/png",
     )
-    image = ImageContent(ref.id, ref.media_type, ref.size)
+    image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
 
     events = [
         event

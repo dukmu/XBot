@@ -23,7 +23,6 @@ __all__ = [
     "CommandEffect",
     "CommandExecution",
     "CommandHandler",
-    "CommandInfo",
     "CommandListResponse",
     "CommandRequest",
     "CommandResponse",
@@ -38,7 +37,6 @@ __all__ = [
 ]
 
 _PROTOCOL_EXPORTS = {
-    "CommandInfo",
     "CommandListResponse",
     "CommandRequest",
     "CommandResponse",

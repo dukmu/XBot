@@ -6,6 +6,8 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol, TypeVar
 
 from XBotv2.core.messages import Message
+from XBotv2.core.history import ConversationPage
+from XBotv2.core.tools import ClientEvent
 from XBotv2.core.operations import Operation
 from XBotv2.session.contracts import SessionStatus
 from XBotv2.session.types import (
@@ -13,7 +15,6 @@ from XBotv2.session.types import (
     HistoryMutation,
     InteractionReceipt,
     InterruptResult,
-    MessagePage,
     OpenedSession,
     OpenSession,
     OpenThread,
@@ -21,7 +22,6 @@ from XBotv2.session.types import (
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
-    SessionStreamEvent,
     SessionSummary,
     ThreadSummary,
 )
@@ -92,7 +92,7 @@ class SessionsPort(Protocol):
         *,
         cursor: str | None,
         limit: int | None,
-    ) -> MessagePage: ...
+    ) -> ConversationPage: ...
 
     async def artifact(
         self,
@@ -117,7 +117,7 @@ class SessionsPort(Protocol):
     async def stream_message(
         self,
         request: SendMessage,
-    ) -> AsyncIterator[SessionStreamEvent]: ...
+    ) -> AsyncIterator[ClientEvent]: ...
 
     async def pending_inputs(
         self,
@@ -133,7 +133,7 @@ class SessionsPort(Protocol):
     async def regenerate_message(
         self,
         request: RegenerateMessage,
-    ) -> AsyncIterator[SessionStreamEvent]: ...
+    ) -> AsyncIterator[ClientEvent]: ...
 
     async def stream_events(
         self,

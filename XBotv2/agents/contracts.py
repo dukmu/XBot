@@ -2,50 +2,39 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider
-from pydantic import JsonValue
+from XBotv2.core.usage import UsageData
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 AgentMode = Literal["primary", "subagent", "all"]
-_AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-@dataclass(frozen=True, slots=True)
-class AgentDefinition:
-    name: str
-    description: str
+class AgentDefinition(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    description: str = Field(min_length=1)
     mode: AgentMode = "subagent"
     prompt: str = ""
     provider: str | None = None
     model: str | None = None
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    context_window: int | None = None
-    max_iterations: int | None = None
-    permissions: dict[str, JsonValue] = field(default_factory=dict)
+    temperature: float | None = Field(default=None, ge=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    context_window: int | None = Field(default=None, gt=0)
+    max_iterations: int | None = Field(default=None, gt=0)
+    permissions: dict[str, JsonValue] = Field(default_factory=dict)
     tools: tuple[str, ...] | None = None
     disabled_tools: tuple[str, ...] = ()
     hidden: bool = False
 
-    def __post_init__(self) -> None:
-        if not _AGENT_NAME.fullmatch(self.name):
-            raise ValueError(
-                "Agent name must use letters, numbers, '.', '_', or '-'"
-            )
-        if not self.description.strip():
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("description")
+    @classmethod
+    def _description_not_blank(cls, value: str) -> str:
+        if not value.strip():
             raise ValueError("Agent description must not be empty")
-        if self.mode not in {"primary", "subagent", "all"}:
-            raise ValueError("Agent mode must be primary, subagent, or all")
-        if self.temperature is not None and self.temperature < 0:
-            raise ValueError("Agent temperature must be non-negative")
-        for field_name in ("max_output_tokens", "context_window", "max_iterations"):
-            value = getattr(self, field_name)
-            if value is not None and value <= 0:
-                raise ValueError(f"Agent {field_name} must be positive")
+        return value
 
 
 class SubagentAgentError(RuntimeError):
@@ -59,7 +48,7 @@ class SubagentTurnError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class AgentSessionResult:
     final_response: str
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: UsageData = field(default_factory=UsageData)
 
 
 class AgentSession(Protocol):

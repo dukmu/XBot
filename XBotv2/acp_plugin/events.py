@@ -184,11 +184,11 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
                 updates.append(update_agent_message_text(item.content))
             for call in item.tool_calls:
                 updates.append(start_tool_call(
-                    str(call["id"]),
-                    str(call["name"]),
-                    kind=_tool_kind(str(call["name"])),
+                    call.id,
+                    call.name,
+                    kind=_tool_kind(call.name),
                     status="pending",
-                    raw_input=call.get("args"),
+                    raw_input=call.args,
                 ))
             continue
         if item.role != "tool" or not item.tool_call_id:
@@ -197,8 +197,8 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
             "content": item.content,
             "data": item.data,
             "error": item.error,
-            "artifacts": list(item.artifacts),
-            "images": list(item.images),
+            "artifacts": [value.model_dump(mode="json") for value in item.artifacts],
+            "images": [value.model_dump(mode="json") for value in item.images],
         }
         updates.append(update_tool_call(
             item.tool_call_id,

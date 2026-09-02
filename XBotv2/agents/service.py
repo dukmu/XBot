@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import TypeAdapter
-
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
     AgentDefinition,
@@ -104,10 +102,7 @@ class AgentsService:
         state.metadata.replace(ThreadMetadata(
             agent=definition.name if definition is not None else "",
             agent_definition=(
-                TypeAdapter(AgentDefinition).dump_python(
-                    definition,
-                    mode="json",
-                )
+                definition.model_dump(mode="json")
                 if definition is not None
                 else None
             ),
@@ -278,10 +273,7 @@ class AgentsService:
         state.session.provider = provider_name
         state.metadata.update(
             agent=definition.name,
-            agent_definition=TypeAdapter(AgentDefinition).dump_python(
-                definition,
-                mode="json",
-            ),
+            agent_definition=definition.model_dump(mode="json"),
             provider=provider_name,
             model=model_config.model,
             model_mode=model_config.model_mode,

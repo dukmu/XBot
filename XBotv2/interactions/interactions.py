@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 
 class InteractionNotPending(RuntimeError):
     """Raised when a response targets no live interaction request."""
 
 
-@dataclass
-class InteractionResult:
+class InteractionResult(BaseModel):
     request_id: str
     status: str
     answer: Any = None
     decision: str = ""
     scope: str = "once"
     reason: str = ""
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class InteractionWaiter:

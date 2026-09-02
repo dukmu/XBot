@@ -68,8 +68,8 @@ class InteractionsService:
             timeout_seconds=timeout_seconds,
         )
         client_event = ClientEvent(
-            "user_input_required",
-            payload.model_dump(),
+            type="user_input_required",
+            data=payload.model_dump(),
         )
         await self._events.emit(
             Events.CLIENT_EVENT,

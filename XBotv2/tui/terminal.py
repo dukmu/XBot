@@ -11,7 +11,7 @@ from urllib.parse import quote
 from XBotv2.client import XBotClient
 from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.protocol import ServerEvent, WireModel
-from XBotv2.session import SessionMode
+from XBotv2.session.protocol import SessionMode
 from XBotv2.tui.trace import trace_event
 
 

@@ -63,7 +63,7 @@ _EVENT_MODELS: dict[str, type[WireModel]] = {
 def compact_event(type: CompactEventType, data: dict[str, Any]) -> ClientEvent:
     """Validate a Compact-owned event before publishing it through XCore."""
     payload = _EVENT_MODELS[type].model_validate(data)
-    return ClientEvent(type, payload.model_dump(exclude_unset=True))
+    return ClientEvent(type=type, data=payload.model_dump(exclude_unset=True))
 
 
 __all__ = [

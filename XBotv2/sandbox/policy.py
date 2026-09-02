@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from XBotv2.config.models import SandboxConfig
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
@@ -30,7 +31,7 @@ class SandboxResourceRule:
 class SandboxPolicy:
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: SandboxConfig | None = None,
         *,
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
@@ -43,7 +44,6 @@ class SandboxPolicy:
         workspace_write: str = "allow",
         variables: RuntimeVariables | None = None,
     ) -> None:
-        self.config: dict[str, Any] | None = config
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
@@ -79,7 +79,7 @@ class SandboxPolicy:
         self._rules.insert(0, rule)
         return rule
 
-    def replace_config(self, config: dict[str, Any]) -> None:
+    def replace_config(self, config: SandboxConfig) -> None:
         """Replace policy state without invalidating runtime references."""
         replacement = SandboxPolicy(
             config,
@@ -375,20 +375,19 @@ class SandboxPolicy:
     # Config loading / serialisation
     # ------------------------------------------------------------------
 
-    def _load_config(self, config: dict[str, Any]) -> None:
-        self.enabled = config.get("enabled", self.enabled)
-        self._network = config.get("network", True)
-        self.external_read = str(config.get("external_read", "readonly"))
-        self.external_write = str(config.get("external_write", "deny"))
-        self.workspace_read = str(config.get("workspace_read", "allow"))
-        self.workspace_write = str(config.get("workspace_write", "allow"))
-        for rule_data in config.get("resources", []):
+    def _load_config(self, config: SandboxConfig) -> None:
+        self.enabled = config.enabled
+        self._network = config.network
+        self.external_read = config.external_read
+        self.external_write = config.external_write
+        self.workspace_read = config.workspace_read
+        self.workspace_write = config.workspace_write
+        for resource in config.resources:
             path = self.variables.expand(
-                str(rule_data.get("path", "")),
+                resource.path,
                 source="sandbox resource path",
             )
-            access = rule_data.get("access", "readonly")
-            self._rules.append(SandboxResourceRule(path=path, access=access))
+            self._rules.append(SandboxResourceRule(path=path, access=resource.access))
 
     def export_config(self) -> dict[str, Any]:
         """Serialize the live sandbox config back to the format

@@ -28,6 +28,8 @@ from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.core.errors import OperationError
+from XBotv2.core.history import ConversationPage
+from XBotv2.core.tools import ClientEvent
 from XBotv2.session.event_stream import (
     SessionEventCursorExpired,
     SessionEventFrame,
@@ -37,9 +39,9 @@ from XBotv2.core.timing import SessionStats, conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
-    AttachmentUpload,
+    AttachmentInput,
     HistoryMutation,
-    ImageUpload,
+    ImageInput,
     InteractionReceipt,
     OpenedSession,
     OpenSession,
@@ -141,17 +143,6 @@ class DeleteSessionResponse(WireModel):
     status: Literal["deleted"] = "deleted"
 
 
-class ImageInput(WireModel):
-    data: str = Field(min_length=1)
-    media_type: str = Field(pattern=r"^image/[A-Za-z0-9.+-]+$")
-
-
-class AttachmentInput(WireModel):
-    data: str = Field(min_length=1)
-    media_type: str = "application/octet-stream"
-    name: str = Field(min_length=1)
-
-
 class MessageData(WireModel):
     id: str
     role: Literal["user"]
@@ -215,13 +206,13 @@ _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
 def session_event(
     type: SessionEventType,
     data: dict[str, Any],
-) -> dict[str, Any]:
+) -> ClientEvent:
     """Validate one Session-owned event at its producer boundary."""
     payload = _SESSION_EVENT_MODELS[type].model_validate(data)
-    return {
-        "type": type,
-        "data": payload.model_dump(mode="json", exclude_unset=True),
-    }
+    return ClientEvent(
+        type=type,
+        data=payload.model_dump(mode="json", exclude_unset=True),
+    )
 
 
 def session_error_event(
@@ -229,17 +220,17 @@ def session_error_event(
     message: str,
     *,
     details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> ClientEvent:
     """Validate a Session-produced generic error event."""
     payload = ErrorEventData(
         code=code,
         message=message,
         details=details or {},
     )
-    return {
-        "type": "error",
-        "data": payload.model_dump(mode="json", exclude_unset=True),
-    }
+    return ClientEvent(
+        type="error",
+        data=payload.model_dump(mode="json", exclude_unset=True),
+    )
 
 
 class MessageRequest(WireModel):
@@ -274,7 +265,7 @@ SessionMode = Literal["new", "resume"]
 
 def _open_session_response(
     value: OpenedSession,
-    page: MessagePage | None = None,
+    page: ConversationPage | None = None,
 ) -> OpenSessionResponse:
     history = page.messages if page is not None else value.history
     return OpenSessionResponse.model_validate(
@@ -290,7 +281,7 @@ def _history_response(
     session_id: str,
     thread_id: str,
     result: HistoryMutation,
-    page: MessagePage | None = None,
+    page: ConversationPage | None = None,
 ) -> HistoryMutationResponse:
     messages = page.messages if page is not None else result.messages
     return HistoryMutationResponse(
@@ -705,18 +696,8 @@ def build_session_router(
             content=content,
             request_id=client_request_id,
             delivery=payload.delivery,
-            images=tuple(
-                ImageUpload(image.data, image.media_type)
-                for image in payload.images
-            ),
-            attachments=tuple(
-                AttachmentUpload(
-                    attachment.data,
-                    attachment.media_type,
-                    attachment.name,
-                )
-                for attachment in payload.attachments
-            ),
+            images=tuple(payload.images),
+            attachments=tuple(payload.attachments),
         )
         try:
             events = await sessions.stream_message(message)
