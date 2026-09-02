@@ -7,8 +7,9 @@ loop composition.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
+
+from pydantic import TypeAdapter
 
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
@@ -103,7 +104,12 @@ class AgentsService:
         state.metadata.replace(ThreadMetadata(
             agent=definition.name if definition is not None else "",
             agent_definition=(
-                asdict(definition) if definition is not None else None
+                TypeAdapter(AgentDefinition).dump_python(
+                    definition,
+                    mode="json",
+                )
+                if definition is not None
+                else None
             ),
             provider=provider_name,
             parent_thread_id=options.parent_thread_id,
@@ -272,7 +278,10 @@ class AgentsService:
         state.session.provider = provider_name
         state.metadata.update(
             agent=definition.name,
-            agent_definition=asdict(definition),
+            agent_definition=TypeAdapter(AgentDefinition).dump_python(
+                definition,
+                mode="json",
+            ),
             provider=provider_name,
             model=model_config.model,
             model_mode=model_config.model_mode,

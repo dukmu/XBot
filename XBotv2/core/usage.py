@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict, Field
 
 USAGE_FIELDS = (
     "input_tokens",
@@ -17,19 +17,19 @@ USAGE_FIELDS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class UsageDelta:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
-    requests: int = 0
-    context_tokens: int = 0
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    prompt_cache_write_tokens: int = 0
+class UsageData(BaseModel):
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    requests: int = Field(default=0, ge=0)
+    context_tokens: int = Field(default=0, ge=0)
+    cache_read_input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
+    prompt_cache_write_tokens: int = Field(default=0, ge=0)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
-    def from_provider(cls, value: Mapping[str, object]) -> "UsageDelta":
+    def from_provider(cls, value: Mapping[str, object]) -> "UsageData":
         unknown = set(value) - set(USAGE_FIELDS)
         if unknown:
             raise ValueError("Unknown usage fields: " + ", ".join(sorted(unknown)))
@@ -63,7 +63,7 @@ class UsageDelta:
         return not any(getattr(self, field) for field in USAGE_FIELDS)
 
     @classmethod
-    def from_snapshot(cls, value: Mapping[str, object]) -> "UsageDelta":
+    def from_snapshot(cls, value: Mapping[str, object]) -> "UsageData":
         expected = {"schema_version", *USAGE_FIELDS}
         if set(value) != expected:
             raise ValueError("Usage snapshot fields do not match schema version 1")
@@ -71,13 +71,13 @@ class UsageDelta:
             raise ValueError(f"Unsupported usage schema version: {value['schema_version']}")
         return cls(**{field: _tokens(value, field) for field in USAGE_FIELDS})
 
-    def add(self, delta: "UsageDelta") -> "UsageDelta":
+    def add(self, delta: "UsageData") -> "UsageData":
         totals = {
             field: getattr(self, field) + getattr(delta, field)
             for field in USAGE_FIELDS
         }
         totals["context_tokens"] = delta.context_tokens
-        return UsageDelta(**totals)
+        return UsageData(**totals)
 
     def totals(self) -> dict[str, int]:
         return {field: getattr(self, field) for field in USAGE_FIELDS}
@@ -101,7 +101,7 @@ class UsageDelta:
 
 
 def normalize_usage(value: Mapping[str, object]) -> dict[str, int]:
-    return UsageDelta.from_provider(value).to_event_dict() if value else {}
+    return UsageData.from_provider(value).to_event_dict() if value else {}
 
 
 def _tokens(value: Mapping[str, object], field: str) -> int:
@@ -119,4 +119,4 @@ def _optional_tokens(
     return default if field not in value else _tokens(value, field)
 
 
-__all__ = ["USAGE_FIELDS", "UsageDelta", "normalize_usage"]
+__all__ = ["USAGE_FIELDS", "UsageData", "normalize_usage"]

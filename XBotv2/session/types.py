@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from XBotv2.core.messages import Message
 from XBotv2.core.history import ConversationPage
 from XBotv2.core.providers import BaseProvider
+from XBotv2.core.timing import SessionStats
+from XBotv2.core.usage import UsageData
 from pydantic import JsonValue
 
 
@@ -77,7 +79,7 @@ class OpenThread:
     model_override: BaseProvider | None = None
 
 
-class OpenedSession(BaseModel):
+class SessionDescriptor(BaseModel):
     session_id: str
     thread_id: str
     agent_name: str
@@ -86,12 +88,16 @@ class OpenedSession(BaseModel):
     model: str
     model_mode: str
     context_window: int
-    usage: dict[str, int]
-    history: tuple[Message, ...]
+    usage: UsageData
     status_slots: dict[str, str]
     event_cursor: int
-    session_stats: dict[str, int | float] = Field(default_factory=dict)
-    pending_inputs: tuple["PendingInputSnapshot", ...] = ()
+    session_stats: SessionStats = Field(default_factory=SessionStats)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class OpenedSession(SessionDescriptor):
+    history: tuple[Message, ...]
+    pending_inputs: tuple["PendingInputData", ...] = ()
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         extra="forbid",
@@ -99,7 +105,7 @@ class OpenedSession(BaseModel):
     )
 
 
-class SessionSnapshot(BaseModel):
+class SessionSummary(BaseModel):
     session_id: str
     status: Literal["active", "inactive"]
     active_threads: int = 0
@@ -109,7 +115,7 @@ class SessionSnapshot(BaseModel):
     blank: bool = True
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-class ThreadSnapshot(BaseModel):
+class ThreadSummary(BaseModel):
     session_id: str
     thread_id: str
     status: Literal["active", "inactive"]
@@ -122,8 +128,8 @@ class ThreadSnapshot(BaseModel):
     model_mode: str = ""
     context_window: int = 0
     message_count: int = 0
-    usage: dict[str, int] = Field(default_factory=dict)
-    session_stats: dict[str, int | float] = Field(default_factory=dict)
+    usage: UsageData = Field(default_factory=UsageData)
+    session_stats: SessionStats = Field(default_factory=SessionStats)
     pending_interactions: tuple[str, ...] = ()
     status_slots: dict[str, str] = Field(default_factory=dict)
     workspace_root: str = ""
@@ -146,7 +152,7 @@ class ArtifactPayload:
     name: str = ""
 
 
-class PendingInputSnapshot(BaseModel):
+class PendingInputData(BaseModel):
     message_id: str
     content: str
     target: Literal["next-turn", "next-step"]
@@ -209,16 +215,17 @@ __all__ = [
     "OpenedSession",
     "OpenSession",
     "OpenThread",
-    "PendingInputSnapshot",
+    "PendingInputData",
     "PendingInputUpdate",
     "MessagePage",
     "RegenerateMessage",
     "SendMessage",
     "SessionExists",
+    "SessionDescriptor",
     "SessionInfo",
     "SessionNotFound",
     "SessionStreamEvent",
-    "SessionSnapshot",
+    "SessionSummary",
     "ThreadNotActive",
-    "ThreadSnapshot",
+    "ThreadSummary",
 ]

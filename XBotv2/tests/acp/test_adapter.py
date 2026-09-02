@@ -28,7 +28,7 @@ from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ToolCall
 from XBotv2.llm.mock import MockLLM
-from XBotv2.session import OpenedSession, SessionSnapshot, SessionStreamEvent, ThreadSnapshot
+from XBotv2.session import OpenedSession, SessionSummary, SessionStreamEvent, ThreadSummary
 
 
 class FakeConnection:
@@ -80,7 +80,7 @@ class FakeSessions:
         )
 
     async def list_sessions(self):
-        return (SessionSnapshot(
+        return (SessionSummary(
             "session-1",
             "active",
             workspace_root="/workspace",
@@ -91,7 +91,7 @@ class FakeSessions:
         return (await self.list_sessions())[0]
 
     async def thread_summary(self, session_id: str, thread_id: str):
-        return ThreadSnapshot(
+        return ThreadSummary(
             session_id,
             thread_id,
             "active",
@@ -261,7 +261,9 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         Message(
             role="assistant",
             reasoning="checking",
-            tool_calls=[ToolCall("call-1", "shell", {"command": "pwd"})],
+            tool_calls=[
+                ToolCall(id="call-1", name="shell", args={"command": "pwd"})
+            ],
         ),
         Message(
             role="tool",
@@ -284,14 +286,16 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         "content": "/workspace",
         "data": {"exit_code": 0},
         "error": None,
-        "artifacts": [ArtifactRef(id="tool_results/out.txt").to_dict()],
+        "artifacts": [
+            ArtifactRef(id="tool_results/out.txt").model_dump(mode="json")
+        ],
         "images": [],
     }
 
 
 async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None:
     agent, _ = _agent(tmp_path, [])
-    permission_event = SessionStreamEvent.from_mapping({
+    permission_event = SessionStreamEvent.model_validate({
             "type": "permission_request",
             "data": {
                 "request_id": "permission-1",
@@ -302,7 +306,7 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
                 },
             },
         })
-    user_input_event = SessionStreamEvent.from_mapping({
+    user_input_event = SessionStreamEvent.model_validate({
             "type": "user_input_required",
             "data": {
                 "request_id": "question-1",

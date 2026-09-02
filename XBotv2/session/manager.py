@@ -25,7 +25,7 @@ from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.core.usage import UsageDelta
+from XBotv2.core.usage import UsageData
 from XBotv2.core.timing import conversation_stats
 from XBotv2.session.runtime import (
     SessionRuntime,
@@ -57,16 +57,16 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
-    PendingInputSnapshot,
+    PendingInputData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionNotFound,
     SessionStreamEvent,
-    SessionSnapshot,
+    SessionSummary,
     ThreadNotActive,
-    ThreadSnapshot,
+    ThreadSummary,
 )
 from XBotv2.server import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
@@ -580,7 +580,7 @@ class SessionManager:
         )
         return await _opened_session(runtime)
 
-    async def list_sessions(self) -> tuple[SessionSnapshot, ...]:
+    async def list_sessions(self) -> tuple[SessionSummary, ...]:
         root = self.paths.sessions_dir
         session_ids = sorted(
             path.name for path in root.iterdir() if path.is_dir()
@@ -590,14 +590,14 @@ class SessionManager:
             for session_id in session_ids
         ])
 
-    async def session_summary(self, session_id: str) -> SessionSnapshot:
+    async def session_summary(self, session_id: str) -> SessionSummary:
         return await session_summary(self, session_id)
 
     async def rename_session(
         self,
         session_id: str,
         title: str,
-    ) -> SessionSnapshot:
+    ) -> SessionSummary:
         value = title.strip()
         if not value:
             raise ValueError("Session title must be non-empty")
@@ -705,7 +705,7 @@ class SessionManager:
             SessionResourceRemoved(session_id),
         )
 
-    async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]:
+    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
         await session_summary(self, session_id)
         return tuple([
             await thread_summary(self, session_id, thread_id)
@@ -763,7 +763,7 @@ class SessionManager:
         self,
         session_id: str,
         thread_id: str,
-    ) -> ThreadSnapshot:
+    ) -> ThreadSummary:
         return await thread_summary(self, session_id, thread_id)
 
     async def messages(
@@ -924,14 +924,14 @@ class SessionManager:
         self,
         session_id: str,
         thread_id: str,
-    ) -> tuple[PendingInputSnapshot, ...]:
+    ) -> tuple[PendingInputData, ...]:
         runtime = await self.get(session_id, thread_id)
         return runtime.pending_inputs()
 
     async def update_pending_input(
         self,
         request: PendingInputUpdate,
-    ) -> tuple[PendingInputSnapshot, ...]:
+    ) -> tuple[PendingInputData, ...]:
         runtime = await self.get(request.session_id, request.thread_id)
         items = await runtime.update_pending_input(
             request.message_id,
@@ -1169,7 +1169,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         model_mode=snapshot.model_mode,
         context_window=snapshot.context_window,
         usage=snapshot.usage,
-        session_stats=conversation_stats(snapshot.messages).model_dump(mode="json"),
+        session_stats=conversation_stats(snapshot.messages),
         history=snapshot.messages,
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
@@ -1191,13 +1191,13 @@ async def thread_summary(
     manager: SessionManager,
     session_id: str,
     thread_id: str,
-) -> ThreadSnapshot:
+) -> ThreadSummary:
     active = (await manager.active_threads()).get((session_id, thread_id))
     if active is not None:
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
         parent_thread_id = metadata.parent_thread_id
-        return ThreadSnapshot(
+        return ThreadSummary(
             session_id=session_id,
             thread_id=thread_id,
             status="active",
@@ -1211,7 +1211,7 @@ async def thread_summary(
             context_window=snapshot.context_window,
             message_count=len(snapshot.messages),
             usage=snapshot.usage,
-            session_stats=conversation_stats(snapshot.messages).model_dump(mode="json"),
+            session_stats=conversation_stats(snapshot.messages),
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
@@ -1228,7 +1228,7 @@ async def thread_summary(
     metadata = persistence.metadata.load()
     parent_thread_id = metadata.parent_thread_id
     messages = persistence.history.load()
-    return ThreadSnapshot(
+    return ThreadSummary(
         session_id=session_id,
         thread_id=thread_id,
         status="inactive",
@@ -1241,7 +1241,7 @@ async def thread_summary(
         context_window=metadata.context_window,
         message_count=persistence.history.count(),
         usage=await _read_usage(persistence),
-        session_stats=conversation_stats(messages).model_dump(mode="json"),
+        session_stats=conversation_stats(messages),
         workspace_root=metadata.workspace_root,
         title=metadata.title or session_id,
     )
@@ -1249,13 +1249,13 @@ async def thread_summary(
 
 async def _read_usage(
     persistence: ThreadPersistencePort,
-) -> dict[str, int]:
+) -> UsageData:
     stored = await persistence.state.namespace("usage").get("snapshot")
     if stored is None:
-        return _empty_usage()
+        return UsageData()
     if not isinstance(stored, dict):
         raise TypeError("Persisted usage snapshot must be an object")
-    return UsageDelta.from_snapshot(stored).totals()
+    return UsageData.from_snapshot(stored)
 
 
 def _upload_bytes(data: str) -> bytes:
@@ -1290,7 +1290,7 @@ def _history_artifact(
 async def session_summary(
     manager: SessionManager,
     session_id: str,
-) -> SessionSnapshot:
+) -> SessionSummary:
     session = manager.paths.session(session_id)
     active = await manager.active_threads()
     active_ids = {
@@ -1312,7 +1312,7 @@ async def session_summary(
                 main_id = candidate_id
                 break
     main = await thread_summary(manager, session_id, main_id) if main_id else None
-    return SessionSnapshot(
+    return SessionSummary(
         session_id=session_id,
         status="active" if active_threads else "inactive",
         active_threads=active_threads,
@@ -1326,16 +1326,6 @@ async def session_summary(
 def pending_interactions(ctx: SessionRuntime) -> list[str]:
     """List pending requests through the application client-event router."""
     return ctx.application.client_events.pending_request_ids()
-
-
-def _empty_usage() -> dict[str, int]:
-    return {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "context_tokens": 0,
-    }
 
 
 def _new_session_id() -> str:

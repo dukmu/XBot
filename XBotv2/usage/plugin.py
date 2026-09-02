@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 
 from xcore import Context
 from xcore.state import StateService
@@ -12,7 +11,7 @@ from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import EventContext, Events, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.core.usage import UsageDelta
+from XBotv2.core.usage import UsageData
 
 
 class UsageService:
@@ -25,7 +24,7 @@ class UsageService:
     ) -> None:
         self._store = store
         self._log = runtime_log.bind("usage")
-        self._snapshot = UsageDelta()
+        self._snapshot = UsageData()
         self._initialized = False
 
     async def initialize(self, messages: Sequence[Message]) -> None:
@@ -34,11 +33,11 @@ class UsageService:
         stored = await self._store.get("snapshot")
         source = "history"
         if stored is None:
-            snapshot = UsageDelta()
+            snapshot = UsageData()
             for message in messages:
                 usage = message.usage_metadata
                 if usage:
-                    delta = UsageDelta.from_provider(usage)
+                    delta = UsageData.from_provider(usage)
                     if not delta.is_empty():
                         snapshot = snapshot.add(delta)
             self._snapshot = snapshot
@@ -48,7 +47,7 @@ class UsageService:
             source = "snapshot"
             if not isinstance(stored, Mapping):
                 raise TypeError("Persisted usage snapshot must be an object")
-            self._snapshot = UsageDelta.from_snapshot(stored)
+            self._snapshot = UsageData.from_snapshot(stored)
         self._initialized = True
         self._log.info(
             "usage.initialized",
@@ -68,14 +67,16 @@ class UsageService:
     ) -> dict[str, int] | None:
         if not self._initialized:
             raise RuntimeError("UsageService must be initialized before recording usage")
-        delta = UsageDelta.from_provider(usage)
+        delta = UsageData.from_provider(usage)
         if delta.is_empty():
             return None
         updated = self._snapshot.add(delta)
         self._snapshot = (
             updated
             if update_context
-            else replace(updated, context_tokens=self._snapshot.context_tokens)
+            else updated.model_copy(
+                update={"context_tokens": self._snapshot.context_tokens}
+            )
         )
         await self._store.set("snapshot", self._snapshot.to_snapshot())
         self._log.info(
@@ -95,7 +96,9 @@ class UsageService:
             raise RuntimeError("UsageService must be initialized before updating context")
         if isinstance(context_tokens, bool) or context_tokens < 0:
             raise ValueError("context_tokens must be a non-negative integer")
-        self._snapshot = replace(self._snapshot, context_tokens=context_tokens)
+        self._snapshot = self._snapshot.model_copy(
+            update={"context_tokens": context_tokens}
+        )
         await self._store.set("snapshot", self._snapshot.to_snapshot())
         self._log.info(
             "usage.context_updated",

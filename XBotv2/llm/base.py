@@ -9,7 +9,9 @@ from typing import Any
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.core.usage import UsageDelta
+from XBotv2.core.usage import UsageData
+
+
 def attachment_prompt(message: Message) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
@@ -61,4 +63,4 @@ def usage_metadata(
         values["total_tokens"] = total_tokens
     if context_tokens is not None:
         values["context_tokens"] = context_tokens
-    return UsageDelta.from_provider(values).to_event_dict()
+    return UsageData.from_provider(values).to_event_dict()

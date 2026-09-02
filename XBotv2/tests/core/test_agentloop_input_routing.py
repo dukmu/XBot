@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from XBotv2.session.runtime import SessionRuntime
-from XBotv2.session.history import display_history
+from XBotv2.session.history import conversation_replay
 from XBotv2.application.app import start_application
 from XBotv2.application.host import mounted_application
 from XBotv2.core.paths import RuntimePaths
@@ -135,7 +135,7 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         "source": "job",
         "event": "completion",
     }
-    assert display_history(resumed.messages)[0]["runtime"] == {
+    assert conversation_replay(resumed.messages)[0].runtime == {
         "source": "job",
         "event": "completion",
     }

@@ -28,9 +28,9 @@ def mount_ctx(state_store):
             self.records.append((dict(usage), update_context))
             if not usage:
                 return None
-            from XBotv2.core.usage import UsageDelta
+            from XBotv2.core.usage import UsageData
 
-            event = UsageDelta.from_mapping(usage).to_event_dict()
+            event = UsageData.from_provider(usage).to_event_dict()
             if not update_context:
                 event["context_tokens"] = 0
             return event

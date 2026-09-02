@@ -22,7 +22,7 @@ from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.session.history import display_history
+from XBotv2.session.history import conversation_replay
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.paths import RuntimePaths
 from pydantic import JsonValue
@@ -35,7 +35,7 @@ from XBotv2.session.event_stream import (
     SessionEventSubscription,
 )
 from XBotv2.session.protocol import session_error_event, session_event
-from XBotv2.session.types import PendingInputSnapshot
+from XBotv2.session.types import PendingInputData
 
 
 class SessionBusy(RuntimeError):
@@ -52,8 +52,8 @@ def require_idle(ctx: Any, action: str) -> None:
         )
 
 
-def _pending_input_snapshot(item: InboxInput) -> PendingInputSnapshot:
-    return PendingInputSnapshot(
+def _pending_input_snapshot(item: InboxInput) -> PendingInputData:
+    return PendingInputData(
         message_id=item.message_id,
         content=item.content,
         target=item.target.value,
@@ -164,13 +164,11 @@ class SessionRuntime:
         self._publish_runtime_event(session_event(
             "history_updated",
             {
-                "history": display_history(page.messages),
+                "history": conversation_replay(page.messages),
                 "history_cursor": page.next_cursor,
                 "operation": event.operation,
                 "turns": event.turns,
-                "session_stats": conversation_stats(event.messages).model_dump(
-                    mode="json"
-                ),
+                "session_stats": conversation_stats(event.messages),
             },
         ))
 
@@ -272,7 +270,7 @@ class SessionRuntime:
         )
         self.event_stream.publish(event, request_id=message_id)
 
-    def pending_inputs(self) -> tuple[PendingInputSnapshot, ...]:
+    def pending_inputs(self) -> tuple[PendingInputData, ...]:
         return tuple(_pending_input_snapshot(item) for item in self.engine.pending_inputs)
 
     async def update_pending_input(
@@ -280,7 +278,7 @@ class SessionRuntime:
         message_id: str,
         action: str,
         content: str = "",
-    ) -> tuple[PendingInputSnapshot, ...]:
+    ) -> tuple[PendingInputData, ...]:
         try:
             if action == "edit":
                 await self.engine.edit_input(message_id, content)
@@ -706,13 +704,11 @@ async def regenerate_turn_stream(
         router.emit(session_event(
             "history_updated",
             {
-                "history": display_history(page.messages),
+                "history": conversation_replay(page.messages),
                 "history_cursor": page.next_cursor,
                 "operation": "regenerate",
                 "turns": 1,
-                "session_stats": conversation_stats(snapshot.messages).model_dump(
-                    mode="json"
-                ),
+                "session_stats": conversation_stats(snapshot.messages),
             },
         ))
         accepted = runtime._message_event(

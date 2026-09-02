@@ -27,14 +27,13 @@ from XBotv2.protocol.http_util import (
 from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
-from XBotv2.usage import UsageData
 from XBotv2.core.errors import OperationError
 from XBotv2.session.event_stream import (
     SessionEventCursorExpired,
     SessionEventFrame,
 )
-from XBotv2.session.history import SessionHistoryItem, display_history
-from XBotv2.core.timing import conversation_stats
+from XBotv2.session.history import SessionHistoryItem, conversation_replay
+from XBotv2.core.timing import SessionStats, conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.services import SessionsPort
 from XBotv2.session.types import (
@@ -45,28 +44,19 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
-    PendingInputSnapshot,
+    PendingInputData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionNotFound,
-    SessionSnapshot,
+    SessionDescriptor,
+    SessionSummary,
     ThreadNotActive,
-    ThreadSnapshot,
+    ThreadSummary,
 )
 
 logger = logging.getLogger("xbotv2.api")
-
-
-def _empty_usage() -> UsageData:
-    return UsageData(
-        input_tokens=0,
-        output_tokens=0,
-        total_tokens=0,
-        requests=0,
-    )
-
 
 class OpenSessionRequest(WireModel):
     session_id: str | None = None
@@ -77,51 +67,9 @@ class OpenSessionRequest(WireModel):
     history_limit: int | None = Field(default=None, ge=1, le=500)
 
 
-class SessionStatsData(WireModel):
-    turns: int = Field(default=0, ge=0)
-    steps: int = Field(default=0, ge=0)
-    llm_ms: float = Field(default=0, ge=0)
-    tool_ms: float = Field(default=0, ge=0)
-    ttft_ms: float = Field(default=0, ge=0)
-    ttft_steps: int = Field(default=0, ge=0)
-    decode_ms: float = Field(default=0, ge=0)
-    decode_tokens: int = Field(default=0, ge=0)
-
-
-class ThreadSummary(WireModel):
-    session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    status: Literal["active", "inactive"]
-    kind: Literal["main", "subagent"] = "main"
-    turn_status: Literal["idle", "running"] = "idle"
-    parent_thread_id: str = ""
-    agent: str = ""
-    provider: str = ""
-    model: str = ""
-    model_mode: str = ""
-    context_window: int = Field(default=0, ge=0)
-    message_count: int = Field(default=0, ge=0)
-    usage: UsageData = Field(default_factory=_empty_usage)
-    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
-    pending_interactions: list[str] = Field(default_factory=list)
-    status_slots: dict[str, str] = Field(default_factory=dict)
-    workspace_root: str = ""
-    title: str = ""
-
-
 class ThreadListResponse(WireModel):
     session_id: str = Field(min_length=1)
     threads: list[ThreadSummary] = Field(default_factory=list)
-
-
-class SessionSummary(WireModel):
-    session_id: str = Field(min_length=1)
-    status: Literal["active", "inactive"]
-    active_threads: int = Field(default=0, ge=0)
-    thread_count: int = Field(default=0, ge=0)
-    workspace_root: str = ""
-    title: str = ""
-    blank: bool
 
 
 class SessionListResponse(WireModel):
@@ -138,22 +86,10 @@ class SessionUpdateRequest(WireModel):
     title: str = Field(min_length=1, max_length=200)
 
 
-class OpenSessionResponse(WireModel):
-    session_id: str
-    thread_id: str
+class OpenSessionResponse(SessionDescriptor):
     status: Literal["ready"] = "ready"
-    agent_name: str
-    workspace_root: str
-    provider: str
-    model: str = ""
-    model_mode: str = ""
-    context_window: int = Field(default=0, ge=0)
-    usage: UsageData = Field(default_factory=_empty_usage)
-    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
     history: list[SessionHistoryItem] = Field(default_factory=list)
     history_cursor: str | None = None
-    event_cursor: int = Field(default=0, ge=0)
-    status_slots: dict[str, str] = Field(default_factory=dict)
     pending_inputs: list["PendingInputData"] = Field(default_factory=list)
 
 
@@ -187,7 +123,7 @@ class HistoryMutationResponse(WireModel):
     thread_id: str = Field(min_length=1)
     removed_turns: int = Field(ge=0)
     messages: list[SessionHistoryItem] = Field(default_factory=list)
-    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
+    session_stats: SessionStats = Field(default_factory=SessionStats)
     history_cursor: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -229,7 +165,7 @@ class HistoryUpdatedData(WireModel):
     operation: str = Field(min_length=1)
     turns: int = Field(ge=0)
     history_cursor: str | None = None
-    session_stats: SessionStatsData = Field(default_factory=SessionStatsData)
+    session_stats: SessionStats = Field(default_factory=SessionStats)
 
 
 class AgentConfiguredData(WireModel):
@@ -238,15 +174,6 @@ class AgentConfiguredData(WireModel):
     model: str = ""
     model_mode: str = ""
     context_window: int = Field(default=0, ge=0)
-
-
-class PendingInputData(WireModel):
-    message_id: str = Field(min_length=1)
-    content: str = ""
-    target: Literal["next-turn", "next-step"]
-    source: str = "user"
-    image_count: int = Field(default=0, ge=0)
-    artifact_count: int = Field(default=0, ge=0)
 
 
 class PendingInputListResponse(WireModel):
@@ -353,18 +280,10 @@ def _open_session_response(
     return OpenSessionResponse.model_validate(
         {
             **value.model_dump(mode="json", exclude={"history"}),
-            "history": display_history(history),
+            "history": conversation_replay(history),
             "history_cursor": page.next_cursor if page is not None else None,
         }
     )
-
-
-def _session_summary(value: SessionSnapshot) -> SessionSummary:
-    return SessionSummary.model_validate(value, from_attributes=True)
-
-
-def _thread_summary(value: ThreadSnapshot) -> ThreadSummary:
-    return ThreadSummary.model_validate(value, from_attributes=True)
 
 
 def _history_response(
@@ -378,8 +297,8 @@ def _history_response(
         session_id=session_id,
         thread_id=thread_id,
         removed_turns=result.removed_turns,
-        messages=display_history(messages),
-        session_stats=conversation_stats(result.messages).model_dump(mode="json"),
+        messages=conversation_replay(messages),
+        session_stats=conversation_stats(result.messages),
         history_cursor=page.next_cursor if page is not None else None,
     )
 
@@ -561,15 +480,13 @@ def build_session_router(
     async def list_sessions_endpoint() -> SessionListResponse:
         event_cursor = workspace_events.sequence
         return SessionListResponse(
-            sessions=[
-                _session_summary(value) for value in await sessions.list_sessions()
-            ],
+            sessions=list(await sessions.list_sessions()),
             event_cursor=event_cursor,
         )
 
     @router.get("/sessions/{session_id}", operation_id="get_session")
     async def get_session_endpoint(session_id: str) -> SessionSummary:
-        return _session_summary(await sessions.session_summary(session_id))
+        return await sessions.session_summary(session_id)
 
     @router.patch("/sessions/{session_id}", operation_id="rename_session")
     async def rename_session_endpoint(
@@ -577,9 +494,7 @@ def build_session_router(
         payload: SessionUpdateRequest,
     ) -> SessionSummary:
         try:
-            return _session_summary(
-                await sessions.rename_session(session_id, payload.title)
-            )
+            return await sessions.rename_session(session_id, payload.title)
         except ValueError as exc:
             raise HttpServerError("invalid_session_title", str(exc), status=400) from exc
 
@@ -609,10 +524,7 @@ def build_session_router(
     async def list_threads_endpoint(session_id: str) -> ThreadListResponse:
         return ThreadListResponse(
             session_id=session_id,
-            threads=[
-                _thread_summary(value)
-                for value in await sessions.list_threads(session_id)
-            ],
+            threads=list(await sessions.list_threads(session_id)),
         )
 
     @router.post(
@@ -660,9 +572,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
     ) -> ThreadSummary:
-        return _thread_summary(
-            await sessions.thread_summary(session_id, thread_id)
-        )
+        return await sessions.thread_summary(session_id, thread_id)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/messages",
@@ -683,7 +593,7 @@ def build_session_router(
         return ThreadMessagesResponse(
             session_id=session_id,
             thread_id=thread_id,
-            messages=display_history(page.messages),
+            messages=conversation_replay(page.messages),
             next_cursor=page.next_cursor,
         )
 
@@ -840,7 +750,7 @@ def build_session_router(
         return PendingInputListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            items=[PendingInputData.model_validate(item, from_attributes=True) for item in items],
+            items=list(items),
         )
 
     @router.patch(
@@ -866,7 +776,7 @@ def build_session_router(
         return PendingInputListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            items=[PendingInputData.model_validate(item, from_attributes=True) for item in items],
+            items=list(items),
         )
 
     @router.get(

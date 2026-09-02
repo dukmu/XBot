@@ -17,13 +17,13 @@ from XBotv2.session.types import (
     OpenedSession,
     OpenSession,
     OpenThread,
-    PendingInputSnapshot,
+    PendingInputData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionStreamEvent,
-    SessionSnapshot,
-    ThreadSnapshot,
+    SessionSummary,
+    ThreadSummary,
 )
 from XBotv2.session.event_stream import SessionEventFrame
 
@@ -59,21 +59,21 @@ class SessionsPort(Protocol):
 
     async def open(self, request: OpenSession) -> OpenedSession: ...
 
-    async def list_sessions(self) -> tuple[SessionSnapshot, ...]: ...
+    async def list_sessions(self) -> tuple[SessionSummary, ...]: ...
 
-    async def session_summary(self, session_id: str) -> SessionSnapshot: ...
+    async def session_summary(self, session_id: str) -> SessionSummary: ...
 
     async def rename_session(
         self,
         session_id: str,
         title: str,
-    ) -> SessionSnapshot: ...
+    ) -> SessionSummary: ...
 
     async def fork_session(self, session_id: str) -> str: ...
 
     async def delete_session(self, session_id: str) -> None: ...
 
-    async def list_threads(self, session_id: str) -> tuple[ThreadSnapshot, ...]: ...
+    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]: ...
 
     async def open_thread(self, request: OpenThread) -> OpenedSession: ...
 
@@ -81,7 +81,7 @@ class SessionsPort(Protocol):
         self,
         session_id: str,
         thread_id: str,
-    ) -> ThreadSnapshot: ...
+    ) -> ThreadSummary: ...
 
     async def messages(self, session_id: str, thread_id: str) -> tuple[Message, ...]: ...
 
@@ -123,12 +123,12 @@ class SessionsPort(Protocol):
         self,
         session_id: str,
         thread_id: str,
-    ) -> tuple[PendingInputSnapshot, ...]: ...
+    ) -> tuple[PendingInputData, ...]: ...
 
     async def update_pending_input(
         self,
         request: PendingInputUpdate,
-    ) -> tuple[PendingInputSnapshot, ...]: ...
+    ) -> tuple[PendingInputData, ...]: ...
 
     async def regenerate_message(
         self,

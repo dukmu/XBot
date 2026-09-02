@@ -3,7 +3,7 @@ from xcore.state import StateService
 
 from XBotv2.core.messages import Message
 from XBotv2.usage.plugin import UsageService
-from XBotv2.core.usage import UsageDelta
+from XBotv2.core.usage import UsageData
 
 
 @pytest.mark.asyncio
@@ -151,4 +151,4 @@ async def test_zero_token_and_total_only_requests_are_not_dropped(tmp_path):
 )
 def test_usage_delta_rejects_invalid_provider_fields(value, error):
     with pytest.raises(ValueError, match=error):
-        UsageDelta.from_mapping(value)
+        UsageData.from_provider(value)

@@ -88,16 +88,6 @@ def conversation_replay(
     return tuple(replay)
 
 
-def display_history(messages: Iterable[Message]) -> list[dict[str, Any]]:
-    return [
-        item.model_dump(
-            mode="json",
-            exclude={"error"} if item.role != "tool" else None,
-        )
-        for item in conversation_replay(messages)
-    ]
-
-
 def _artifact_data(value: Any) -> dict[str, Any] | None:
     if isinstance(value, ArtifactRef):
         return value.model_dump(mode="json")
@@ -107,5 +97,4 @@ def _artifact_data(value: Any) -> dict[str, Any] | None:
 __all__ = [
     "SessionHistoryItem",
     "conversation_replay",
-    "display_history",
 ]

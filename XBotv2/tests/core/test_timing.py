@@ -15,7 +15,7 @@ from XBotv2.core.timing import (
 )
 from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.llm.mock import MockLLM
-from XBotv2.session.history import display_history
+from XBotv2.session.history import conversation_replay
 from XBotv2.tests.helpers import make_engine
 
 
@@ -96,7 +96,7 @@ def test_conversation_stats_survive_compacted_prefix_and_replay_timing() -> None
         decode_ms=1000,
         decode_tokens=25,
     )
-    assert display_history([assistant])[0]["timing"] == {
+    assert conversation_replay([assistant])[0].timing == {
         "llm_ms": 1200,
         "ttft_ms": 200,
         "decode_ms": 1000,

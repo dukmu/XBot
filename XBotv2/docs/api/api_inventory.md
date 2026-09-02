@@ -42,11 +42,9 @@ plugin implementations.
 | `EmptyRequest` | dataclass | Explicit payload for typed query operations without arguments. |
 | `Operation` | dataclass | Typed XCore operation name and request/response contract. |
 | `OperationContext` | protocol | Narrow event-dispatch surface used by typed operations. |
-| `ImageContent` | dataclass |  |
-| `ImagePart` | dataclass |  |
+| `ImageContent` | pydantic model |  |
+| `ImagePart` | pydantic model |  |
 | `InputModality` | type alias |  |
-| `JsonObject` | type alias | JSON object carried by generic core envelopes. |
-| `JsonValue` | type alias |  |
 | `HistorySink` | protocol | Durable append/replace boundary used by ConversationHistory. |
 | `MESSAGE_FORMAT_KEY` | constant |  |
 | `Message` | dataclass |  |
@@ -55,18 +53,18 @@ plugin implementations.
 | `BaseProvider` | abstract class | Provider-neutral configuration and Tool binding contract for model adapters. |
 | `ProviderRetryExhaustedError` | exception | A provider request failed after all configured retries were consumed. |
 | `ProviderCapabilities` | dataclass |  |
-| `ReasoningPart` | dataclass |  |
+| `ReasoningPart` | pydantic model |  |
 | `RuntimePaths` | class |  |
 | `RuntimeVariables` | class |  |
 | `SessionPaths` | class |  |
-| `TextPart` | dataclass |  |
+| `TextPart` | pydantic model |  |
 | `ThreadPaths` | class |  |
 | `Tool` | class |  |
-| `ToolCall` | dataclass |  |
-| `ToolCallDelta` | dataclass |  |
-| `ToolCallPart` | dataclass |  |
+| `ToolCall` | pydantic model |  |
+| `ToolCallDelta` | pydantic model |  |
+| `ToolCallPart` | pydantic model |  |
 | `ToolError` | exception |  |
-| `ToolResult` | dataclass |  |
+| `ToolResult` | pydantic dataclass |  |
 | `calibrated_context_tokens` | function |  |
 | `context_token_limit` | function |  |
 | `estimate_messages_tokens` | function |  |
@@ -74,8 +72,6 @@ plugin implementations.
 | `estimate_request_tokens` | function |  |
 | `prompt_container` | function |  |
 | `prompt_element` | function |  |
-| `json_object` | function | Validate and copy a JSON object. |
-| `json_value` | function | Validate and copy a JSON value. |
 
 ## Agents Declarations (`XBotv2.agents`)
 

@@ -13,7 +13,7 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from pydantic import JsonValue
 from XBotv2.permissions import PermissionsPort
-from XBotv2.session.types import SessionSnapshot
+from XBotv2.session.types import SessionSummary
 
 
 PREPARE_FORK = "session/prepare-fork"
@@ -37,7 +37,7 @@ class HistoryChanged:
 
 @dataclass(frozen=True, slots=True)
 class SessionResourceChanged:
-    session: SessionSnapshot
+    session: SessionSummary
     added: bool = False
 
 

@@ -81,7 +81,7 @@ from XBotv2.session import (
     SessionsPort,
     SessionNotFound,
     SessionStreamEvent,
-    ThreadSnapshot,
+    ThreadSummary,
     ThreadNotActive,
 )
 
@@ -525,7 +525,7 @@ class XBotACPAgent:
         )
         self._event_tasks[session_id] = task
 
-    async def _thread(self, session_id: str) -> ThreadSnapshot:
+    async def _thread(self, session_id: str) -> ThreadSummary:
         try:
             return await self.sessions.thread_summary(session_id, "agent")
         except (SessionNotFound, ThreadNotActive) as exc:

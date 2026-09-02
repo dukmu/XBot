@@ -8,19 +8,23 @@ from fastapi import FastAPI
 
 from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.protocol import build_session_router
-from XBotv2.session.types import SessionSnapshot
+from XBotv2.session.types import SessionSummary
 from XBotv2.workspaces.events import WorkspaceCursorExpired, WorkspaceEventStream
 
 
 @pytest.mark.asyncio
 async def test_workspace_event_stream_replays_then_fans_out_to_every_client():
     stream = WorkspaceEventStream(capacity=4)
-    first = stream.publish(SessionResourceChanged(SessionSnapshot("s1", "inactive")))
+    first = stream.publish(SessionResourceChanged(SessionSummary(
+        session_id="s1", status="inactive"
+    )))
     left = stream.subscribe(0)
     right = stream.subscribe(1)
 
     assert await anext(left) == first
-    changed = stream.publish(SessionResourceChanged(SessionSnapshot("s1", "active")))
+    changed = stream.publish(SessionResourceChanged(SessionSummary(
+        session_id="s1", status="active"
+    )))
     assert await anext(left) == changed
     assert await anext(right) == changed
 
@@ -32,9 +36,9 @@ async def test_workspace_event_stream_replays_then_fans_out_to_every_client():
 async def test_workspace_event_stream_rejects_an_expired_cursor():
     stream = WorkspaceEventStream(capacity=2)
     for number in range(3):
-        stream.publish(SessionResourceChanged(SessionSnapshot(
-            f"s{number}",
-            "inactive",
+        stream.publish(SessionResourceChanged(SessionSummary(
+            session_id=f"s{number}",
+            status="inactive",
         )))
 
     with pytest.raises(WorkspaceCursorExpired, match="expired"):
