@@ -17,7 +17,7 @@ from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.commands import build_permissions_commands
@@ -168,11 +168,11 @@ class PermissionHandlers:
 
     async def record_decision(
         self,
-        event: dict[str, Any],
+        event: ClientEvent,
         decision: str,
         scope: str,
     ) -> None:
-        data = event.get("data") or {}
+        data = event.data
         if data.get("source") == "request_permission":
             rule = requested_permission_rule(data.get("permission"))
         else:
@@ -189,12 +189,14 @@ class PermissionHandlers:
         )
 
     async def configure_initial(self, event: ApplicationInitialized) -> None:
-        if event.agent is not None:
-            self._permissions.configure_agent(event.agent.permissions)
+        self._configure_agent(event.agent)
 
     async def configure_agent(self, event: AgentConfigured) -> None:
-        if event.agent is not None:
-            self._permissions.configure_agent(event.agent.permissions)
+        self._configure_agent(event.agent)
+
+    def _configure_agent(self, agent: Any) -> None:
+        if agent is not None:
+            self._permissions.configure_agent(agent.permissions)
 
     async def update_policy(self, event: PolicyChanged) -> None:
         self._permissions.replace_rules(event.config.permissions)

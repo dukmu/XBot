@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.core.artifacts import ArtifactRef, ImageContent
-from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.core.tools import ClientEvent, ToolCall, ToolCallDelta
 
 
 class TextPart(BaseModel):
@@ -149,7 +149,7 @@ class Message(_PartBacked):
     usage_metadata: dict[str, Any]
     artifact: Any
     error: dict[str, Any] | None
-    client_events: list[dict[str, Any]]
+    client_events: list[ClientEvent]
     turn_complete: bool
     _sealed: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -171,7 +171,7 @@ class Message(_PartBacked):
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
         error: dict[str, Any] | None = None,
-        client_events: list[dict[str, Any]] | None = None,
+        client_events: list[ClientEvent] | None = None,
         turn_complete: bool = False,
     ) -> None:
         self._sealed = False
@@ -186,7 +186,9 @@ class Message(_PartBacked):
         self.usage_metadata = dict(usage_metadata or {})
         self.artifact = artifact
         self.error = dict(error) if error is not None else None
-        self.client_events = list(client_events or [])
+        self.client_events = [
+            ClientEvent.model_validate(event) for event in (client_events or [])
+        ]
         self.turn_complete = turn_complete
         if parts is not None:
             self.parts = list(parts)
@@ -214,7 +216,7 @@ class Message(_PartBacked):
         self.artifact = _freeze_artifact(self.artifact)
         self.error = _freeze_object(self.error) if self.error is not None else None
         self.client_events = _FrozenList(
-            _freeze_object(event) for event in self.client_events
+            _freeze_client_event(event) for event in self.client_events
         )
         self._sealed = True
 
@@ -272,6 +274,13 @@ def _freeze_part(part: ContentPart) -> ContentPart:
             type="tool_call",
         )
     return part
+
+
+def _freeze_client_event(event: ClientEvent) -> ClientEvent:
+    return ClientEvent.model_construct(
+        type=event.type,
+        data=_freeze_object(event.data),
+    )
 
 
 def _freeze_object(value: Mapping[str, object]) -> _FrozenDict:

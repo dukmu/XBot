@@ -147,4 +147,4 @@ def create_mock_provider(provider_config, model_config, *, artifacts=None):
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_mock_provider"]
+__all__ = ["MockLLM", "create_mock_provider"]

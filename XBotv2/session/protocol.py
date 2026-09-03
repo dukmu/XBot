@@ -21,6 +21,7 @@ from pydantic import Field, model_validator
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     _error_payload,
+    _sse_response,
     HttpServerError,
     _format_sse,
 )
@@ -29,7 +30,7 @@ from XBotv2.permission_request import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationPage
-from XBotv2.core.tools import ClientEvent
+from XBotv2.core.tools import ClientEvent, _validated_client_event
 from XBotv2.session.event_stream import (
     SessionEventCursorExpired,
     SessionEventFrame,
@@ -52,6 +53,7 @@ from XBotv2.session.types import (
     SendMessage,
     SessionExists,
     SessionNotFound,
+    SessionMode,
     SessionDescriptor,
     SessionSummary,
     ThreadNotActive,
@@ -64,7 +66,7 @@ class OpenSessionRequest(WireModel):
     session_id: str | None = None
     thread_id: str = "agent"
     workspace_root: str | None = None
-    mode: Literal["new", "resume"] = "new"
+    mode: SessionMode = "new"
     agent: str | None = None
     history_limit: int | None = Field(default=None, ge=1, le=500)
 
@@ -99,7 +101,7 @@ class OpenThreadRequest(WireModel):
     thread_id: str = Field(min_length=1)
     parent_thread_id: str = Field(default="agent", min_length=1)
     workspace_root: str | None = None
-    mode: Literal["new", "resume"] = "new"
+    mode: SessionMode = "new"
     agent: str | None = None
     history_limit: int | None = Field(default=None, ge=1, le=500)
 
@@ -208,11 +210,7 @@ def session_event(
     data: dict[str, Any],
 ) -> ClientEvent:
     """Validate one Session-owned event at its producer boundary."""
-    payload = _SESSION_EVENT_MODELS[type].model_validate(data)
-    return ClientEvent(
-        type=type,
-        data=payload.model_dump(mode="json", exclude_unset=True),
-    )
+    return _validated_client_event(type, data, _SESSION_EVENT_MODELS[type])
 
 
 def session_error_event(
@@ -222,14 +220,10 @@ def session_error_event(
     details: dict[str, Any] | None = None,
 ) -> ClientEvent:
     """Validate a Session-produced generic error event."""
-    payload = ErrorEventData(
-        code=code,
-        message=message,
-        details=details or {},
-    )
-    return ClientEvent(
-        type="error",
-        data=payload.model_dump(mode="json", exclude_unset=True),
+    return _validated_client_event(
+        "error",
+        {"code": code, "message": message, "details": details or {}},
+        ErrorEventData,
     )
 
 
@@ -260,9 +254,6 @@ class CloseResponse(WireModel):
     status: Literal["closed"] = "closed"
 
 
-SessionMode = Literal["new", "resume"]
-
-
 def _open_session_response(
     value: OpenedSession,
     page: ConversationPage | None = None,
@@ -291,6 +282,22 @@ def _history_response(
         messages=conversation_replay(messages),
         session_stats=conversation_stats(result.messages),
         history_cursor=page.next_cursor if page is not None else None,
+    )
+
+
+async def _requested_history_page(
+    sessions: SessionsPort,
+    session_id: str,
+    thread_id: str,
+    limit: int | None,
+) -> ConversationPage | None:
+    if limit is None:
+        return None
+    return await sessions.message_page(
+        session_id,
+        thread_id,
+        cursor=None,
+        limit=limit,
     )
 
 
@@ -455,15 +462,11 @@ def build_session_router(
             raise HttpServerError(
                 "session_open_failed", str(exc), status=500
             ) from exc
-        page = (
-            await sessions.message_page(
-                opened.session_id,
-                opened.thread_id,
-                cursor=None,
-                limit=payload.history_limit,
-            )
-            if payload.history_limit is not None
-            else None
+        page = await _requested_history_page(
+            sessions,
+            opened.session_id,
+            opened.thread_id,
+            payload.history_limit,
         )
         return _open_session_response(opened, page)
 
@@ -543,15 +546,11 @@ def build_session_router(
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        page = (
-            await sessions.message_page(
-                opened.session_id,
-                opened.thread_id,
-                cursor=None,
-                limit=payload.history_limit,
-            )
-            if payload.history_limit is not None
-            else None
+        page = await _requested_history_page(
+            sessions,
+            opened.session_id,
+            opened.thread_id,
+            payload.history_limit,
         )
         return _open_session_response(opened, page)
 
@@ -634,15 +633,11 @@ def build_session_router(
         payload: UndoRequest,
     ) -> HistoryMutationResponse:
         result = await sessions.undo_history(session_id, thread_id, payload.count)
-        page = (
-            await sessions.message_page(
-                session_id,
-                thread_id,
-                cursor=None,
-                limit=payload.history_limit,
-            )
-            if payload.history_limit is not None
-            else None
+        page = await _requested_history_page(
+            sessions,
+            session_id,
+            thread_id,
+            payload.history_limit,
         )
         return _history_response(
             session_id,
@@ -668,13 +663,8 @@ def build_session_router(
             thread_id=thread_id,
             request_id=request_id,
         ))
-        return StreamingResponse(
+        return _sse_response(
             _message_sse(events, session_id, thread_id, request_id),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
         )
 
     @router.post(
@@ -708,15 +698,8 @@ def build_session_router(
                 status=400,
             ) from exc
 
-        return StreamingResponse(
-            _message_sse(
-                events, session_id, thread_id, client_request_id
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
+        return _sse_response(
+            _message_sse(events, session_id, thread_id, client_request_id),
         )
 
     @router.get(
@@ -792,13 +775,8 @@ def build_session_router(
                 status=400,
             ) from exc
 
-        return StreamingResponse(
+        return _sse_response(
             _session_sse(events, session_id, thread_id),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
         )
 
     @router.post(

@@ -59,6 +59,12 @@ _MERGED_TOOL_OPERATIONS = {
         "name": "find",
     },
 }
+_MERGED_TOOL_DEFAULTS = {
+    "read": "utf8",
+    "edit": "replace",
+    "path": "mkdir",
+    "search": "content",
+}
 
 
 def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
@@ -71,13 +77,9 @@ def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
     modes = _MERGED_TOOL_OPERATIONS.get(tool_name)
     if modes is not None:
         selector = "operation" if tool_name == "path" else "mode"
-        return modes.get(str(args.get(selector) or ""), None) or modes.get(
-            "utf8" if tool_name == "read" else (
-                "replace" if tool_name == "edit" else (
-                    "mkdir" if tool_name == "path" else "content"
-                )
-            ),
-            None,
+        return modes.get(
+            str(args.get(selector) or ""),
+            modes[_MERGED_TOOL_DEFAULTS[tool_name]],
         )
     return None
 
@@ -90,22 +92,7 @@ class FilesystemError(Exception):
 
 
 def execute(operation: str, args: dict[str, Any]) -> dict[str, Any]:
-    handlers = {
-        "read": _read,
-        "read_bytes": _read_bytes,
-        "stat": _stat,
-        "list": _list,
-        "search": _search,
-        "find": _find,
-        "write": _write,
-        "edit": _edit,
-        "patch": _patch,
-        "move": _move,
-        "copy": _copy,
-        "delete": _delete,
-        "mkdir": _mkdir,
-    }
-    handler = handlers.get(operation)
+    handler = _OPERATIONS.get(operation)
     if handler is None:
         return _error("invalid_operation", f"Unknown filesystem operation: {operation}")
     try:
@@ -503,6 +490,23 @@ def _mkdir(path: str, parents: bool = True) -> dict[str, Any]:
     existed = target.is_dir()
     target.mkdir(parents=parents, exist_ok=True)
     return {"path": str(target), "created": not existed}
+
+
+_OPERATIONS = {
+    "read": _read,
+    "read_bytes": _read_bytes,
+    "stat": _stat,
+    "list": _list,
+    "search": _search,
+    "find": _find,
+    "write": _write,
+    "edit": _edit,
+    "patch": _patch,
+    "move": _move,
+    "copy": _copy,
+    "delete": _delete,
+    "mkdir": _mkdir,
+}
 
 
 def _path(value: str) -> Path:

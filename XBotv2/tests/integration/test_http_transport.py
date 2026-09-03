@@ -2366,9 +2366,9 @@ async def test_request_permission_tool_emits_request_id() -> None:
     )
     assert result.status == "success"
     event = captured["event"]
-    assert event["type"] == "permission_request"
-    assert event["data"]["request_id"]
-    assert event["data"]["source"] == "request_permission"
+    assert event.type == "permission_request"
+    assert event.data["request_id"]
+    assert event.data["source"] == "request_permission"
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
@@ -141,17 +141,8 @@ class AgentInbox:
     async def claim_turn(self) -> list[InboxInput]:
         """Atomically claim every next-step input and one next-turn input."""
         async with self._lock:
-            items = [
-                item for item in self._next_step
-                if item.message_id not in self._claimed_ids
-            ]
-            next_turn = next(
-                (
-                    item for item in self._next_turn
-                    if item.message_id not in self._claimed_ids
-                ),
-                None,
-            )
+            items = list(self._unclaimed(self._next_step))
+            next_turn = next(self._unclaimed(self._next_turn), None)
             if next_turn is not None:
                 items.append(next_turn)
             if not items:
@@ -163,10 +154,7 @@ class AgentInbox:
     async def claim_step(self) -> list[InboxInput]:
         """Atomically claim only inputs targeted at the next loop step."""
         async with self._lock:
-            items = [
-                item for item in self._next_step
-                if item.message_id not in self._claimed_ids
-            ]
+            items = list(self._unclaimed(self._next_step))
             if not items:
                 return []
             self._claimed_ids.update(item.message_id for item in items)
@@ -184,20 +172,7 @@ class AgentInbox:
                     "Cannot commit unclaimed inbox ids: "
                     + ", ".join(sorted(unknown))
                 )
-            remaining = [
-                item for item in self._items()
-                if item.message_id not in committed
-            ]
-            self._persist(remaining)
-            self._next_step = deque(
-                item for item in self._next_step
-                if item.message_id not in committed
-            )
-            self._next_turn = deque(
-                item for item in self._next_turn
-                if item.message_id not in committed
-            )
-            self._ids.difference_update(committed)
+            self._remove_ids(committed)
             self._claimed_ids.difference_update(committed)
 
     async def reconcile(
@@ -211,20 +186,7 @@ class AgentInbox:
             active = requested & self._claimed_ids
             durable = active & committed_ids
             if durable:
-                remaining = [
-                    item for item in self._items()
-                    if item.message_id not in durable
-                ]
-                self._persist(remaining)
-                self._next_step = deque(
-                    item for item in self._next_step
-                    if item.message_id not in durable
-                )
-                self._next_turn = deque(
-                    item for item in self._next_turn
-                    if item.message_id not in durable
-                )
-                self._ids.difference_update(durable)
+                self._remove_ids(durable)
             self._claimed_ids.difference_update(active)
 
     async def edit(self, message_id: str, content: str) -> InboxInput:
@@ -296,6 +258,12 @@ class AgentInbox:
     def _items(self) -> list[InboxInput]:
         return [*self._next_step, *self._next_turn]
 
+    def _unclaimed(self, items: Iterable[InboxInput]) -> Iterator[InboxInput]:
+        return (
+            item for item in items
+            if item.message_id not in self._claimed_ids
+        )
+
     def _pending_item(self, message_id: str) -> InboxInput:
         if message_id in self._claimed_ids:
             raise KeyError(message_id)
@@ -310,6 +278,22 @@ class AgentInbox:
     def _persist(self, items: Sequence[InboxInput]) -> None:
         if self._sink is not None:
             self._sink.replace(items)
+
+    def _remove_ids(self, message_ids: set[str]) -> None:
+        remaining = [
+            item for item in self._items()
+            if item.message_id not in message_ids
+        ]
+        self._persist(remaining)
+        self._next_step = deque(
+            item for item in self._next_step
+            if item.message_id not in message_ids
+        )
+        self._next_turn = deque(
+            item for item in self._next_turn
+            if item.message_id not in message_ids
+        )
+        self._ids.difference_update(message_ids)
 
     async def _record(
         self,
@@ -345,16 +329,10 @@ class AgentInbox:
         })
 
     def __len__(self) -> int:
-        return sum(
-            item.message_id not in self._claimed_ids
-            for item in self._items()
-        )
+        return sum(1 for _ in self._unclaimed(self._items()))
 
     @property
     def pending(self) -> list[InboxInput]:
-        return [
-            item for item in self._items()
-            if item.message_id not in self._claimed_ids
-        ]
+        return list(self._unclaimed(self._items()))
 
 __all__ = ["AgentInbox", "InboxInput", "InboxSink", "InboxTarget"]

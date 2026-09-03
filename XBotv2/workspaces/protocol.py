@@ -13,6 +13,7 @@ from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     _format_sse,
+    _sse_response,
     HttpServerError,
 )
 from XBotv2.session.contracts import (
@@ -188,13 +189,8 @@ def build_router(
                 str(exc),
                 status=400,
             ) from exc
-        return StreamingResponse(
+        return _sse_response(
             _workspace_sse(stream, after),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
         )
 
     @router.post("/workspaces", operation_id="create_workspace")

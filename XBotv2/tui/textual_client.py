@@ -671,12 +671,18 @@ class XBotTextualApp(App[None]):
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
 
+        await self._clear_rendered_transcript()
+        self.state.reset_history()
+        await self._render_new_transcript_entries()
+        self._refresh_all()
+
+    async def _clear_rendered_transcript(self) -> None:
+        """Remove mounted transcript widgets without mutating protocol state."""
         await self._cancel_tool_refresh_timer()
         self._deferred_tool_ids.clear()
         stream = self._safe_query_one("#transcript", VerticalScroll)
         if stream is not None:
             await stream.remove_children()
-        self.state.reset_history()
         self._window_start = 0
         self._window_end = 0
         self._mounted_entry_widgets.clear()
@@ -690,8 +696,6 @@ class XBotTextualApp(App[None]):
         self._resolved_choice_keys.clear()
         self._active_choice_key = None
         self._active_choice_index = 0
-        await self._render_new_transcript_entries()
-        self._refresh_all()
 
     async def _cmd_attach(self, args: str) -> None:
         try:
@@ -841,22 +845,7 @@ class XBotTextualApp(App[None]):
         try:
             async for event in self.session.session_events():
                 try:
-                    if event.get("type") == "message":
-                        data = event.get("data") or {}
-                        if data.get("role") == "user":
-                            # Render accepted inputs in the order the server
-                            # published them on this single stream, and pop the
-                            # matching entry from the local queue at the same
-                            # time so the queue panel clears at delivery.
-                            content = str(data.get("content") or "")
-                            self._pop_pending_message(content)
-                            self.state.append_message("user", content)
-                            await self._render_new_transcript_entries()
-                            self._refresh_all()
-                        continue
-                    self.state.apply_event(event)
-                    await self._handle_stream_event(event)
-                    await self._start_interaction_response(event)
+                    await self._consume_stream_event(event, pop_pending=True)
                 except Exception:  # noqa: BLE001
                     # A single malformed event must not abort the stream,
                     # otherwise the turn state (e.g. turn_active) stays stuck.
@@ -887,20 +876,10 @@ class XBotTextualApp(App[None]):
             async for event in stream:
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
                 try:
-                    if event.get("type") == "input_rejected":
-                        rejected = True
-                        continue
-                    if event.get("type") == "message":
-                        data = event.get("data") or {}
-                        if data.get("role") == "user":
-                            self.state.append_message(
-                                "user", str(data.get("content") or "")
-                            )
-                            await self._render_new_transcript_entries()
-                        continue
-                    self.state.apply_event(event)
-                    await self._handle_stream_event(event)
-                    await self._start_interaction_response(event)
+                    rejected = (
+                        await self._consume_stream_event(event)
+                        or rejected
+                    )
                 except Exception:  # noqa: BLE001
                     # Keep consuming the stream: a single bad event must not
                     # skip turn_finished/turn_cancelled and leave turn_active
@@ -910,6 +889,35 @@ class XBotTextualApp(App[None]):
             logger.exception("tui.collect_response failed")
             self._record_error(exc)
         return rejected
+
+    async def _consume_stream_event(
+        self,
+        event: dict[str, Any],
+        *,
+        pop_pending: bool = False,
+    ) -> bool:
+        """Apply one transport event and return whether input was rejected."""
+        event_type = event.get("type")
+        if event_type == "input_rejected":
+            return True
+        if event_type == "message":
+            data = event.get("data") or {}
+            if data.get("role") == "user":
+                # The session event stream is authoritative for accepted
+                # queued inputs; the message stream is authoritative for the
+                # request currently being consumed.
+                content = str(data.get("content") or "")
+                if pop_pending:
+                    self._pop_pending_message(content)
+                self.state.append_message("user", content)
+                await self._render_new_transcript_entries()
+                if pop_pending:
+                    self._refresh_all()
+                return False
+        self.state.apply_event(event)
+        await self._handle_stream_event(event)
+        await self._start_interaction_response(event)
+        return False
 
     async def _submit_live_input(self, payload: dict[str, Any]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")
@@ -1187,12 +1195,7 @@ class XBotTextualApp(App[None]):
         elif event_type == "task_updated":
             self._refresh_task_panel()
         elif event_type == "history_updated":
-            await self._cmd_clear()
-            data = event.get("data") or {}
-            history = data.get("history")
-            if isinstance(history, list):
-                self.state.restore_history(history)
-            await self._render_new_transcript_entries()
+            await self._clear_rendered_transcript()
         elif event_type == "permission_request":
             await self._flush_tool_refresh()
             await self._render_new_transcript_entries()

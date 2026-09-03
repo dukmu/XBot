@@ -76,7 +76,7 @@ class JobRegistry:
             for kind, limit in (limits or {}).items()
         }
         self._closing = False
-        # Session wiring hooks; both receive a protocol-facing snapshot dict.
+        # Session wiring hooks; both receive a protocol-facing snapshot.
         self.on_update: TaskCallback | None = None
         self.on_complete: TaskCallback | None = None
 
@@ -205,13 +205,7 @@ class JobRegistry:
                 timed_out = True
             except asyncio.CancelledError:
                 raise
-        ready = [job for job in jobs if job.terminal]
-        pending = [job.id for job in jobs if not job.terminal]
-        return WaitResult(
-            ready=[job_summary(job) for job in ready],
-            pending=pending,
-            timed_out=timed_out,
-        )
+        return self._wait_result(jobs, timed_out)
 
     async def _wait_any(
         self,
@@ -238,11 +232,13 @@ class JobRegistry:
             timed_out = not done
             for task in pending:
                 task.cancel()
-        ready = [job for job in jobs if job.terminal]
-        pending = [job.id for job in jobs if not job.terminal]
+        return self._wait_result(jobs, timed_out)
+
+    @staticmethod
+    def _wait_result(jobs: list[Job], timed_out: bool) -> WaitResult:
         return WaitResult(
-            ready=[job_summary(job) for job in ready],
-            pending=pending,
+            ready=[job_summary(job) for job in jobs if job.terminal],
+            pending=[job.id for job in jobs if not job.terminal],
             timed_out=timed_out,
         )
 
@@ -379,15 +375,14 @@ class JobRegistry:
         """Build one bounded client-facing task snapshot."""
         metadata = job.metadata
         if job.kind is JobKind.SHELL:
-            command = str(metadata.get("command") or "")
             cwd = str(metadata.get("cwd") or "")
             agent = ""
             thread_id = ""
         else:
-            command = str(metadata.get("command") or "")
             cwd = ""
             agent = str(metadata.get("agent") or "")
             thread_id = str(metadata.get("thread_id") or "")
+        command = str(metadata.get("command") or "")
         output = self._snapshot_output(job, full_output=full_output)
         error = str(job.error.message if job.error is not None else "")
         return TaskSnapshot(
@@ -417,10 +412,7 @@ class JobRegistry:
         result = job.result
         if result is None or result.output_store is None:
             return ""
-        text = getattr(result.output_store, "all", None)
-        if text is None:
-            return ""
-        value = text()
+        value = result.output_store.all()
         return value if full_output else _preview(value, _MAX_SNAPSHOT_OUTPUT)
 
     def _next_job_id(self, kind: JobKind) -> JobId:

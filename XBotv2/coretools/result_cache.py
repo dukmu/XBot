@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from XBotv2.agentloop import EventContext
 from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
+from XBotv2.core.messages import Message
 from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
     DISPLAY_CONTENT_KEY,
@@ -40,7 +40,7 @@ def make_tool_result_cache_hook(
     if tail_chars < 0 or tail_chars > preview_chars:
         raise ValueError("tail_chars must be between zero and preview_chars")
 
-    async def cache_large_tool_results(ctx: Any) -> None:
+    async def cache_large_tool_results(ctx: EventContext) -> None:
         if not ctx.tool_results:
             return None
 
@@ -50,7 +50,7 @@ def make_tool_result_cache_hook(
                 continue
             content, suffix = candidate
 
-            tool_call_id = getattr(message, "tool_call_id", "tool")
+            tool_call_id = message.tool_call_id or "tool"
             stored = artifacts.put(
                 ArtifactKind.TOOL_RESULT,
                 content.encode("utf-8"),
@@ -107,10 +107,8 @@ def _format_cached_result(
     )
 
 
-def _cache_candidate(message: Any, limit: int) -> tuple[str, str] | None:
-    content = getattr(message, "content", "")
-    if not isinstance(content, str):
-        content = str(content)
+def _cache_candidate(message: Message, limit: int) -> tuple[str, str] | None:
+    content = message.content
     return (content, "txt") if len(content) > limit else None
 
 

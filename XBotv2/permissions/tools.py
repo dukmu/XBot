@@ -7,7 +7,7 @@ import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.core.tools import ClientEvent, Tool, ToolResult
 from XBotv2.permission_request import ApprovalPort, PermissionRequestData
 from XBotv2.permissions import PermissionsPort
 
@@ -20,7 +20,7 @@ async def request_tool_permission(
     permissions: PermissionsPort,
     approval: ApprovalPort,
     record_permission_decision: Callable[
-        [dict[str, Any], str, str], Awaitable[None]
+        [ClientEvent, str, str], Awaitable[None]
     ],
 ) -> ToolResult:
     """Ask the human to approve a restricted permission rule for one tool."""
@@ -43,10 +43,10 @@ async def request_tool_permission(
         reason=reason,
         resume_supported=False,
     )
-    event = {
-        "type": "permission_request",
-        "data": payload.model_dump(exclude_none=True),
-    }
+    event = ClientEvent(
+        type="permission_request",
+        data=payload.model_dump(exclude_none=True),
+    )
     result = await approval.request(event)
     decision = str(result.get("decision") or "")
     scope = str(result.get("scope") or "once")
@@ -70,7 +70,7 @@ class RequestPermissionTool:
         permissions: PermissionsPort,
         approval: ApprovalPort,
         record_permission_decision: Callable[
-            [dict[str, Any], str, str], Awaitable[None]
+            [ClientEvent, str, str], Awaitable[None]
         ],
     ) -> None:
         self._permissions = permissions

@@ -5,17 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
-USAGE_FIELDS = (
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "requests",
-    "context_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "prompt_cache_write_tokens",
-)
-
 
 class UsageData(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
@@ -60,7 +49,7 @@ class UsageData(BaseModel):
         )
 
     def is_empty(self) -> bool:
-        return not any(getattr(self, field) for field in USAGE_FIELDS)
+        return not any(self.model_dump().values())
 
     @classmethod
     def from_snapshot(cls, value: Mapping[str, object]) -> "UsageData":
@@ -72,31 +61,26 @@ class UsageData(BaseModel):
         return cls(**{field: _tokens(value, field) for field in USAGE_FIELDS})
 
     def add(self, delta: "UsageData") -> "UsageData":
+        current = self.model_dump()
+        increment = delta.model_dump()
         totals = {
-            field: getattr(self, field) + getattr(delta, field)
+            field: current[field] + increment[field]
             for field in USAGE_FIELDS
         }
         totals["context_tokens"] = delta.context_tokens
         return UsageData(**totals)
 
     def totals(self) -> dict[str, int]:
-        return {field: getattr(self, field) for field in USAGE_FIELDS}
+        return self.model_dump()
 
     def to_snapshot(self) -> dict[str, int]:
         return {"schema_version": 1, **self.totals()}
 
     def to_event_dict(self) -> dict[str, int]:
-        result = {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "total_tokens": self.total_tokens,
-            "requests": self.requests,
-            "context_tokens": self.context_tokens,
-        }
+        result = self.totals()
         for field in USAGE_FIELDS[5:]:
-            value = getattr(self, field)
-            if value:
-                result[field] = value
+            if not result[field]:
+                result.pop(field)
         return result
 
 
@@ -119,4 +103,24 @@ def _optional_tokens(
     return default if field not in value else _tokens(value, field)
 
 
-__all__ = ["USAGE_FIELDS", "UsageData", "normalize_usage"]
+# Keep all derived usage projections tied to the Pydantic field declaration.
+# Consumers must not maintain a second copy when a provider adds a counter.
+USAGE_FIELDS = tuple(UsageData.model_fields)
+USAGE_COUNTER_FIELDS = tuple(
+    field for field in USAGE_FIELDS if field != "context_tokens"
+)
+INPUT_USAGE_FIELDS = (
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "prompt_cache_write_tokens",
+)
+
+
+__all__ = [
+    "INPUT_USAGE_FIELDS",
+    "USAGE_COUNTER_FIELDS",
+    "USAGE_FIELDS",
+    "UsageData",
+    "normalize_usage",
+]

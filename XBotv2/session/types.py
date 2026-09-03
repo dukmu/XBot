@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.core.messages import Message
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.timing import SessionStats
 from XBotv2.core.usage import UsageData
-from pydantic import JsonValue
+SessionMode = Literal["new", "resume"]
+
+
+def new_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
 
 class SessionNotFound(KeyError):
@@ -58,7 +64,7 @@ class OpenSession:
     thread_id: str
     workspace_root: str
     provider_name: str
-    mode: Literal["new", "resume"]
+    mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
@@ -72,7 +78,7 @@ class OpenThread:
     parent_thread_id: str
     workspace_root: str | None
     provider_name: str
-    mode: Literal["new", "resume"]
+    mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
@@ -211,6 +217,8 @@ __all__ = [
     "SendMessage",
     "SessionExists",
     "SessionInfo",
+    "SessionMode",
+    "new_session_id",
     "SessionNotFound",
     "SessionSummary",
     "ThreadNotActive",

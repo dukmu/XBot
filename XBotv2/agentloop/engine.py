@@ -863,12 +863,12 @@ class Engine:
             client_events = message.client_events
             for client_event in client_events:
                 event_ctx = self._make_event_context(tool_result=message,
-                    client_event=ClientEvent(**client_event),
+                    client_event=client_event,
                 )
                 await self._dispatch(Events.CLIENT_EVENT, event_ctx,
                     short_circuit=False,
                 )
-                yield client_event
+                yield client_event.model_dump(mode="json")
             yield agentloop_event("tool_result", event_payload)
 
         for message in tool_messages:

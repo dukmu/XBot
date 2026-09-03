@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from XBotv2.core.messages import Message
-from XBotv2.core.tools import provider_tool_schema
+from XBotv2.core.tools import Tool, provider_tool_schema
 
 REQUEST_ESTIMATE_KEY = "xbotv2_request_estimated_tokens"
 REQUEST_CONTEXT_WINDOW_KEY = "xbotv2_request_context_window"
@@ -38,7 +38,7 @@ def estimate_messages_tokens(messages: Sequence[Message]) -> int:
     return total
 
 
-def estimate_tool_schema_tokens(tools: list[Any]) -> int:
+def estimate_tool_schema_tokens(tools: list[Tool]) -> int:
     return sum(
         estimate_text_tokens(_stable_json(provider_tool_schema(tool)))
         for tool in tools
@@ -47,7 +47,7 @@ def estimate_tool_schema_tokens(tools: list[Any]) -> int:
 
 def estimate_request_tokens(
     messages: Sequence[Message],
-    tools: list[Any] | None = None,
+    tools: list[Tool] | None = None,
 ) -> int:
     return estimate_messages_tokens(messages) + estimate_tool_schema_tokens(
         tools or []
@@ -56,7 +56,7 @@ def estimate_request_tokens(
 
 def calibrated_context_tokens(
     messages: Sequence[Message],
-    tools: list[Any],
+    tools: list[Tool],
     history: Sequence[Message],
     *,
     provider: str = "",

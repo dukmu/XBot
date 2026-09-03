@@ -9,33 +9,17 @@ from datetime import datetime
 from textwrap import shorten
 from typing import Any
 
-
-_USAGE_COUNTER_KEYS = (
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "requests",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "prompt_cache_write_tokens",
-)
-
+from XBotv2.core.usage import INPUT_USAGE_FIELDS, USAGE_COUNTER_FIELDS
 
 def _empty_usage_counters() -> dict[str, int]:
-    return {key: 0 for key in _USAGE_COUNTER_KEYS}
+    return {key: 0 for key in USAGE_COUNTER_FIELDS}
 
 
 def _effective_context_tokens(usage: dict[str, Any], previous: int = 0) -> int:
     if "context_tokens" in usage:
         return int(usage.get("context_tokens") or 0)
-    input_keys = (
-        "input_tokens",
-        "cache_read_input_tokens",
-        "cache_creation_input_tokens",
-        "prompt_cache_write_tokens",
-    )
-    if any(key in usage for key in input_keys):
-        return sum(int(usage.get(key) or 0) for key in input_keys)
+    if any(key in usage for key in INPUT_USAGE_FIELDS):
+        return sum(int(usage.get(key) or 0) for key in INPUT_USAGE_FIELDS)
     return previous
 
 
@@ -632,7 +616,7 @@ class TuiState:
         self.context_input_tokens = _effective_context_tokens(
             data, self.context_input_tokens
         )
-        for key in _USAGE_COUNTER_KEYS:
+        for key in USAGE_COUNTER_FIELDS:
             if key not in data:
                 continue
             value = int(data.get(key) or 0)

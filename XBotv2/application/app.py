@@ -9,9 +9,7 @@ or implement Agent policy.
 
 from __future__ import annotations
 
-import secrets
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +32,7 @@ from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.session.contracts import AgentApplicationOptions
+from XBotv2.session.types import new_session_id
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
@@ -65,7 +64,7 @@ async def start_application(
     external import roots; ``no_plugins`` selects the core Agent composition.
     ``extra_plugins`` contains session-scoped configuration patches."""
     _validate_identifier("provider_name", provider_name)
-    session_id = session_id or _new_session_id()
+    session_id = session_id or new_session_id()
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
     workspace_root = Path(workspace_root or Path.cwd()).resolve()
@@ -233,7 +232,3 @@ def _validate_identifier(field: str, value: str) -> None:
         raise ValueError(
             f"{field} must be a non-empty identifier using letters, numbers, '.', '_', or '-'"
         )
-
-
-def _new_session_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"

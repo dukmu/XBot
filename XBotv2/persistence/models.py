@@ -50,20 +50,7 @@ class MessagePayloadRecord(PersistenceRecord):
 
     @classmethod
     def from_message(cls, message: Message) -> "MessagePayloadRecord":
-        return cls(
-            role=message.role,
-            status=message.status,
-            data=message.data,
-            parts=tuple(message.parts),
-            tool_call_id=message.tool_call_id,
-            input_id=message.input_id,
-            name=message.name,
-            additional_kwargs=message.additional_kwargs,
-            response_metadata=message.response_metadata,
-            usage_metadata=message.usage_metadata,
-            artifact=tuple(message.artifact or ()),
-            error=message.error,
-        )
+        return cls(**_message_record_values(message))
 
     def to_message(self) -> Message:
         return Message(
@@ -89,10 +76,16 @@ class MessageRecord(MessagePayloadRecord):
 
     @classmethod
     def from_message(cls, message: Message, position: int) -> "MessageRecord":
-        return cls(
-            **MessagePayloadRecord.from_message(message).model_dump(),
-            position=position,
-        )
+        return cls(**_message_record_values(message), position=position)
+
+
+class _TimestampedRecord(PersistenceRecord):
+    timestamp: str
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _validate_timestamp(cls, value: object) -> str:
+        return _timestamp(value, "timestamp")
 
 
 class SurfaceReplaceRecord(PersistenceRecord):
@@ -125,7 +118,7 @@ class SurfaceReplaceRecord(PersistenceRecord):
             raise ValueError("Surface source node ids must be unique")
         return nodes
 
-class TrajectoryEventRecord(PersistenceRecord):
+class TrajectoryEventRecord(_TimestampedRecord):
     """One plugin-owned, log-only event that never enters the surface."""
 
     schema_version: Literal[1] = TRAJECTORY_SCHEMA_VERSION
@@ -133,7 +126,6 @@ class TrajectoryEventRecord(PersistenceRecord):
     record_type: Literal["event"] = "event"
     event: str
     data: dict[str, JsonValue]
-    timestamp: str
 
     @field_validator("event", mode="before")
     @classmethod
@@ -142,19 +134,13 @@ class TrajectoryEventRecord(PersistenceRecord):
             raise ValueError("Trajectory event must be a non-empty string")
         return value
 
-    @field_validator("timestamp", mode="before")
-    @classmethod
-    def _validate_timestamp(cls, value: object) -> str:
-        return _timestamp(value, "timestamp")
 
-
-class ThreadLifecycleRecord(PersistenceRecord):
+class ThreadLifecycleRecord(_TimestampedRecord):
     schema_version: Literal[1] = THREAD_LIFECYCLE_SCHEMA_VERSION
     event: Literal["started", "completed", "failed", "cancelled"]
     thread_id: str
     parent_thread_id: str
     agent: str
-    timestamp: str
     error: str = ""
 
     @classmethod
@@ -177,12 +163,6 @@ class ThreadLifecycleRecord(PersistenceRecord):
             timestamp=utc_now(),
             error=error,
         )
-
-    @field_validator("timestamp", mode="before")
-    @classmethod
-    def _validate_timestamp(cls, value: object) -> str:
-        return _timestamp(value, "timestamp")
-
 
 class InboxItemRecord(PersistenceRecord):
     message_id: str
@@ -232,6 +212,23 @@ class InboxSnapshot(PersistenceRecord):
 
     def to_inputs(self) -> list["InboxInput"]:
         return [item.to_input() for item in self.items]
+
+
+def _message_record_values(message: Message) -> dict[str, object]:
+    return {
+        "role": message.role,
+        "status": message.status,
+        "data": message.data,
+        "parts": tuple(message.parts),
+        "tool_call_id": message.tool_call_id,
+        "input_id": message.input_id,
+        "name": message.name,
+        "additional_kwargs": message.additional_kwargs,
+        "response_metadata": message.response_metadata,
+        "usage_metadata": message.usage_metadata,
+        "artifact": tuple(message.artifact or ()),
+        "error": message.error,
+    }
 
 
 def _timestamp(value: object, name: str) -> str:

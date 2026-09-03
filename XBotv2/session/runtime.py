@@ -670,14 +670,8 @@ async def run_turn_stream(
         runtime.turn_lock.release()
         raise
     runtime.turn_task = task
-    try:
-        while True:
-            event = await response.events.get()
-            if event is None:
-                return
-            yield event
-    finally:
-        response.detach()
+    async for event in _response_events(response):
+        yield event
 
 
 async def regenerate_turn_stream(
@@ -731,6 +725,14 @@ async def regenerate_turn_stream(
         interactive=interactive,
     ))
     runtime.turn_task = task
+    async for event in _response_events(response):
+        yield event
+
+
+async def _response_events(
+    response: TurnResponse,
+) -> AsyncIterator[ClientEvent]:
+    """Expose a turn response while detaching the transport view reliably."""
     try:
         while True:
             event = await response.events.get()

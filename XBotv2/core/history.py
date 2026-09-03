@@ -214,21 +214,12 @@ class ConversationHistory(Sequence[Message]):
         limit: int,
         cursor: str | None = None,
     ) -> ConversationPage:
-        if limit < 1:
-            raise ValueError("History page limit must be positive")
-        end = (
-            len(self._messages)
-            if cursor is None
-            else decode_history_cursor(cursor, self._surface_revision)
-        )
-        if end < 0 or end > len(self._messages):
-            raise HistoryCursorInvalid(
-                "History cursor is outside the current history"
-            )
-        start = max(0, end - limit)
-        return ConversationPage(
-            tuple(self._messages[start:end]),
-            encode_history_cursor(self._surface_revision, start) if start else None,
+        return page_messages(
+            self._messages,
+            revision=self._surface_revision,
+            limit=limit,
+            cursor=cursor,
+            out_of_range="History cursor is outside the current history",
         )
 
     def page_transcript(
@@ -237,19 +228,12 @@ class ConversationHistory(Sequence[Message]):
         limit: int,
         cursor: str | None = None,
     ) -> ConversationPage:
-        if limit < 1:
-            raise ValueError("History page limit must be positive")
-        end = (
-            len(self._transcript)
-            if cursor is None
-            else decode_history_cursor(cursor, self._transcript_revision)
-        )
-        if end < 0 or end > len(self._transcript):
-            raise HistoryCursorInvalid("History cursor is outside the transcript")
-        start = max(0, end - limit)
-        return ConversationPage(
-            tuple(node.message for node in self._transcript[start:end]),
-            encode_history_cursor(self._transcript_revision, start) if start else None,
+        return page_messages(
+            tuple(node.message for node in self._transcript),
+            revision=self._transcript_revision,
+            limit=limit,
+            cursor=cursor,
+            out_of_range="History cursor is outside the transcript",
         )
 
     def replace_last(self, message: Message) -> None:
@@ -312,6 +296,28 @@ class ConversationHistory(Sequence[Message]):
         return repr(self._messages)
 
 
+def page_messages(
+    messages: Sequence[Message],
+    *,
+    revision: str,
+    limit: int,
+    cursor: str | None,
+    out_of_range: str,
+) -> ConversationPage:
+    if limit < 1:
+        raise ValueError("History page limit must be positive")
+    if not messages and cursor is not None:
+        raise HistoryCursorInvalid(out_of_range)
+    end = len(messages) if cursor is None else decode_history_cursor(cursor, revision)
+    if end < 0 or end > len(messages):
+        raise HistoryCursorInvalid(out_of_range)
+    start = max(0, end - limit)
+    return ConversationPage(
+        tuple(messages[start:end]),
+        encode_history_cursor(revision, start) if start else None,
+    )
+
+
 def encode_history_cursor(revision: str, offset: int) -> str:
     value = json.dumps([1, revision, offset], separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
@@ -349,4 +355,5 @@ __all__ = [
     "HistorySink",
     "decode_history_cursor",
     "encode_history_cursor",
+    "page_messages",
 ]

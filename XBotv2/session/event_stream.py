@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from XBotv2.core.tools import ClientEvent
+from XBotv2.core.replay import (
+    ReplaySubscriber,
+    ReplaySubscription,
+    fan_out,
+)
 
 
 class SessionEventCursorExpired(LookupError):
@@ -27,60 +31,21 @@ class SessionEventFrame:
     event: ClientEvent
 
 
-@dataclass(slots=True, eq=False)
-class _Subscriber:
-    queue: asyncio.Queue[SessionEventFrame | None]
-    overflowed: bool = False
-
-
-class SessionEventSubscription(AsyncIterator[SessionEventFrame]):
+class SessionEventSubscription(ReplaySubscription[SessionEventFrame]):
     def __init__(
         self,
         stream: "SessionEventStream",
-        subscriber: _Subscriber,
+        subscriber: ReplaySubscriber[SessionEventFrame],
         replay: tuple[SessionEventFrame, ...],
         cursor: int,
     ) -> None:
-        self._stream = stream
-        self._subscriber = subscriber
-        self._replay = deque(replay)
-        self._cursor = cursor
-        self._closed = False
-
-    def __aiter__(self) -> "SessionEventSubscription":
-        return self
-
-    async def __anext__(self) -> SessionEventFrame:
-        if self._closed:
-            raise StopAsyncIteration
-        if self._subscriber.overflowed:
-            self._close()
-            raise SessionEventCursorExpired(
-                self._cursor,
-                self._stream.oldest_sequence,
-            )
-        frame = (
-            self._replay.popleft()
-            if self._replay
-            else await self._subscriber.queue.get()
+        super().__init__(
+            stream=stream,
+            subscriber=subscriber,
+            replay=replay,
+            cursor=cursor,
+            cursor_error=SessionEventCursorExpired,
         )
-        if frame is None:
-            self._close()
-            raise StopAsyncIteration
-        self._cursor = frame.sequence
-        return frame
-
-    async def aclose(self) -> None:
-        self._close()
-
-    def close(self) -> None:
-        self._close()
-
-    def _close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._stream.detach(self._subscriber)
 
 
 class SessionEventStream:
@@ -89,7 +54,7 @@ class SessionEventStream:
             raise ValueError("Session event capacity must be positive")
         self._capacity = capacity
         self._frames: deque[SessionEventFrame] = deque(maxlen=capacity)
-        self._subscribers: set[_Subscriber] = set()
+        self._subscribers: set[ReplaySubscriber[SessionEventFrame]] = set()
         self._sequence = 0
         self._closed = False
 
@@ -116,12 +81,7 @@ class SessionEventStream:
         self._sequence += 1
         frame = SessionEventFrame(self._sequence, request_id, event)
         self._frames.append(frame)
-        for subscriber in tuple(self._subscribers):
-            try:
-                subscriber.queue.put_nowait(frame)
-            except asyncio.QueueFull:
-                subscriber.overflowed = True
-                self._subscribers.discard(subscriber)
+        fan_out(self._subscribers, frame)
         return frame
 
     def subscribe(self, after: int | None = None) -> SessionEventSubscription:
@@ -132,11 +92,11 @@ class SessionEventStream:
         if cursor < oldest - 1:
             raise SessionEventCursorExpired(cursor, oldest)
         replay = tuple(frame for frame in self._frames if frame.sequence > cursor)
-        subscriber = _Subscriber(asyncio.Queue(maxsize=self._capacity))
+        subscriber = ReplaySubscriber(asyncio.Queue(maxsize=self._capacity))
         self._subscribers.add(subscriber)
         return SessionEventSubscription(self, subscriber, replay, cursor)
 
-    def detach(self, subscriber: _Subscriber) -> None:
+    def detach(self, subscriber: ReplaySubscriber[SessionEventFrame]) -> None:
         self._subscribers.discard(subscriber)
 
     def close(self) -> None:

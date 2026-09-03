@@ -31,7 +31,7 @@ from XBotv2.jobs import (
     JobResult,
     JobRunnerContext,
     JobsPort,
-    JobStatus,
+    parse_job_status,
 )
 from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.session.services import SessionPort
@@ -185,7 +185,7 @@ class SubagentTools:
         """List subagent jobs, optionally filtered by terminal status."""
         summaries = self._registry.list(
             kind=JobKind.SUBAGENT,
-            status=_parse_status(status),
+            status=parse_job_status(status),
         )
         return ToolResult.success(f"{len(summaries)} subagent job(s)")
 
@@ -311,15 +311,6 @@ class SubagentCatalogPrompt:
             "\n".join(lines),
             source="available_subagents",
         )
-
-
-def _parse_status(value: str | None) -> JobStatus | None:
-    if value is None:
-        return None
-    try:
-        return JobStatus(value)
-    except ValueError:
-        return None
 
 
 def _preview(value: str, limit: int) -> str:

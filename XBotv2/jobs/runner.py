@@ -6,7 +6,7 @@ context created by JobRegistry for one execution.
 
 from __future__ import annotations
 
-from XBotv2.jobs.contracts import OutputStore
+from XBotv2.jobs.contracts import TextOutputStorePort
 from XBotv2.jobs.output import TextOutputStore
 
 
@@ -15,7 +15,7 @@ class JobContext:
 
     def __init__(self) -> None:
         self.outputs = _OutputFactory()
-        self.primary_output: OutputStore | None = None
+        self.primary_output: TextOutputStorePort | None = None
 
 
 class _OutputFactory:

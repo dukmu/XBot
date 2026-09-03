@@ -14,9 +14,7 @@ from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
     ConversationPage,
     HistoryNode,
-    HistoryCursorInvalid,
-    decode_history_cursor,
-    encode_history_cursor,
+    page_messages,
 )
 from XBotv2.core.messages import Message
 from pydantic import JsonValue
@@ -157,11 +155,14 @@ class MessageHistoryStore:
         return len(self.load_surface())
 
     def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
-        return self._page_nodes(
-            _fold_surface(self._records()),
+        records = self._records()
+        nodes = _fold_surface(records)
+        return page_messages(
+            tuple(node.message for node in nodes),
+            revision=self._cursor_revision(records, "surface"),
             limit=limit,
             cursor=cursor,
-            projection="surface",
+            out_of_range="History cursor is outside the current history",
         )
 
     def page_transcript(
@@ -170,30 +171,21 @@ class MessageHistoryStore:
         limit: int,
         cursor: str | None = None,
     ) -> ConversationPage:
-        return self._page_nodes(
-            _fold_transcript(self._records()),
+        records = self._records()
+        nodes = _fold_transcript(records)
+        return page_messages(
+            tuple(node.message for node in nodes),
+            revision=self._cursor_revision(records, "transcript"),
             limit=limit,
             cursor=cursor,
-            projection="transcript",
+            out_of_range="History cursor is outside the current history",
         )
 
-    def _page_nodes(
+    def _cursor_revision(
         self,
-        nodes: Sequence[HistoryNode],
-        *,
-        limit: int,
-        cursor: str | None,
+        records: Sequence[TrajectoryRecord],
         projection: str,
-    ) -> ConversationPage:
-        if limit < 1:
-            raise ValueError("History page limit must be positive")
-        records = self._records()
-        if not nodes:
-            if cursor is not None:
-                raise HistoryCursorInvalid(
-                    "History cursor is outside the current history"
-                )
-            return ConversationPage(())
+    ) -> str:
         generation = max((
             record.position
             for record in records
@@ -203,18 +195,7 @@ class MessageHistoryStore:
                 or record.transcript == "replace"
             )
         ), default=0)
-        revision = f"{self._cursor_scope}:{projection}:{generation}"
-        end = len(nodes) if cursor is None else decode_history_cursor(cursor, revision)
-        if end < 0 or end > len(nodes):
-            raise HistoryCursorInvalid("History cursor is outside the current history")
-        if end == 0:
-            return ConversationPage(())
-        start = max(0, end - limit)
-        messages = tuple(node.message for node in nodes[start:end])
-        return ConversationPage(
-            messages,
-            encode_history_cursor(revision, start) if start else None,
-        )
+        return f"{self._cursor_scope}:{projection}:{generation}"
 
     def has_history(self) -> bool:
         return self._path.exists() and self._path.stat().st_size > 0
@@ -289,7 +270,14 @@ def _fold_surface(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...
         if isinstance(record, MessageRecord):
             surface.append(HistoryNode(str(record.position), record.to_message()))
         elif isinstance(record, SurfaceReplaceRecord):
-            _apply_surface_record(surface, record)
+            _replace_nodes(
+                surface,
+                record.source_node_ids,
+                _replacement_nodes(record),
+                position=record.position,
+                scope="Surface",
+                source_term="source nodes",
+            )
     for node in surface:
         node.message.seal()
     return tuple(surface)
@@ -310,10 +298,7 @@ def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, 
                 for source in record.source_node_ids
                 for origin in lineage.get(source, (source,))
             )
-            replacements = [
-                HistoryNode(f"{record.position}:{index}", payload.to_message())
-                for index, payload in enumerate(record.messages)
-            ]
+            replacements = _replacement_nodes(record)
             if record.transcript == "preserve":
                 if len(replacements) != 1:
                     raise ValueError(
@@ -321,7 +306,14 @@ def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, 
                     )
                 lineage[replacements[0].node_id] = sources
                 continue
-            _replace_transcript_nodes(transcript, sources, replacements, record.position)
+            _replace_nodes(
+                transcript,
+                sources,
+                replacements,
+                position=record.position,
+                scope="Transcript",
+                source_term="sources",
+            )
             for node in replacements:
                 lineage[node.node_id] = (node.node_id,)
     for node in transcript:
@@ -329,57 +321,36 @@ def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, 
     return tuple(transcript)
 
 
-def _replace_transcript_nodes(
-    transcript: list[HistoryNode],
-    source_ids: Sequence[str],
-    replacements: Sequence[HistoryNode],
-    position: int,
-) -> None:
-    if not source_ids:
-        raise ValueError(f"Transcript replacement at {position} has no sources")
-    try:
-        start = next(
-            index
-            for index, node in enumerate(transcript)
-            if node.node_id == source_ids[0]
-        )
-    except StopIteration as exc:
-        raise ValueError(
-            f"Transcript replacement at {position} sources are not current"
-        ) from exc
-    current = [node.node_id for node in transcript[start:start + len(source_ids)]]
-    if current != list(source_ids):
-        raise ValueError(f"Transcript replacement at {position} sources are not current")
-    transcript[start:start + len(source_ids)] = replacements
-
-
-def _apply_surface_record(
-    surface: list[HistoryNode],
-    record: SurfaceReplaceRecord,
-) -> None:
-    source_ids = list(record.source_node_ids)
-    try:
-        start = next(
-            index
-            for index, node in enumerate(surface)
-            if node.node_id == source_ids[0]
-        )
-    except StopIteration as exc:
-        raise ValueError(
-            f"Surface replacement at {record.position} source nodes are not current"
-        ) from exc
-    current = [
-        node.node_id for node in surface[start:start + len(source_ids)]
-    ]
-    if current != source_ids:
-        raise ValueError(
-            f"Surface replacement at {record.position} source nodes are not current"
-        )
-    replacements = [
+def _replacement_nodes(record: SurfaceReplaceRecord) -> list[HistoryNode]:
+    return [
         HistoryNode(f"{record.position}:{index}", payload.to_message())
         for index, payload in enumerate(record.messages)
     ]
-    surface[start:start + len(source_ids)] = replacements
+
+
+def _replace_nodes(
+    nodes: list[HistoryNode],
+    source_ids: Sequence[str],
+    replacements: Sequence[HistoryNode],
+    *,
+    position: int,
+    scope: str,
+    source_term: str,
+) -> None:
+    if not source_ids:
+        raise ValueError(f"{scope} replacement at {position} has no {source_term}")
+    try:
+        start = next(
+            index
+            for index, node in enumerate(nodes)
+            if node.node_id == source_ids[0]
+        )
+    except StopIteration as exc:
+        raise ValueError(f"{scope} replacement at {position} {source_term} are not current") from exc
+    current = [node.node_id for node in nodes[start:start + len(source_ids)]]
+    if current != list(source_ids):
+        raise ValueError(f"{scope} replacement at {position} {source_term} are not current")
+    nodes[start:start + len(source_ids)] = replacements
 
 
 class ThreadMetadataStore:
@@ -567,11 +538,7 @@ class ThreadPersistence:
         provider: str,
         artifacts: ArtifactStorePort | None = None,
     ) -> "ThreadPersistence":
-        thread_paths = (
-            paths.thread(thread_id)
-            if isinstance(paths, SessionPaths)
-            else paths
-        )
+        thread_paths = _thread_paths(paths, thread_id)
         thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
         return cls(
             thread_paths,
@@ -591,17 +558,17 @@ class ThreadPersistence:
         provider: str = "",
     ) -> "ThreadPersistence":
         """Open an inactive thread with one private StateService instance."""
-        thread_paths = (
-            paths.thread(thread_id)
-            if isinstance(paths, SessionPaths)
-            else paths
-        )
+        thread_paths = _thread_paths(paths, thread_id)
         return cls(
             thread_paths,
             state=StateService(path=thread_paths.plugin_state_file),
             workspace_root=workspace_root,
             provider=provider,
         )
+
+
+def _thread_paths(paths: SessionPaths | ThreadPaths, thread_id: str) -> ThreadPaths:
+    return paths.thread(thread_id) if isinstance(paths, SessionPaths) else paths
 
 
 __all__ = [

@@ -8,7 +8,10 @@ Capability response builders live in their owning plugin ``protocol`` modules.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
+
+from fastapi.responses import StreamingResponse
 
 from XBotv2.protocol.models import ErrorResponse, server_event
 from XBotv2.protocol.sse import encode_server_event
@@ -26,6 +29,18 @@ _SSE_RESPONSE = {
         },
     },
 }
+
+
+def _sse_response(events: AsyncIterator[bytes]) -> StreamingResponse:
+    """Build the standard unbuffered response shared by SSE routes."""
+    return StreamingResponse(
+        events,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 class HttpServerError(Exception):

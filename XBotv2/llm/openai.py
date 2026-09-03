@@ -333,4 +333,4 @@ def create_openai_provider(provider_config, model_config, *, artifacts=None):
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_openai_provider"]
+__all__ = ["OpenAICompatibleProvider", "create_openai_provider"]

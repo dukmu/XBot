@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None):
 def _run_server(args) -> None:
     """Run the HTTP/SSE server with uvicorn."""
 
-    if not getattr(args, "uds", None):
+    if not args.uds:
         logging.getLogger("xbotv2").info(
             "starting server mode data_dir=%s workspace=%s provider=%s bind=%s port=%s",
             args.data_dir, _workspace_root(args), args.provider, args.bind, args.port,
@@ -237,7 +237,7 @@ def _run_server(args) -> None:
         no_plugins=args.no_plugins,
     ))
     app = root_ctx.server
-    uds = getattr(args, "uds", None)
+    uds = args.uds
     try:
         if uds:
             uds_path = Path(uds).expanduser()
@@ -285,9 +285,7 @@ def _run_tui(args) -> None:
     try:
         asyncio.run(client.run())
     finally:
-        if spawned_server is not None:
-            _stop_process(spawned_server)
-            _cleanup_socket(uds_path)
+        _cleanup_spawned_server(spawned_server, uds_path)
 
 
 def _run_web(args) -> None:
@@ -326,9 +324,17 @@ def _run_web(args) -> None:
             ws="none",
         )
     finally:
-        if spawned_server is not None:
-            _stop_process(spawned_server)
-            _cleanup_socket(uds_path)
+        _cleanup_spawned_server(spawned_server, uds_path)
+
+
+def _cleanup_spawned_server(
+    process: subprocess.Popen | None,
+    uds_path: str | None,
+) -> None:
+    if process is None:
+        return
+    _stop_process(process)
+    _cleanup_socket(uds_path)
 
 
 def _cleanup_socket(path: str | None) -> None:

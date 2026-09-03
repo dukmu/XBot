@@ -15,18 +15,22 @@ no knowledge of individual plugins.
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
-from XBotv2.agentloop.events import EventPort
-from XBotv2.core.tools import GuardDecision, Tool
+from XBotv2.agentloop.events import EventContext, EventPort
+from XBotv2.agentloop.services import ToolGuard
+from XBotv2.core.messages import Message
+from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.contracts import LIST_TOOLS, ToolCatalog, ToolDescription
+from XBotv2.agentloop.contracts import (
+    LIST_TOOLS,
+    ToolCatalog,
+    ToolDescription,
+    ToolRegistration,
+)
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from xcore import bound_effect, current_plugin_name
-
-Guard = Callable[[Any, Any], GuardDecision | None | Awaitable[GuardDecision | None]]
-
 
 class ToolsService:
     """Plugin-facing tool registry with fiber-scoped auto-unregister.
@@ -39,7 +43,7 @@ class ToolsService:
 
     def __init__(
         self,
-        registry: Any,
+        registry: ToolRegistry,
         *,
         events: EventPort | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
@@ -47,9 +51,9 @@ class ToolsService:
         self._registry = registry
         self.events = events
         self._log = runtime_log.bind("tools")
-        self._guards: list[Guard] = []
+        self._guards: list[ToolGuard] = []
 
-    def guard(self, guard: Guard) -> Any:
+    def guard(self, guard: ToolGuard) -> object:
         """Register one monotonic execution guard.
 
         The returned disposer (and the registering fiber's unload) removes
@@ -63,7 +67,7 @@ class ToolsService:
         )
         return bound_effect(partial(self._guards.remove, guard))
 
-    def guards(self) -> tuple[Guard, ...]:
+    def guards(self) -> tuple[ToolGuard, ...]:
         return tuple(self._guards)
 
     def register(
@@ -119,7 +123,7 @@ class ToolsService:
     def registered_names(self) -> tuple[str, ...]:
         return tuple(self._registry.registered_names())
 
-    def registrations(self) -> tuple[Any, ...]:
+    def registrations(self) -> tuple[ToolRegistration, ...]:
         return self._registry.registered_entries()
 
     def restrict(self, selectors: list[str] | None) -> tuple[str, ...]:
@@ -142,10 +146,10 @@ class ToolsService:
 
     async def execute_all(
         self,
-        tool_calls: list[Any],
+        tool_calls: list[ToolCall],
         *,
-        context_factory: Any = None,
-    ) -> list[Any]:
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> list[Message]:
         """Run the full tool-execution guard pipeline.
 
         Pipeline per call: rewrite-only ``BEFORE_TOOL_CALL`` event, schema

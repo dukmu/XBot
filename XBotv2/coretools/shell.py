@@ -29,8 +29,8 @@ from XBotv2.jobs import (
     JobResult,
     JobRunnerContext,
     JobsPort,
-    JobStatus,
     WaitResult,
+    parse_job_status,
 )
 from XBotv2.core.tools import Tool, ToolResult
 
@@ -247,7 +247,7 @@ async def list_shells(
         return ToolResult.failure(
             "job_registry_unavailable", "Background shells require a live session"
         )
-    status_filter = _parse_status(status)
+    status_filter = parse_job_status(status)
     summaries = job_registry.list(kind=JobKind.SHELL, status=status_filter)
     payload = {
         "shells": [
@@ -403,15 +403,6 @@ def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, Any]:
         "pending": list(result.pending),
         "timed_out": result.timed_out,
     }
-
-
-def _parse_status(value: str | None) -> JobStatus | None:
-    if value is None:
-        return None
-    try:
-        return JobStatus(value)
-    except ValueError:
-        return None
 
 
 async def run_shell_command(

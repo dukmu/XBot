@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from XBotv2.session.contracts import (
@@ -17,6 +16,7 @@ from XBotv2.workspaces.contracts import (
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
 )
+from XBotv2.core.replay import ReplaySubscriber, ReplaySubscription, fan_out
 
 
 WorkspaceCatalogChange = (
@@ -45,52 +45,21 @@ class WorkspaceEventFrame:
     change: WorkspaceCatalogChange
 
 
-@dataclass(slots=True, eq=False)
-class _Subscriber:
-    queue: asyncio.Queue[WorkspaceEventFrame]
-    overflowed: bool = False
-
-
-class WorkspaceEventSubscription(AsyncIterator[WorkspaceEventFrame]):
+class WorkspaceEventSubscription(ReplaySubscription[WorkspaceEventFrame]):
     def __init__(
         self,
         stream: "WorkspaceEventStream",
-        subscriber: _Subscriber,
+        subscriber: ReplaySubscriber[WorkspaceEventFrame],
         replay: tuple[WorkspaceEventFrame, ...],
         cursor: int,
     ) -> None:
-        self._stream = stream
-        self._subscriber = subscriber
-        self._replay = deque(replay)
-        self._cursor = cursor
-        self._closed = False
-
-    def __aiter__(self) -> "WorkspaceEventSubscription":
-        return self
-
-    async def __anext__(self) -> WorkspaceEventFrame:
-        if self._closed:
-            raise StopAsyncIteration
-        if self._subscriber.overflowed:
-            self._closed = True
-            self._stream.detach(self._subscriber)
-            raise WorkspaceCursorExpired(
-                self._cursor,
-                self._stream.oldest_sequence,
-            )
-        frame = (
-            self._replay.popleft()
-            if self._replay
-            else await self._subscriber.queue.get()
+        super().__init__(
+            stream=stream,
+            subscriber=subscriber,
+            replay=replay,
+            cursor=cursor,
+            cursor_error=WorkspaceCursorExpired,
         )
-        self._cursor = frame.sequence
-        return frame
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._stream.detach(self._subscriber)
 
 
 class WorkspaceEventStream:
@@ -101,7 +70,7 @@ class WorkspaceEventStream:
             raise ValueError("Workspace event capacity must be positive")
         self._capacity = capacity
         self._frames: deque[WorkspaceEventFrame] = deque(maxlen=capacity)
-        self._subscribers: set[_Subscriber] = set()
+        self._subscribers: set[ReplaySubscriber[WorkspaceEventFrame]] = set()
         self._sequence = 0
 
     @property
@@ -116,12 +85,7 @@ class WorkspaceEventStream:
         self._sequence += 1
         frame = WorkspaceEventFrame(self._sequence, change)
         self._frames.append(frame)
-        for subscriber in tuple(self._subscribers):
-            try:
-                subscriber.queue.put_nowait(frame)
-            except asyncio.QueueFull:
-                subscriber.overflowed = True
-                self._subscribers.discard(subscriber)
+        fan_out(self._subscribers, frame)
         return frame
 
     def subscribe(self, after: int) -> WorkspaceEventSubscription:
@@ -131,11 +95,11 @@ class WorkspaceEventStream:
         if after < oldest - 1:
             raise WorkspaceCursorExpired(after, oldest)
         replay = tuple(frame for frame in self._frames if frame.sequence > after)
-        subscriber = _Subscriber(asyncio.Queue(maxsize=self._capacity))
+        subscriber = ReplaySubscriber(asyncio.Queue(maxsize=self._capacity))
         self._subscribers.add(subscriber)
         return WorkspaceEventSubscription(self, subscriber, replay, after)
 
-    def detach(self, subscriber: _Subscriber) -> None:
+    def detach(self, subscriber: ReplaySubscriber[WorkspaceEventFrame]) -> None:
         self._subscribers.discard(subscriber)
 
 

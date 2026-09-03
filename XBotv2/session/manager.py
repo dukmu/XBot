@@ -6,10 +6,8 @@ import asyncio
 import base64
 import binascii
 import time
-import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -66,6 +64,7 @@ from XBotv2.session.types import (
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
+    new_session_id,
 )
 from XBotv2.server import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
@@ -75,37 +74,13 @@ from XBotv2.core.operations import (
     dispatch_operation,
 )
 
-async def _runtime_message_events(
+async def _announce_runtime_events(
     manager: "SessionManager",
     runtime: SessionRuntime,
-    request: SendMessage,
-    images: list[ImageContent],
-    attachments: list[ArtifactRef],
+    events: AsyncIterator[ClientEvent],
 ) -> AsyncIterator[ClientEvent]:
     announced = False
-    async for event in runtime.stream_message(
-        request.content,
-        request.request_id,
-        delivery=request.delivery,
-        images=images,
-        artifacts=attachments,
-    ):
-        if not announced:
-            announced = True
-            await manager._emit_session_changed(runtime.session_id)
-        yield event
-
-
-async def _runtime_regenerate_events(
-    manager: "SessionManager",
-    runtime: SessionRuntime,
-    request: RegenerateMessage,
-) -> AsyncIterator[ClientEvent]:
-    announced = False
-    async for event in regenerate_turn_stream(
-        runtime,
-        request_id=request.request_id,
-    ):
+    async for event in events:
         if not announced:
             announced = True
             await manager._emit_session_changed(runtime.session_id)
@@ -267,7 +242,7 @@ class SessionManager:
         if mode == "resume" and not session_id:
             raise ValueError("resume mode requires session_id")
         if mode == "new":
-            session_id = session_id or _new_session_id()
+            session_id = session_id or new_session_id()
         assert session_id is not None
         key = (session_id, thread_id)
         self._log.info(
@@ -584,8 +559,9 @@ class SessionManager:
         session_ids = sorted(
             path.name for path in root.iterdir() if path.is_dir()
         ) if root.is_dir() else []
+        active = await self.active_threads()
         return tuple([
-            await session_summary(self, session_id)
+            await _build_session_summary(self, session_id, active)
             for session_id in session_ids
         ])
 
@@ -602,7 +578,8 @@ class SessionManager:
             raise ValueError("Session title must be non-empty")
         if len(value) > 200:
             raise ValueError("Session title must not exceed 200 characters")
-        summary = await session_summary(self, session_id)
+        active_threads = await self.active_threads()
+        summary = await _build_session_summary(self, session_id, active_threads)
         thread_ids = persisted_thread_ids(self.paths, session_id)
         main_id = "agent" if "agent" in thread_ids else ""
         if not main_id:
@@ -616,7 +593,7 @@ class SessionManager:
                 "main_thread_not_found",
                 f"Session {session_id!r} has no main thread",
             )
-        active = (await self.active_threads()).get((session_id, main_id))
+        active = active_threads.get((session_id, main_id))
         if active is not None:
             active.application.loop_state.metadata.update(title=value)
         else:
@@ -636,13 +613,9 @@ class SessionManager:
         return renamed
 
     async def fork_session(self, session_id: str) -> str:
-        await session_summary(self, session_id)
         active = await self.active_threads()
-        runtimes = [
-            runtime
-            for (active_session_id, _), runtime in active.items()
-            if active_session_id == session_id
-        ]
+        await _build_session_summary(self, session_id, active)
+        runtimes = _session_runtimes(active, session_id)
         if any(runtime.turn_lock.locked() for runtime in runtimes):
             raise OperationError(
                 "thread_busy",
@@ -683,13 +656,9 @@ class SessionManager:
         return forked_id
 
     async def delete_session(self, session_id: str) -> None:
-        await session_summary(self, session_id)
         active = await self.active_threads()
-        runtimes = [
-            runtime
-            for (active_session_id, _), runtime in active.items()
-            if active_session_id == session_id
-        ]
+        await _build_session_summary(self, session_id, active)
+        runtimes = _session_runtimes(active, session_id)
         if any(runtime.turn_lock.locked() for runtime in runtimes):
             raise OperationError(
                 "thread_busy",
@@ -705,9 +674,10 @@ class SessionManager:
         )
 
     async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
-        await session_summary(self, session_id)
+        active = await self.active_threads()
+        await _build_session_summary(self, session_id, active)
         return tuple([
-            await thread_summary(self, session_id, thread_id)
+            await _thread_summary(self, session_id, thread_id, active)
             for thread_id in persisted_thread_ids(self.paths, session_id)
         ])
 
@@ -917,7 +887,17 @@ class SessionManager:
             images=len(images),
             attachments=len(attachments),
         )
-        return _runtime_message_events(self, runtime, request, images, attachments)
+        return _announce_runtime_events(
+            self,
+            runtime,
+            runtime.stream_message(
+                request.content,
+                request.request_id,
+                delivery=request.delivery,
+                images=images,
+                artifacts=attachments,
+            ),
+        )
 
     async def pending_inputs(
         self,
@@ -959,7 +939,11 @@ class SessionManager:
             thread_id=request.thread_id,
             request_id=request.request_id,
         )
-        return _runtime_regenerate_events(self, runtime, request)
+        return _announce_runtime_events(
+            self,
+            runtime,
+            regenerate_turn_stream(runtime, request_id=request.request_id),
+        )
 
     async def stream_events(
         self,
@@ -1186,12 +1170,37 @@ def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:
     return sorted(thread_ids)
 
 
+def _session_runtimes(
+    active: Mapping[tuple[str, str], SessionRuntime],
+    session_id: str,
+) -> list[SessionRuntime]:
+    return [
+        runtime
+        for (active_session_id, _), runtime in active.items()
+        if active_session_id == session_id
+    ]
+
+
 async def thread_summary(
     manager: SessionManager,
     session_id: str,
     thread_id: str,
 ) -> ThreadSummary:
-    active = (await manager.active_threads()).get((session_id, thread_id))
+    return await _thread_summary(
+        manager,
+        session_id,
+        thread_id,
+        await manager.active_threads(),
+    )
+
+
+async def _thread_summary(
+    manager: SessionManager,
+    session_id: str,
+    thread_id: str,
+    active_threads: Mapping[tuple[str, str], SessionRuntime],
+) -> ThreadSummary:
+    active = active_threads.get((session_id, thread_id))
     if active is not None:
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
@@ -1290,8 +1299,15 @@ async def session_summary(
     manager: SessionManager,
     session_id: str,
 ) -> SessionSummary:
+    return await _build_session_summary(manager, session_id, await manager.active_threads())
+
+
+async def _build_session_summary(
+    manager: SessionManager,
+    session_id: str,
+    active: Mapping[tuple[str, str], SessionRuntime],
+) -> SessionSummary:
     session = manager.paths.session(session_id)
-    active = await manager.active_threads()
     active_ids = {
         thread_id
         for (active_session_id, thread_id) in active
@@ -1306,11 +1322,17 @@ async def session_summary(
     main_id = "agent" if "agent" in thread_ids else None
     if main_id is None:
         for candidate_id in thread_ids:
-            candidate = await thread_summary(manager, session_id, candidate_id)
+            candidate = await _thread_summary(
+                manager, session_id, candidate_id, active
+            )
             if not candidate.parent_thread_id:
                 main_id = candidate_id
                 break
-    main = await thread_summary(manager, session_id, main_id) if main_id else None
+    main = (
+        await _thread_summary(manager, session_id, main_id, active)
+        if main_id
+        else None
+    )
     return SessionSummary(
         session_id=session_id,
         status="active" if active_threads else "inactive",
@@ -1325,10 +1347,6 @@ async def session_summary(
 def pending_interactions(ctx: SessionRuntime) -> list[str]:
     """List pending requests through the application client-event router."""
     return ctx.application.client_events.pending_request_ids()
-
-
-def _new_session_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
 
 
 __all__ = [

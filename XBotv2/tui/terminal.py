@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
-from urllib.parse import quote
 
-from XBotv2.client import XBotClient
+from XBotv2.client import XBotClient, _thread_path
 from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.protocol import ServerEvent, WireModel
 from XBotv2.session.protocol import SessionMode
+from XBotv2.session.types import new_session_id
 from XBotv2.tui.trace import trace_event
-
-
-def _new_session_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
 
 class TerminalSession:
@@ -48,7 +43,7 @@ class TerminalSession:
         token: str | None = None,
         uds_path: str | None = None,
     ) -> None:
-        self._session_id = session_id or _new_session_id()
+        self._session_id = session_id or new_session_id()
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
         self._agent = agent
@@ -129,7 +124,7 @@ class TerminalSession:
         when ``workspace_root`` is omitted; ``new`` sessions use the supplied
         workspace or the current working directory.
         """
-        target_session = session_id or _new_session_id()
+        target_session = session_id or new_session_id()
         target_workspace = (
             None
             if mode == "resume" and workspace_root is None
@@ -253,10 +248,7 @@ class TerminalSession:
 
     @property
     def _thread_path(self) -> str:
-        return (
-            f"/sessions/{quote(self._session_id, safe='')}/threads/"
-            f"{quote(self._thread_id, safe='')}"
-        )
+        return _thread_path(self._session_id, self._thread_id)
 
     async def _events(
         self,

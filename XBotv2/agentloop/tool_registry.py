@@ -15,9 +15,10 @@ bare names (default namespace).
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections.abc import Iterator
 
 from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.core.tools import Tool
 
 
 class ToolRegistry:
@@ -27,13 +28,13 @@ class ToolRegistry:
 
     def register(
         self,
-        tool: Any,
+        tool: Tool,
         *,
         namespace: str | None = None,
         model_visible: bool = True,
         timeout_seconds: float | None = None,
     ) -> str:
-        name = tool.name if hasattr(tool, "name") else getattr(tool, "__name__", str(tool))
+        name = tool.name
         ns = namespace or "builtin"
         full_name = name if ns == "builtin" else f"{ns}:{name}"
         if full_name in self._entries:
@@ -42,7 +43,7 @@ class ToolRegistry:
             (
                 entry.registered_name
                 for entry in self._entries.values()
-                if getattr(entry.tool, "name", "") == name
+                if entry.tool.name == name
             ),
             None,
         )
@@ -68,39 +69,23 @@ class ToolRegistry:
         return True
 
     def get(self, name: str) -> ToolRegistration | None:
-        if (
-            name in self._entries
-            and self._entries[name].model_visible
-            and self._is_enabled(name)
-        ):
-            return self._entries[name]
-        # Fallback: match by tool display name.
-        for full_name, entry in self._entries.items():
-            if (
-                entry.model_visible
-                and getattr(entry.tool, "name", "") == name
-                and self._is_enabled(full_name)
-            ):
-                return entry
-        return None
-
-    def get_registered(self, name: str) -> ToolRegistration | None:
-        """Resolve an entry without applying model-visible tool restrictions."""
-        if name in self._entries:
-            return self._entries[name]
         return next(
             (
                 entry
-                for entry in self._entries.values()
-                if getattr(entry.tool, "name", "") == name
+                for entry in self._matches(name)
+                if entry.model_visible and self._is_enabled(entry.registered_name)
             ),
             None,
         )
 
+    def get_registered(self, name: str) -> ToolRegistration | None:
+        """Resolve an entry without applying model-visible tool restrictions."""
+        return next(self._matches(name), None)
+
     def registered(self, name: str) -> bool:
         return name in self._entries and (self._enabled_names is None or name in self._enabled_names)
 
-    def get_all(self) -> list[Any]:
+    def get_all(self) -> list[Tool]:
         return [
             entry.tool
             for name, entry in self._entries.items()
@@ -167,6 +152,16 @@ class ToolRegistry:
 
     def _is_enabled(self, name: str) -> bool:
         return self._enabled_names is None or name in self._enabled_names
+
+    def _matches(self, name: str) -> Iterator[ToolRegistration]:
+        exact = self._entries.get(name)
+        if exact is not None:
+            yield exact
+        yield from (
+            entry
+            for entry in self._entries.values()
+            if entry is not exact and entry.tool.name == name
+        )
 
 
 def _wildcard_to_regex(pattern: str) -> str:

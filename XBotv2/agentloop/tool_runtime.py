@@ -7,16 +7,22 @@ import inspect
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from XBotv2.agentloop.events import EventPort, Events
+from XBotv2.agentloop.events import EventContext, EventPort, Events
+from XBotv2.agentloop.services import ToolGuard
+from XBotv2.agentloop.tool_registry import ToolRegistry
+from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.tools import (
+    ClientEvent,
     GuardDecision,
     ToolCall,
     ToolError,
+    Tool,
     ToolResult,
     tool_parameters_schema,
 )
@@ -61,11 +67,11 @@ class ToolDispatchTimeoutError(TimeoutError):
 
 async def execute_tools(
     tool_calls: list[ToolCall],
-    registry: Any,  # ToolRegistry
+    registry: ToolRegistry,
     *,
     events: EventPort | None = None,
-    guards: tuple[Any, ...] = (),
-    context_factory: Any = None,
+    guards: tuple[ToolGuard, ...] = (),
+    context_factory: Callable[..., EventContext] | None = None,
     runtime_log: RuntimeLog = _DEFAULT_TOOL_LOG,
 ) -> list[Message]:
     """Execute tool calls through the guard pipeline.
@@ -145,8 +151,8 @@ async def execute_tools(
 
 
 async def _emit_tool_denied(
-    events: Any,
-    context_factory: Any,
+    events: EventPort | None,
+    context_factory: Callable[..., EventContext] | None,
     tool_call: ToolCall,
     reason: str,
 ) -> None:
@@ -160,20 +166,18 @@ async def _emit_tool_denied(
     )
 
 
-def _normalize_client_event(event: dict[str, Any], tool_call_id: str) -> dict[str, Any]:
-    """Attach generic correlation metadata to a tool-originated event."""
-    if not isinstance(event, dict):
+def _correlate_client_event(event: ClientEvent, tool_call_id: str) -> ClientEvent:
+    """Attach the originating tool call to an event that lacks one."""
+    if "tool_call_id" in event.data:
         return event
-    normalized = dict(event)
-    data = dict(normalized.get("data") or {})
-    data.setdefault("tool_call_id", tool_call_id)
-    normalized["data"] = data
-    return normalized
+    return event.model_copy(
+        update={"data": {**event.data, "tool_call_id": tool_call_id}}
+    )
 
 
 async def _run_tool_event(
-    events: Any,
-    context_factory: Any,
+    events: EventPort | None,
+    context_factory: Callable[..., EventContext] | None,
     event: str,
     *,
     tool_call: ToolCall,
@@ -197,7 +201,7 @@ async def _run_tool_event(
 def _error_message(
     call: ToolCall,
     reason: str,
-    events: list[dict[str, Any]] | None = None,
+    events: list[ClientEvent] | None = None,
     error: ToolError | None = None,
 ) -> Message:
     return Message(
@@ -222,11 +226,13 @@ def _append_timed_result(
 
 
 async def _execute_one_tool(
-    call: ToolCall, entry: Any, registry: Any,
+    call: ToolCall,
+    entry: ToolRegistration,
+    registry: ToolRegistry,
     *,
-    events: Any,
-    guards: tuple[Any, ...],
-    context_factory: Any,
+    events: EventPort | None,
+    guards: tuple[ToolGuard, ...],
+    context_factory: Callable[..., EventContext] | None,
     runtime_log: RuntimeLog,
     results: list[Message], observed_tool_calls: list[ToolCall],
 ) -> None:
@@ -472,7 +478,7 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
             images=list(value.images),
             error=value.error.model_dump(mode="json") if value.error is not None else None,
             client_events=[
-                _normalize_client_event(event.model_dump(mode="json"), tool_call_id)
+                _correlate_client_event(event, tool_call_id)
                 for event in value.client_events
             ],
             turn_complete=value.turn_complete,
@@ -492,22 +498,14 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
 
 
 async def _invoke_tool(
-    tool: Any,
+    tool: Tool,
     args: dict[str, Any],
     *,
     tool_call: ToolCall,
     timeout_seconds: float | None = None,
 ) -> Any:
-    """Invoke any registered tool without blocking the event loop."""
-    if hasattr(tool, "ainvoke"):
-        call = tool.ainvoke(args, tool_call=tool_call)
-    elif hasattr(tool, "invoke"):
-        call = asyncio.to_thread(tool.invoke, args)
-    elif callable(tool):
-        call = asyncio.to_thread(tool, **args)
-    else:
-        raise TypeError(f"Tool {tool!r} is not callable")
-    task = asyncio.create_task(call)
+    """Invoke one registered Tool without blocking the event loop."""
+    task = asyncio.create_task(tool.ainvoke(args, tool_call=tool_call))
     if timeout_seconds is None:
         return await task
     done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
@@ -515,7 +513,7 @@ async def _invoke_tool(
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         raise ToolDispatchTimeoutError(
-            tool_name=getattr(tool, "name", str(tool)),
+            tool_name=tool.name,
             timeout_seconds=timeout_seconds,
         )
     return task.result()

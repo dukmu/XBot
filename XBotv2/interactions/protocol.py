@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from XBotv2.protocol import WireModel
 from XBotv2.core import ClientEvent
+from XBotv2.core.tools import _validated_client_event
 
 
 class UserInputOption(WireModel):
@@ -67,8 +68,7 @@ def interaction_recorded_event(
     data: dict[str, Any],
 ) -> ClientEvent:
     """Validate a recorded interaction before publishing it."""
-    payload = InteractionRecordedData.model_validate(data)
-    return ClientEvent(type=type, data=payload.model_dump(exclude_unset=True))
+    return _validated_client_event(type, data, InteractionRecordedData)
 
 
 __all__ = [

@@ -25,8 +25,10 @@ class SessionStats(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     def add(self, other: "SessionStats") -> "SessionStats":
+        current = self.model_dump()
+        increment = other.model_dump()
         return SessionStats(**{
-            name: getattr(self, name) + getattr(other, name)
+            name: current[name] + increment[name]
             for name in type(self).model_fields
         })
 

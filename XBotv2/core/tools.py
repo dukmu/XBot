@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
@@ -23,7 +24,7 @@ class GuardDecision:
     action: Literal["deny"] = "deny"
     reason: str = ""
     source: str = "guard"
-    client_events: tuple[dict[str, Any], ...] = ()
+    client_events: tuple["ClientEvent", ...] = ()
 
 
 class ToolCall(BaseModel):
@@ -54,6 +55,19 @@ class ClientEvent(BaseModel):
     type: str = Field(min_length=1)
     data: dict[str, JsonValue] = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def _validated_client_event(
+    event_type: str,
+    data: Mapping[str, object],
+    model: type[BaseModel],
+) -> ClientEvent:
+    """Validate one typed event payload and return its client envelope."""
+    payload = model.model_validate(data)
+    return ClientEvent(
+        type=event_type,
+        data=payload.model_dump(mode="json", exclude_unset=True),
+    )
 
 
 class ToolResult(BaseModel):
@@ -179,27 +193,13 @@ class Tool:
         return {self.tool_call_parameter: tool_call}
 
 
-def provider_tool_schema(tool: Any) -> Any:
-    if isinstance(tool, Tool):
-        return tool.provider_schema()
-    if hasattr(tool, "provider_schema"):
-        return tool.provider_schema()
-    return tool
+def provider_tool_schema(tool: Tool) -> dict[str, Any]:
+    return tool.provider_schema()
 
 
-def tool_parameters_schema(tool: Any) -> dict[str, Any]:
-    """Return one JSON Schema for XBot and compatible external tools."""
-    if isinstance(tool, Tool):
-        return tool.parameters
-    args_schema = getattr(tool, "args_schema", None)
-    if hasattr(args_schema, "model_json_schema"):
-        return args_schema.model_json_schema()
-    if isinstance(args_schema, dict):
-        return args_schema
-    properties = getattr(tool, "args", None)
-    if isinstance(properties, dict):
-        return {"type": "object", "properties": properties}
-    return {"type": "object", "properties": {}}
+def tool_parameters_schema(tool: Tool) -> dict[str, Any]:
+    """Return the JSON Schema declared by one registered XBot ``Tool``."""
+    return tool.parameters
 
 
 def _parameters_schema(

@@ -446,4 +446,4 @@ def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_anthropic_provider"]
+__all__ = ["AnthropicProvider", "create_anthropic_provider"]

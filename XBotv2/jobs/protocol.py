@@ -42,7 +42,10 @@ def task_completion_event(task: TaskSnapshot) -> ClientEvent:
         command=task.command,
         agent=task.agent,
     )
-    return ClientEvent(type="completion_notice", data=payload.model_dump())
+    return ClientEvent(
+        type="completion_notice",
+        data=payload.model_dump(mode="json"),
+    )
 
 
 class TaskListResponse(WireModel):

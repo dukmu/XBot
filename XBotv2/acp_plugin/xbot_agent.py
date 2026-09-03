@@ -541,18 +541,21 @@ class XBotACPAgent:
             async for frame in events:
                 await self._resolve_interaction(session_id, frame.event)
                 active = self._active_prompts.get(session_id)
-                if active is not None and frame.request_id == active.request_id:
-                    for update in active.mapper.updates(frame.event.model_dump()):
-                        await self._update(session_id, update)
+                active_prompt = (
+                    active
+                    if active is not None and frame.request_id == active.request_id
+                    else None
+                )
+                event_mapper = active_prompt.mapper if active_prompt else mapper
+                for update in event_mapper.updates(frame.event.model_dump()):
+                    await self._update(session_id, update)
+                if active_prompt is not None:
                     if frame.event.type in {
                         "turn_finished",
                         "turn_cancelled",
                         "error",
                     }:
-                        active.completed.set()
-                    continue
-                for update in mapper.updates(frame.event.model_dump()):
-                    await self._update(session_id, update)
+                        active_prompt.completed.set()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -686,34 +689,20 @@ class XBotACPAgent:
         )
 
     async def _replay_history(self, session_id: str) -> None:
-        cursors: list[str | None] = [None]
-        latest = await self.sessions.message_page(
-            session_id,
-            "agent",
-            cursor=None,
-            limit=200,
-        )
-        cursor = latest.next_cursor
-        while cursor is not None:
-            cursors.append(cursor)
+        pages = []
+        cursor = None
+        while True:
             page = await self.sessions.message_page(
                 session_id,
                 "agent",
                 cursor=cursor,
                 limit=200,
             )
+            pages.append(page)
             cursor = page.next_cursor
-        for cursor in reversed(cursors):
-            page = (
-                latest
-                if cursor is None
-                else await self.sessions.message_page(
-                    session_id,
-                    "agent",
-                    cursor=cursor,
-                    limit=200,
-                )
-            )
+            if cursor is None:
+                break
+        for page in reversed(pages):
             for update in replay_history(conversation_replay(page.messages)):
                 await self._update(session_id, update)
 

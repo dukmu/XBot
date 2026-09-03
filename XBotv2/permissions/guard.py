@@ -18,7 +18,7 @@ class PermissionGuard:
         permissions: PermissionsPort,
         approval: ApprovalPort,
         emit: Callable[[str, Any], Awaitable[Any]],
-        record_decision: Callable[[dict[str, Any], str, str], Awaitable[None]],
+        record_decision: Callable[[ClientEvent, str, str], Awaitable[None]],
     ) -> None:
         self._permissions = permissions
         self._approval = approval
@@ -39,15 +39,15 @@ class PermissionGuard:
             reason=reason,
             resume_supported=False,
         )
-        event = {
-            "type": "permission_request",
-            "data": payload.model_dump(exclude_none=True),
-        }
+        event = ClientEvent(
+            type="permission_request",
+            data=payload.model_dump(exclude_none=True),
+        )
         await self._emit(
             PERMISSION_REQUESTED,
             PermissionRequested(
                 tool_call=tool_call,
-                client_event=ClientEvent(**event),
+                client_event=event,
             ),
         )
         result = await self._approval.request(event)

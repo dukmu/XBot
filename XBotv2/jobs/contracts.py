@@ -28,6 +28,15 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+def parse_job_status(value: str | None) -> JobStatus | None:
+    if value is None:
+        return None
+    try:
+        return JobStatus(value)
+    except ValueError:
+        return None
+
+
 TERMINAL_STATES = frozenset({
     JobStatus.COMPLETED,
     JobStatus.FAILED,
@@ -64,7 +73,7 @@ class JobOutputFactoryPort(Protocol):
 
 class JobRunnerContext(Protocol):
     outputs: JobOutputFactoryPort
-    primary_output: OutputStore | None
+    primary_output: TextOutputStorePort | None
 
 
 class JobError(BaseModel):
@@ -77,7 +86,7 @@ class JobError(BaseModel):
 @dataclass(slots=True)
 class JobResult:
     summary: str | None = None
-    output_store: OutputStore | None = None
+    output_store: TextOutputStorePort | None = None
     data: dict[str, JsonValue] = field(default_factory=dict)
 
 
@@ -253,4 +262,5 @@ __all__ = [
     "TextOutputStorePort",
     "WaitMode",
     "WaitResult",
+    "parse_job_status",
 ]

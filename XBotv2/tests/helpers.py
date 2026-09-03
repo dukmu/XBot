@@ -14,15 +14,16 @@ import xcore
 
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_service import ToolsService
+from XBotv2.core.tools import ClientEvent
 
 
 class _UnavailableApproval:
-    async def request(self, _event: dict[str, Any]) -> dict[str, str]:
+    async def request(self, _event: ClientEvent) -> dict[str, str]:
         return {"status": "unavailable", "decision": "", "scope": "once"}
 
 
 async def _ignore_permission_decision(
-    _event: dict[str, Any], _decision: str, _scope: str
+    _event: ClientEvent, _decision: str, _scope: str
 ) -> None:
     return None
 

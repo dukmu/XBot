@@ -6,7 +6,7 @@ It owns pending-response coordination but no permission policy.
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
@@ -33,14 +33,13 @@ class ApprovalService:
     def session_closed(self, _event: EventContext) -> None:
         self._waiter.cancel_all("session_closed")
 
-    async def request(self, client_event: dict[str, Any]) -> dict[str, Any]:
+    async def request(self, client_event: ClientEvent) -> dict[str, JsonValue]:
         """Publish a request and return the client's raw decision record."""
-        envelope = ClientEvent(**client_event)
         await self._events.emit(
             Events.CLIENT_EVENT,
-            EventContext(client_event=envelope),
+            EventContext(client_event=client_event),
         )
-        sink_result = await self._client_events.request(envelope)
+        sink_result = await self._client_events.request(client_event)
         if sink_result is not None:
             return sink_result
         return {"status": "unavailable", "decision": "", "scope": "once"}

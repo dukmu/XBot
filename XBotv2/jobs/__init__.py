@@ -30,6 +30,7 @@ from XBotv2.jobs.contracts import (
     TextOutputStorePort,
     WaitMode,
     WaitResult,
+    parse_job_status,
 )
 
 __all__ = [
@@ -66,6 +67,7 @@ __all__ = [
     "WaitMode",
     "WaitResult",
     "build_jobs_commands",
+    "parse_job_status",
     "task_completion_event",
     "task_updated_event",
 ]
