@@ -19,7 +19,7 @@ Reuse these capabilities instead of reimplementing a parallel path.
 | `browser` | public Web and isolated Chromium | normal Tools, network policy, session artifacts |
 | `compact` | history compaction | compact Tool/command and typed history events |
 | `goal` / `todolist` | durable objective/checklist UX | state namespaces plus standard Tools/commands |
-| `mcp` | MCP server tools/resources/prompts | MCP plugin registration and client adapter |
+| `mcp_plugin` | MCP server tools/resources/prompts | MCP plugin registration and client adapter |
 
 ## Common Inject Names
 

@@ -10,16 +10,52 @@ metadata:
 Use this skill for an XBot plugin project: starting a plugin, adding a Tool or
 command, connecting to a service, subscribing to events, adding configuration,
 or reviewing an existing plugin. It is written for developers who may not know
-the XBot or XCore repository layout yet.
+the XBot or XCore repository layout yet. The references are versioned with the
+XBot distribution; when a checkout is available, source and tests remain the
+final authority.
+
+## Read the Fast References First
+
+Do not begin by grepping the whole repository. Read the small index that
+matches the work, then follow the detailed page only when necessary:
+
+1. [plugins_list.md](references/plugins_list.md) for the bundled tree, profiles,
+   injected services, public operations, and the built-in plugin index;
+2. [xbot-architecture.md](references/xbot-architecture.md) for ownership,
+   application composition, session/runtime boundaries, and persistence;
+3. [xcore-api.md](references/xcore-api.md) for Context, effects, events,
+   injection, schemas, and lifecycle;
+4. [first-plugin.md](references/first-plugin.md) for the complete package,
+   install, test, overlay, and smoke-test path;
+5. [extension-patterns.md](references/extension-patterns.md) for Tool,
+   command, event, service, state, and resource patterns.
+
+Read [session-trace.md](references/session-trace.md) for JSONL/history work.
+For a bundled component, open its page under
+[`references/plugins/`](references/plugins/README.md) after selecting the
+component from the index. These pages record the current service names and
+effects; they are not permission to import private implementation modules.
 
 ## Start With Discovery
 
 First determine how XBot is installed. A plugin is an external Python package,
 so the relevant interpreter is the one that launches the user's `xbot` command,
-not necessarily the interpreter in this skill's repository.
+not necessarily the interpreter in this skill's repository. The data directory
+is also an explicit runtime input: `~/.xbot` is only the default. Tests and
+smoke runs should normally pass a disposable `--data-dir`; do not assume that
+the user's home directory is writable or that `.xbot` means home.
 
 - **Source checkout:** from the checkout, prefer `.venv/bin/python` (POSIX) or
   `.venv/Scripts/python.exe` (Windows), otherwise use the checkout's `uv run`.
+  When importing source without installing it, use `PYTHONPATH` for the
+  checkout roots only:
+
+  ```bash
+  PYTHONPATH="$XBOT_ROOT:$XBOT_ROOT/XCore" .venv/bin/python -c \
+    'import XBotv2, xcore; print(XBotv2.__file__, xcore.__file__)'
+  ```
+
+  This is a source-checkout technique, not a way to test a published wheel.
 - **uv project dependency:** run every command as `uv run ...` from the plugin
   project's directory. Add the runtime with `uv add xbotv2` (or an editable
   local path while developing XBot itself).
@@ -58,6 +94,14 @@ references progressively:
 - For selecting an existing capability, read [builtin-components.md](references/builtin-components.md).
 - For workflow, testing, and troubleshooting advice, read [usage-guidance.md](references/usage-guidance.md).
 
+For an installed wheel, the same command should show `site-packages` origins
+for both packages and must not contain a checkout `PYTHONPATH`. In a restricted
+or offline sandbox, a plugin source tree may be exposed with `PYTHONPATH` and
+mounted through the Python `start_application(..., plugin_dirs=[...])` API; the
+current `xbot` CLI does not expose `plugin_dirs`. For a normal user install,
+install the wheel into the environment that owns `xbot` and select it from a
+workspace `.xbot/plugins.yaml` entry.
+
 Also inspect the current source files named by the references. Documentation is
 the map; the checked-out code and tests are the final contract.
 
@@ -85,6 +129,14 @@ the map; the checked-out code and tests are the final contract.
    Run broader suites when the plugin crosses core, provider, protocol, or
    session boundaries.
 
+If a mounted plugin is `FiberState.PENDING`, inspect
+`handle.missing_dependencies` before changing code. The usual test fixtures
+provide `RuntimePaths.from_data_dir(tmp_path / "data")` as `runtime_paths`, a
+workspace `Path` as `workspace_root`, `paths.data_dir` as `data_root`, and a
+typed `LoopState`/`SessionLaunch`/`ThreadPaths` only when the plugin declares
+those services. Do not satisfy a missing service with `None`; add the service
+at the composition boundary or narrow the plugin's declared dependency.
+
 Do not skip directly from a code snippet to editing the user's global plugin
 tree. A first plugin is complete only when all of these checkpoints have
 observable evidence:
@@ -102,6 +154,12 @@ observable evidence:
    the capability through the real client boundary.
 7. **Distribution:** a built wheel contains the plugin package and any bundled
    skill/reference assets; a clean environment can install and import it.
+
+The XBot distribution includes this skill as package data. On application boot,
+`ensure_initial_config()` copies it to
+`<data-dir>/.agents/skills/xbot-plugin-development/`; that target is governed
+by `--data-dir`/`XBOT_DATA_DIR`, not necessarily `$HOME`. Unrelated skills in
+that directory are preserved.
 
 For each checkpoint, prefer one small assertion that observes the contract.
 Do not inspect a private list merely because it is easier than invoking the

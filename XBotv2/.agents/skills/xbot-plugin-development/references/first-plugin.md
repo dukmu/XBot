@@ -14,10 +14,32 @@ command -v xbot
 python -c 'import sys, XBotv2, xcore; print(sys.executable); print(XBotv2.__file__); print(xcore.__file__)'
 ```
 
+If `command -v xbot` is empty, use the project entry point explicitly (for
+example `.venv/bin/xbot`) and run the provenance command with that same
+`.venv/bin/python`. `uv` environments may intentionally have no standalone
+`pip`; `uv run python` is still the runtime, while `uv pip` is only an
+installer. Never infer the runtime from whichever `pytest` happens to be on
+`PATH`.
+
 For a uv project, use `uv run xbot` and `uv run python` in every command. For a
 pip installation, activate its virtual environment and use `python -m pip`,
 `python -m pytest`, and that environment's `xbot`. Never install the plugin in
 one interpreter and launch XBot from another.
+
+For source-only development, a checkout can be imported without installing a
+wheel:
+
+```bash
+export XBOT_ROOT="$(git -C /path/to/XBot rev-parse --show-toplevel)"
+PYTHONPATH="$XBOT_ROOT:$XBOT_ROOT/XCore:$PWD/src" \
+  "$XBOT_ROOT/.venv/bin/python" -c \
+  'import sys, XBotv2, xcore, my_xbot_plugin; print(sys.executable); print(XBotv2.__file__); print(xcore.__file__); print(my_xbot_plugin.__file__)'
+```
+
+This is valid for a source checkout or a read-only sandbox. When testing a
+published `xbotv2` wheel, remove the checkout paths from `PYTHONPATH` and
+verify that both packages come from the selected environment's
+`site-packages`.
 
 ## 2. Create the Package
 
@@ -192,6 +214,24 @@ async def test_hello_waits_for_required_tools(tmp_path: Path) -> None:
     await ctx.destroy()
 ```
 
+For a plugin that injects application-only services, provide the typed values
+at the test composition boundary instead of weakening `inject`:
+
+```python
+from XBotv2.core.paths import RuntimePaths
+
+paths = RuntimePaths.from_data_dir(tmp_path / "data")
+ctx = Context(data_dir=paths.data_dir)
+ctx.set("runtime_paths", paths)
+ctx.set("workspace_root", tmp_path / "workspace")
+ctx.set("data_root", paths.data_dir)
+```
+
+The complete service matrix is in [plugins_list.md](plugins_list.md). A
+`PENDING` handle is a useful diagnostic: print `handle.missing_dependencies`
+and add only those services. Supplying `None` to make a required dependency
+appear present tests the wrong contract.
+
 Run it with the selected environment:
 
 ```bash
@@ -243,6 +283,23 @@ Prefix with `uv run` for uv. A real provider requires its configured
 credentials. If none is available, the mounted test is still valid evidence
 for loading, registration, execution, and cleanup; report that the provider
 smoke was not run rather than claiming it passed.
+
+The command-line launcher currently has no `--plugin-dirs` option. A package
+installed into the XBot environment is selected by its import name in the
+workspace overlay. In a sandbox where installation or the global data root is
+read-only, expose the source package with `PYTHONPATH` and run a small Python
+harness that calls `start_application(..., plugin_dirs=[plugin_parent])` with
+a disposable `RuntimePaths`; this exercises the same loader without writing
+to the user's data directory. `plugin_paths` in runtime configuration is not
+an alternative loader entry unless the current application version explicitly
+wires it into `plugin_dirs`.
+
+When no provider credentials or network are available, use the mounted XCore
+test plus a persistence-only trace test (see [session-trace.md](session-trace.md)).
+Record “provider smoke not run: missing credentials/endpoint” separately from
+plugin load or persistence evidence. A non-zero `xbot once` exit caused by a
+provider error is not proof that the plugin failed to load, and an empty trace
+is not proof that a no-op turn succeeded.
 
 When startup says the module cannot be imported, rerun the provenance command
 from step 1 and then:

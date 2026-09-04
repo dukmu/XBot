@@ -303,6 +303,74 @@ on names. The invariant is that failed discovery leaves the previous complete
 set or no set—never an undocumented mixture. Test the failure in the middle of
 a batch and a repeated identical discovery.
 
+## HTTP/SSE route: transport adapter at the carrier boundary
+
+Only a server-profile plugin should add a public route. Keep request and
+response models in the owning package's `protocol.py`; the domain service
+returns its own typed result. Contribute an `APIRouter` through the server
+carrier so the route and its exception handlers are one fiber-owned effect:
+
+```python
+from fastapi import APIRouter
+from XBotv2.server import contribute_router
+
+
+class NotesRoutes:
+    def __init__(self, notes) -> None:
+        self._notes = notes
+
+    async def list_notes(self):
+        return await self._notes.list()
+
+
+class NotesHttpPlugin:
+    name = "notes.http"
+    inject = ["server", "notes"]
+
+    async def apply(self, ctx, config=None) -> None:
+        router = APIRouter()
+        routes = NotesRoutes(ctx.notes)
+        router.add_api_route("/notes", routes.list_notes, methods=["GET"])
+        await contribute_router(ctx, owner=self.name, router=router)
+
+
+plugin = NotesHttpPlugin()
+```
+
+`NotesRoutes` is a named handler whose constructor receives the narrow
+`notes` port; it exposes an `async list_notes()` method. In a real plugin,
+return a typed Pydantic response model and handle domain errors at this
+boundary. Keeping the handler named makes ownership, testing, and cleanup
+explicit.
+
+This compact example is suitable for a read-only route only. For a real
+contract, define a Pydantic request/response model and translate the domain
+value explicitly. Do not put FastAPI objects in a Tool, expose the Agent
+`Context` through a route, or call an HTTP handler from a human slash command.
+The server's `http/route` event uses a single carrier; duplicate method/path
+or exception-handler registrations fail loudly and unload removes exactly the
+contribution.
+
+## Client-facing runtime events
+
+The Agent loop may emit `ClientEvent` values through the application
+`client_events` port. A plugin should publish a typed event or return a
+`ToolResult(client_events=...)` when the event is part of its user-visible
+contract; it should not invent a second socket, waiter, or polling channel.
+HTTP/SSE clients receive validated `ServerEvent` envelopes through the session
+event stream. ACP and TUI adapters consume the same event contract. Keep
+runtime-only waiters in the owning service and cancel them on
+`Events.SESSION_CLOSE`.
+
+## Blocking and asynchronous handlers
+
+An `async` event handler still runs on the event loop. Use async file/network
+APIs or `asyncio.to_thread` around genuinely blocking work. Do not create a
+fire-and-forget task from `apply` or an event callback without retaining and
+cancelling it from a named owner. A synchronous handler is acceptable for
+small in-memory mutation and is often easier to debug. Listener errors follow
+the selected dispatch primitive; hiding them in a task changes the contract.
+
 ## Boundary Review
 
 Before adding code, answer:

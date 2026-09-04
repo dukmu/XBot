@@ -459,6 +459,34 @@ An `S` plugin `Config` is validated with defaults before apply. A plain dict
 Config only shallow-merges defaults and is intentionally loose; avoid it for a
 new external plugin. `Config = None` performs no validation.
 
+### Schema signatures worth memorising
+
+The DSL takes collections as one value. In particular, use
+`S.enum(["safe", "fast"])`, not positional arguments, and use
+`S.array(S.string())`, not a Python type:
+
+```python
+Config = S.object({
+    "mode": S.enum(["safe", "fast"]).default("safe"),
+    "paths": S.array(S.string()).default([]),
+    "endpoint": S.string().optional(),
+}).strict()
+```
+
+`S.object` validates a mapping, recursively validates known fields, preserves
+unknown fields by default, and drops them with `.strict()`. It never rejects
+unknown fields merely because `.strict()` was used. `.optional()` omits a
+missing object key; it is not a required-service fallback and should not be
+used to hide a broken composition. `.default(value)` deep-copies the value on
+each validation. `S.number()` rejects `bool`, even though Python considers
+`bool` an `int`. `S.union([...])` tries branches in declaration order and
+aggregates errors. `schema.validate(value)` returns a new value and leaves the
+input untouched.
+
+For an invalid config, inspect `SchemaValidationError.path` (for example
+`$.servers[0].url`) and the original exception stored on the `PluginHandle`;
+the loader does not replace it with a generic plugin error.
+
 ## State Guarantees and Limits
 
 ```python
@@ -483,3 +511,57 @@ Namespace prefixes are logical ownership, not separate files. StateService is
 a small JSON KV contract, not a general database transaction system: when a
 domain update must change several fields atomically, serialize them as one
 validated snapshot value.
+
+## Minimal XBot composition fixtures
+
+`Context(data_dir=tmp_path)` creates XCore's root StateService. It does not
+magically create XBot application services. A plugin test should set only the
+declared dependencies, using the real public implementation ports where
+possible:
+
+```python
+paths = RuntimePaths.from_data_dir(tmp_path / "data")
+ctx = Context(data_dir=paths.data_dir)
+ctx.set("runtime_paths", paths)
+ctx.set("workspace_root", tmp_path / "workspace")
+ctx.set("data_root", paths.data_dir)
+ctx.set("runtime_log", DEFAULT_RUNTIME_LOG)
+ctx.set("tools", ToolsService(ToolRegistry()))
+```
+
+Session-level plugins additionally need a `SessionLaunch`, `ThreadPaths`,
+`LoopState`, `ArtifactStore`, or `ThreadPersistence` as specified by their
+`inject` declaration. The constructors and ownership table are in
+[plugins_list.md](plugins_list.md). A test that omits one of these should
+assert `handle.missing_dependencies`; it should not inject `None` solely to
+make the fiber load.
+
+## Async listeners and blocking work
+
+`ctx.on` accepts synchronous and asynchronous listeners. Declaring `async def`
+does not make blocking file, subprocess, or network work non-blocking. For
+short in-memory work, a synchronous listener is clearer. For blocking I/O in
+an async event path, use an async client or explicitly isolate the blocking
+operation with `await asyncio.to_thread(...)`; preserve the event's ordering
+and error contract. Do not spawn an untracked task from a listener to hide
+errors or to outlive the owning fiber. If the work is a resource or background
+job, give it a named owner and register cancellation/cleanup with the plugin.
+
+## Loader resolution and fresh plugin instances
+
+For a tree entry `name: package_name`, XBot tries these imports in order:
+
+```text
+XBotv2.package_name.plugin
+package_name.plugin
+XBotv2.package_name
+package_name
+```
+
+The resolved module must export `plugin`, `Plugin`, or be a plugin itself. An
+exported object is reconstructed with `type(exported)()` before mounting, so a
+module-level `plugin = Component()` must be no-argument constructible. Put
+runtime dependencies and mutable state in objects created by `apply`, not in
+the exported singleton. The tree loader reports the imported module origin in
+an import error; compare it with the runtime provenance command before editing
+the plugin.
