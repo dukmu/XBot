@@ -5,6 +5,27 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
+test("opens DSh-style client and server settings and applies the theme locally", async ({ page }) => {
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "Open settings" }).click();
+  const settings = page.getByRole("dialog", { name: "Client settings" });
+  await expect(settings).toBeVisible();
+
+  await settings.getByRole("radio", { name: /Dark/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#0f1115");
+  await settings.getByRole("radio", { name: /Light/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#ffffff");
+
+  await settings.getByRole("button", { name: "Server" }).click();
+  await expect(page.getByRole("dialog", { name: "Server settings" })).toContainText("Read-only preview");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Server settings" })).toHaveCount(0);
+});
+
 test("collapses to the DSh rail and expands into focused session search", async ({ page }) => {
   test.skip((page.viewportSize()?.width || 0) <= 760, "mobile uses the overlay sidebar");
   await page.getByRole("button", { name: "Collapse sidebar" }).click();

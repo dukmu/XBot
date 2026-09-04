@@ -112,6 +112,7 @@ export type RuntimeAction =
   | { type: "tasks"; tasks: TaskData[] }
   | { type: "todos"; todos: TodoItemData[] }
   | { type: "pending_inputs"; items: PendingInput[] }
+  | { type: "pending_input_failed"; messageId: string }
   | { type: "user_message"; id: string; content: string; images: MessageImage[] }
   | { type: "user_message_failed"; id: string }
   | { type: "event"; event: ServerEvent }
@@ -162,7 +163,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "catalog_event_stream":
       return { ...state, catalogEventStreamConnected: action.value };
     case "threads":
-      return { ...state, threads: action.threads };
+      return { ...state, threads: action.threads, ...currentThreadProjection(state, action.threads) };
     case "providers":
       return { ...state, providers: action.providers };
     case "agents":
@@ -257,6 +258,11 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, todos: action.todos };
     case "pending_inputs":
       return { ...state, pendingInputs: action.items };
+    case "pending_input_failed":
+      return {
+        ...state,
+        pendingInputs: state.pendingInputs.filter((item) => item.message_id !== action.messageId),
+      };
     case "user_message":
       return {
         ...state,
@@ -332,7 +338,12 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
   const data = event.data;
   switch (event.type) {
     case "turn_started":
-      return { ...state, turnRunning: true };
+      return {
+        ...state,
+        turnRunning: true,
+        sessionStats: updateLiveTurn(state.sessionStats, data.turn),
+        current: updateSlots(state.current, data.status_slots),
+      };
     case "turn_finished":
     case "turn_cancelled":
       return {
@@ -364,13 +375,20 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           arrayValue(data.tool_calls),
         ),
         assistantDraft: null,
+        sessionStats: addAssistantTiming(state.sessionStats, data.timing),
+        current: updateSlots(state.current, data.status_slots),
       };
     case "tool_calls_started":
       return { ...state, entries: upsertToolCalls(state.entries, arrayValue(data.tool_calls)) };
     case "tool_call_delta":
       return { ...state, entries: applyToolDeltas(state.entries, arrayValue(data.tool_calls)) };
     case "tool_result":
-      return { ...state, entries: applyToolResult(state.entries, data) };
+      return {
+        ...state,
+        entries: applyToolResult(state.entries, data),
+        sessionStats: addToolTiming(state.sessionStats, data.timing),
+        current: updateSlots(state.current, data.status_slots),
+      };
     case "permission_request":
       return queueInteraction(state, permissionRequest(data));
     case "user_input_required":
@@ -387,7 +405,12 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: [...state.entries, noticeEntry(stringValue(data.reason) || "Permission denied", "error")],
       };
     case "usage":
-      return { ...state, usage: addUsage(state.usage, data) };
+      return {
+        ...state,
+        usage: addUsage(state.usage, data),
+        sessionStats: addUsageOutputTokens(state.sessionStats, data),
+        current: updateSlots(state.current, data.status_slots),
+      };
     case "queue_updated":
       return { ...state, pendingInputs: pendingInputs(data.items) };
     case "task_updated": {
@@ -400,6 +423,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
+        current: updateSlots(state.current, data.status_slots),
       };
     case "message": {
       const id = stringValue(data.id);
@@ -408,6 +432,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       if (index >= 0) return state;
       return {
         ...state,
+        pendingInputs: state.pendingInputs.filter((item) => item.message_id !== id),
         entries: [
           ...state.entries,
           {
@@ -590,14 +615,39 @@ function upsertToolCalls(entries: TimelineEntry[], rawCalls: unknown[]): Timelin
 }
 
 function applyToolDeltas(entries: TimelineEntry[], deltas: unknown[]): TimelineEntry[] {
-  return upsertToolCalls(entries, deltas.map((raw) => {
+  let copy = [...entries];
+  for (const raw of deltas) {
     const item = objectValue(raw);
-    return {
-      id: stringValue(item.tool_call_id) || stringValue(item.id),
+    const id = stringValue(item.tool_call_id) || stringValue(item.id);
+    const previousId = stringValue(item.replaces_tool_call_id);
+    if (previousId && previousId !== id && previousId.startsWith("tool_")) {
+      copy = renameToolCall(copy, previousId, id);
+    }
+    copy = upsertToolCalls(copy, [{
+      id,
       name: item.name,
       args: item.args,
-    };
-  }));
+    }]);
+  }
+  return copy;
+}
+
+function renameToolCall(entries: TimelineEntry[], previousId: string, id: string): TimelineEntry[] {
+  const previousIndex = entries.findIndex(
+    (entry) => entry.kind === "tool" && entry.toolCallId === previousId,
+  );
+  if (previousIndex < 0 || !id) return entries;
+  const currentIndex = entries.findIndex(
+    (entry) => entry.kind === "tool" && entry.toolCallId === id,
+  );
+  const copy = [...entries];
+  if (currentIndex >= 0) {
+    copy.splice(previousIndex, 1);
+    return copy;
+  }
+  const previous = copy[previousIndex] as ToolEntry;
+  copy[previousIndex] = { ...previous, toolCallId: id };
+  return copy;
 }
 
 function applyToolResult(entries: TimelineEntry[], data: JsonObject): TimelineEntry[] {
@@ -672,6 +722,37 @@ function addUsage(current: UsageData, data: JsonObject): UsageData {
   };
 }
 
+function updateLiveTurn(current: SessionStatsData, turn: unknown): SessionStatsData {
+  const value = numberValue(turn);
+  return value > current.turns ? { ...current, turns: value } : current;
+}
+
+function addAssistantTiming(current: SessionStatsData, value: unknown): SessionStatsData {
+  const timing = objectValue(value);
+  const llm = numberValue(timing.llm_ms);
+  const ttft = numberValue(timing.ttft_ms);
+  const decode = numberValue(timing.decode_ms);
+  if (!(llm || ttft || decode)) return current;
+  return {
+    ...current,
+    steps: current.steps + 1,
+    llm_ms: current.llm_ms + llm,
+    ttft_ms: current.ttft_ms + ttft,
+    ttft_steps: current.ttft_steps + (Object.hasOwn(timing, "ttft_ms") ? 1 : 0),
+    decode_ms: current.decode_ms + decode,
+  };
+}
+
+function addToolTiming(current: SessionStatsData, value: unknown): SessionStatsData {
+  const duration = numberValue(objectValue(value).duration_ms);
+  return duration ? { ...current, tool_ms: current.tool_ms + duration } : current;
+}
+
+function addUsageOutputTokens(current: SessionStatsData, data: JsonObject): SessionStatsData {
+  const output = numberValue(data.output_tokens);
+  return output ? { ...current, decode_tokens: current.decode_tokens + output } : current;
+}
+
 function normalizeUsage(usage: Partial<UsageData>): UsageData {
   return {
     input_tokens: numberValue(usage.input_tokens),
@@ -702,6 +783,67 @@ function normalizeSessionStats(value: unknown): SessionStatsData {
 function updateSlots(current: RuntimeSession | null, slots: unknown): RuntimeSession | null {
   if (!current || !slots || typeof slots !== "object" || Array.isArray(slots)) return current;
   return { ...current, status_slots: slots as Record<string, string> };
+}
+
+function currentThreadProjection(
+  state: RuntimeState,
+  threads: ThreadSummary[],
+): Pick<RuntimeState, "current" | "usage" | "sessionStats"> {
+  const current = state.current;
+  if (!current) return {
+    current: null,
+    usage: state.usage,
+    sessionStats: state.sessionStats,
+  };
+  const thread = threads.find((item) => item.thread_id === current.thread_id);
+  if (!thread) return {
+    current,
+    usage: state.usage,
+    sessionStats: state.sessionStats,
+  };
+  return {
+    current: {
+      ...current,
+      agent_name: thread.agent,
+      provider: thread.provider,
+      model: thread.model,
+      model_mode: thread.model_mode,
+      context_window: thread.context_window,
+      status_slots: thread.status_slots,
+    },
+    usage: mergeLiveUsage(state.usage, thread.usage),
+    sessionStats: mergeLiveStats(state.sessionStats, thread.session_stats),
+  };
+}
+
+function mergeLiveUsage(current: UsageData, snapshot: UsageData): UsageData {
+  const next = normalizeUsage(snapshot);
+  return {
+    input_tokens: Math.max(current.input_tokens, next.input_tokens),
+    output_tokens: Math.max(current.output_tokens, next.output_tokens),
+    total_tokens: Math.max(current.total_tokens, next.total_tokens),
+    requests: Math.max(current.requests, next.requests),
+    // Context is a point-in-time value. Do not let a concurrently returned
+    // snapshot move a newer stream event backwards during a running turn.
+    context_tokens: Math.max(current.context_tokens, next.context_tokens),
+    cache_read_input_tokens: Math.max(current.cache_read_input_tokens, next.cache_read_input_tokens),
+    cache_creation_input_tokens: Math.max(current.cache_creation_input_tokens, next.cache_creation_input_tokens),
+    prompt_cache_write_tokens: Math.max(current.prompt_cache_write_tokens, next.prompt_cache_write_tokens),
+  };
+}
+
+function mergeLiveStats(current: SessionStatsData, snapshot: SessionStatsData): SessionStatsData {
+  const next = normalizeSessionStats(snapshot);
+  return {
+    turns: Math.max(current.turns, next.turns),
+    steps: Math.max(current.steps, next.steps),
+    llm_ms: Math.max(current.llm_ms, next.llm_ms),
+    tool_ms: Math.max(current.tool_ms, next.tool_ms),
+    ttft_ms: Math.max(current.ttft_ms, next.ttft_ms),
+    ttft_steps: Math.max(current.ttft_steps, next.ttft_steps),
+    decode_ms: Math.max(current.decode_ms, next.decode_ms),
+    decode_tokens: Math.max(current.decode_tokens, next.decode_tokens),
+  };
 }
 
 function runtimeSession(session: OpenSessionResponse): RuntimeSession {

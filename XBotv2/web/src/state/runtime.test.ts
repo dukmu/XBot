@@ -54,6 +54,65 @@ describe("runtimeReducer", () => {
     });
   });
 
+  it("projects model and tool timing as soon as their events arrive", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        content: "live",
+        tool_calls: [],
+        timing: { llm_ms: 100, ttft_ms: 25, decode_ms: 75 },
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 10, output_tokens: 5, total_tokens: 15, context_tokens: 500 }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_result", {
+        tool_call_id: "call-1", name: "shell", content: "ok", status: "success",
+        timing: { duration_ms: 40 },
+      }),
+    });
+
+    expect(state.sessionStats).toMatchObject({
+      turns: 1, steps: 1, llm_ms: 100, tool_ms: 40,
+      ttft_ms: 25, ttft_steps: 1, decode_ms: 75, decode_tokens: 5,
+    });
+    expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 500 });
+  });
+
+  it("keeps a newer live usage projection ahead of a stale thread refresh", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 20, output_tokens: 5, total_tokens: 25, context_tokens: 700 }),
+    });
+    state = runtimeReducer(state, { type: "threads", threads: [{
+      session_id: opened.session_id,
+      thread_id: opened.thread_id,
+      status: "active",
+      kind: "main",
+      turn_status: "running",
+      parent_thread_id: "",
+      agent: opened.agent_name,
+      provider: opened.provider,
+      model: opened.model,
+      model_mode: opened.model_mode,
+      context_window: opened.context_window,
+      message_count: 0,
+      usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10, context_tokens: 400 },
+      session_stats: { ...EMPTY_SESSION_STATS },
+      pending_interactions: [],
+      status_slots: {},
+    }] });
+
+    expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
+  });
+
   it("renders injected model context with provenance and content, not as a user", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "history",
@@ -215,6 +274,33 @@ describe("runtimeReducer", () => {
       event: event("turn_failed", { message: "provider unavailable" }),
     });
     expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-1"]);
+  });
+
+  it("removes only the optimistic queue item when its request fails", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
+        message_id: "queued-1", content: "continue later", target: "next-turn",
+        source: "user", image_count: 0, artifact_count: 0,
+      }, {
+        message_id: "queued-2", content: "keep this", target: "next-turn",
+        source: "user", image_count: 0, artifact_count: 0,
+      }] }),
+      { type: "pending_input_failed", messageId: "queued-1" },
+    );
+    expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-2"]);
+  });
+
+  it("removes a steered input when its delivery message reaches the transcript", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
+      message_id: "steer-1", content: "interrupt with this", target: "next-step",
+      source: "user", image_count: 0, artifact_count: 0,
+    }] });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", { id: "steer-1", role: "user", content: "interrupt with this" }),
+    });
+    expect(state.pendingInputs).toEqual([]);
+    expect(state.entries).toHaveLength(1);
   });
 
   it("detaches all thread projections when the current session is deleted", () => {
@@ -411,6 +497,56 @@ describe("runtimeReducer", () => {
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
+  });
+
+  it("reconciles provisional streamed tool ids with the executed call", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_call_delta", {
+        tool_calls: [{
+          tool_call_id: "tool_0",
+          name: "shell",
+          args_delta: '{"command":"pwd"}',
+          index: 0,
+        }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_call_delta", {
+        tool_calls: [{
+          tool_call_id: "call_shell",
+          replaces_tool_call_id: "tool_0",
+          name: "shell",
+          args_delta: "",
+          index: 0,
+        }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_calls_started", {
+        tool_calls: [{ id: "call_shell", name: "shell", args: { command: "pwd" } }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_result", {
+        tool_call_id: "call_shell",
+        name: "shell",
+        content: "/workspace",
+        status: "success",
+      }),
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "tool",
+      toolCallId: "call_shell",
+      status: "success",
+      result: "/workspace",
+    });
   });
 
   it("closes a turn and preserves a visible error when the stream fails", () => {

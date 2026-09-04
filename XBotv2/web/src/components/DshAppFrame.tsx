@@ -8,6 +8,8 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import css from "./DshAppFrame.module.css";
 
 const SIDEBAR_DEFAULT = 280;
+const SIDEBAR_MOBILE_MAX = 264;
+const SIDEBAR_MOBILE_MIN = 236;
 const SIDEBAR_MIN = 264;
 const SIDEBAR_MAX = 420;
 const SIDEBAR_COLLAPSED = 56;
@@ -44,7 +46,8 @@ export function DshAppFrame({ mobileSidebarOpen, sidebar, children }: DshAppFram
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
   const mobile = viewport <= 760;
   const collapsed = !mobile && (narrow ? !narrowExpanded : preference === 0);
-  const width = mobile ? SIDEBAR_DEFAULT : collapsed ? SIDEBAR_COLLAPSED : (preference || SIDEBAR_DEFAULT);
+  const mobileWidth = Math.min(SIDEBAR_MOBILE_MAX, Math.max(SIDEBAR_MOBILE_MIN, Math.round(viewport * 0.84)));
+  const width = mobile ? mobileWidth : collapsed ? SIDEBAR_COLLAPSED : (preference || SIDEBAR_DEFAULT);
 
   useEffect(() => {
     const element = frame.current;

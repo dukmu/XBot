@@ -6,6 +6,7 @@ import { MessageItem } from "./MessageItem";
 
 const TIMELINE_WINDOW = 160;
 const TIMELINE_BATCH = 80;
+const FOLLOW_THRESHOLD = 32;
 
 interface TimelineProps {
   entries: TimelineEntry[];
@@ -106,19 +107,37 @@ export const Timeline = memo(function Timeline({
 
   useEffect(() => {
     const element = scrollerOf(list.current);
-    if (shouldFollow.current && element) element.scrollTo({ top: element.scrollHeight });
+    if (!element || !shouldFollow.current) return;
+    // Re-check the distance at the point of the update.  A scroll event can
+    // be queued behind a streamed delta; never pull the user back down after
+    // they have already moved away from the end.
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distance <= FOLLOW_THRESHOLD) element.scrollTo({ top: element.scrollHeight });
   }, [entries, assistantDraft?.content, assistantDraft?.reasoning]);
 
   useEffect(() => {
     const element = scrollerOf(list.current);
     if (!element) return;
     const onScroll = () => {
-      const following = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+      const following = element.scrollHeight - element.scrollTop - element.clientHeight <= FOLLOW_THRESHOLD;
       shouldFollow.current = following;
       setShowLatest(!following || range.end < entries.length);
     };
+    const onWheel = (event: WheelEvent) => {
+      if (!(event.target instanceof Node) || !list.current?.contains(event.target)) return;
+      if (event.deltaY < 0) {
+        // Record the user's intent before the browser dispatches the paired
+        // scroll event, so a streamed render in between cannot steal focus.
+        shouldFollow.current = false;
+        setShowLatest(true);
+      }
+    };
     element.addEventListener("scroll", onScroll, { passive: true });
-    return () => element.removeEventListener("scroll", onScroll);
+    element.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", onWheel);
+    };
   }, [entries.length, range.end]);
 
   return (

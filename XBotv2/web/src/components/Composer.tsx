@@ -43,8 +43,11 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   useEffect(() => {
     const element = textarea.current;
     if (!element) return;
+    const styles = window.getComputedStyle(element);
+    const minHeight = Number.parseFloat(styles.minHeight) || 46;
+    const maxHeight = Number.parseFloat(styles.maxHeight) || 336;
     element.style.height = "0px";
-    element.style.height = `${Math.min(336, Math.max(46, element.scrollHeight))}px`;
+    element.style.height = `${Math.min(maxHeight, Math.max(minHeight, element.scrollHeight))}px`;
   }, [content]);
 
   useEffect(() => setCommandIndex(0), [content]);

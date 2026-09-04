@@ -39,6 +39,7 @@ describe("SessionSidebar", () => {
         current={null}
         onClose={noop}
         onToggle={noop}
+        onSettings={noop}
         onNew={noop}
         onRefresh={async () => undefined}
         refreshing={false}

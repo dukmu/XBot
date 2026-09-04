@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, FolderSearch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
@@ -15,6 +15,7 @@ import { DirectoryBrowser } from "../components/DirectoryBrowser";
 import { TaskDock } from "../components/TaskDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
+import { SettingsDialog, type ThemePreference } from "../components/SettingsDialog";
 import { commandCatalog, parseCommand } from "../commands";
 import type { CommandInfo, CommandResultData, DirectoryListingData, SessionSummary } from "../api/types";
 
@@ -29,7 +30,28 @@ export function App() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<SessionSummary | null>(null);
   const [composerDraft, setComposerDraft] = useState<{ id: number; value: string } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const commands = useMemo(() => commandCatalog(runtime.commands), [runtime.commands]);
+
+  useEffect(() => {
+    const media = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+    const applyTheme = () => {
+      const effective = themePreference === "system"
+        ? (media?.matches ? "dark" : "light")
+        : themePreference;
+      document.documentElement.dataset.theme = effective;
+      document.documentElement.style.colorScheme = effective;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", effective === "dark" ? "#0f1115" : "#ffffff");
+    };
+    applyTheme();
+    if (themePreference !== "system" || !media) return;
+    media.addEventListener?.("change", applyTheme);
+    return () => media.removeEventListener?.("change", applyTheme);
+  }, [themePreference]);
 
   useEffect(() => {
     setCommandOutput(null);
@@ -148,6 +170,7 @@ export function App() {
         current={state.current}
         onClose={() => setSidebarOpen(false)}
         onToggle={toggle}
+        onSettings={() => setSettingsOpen(true)}
         onNew={() => setNewSessionOpen(true)}
         onRefresh={runtime.refreshSessions}
         refreshing={state.loading}
@@ -309,6 +332,17 @@ export function App() {
         />
       )}
 
+      {settingsOpen && (
+        <SettingsDialog
+          themePreference={themePreference}
+          onThemeChange={(preference) => {
+            setThemePreference(preference);
+            window.localStorage.setItem("xbot.theme", preference);
+          }}
+          onClose={closeSettings}
+        />
+      )}
+
       {helpQuery !== null && (
         <CommandHelpDialog
           commands={commands}
@@ -404,6 +438,11 @@ function unquote(value: string): string {
     return input.slice(1, -1);
   }
   return input;
+}
+
+function readThemePreference(): ThemePreference {
+  const value = window.localStorage.getItem("xbot.theme");
+  return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 
 function NewSessionDialog({

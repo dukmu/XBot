@@ -17,6 +17,8 @@ export class RuntimeEventController {
   private events: ServerEvent[] = [];
   private flushTimer: number | null = null;
   private threadRefreshTimer: number | null = null;
+  private liveRefreshTimer: number | null = null;
+  private liveRefreshGeneration: number | null = null;
   private readonly taskTimers = new Map<string, number>();
   private generation: number | null = null;
 
@@ -27,7 +29,7 @@ export class RuntimeEventController {
     this.connection = new SessionEventConnection(api);
   }
 
-  start(session: SessionAddress, generation: number): void {
+  start(session: SessionAddress, generation: number, running = false): void {
     this.generation = generation;
     this.connection.start(session, {
       onEvent: (event) => this.handle(event, generation),
@@ -38,6 +40,7 @@ export class RuntimeEventController {
         if (this.isCurrent(generation) && !retrying) this.listener.onError(error);
       },
     });
+    if (running) this.startLiveRefresh(session.session_id, generation);
   }
 
   stop(): void {
@@ -45,10 +48,13 @@ export class RuntimeEventController {
     this.connection.stop();
     if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
     if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
+    if (this.liveRefreshTimer !== null) window.clearTimeout(this.liveRefreshTimer);
     for (const timer of this.taskTimers.values()) window.clearTimeout(timer);
     this.events = [];
     this.flushTimer = null;
     this.threadRefreshTimer = null;
+    this.liveRefreshTimer = null;
+    this.liveRefreshGeneration = null;
     this.taskTimers.clear();
   }
 
@@ -63,7 +69,41 @@ export class RuntimeEventController {
       this.flush(generation);
       this.listener.onEvents([event]);
     }
+    if (event.type === "turn_started") this.startLiveRefresh(event.session_id, generation);
+    if (["turn_finished", "turn_cancelled", "error"].includes(event.type)) {
+      this.stopLiveRefresh();
+      this.refreshThreads(event.session_id, generation);
+    }
     if (event.type === "task_updated") this.handleTask(event, generation);
+  }
+
+  private startLiveRefresh(sessionId: string, generation: number): void {
+    this.stopLiveRefresh();
+    this.liveRefreshGeneration = generation;
+    const refresh = () => {
+      if (this.liveRefreshGeneration !== generation || !this.isCurrent(generation)) return;
+      void this.refreshThreads(sessionId, generation).finally(() => {
+        if (this.liveRefreshGeneration !== generation || !this.isCurrent(generation)) return;
+        this.liveRefreshTimer = window.setTimeout(refresh, 750);
+      });
+    };
+    this.liveRefreshTimer = window.setTimeout(refresh, 750);
+  }
+
+  private stopLiveRefresh(): void {
+    this.liveRefreshGeneration = null;
+    if (this.liveRefreshTimer !== null) window.clearTimeout(this.liveRefreshTimer);
+    this.liveRefreshTimer = null;
+  }
+
+  private refreshThreads(sessionId: string, generation: number): Promise<void> {
+    return this.api.listThreads(sessionId)
+      .then((threads) => {
+        if (this.isCurrent(generation)) this.listener.onThreads(threads);
+      })
+      .catch((error) => {
+        if (this.isCurrent(generation)) this.listener.onError(error);
+      });
   }
 
   private flush(generation: number): void {
@@ -91,11 +131,7 @@ export class RuntimeEventController {
     this.threadRefreshTimer = window.setTimeout(() => {
       this.threadRefreshTimer = null;
       if (!this.isCurrent(generation)) return;
-      void this.api.listThreads(event.session_id)
-        .then((threads) => {
-          if (this.isCurrent(generation)) this.listener.onThreads(threads);
-        })
-        .catch((error) => this.listener.onError(error));
+      void this.refreshThreads(event.session_id, generation);
     }, 250);
   }
 

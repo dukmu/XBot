@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, TerminalSquare, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenSessionResponse, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
 
@@ -13,6 +13,7 @@ interface SessionSidebarProps {
   current: Pick<OpenSessionResponse, "session_id" | "thread_id"> | null;
   onClose: () => void;
   onToggle: () => void;
+  onSettings: () => void;
   onNew: () => void;
   onRefresh: () => Promise<void>;
   refreshing: boolean;
@@ -102,6 +103,9 @@ export function SessionSidebar(props: SessionSidebarProps) {
       <div className="brand-row">
         <span className="brand-mark"><TerminalSquare size={19} /></span>
         <strong className="sidebar-wide">XBot</strong>
+        <button className="icon-button settings-button sidebar-wide" title="Settings" aria-label="Open settings" onClick={props.onSettings}>
+          <Settings size={16} />
+        </button>
         <button className="icon-button sidebar-toggle" title={props.collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-label={props.collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={props.onToggle}>
           {rail ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={17} />}
         </button>
@@ -120,6 +124,9 @@ export function SessionSidebar(props: SessionSidebarProps) {
           }}><Search size={18} /></button>
           <button type="button" title="Refresh sessions" aria-label="Refresh sessions" disabled={props.refreshing} onClick={() => void props.onRefresh()}>
             <RefreshCw size={18} className={props.refreshing ? "spin" : ""} />
+          </button>
+          <button type="button" title="Settings" aria-label="Open settings" onClick={props.onSettings}>
+            <Settings size={18} />
           </button>
         </div>
       )}

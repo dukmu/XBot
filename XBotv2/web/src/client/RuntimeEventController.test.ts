@@ -26,6 +26,29 @@ describe("RuntimeEventController", () => {
     controller.stop();
     vi.useRealTimers();
   });
+
+  it("refreshes an already-running thread without waiting for another event", async () => {
+    vi.useFakeTimers();
+    const listThreads = vi.fn(async () => []);
+    const api = {
+      async *streamEvents() {
+        await Promise.resolve();
+        yield event("assistant_message_delta");
+        await new Promise(() => undefined);
+      },
+      listThreads,
+    };
+    const controller = new RuntimeEventController(api, listener({}));
+
+    controller.start({ session_id: "s", thread_id: "t", event_cursor: 0 } as OpenSessionResponse, 1, true);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(listThreads).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listThreads).toHaveBeenCalledWith("s");
+
+    controller.stop();
+    vi.useRealTimers();
+  });
 });
 
 function event(type: ServerEvent["type"]): ServerEvent {

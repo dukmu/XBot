@@ -72,6 +72,16 @@
 }
 
 @media (max-width: 580px) {
+  .message { margin-bottom: 20px; }
+  .user > .content {
+    padding: 8px 12px;
+    border-radius: 17px;
+    font-size: 14px;
+    line-height: 21px;
+  }
+  .assistant > .content { font-size: 14px; line-height: 1.6; }
   .user > .content,
   .images { max-width: 88%; }
+  .images { gap: 6px; }
+  .imageButton img { width: min(180px, 100%); max-height: 180px; }
 }

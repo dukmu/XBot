@@ -30,6 +30,8 @@ export function UsageStatsLine({ usage, stats = EMPTY_STATS }: {
       stats.decode_ms > 0 ? `${formatRate(stats.decode_tokens / (stats.decode_ms / 1_000))} tok/s` : "",
     ].filter(Boolean);
     if (speed.length) groups.push(speed.join(" · "));
+  } else if (stats.tool_ms > 0) {
+    groups.push(`Tool ${formatDuration(stats.tool_ms)}`);
   }
   const input = billedInput(usage);
   if (input > 0 || usage.output_tokens > 0) {

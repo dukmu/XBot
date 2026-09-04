@@ -58,3 +58,9 @@
 @media (prefers-reduced-motion: reduce) {
   .block[data-state="running"] .summary::after { animation: none; }
 }
+
+@media (max-width: 580px) {
+  .summary { min-height: 26px; padding-inline: 2px; font-size: 13px; }
+  .separator { margin-inline: 6px; }
+  .content { margin-left: 0; padding: 5px 4px 8px; font-size: 12px; }
+}

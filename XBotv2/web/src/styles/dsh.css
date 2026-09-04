@@ -22,13 +22,16 @@
   --dsw-static-neutral-bluish-75: rgb(241 243 245);
   --dsw-static-neutral-bluish-100: rgb(235 238 242);
   --dsw-static-neutral-bluish-200: rgb(225 229 238);
-  --dsw-static-neutral-bluish-400: rgb(173 178 184);
-  --dsw-static-neutral-bluish-600: rgb(129 133 140);
-  --dsw-static-neutral-bluish-700: rgb(97 102 107);
-  --dsw-static-neutral-bluish-1000: rgb(15 17 21);
+  /* Keep secondary and tertiary labels readable against the white DSH
+     surfaces. The original neutral-600 token is too faint for compact
+     mobile labels and status text. */
+  --dsw-static-neutral-bluish-400: rgb(105 116 130);
+  --dsw-static-neutral-bluish-600: rgb(84 94 108);
+  --dsw-static-neutral-bluish-700: rgb(62 70 82);
+  --dsw-static-neutral-bluish-1000: rgb(20 24 32);
   --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-00);
   --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-00);
-  --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-layer-2: rgb(250 251 253);
   --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-00);
   --dsw-alias-border-l1: rgb(0 0 0 / 4%);
   --dsw-alias-border-l2-darkmode-thin: rgb(0 0 0 / 10%);
@@ -49,6 +52,9 @@
   --dsw-alias-state-error-primary: rgb(236 19 19);
   --dsw-alias-state-success-primary: rgb(34 197 94);
   --dsw-alias-state-warn-primary: rgb(245 158 11);
+  --dsw-alias-bg-mask-1: rgb(15 17 21 / 24%);
+  --dsh-drop-mask: rgb(255 255 255 / 76%);
+  --dsh-image-mask: rgb(15 17 21 / 64%);
   --dsw-specific-bubble: var(--dsw-static-deepseek-50);
   --dsw-specific-input-major: var(--dsw-static-neutral-bluish-00);
   --dsw-specific-menu: var(--dsw-alias-bg-layer-3);
@@ -57,6 +63,12 @@
   --dsw-specific-sidebar-nav-item-active: var(--dsw-static-neutral-bluish-100);
   --dsw-specific-sidebar-nav-item-hover: var(--dsw-static-neutral-bluish-75);
   --dsw-shadow-lv2: 0 4px 16px rgb(0 0 0 / 8%), 0 1px 3px rgb(0 0 0 / 6%);
+  --dsh-error-bg: rgb(254 242 241);
+  --dsh-error-border: rgb(194 56 47 / 30%);
+  --dsh-error-text: rgb(145 43 37);
+  --dsh-warning-bg: rgb(255 248 230);
+  --dsh-warning-border: rgb(194 130 25 / 30%);
+  --dsh-warning-text: rgb(125 79 12);
   --bg: var(--dsw-alias-bg-base);
   --panel: var(--dsw-alias-bg-layer-1);
   --panel-raised: var(--dsw-alias-bg-layer-2);
@@ -69,10 +81,68 @@
   --blue: var(--dsw-alias-state-business-primary);
   --amber: var(--dsw-alias-state-warn-primary);
   --red: var(--dsw-alias-state-error-primary);
-  --sidebar-width: 280px;
+  --sidebar-width: 264px;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-base);
   color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --dsw-static-deepseek-50: rgb(28 42 69);
+  --dsw-static-deepseek-100: rgb(37 56 91);
+  --dsw-static-deepseek-200: rgb(56 82 132);
+  --dsw-static-deepseek-500: rgb(116 163 238);
+  --dsw-static-neutral-bluish-00: rgb(15 17 21);
+  --dsw-static-neutral-bluish-50: rgb(22 25 31);
+  --dsw-static-neutral-bluish-60: rgb(25 29 36);
+  --dsw-static-neutral-bluish-75: rgb(29 33 41);
+  --dsw-static-neutral-bluish-100: rgb(34 39 48);
+  --dsw-static-neutral-bluish-200: rgb(47 54 65);
+  --dsw-static-neutral-bluish-400: rgb(132 145 162);
+  --dsw-static-neutral-bluish-600: rgb(158 169 184);
+  --dsw-static-neutral-bluish-700: rgb(202 210 221);
+  --dsw-static-neutral-bluish-1000: rgb(244 247 251);
+  --dsw-alias-bg-base: rgb(15 17 21);
+  --dsw-alias-bg-layer-1: rgb(24 27 33);
+  --dsw-alias-bg-layer-2: rgb(29 33 41);
+  --dsw-alias-bg-layer-3: rgb(34 39 48);
+  --dsw-alias-border-l1: rgb(255 255 255 / 8%);
+  --dsw-alias-border-l2-darkmode-thin: rgb(255 255 255 / 12%);
+  --dsw-alias-border-l2: rgb(255 255 255 / 14%);
+  --dsw-alias-border-l3: rgb(255 255 255 / 20%);
+  --dsw-alias-button-floating-fill: rgb(34 39 48);
+  --dsw-alias-button-floating-hover: rgb(47 54 65);
+  --dsw-alias-interactive-bg-active: rgb(116 163 238 / 24%);
+  --dsw-alias-interactive-bg-hover: rgb(255 255 255 / 8%);
+  --dsw-alias-interactive-bg-hover-solid: rgb(47 54 65);
+  --dsw-alias-label-caption: rgb(132 145 162);
+  --dsw-alias-label-primary: rgb(244 247 251);
+  --dsw-alias-label-secondary: rgb(202 210 221);
+  --dsw-alias-label-tertiary: rgb(158 169 184);
+  --dsw-alias-markdown-code-block: rgb(22 25 31);
+  --dsw-alias-markdown-inline-code: rgb(255 255 255 / 10%);
+  --dsw-alias-state-business-primary: rgb(116 163 238);
+  --dsw-alias-state-error-primary: rgb(239 126 119);
+  --dsw-alias-state-success-primary: rgb(100 204 145);
+  --dsw-alias-state-warn-primary: rgb(239 189 93);
+  --dsw-alias-bg-mask-1: rgb(0 0 0 / 56%);
+  --dsh-drop-mask: rgb(15 17 21 / 76%);
+  --dsh-image-mask: rgb(0 0 0 / 78%);
+  --dsw-specific-bubble: rgb(28 42 69);
+  --dsw-specific-input-major: rgb(24 27 33);
+  --dsw-specific-menu: rgb(34 39 48);
+  --dsw-specific-tip: rgb(22 25 31);
+  --dsw-specific-sidebar-fill: rgb(22 25 31);
+  --dsw-specific-sidebar-nav-item-active: rgb(47 54 65);
+  --dsw-specific-sidebar-nav-item-hover: rgb(255 255 255 / 8%);
+  --dsw-shadow-lv2: 0 10px 30px rgb(0 0 0 / 34%), 0 2px 8px rgb(0 0 0 / 24%);
+  --dsh-error-bg: rgb(76 31 30 / 58%);
+  --dsh-error-border: rgb(239 126 119 / 42%);
+  --dsh-error-text: rgb(255 193 187);
+  --dsh-warning-bg: rgb(72 53 23 / 58%);
+  --dsh-warning-border: rgb(239 189 93 / 42%);
+  --dsh-warning-text: rgb(255 215 139);
+  color-scheme: dark;
 }
 
 body {
@@ -895,4 +965,315 @@ body {
     width: auto;
     max-width: none;
   }
+}
+
+/* Semantic repaint for the remaining application-owned surfaces. Global
+   styles predate the DSH palette and contain a few fixed dark colors; keeping
+   these selectors here makes both themes use the same contrast tokens. */
+.brand-mark {
+  border-color: var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.brand-row .settings-button { margin-left: auto; }
+.brand-row .sidebar-toggle { margin-left: 0; }
+
+.session-search,
+.workspace-inline-action,
+.runtime-selectors select,
+.mobile-runtime-menu select {
+  border-color: var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.workspace-toggle:hover,
+.session-row:hover,
+.thread-row:hover,
+.session-row.selected,
+.thread-row.selected,
+.icon-button:hover:not(:disabled),
+.text-button:hover:not(:disabled),
+.composer-tool:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.session-action-menu button:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.session-action-menu button.danger { color: var(--dsw-alias-state-error-primary); }
+.session-action-menu { background: var(--dsw-specific-menu); box-shadow: var(--dsw-shadow-lv2); }
+.runtime-header { background: var(--dsw-alias-bg-base); }
+.runtime-selectors select { background: var(--dsw-alias-bg-layer-1); }
+.tool-name,
+.markdown-body,
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.todo-item,
+.task-item summary,
+.command-output,
+.task-dock,
+.todo-dock { color: var(--dsw-alias-label-primary); }
+.tool-summary,
+.tool-details,
+.task-output pre,
+.todo-item small,
+.notice-row,
+.command-output pre,
+.status-bar { color: var(--dsw-alias-label-secondary); }
+.markdown-body :not(pre) > code {
+  border-color: var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-markdown-inline-code);
+}
+.markdown-body pre,
+.command-output pre,
+.task-output pre { background: var(--dsw-alias-markdown-code-block); }
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 { color: var(--dsw-alias-label-primary); }
+.markdown-body blockquote { color: var(--dsw-alias-label-secondary); }
+.tool-block,
+.task-dock,
+.todo-dock,
+.command-output { border-color: var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
+.tool-block { color: var(--dsw-alias-label-secondary); }
+.todo-in_progress { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-interactive-bg-active); }
+.notice-row { color: var(--dsw-alias-label-secondary); }
+.error-banner {
+  border-color: var(--dsh-error-border);
+  color: var(--dsh-error-text);
+  background: var(--dsh-error-bg);
+}
+.ui-notification {
+  border-color: var(--dsh-warning-border);
+  color: var(--dsh-warning-text);
+  background: var(--dsh-warning-bg);
+}
+.text-button { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); }
+.composer,
+.composer-image,
+.composer-image > button[aria-label^="Remove "] {
+  border-color: var(--dsw-alias-border-l2);
+}
+.composer { background: var(--dsw-specific-input-major); }
+.composer textarea::placeholder { color: var(--dsw-alias-label-caption); }
+.composer-action:disabled { color: var(--dsw-alias-label-caption); background: var(--dsw-static-neutral-bluish-100); }
+.status-bar { background: var(--dsw-alias-bg-base); }
+.mobile-runtime-menu { background: var(--dsw-specific-menu); box-shadow: var(--dsw-shadow-lv2); }
+.task-item + .task-item,
+.task-output,
+.command-output header,
+.todo-dock > div { border-color: var(--dsw-alias-border-l1); }
+.dialog-backdrop,
+.interaction-backdrop { background: var(--dsw-alias-bg-mask-1); }
+.timeline { scrollbar-color: var(--dsw-static-neutral-bluish-400) transparent; }
+.timeline-older:hover,
+.timeline-latest:hover { border-color: var(--dsw-alias-border-l3); background: var(--dsw-alias-button-floating-hover); }
+.composer:focus-within { border-color: var(--dsw-alias-state-business-primary); box-shadow: 0 0 0 1px var(--dsw-static-deepseek-100), var(--dsw-shadow-lv2); }
+.danger-hover:hover:not(:disabled) { color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.command-output.error { border-color: var(--dsh-error-border); }
+
+/* Settings shell follows DSH's two-column modal: a compact navigation rail
+   and an independently scrolling options column. It is client-only for now;
+   server rows intentionally communicate that no settings endpoint is used. */
+.settings-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--dsw-alias-bg-mask-1);
+  backdrop-filter: blur(3px);
+}
+
+.settings-dialog {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  width: min(800px, calc(100vw - 48px));
+  height: min(640px, calc(100vh - 48px));
+  max-height: calc(100svh - 48px);
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 20px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv2);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 12px;
+  border-right: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-specific-sidebar-fill);
+}
+
+.settings-nav-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-nav > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.settings-nav > button:hover { background: var(--dsw-specific-sidebar-nav-item-hover); }
+.settings-nav > button.active { color: var(--dsw-alias-label-primary); background: var(--dsw-specific-sidebar-nav-item-active); }
+
+.settings-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 78px;
+  padding: 22px 24px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.settings-header h2 { margin: 3px 0 0; font-size: 19px; font-weight: 600; }
+.settings-sections { display: grid; gap: 14px; padding: 22px 24px 28px; overflow-y: auto; }
+.settings-section {
+  padding: 17px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.settings-section-heading h3 { margin: 0; color: var(--dsw-alias-label-primary); font-size: 14px; font-weight: 600; }
+.settings-section-heading p { max-width: 520px; margin: 5px 0 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.5; }
+.theme-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
+.theme-option {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 116px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 11px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-1);
+  cursor: pointer;
+  text-align: left;
+}
+
+.theme-option:hover { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-interactive-bg-hover); }
+.theme-option.selected { border-color: var(--dsw-alias-state-business-primary); box-shadow: 0 0 0 1px var(--dsw-alias-state-business-primary); }
+.theme-option-icon { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: var(--dsw-alias-state-business-primary); background: var(--dsw-static-deepseek-50); }
+.theme-option-copy { display: grid; min-width: 0; gap: 3px; }
+.theme-option-copy strong { color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 600; }
+.theme-option-copy small { color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 1.4; }
+.theme-option-check { position: absolute; top: 12px; right: 12px; color: var(--dsw-alias-state-business-primary); }
+.settings-note { display: flex; align-items: flex-start; gap: 10px; color: var(--dsw-alias-label-secondary); background: var(--dsw-specific-tip); }
+.settings-note-icon { display: grid; flex: none; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: var(--dsw-alias-state-business-primary); background: var(--dsw-static-deepseek-50); }
+.settings-note strong { color: var(--dsw-alias-label-primary); font-size: 12px; }
+.settings-note p { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.5; }
+.server-settings-preview { display: grid; gap: 0; margin-top: 16px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
+.server-settings-preview > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; padding: 0 11px; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; }
+.server-settings-preview > div:last-child { border-bottom: 0; }
+.server-settings-preview span { color: var(--dsw-alias-label-tertiary); }
+.server-settings-preview strong,
+.server-settings-preview code { max-width: 68%; overflow: hidden; color: var(--dsw-alias-label-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.server-settings-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.server-settings-readonly { color: var(--dsw-alias-state-warn-primary) !important; }
+
+@media (max-width: 760px) {
+  .brand-row { height: 48px; padding: 8px 10px; }
+  .new-session-button { height: 32px; margin: 4px 10px 8px; padding: 0 10px; font-size: 13px; }
+  .sidebar-tools { padding-inline: 10px; }
+  .session-list { padding-inline: 6px; }
+  .workspace-toggle { height: 34px; }
+  .session-row { height: 31px; padding-inline: 7px; }
+  .thread-row { height: 27px; }
+  .runtime-header { min-height: 48px; padding-inline: 8px; }
+  .timeline { padding: 10px 10px 16px; }
+  .timeline-inner { gap: 12px; padding: 14px 8px 16px; }
+  .runtime-controls { padding-inline: 8px; }
+  .composer-wrap,
+  .task-dock,
+  .todo-dock,
+  .command-output,
+  .command-progress { width: calc(100% - 12px); }
+  .composer { gap: 6px; padding: 7px 8px 6px; border-radius: 16px; }
+  .composer textarea { min-height: 40px; max-height: 220px; padding: 3px 3px 0; line-height: 21px; }
+  .composer-images { gap: 6px; padding: 7px 8px 0; }
+  .composer-image { flex-basis: 48px; width: 48px; height: 48px; }
+  .composer-footer { height: 30px; padding-inline: 3px; }
+  .composer-tool,
+  .composer-action { width: 27px; height: 27px; }
+  .status-bar { min-height: 22px; padding-inline: 7px; font-size: 9px; }
+  .task-dock,
+  .todo-dock { max-height: 140px; margin-bottom: 6px; }
+  .command-output { margin-bottom: 6px; }
+  .dialog { padding: 14px; border-radius: 12px; max-height: calc(100svh - 24px); }
+  .dialog h2 { font-size: 16px; }
+  .dialog-actions { margin-top: 12px; }
+  .choice-list button { padding: 8px 10px; }
+  .interaction-backdrop { padding: 8px; }
+  .settings-backdrop { padding: 8px; }
+  .settings-dialog { grid-template-columns: 132px minmax(0, 1fr); width: calc(100vw - 16px); height: min(700px, calc(100svh - 16px)); max-height: calc(100svh - 16px); border-radius: 14px; }
+  .settings-nav { gap: 10px; padding: 16px 8px; }
+  .settings-nav-title { padding-inline: 8px; font-size: 14px; }
+  .settings-nav > button { min-height: 34px; padding-inline: 8px; font-size: 12px; }
+  .settings-header { min-height: 66px; padding: 16px 14px 10px; }
+  .settings-header h2 { font-size: 16px; }
+  .settings-sections { gap: 10px; padding: 14px 12px 18px; }
+  .settings-section { padding: 13px; border-radius: 11px; }
+  .theme-options { grid-template-columns: 1fr; gap: 6px; margin-top: 12px; }
+  .theme-option { min-height: 0; flex-direction: row; align-items: center; gap: 8px; padding: 9px; }
+  .theme-option-icon { width: 26px; height: 26px; }
+  .theme-option-copy { gap: 2px; }
+  .theme-option-check { top: 14px; right: 10px; }
+}
+
+@media (max-width: 580px) {
+  .runtime-title strong { font-size: 12px; }
+  .header-actions .icon-button { width: 28px; height: 28px; }
+  .mobile-runtime-menu { top: 48px; right: 6px; width: min(240px, calc(100vw - 12px)); padding: 10px; gap: 8px; }
+  .mobile-runtime-menu select { height: 30px; }
+  .dialog.command-help-dialog { width: calc(100vw - 16px); max-height: calc(100svh - 16px); padding: 10px 4px 8px; }
+  .command-help-search { height: 36px; margin-inline: 8px; }
+  .command-help-list { margin-inline: 4px; }
+  .settings-dialog { display: flex; flex-direction: column; }
+  .settings-nav { flex: none; flex-direction: row; align-items: center; gap: 4px; padding: 10px 8px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+  .settings-nav-title { flex: none; padding-inline: 6px; }
+  .settings-nav > button { flex: none; min-height: 32px; padding-inline: 8px; }
+  .settings-content { min-height: 0; }
+  .settings-header { min-height: 62px; padding: 12px 12px 8px; }
+  .settings-sections { padding: 12px 10px 16px; }
 }

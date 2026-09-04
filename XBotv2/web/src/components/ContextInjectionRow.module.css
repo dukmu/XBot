@@ -41,3 +41,8 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 14px;
 }
+
+@media (max-width: 580px) {
+  .row summary { min-height: 22px; font-size: 13px; }
+  .body { padding: 3px 0 3px 18px; font-size: 12px; }
+}

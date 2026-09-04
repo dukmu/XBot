@@ -59,8 +59,12 @@ export function useXBot() {
 
   const resetStreamingState = useCallback(() => runtimeEvents.stop(), [runtimeEvents]);
 
-  const startEventStream = useCallback((session: Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">, generation: number) => {
-    runtimeEvents.start(session, generation);
+  const startEventStream = useCallback((
+    session: Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">,
+    generation: number,
+    running = false,
+  ) => {
+    runtimeEvents.start(session, generation, running);
   }, [runtimeEvents]);
 
   const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
@@ -92,7 +96,7 @@ export function useXBot() {
     dispatch({ type: "todos", todos });
     setCommands(availableCommands);
     setNotification("");
-    startEventStream(session, generation);
+    startEventStream(session, generation, activeThread?.turn_status === "running");
   }, [api, resetStreamingState, startEventStream]);
 
   const refreshSessions = useCallback(async () => {
@@ -304,6 +308,25 @@ export function useXBot() {
         content,
         images: attachments.map((attachment) => ({ label: attachment.name, src: attachment.preview })),
       });
+    } else {
+      // Queue insertion is intentionally visible before the POST stream
+      // completes.  The session event stream remains authoritative and will
+      // replace this projection with queue_updated; this only removes the
+      // network round-trip gap in the composer.
+      dispatch({
+        type: "pending_inputs",
+        items: [
+          ...state.pendingInputs,
+          {
+            message_id: requestId,
+            content,
+            target: "next-turn",
+            source: "user",
+            image_count: attachments.filter((item) => item.media_type.startsWith("image/")).length,
+            artifact_count: attachments.filter((item) => !item.media_type.startsWith("image/")).length,
+          },
+        ],
+      });
     }
     const controller = new AbortController();
     messageControllers.current.set(controller, requestTarget);
@@ -331,12 +354,15 @@ export function useXBot() {
       if (generation === navigationGeneration.current && delivery === "steer") {
         dispatch({ type: "user_message_failed", id: requestId });
       }
+      if (generation === navigationGeneration.current && delivery === "queue") {
+        dispatch({ type: "pending_input_failed", messageId: requestId });
+      }
       if (generation === navigationGeneration.current) reportError(error, delivery === "steer");
       return false;
     } finally {
       messageControllers.current.delete(controller);
     }
-  }, [api, reportError, state.current, state.loading, state.turnRunning]);
+  }, [api, reportError, state.current, state.loading, state.pendingInputs, state.turnRunning]);
 
   const updatePendingInput = useCallback(async (
     messageId: string,

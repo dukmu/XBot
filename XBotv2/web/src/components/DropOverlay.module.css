@@ -7,7 +7,7 @@
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  background: rgb(255 255 255 / 76%);
+  background: var(--dsh-drop-mask);
   backdrop-filter: blur(10px);
   animation: drop-fade-in 160ms ease-out;
 }
