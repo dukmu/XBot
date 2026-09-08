@@ -40,7 +40,7 @@ class SessionComponent:
             workspace_root=str(workspace_root),
             provider="default",
         )
-        state = LoopState(session=info)
+        state = LoopState(session=info, variables=variables)
         artifacts = ctx.artifacts
         session = Session(
             events=ctx,

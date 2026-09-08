@@ -828,7 +828,7 @@ plugin = ConfiguredPlugin()
         runtime = root.findtext("runtime_environment") or ""
         assert "Human: Ada (human-7)" in runtime
         assert f"- workspace: {temp_workspace}" in runtime
-        assert "- tool_results: session/artifacts/tool_results/ (read-only)" in runtime
+        assert f"- tool_results: {application.variables['tool_results']}" in runtime
 
     @pytest.mark.asyncio
     async def test_application_startup_separates_configured_and_agent_instructions(

@@ -96,8 +96,17 @@ class Session:
         return SessionStatus(
             session_id=self.session_id,
             thread_id=self.thread_id,
+            workspace_root=self.workspace_root,
+            agent=self.state.metadata.value.agent,
             provider=self.state.metadata.value.provider or self.provider,
             model=self.state.metadata.value.model,
+            model_mode=self.state.metadata.value.model_mode,
+            context_window=self.state.metadata.value.context_window,
+            status=self.info.status,
+            resumed=self.state.resumed,
+            turn_count=self.state.turn_count,
+            message_count=len(self.state.history),
+            pending_inputs=len(self.state.inbox_items),
         )
 
     async def fork(self) -> str:

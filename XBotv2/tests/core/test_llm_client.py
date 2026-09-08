@@ -225,7 +225,7 @@ def test_provider_adapters_encode_canonical_image_content():
     ]
 
 
-def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
+def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it(artifact_store):
     message = Message(
         role="tool",
         content="image loaded",
@@ -244,13 +244,13 @@ def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
         role="user",
         content="inspect",
         artifact=[{
-            "id": "artifacts/attachments/hash/sample.bin",
+            "id": "attachments/sample.bin",
             "name": "sample.bin",
             "media_type": "application/octet-stream",
             "size": 6,
         }],
-    )])
-    assert "session/artifacts/attachments/hash/sample.bin" in uploaded[0]["content"]
+    )], artifacts=artifact_store)
+    assert artifact_store.model_path("attachments/sample.bin") in uploaded[0]["content"]
 
 
 def test_anthropic_usage_values_preserve_cache_context_tokens():
@@ -365,6 +365,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
             return FakeStream()
 
     provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.artifacts = None
     provider.model = "model"
     provider.temperature = 0.2
     provider.max_output_tokens = 100
@@ -486,6 +487,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
             return FakeResponse()
 
     provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.artifacts = None
     provider.model = "model"
     provider.temperature = 0.2
     provider.max_output_tokens = None
@@ -639,6 +641,7 @@ async def test_anthropic_extra_body_merges_vendor_config():
             return FakeStream()
 
     provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.artifacts = None
     provider.model = "m"
     provider.temperature = 0.0
     provider.max_output_tokens = 10
@@ -699,6 +702,7 @@ async def test_openai_extra_body_merges_vendor_config():
             return FakeResponse()
 
     provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.artifacts = None
     provider.model = "m"
     provider.temperature = 0.0
     provider.max_output_tokens = None

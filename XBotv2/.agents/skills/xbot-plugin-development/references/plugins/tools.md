@@ -64,7 +64,8 @@ class ToolResult(BaseModel):
 ```
 
 `status` drives the next turn decision. `artifacts` and `images` are
-session-relative references; the model sees them as such. `data` and
+logical references; ArtifactStore resolves model-facing file paths to absolute
+paths in the active thread. `data` and
 `client_events` must be JSON-compatible.
 
 ### `ToolError`

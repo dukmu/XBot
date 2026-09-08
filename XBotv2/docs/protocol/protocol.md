@@ -145,8 +145,9 @@ Thread status and history remain queryable after its runtime closes.
 `POST .../messages` accepts text plus optional `images` and `attachments`.
 Images contain base64 `data` and an `image/*` `media_type` and become native
 visual input. Attachments additionally contain a file `name`; the server stores
-them under `session/artifacts/attachments/` and gives the Agent a structured
-relative reference for filesystem or shell inspection. At least one of text,
+them in the thread ArtifactStore and gives the Agent a structured absolute
+path for filesystem or shell inspection. Wire references remain logical IDs.
+At least one of text,
 images, or attachments is required. Uploaded bytes are not embedded in history.
 Assistant history items include persisted `reasoning` when the provider emitted
 it. The same field is returned by session resume, message paging, and history

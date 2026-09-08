@@ -21,7 +21,7 @@ from XBotv2.interactions import (
     UserInputRequiredData,
     UserInputResponseRequest,
 )
-from XBotv2.permission_request import (
+from XBotv2.permissions import (
     PermissionDeniedData,
     PermissionRequestData,
     PermissionResponseRequest,

@@ -445,12 +445,13 @@ def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
     ``xcore.yaml`` merged with the data dir's ``plugins.yaml`` overlay) —
     there is no separate ``providers.yaml`` document.
     """
+    sys.path.insert(0, "/home/shefrin/repo/XBot")
     from XBotv2.loader import PluginTree
 
     tree = PluginTree.from_yaml(REPO_ROOT / "XBotv2" / "xcore.yaml")
     overlay_path = data_dir / "config" / "plugins.yaml"
-    if overlay_path.is_file():
-        tree = tree.merged_with(PluginTree.from_yaml(overlay_path))
+    # if overlay_path.is_file():
+    #     tree = tree.patched_with(PluginOverlay.from_yaml(overlay_path))
     llm_entry = next(
         (entry for entry in tree.entries if entry.id == "llm"),
         None,

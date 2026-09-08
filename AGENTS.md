@@ -122,7 +122,9 @@ Before every commit, ask:
 - Do not let background completion notices repeatedly create new turns.
 - Do not cache or truncate Agent-authored tool arguments before execution.
 - Long user input and Tool results may be externalized, but the stored artifact
-  must retain the original content and use model-facing relative paths.
+  must retain the original content and expose absolute model-facing paths
+  resolved by ArtifactStore and the existing RuntimeVariables. Persist logical
+  artifact IDs; resolve them against the active thread when building requests.
 - Do not report a task as complete while a requested tool call or required
   verification step is still pending.
 - Do not infer success from a summary message, a passing command, or an all-green

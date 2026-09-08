@@ -33,8 +33,7 @@ overlays preserve omitted fields. `config` is recursively merged; `name`,
 | `context_builder` | `context_builder` | agent | `runtime_log` | `context_builder`; context assembly |
 | `prompts` | `prompts` | agent | `context_builder` | `prompts`; prompt fragment registry |
 | `sandbox` | `sandbox` | agent | thread paths, session, tools, data/workspace roots, variables, commands, settings | `sandbox`; sandbox guard and context facts |
-| `permission_request` | `permission_request` | agent | `client_events` | `approval`; live approval waiter |
-| `permissions` | `permissions` | agent | session/launch, parent permissions, tools, approval, variables, commands, settings | `permissions`; permission guard and policy commands |
+| `permissions` | `permissions` | agent | session/launch, parent permissions, tools, client_events, variables, commands, settings, state | `permissions`, `approval`; guard, approval waiter, persistent grants and policy commands |
 | `coretools` | `coretools` | agent | tools, session, artifacts, sandbox, jobs, workspace root | filesystem/Shell Tools and result-cache hook |
 | `subagents` | `agents.subagent_tools` | agent | agent runtime, jobs, permissions, tools | subagent Tools |
 | `goal` | `goal` | agent | tools, commands, engine, state | `goal`; objective Tools, `/goal`, status slot |

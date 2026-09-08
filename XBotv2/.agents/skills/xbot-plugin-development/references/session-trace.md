@@ -99,7 +99,7 @@ not evidence of a successful no-op turn.
 - Use `PRE_COMPACT`/`POST_COMPACT` for compaction metadata, not a second summary
   file or direct surface mutation.
 - Use `ArtifactStore` for large content and return an `ArtifactRef`; the model
-  receives a session-relative reference and the original bytes remain owned by
+  receives an absolute path resolved by the store and the original bytes remain owned by
   the artifact service.
 - Use `UsageService` for cumulative token accounting. Auxiliary model calls
   may contribute usage without replacing the latest main-Agent context size.

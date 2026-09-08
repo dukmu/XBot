@@ -168,9 +168,6 @@
       workspace_write: allow
     resources: []
 
-- id: permission_request
-  name: permission_request
-
 - id: permissions
   name: permissions
   config:

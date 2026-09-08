@@ -115,15 +115,10 @@ to avoid re-caching on subsequent calls.
 ## Typical extension: read cached content
 
 ```python
-from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.artifacts import ArtifactRef, ArtifactStorePort
 
-class ContentCachePlugin:
-    inject = ["content_cache"]
-
-    def apply(self, ctx, config):
-        # content_cache is ContentCacheService — read ctx.content_cache._cached
-        # to see what was cached this turn
-        ...
+def read_cached_text(artifacts: ArtifactStorePort, ref: ArtifactRef) -> str:
+    return artifacts.read(ref).decode("utf-8")
 ```
 
 ## Cross-references
@@ -136,7 +131,7 @@ class ContentCachePlugin:
 ## Common pitfalls
 
 - **Caching only the current message**: `bind_current_user_message()`
-  only looks at the last user message (index -1). Earlier user
+  finds the last user message by scanning backwards. Earlier user
   messages are not bounded.
 - **Re-caching on subsequent turns**: the `_cached` dict uses
   `id(source)` to prevent duplicate caching. If the message object
@@ -144,6 +139,6 @@ class ContentCachePlugin:
 - **Config validation**: `preview_chars` must not exceed
   `cache_threshold_chars`; `tail_chars` must not exceed
   `preview_chars`. Invalid configs raise `ValueError`.
-- **Artifact storage is session-relative**: cached content lives
-  in the thread's artifact store and is accessible via
-  `ArtifactStorePort.open(ref)`.
+- **Artifact identity and path differ**: use `ArtifactStorePort.read(ref)`
+  for bytes and `model_path(ref)` for the absolute path displayed to the Agent.
+  The public port has no `open(ref)` method. Do not inspect `_cached`.

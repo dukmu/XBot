@@ -103,9 +103,7 @@ def test_cache_user_message_keeps_original_and_explains_relative_path(
         "omitted_chars": str(len(content) - 12000),
         "original_chars": str(len(content)),
     }
-    assert root.findtext("cache_path").strip().startswith(
-        "session/artifacts/context/"
-    )
+    assert root.findtext("cache_path").strip() == artifact_store.model_path(artifact)
     instruction = root.findtext("read_instruction")
     assert "Pass it unchanged" in instruction
     assert "absolute filesystem path" in instruction

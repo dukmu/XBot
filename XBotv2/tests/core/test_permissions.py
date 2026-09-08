@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from xcore.state import StateService
 
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.core import ToolCall
-from XBotv2.config.policy import persist_permission_rule
 from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
@@ -75,6 +75,7 @@ class TestPermissionSystemBasics:
             {**arguments, "content": "other"},
         ) == "ask"
         assert permissions.check("edit", arguments) == "allow"
+        assert permissions.check_tool_call(ToolCall(id="once", name="edit", args=arguments))[0] == "allow"
         assert permissions.check("edit", arguments) == "ask"
 
         denied = PermissionSystem({"deny": [{"tool": "edit"}]})
@@ -84,7 +85,7 @@ class TestPermissionSystemBasics:
         )
         assert denied.check("edit", arguments) == "deny"
         denied.replace_rules(None)
-        assert denied.check("edit", arguments) == "ask"
+        assert denied.check("edit", arguments) == "allow"
 
     def test_filesystem_write_session_rule_records_only_path(self):
         rule = permission_rule_for_tool_call(ToolCall(
@@ -95,7 +96,7 @@ class TestPermissionSystemBasics:
 
         assert rule == {
             "tool": "edit",
-            "params": {"path": "notes\\.md"},
+            "params": {"path": "notes\\.md", "mode": "write"},
         }
         permissions = PermissionSystem({"allow": [rule]})
         assert permissions.check(
@@ -118,69 +119,11 @@ class TestPermissionSystemBasics:
             "tool": "path",
             "params": {
                 "destination": "b\\.txt",
+                "operation": "move",
                 "overwrite": "True",
                 "source": "a\\.txt",
             },
         }
-
-    def test_requested_session_rule_is_persisted(self, tmp_path):
-        paths = RuntimePaths.from_data_dir(tmp_path / "data")
-        persist_permission_rule(
-            paths=paths,
-            session_id="permission-rule",
-            rule={
-                "tool": "mcp__github__search",
-                "params": {"query": r"issues/.*"},
-            },
-            decision="allow",
-            scope="session",
-        )
-
-        policy = yaml.safe_load(
-            paths.session("permission-rule").config_file.read_text(
-                encoding="utf-8"
-            )
-        )
-        assert policy["permissions"]["allow"] == [{
-            "tool": "mcp__github__search",
-            "params": {"query": r"issues/.*"},
-        }]
-
-    def test_shell_escalation_session_approval_persists_param_rule(self, tmp_path):
-        paths = RuntimePaths.from_data_dir(tmp_path / "data")
-        persist_permission_rule(
-            paths=paths,
-            session_id="shell-escalation",
-            rule={
-                "tool": "shell",
-                "params": {"sandbox_permissions": "require_escalated"},
-            },
-            decision="allow",
-            scope="session",
-        )
-
-        policy = yaml.safe_load(
-            paths.session("shell-escalation").config_file.read_text(
-                encoding="utf-8"
-            )
-        )
-        assert policy["permissions"]["allow"] == [{
-            "tool": "shell",
-            "params": {"sandbox_permissions": "require_escalated"},
-        }]
-        permissions = PermissionSystem({"allow": [{
-            "tool": "shell",
-            "params": {"sandbox_permissions": "require_escalated"},
-        }]})
-        assert permissions.explicit_allow(
-            "shell",
-            {
-                "command": "another command",
-                "sandbox_permissions": "require_escalated",
-                "justification": "A different reason.",
-            },
-            constrain_param="sandbox_permissions",
-        ) is True
 
 
 @pytest.mark.asyncio
@@ -191,11 +134,13 @@ async def test_session_policy_update_cannot_expand_child_past_parent(tmp_path):
     paths.session("s").root.mkdir(parents=True)
     variables = RuntimeVariables()
     parent_permissions = PermissionsService(
-        {"deny": [{"tool": "shell"}]}, variables
+        {"deny": [{"tool": "shell"}]}, variables,
+        StateService(path=tmp_path / "parent-permissions.json"),
     )
     child_permissions = PermissionsService(
         {"allow": [{"tool": "shell"}]},
         variables,
+        StateService(path=tmp_path / "child-permissions.json"),
         parent=parent_permissions,
     )
 

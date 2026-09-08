@@ -50,8 +50,17 @@ class SessionResourceRemoved:
 class SessionStatus:
     session_id: str
     thread_id: str
+    workspace_root: str
+    agent: str
     provider: str
     model: str
+    model_mode: str
+    context_window: int
+    status: str
+    resumed: bool
+    turn_count: int
+    message_count: int
+    pending_inputs: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -249,9 +249,9 @@ ask_user() → interactions.request_user_input() →
 
 - Depends on: `tools`, `client_events`, `session_launch`,
   `agentloop` (`SESSION_CLOSE`).
-- Depended on by: `permission_request` (uses `InteractionsService`
+- Depended on by: `permissions` (uses `InteractionsService`
   for approval flow), the Agent (`ask_user` / `send_message` tools).
-- Pairs with: `permission-request` (interactive approval),
+- Pairs with: `permissions` (interactive approval),
   `session` (interactive flag).
 
 ## Common pitfalls

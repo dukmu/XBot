@@ -1,16 +1,20 @@
-"""Wire models owned by the permission-request capability."""
+"""Approval contracts owned by the permissions plugin."""
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field, model_validator
 
 from XBotv2.protocol import WireModel
+from XBotv2.core.tools import ToolCall
 
 
-class PermissionResponseRequest(WireModel):
-    request_id: str = Field(min_length=1)
+class ApprovalDecision(WireModel):
     decision: Literal["allow", "deny"]
     scope: Literal["once", "session"] = "once"
+
+
+class PermissionResponseRequest(ApprovalDecision):
+    request_id: str = Field(min_length=1)
 
 
 class RequestedPermissionData(WireModel):
@@ -21,7 +25,7 @@ class RequestedPermissionData(WireModel):
 class PermissionRequestData(WireModel):
     request_id: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    tool_call: dict[str, Any] | None = None
+    tool_call: ToolCall | None = None
     permission: RequestedPermissionData | None = None
     decision: Literal["ask"] = "ask"
     reason: str
@@ -39,13 +43,14 @@ class PermissionRequestData(WireModel):
 class PermissionDeniedData(WireModel):
     request_id: str = Field(min_length=1)
     source: str = Field(min_length=1)
-    tool_call: dict[str, Any]
+    tool_call: ToolCall
     decision: Literal["deny"] = "deny"
     reason: str
     resume_supported: bool = False
 
 
 __all__ = [
+    "ApprovalDecision",
     "PermissionDeniedData",
     "PermissionRequestData",
     "PermissionResponseRequest",

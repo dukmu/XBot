@@ -33,7 +33,7 @@ plugin independent of concrete built-in implementations.
 | Agent definition | `XBotv2.agents` | Agent catalog/declarations and Agent-owned events |
 | Context contribution | `XBotv2.context_builder` | component contracts and context build events |
 | Permission decision | `XBotv2.permissions` | permission request/decision contracts and events |
-| Live approval channel | `XBotv2.permission_request` | `ApprovalPort` and permission request wire data |
+| Live approval channel | `XBotv2.permissions` | `ApprovalPort`, typed `ApprovalDecision`, and permission request wire data |
 | Application lifecycle | `XBotv2.application` | application initialization and typed lifecycle facts |
 
 If a symbol is absent from the package root and public API inventory, treat it

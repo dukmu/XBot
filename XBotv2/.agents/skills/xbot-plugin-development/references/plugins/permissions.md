@@ -1,290 +1,138 @@
-# `permissions`
+# Permissions: Tool parameter authorization
 
-Policy enforcement for every registered Tool. The plugin walks the rule
-list per call, decides `allow` / `deny` / `ask`, persists grants, and
-hands off interactive decisions to `permission_request`. Never bypass
-the guard pipeline — register Tools normally and let policy decide.
+Tree id/import: `permissions`, Agent profile.
+Source: `XBotv2/permissions/plugin.py`, `system.py`, `guard.py`,
+`rules.py`, `tools.py`, `approval.py`, `protocol.py`.
 
-- **Import/profile:** `permissions`, Agent profile.
-- **Source:** `XBotv2/permissions/plugin.py`,
-  `XBotv2/permissions/system.py`, `XBotv2/permissions/services.py`,
-  `XBotv2/permissions/guard.py`, `XBotv2/permissions/events.py`,
-  `XBotv2/permissions/rules.py`,
-  `XBotv2/permissions/tools.py`.
-- **Injects/provides:** session/launch, parent permissions, tools,
-  approval, variables, commands, settings → `permissions`
-  (`PermissionsService`).
-- **Emits events:** `permissions/decided` (`PermissionDecided`),
-  `permission/request` (`PermissionRequested`) — see
-  [../events-catalog.md](../events-catalog.md).
+## Composition and effects
 
-## Public data models
+Injects `session`, `session_launch`, `parent_permissions`, `tools`,
+`client_events`, `variables`, `commands`, `settings`, `state`.
+Provides `permissions` and `approval`, and owns the live approval waiter.
+Registers the standard permission guard and human permission commands, observes
+application/Agent configuration and `POLICY_CHANGED`, and registers
+`request_permission` only for interactive sessions.
 
-### `PermissionDecision`
+The permission service evaluates Tool names and argument regexes. Sandbox
+policy is independent and remains a hard execution ceiling.
 
-```python
-PermissionDecision = Literal["allow", "ask", "deny"]
+## Configuration and matching
+
+```yaml
+- id: permissions
+  config:
+    permissions:
+      deny:
+        - tool: shell
+          params:
+            command: "dangerous-command.*"
+      allow:
+        - tool: read
+      ask:
+        - tool: shell
 ```
 
-Returned by `PermissionSystem.check`.
+Configured `tool` and `params` values use bounded regex full matching. A missing
+constrained parameter does not match. Unspecified parameters are unrestricted.
+Precedence is deny, allow, ask, default (ask). Explicit denies always win.
+Child policy intersects with the parent policy.
 
-### `PermissionRule` (`permissions/system.py:62-68`)
+Optional `paths` applies to all filesystem path arguments. An exact runtime
+directory variable such as `${workspace}` means containment in that directory;
+other values are regexes over resolved absolute paths. Variable substitutions
+are escaped before insertion into regexes.
 
-```python
-@dataclass
-class PermissionRule:
-    tool_pattern: str = ".*"            # regex against Tool.name
-    param_patterns: dict[str, str] = field(default_factory=dict)
-    paths: str | None = None            # resolved path scope
-    decision: PermissionDecision = "ask"
+## Proactive authorization without execution
+
+The Agent Tool is named `request_permission`; its approval channel and policy
+are both owned by the `permissions` plugin. There is no separate approval plugin.
+
+```json
+{
+  "tool": "shell",
+  "params": {
+    "command": "git status(?: --short)?",
+    "cwd": "/work/project"
+  },
+  "reason": "Inspect status repeatedly during this task"
+}
 ```
 
-Serialized form (`permissions/rules.py`):
+The request Tool treats `tool` as an exact name and validates parameter regexes.
+It emits `PermissionRequestData` with `source="request_permission"` and
+`permission={tool, params}`. It never invokes the target Tool.
+A pending Tool's ask interaction instead carries its concrete `tool_call`
+and `source="permission_system"`.
 
-```python
-{"tool": "<regex>", "params": {...}, "paths": "<resolved>"}
-```
+An approval response has `decision: allow | deny` and `scope: once | session`.
+For proactive requests, once grants the next matching call; session grants all
+matching calls in the current Agent thread, including after resume. For a pending call, once authorizes
+that call. Decline leaves authorization unchanged.
 
-### `PermissionsPort` — consumer Protocol
+Once grants are in-memory. Session grants are persisted through
+`ctx.state.namespace("permissions")`, under the `grants` key, and restored at
+application initialization. Updates are serialized and written before becoming
+active; repeated approvals do not add duplicate rules.
+Here session means the current Agent thread (normally `agent`), not a shared
+store for all threads. Subagents use the existing parent permission chain.
+Human policy configuration is a separate persisted settings operation.
+Normal session approvals retain shell command/cwd/escape mode or filesystem
+mode/operation/path/destructive flags. File bodies are not permission patterns.
 
-```python
-class PermissionsPort(Protocol):
-    def check(
-        self,
-        tool_name: str,
-        args: dict[str, object] | None = None,
-    ) -> str: ...
+An escape request still needs `shell(sandbox_permissions="require_escalated",
+justification=...)`. A grant cannot change sandbox mounts or turn a denied
+filesystem Tool into an unsandboxed operation.
 
-    def explicit_allow(
-        self,
-        tool_name: str,
-        args: dict[str, object] | None = None,
-        *,
-        constrain_param: str | None = None,
-    ) -> bool: ...
+## Public service and events
 
-    def check_tool_call(self, tool_call: ToolCall) -> tuple[str, str]: ...
+Import `PermissionsPort` from `XBotv2.permissions`.
+`check` and `explicit_allow` are read-only. `check_tool_call` is the guard's
+authorization step and may consume once grants; do not call it as a preview.
+Parent/child deny checks do not consume a parent grant. A later non-permission
+guard can still reject a call after permission consumption; this is intentional
+because once covers one permission-layer authorization attempt and the sandbox
+is a separate hard ceiling.
 
-    def grant_once(
-        self, tool_name: str, param_patterns: dict[str, str]
-    ) -> None: ...
-```
+Human commands distinguish policy configuration from approved grants:
 
-Declare `inject = ["permissions"]` and resolve to `ctx.permissions`.
-Do **not** import `PermissionsService` directly.
+- `/permission status` summarizes all sources;
+- `/permission rules` shows effective and session-configured rules;
+- `/permission grants` shows persisted thread grants with stable list indexes;
+- `/permission list` shows rules and grants together;
+- `/permission set <tool> <allow|deny|ask>` and `reset <tool>` edit session policy;
+- `/permission revoke <index>` and `clear-grants` remove persisted approvals.
 
-### `PermissionDecided` / `PermissionRequested` (`permissions/events.py`)
+`PERMISSION_REQUESTED` carries `PermissionRequested(tool_call, client_event)`.
+`PERMISSION_DECIDED` carries decision, scope, rule, request_id, and source.
+Both approval entrypoints validate once/session responses and record terminal
+decisions; the normal guard also emits `PERMISSION_REQUESTED`. No observer should
+silently turn an approval into persisted policy or a sandbox mutation.
 
-```python
-@dataclass(frozen=True, slots=True)
-class PermissionDecided:
-    decision: Literal["allow", "deny"]   # only terminal decisions emitted
-    scope: str                          # "session" or one-shot id
-    rule: dict[str, JsonValue]          # matched rule payload
+Permission regexes use bounded `regex.VERSION0` full matches: 4096 characters
+per pattern, 1,048,576 per matched value, and 10 ms per match. A complete
+top-level policy check shares a 50 ms / 1024-match aggregate budget across
+parent, child, and explicit-escape checks. Limit failures raise and stop the
+call; they must not become a nonmatching deny rule. Structured parameter values
+use compact canonical JSON with sorted keys; strings keep unquoted matching.
 
-@dataclass(frozen=True, slots=True)
-class PermissionRequested:
-    tool_call: ToolCall
-    client_event: ClientEvent
+Register Tools through `ctx.tools.register(Tool.from_function(handler))`;
+the registry applies guards. Do not implement another approval check inside
+the handler or dispatch a synthetic ToolCall to acquire permissions.
 
-PERMISSION_DECIDED = "permissions/decided"
-PERMISSION_REQUESTED = "permission/request"
-```
+## Approval contracts
 
-### `PermissionConfig` (`XBotv2/config/models.py`)
+Import `ApprovalPort`, `ApprovalDecision`, `PermissionRequestData`, and
+`PermissionResponseRequest` from `XBotv2.permissions`. Wire declarations live
+in `permissions/protocol.py`; they contain no policy or persistence logic.
+`ApprovalPort.request(event)` returns a validated `ApprovalDecision`, whose
+fields are `decision: allow | deny` and `scope: once | session`. HTTP responses
+add `request_id`. The client event remains named `permission_request`.
 
-```python
-class PermissionRuleConfig(StrictModel):
-    tool: str = ".*"
-    params: dict[str, str] = Field(default_factory=dict)
-    paths: str | None = None
+ApprovalService validates raw client responses. PermissionHandlers applies the
+decision, persists session grants or installs proactive once grants, and emits
+`PERMISSION_DECIDED` only afterwards. Cancellation/invalid responses do not
+invoke the decision handler; terminal logs preserve the original failure.
+Pending calls recheck current deny rules after approval, including parent rules.
+Session close cancels pending waiters; pending requests themselves do not resume.
 
-class PermissionConfig(StrictModel):
-    deny: list[PermissionRuleConfig] = Field(default_factory=list)
-    allow: list[PermissionRuleConfig] = Field(default_factory=list)
-    ask: list[PermissionRuleConfig] = Field(default_factory=list)
-```
-
-## `PermissionsService` (`permissions/plugin.py:33-110`)
-
-```python
-class PermissionsService:
-    def configure_agent(self, agent: Any) -> None: ...
-    def replace_rules(self, config: object) -> None: ...
-    def add_rule(self, decision: str, rule: dict[str, Any]) -> None: ...
-
-    def check(
-        self, tool_name: str, args: dict[str, Any] | None = None
-    ) -> str: ...                        # decision literal
-
-    def explicit_allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-        *,
-        constrain_param: str | None = None,
-    ) -> bool: ...
-
-    def check_tool_call(
-        self, tool_call: ToolCall
-    ) -> tuple[str, str]: ...             # (decision, reason)
-
-    def grant_once(
-        self, tool_name: str, param_patterns: dict[str, str]
-    ) -> None: ...
-```
-
-The service rebuilds its internal `PermissionSystem` on rule changes;
-observers must subscribe to `PERMISSION_DECIDED` to react to *terminal*
-decisions (no event fires for `ask` mid-flight — see
-`permission_request`).
-
-## `PermissionGuard` (`permissions/guard.py`)
-
-Registered against `ctx.tools.guard(...)` so every Tool dispatch runs:
-
-```python
-class PermissionGuard:
-    def __init__(
-        self,
-        service: PermissionsService,
-        *,
-        policy: PermissionSystem,
-    ) -> None: ...
-
-    def allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any],
-        *,
-        tool_call: ToolCall | None = None,
-    ) -> GuardDecision | None: ...
-```
-
-Returning a `GuardDecision(action="deny", reason="...",
-source="permissions")` short-circuits the dispatch and emits
-`tool/denied`. The default delegates to
-`PermissionsService.check_tool_call`.
-
-## `PermissionSystem` (`permissions/system.py:103-400`)
-
-```python
-class PermissionSystem:
-    """Tri-state permission system. deny > allow > ask > default."""
-
-    def __init__(
-        self,
-        config: Any | None = None,
-        *,
-        default_decision: PermissionDecision = "ask",
-        variables: RuntimeVariables | None = None,
-        parent: PermissionsPort | None = None,
-    ) -> None:
-        self.default_decision = default_decision
-        self.variables = variables or RuntimeVariables()
-        self.parent = parent
-        self._rules: dict[PermissionDecision, list[PermissionRule]] = {
-            decision: [] for decision in ("deny", "allow", "ask")
-        }
-        self._once_grants: list[PermissionRule] = []
-        if config is not None:
-            self._load_config(config)
-
-    def add_rule(
-        self, decision: PermissionDecision, rule_data: dict[str, Any]
-    ) -> None:
-        """Add one live permission rule to the in-memory policy."""
-
-    def replace_rules(self, config: Any | None) -> None:
-        """Replace configured rules without invalidating shared references."""
-
-    def grant_once(
-        self, tool_name: str, param_patterns: dict[str, str]
-    ) -> None:
-        """Allow the next call matching one exact-name parameter rule."""
-
-    def check(
-        self, tool_name: str, args: dict[str, Any] | None = None
-    ) -> PermissionDecision:
-        """deny > allow > ask > default. Delegates to parent if set."""
-
-    def explicit_allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-        *,
-        constrain_param: str | None = None,
-    ) -> bool:
-        """Promote an ask to allow by appending a one-shot rule."""
-
-    def check_tool_call(
-        self, tool_call: Any
-    ) -> tuple[PermissionDecision, str]:
-        """Per-call decision plus a human-readable reason."""
-```
-
-`_load_config` accepts a `BaseModel` (`PermissionConfig`) or a plain
-`Mapping`. Rule patterns are validated as Python regexes at parse
-time; `paths` go through `variables.expand_regex(paths, ...)` so
-`${VAR}` substitution works in path patterns.
-
-`permissions/tools.py` exports the `resolve_operation(tool_name, args)`
-helper that maps a Tool call to its underlying filesystem operation.
-
-## On-disk artifacts
-
-None directly. Rules live in `Settings` configuration (config service
-owns persistence). One-time grants are runtime facts only — never
-persisted to disk.
-
-## Typical extension: a permission-aware Tool
-
-```python
-from XBotv2.core import Tool, ToolResult
-
-class NetworkTool:
-    inject = ["permissions", "session"]
-
-    def apply(self, ctx, config):
-        async def ping(host: str) -> ToolResult:
-            decision = ctx.permissions.check("ping", {"host": host})
-            if decision == "deny":
-                return ToolResult.failure("denied", "policy denies ping")
-            return ToolResult.success(await _do_ping(host))
-        ctx.tools.register(Tool.from_function(ping, name="ping"))
-```
-
-To require an interactive prompt for a particular tool, set the rule
-decision to `"ask"`; the guard hands off to `permission_request`.
-
-## Cross-references
-
-- Depends on: `tools` (registers the guard), `approval` (interactive
-  decisions via `permission_request`), `commands` (`/permissions`),
-  `settings` (rule config).
-- Depended on by: `coretools`, every Tool-registered plugin.
-- Pairs with: [permission-request.md](permission-request.md)
-  (interactive approval flow), [sandbox.md](sandbox.md) (path
-  capability, orthogonal axis).
-
-## Common pitfalls
-
-- **Bypassing the guard for "trusted" tools**: every Tool passes
-  through `ctx.tools.guard(...)`. A Tool that calls its handler
-  directly from a coroutine skips sandbox, permissions, and event
-  observers.
-- **Importing `PermissionsService` instead of the `Protocol`**:
-  `PermissionsPort` is the consumer contract; concrete class is
-  implementation detail.
-- **Persisting one-time grants to disk**: `grant_once` is intentionally
-  runtime-only. Persisting it would create a parallel rule file.
-- **Treating `ask` as a terminal decision**: only `allow` / `deny` emit
-  `PERMISSION_DECIDED`. Listen for `PERMISSION_REQUESTED` if you
-  need to react to mid-flight prompts.
-- **Reading `ctx.permissions.check(...)` from inside a Tool handler**:
-  the guard has already run before dispatch. Use `PermissionsPort`
-  to decide *whether to call* a tool at the orchestration layer; do
-  not re-check inside.
-- **Mutating rules via `add_rule` from a request handler**: prefer
-  `replace_rules` from a config update; runtime `add_rule` is for
-  short-lived, session-scoped grants.
+See [sandbox.md](sandbox.md) for OS enforcement.

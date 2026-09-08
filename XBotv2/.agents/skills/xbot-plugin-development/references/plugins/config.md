@@ -14,8 +14,8 @@ and handles session-level policy patches (permissions + sandbox).
   `XBotv2/config/events.py`.
 - **Injects/provides:** `runtime_log`, `runtime_paths`,
   `session_launch` → `settings` (`ConfigService`).
-- **Subscribes to events:** `permissions/decided` (`PermissionDecided`) —
-  persists the decision to disk via `PermissionRulePersister`.
+- **Permission approval:** grants belong to the permissions runtime and are
+  not persisted by this plugin. Human policy commands remain persisted.
 - **Operations:** `GET_POLICY`, `UPDATE_POLICY`.
 
 ## Public data models
@@ -181,12 +181,6 @@ def apply(self, ctx: Context, config: object | None = None) -> None:
     operations = ConfigOperations(settings)
     ctx.on(GET_POLICY.name, operations.get_policy)
     ctx.on(UPDATE_POLICY.name, settings.update_policy)
-    persister = PermissionRulePersister(
-        paths=ctx.runtime_paths,
-        session_id=ctx.session_launch.session_id,
-        runtime_log=ctx.runtime_log,
-    )
-    ctx.on(PERMISSION_DECIDED, persister.persist)
 ```
 
 The plugin never exposes `RuntimeConfig` itself — only `policy()`
@@ -223,8 +217,7 @@ class PolicyAwareTool:
 
 ## Cross-references
 
-- Depends on: `runtime_log`, `runtime_paths`, `session_launch`,
-  `permissions` (subscribes to `PERMISSION_DECIDED`).
+- Depends on: `runtime_log`, `runtime_paths`, `session_launch`.
 - Depended on by: `sandbox` (reads `SandboxConfig`), `permissions`
   (reads `PermissionConfig`), `coretools` (reads `ToolResultConfig`),
   `skills` (reads `PluginConfig`).
@@ -237,9 +230,9 @@ class PolicyAwareTool:
   checks**: `ConfigService.policy()` returns `PolicySnapshot` (only
   sandbox + permissions). If you need the full `RuntimeConfig`, call
   `load_runtime_config(workspace, session_id)` directly.
-- **Persisting permissions from `PERMISSION_DECIDED` manually**: the
-  `config` plugin owns this via `PermissionRulePersister`. Your plugin
-  should not duplicate that logic.
+- **Persisting `PERMISSION_DECIDED` grants** changes a runtime approval into
+  durable policy. Do not do this; persisted policy requires a human settings
+  operation.
 - **Mutating `ConfigService._user_context`**: it is a property on
   initialization; do not set it after the service is created.
 - **Reading `ctx.settings.policy()` during `apply()` before the

@@ -245,12 +245,12 @@ def _run_server(args) -> None:
             uvicorn.run(
                 app,
                 uds=str(uds_path),
-                log_level="warning",
+                log_config=None,
                 ws="none",
             )
         else:
             uvicorn.run(
-                app, host=args.bind, port=args.port, log_level="warning", ws="none"
+                app, host=args.bind, port=args.port, log_config=None, ws="none"
             )
     finally:
         asyncio.run(root_ctx.stop())
@@ -320,7 +320,7 @@ def _run_web(args) -> None:
             app,
             host=args.web_bind,
             port=args.web_port,
-            log_level="warning",
+            log_config=None,
             ws="none",
         )
     finally:

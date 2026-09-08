@@ -19,6 +19,8 @@ class PermissionDecided:
     decision: Literal["allow", "deny"]
     scope: str
     rule: dict[str, JsonValue]
+    request_id: str
+    source: str
 
 
 @dataclass(frozen=True, slots=True)

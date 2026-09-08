@@ -28,6 +28,20 @@ _NOISY_LOGGERS = (
     "httpcore",
     "starlette",
 )
+_TRANSPORT_LOGGERS = ("xbotv2.api", "xbotv2.acp", "xbotv2.transport", *_NOISY_LOGGERS)
+
+
+class _LogChannelFilter(logging.Filter):
+    def __init__(self, *, transport: bool) -> None:
+        super().__init__()
+        self._transport = transport
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        is_transport = any(
+            record.name == name or record.name.startswith(name + ".")
+            for name in _TRANSPORT_LOGGERS
+        )
+        return is_transport == self._transport
 
 
 def _resolve_log_file(data_dir: str | os.PathLike[str] | None) -> Path:
@@ -82,7 +96,7 @@ def _category_levels(
         values[name.strip()] = level.strip()
     values.update(configured or {})
     for name, level in values.items():
-        if not any(name == root or name.startswith(f"{root}.") for root in _OWNED_LOGGERS):
+        if not any(name == root or name.startswith(f"{root}.") for root in (*_OWNED_LOGGERS, *_NOISY_LOGGERS)):
             raise ValueError(f"Unsupported XBot log category: {name}")
         if level.upper() not in logging.getLevelNamesMapping():
             raise ValueError(f"Unsupported log level for {name}: {level}")
@@ -118,7 +132,7 @@ def setup_logging(
         logging.getLogger(name).setLevel(logging.NOTSET)
     _configured_category_loggers = set(levels)
 
-    roots = [logging.getLogger(name) for name in _OWNED_LOGGERS]
+    roots = [logging.getLogger(name) for name in (*_OWNED_LOGGERS, *_NOISY_LOGGERS)]
     previous_handlers = {
         handler for root in roots for handler in root.handlers
     }
@@ -126,7 +140,7 @@ def setup_logging(
         for handler in list(root.handlers):
             root.removeHandler(handler)
         root.setLevel(level.upper())
-        root.propagate = True
+        root.propagate = root.name in _OWNED_LOGGERS or root.name in {"uvicorn.error", "uvicorn.access"}
     for handler in previous_handlers:
         handler.close()
 
@@ -150,8 +164,23 @@ def setup_logging(
         file_handler.setFormatter(fmt)
         file_handler.setLevel(handler_level)
         file_handler.addFilter(context_filter)
+        file_handler.addFilter(_LogChannelFilter(transport=False))
         for root in roots:
-            root.addHandler(file_handler)
+            if root.name in _OWNED_LOGGERS:
+                root.addHandler(file_handler)
+        transport_handler = logging.handlers.RotatingFileHandler(
+            path.with_name(path.stem + ".transport" + path.suffix),
+            maxBytes=_MAX_BYTES,
+            backupCount=_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        transport_handler.setFormatter(fmt)
+        transport_handler.setLevel(handler_level)
+        transport_handler.addFilter(context_filter)
+        transport_handler.addFilter(_LogChannelFilter(transport=True))
+        for root in roots:
+            if root.name != "xcore" and root.name not in {"uvicorn.error", "uvicorn.access"}:
+                root.addHandler(transport_handler)
     except OSError:
         sys.stderr.write(
             f"xbotv2: could not open log file {path}; logging to stderr only\n"
@@ -164,11 +193,13 @@ def setup_logging(
         stream_handler.setFormatter(fmt)
         stream_handler.setLevel(handler_level)
         stream_handler.addFilter(context_filter)
+        stream_handler.addFilter(_LogChannelFilter(transport=False))
         for root in roots:
-            root.addHandler(stream_handler)
+            if root.name in _OWNED_LOGGERS:
+                root.addHandler(stream_handler)
 
-    for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    for name in ("uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
     for name, category_level in levels.items():
         logging.getLogger(name).setLevel(category_level)
 

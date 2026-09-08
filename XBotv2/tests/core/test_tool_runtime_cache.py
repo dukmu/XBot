@@ -34,7 +34,7 @@ from XBotv2.core.messages import Message
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.permission_request import PermissionRequestData
+from XBotv2.permissions import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import PERMISSION_REQUESTED
 from XBotv2.permissions.system import PermissionSystem
@@ -42,7 +42,7 @@ from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
-from XBotv2.permission_request.service import ApprovalService
+from XBotv2.permissions.approval import ApprovalService
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.interactions.plugin import InteractionsService
 from XBotv2.tests.helpers import make_tool_ctx
@@ -132,7 +132,7 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
     )
     results = await execute_tools(
         [ToolCall(id="c1", name="read", args={
-            "path": "session/artifacts/tool_results/cached.txt",
+            "path": str(cached),
         })],
         registry,
         ctx=ctx,
@@ -167,12 +167,12 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     results = await execute_tools(
         [
-            ToolCall(id="list", name="read", args={"path": "session/artifacts", "mode": "list"}),
+            ToolCall(id="list", name="read", args={"path": str(session_root / "artifacts"), "mode": "list"}),
             ToolCall(id="search", name="search", args={
-                "path": "session/artifacts", "pattern": "cached",
+                "path": str(session_root / "artifacts"), "pattern": "cached",
             }),
             ToolCall(id="find", name="search", args={
-                "path": "session/artifacts", "pattern": "*.txt", "mode": "name",
+                "path": str(session_root / "artifacts"), "pattern": "*.txt", "mode": "name",
             }),
         ],
         registry,
@@ -922,7 +922,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
     tool_event = next(e for e in events if e["type"] == "tool_result")
     tool_message = next(m for m in engine.messages if m.role == "tool")
 
-    assert tool_event["data"]["content"].startswith("Tool result cached at session/")
+    assert tool_message.artifact[0].id in tool_event["data"]["content"]
     cached = ET.fromstring(tool_message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["kind"] == "tool_result"
@@ -931,8 +931,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
     assert cached.find("read_instruction") is not None
     assert len(tool_message.artifact) == 1
     assert tool_message.artifact[0].kind is ArtifactKind.TOOL_RESULT
-    assert not Path(artifact_store.model_path(tool_message.artifact[0])).is_absolute()
-    assert str(state_store.paths.state_dir) not in tool_message.content
+    assert Path(artifact_store.model_path(tool_message.artifact[0])).is_absolute()
 
     cache_files = list(
         state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).glob("*.txt")
@@ -976,6 +975,22 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(
     assert len(message.artifact) == 1
     assert message.artifact[0].kind is ArtifactKind.TOOL_RESULT
     assert message.artifact[0].id.endswith(cache_files[0].name)
+
+    from XBotv2.core.filesystem.artifacts import ArtifactStore
+    from XBotv2.llm.openai import openai_messages
+    from XBotv2.llm.anthropic import anthropic_messages
+    from dataclasses import replace
+
+    persisted = message.content
+    assert cached.findtext("cache_path").strip() == message.artifact[0].id
+    moved = ArtifactStore(replace(state_store.paths, thread_id="forked"))
+    for store in (artifact_store, moved):
+        expected = store.model_path(message.artifact[0])
+        openai = openai_messages([message], artifacts=store)[0]["content"]
+        anthropic = anthropic_messages([message], artifacts=store)[0]["content"][0]["content"]
+        assert ET.fromstring(openai).findtext("cache_path") == expected
+        assert ET.fromstring(anthropic).findtext("cache_path") == expected
+    assert message.content == persisted
 
 
 @pytest.mark.asyncio

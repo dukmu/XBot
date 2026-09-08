@@ -34,7 +34,6 @@ These are quick references, not a replacement for the package's public
 | `context-builder` | [context-builder.md](context-builder.md) |
 | `prompts` | [prompts.md](prompts.md) |
 | `sandbox` | [sandbox.md](sandbox.md) |
-| `permission-request` | [permission-request.md](permission-request.md) |
 | `permissions` | [permissions.md](permissions.md) |
 | `coretools` | [coretools.md](coretools.md) |
 | `subagents` | [subagents.md](subagents.md) |

@@ -66,7 +66,7 @@ async def read(
     - ``utf8`` (default): bounded UTF-8 text read with line/character limits.
       Non-UTF-8 files return metadata (MIME, size, SHA-256, image dimensions)
       instead of binary content. Continue truncated reads from the returned
-      next offsets. The ``session/`` virtual path is read-only.
+      next offsets. Runtime artifact paths are absolute and read-only.
     - ``binary``: return raw bytes as base64 with metadata; the model sees the
       encoding sidecar, not the payload.
     - ``stat``: return metadata for a file, directory, or symlink without
@@ -78,7 +78,7 @@ async def read(
       traversal stops at ``max_entries`` and never follows symlinks.
 
     Args:
-        path: Workspace-relative, absolute approved, or ``session/`` path.
+        path: Workspace-relative or absolute path allowed by sandbox policy.
         mode: Operation to perform.
         offset: Zero-based first line (utf8).
         limit: Maximum lines (utf8).
@@ -188,7 +188,7 @@ async def _read_media(
     ``read(mode=media)`` is the single model-facing content tool. Exactly one
     of ``path``, ``url``, or ``data`` is required; images (GIF, JPEG, PNG,
     WebP) are supported today. Bytes are stored under
-    ``session/artifacts/media/`` and returned as a model-visible part.
+    the thread media ArtifactStore and returned as a model-visible part.
     """
     sources = [value for value in (path, url, data) if value]
     if len(sources) != 1:

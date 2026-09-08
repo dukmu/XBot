@@ -17,17 +17,22 @@ def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
         if raw_args.strip():
             return command_usage("/status")
         status = session.status()
-        return CommandResult(
-            " ".join(
-                f"{key}={value}"
-                for key, value in (
-                    ("session_id", status.session_id),
-                    ("thread_id", status.thread_id),
-                    ("provider", status.provider),
-                    ("model", status.model),
-                )
-            )
-        )
+        return CommandResult("\n".join((
+            "Session",
+            f"  ID: {status.session_id}",
+            f"  Thread: {status.thread_id}",
+            f"  Workspace: {status.workspace_root}",
+            f"  Agent: {status.agent or 'default'}",
+            "Runtime",
+            f"  State: {status.status} ({'resumed' if status.resumed else 'new'})",
+            f"  History: {status.turn_count} turns, {status.message_count} messages",
+            f"  Queued inputs: {status.pending_inputs}",
+            "Model",
+            f"  Provider: {status.provider}",
+            f"  Model: {status.model or 'default'}",
+            f"  Mode: {status.model_mode or 'default'}",
+            f"  Context window: {status.context_window or 'provider default'}",
+        )))
 
     async def clear_command(raw_args: str) -> CommandResult:
         if raw_args.strip():

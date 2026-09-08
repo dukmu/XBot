@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from XBotv2.core.tools import ClientEvent, GuardDecision, ToolCall
-from XBotv2.permission_request import ApprovalPort, PermissionRequestData
+from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
 from XBotv2.permissions import PermissionsPort
 from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
+from XBotv2.permissions.approval import request_decision
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 
 
 class PermissionGuard:
@@ -18,15 +20,18 @@ class PermissionGuard:
         permissions: PermissionsPort,
         approval: ApprovalPort,
         emit: Callable[[str, Any], Awaitable[Any]],
-        record_decision: Callable[[ClientEvent, str, str], Awaitable[None]],
+        apply_decision: Callable[[ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]],
     ) -> None:
         self._permissions = permissions
         self._approval = approval
         self._emit = emit
-        self._record_decision = record_decision
+        self._apply_decision = apply_decision
 
     async def check(self, tool_call: ToolCall, _entry: Any) -> GuardDecision | None:
         decision, reason = self._permissions.check_tool_call(tool_call)
+        DEFAULT_RUNTIME_LOG.bind("permissions").info(
+            "permission.checked", call_id=tool_call.id, tool=tool_call.name, decision=decision,
+        )
         if decision == "allow":
             return None
         if decision == "deny":
@@ -34,7 +39,7 @@ class PermissionGuard:
         payload = PermissionRequestData(
             request_id=f"permission:{tool_call.id}",
             source="permission_system",
-            tool_call=tool_call.model_dump(mode="json"),
+            tool_call=tool_call,
             decision="ask",
             reason=reason,
             resume_supported=False,
@@ -50,14 +55,11 @@ class PermissionGuard:
                 client_event=event,
             ),
         )
-        result = await self._approval.request(event)
-        if str(result.get("decision") or "") != "allow":
+        result = await request_decision(self._approval, event, self._apply_decision)
+        if result.decision != "allow" or self._permissions.check(tool_call.name, tool_call.args) == "deny":
             return GuardDecision(
                 "deny",
                 reason or f"Permission denied for tool: {tool_call.name}",
                 source="permissions",
             )
-        scope = str(result.get("scope") or "once")
-        if scope == "session":
-            await self._record_decision(event, "allow", scope)
         return None

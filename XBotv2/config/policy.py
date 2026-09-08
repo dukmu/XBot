@@ -12,7 +12,6 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.config.models import config_dict
 
 
-PermissionScope = str
 _PERMISSION_DECISIONS = ("deny", "allow", "ask")
 
 
@@ -94,42 +93,6 @@ def merge_sandbox_config(
     return merged
 
 
-def persist_permission_rule(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    rule: dict[str, Any],
-    decision: str,
-    scope: PermissionScope,
-) -> None:
-    """Persist one already-resolved permission rule for this session."""
-    decision = decision.lower().strip()
-    scope = (scope or "once").lower().strip()
-    if decision not in {"allow", "deny"} or scope != "session" or not rule:
-        return
-    _persist_permission_rule(
-        paths=paths,
-        session_id=session_id,
-        rule=rule,
-        decision=decision,
-    )
-
-
-def _persist_permission_rule(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    rule: dict[str, Any],
-    decision: str,
-) -> None:
-    path = paths.session(session_id).config_file
-    doc = _read_yaml(path)
-    permissions = doc.setdefault("permissions", {})
-    _remove_rule(permissions, rule)
-    permissions.setdefault(decision, [])
-    if rule not in permissions[decision]:
-        permissions[decision].insert(0, rule)
-    _write_yaml(path, doc)
 def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:
     for key in _PERMISSION_DECISIONS:
         permissions[key] = [item for item in permissions.get(key, []) if item != rule]

@@ -103,7 +103,8 @@ provider ownership.
 
 ## Session, thread, and loop identities
 
-- `SessionInfo` is the immutable identity/facts value passed in loop events.
+- `SessionInfo` holds current identity/facts passed in loop events; it is not
+  an immutable historical snapshot.
 - `Session` is the session-level runtime object that owns variables, paths,
   commands, and the `LoopState` view.
 - `SessionManager` is the process service that opens, resumes, lists, forks,
@@ -124,9 +125,12 @@ rules, read [session-trace.md](session-trace.md).
 
 These are the stable loop-hook names currently exposed by `Events`. Their
 payload is an `EventContext`; only fields relevant to that phase are populated.
-The `before/*` hooks are short-circuit points (`ctx.serial`) and may return the
-documented replacement/rejection value. The remaining loop events are
-observer notifications (`ctx.emit`) and normally return `None`.
+`SHORT_CIRCUIT_EVENTS` determines serial dispatch, not the event-name prefix:
+`before/user-message-accept`, `before/context`, `after/context`,
+`before/model-request`, `before/agent`, `before/tool-schema-bind`, `after/agent`,
+`before/tools`, `before/tool-call`, and `after/tools`. They use `ctx.serial`
+and may return the documented replacement/rejection value. Remaining loop
+events use `ctx.emit`; observers normally return `None`.
 
 | Phase | Names | Common populated fields |
 |---|---|---|

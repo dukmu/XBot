@@ -69,9 +69,9 @@ def cached_content_prompt(
         ),
         prompt_element(
             "read_instruction",
-            "The cache_path is an XBot session-relative model path. Pass it "
-            "unchanged to filesystem_read; do not search for or construct an "
-            "absolute filesystem path. Use offset and limit before acting when "
+            "The cache_path is an absolute filesystem path in this runtime. Pass it "
+            "unchanged to the read tool. It is read-only. "
+            "Use offset and limit before acting when "
             "omitted content may matter. For a long single line, continue with "
             "next_offset and next_char_offset.",
         ),

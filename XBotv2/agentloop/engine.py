@@ -1028,12 +1028,7 @@ class Engine:
             developer_instructions=self.settings.developer_instructions,
             instructions=self.settings.agent_instructions,
             memory=self.settings.memory,
-            runtime_paths={
-                "workspace": self.settings.workspace,
-                "session": "session/ (read-only)",
-                "artifacts": "session/artifacts/ (read-only)",
-                "tool_results": "session/artifacts/tool_results/ (read-only)",
-            },
+            runtime_paths=dict(self.state.variables),
             turn_count=self.turn_count,
         )
         build_result = await self._events.serial(

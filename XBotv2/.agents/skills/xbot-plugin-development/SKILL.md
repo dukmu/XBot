@@ -167,6 +167,17 @@ registered behavior.
 
 ## Stable Design Rules
 
+- Persist logical artifact IDs. Resolve model-facing absolute paths through
+  the active thread's ArtifactStore when building a request; never persist a
+  thread's absolute path or invent a virtual `session/` filesystem namespace.
+  Reuse the existing `RuntimeVariables.for_thread(paths, workspace_root,
+  thread_paths)` result; do not add a path service or injection hook.
+- Permission grants authorize Tool argument patterns, not sandbox policy
+  changes. `request_permission` grants future calls without executing them;
+  session grants persist in the current Agent thread's `permissions` state
+  namespace, not plugin configuration; once grants remain in memory. Only an explicit
+  shell escalation request can ask to leave the sandbox; human `/sandbox`
+  commands own policy changes. See the permissions and sandbox component pages.
 - Use package-root exports and typed events/operations for cross-plugin APIs;
   do not import a concrete sibling plugin.
 - Keep protocol routes and wire models in the owning `protocol.py`; do not put

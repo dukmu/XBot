@@ -80,7 +80,7 @@ class ArtifactStore:
         return self._paths.artifact_file(_artifact_id(artifact)).is_file()
 
     def model_path(self, artifact: ArtifactRef | str) -> str:
-        return f"session/artifacts/{_artifact_id(artifact)}"
+        return str(self._paths.artifact_file(_artifact_id(artifact)).resolve())
 
 
 def _artifact_id(artifact: ArtifactRef | str) -> str:

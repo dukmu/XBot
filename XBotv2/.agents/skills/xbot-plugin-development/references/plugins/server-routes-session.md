@@ -343,7 +343,7 @@ exception_handlers=(
   `server_options`, `workspace_events`.
 - Depended on by: HTTP clients, TUI, web interface.
 - Pairs with: `process-sessions` (`SessionsPort`), `interactions`
-  (interaction responses), `permission-request` (permission responses).
+  (interaction responses), `permissions` (permission responses).
 
 ## Common pitfalls
 

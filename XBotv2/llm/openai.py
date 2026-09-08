@@ -22,6 +22,7 @@ from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 from XBotv2.llm.base import (
     attachment_prompt,
+    tool_content,
     usage_metadata,
 )
 
@@ -73,6 +74,7 @@ class OpenAICompatibleProvider(BaseProvider):
             "messages": openai_messages(
                 messages,
                 image_loader=self.read_image,
+                artifacts=self.artifacts,
             ),
             "tools": self.bound_tools or None,
             "stream": True,
@@ -193,6 +195,7 @@ def openai_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     system_parts = [
@@ -215,7 +218,7 @@ def openai_messages(
             result.append(
                 {
                     "role": "tool",
-                    "content": str(content),
+                    "content": tool_content(message, artifacts),
                     "tool_call_id": message.tool_call_id,
                 }
             )
@@ -229,7 +232,7 @@ def openai_messages(
             "content": _openai_content(
                 parts,
                 image_loader,
-                attachment_prompt(message),
+                attachment_prompt(message, artifacts),
             ),
         }
         tool_calls = [

@@ -17,7 +17,7 @@ from XBotv2.core.messages import (
 )
 from XBotv2.core.tools import ToolCall
 from XBotv2.core.providers import BaseProvider
-from XBotv2.llm.base import attachment_prompt, usage_metadata
+from XBotv2.llm.base import attachment_prompt, tool_content, usage_metadata
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 
@@ -73,6 +73,7 @@ class AnthropicProvider(BaseProvider):
         system, request_messages = anthropic_request_messages(
             messages,
             image_loader=self.read_image,
+            artifacts=self.artifacts,
         )
         api_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -237,6 +238,7 @@ def anthropic_request_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     system = "\n\n".join(
         message.content
@@ -246,6 +248,7 @@ def anthropic_request_messages(
     return system, anthropic_messages(
         messages,
         image_loader=image_loader,
+        artifacts=artifacts,
     )
 
 
@@ -253,6 +256,7 @@ def anthropic_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
@@ -263,14 +267,14 @@ def anthropic_messages(
         blocks: list[dict[str, Any]] = []
         target_role = "assistant" if role == "assistant" else "user"
         if role == "tool":
-            tool_content = _parts_to_anthropic(
+            tool_blocks = _parts_to_anthropic(
                 message.parts,
                 image_loader=image_loader,
             )
             block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": message.tool_call_id,
-                "content": tool_content if message.images else content,
+                "content": tool_blocks if message.images else tool_content(message, artifacts),
             }
             if (message.status or "success") != "success":
                 block["is_error"] = True
@@ -285,7 +289,7 @@ def anthropic_messages(
                 message.parts,
                 image_loader=image_loader,
             ))
-            attachments = attachment_prompt(message)
+            attachments = attachment_prompt(message, artifacts)
             if attachments:
                 blocks.append({"type": "text", "text": attachments})
         if not blocks:

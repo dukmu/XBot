@@ -202,7 +202,7 @@ For a `kind="prompt"` command (client-side expansion only), omit
   (`sandbox`, `session`, `goal`, `todolist`, `subagents`, `jobs`,
   `compact`, `llm-commands`, `mcp-plugin`, `browser`, etc.).
 - Pairs with: `interactions` (asynchronous input requests),
-  `permission_request` (approval flow), `server.routes.commands` for
+  `permissions` (approval flow), `server.routes.commands` for
   HTTP exposure (already wired here).
 
 ## Common pitfalls

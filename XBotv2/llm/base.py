@@ -5,14 +5,33 @@ from __future__ import annotations
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from xml.etree import ElementTree
 
-from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.artifacts import ArtifactRef, ArtifactStorePort
 from XBotv2.core.messages import Message
-from XBotv2.core.prompts import prompt_container, prompt_element
+from XBotv2.core.prompts import CACHED_CONTENT_KEY, prompt_container, prompt_element
 from XBotv2.core.usage import UsageData
 
 
-def attachment_prompt(message: Message) -> str:
+def tool_content(message: Message, artifacts: ArtifactStorePort | None) -> str:
+    """Resolve an externalized result against this request's artifact store.
+
+    Only the engine-marked cache envelope is projected; neither history nor
+    arbitrary tool output is rewritten.
+    """
+    if not message.additional_kwargs.get(CACHED_CONTENT_KEY):
+        return message.content
+    if artifacts is None or not message.artifact or len(message.artifact) != 1:
+        raise ValueError("Cached tool result requires its artifact and storage")
+    root = ElementTree.fromstring(message.content)
+    path = root.find("cache_path")
+    if root.tag != "cached_content" or path is None:
+        raise ValueError("Cached tool result requires a cache envelope")
+    path.text = artifacts.model_path(message.artifact[0])
+    return ElementTree.tostring(root, encoding="unicode")
+
+
+def attachment_prompt(message: Message, artifacts: ArtifactStorePort | None) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
     for value in message.artifact or []:
@@ -24,9 +43,9 @@ def attachment_prompt(message: Message) -> str:
             raise TypeError(f"Unsupported attachment reference: {type(value).__name__}")
         if not item.get("id"):
             raise ValueError("Attachment reference requires an id")
-        path = str(item["id"])
-        if not path.startswith("session/"):
-            path = f"session/{path}"
+        if artifacts is None:
+            raise ValueError("Provider artifact storage is not configured")
+        path = artifacts.model_path(str(item["id"]))
         children.append(prompt_element(
             "attachment",
             "Use filesystem or shell tools to inspect this file when needed.",

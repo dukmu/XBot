@@ -15,7 +15,7 @@ from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
 from XBotv2.agentloop import Events
 from XBotv2.commands.plugin import CommandsService
-from XBotv2.permission_request.service import ApprovalService
+from XBotv2.permissions.approval import ApprovalService
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.config.models import SandboxConfig
 from XBotv2.tests.helpers import make_tool_ctx

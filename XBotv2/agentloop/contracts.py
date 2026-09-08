@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from XBotv2.core.history import ConversationHistory
+from XBotv2.core.variables import RuntimeVariables
 from XBotv2.agentloop.inbox import InboxInput, InboxSink
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import Message
@@ -30,8 +31,10 @@ class LoopState:
         metadata: ThreadMetadata | dict[str, JsonValue] | None = None,
         inbox_items: list[InboxInput] | None = None,
         inbox_sink: InboxSink | None = None,
+        variables: RuntimeVariables = RuntimeVariables(),
     ) -> None:
         self.session = session
+        self.variables = variables
         self.history = (
             messages
             if isinstance(messages, ConversationHistory)

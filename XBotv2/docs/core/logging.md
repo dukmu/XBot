@@ -1,10 +1,16 @@
 # Runtime logging
 
-XBot configures one rotating UTF-8 application log under
+XBot configures rotating UTF-8 application and transport logs under
 `<data-dir>/logs/xbotv2.log`. `XBOT_LOG_FILE` overrides that path. The handler
-captures both `xbotv2.*` and `xcore.*`; XCore lifecycle records are therefore
+captures domain `xbotv2.*` and `xcore.*`; XCore lifecycle records are therefore
 part of the same ordered application trace instead of disappearing into an
 unconfigured root logger.
+
+HTTP/SSE (`xbotv2.api`), future `xbotv2.transport.*` records, uvicorn,
+httpx/httpcore and Starlette use `xbotv2.transport.log` in the same directory.
+A custom `XBOT_LOG_FILE=/path/runtime.log` selects `runtime.transport.log`
+beside it. Transport records are excluded from the domain file and optional
+domain stderr output. Both files rotate independently (5 MiB, three backups).
 
 ## Levels
 
@@ -24,12 +30,12 @@ The CLI log-level setting controls both XBot and XCore namespaces. Individual
 categories can override it through `XBOT_LOG_LEVELS`, using comma-separated
 `logger=LEVEL` entries such as
 `xbotv2.llm=DEBUG,xcore.events=WARNING,xbotv2.persistence=DEBUG`. Only
-`xbotv2.*` and `xcore.*` categories are accepted; invalid category names or
+`xbotv2.*`, `xcore.*`, and the configured transport roots (`uvicorn`, `httpx`,
+`httpcore`, `starlette`) are accepted; invalid category names or
 levels fail during startup instead of being ignored. A program embedding XBot
 can pass the same mapping as `category_levels` to `setup_logging`.
 
-Framework
-access loggers remain suppressed because the XBot API records already include
+Framework access loggers write to the transport file. XBot API records include
 method, path, status, full response-stream duration, and `x-request-id`
 correlation. The pure-ASGI logger forwards streaming bodies directly and does
 not add response buffering.
@@ -52,13 +58,15 @@ The main operational categories are `api`, `session`, `acp`, `agentloop`,
 `context`, `tools`, `llm`, `usage`, `persistence`, `config`, and `application`.
 XCore uses `xcore.context`, `xcore.plugin`, `xcore.service`, and `xcore.events`.
 
-Runtime logs never include raw prompts, message content, tool argument values,
+Structured XBot runtime logs never include raw prompts, message content, tool argument values,
 tool results, request bodies, or credentials. They describe content through
 counts, character lengths, field names, source names, statuses, and token
 usage. Fields whose names identify credentials are redacted by the core log
 service. Empty optional fields are omitted. Exception records retain file,
 line, function, and exception type for debugging, but omit the exception
 message and source-code line because either may contain request content.
+Third-party transport logs retain their own message formats, including URLs;
+avoid credentials in URLs and apply appropriate access controls to log files.
 
 ## Plugin use
 

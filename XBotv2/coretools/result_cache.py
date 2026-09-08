@@ -58,7 +58,7 @@ def make_tool_result_cache_hook(
                 name=f"{_safe_name(tool_call_id)}.{suffix}",
                 suffix=f".{suffix}",
             )
-            cache_path = artifacts.model_path(stored)
+            cache_path = stored.id
             replacement = _format_cached_result(
                 content=content,
                 cache_path=cache_path,

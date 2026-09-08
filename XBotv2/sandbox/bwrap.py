@@ -137,6 +137,12 @@ def _build_args(
     network: bool,
     cwd: str,
 ) -> list[str]:
+    mounts = sorted(mount_specs, key=lambda mount: len(mount.target.parts))
+    root = next((mount for mount in mounts if mount.target == Path("/")), None)
+    root_args = (
+        ["--tmpfs", "/"] if root is not None and root.mask
+        else ["--bind" if root is not None and root.access == "readwrite" else "--ro-bind", "/", "/"]
+    )
     args = [
         "--die-with-parent",
         "--unshare-user",
@@ -145,10 +151,10 @@ def _build_args(
         "--unshare-uts",
         "--unshare-cgroup",
         "--new-session",
-        "--ro-bind", "/", "/",
+        *root_args,
         "--dev", "/dev",
         "--proc", "/proc",
-        "--bind", "/tmp", "/tmp",
+        "--tmpfs", "/tmp",
     ]
     if network:
         # Share the host network namespace so DNS and TCP egress
@@ -161,12 +167,14 @@ def _build_args(
     else:
         args.append("--unshare-net")
 
-    mounts = sorted(mount_specs, key=lambda mount: len(mount.target.parts))
     for mount in mounts:
-        if mount.target == Path("/") and mount.access == "readonly":
+        if mount.target == Path("/"):
             continue
-        if mount.mask and mount.kind == "dir":
-            args.extend(["--tmpfs", str(mount.target)])
+        if mount.mask:
+            if mount.kind == "dir":
+                args.extend(["--tmpfs", str(mount.target), "--remount-ro", str(mount.target)])
+            else:
+                args.extend(["--ro-bind", "/dev/null", str(mount.target)])
             continue
         bind_flag = "--bind-try" if mount.access == "readwrite" else "--ro-bind-try"
         args.extend([bind_flag, str(mount.source), str(mount.target)])

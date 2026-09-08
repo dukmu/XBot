@@ -41,10 +41,11 @@ are persisted `<runtime_event>` inputs with explicit non-human metadata. An
 active Goal schedules such an input only after a turn ends, not on every
 provider call or Tool result.
 
-Runtime paths are stable for the thread. The workspace is shown explicitly;
-cached artifacts use the read-only `session/artifacts/...` virtual namespace.
-Internal configuration and plugin-state directories are not exposed merely
-because Core has immutable runtime variables for them.
+Runtime directories come directly from `RuntimeVariables.for_thread` and are
+absolute. Context construction uses the same variables held by LoopState.
+ArtifactStore resolves logical artifact IDs to absolute paths for model input;
+there is no virtual `session/` filesystem namespace. These paths describe
+locations; sandbox policy still controls access.
 
 Slash-invoked Skills use `<skill_invocation>` with separate
 `skill_instructions` and `user_arguments` children. Model-invoked Skills remain
@@ -72,13 +73,14 @@ history instead of exposing XML in the TUI.
 
 ## Cached Content
 
-Both cache layers use `<cached_content>` with a relative `session/...` path,
+Both cache layers present `<cached_content>` to the model with an absolute artifact path,
 size metadata, escaped beginning/ending previews, and bounded-read guidance.
-The read instruction identifies the path as an XBot model path that must be
-passed unchanged to `filesystem_read`; models must not search for or derive an
-absolute host path. Their lifecycles remain distinct:
+The read instruction tells the model to pass that read-only path unchanged to
+the `read` tool. Their lifecycles remain distinct:
 
 - Tool-result caching runs after Tool execution and before history persistence.
+  The persisted envelope holds the logical artifact ID. Provider adapters resolve
+  its absolute path against the active thread without mutating stored history.
 - Context caching runs at the start of the pre-model request chain and replaces only the
   current oversized user message in the request copy. It retains the complete
   persisted user message and reuses the same cached request copy across ReAct

@@ -112,7 +112,8 @@ server-owned commands use the compatibility route.
 present.
 `XBotClient.send_message(..., attachments=[...])` uploads arbitrary files.
 Each item contains base64 `data`, `media_type`, and `name`. History returns a
-session-relative artifact reference, not the original bytes.
+logical artifact reference, not the original bytes. Provider prompts resolve
+that identity to the active thread's absolute path through ArtifactStore.
 Use `XBotClient.read_artifact(...)` to retrieve referenced bytes and
 `XBotClient.regenerate_message(...)` to replace the latest human turn without
 duplicating it. `list_messages(..., limit=..., cursor=...)` reads newest-first

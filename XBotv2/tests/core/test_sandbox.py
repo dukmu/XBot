@@ -75,7 +75,7 @@ class TestResourcePathResolution:
         )
 
         assert policy.resolve_read_path("session/artifacts/tool_results/cached.txt") == (
-            session_root / "artifacts" / "tool_results" / "cached.txt"
+            workspace / "session" / "artifacts" / "tool_results" / "cached.txt"
         ).resolve()
         assert policy.resolve_read_path("session/../outside.txt") == (
             workspace / "session" / "../outside.txt"
@@ -97,7 +97,7 @@ class TestResourcePathResolution:
         )
 
         assert policy.check_filesystem_access(
-            "write", {"path": "session/state.txt"}
+            "write", {"path": str(session_root / "state.txt")}
         )[0]["decision"] == "deny"
 
     def test_session_symlink_cannot_redirect_a_write(self, tmp_path):
@@ -119,7 +119,7 @@ class TestResourcePathResolution:
         )
 
         assert policy.check_filesystem_access(
-            "write", {"path": "session/link.txt"}
+            "write", {"path": str(session_root / "link.txt")}
         )[0]["decision"] == "deny"
 
 
@@ -138,8 +138,8 @@ class TestBubblewrapBuildArgs:
         args = _build_args([], network=True, cwd=str(temp_workspace))
         root_bind = args.index("--ro-bind")
         assert args[root_bind : root_bind + 3] == ["--ro-bind", "/", "/"]
-        tmp_bind = args.index("--bind")
-        assert args[tmp_bind : tmp_bind + 3] == ["--bind", "/tmp", "/tmp"]
+        tmp_bind = args.index("--tmpfs")
+        assert args[tmp_bind : tmp_bind + 2] == ["--tmpfs", "/tmp"]
 
 
 class TestBubblewrapCapabilities:
@@ -165,7 +165,7 @@ class TestBubblewrapCapabilities:
 
         cached = json.loads(await policy.filesystem(
             "read",
-            {"path": "session/artifacts/tool_results/cached.txt"},
+            {"path": str(cached_path)},
         ))
         searched = json.loads(await policy.filesystem(
             "search",

@@ -1723,7 +1723,9 @@ async def test_http_command_plane_exposes_platform_builtins(
     assert body["type"] == "command_result"
     assert body["data"]["status"] == "ok"
     assert body["data"]["effects"] == []
-    assert "provider=" in body["data"]["message"]
+    assert "Provider: default" in body["data"]["message"]
+    assert "Workspace:" in body["data"]["message"]
+    assert "History: 0 turns, 0 messages" in body["data"]["message"]
     messages_response = await client.get("/sessions/cmds/threads/t/messages")
     assert messages_response.status_code == 200
     assert messages_response.json()["messages"] == []
@@ -1777,11 +1779,22 @@ async def test_http_builtin_commands_execute_through_command_plane(
 
     policy = await run("/permission status")
     assert policy["status"] == "ok"
-    assert "Session permission policy:" in policy["message"]
+    assert "Permission policy" in policy["message"]
+    assert "Approved grants: 0" in policy["message"]
 
     sandbox = await run("/sandbox status")
     assert sandbox["status"] == "ok"
-    assert "Session sandbox policy:" in sandbox["message"]
+    assert "Sandbox policy" in sandbox["message"]
+    assert "hard guard" in sandbox["message"]
+
+    added = await run("/sandbox add readonly /tmp/reference")
+    assert added["status"] == "ok"
+    resources = await run("/sandbox resources")
+    assert '\"path\": \"/tmp/reference\"' in resources["message"]
+    removed = await run("/sandbox remove 1")
+    assert removed["status"] == "ok"
+    resources = await run("/sandbox resources")
+    assert "/tmp/reference" not in resources["message"]
 
 
 @pytest.mark.asyncio
@@ -2225,7 +2238,7 @@ async def test_http_policy_api_updates_live_session_policy(
         ToolCall(
             id="read-cached-policy",
             name="read",
-            args={"path": "session/artifacts/tool_results/cached.txt"},
+            args={"path": str(cached_path)},
         ),
     ])
     status_response = await client.get("/sessions/policy/policy")
@@ -2346,25 +2359,23 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
     class _Approval:
         async def request(self, event):
+            from XBotv2.permissions import ApprovalDecision
             captured["event"] = event
-            return {"decision": "allow", "scope": "once"}
+            return ApprovalDecision(decision="allow", scope="once")
 
-    class _Permissions:
-        def grant_once(self, tool, params):
-            captured["grant"] = (tool, params)
-
-    async def record_decision(_event, _decision, _scope):
-        raise AssertionError("once approval must not persist a session rule")
+    async def apply_decision(_event, decision):
+        captured["decision"] = (decision.decision, decision.scope)
+        return decision
 
     result = await request_tool_permission(
         "shell",
         {},
         "needs approval",
-        permissions=_Permissions(),
         approval=_Approval(),
-        record_permission_decision=record_decision,
+        apply_permission_decision=apply_decision,
     )
     assert result.status == "success"
+    assert captured["decision"] == ("allow", "once")
     event = captured["event"]
     assert event.type == "permission_request"
     assert event.data["request_id"]
@@ -2373,7 +2384,7 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from XBotv2.permission_request import PermissionResponseRequest
+    from XBotv2.permissions import PermissionResponseRequest
 
     with pytest.raises(ValidationError, match="scope"):
         PermissionResponseRequest(

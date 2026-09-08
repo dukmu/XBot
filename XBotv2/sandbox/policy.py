@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -137,12 +138,27 @@ class SandboxPolicy:
     # ------------------------------------------------------------------
 
     def _mount_specs(self) -> list[SandboxMountSpec]:
+        external_access = self._configured_mount_access(self.external_read, self.external_write)
         mounts = [SandboxMountSpec(
+            Path("/"), Path("/"), external_access or "readonly", "dir",
+            mask=external_access is None,
+        )]
+        if external_access is None:
+            # A hidden host root still needs the interpreter, shell and shared libraries.
+            for path in (
+                "/usr", "/bin", "/sbin", "/lib", "/lib64", sys.base_prefix,
+                "/etc/ld.so.cache", "/etc/alternatives", "/etc/ssl",
+                "/etc/resolv.conf", "/etc/hosts",
+            ):
+                source = Path(path).resolve()
+                if source.exists():
+                    mounts.append(SandboxMountSpec(source, Path(path), "readonly", _path_kind(str(source))))
+        mounts.append(SandboxMountSpec(
             source=self.data_root,
             target=self.data_root,
             access="readonly",
             kind="dir",
-        )]
+        ))
 
         workspace_access = self._configured_mount_access(
             self.workspace_read,
@@ -155,6 +171,10 @@ class SandboxPolicy:
                 access=workspace_access,
                 kind="dir",
             ))
+        else:
+            mounts.append(SandboxMountSpec(
+                self.workspace_root, self.workspace_root, "readonly", "dir", mask=True,
+            ))
         if self.session_root is not None:
             mounts.append(SandboxMountSpec(
                 source=self.session_root,
@@ -163,7 +183,7 @@ class SandboxPolicy:
                 kind="dir",
             ))
 
-        for rule in self._rules:
+        for rule in reversed(self._rules):
             resolved = self.resolve_resource_path(rule.path)
             if (
                 self.session_root is not None
@@ -175,10 +195,21 @@ class SandboxPolicy:
                 mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind))
             elif rule.access == "readonly":
                 mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind))
+            elif rule.access == "allow":
+                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind))
+            elif rule.access == "deny":
+                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind, mask=True))
 
         worker = Path(filesystem_ops.__file__).resolve()
         if not worker.is_relative_to(self.workspace_root):
             mounts.append(SandboxMountSpec(worker, worker, "readonly", "file"))
+
+        # Runtime policy files stay immutable even when the workspace is writable.
+        overlay = Path(self.variables["custom_config_dir"])
+        if workspace_access == "readwrite":
+            overlay.mkdir(parents=True, exist_ok=True)
+        if overlay.is_dir():
+            mounts.append(SandboxMountSpec(overlay, overlay, "readonly", "dir"))
 
         return mounts
 
@@ -238,18 +269,12 @@ class SandboxPolicy:
         p = Path(path)
         if p.is_absolute():
             return _absolute_path(p)
-        if p.parts and p.parts[0] == "session" and self.session_root is not None:
-            resolved = _absolute_path(self.session_root / Path(*p.parts[1:]))
-            if resolved.is_relative_to(self.session_root):
-                return resolved
         return _absolute_path(self.workspace_root / p)
 
     def resolve_write_path(self, path: str) -> Path:
         p = Path(path)
         if p.is_absolute():
             return _absolute_path(p)
-        if p.parts and p.parts[0] == "session" and self.session_root is not None:
-            return _absolute_path(self.session_root / Path(*p.parts[1:]))
         return _absolute_path(self.workspace_root / p)
 
     def resolve_filesystem_args(
@@ -332,16 +357,26 @@ class SandboxPolicy:
 
     def _path_decision(self, path: Path, *, write: bool) -> str:
         lexical = _absolute_path(path)
+        target = path.resolve()
+        if write and any(
+            candidate.is_relative_to(root)
+            for candidate in (lexical, target)
+            for root in (self.data_root, self.workspace_root / ".xbot")
+        ):
+            return "deny"
         if (
             write
             and self.session_root is not None
             and lexical.is_relative_to(self.session_root)
         ):
             return "deny"
-        target = path.resolve()
         if self.session_root is not None and target.is_relative_to(self.session_root):
             return "deny" if write else "allow"
-        for rule in self._rules:
+        for rule in sorted(
+            self._rules,
+            key=lambda rule: len(Path(self.resolve_resource_path(rule.path)).parts),
+            reverse=True,
+        ):
             rule_path = Path(self.resolve_resource_path(rule.path))
             if target.is_relative_to(rule_path):
                 return _access_decision(rule.access, write=write)

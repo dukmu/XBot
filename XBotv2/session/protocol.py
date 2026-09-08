@@ -26,7 +26,7 @@ from XBotv2.protocol.http_util import (
     _format_sse,
 )
 from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
-from XBotv2.permission_request import PermissionResponseRequest
+from XBotv2.permissions import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationPage

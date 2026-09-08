@@ -109,7 +109,7 @@ templates should return `ToolResult` directly.
 `read` (mode=media) for model-visible media input (images today). It accepts exactly one of a local
 path, an `http`/`https` URL, or base64 image data (optionally as a
 `data:image/*;base64,` URL). Supported types are GIF, JPEG, PNG, and WebP; the
-bytes are stored under `session/artifacts/media/` and sent to image-capable
+bytes are stored in the thread's media ArtifactStore and sent to image-capable
 providers as a native image block. `read` (mode=stat) still reports recognized
 image dimensions for discovery.
 
@@ -122,11 +122,10 @@ bounded beginning and ending preview (8,000 characters by default), and
 All three values are
 configured in the `coretools` plugin entry of the plugin tree (`xcore.yaml` or
 a `plugins.yaml` overlay), and the preview may not exceed the inline
-threshold. The model receives the preview plus a `cache_path` relative to
-the current session state, such as `session/artifacts/tool_results/<file>`. That
+threshold. The model receives the preview plus an absolute `cache_path`
+resolved by `ArtifactStore.model_path()`. That
 path is readable through the filesystem read, list, search, and find tools;
-callers must pass that model path unchanged rather than construct an absolute
-host path. They should use `offset`, `char_offset`, `limit`, and `max_chars` to
+callers must pass that path unchanged. They should use `offset`, `char_offset`, `limit`, and `max_chars` to
 inspect only the required range, including long single-line artifacts.
 `inline_limit_chars` in the cache envelope is the actual preview length, while
 `cache_threshold_chars` is the configured threshold that triggered caching.
@@ -135,19 +134,18 @@ explicit original text payloads, such as the `content` returned by
 `read`, are stored verbatim in a `.txt` artifact without JSON
 encoding or escaped lines. Only an original object or array is serialized as
 JSON. A string that already contains JSON text remains that exact string and is
-not encoded a second time. The cached value becomes a relative artifact
-reference instead of being duplicated in history and SSE. The
-single read-only `session/` namespace maps the current session state directory;
-other relative paths remain workspace-relative. It is intentionally not a
-general virtual filesystem. Policy updates preserve the mount, and cached-result
+not encoded a second time. The cached value becomes an artifact
+reference instead of being duplicated in history and SSE.
+Relative Tool paths always resolve inside the workspace, including a real
+`session/` directory. Runtime directories are absolute variables.
+Policy updates preserve the read-only state mount, and cached-result
 metadata survives restoration.
 
-Provider-bound context uses a 48,000-character boundary for user messages and a
-12,000-character boundary for assistant content, Tool results, and assistant
-reasoning content. Model-authored ToolCall arguments are passed through
-unchanged. Oversized values are stored under
-`session/artifacts/context/`; only a beginning/ending preview, digest, size, and
-session-relative `cache_path` are sent to the provider. This projection does
+Provider-bound content caching uses a 48,000-character boundary for the current
+user input only. It never scans history, assistant reasoning, or model-authored
+ToolCall arguments. Oversized input is stored in the thread context ArtifactStore;
+only a beginning/ending preview, digest, size, and absolute `cache_path` are
+sent to the provider. This projection does
 not mutate persisted messages, so resume retains the exact original input. The
 marker tells the Agent to inspect omitted sections with bounded
 `read` calls before acting when needed.
@@ -215,8 +213,8 @@ expressions over resolved absolute paths and may embed runtime variables.
 Discovered Skills, MCP tools, and unknown tools remain subject to explicit
 policy. The workspace mount follows
 `workspace_read` and `workspace_write`; current session state remains read-only
-through relative `session/...` paths. External `ask` paths use the normal
-ordered permission interaction and record only the approved path. For atomic
+through absolute paths. Sandbox denials remain denials after permission approval.
+Tool `ask` rules use the permission interaction. For atomic
 filesystem mutations, the trusted filesystem worker receives a temporary parent
 directory mount for that call; shell commands do not inherit it. The complete
 data directory is visible but read-only inside shell sandboxes.
@@ -235,8 +233,10 @@ a successful Tool result.
 parameter names to full-match regular expressions, and a reason. The Tool name
 is treated literally, not as a regular expression. It never constructs or
 executes a target ToolCall. An allow-once response installs a rule consumed by
-the next matching call; an allow-session response uses normal session policy
-persistence. Explicit deny rules and sandbox checks still take precedence.
+the next matching call; an allow-session response grants matching calls in the
+current Agent thread, persisted in its permissions state and restored on resume.
+Once grants are not persisted. Neither changes sandbox policy. Explicit
+deny rules and sandbox checks still take precedence.
 Non-interactive runtimes do not expose this Tool.
 
 Registered tools use one canonical string name:

@@ -33,7 +33,7 @@ from XBotv2.llm import (
     ProviderSelectionRequest,
     ProviderSelectionResponse,
 )
-from XBotv2.permission_request import PermissionResponseRequest
+from XBotv2.permissions import PermissionResponseRequest
 from XBotv2.protocol import (
     ErrorResponse,
     HealthResponse,
