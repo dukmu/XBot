@@ -155,32 +155,27 @@ async def contribute_router(
     """Register an adapter router and bind cleanup to its XCore fiber."""
 ```
 
-## Server routes (core)
+## Server routes
 
-The `server` plugin does NOT register any routes directly. Route plugins
-(`server-routes-core`, `server-routes-session`, etc.) use `contribute_router()`
-to register their `APIRouter`:
+The `server` plugin registers only its own core routes. Every other capability
+owns its router in `protocol.py` and mounts it from that capability's root
+`plugin.py` through a dependency-gated callback:
 
 ```python
-# server/routes/plugin.py
-class CoreHttpPlugin:
-    name = "xbot.http.core"
-    inject = ["server", "server_info"]
+# notes/plugin.py
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(ctx, owner="notes.http", router=build_router(ctx.notes))
 
-    async def apply(self, ctx, config=None):
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_core_router(events=ctx, info=ctx.server_info),
-        )
+class NotesPlugin:
+    def apply(self, ctx: Context, config=None):
+        ctx.inject(["server", "notes"], mount_http)
 ```
 
 ## Cross-references
 
 - Depends on: `runtime_log`.
-- Depended on by: all `server-routes-*` plugins, `acp-plugin`.
-- Pairs with: `server.routes.core`, `server.routes.session`, etc.
-  (route plugins).
+- Depended on by: capability-owned HTTP integrations.
+- Pairs with: the route builders in each owning package's `protocol.py`.
 
 ## Common pitfalls
 

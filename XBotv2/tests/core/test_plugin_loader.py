@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from XBotv2.loader import PluginEntry, PluginTree
-from XBotv2.loader.types import PluginOverlay
+from XBotv2.loader.contracts import PluginOverlay
 from XBotv2.loader.runtime import (
     mount_plugin_tree,
     resolve_plugin_from_module,

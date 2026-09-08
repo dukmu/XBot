@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
@@ -38,7 +39,7 @@ from XBotv2.agentloop.contracts import (
     LoopState,
     ModelRequest,
 )
-from XBotv2.agentloop.services import ToolsPort
+from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
@@ -70,7 +71,7 @@ from XBotv2.core.tokens import (
 )
 from XBotv2.core.timing import TIMING_METADATA_KEY
 from XBotv2.llm import ModelPort
-from XBotv2.session.types import SessionInfo
+from XBotv2.session.contracts import SessionInfo
 from XBotv2.core.tools import (
     ClientEvent,
     Tool,
@@ -187,7 +188,7 @@ def _artifact_event_data(artifact: object) -> dict[str, Any]:
     raise TypeError(f"Unsupported artifact reference: {type(artifact).__name__}")
 
 
-class Engine:
+class Engine(AgentLoopDriverPort):
     """Core ReAct loop engine.
 
     No plugin imports. No DAG, skills, or compaction logic.
@@ -341,7 +342,7 @@ class Engine:
             results = list(after_result["tool_results"])
         return results
 
-    async def _record_inbox_splice(self, event: dict[str, Any]) -> None:
+    async def _record_inbox_splice(self, event: dict[str, JsonValue]) -> None:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
             Events.INBOX_SPLICE,

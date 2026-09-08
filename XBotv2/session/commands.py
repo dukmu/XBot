@@ -9,7 +9,7 @@ from XBotv2.commands import (
     guard_command,
     split_command_args,
 )
-from XBotv2.session.services import SessionPort
+from XBotv2.session.contracts import SessionPort
 
 
 def build_session_commands(session: SessionPort) -> tuple[Command, ...]:

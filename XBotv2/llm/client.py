@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import json
 import os
-from typing import Any
+from pydantic import JsonValue
 
-from XBotv2.llm.config import expand_env
+from XBotv2.llm.config import ModelConfig, ProviderConfig, expand_env
 
 logger = logging.getLogger("xbotv2.llm")
 
@@ -43,7 +43,10 @@ def _retry_settings() -> tuple[int | None, float]:
     return max_retries, backoff
 
 
-def _provider_arguments(provider_config, model_config) -> dict[str, Any]:
+def _provider_arguments(
+    provider_config: ProviderConfig,
+    model_config: ModelConfig,
+) -> dict[str, JsonValue]:
     """Resolve configuration shared by concrete remote adapters."""
     api_key = expand_env(provider_config.api_key or "")
     _require_api_key(provider_config.protocol, model_config.model, api_key)
@@ -65,7 +68,7 @@ def _provider_arguments(provider_config, model_config) -> dict[str, Any]:
     }
 
 
-def _parse_tool_args(raw: str) -> dict[str, Any]:
+def _parse_tool_args(raw: str) -> dict[str, JsonValue]:
     try:
         value = json.loads(raw) if raw else {}
     except (json.JSONDecodeError, TypeError):

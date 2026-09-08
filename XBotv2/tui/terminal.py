@@ -10,7 +10,7 @@ from XBotv2.client import XBotClient, _thread_path
 from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.protocol import ServerEvent, WireModel
 from XBotv2.session.protocol import SessionMode
-from XBotv2.session.types import new_session_id
+from XBotv2.session.contracts import new_session_id
 from XBotv2.tui.trace import trace_event
 
 

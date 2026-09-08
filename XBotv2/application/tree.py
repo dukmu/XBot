@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.loader import PluginEntry, PluginTree
-from XBotv2.loader.types import PluginOverlay
+from XBotv2.loader.contracts import PluginOverlay
+from XBotv2.core.paths import RuntimePaths
 
 
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
@@ -26,12 +27,12 @@ OPTIONAL_CAPABILITIES = frozenset({
 
 def load_agent_tree(
     *,
-    paths: Any,
+    paths: RuntimePaths,
     workspace_root: Path | str,
     is_subagent: bool,
     no_plugins: bool,
     plugin_dirs: list[Path | str] | None,
-    extra_plugins: list[dict[str, Any]] | None,
+    extra_plugins: list[dict[str, JsonValue]] | None,
 ) -> PluginTree:
     """Compose the Agent tree in global, workspace, then session order."""
     excluded = frozenset(
@@ -68,7 +69,7 @@ def load_agent_tree(
     return tree.for_profile("agent")
 
 
-def load_server_tree(*, paths: Any) -> PluginTree:
+def load_server_tree(*, paths: RuntimePaths) -> PluginTree:
     """Load the declarative server application profile."""
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
@@ -80,7 +81,7 @@ def load_server_tree(*, paths: Any) -> PluginTree:
     return selected
 
 
-def load_acp_tree(*, paths: Any) -> PluginTree:
+def load_acp_tree(*, paths: RuntimePaths) -> PluginTree:
     """Load the ACP carrier application profile."""
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"

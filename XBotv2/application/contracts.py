@@ -1,4 +1,4 @@
-"""Public composition services for launching child Agent applications."""
+"""Public contracts for Agent application composition."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class ApplicationEventsPort(OperationContext, Protocol):
 class InteractionResultPort(Protocol):
     request_id: str
     status: str
-    answer: object
+    answer: JsonValue | None
     decision: str
     scope: str
     reason: str

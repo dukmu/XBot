@@ -26,7 +26,7 @@ class ThreadMetadata(BaseModel):
     title: str = ""
 
     @classmethod
-    def from_state(cls, value: Mapping[str, object]) -> "ThreadMetadata":
+    def from_state(cls, value: Mapping[str, JsonValue]) -> "ThreadMetadata":
         return cls.model_validate({"schema_version": 1, **value})
 
 class ThreadMetadataSink(Protocol):
@@ -56,7 +56,7 @@ class ThreadMetadataState:
             self._sink.save(value)
         self._value = value
 
-    def update(self, **values: object) -> None:
+    def update(self, **values: JsonValue) -> None:
         self.replace(ThreadMetadata.model_validate({
             **self._value.model_dump(), **values,
         }))

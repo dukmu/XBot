@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, AsyncIterator, Callable
+from pydantic import JsonValue
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import (
@@ -34,7 +35,7 @@ class AnthropicProvider(BaseProvider):
         max_output_tokens: int,
         reasoning_effort: str | None = None,
         thinking: str | None = None,
-        extra_body: dict[str, Any] | None = None,
+        extra_body: dict[str, JsonValue] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
@@ -53,7 +54,7 @@ class AnthropicProvider(BaseProvider):
             input_modalities=input_modalities,
             artifacts=artifacts,
         )
-        kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
@@ -61,8 +62,8 @@ class AnthropicProvider(BaseProvider):
 
     def _provider_tools(
         self,
-        tools: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        tools: list[dict[str, JsonValue]],
+    ) -> list[dict[str, JsonValue]]:
         return [anthropic_tool_schema(tool) for tool in tools]
 
     async def _astream_once(
@@ -75,7 +76,7 @@ class AnthropicProvider(BaseProvider):
             image_loader=self.read_image,
             artifacts=self.artifacts,
         )
-        api_kwargs: dict[str, Any] = {
+        api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
             "messages": request_messages,
             "max_tokens": self.max_output_tokens,
@@ -86,7 +87,7 @@ class AnthropicProvider(BaseProvider):
             api_kwargs["system"] = system
         if self.bound_tools:
             api_kwargs["tools"] = self.bound_tools
-        derived_extra_body: dict[str, Any] = {}
+        derived_extra_body: dict[str, JsonValue] = {}
         if self.reasoning_effort:
             derived_extra_body["reasoning_effort"] = self.reasoning_effort
         if self.thinking:
@@ -98,9 +99,9 @@ class AnthropicProvider(BaseProvider):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        tool_blocks: dict[int, dict[str, Any]] = {}
+        tool_blocks: dict[int, dict[str, JsonValue]] = {}
         tool_json: dict[int, list[str]] = {}
-        content_blocks: dict[int, dict[str, Any]] = {}
+        content_blocks: dict[int, dict[str, JsonValue]] = {}
         usage_values = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -239,7 +240,7 @@ def anthropic_request_messages(
     *,
     image_loader: Callable[[str], str] | None = None,
     artifacts: ArtifactStorePort | None = None,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, JsonValue]]]:
     system = "\n\n".join(
         message.content
         for message in messages
@@ -257,21 +258,21 @@ def anthropic_messages(
     *,
     image_loader: Callable[[str], str] | None = None,
     artifacts: ArtifactStorePort | None = None,
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+) -> list[dict[str, JsonValue]]:
+    result: list[dict[str, JsonValue]] = []
     for message in messages:
         role = message.role
         if role == "system":
             continue
         content = message.content
-        blocks: list[dict[str, Any]] = []
+        blocks: list[dict[str, JsonValue]] = []
         target_role = "assistant" if role == "assistant" else "user"
         if role == "tool":
             tool_blocks = _parts_to_anthropic(
                 message.parts,
                 image_loader=image_loader,
             )
-            block: dict[str, Any] = {
+            block: dict[str, JsonValue] = {
                 "type": "tool_result",
                 "tool_use_id": message.tool_call_id,
                 "content": tool_blocks if message.images else tool_content(message, artifacts),
@@ -301,7 +302,7 @@ def anthropic_messages(
     return result
 
 
-def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
+def _response_parts(blocks: dict[int, dict[str, JsonValue]]) -> list[ContentPart]:
     parts: list[ContentPart] = []
     for block in (blocks[index] for index in sorted(blocks)):
         block_type = block.get("type")
@@ -337,8 +338,8 @@ def _parts_to_anthropic(
     parts: list[ContentPart],
     *,
     image_loader: Callable[[str], str] | None,
-) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
+) -> list[dict[str, JsonValue]]:
+    blocks: list[dict[str, JsonValue]] = []
     for part in parts:
         if isinstance(part, TextPart):
             blocks.append({"type": "text", "text": part.text})
@@ -385,7 +386,7 @@ def _parts_to_anthropic(
     return blocks
 
 
-def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+def anthropic_tool_schema(tool: dict[str, JsonValue]) -> dict[str, JsonValue]:
     function = tool.get("function", tool)
     return {
         "name": function.get("name", ""),

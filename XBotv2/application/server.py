@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from xcore import Context
 
 from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.tree import load_server_tree
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.server import ServerOptions
+from XBotv2.core.paths import RuntimePaths
 
 
 async def start_server_application(
     *,
-    paths: Any,
+    paths: RuntimePaths,
     provider_name: str,
     workspace_root: str,
     no_plugins: bool,
-) -> Any:
+) -> Context:
     """Start the server host without constructing an Agent session."""
     ensure_initial_config(paths)
     tree = load_server_tree(paths=paths)

@@ -12,10 +12,28 @@ from XBotv2.agentloop import LoopState
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
-from XBotv2.session.types import SessionInfo
+from XBotv2.session.contracts import SessionInfo, SessionNotFound, ThreadNotActive
+from XBotv2.session.manager import SessionManager
+from XBotv2.session.protocol import (
+    _session_not_found,
+    _thread_not_active,
+    build_session_router,
+)
+from XBotv2.server import QUERY_STATUS, ServerStatus, contribute_router
 
 
-class SessionComponent:
+_MANAGER_DEPENDENCIES = {
+    "required": [
+        "runtime_paths",
+        "agent_application_factory",
+        "workspace_root",
+        "runtime_log",
+    ],
+    "optional": ["thread_persistence_factory"],
+}
+
+
+class SessionRuntimeComponent:
     inject = ["runtime_paths", "session_launch", "commands", "artifacts"]
     """Register the session entity and session-level runtime services."""
 
@@ -63,4 +81,70 @@ class SessionComponent:
 
 
 
-plugin = SessionComponent()
+def mount_runtime(ctx: Context) -> None:
+    SessionRuntimeComponent().apply(ctx)
+
+
+def mount_manager(ctx: Context) -> None:
+    manager = SessionManager(
+        ctx.runtime_paths,
+        ctx,
+        thread_persistence_factory=ctx.get("thread_persistence_factory"),
+        application_factory=ctx.agent_application_factory,
+        runtime_log=ctx.runtime_log,
+    )
+    ctx.set("sessions", manager)
+    ctx.on(
+        QUERY_STATUS,
+        SessionManagerStatus(manager, str(ctx.workspace_root)).status,
+    )
+    manager.start_reaper()
+    ctx.dispose(manager.close_all)
+
+
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.session.http",
+        router=build_session_router(
+            sessions=ctx.sessions,
+            options=ctx.server_options,
+            workspace_events=ctx.workspace_events,
+        ),
+        exception_handlers=(
+            (SessionNotFound, _session_not_found),
+            (ThreadNotActive, _thread_not_active),
+        ),
+    )
+
+
+class SessionManagerStatus:
+    def __init__(self, manager: SessionManager, workspace_root: str) -> None:
+        self._manager = manager
+        self._workspace_root = workspace_root
+
+    def status(self) -> ServerStatus:
+        return ServerStatus(
+            sessions=self._manager.size,
+            threads=self._manager.thread_count,
+            workspace_root=self._workspace_root,
+        )
+
+
+class SessionPlugin:
+    """Compose thread-local, process-level, and HTTP session behavior."""
+
+    name = "xbot.session"
+
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        ctx.inject(SessionRuntimeComponent.inject, mount_runtime)
+        ctx.inject(_MANAGER_DEPENDENCIES, mount_manager)
+        ctx.inject(
+            ["server", "sessions", "server_options", "workspace_events"],
+            mount_http,
+        )
+
+
+plugin = SessionPlugin()
+
+__all__ = ["SessionPlugin"]

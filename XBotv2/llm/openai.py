@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, AsyncIterator, Callable
+from pydantic import JsonValue
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import (
@@ -39,7 +40,7 @@ class OpenAICompatibleProvider(BaseProvider):
         max_output_tokens: int | None,
         reasoning_effort: str | None = None,
         thinking: str | None = None,
-        extra_body: dict[str, Any] | None = None,
+        extra_body: dict[str, JsonValue] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
@@ -58,7 +59,7 @@ class OpenAICompatibleProvider(BaseProvider):
             input_modalities=input_modalities,
             artifacts=artifacts,
         )
-        kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
@@ -69,7 +70,7 @@ class OpenAICompatibleProvider(BaseProvider):
         messages: list[Message],
         **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
-        api_kwargs: dict[str, Any] = {
+        api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
             "messages": openai_messages(
                 messages,
@@ -86,7 +87,7 @@ class OpenAICompatibleProvider(BaseProvider):
             api_kwargs["max_tokens"] = self.max_output_tokens
         if self.reasoning_effort:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
-        derived_extra_body: dict[str, Any] = {}
+        derived_extra_body: dict[str, JsonValue] = {}
         if self.thinking:
             derived_extra_body["thinking"] = {"type": self.thinking}
         extra_body = merge_request_extras(
@@ -99,7 +100,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
-        tool_call_buffers: dict[int, dict[str, Any]] = {}
+        tool_call_buffers: dict[int, dict[str, JsonValue]] = {}
         final_usage: dict[str, int] = {}
         stop_reason = ""
 
@@ -196,8 +197,8 @@ def openai_messages(
     *,
     image_loader: Callable[[str], str] | None = None,
     artifacts: ArtifactStorePort | None = None,
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+) -> list[dict[str, JsonValue]]:
+    result: list[dict[str, JsonValue]] = []
     system_parts = [
         message.content
         for message in messages
@@ -227,7 +228,7 @@ def openai_messages(
         images = [part for part in parts if isinstance(part, ImagePart)]
         if images and role != "user":
             raise ValueError("Image content is supported only in user messages")
-        item: dict[str, Any] = {
+        item: dict[str, JsonValue] = {
             "role": role,
             "content": _openai_content(
                 parts,
@@ -250,7 +251,7 @@ def _openai_content(
     parts: list[ContentPart],
     image_loader: Callable[[str], str] | None,
     attachment_text: str = "",
-) -> str | list[dict[str, Any]]:
+) -> str | list[dict[str, JsonValue]]:
     text = "".join(
         part.text for part in parts if isinstance(part, TextPart)
     )
@@ -261,7 +262,7 @@ def _openai_content(
         return text
     if image_loader is None:
         raise ValueError("Image loader is required for image content")
-    content_parts: list[dict[str, Any]] = []
+    content_parts: list[dict[str, JsonValue]] = []
     if text:
         content_parts.append({"type": "text", "text": text})
     content_parts.extend({
@@ -276,7 +277,7 @@ def _openai_content(
     return content_parts
 
 
-def openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:
+def openai_tool_call(tool_call: ToolCall) -> dict[str, JsonValue]:
     return {
         "id": tool_call.id,
         "type": "function",

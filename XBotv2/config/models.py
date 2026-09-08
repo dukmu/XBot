@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -50,7 +50,7 @@ class WorkspaceToolConfig(StrictModel):
 
 class PluginConfig(StrictModel):
     enabled: bool = True
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class PermissionRuleConfig(StrictModel):
@@ -134,14 +134,14 @@ class RuntimeConfig(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1, exclude=True)
 
     @property
-    def plugin_configs(self) -> dict[str, dict[str, Any]]:
+    def plugin_configs(self) -> dict[str, dict[str, JsonValue]]:
         return {
             name: entry.config
             for name, entry in self.plugins.items()
             if entry.enabled
         }
 
-def config_dict(value: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
+def config_dict(value: BaseModel | dict[str, JsonValue] | None) -> dict[str, JsonValue]:
     if value is None:
         return {}
     if isinstance(value, BaseModel):

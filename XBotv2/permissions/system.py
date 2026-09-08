@@ -13,11 +13,12 @@ import fnmatch
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
-from pydantic import BaseModel
+from typing import Literal
+from pydantic import BaseModel, JsonValue
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.permissions.services import PermissionsPort
+from XBotv2.core.tools import ToolCall
+from XBotv2.permissions.contracts import PermissionsPort
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.permissions.patterns import compile_pattern, fullmatch, matching_budget
 from XBotv2.permissions.rules import effective_args
@@ -26,7 +27,7 @@ PermissionDecision = Literal["allow", "deny", "ask"]
 _DECISIONS = {"allow", "deny", "ask"}
 
 
-def normalize_agent_permissions(value: Any) -> dict[str, list[dict[str, str]]]:
+def normalize_agent_permissions(value: object) -> dict[str, list[dict[str, str]]]:
     """Normalize an Agent definition's raw permission overlay.
 
     Accepts the ``permission`` / ``permissions`` frontmatter shapes: a whole
@@ -74,7 +75,7 @@ class PermissionRule:
 def _matches_name_and_params(
     rule: PermissionRule,
     tool_name: str,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
 ) -> bool:
     if not fullmatch(rule.tool_pattern, tool_name):
         return False
@@ -84,7 +85,7 @@ def _matches_name_and_params(
     )
 
 
-def _permission_value(value: Any) -> str:
+def _permission_value(value: JsonValue) -> str:
     """Use canonical JSON for structured arguments and stable scalar text."""
     if isinstance(value, (Mapping, list, tuple)):
         try:
@@ -126,7 +127,7 @@ class PermissionSystem:
 
     def __init__(
         self,
-        config: Any | None = None,
+        config: object | None = None,
         *,
         default_decision: PermissionDecision = "ask",
         variables: RuntimeVariables | None = None,
@@ -147,7 +148,7 @@ class PermissionSystem:
     # Config loading
     # ------------------------------------------------------------------
 
-    def _load_config(self, config: Any) -> None:
+    def _load_config(self, config: object) -> None:
         if isinstance(config, BaseModel):
             data = config.model_dump()
         elif isinstance(config, Mapping):
@@ -161,12 +162,12 @@ class PermissionSystem:
                 for rule in data.get(decision, [])
             )
 
-    def add_rule(self, decision: PermissionDecision, rule_data: dict[str, Any]) -> None:
+    def add_rule(self, decision: PermissionDecision, rule_data: dict[str, JsonValue]) -> None:
         """Add one live permission rule to the in-memory policy."""
         rule = self._parse_rule(rule_data, decision)
         self._rules[decision].insert(0, rule)
 
-    def replace_rules(self, config: Any | None) -> None:
+    def replace_rules(self, config: object | None) -> None:
         """Replace configured rules without invalidating shared references."""
         for rules in self._rules.values():
             rules.clear()
@@ -183,7 +184,7 @@ class PermissionSystem:
 
     def _parse_rule(
         self,
-        data: dict,
+        data: dict[str, JsonValue],
         decision: PermissionDecision,
     ) -> PermissionRule:
         tool_pattern = str(data.get("tool", ".*"))
@@ -220,7 +221,7 @@ class PermissionSystem:
     # Check
     # ------------------------------------------------------------------
 
-    def check(self, tool_name: str, args: dict[str, Any] | None = None) -> PermissionDecision:
+    def check(self, tool_name: str, args: dict[str, JsonValue] | None = None) -> PermissionDecision:
         """Check whether *tool_name* with *args* is allowed.
 
         Returns "allow", "deny", or "ask" without consuming authorization.
@@ -234,7 +235,7 @@ class PermissionSystem:
     def _check_local(
         self,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
         *,
         use_grants: bool = True,
     ) -> PermissionDecision:
@@ -268,7 +269,7 @@ class PermissionSystem:
         return self.default_decision
 
     def _check_intersection(
-        self, tool_name: str, args: dict[str, Any]
+        self, tool_name: str, args: dict[str, JsonValue]
     ) -> PermissionDecision:
         parent_decision = self.parent.check(tool_name, args)
         grant_index = next(
@@ -288,7 +289,7 @@ class PermissionSystem:
             return "ask"
         return "allow"
 
-    def consume_once(self, tool_name: str, args: dict[str, Any]) -> None:
+    def consume_once(self, tool_name: str, args: dict[str, JsonValue]) -> None:
         """Consume at the permission guard, never during a policy preview."""
         with matching_budget():
             args = effective_args(tool_name, args, self.variables.get("workspace"))
@@ -302,7 +303,7 @@ class PermissionSystem:
     def explicit_allow(
         self,
         tool_name: str,
-        args: dict[str, Any] | None = None,
+        args: dict[str, JsonValue] | None = None,
         *,
         constrain_param: str | None = None,
     ) -> bool:
@@ -337,12 +338,12 @@ class PermissionSystem:
     # Tool-call policy
     # ------------------------------------------------------------------
 
-    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
+    def check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
         """Return the plugin-local policy decision and human-facing reason."""
         with matching_budget():
             return self._check_tool_call(tool_call)
 
-    def _check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
+    def _check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
         tool_name = tool_call.name
         args = dict(tool_call.args or {})
         escalated = (
@@ -377,7 +378,7 @@ class PermissionSystem:
         self,
         rule: PermissionRule,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
     ) -> bool:
         if not _matches_name_and_params(rule, tool_name, args):
             return False
@@ -389,7 +390,7 @@ class PermissionSystem:
         self,
         pattern: str,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
     ) -> bool:
         operation = resolve_operation(tool_name, args)
         fields = PATH_ACCESS.get(operation or "", ())

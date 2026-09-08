@@ -16,7 +16,7 @@ from XBotv2.jobs.contracts import (
     TaskSnapshot,
 )
 from XBotv2.protocol import WireModel
-from XBotv2.session.services import SessionsPort
+from XBotv2.session.contracts import SessionsPort
 
 
 class TaskCompletionData(WireModel):

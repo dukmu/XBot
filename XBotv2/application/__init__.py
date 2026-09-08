@@ -6,7 +6,7 @@ from XBotv2.application.events import (
     ApplicationInitialized,
     RuntimeEvent,
 )
-from XBotv2.application.services import (
+from XBotv2.application.contracts import (
     AgentApplicationPort,
     AgentApplicationSnapshot,
     ApplicationEventsPort,
@@ -15,9 +15,14 @@ from XBotv2.application.services import (
     ClientEventSink,
     ClientEventsPort,
     COLLECT_STATUS_SLOTS,
+    InteractionResultPort,
+    InteractionWaiterPort,
+    LoopStateView,
     ParentPermissions,
+    SessionHistoryPort,
     SessionLaunch,
     StatusSlots,
+    UsageSnapshotPort,
 )
 
 __all__ = [
@@ -31,9 +36,14 @@ __all__ = [
     "ClientEventSink",
     "ClientEventsPort",
     "COLLECT_STATUS_SLOTS",
+    "InteractionResultPort",
+    "InteractionWaiterPort",
+    "LoopStateView",
     "ParentPermissions",
     "RUNTIME_EVENT",
     "RuntimeEvent",
+    "SessionHistoryPort",
     "SessionLaunch",
     "StatusSlots",
+    "UsageSnapshotPort",
 ]

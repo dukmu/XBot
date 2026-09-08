@@ -2,9 +2,11 @@
 
 from XBotv2.agents.contracts import (
     AgentCatalog,
+    AgentCatalogPort,
     AgentCreateOptions,
     AgentDefinition,
     AgentMode,
+    AgentRuntimePort,
     AgentSession,
     AgentSessionResult,
     AgentSelection,
@@ -14,7 +16,6 @@ from XBotv2.agents.contracts import (
     SubagentAgentError,
     SubagentTurnError,
 )
-from XBotv2.agents.services import AgentCatalogPort, AgentRuntimePort
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 
 __all__ = [

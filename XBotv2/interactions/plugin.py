@@ -9,17 +9,19 @@ events through an installable live sink (the protocol) or the waiter.
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 import uuid
+from pydantic import JsonValue
 
 from XBotv2.interactions.interactions import InteractionWaiter
+from XBotv2.interactions.contracts import InteractionsPort
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
+from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
 from XBotv2.core.tools import ClientEvent
 
 
-class InteractionsService:
+class InteractionsService(InteractionsPort):
     """Per-engine interaction coordination with an installable event sink."""
 
     def __init__(
@@ -46,7 +48,7 @@ class InteractionsService:
         source: str = "interaction",
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """Publish and resolve one user-input request owned by this plugin.
 
         The caller owns ``CLIENT_EVENT`` dispatch (the tool pipeline emits
@@ -104,7 +106,7 @@ class InteractionsComponent:
     inject = ["tools", "client_events", "session_launch"]
     name = "xbot.interactions"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         config = config or {}
         service = InteractionsService(ctx, ctx.client_events)
         ctx.set("interactions", service)

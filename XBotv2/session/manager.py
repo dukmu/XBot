@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.core.runtime_logging import (
@@ -25,6 +25,8 @@ from XBotv2.core.tools import ClientEvent
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.core.usage import UsageData
+from XBotv2.core.providers import BaseProvider
+from XBotv2.permissions import PermissionsPort
 from XBotv2.core.timing import conversation_stats
 from XBotv2.session.runtime import (
     SessionRuntime,
@@ -40,6 +42,7 @@ from XBotv2.session.contracts import (
     SESSION_RESOURCE_REMOVED,
     SessionResourceChanged,
     SessionResourceRemoved,
+    SessionsPort,
 )
 from XBotv2.session.event_stream import (
     SessionEventFrame,
@@ -47,7 +50,7 @@ from XBotv2.session.event_stream import (
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
 from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
-from XBotv2.session.types import (
+from XBotv2.session.contracts import (
     ArtifactPayload,
     HistoryMutation,
     InteractionReceipt,
@@ -66,7 +69,6 @@ from XBotv2.session.types import (
     ThreadSummary,
     new_session_id,
 )
-from XBotv2.server import QUERY_STATUS, ServerStatus
 from XBotv2.core.operations import (
     Operation,
     RequestT,
@@ -102,7 +104,7 @@ class ResourceEvents(Protocol):
     async def emit(self, event: str, *args: object) -> None: ...
 
 
-class SessionManager:
+class SessionManager(SessionsPort):
     """Own active thread runtimes grouped by persistent session id."""
 
     def __init__(
@@ -231,9 +233,9 @@ class SessionManager:
         mode: str = "new",
         no_plugins: bool,
         plugin_configs: dict[str, dict[str, JsonValue]] | None = None,
-        llm_override: Any | None = None,
+        llm_override: BaseProvider | None = None,
         parent_thread_id: str = "",
-        parent_permission_system: Any | None = None,
+        parent_permission_system: PermissionsPort | None = None,
         is_subagent: bool = False,
     ) -> SessionRuntime:
         mode = (mode or "new").lower().strip()
@@ -313,9 +315,9 @@ class SessionManager:
         mode: str,
         no_plugins: bool,
         plugin_configs: dict[str, dict[str, JsonValue]] | None,
-        llm_override: Any | None,
+        llm_override: BaseProvider | None,
         parent_thread_id: str,
-        parent_permission_system: Any | None,
+        parent_permission_system: PermissionsPort | None,
         is_subagent: bool,
     ) -> SessionRuntime:
         started = time.perf_counter()
@@ -978,7 +980,7 @@ class SessionManager:
         session_id: str,
         thread_id: str,
         request_id: str,
-        answer: Any,
+        answer: JsonValue,
     ) -> InteractionReceipt:
         return await self._respond_interaction(
             session_id,
@@ -1021,7 +1023,7 @@ class SessionManager:
         thread_id: str,
         event_type: str,
         request_id: str,
-        **values: object,
+        **values: JsonValue,
     ) -> InteractionReceipt:
         runtime = await self.get(session_id, thread_id)
         waiter = runtime.application.client_events.waiter(event_type)
@@ -1132,7 +1134,7 @@ class SessionManager:
         return tuple(results)
 
 def _has_persisted_session(
-    session_paths: Any,
+    session_paths: SessionPaths,
     thread_id: str,
 ) -> bool:
     """Whether a thread has committed real session evidence on disk."""
@@ -1360,51 +1362,3 @@ __all__ = [
     "thread_summary",
 ]
 
-
-class SessionManagerComponent:
-    """Provide process-level Session management to carrier profiles.
-
-    Requires the persistence read service and exposes lifecycle operations
-    only through the public SessionsPort and typed dispatch events.
-    """
-
-    name = "xbot.session.manager"
-    inject = [
-        "thread_persistence_factory",
-        "runtime_paths",
-        "agent_application_factory",
-        "workspace_root",
-        "runtime_log",
-    ]
-
-    def apply(self, ctx, config=None) -> None:
-        manager = SessionManager(
-            ctx.runtime_paths,
-            ctx,
-            thread_persistence_factory=ctx.thread_persistence_factory,
-            application_factory=ctx.agent_application_factory,
-            runtime_log=ctx.runtime_log,
-        )
-        ctx.set("sessions", manager)
-        handlers = SessionManagerHandlers(manager, workspace_root=str(ctx.workspace_root))
-        ctx.on(QUERY_STATUS, handlers.status)
-        manager.start_reaper()
-        ctx.dispose(manager.close_all)
-
-
-class SessionManagerHandlers:
-    def __init__(
-        self,
-        manager: SessionManager,
-        *,
-        workspace_root: str,
-    ) -> None:
-        self._manager = manager
-        self._workspace_root = workspace_root
-
-    def status(self) -> ServerStatus:
-        return ServerStatus(
-            sessions=self._manager.size,
-            threads=self._manager.thread_count,
-            workspace_root=self._workspace_root,
-        )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 import yaml
 from XBotv2.core.paths import RuntimePaths
@@ -15,7 +15,7 @@ from XBotv2.config.models import config_dict
 _PERMISSION_DECISIONS = ("deny", "allow", "ask")
 
 
-def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
+def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, JsonValue]:
     """Load optional session-local policy overlay."""
     return _read_yaml(paths.session(session_id).config_file)
 
@@ -26,9 +26,9 @@ def patch_session_policy(
     session_id: str,
     permissions: dict[str, str] | None = None,
     remove_permissions: Iterable[str] = (),
-    sandbox: dict[str, Any] | None = None,
+    sandbox: dict[str, JsonValue] | None = None,
     remove_sandbox: Iterable[str] = (),
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Apply one session policy patch while preserving unrelated rules."""
     path = paths.session(session_id).config_file
     doc = _read_yaml(path)
@@ -57,11 +57,11 @@ def patch_session_policy(
 
 
 def merge_permission_config(
-    base: dict[str, Any] | None,
-    overlay: dict[str, Any] | None,
-) -> dict[str, Any]:
+    base: dict[str, JsonValue] | None,
+    overlay: dict[str, JsonValue] | None,
+) -> dict[str, JsonValue]:
     """Merge permission rules, preserving deny/allow/ask precedence in PermissionSystem."""
-    merged: dict[str, Any] = {
+    merged: dict[str, JsonValue] = {
         key: list(config_dict(base).get(key, []))
         for key in _PERMISSION_DECISIONS
     }
@@ -73,10 +73,10 @@ def merge_permission_config(
 
 
 def merge_sandbox_config(
-    base: dict[str, Any] | None,
-    overlay: dict[str, Any] | None,
-    overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    base: dict[str, JsonValue] | None,
+    overlay: dict[str, JsonValue] | None,
+    overrides: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
     """Merge sandbox config: base → session overlay → live overrides.
 
     Session resources are prepended before global resources so
@@ -93,14 +93,14 @@ def merge_sandbox_config(
     return merged
 
 
-def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:
+def _remove_rule(permissions: dict[str, JsonValue], rule: dict[str, JsonValue]) -> None:
     for key in _PERMISSION_DECISIONS:
         permissions[key] = [item for item in permissions.get(key, []) if item != rule]
         if not permissions[key]:
             permissions.pop(key, None)
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_yaml(path: Path) -> dict[str, JsonValue]:
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -111,7 +111,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def _write_yaml(path: Path, data: dict[str, Any]) -> None:
+def _write_yaml(path: Path, data: dict[str, JsonValue]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from XBotv2.agents.services import AgentCatalogPort
+from XBotv2.agents.contracts import AgentCatalogPort
 from XBotv2.application import (
     APPLICATION_INITIALIZED,
     ApplicationInitialized,
@@ -34,8 +34,7 @@ from XBotv2.jobs import (
     parse_job_status,
 )
 from XBotv2.persistence import ThreadLifecycleWriterPort
-from XBotv2.session.services import SessionPort
-from xcore import S
+from XBotv2.session.contracts import SessionPort
 
 _MAX_PROMPT_PREVIEW = 100
 _MAX_SUMMARY = 256
@@ -238,54 +237,6 @@ class SubagentTools:
             return ToolResult.failure("subagent_not_found", f"Unknown subagent job: {id}")
         result = await self._registry.cancel(id)
         return ToolResult.success(f"Subagent {id} {result.status}")
-
-
-class SubagentsPlugin:
-    """Register subagent job tools and their prompt catalog."""
-
-    inject = {
-        "required": [
-            "session", "agent_catalog", "child_applications", "permissions",
-            "client_events", "jobs", "tools", "prompts",
-        ],
-        "optional": ["thread_persistence"],
-    }
-    name = "agents.subagents"
-    Config = S.object({"timeout_seconds": S.number().optional()})
-
-    def apply(self, ctx, config=None) -> None:
-        if not ctx.has("thread_persistence"):
-            return
-        timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
-        catalog: AgentCatalogPort = ctx.agent_catalog
-        prompts = ctx.prompts
-        ctx.on(
-            APPLICATION_INITIALIZED,
-            SubagentCatalogPrompt(catalog, prompts).publish,
-        )
-        handlers = SubagentTools(
-            registry=ctx.jobs,
-            catalog=catalog,
-            launcher=SubagentLauncher(
-                catalog=catalog,
-                session=ctx.session,
-                children=ctx.child_applications,
-                lifecycle=ctx.thread_persistence.lifecycle,
-                parent_permissions=ctx.permissions,
-                client_events=ctx.client_events,
-            ),
-        )
-        ctx.tools.register(
-            Tool.from_function(handlers.spawn_subagent),
-            timeout_seconds=timeout_seconds,
-        )
-        for handler in (
-            handlers.list_subagents,
-            handlers.wait_subagent,
-            handlers.read_subagent,
-            handlers.cancel_subagent,
-        ):
-            ctx.tools.register(Tool.from_function(handler))
 
 
 class SubagentCatalogPrompt:

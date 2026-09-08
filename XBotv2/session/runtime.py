@@ -6,7 +6,7 @@ import asyncio
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort
@@ -28,20 +28,20 @@ from pydantic import JsonValue
 
 from XBotv2.core.tools import ClientEvent
 from XBotv2.interactions import interaction_recorded_event
-from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionPort
 from XBotv2.session.event_stream import (
     SessionEventStream,
     SessionEventSubscription,
 )
 from XBotv2.session.protocol import session_error_event, session_event
-from XBotv2.session.types import PendingInputData
+from XBotv2.session.contracts import PendingInputData
 
 
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
 
 
-def require_idle(ctx: Any, action: str) -> None:
+def require_idle(ctx: "SessionRuntime", action: str) -> None:
     """Reject engine-mutating operations while a turn is active."""
     if ctx.turn_lock.locked():
         raise OperationError(
@@ -106,7 +106,7 @@ class TurnResponse:
 
 
 @dataclass
-class SessionRuntime:
+class SessionRuntime(SessionPort):
     """Protocol streams and one concrete agent-loop driver."""
 
     session_id: str
@@ -470,7 +470,7 @@ class SessionRuntime:
                 self.event_stream.close()
 
 
-def _event_payload(event: dict[str, Any]) -> ClientEvent:
+def _event_payload(event: dict[str, JsonValue]) -> ClientEvent:
     """Validate a loop event before projecting it onto the session stream."""
     return ClientEvent.model_validate(event)
 

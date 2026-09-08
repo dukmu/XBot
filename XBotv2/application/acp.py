@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from xcore import Context
 
 from XBotv2.acp_plugin import ACPLaunch
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_acp_tree
 from XBotv2.config.seed import ensure_initial_config
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.providers import BaseProvider
 
 
 async def start_acp_application(
     *,
-    paths: Any,
+    paths: RuntimePaths,
     provider_name: str,
     no_plugins: bool,
     selected_agent: str | None,
-    llm_override: Any | None = None,
-) -> Any:
+    llm_override: BaseProvider | None = None,
+) -> Context:
     """Start the ACP carrier and its shared process-level services."""
     ensure_initial_config(paths)
     tree = load_acp_tree(paths=paths)

@@ -16,7 +16,8 @@ from typing import Any, Protocol
 from XBotv2.agentloop.contracts import LoopSettings, ModelRequest
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
-from XBotv2.session.types import SessionInfo
+from XBotv2.session.contracts import SessionInfo
+from pydantic import JsonValue
 
 
 class Events:
@@ -111,7 +112,7 @@ class EventContext:
     model_response: ModelResponse | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call: ToolCall | None = None
-    args: dict[str, Any] | None = None
+    args: dict[str, JsonValue] | None = None
     tool_result: Message | None = None
     tool_results: list[Message] | None = None
     error: BaseException | None = None

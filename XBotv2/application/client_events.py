@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from functools import partial
 
-from XBotv2.application.services import ClientEventSink, InteractionWaiterPort
+from XBotv2.application.contracts import ClientEventSink, InteractionWaiterPort
 from pydantic import JsonValue
 
 from XBotv2.core.tools import ClientEvent

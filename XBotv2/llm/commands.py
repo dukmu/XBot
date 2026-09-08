@@ -10,7 +10,7 @@ from XBotv2.commands import (
     guard_command,
     split_command_args,
 )
-from XBotv2.llm.services import LlmCatalogPort
+from XBotv2.llm.contracts import LlmCatalogPort
 
 
 def build_llm_commands(
@@ -34,7 +34,7 @@ def build_llm_commands(
     ) -> CommandResult:
         selected = await runtime.select_provider(name, model=model)
         return CommandResult(
-            f"{verb} {selected['provider']} ({selected['model']}).",
+            f"{verb} {selected.provider} ({selected.model}).",
             effects=("thread",),
         )
 
@@ -102,8 +102,8 @@ def build_llm_commands(
         if len(parts) == 1:
             changed = await runtime.select_effort(parts[0])
             return CommandResult(
-                f"Effort switched to {changed['reasoning_effort']} "
-                f"({changed['model_mode']}).",
+                f"Effort switched to {changed.reasoning_effort} "
+                f"({changed.model_mode}).",
                 effects=("thread",),
             )
         return command_usage("/effort [<level>]")

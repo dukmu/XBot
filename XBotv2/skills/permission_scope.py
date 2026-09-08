@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from pydantic import JsonValue
 
 
 class SkillPermissionScope:
@@ -21,7 +21,7 @@ class SkillPermissionScope:
         self._allowed.extend(allowed_patterns)
         self._disallowed.extend(disallowed_patterns)
 
-    def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str | None:
+    def check(self, tool_name: str, args: dict[str, JsonValue] | None = None) -> str | None:
         targets = [tool_name]
         command = (args or {}).get("command")
         if isinstance(command, str):

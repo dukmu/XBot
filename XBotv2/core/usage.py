@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class UsageData(BaseModel):
@@ -18,7 +18,7 @@ class UsageData(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
-    def from_provider(cls, value: Mapping[str, object]) -> "UsageData":
+    def from_provider(cls, value: Mapping[str, JsonValue]) -> "UsageData":
         unknown = set(value) - set(USAGE_FIELDS)
         if unknown:
             raise ValueError("Unknown usage fields: " + ", ".join(sorted(unknown)))
@@ -52,7 +52,7 @@ class UsageData(BaseModel):
         return not any(self.model_dump().values())
 
     @classmethod
-    def from_snapshot(cls, value: Mapping[str, object]) -> "UsageData":
+    def from_snapshot(cls, value: Mapping[str, JsonValue]) -> "UsageData":
         expected = {"schema_version", *USAGE_FIELDS}
         if set(value) != expected:
             raise ValueError("Usage snapshot fields do not match schema version 1")
@@ -84,11 +84,11 @@ class UsageData(BaseModel):
         return result
 
 
-def normalize_usage(value: Mapping[str, object]) -> dict[str, int]:
+def normalize_usage(value: Mapping[str, JsonValue]) -> dict[str, int]:
     return UsageData.from_provider(value).to_event_dict() if value else {}
 
 
-def _tokens(value: Mapping[str, object], field: str) -> int:
+def _tokens(value: Mapping[str, JsonValue], field: str) -> int:
     raw = value.get(field, 0)
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         raise ValueError(f"{field} must be a non-negative integer")
@@ -96,7 +96,7 @@ def _tokens(value: Mapping[str, object], field: str) -> int:
 
 
 def _optional_tokens(
-    value: Mapping[str, object],
+    value: Mapping[str, JsonValue],
     field: str,
     default: int,
 ) -> int:

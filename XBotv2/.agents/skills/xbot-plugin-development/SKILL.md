@@ -120,12 +120,16 @@ the map; the checked-out code and tests are the final contract.
 5. Pass Tool dependencies to a named handler or service before registration.
    Avoid business closures, service bags, runtime dependency probing, and
    defensive `None` fallbacks for required services.
-6. Add a focused behavior test using the selected runtime Python (`uv run
+6. Export `plugin` only from the capability package's root `plugin.py`. When
+   the same capability has Agent, server, or ACP integrations, mount named
+   dependency-gated callbacks with `ctx.inject`; do not create
+   `http/plugin.py`, `runtime/plugin.py`, or other forwarding plugin packages.
+7. Add a focused behavior test using the selected runtime Python (`uv run
    pytest` for uv, or `python -m pytest` for pip). Test public
    behavior, schema, permission/guard behavior, unload, and failure rollback.
-7. Add or update a plugin-tree entry only after the plugin works in isolation.
+8. Add or update a plugin-tree entry only after the plugin works in isolation.
    Verify the profile, `name`, `id`, config, and service dependencies.
-8. Run the focused test, architecture check, compile check, and diff check.
+9. Run the focused test, architecture check, compile check, and diff check.
    Run broader suites when the plugin crosses core, provider, protocol, or
    session boundaries.
 
@@ -180,6 +184,9 @@ registered behavior.
   commands own policy changes. See the permissions and sandbox component pages.
 - Use package-root exports and typed events/operations for cross-plugin APIs;
   do not import a concrete sibling plugin.
+- Keep one tree entry and one root `plugin.py` export per capability. Protocol
+  routers remain owned by that capability and are mounted from the same root
+  plugin after `server` becomes available; a transport is not a second plugin.
 - Keep protocol routes and wire models in the owning `protocol.py`; do not put
   transport concerns in Tool or service contracts.
 - Use the producer-owned typed event for business facts. `EventContext` is a

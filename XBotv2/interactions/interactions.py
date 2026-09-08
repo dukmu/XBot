@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 
 class InteractionNotPending(RuntimeError):
@@ -15,7 +13,7 @@ class InteractionNotPending(RuntimeError):
 class InteractionResult(BaseModel):
     request_id: str
     status: str
-    answer: Any = None
+    answer: JsonValue = None
     decision: str = ""
     scope: str = "once"
     reason: str = ""
@@ -77,7 +75,7 @@ class InteractionWaiter:
             future.set_result(result)
         return result
 
-    def answer(self, request_id: str, *, answer: Any = None, decision: str = "", scope: str = "once") -> InteractionResult:
+    def answer(self, request_id: str, *, answer: JsonValue = None, decision: str = "", scope: str = "once") -> InteractionResult:
         return self._resolve(request_id, InteractionResult(
             request_id=request_id, status="answered", answer=answer, decision=decision, scope=scope,
         ))

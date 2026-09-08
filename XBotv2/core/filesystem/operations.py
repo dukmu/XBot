@@ -15,7 +15,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from pydantic import JsonValue
 
 
 DEFAULT_EXCLUDES = (".git", ".venv", "node_modules", "__pycache__")
@@ -67,7 +70,7 @@ _MERGED_TOOL_DEFAULTS = {
 }
 
 
-def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
+def resolve_operation(tool_name: str, args: dict[str, JsonValue]) -> str | None:
     """Resolve the concrete filesystem operation one tool call performs.
 
     Merged tools (``read`` / ``edit`` / ``path`` / ``search``) select the
@@ -85,13 +88,13 @@ def resolve_operation(tool_name: str, args: dict[str, Any]) -> str | None:
 
 
 class FilesystemError(Exception):
-    def __init__(self, code: str, message: str, **data: Any) -> None:
+    def __init__(self, code: str, message: str, **data: JsonValue) -> None:
         super().__init__(message)
         self.code = code
         self.data = data
 
 
-def execute(operation: str, args: dict[str, Any]) -> dict[str, Any]:
+def execute(operation: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
     handler = _OPERATIONS.get(operation)
     if handler is None:
         return _error("invalid_operation", f"Unknown filesystem operation: {operation}")
@@ -105,7 +108,7 @@ def execute(operation: str, args: dict[str, Any]) -> dict[str, Any]:
         return _error("invalid_arguments", str(exc))
 
 
-def _read_bytes(path: str) -> dict[str, Any]:
+def _read_bytes(path: str) -> dict[str, JsonValue]:
     target = _file(path)
     metadata = _file_metadata(target, inspect_text=False)
     payload = target.read_bytes()
@@ -121,7 +124,7 @@ def _read(
     limit: int = 2000,
     char_offset: int = 0,
     max_chars: int = 12000,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     target = _file(path)
     if offset < 0 or char_offset < 0 or limit < 1 or max_chars < 1:
         raise FilesystemError(
@@ -195,7 +198,7 @@ def _read(
     }
 
 
-def _stat(path: str) -> dict[str, Any]:
+def _stat(path: str) -> dict[str, JsonValue]:
     target = Path(path)
     if not target.exists() and not target.is_symlink():
         raise FilesystemError("path_not_found", f"Path not found: {path}", path=path)
@@ -228,11 +231,11 @@ def _list(
     recursive: bool = False,
     max_entries: int = 500,
     include_hidden: bool = True,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     root = _directory(path)
     if max_entries < 1:
         raise FilesystemError("invalid_limit", "max_entries must be >= 1", path=path)
-    entries: list[dict[str, Any]] = []
+    entries: list[dict[str, JsonValue]] = []
     truncated = False
     for candidate in _walk_entries(root, recursive=recursive, include_hidden=include_hidden):
         if len(entries) >= max_entries:
@@ -260,7 +263,7 @@ def _search(
     include_hidden: bool = False,
     exclude: list[str] | None = None,
     max_line_chars: int = 1000,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     target = _path(path)
     if not pattern:
         raise FilesystemError("invalid_pattern", "pattern must be non-empty", path=path)
@@ -279,7 +282,7 @@ def _search(
         raise FilesystemError("not_a_file", f"Not a file or directory: {path}", path=path)
     flags = 0 if case_sensitive else re.IGNORECASE
     expression = re.compile(re.escape(pattern) if literal else pattern, flags)
-    matches: list[dict[str, Any]] = []
+    matches: list[dict[str, JsonValue]] = []
     truncated = False
     for candidate, display_path in candidates:
         if kind == "directory" and glob and not _glob_matches(display_path, glob):
@@ -323,7 +326,7 @@ def _find(
     kind: str = "file",
     include_hidden: bool = False,
     exclude: list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     root = _directory(path)
     if max_results < 1 or kind not in {"file", "directory", "any"}:
         raise FilesystemError(
@@ -358,7 +361,7 @@ def _find(
     }
 
 
-def _write(path: str, content: str, expected_sha256: str | None = None) -> dict[str, Any]:
+def _write(path: str, content: str, expected_sha256: str | None = None) -> dict[str, JsonValue]:
     target = Path(path)
     before = _existing_text(target)
     _check_hash(target, before, expected_sha256)
@@ -374,7 +377,7 @@ def _edit(
     new_text: str,
     replace_all: bool = False,
     expected_sha256: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     if not old_text:
         raise FilesystemError("invalid_edit", "old_text must be non-empty", path=path)
     target = _file(path)
@@ -403,7 +406,7 @@ def _patch(
     path: str,
     patch: str,
     expected_sha256: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     target = Path(path)
     before = _existing_text(target)
     _check_hash(target, before, expected_sha256)
@@ -451,7 +454,7 @@ def _patch(
         }
 
 
-def _move(source: str, destination: str, overwrite: bool = False) -> dict[str, Any]:
+def _move(source: str, destination: str, overwrite: bool = False) -> dict[str, JsonValue]:
     src = _path(source)
     dst = Path(destination)
     _prepare_destination(dst, overwrite)
@@ -460,7 +463,7 @@ def _move(source: str, destination: str, overwrite: bool = False) -> dict[str, A
     return {"source": str(src), "destination": str(dst), "moved": True}
 
 
-def _copy(source: str, destination: str, overwrite: bool = False) -> dict[str, Any]:
+def _copy(source: str, destination: str, overwrite: bool = False) -> dict[str, JsonValue]:
     src = _path(source)
     dst = Path(destination)
     _prepare_destination(dst, overwrite)
@@ -472,7 +475,7 @@ def _copy(source: str, destination: str, overwrite: bool = False) -> dict[str, A
     return {"source": str(src), "destination": str(dst), "copied": True}
 
 
-def _delete(path: str, recursive: bool = False) -> dict[str, Any]:
+def _delete(path: str, recursive: bool = False) -> dict[str, JsonValue]:
     target = _path(path)
     kind = "directory" if target.is_dir() and not target.is_symlink() else "file"
     if kind == "directory":
@@ -485,7 +488,7 @@ def _delete(path: str, recursive: bool = False) -> dict[str, Any]:
     return {"path": str(target), "kind": kind, "deleted": True}
 
 
-def _mkdir(path: str, parents: bool = True) -> dict[str, Any]:
+def _mkdir(path: str, parents: bool = True) -> dict[str, JsonValue]:
     target = Path(path)
     existed = target.is_dir()
     target.mkdir(parents=parents, exist_ok=True)
@@ -596,7 +599,7 @@ def _write_metadata(
     *,
     created: bool,
     changed: bool,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     stat = path.stat()
     return {
         "path": str(path),
@@ -611,10 +614,10 @@ def _write_metadata(
     }
 
 
-def _file_metadata(path: Path, *, inspect_text: bool) -> dict[str, Any]:
+def _file_metadata(path: Path, *, inspect_text: bool) -> dict[str, JsonValue]:
     stat = path.stat()
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    result: dict[str, Any] = {
+    result: dict[str, JsonValue] = {
         "path": str(path),
         "resolved_path": str(path.resolve()),
         "kind": "file",
@@ -637,7 +640,7 @@ def _file_metadata(path: Path, *, inspect_text: bool) -> dict[str, Any]:
     return result
 
 
-def _entry_metadata(path: Path, root: Path) -> dict[str, Any]:
+def _entry_metadata(path: Path, root: Path) -> dict[str, JsonValue]:
     stat = path.lstat()
     kind = "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file"
     result = {
@@ -773,7 +776,7 @@ def _contains_binary_controls(value: str) -> bool:
     return bool(value) and controls / len(value) > 0.1
 
 
-def _image_metadata(path: Path) -> dict[str, Any] | None:
+def _image_metadata(path: Path) -> dict[str, JsonValue] | None:
     try:
         with path.open("rb") as handle:
             header = handle.read(32)
@@ -833,7 +836,7 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _error(code: str, message: str, **data: Any) -> dict[str, Any]:
+def _error(code: str, message: str, **data: JsonValue) -> dict[str, JsonValue]:
     return {"ok": False, "error": {"code": code, "message": message}, **data}
 
 

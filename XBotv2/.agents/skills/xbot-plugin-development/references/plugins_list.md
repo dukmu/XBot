@@ -16,28 +16,25 @@ data-directory overlay; they do not read the Agent workspace overlay. Later
 overlays preserve omitted fields. `config` is recursively merged; `name`,
 `profiles`, `disabled`, and `isolate` replace the previous value.
 
-| Tree id | Import name | Profile | Required injected services | Provides / primary role |
+| Tree id | Import name | Profile | Dependency-gated integrations | Provides / primary role |
 |---|---|---|---|---|
-| `config` | `config` | agent | `runtime_log`, `runtime_paths`, `session_launch` | `settings`; policy/config operations |
-| `persistence` | `persistence` | agent | `loop_state`, `thread_persistence`, `runtime_log` | hydrates canonical thread persistence |
+| `config` | `config` | agent, server | Agent: runtime paths and launch; server: `server`, `sessions` | Agent `settings`; policy/config HTTP routes |
+| `persistence` | `persistence` | agent, server, acp | Agent: loop state and thread persistence | process reader factory; Agent history/metadata hydration |
 | `usage` | `usage` | agent | `state`, `loop_state`, `runtime_log` | `usage` snapshot and usage events |
-| `agent-catalog` | `agents.catalog_provider` | agent | `data_root`, `variables`, `workspace_root` | `agent_catalog` |
-| `session` | `session` | agent | `runtime_paths`, `session_launch`, `commands`, `artifacts` | `session`, `paths`, `thread_paths`, `loop_state`, `variables` |
-| `jobs` | `jobs` | agent | `commands`, `engine` | `jobs`; shell/subagent lifecycle |
-| `commands` | `commands` | agent | none | `commands`; human command registry |
-| `llm` | `llm` | agent, server | `runtime_log` | `llm`, `model`; provider catalog |
-| `tools` | `agentloop.tools` | agent | `runtime_log` | `tools`; standard Tool registry/executor |
-| `agentloop` | `agentloop.runtime` | agent | loop-owned services | Agent ReAct loop factory/runtime |
-| `agent-runtime` | `agents.runtime` | agent | catalog, loop factory, settings, llm/model, tools, artifacts, loop state, commands, launch facts, metadata, log | `agent_runtime`, `engine` |
-| `llm-commands` | `llm.runtime_commands` | agent | agent runtime / commands | provider/model selection commands |
+| `agents` | `agents` | agent, server | Agent: runtime variables/catalog and loop dependencies; server: `server`, `sessions` | `agent_catalog`, `agent_runtime`, `engine`; Agent HTTP routes |
+| `session` | `session` | agent, server, acp | Agent: launch, commands, artifacts; carrier: persistence/application factories; server: route dependencies | thread runtime, process `sessions`, Session HTTP routes |
+| `jobs` | `jobs` | agent, server | Agent: `commands`, `engine`; server: `server`, `sessions` | `jobs`; task HTTP routes |
+| `commands` | `commands` | agent, server | server route integration waits for `server`, `sessions` | human command registry; command HTTP routes |
+| `llm` | `llm` | agent, server | runtime log; Agent commands wait for Agent runtime; HTTP waits for sessions | `llm`, `model`; provider catalog, commands, HTTP routes |
+| `agentloop` | `agentloop` | agent, server | Agent launch/runtime log; server routes wait for sessions | Tool registry/executor and Agent loop factory; Tool HTTP routes |
 | `context_builder` | `context_builder` | agent | `runtime_log` | `context_builder`; context assembly |
 | `prompts` | `prompts` | agent | `context_builder` | `prompts`; prompt fragment registry |
 | `sandbox` | `sandbox` | agent | thread paths, session, tools, data/workspace roots, variables, commands, settings | `sandbox`; sandbox guard and context facts |
 | `permissions` | `permissions` | agent | session/launch, parent permissions, tools, client_events, variables, commands, settings, state | `permissions`, `approval`; guard, approval waiter, persistent grants and policy commands |
 | `coretools` | `coretools` | agent | tools, session, artifacts, sandbox, jobs, workspace root | filesystem/Shell Tools and result-cache hook |
-| `subagents` | `agents.subagent_tools` | agent | agent runtime, jobs, permissions, tools | subagent Tools |
+| `subagents` | `subagents` | agent | session, catalog, child applications, permissions, jobs, tools, prompts, persistence | subagent Tools and prompt catalog |
 | `goal` | `goal` | agent | tools, commands, engine, state | `goal`; objective Tools, `/goal`, status slot |
-| `todolist` | `todolist` | agent | tools, state | `todolist`; `update_todos` Tool and snapshot operation |
+| `todolist` | `todolist` | agent, server | Agent: tools/state; server: sessions | Todo Tool/state and HTTP routes |
 | `skills` | `skills` | agent | tools, commands, sandbox, runtime paths | discovered skill Tools and prompt commands |
 | `mcp_plugin` | `mcp_plugin` | agent | tools, model, interactions, session | configured MCP Tools/resources/prompts |
 | `content_cache` | `content_cache` | agent | artifacts | current oversized-user-input provider projection |
@@ -46,18 +43,9 @@ overlays preserve omitted fields. `config` is recursively merged; `name`,
 | `token_manager` | `token_manager` | agent | session | request/context observation diagnostics |
 | `workspace_instructions` | `workspace_instructions` | agent | variables, workspace root | `AGENTS.md` context contribution |
 | `interactions` | `interactions` | agent | tools, client events, session launch | `interactions`; `ask_user` and message delivery |
-| `process.persistence` | `persistence.process` | server, acp | process launch services | process-level persistence host |
-| `process.sessions` | `session.host` | server, acp | process launch services | `sessions`; session manager |
-| `process.workspaces` | `workspaces` | server, acp | runtime log, sessions, state, workspace root | `workspaces`, `workspace_events`, `workspace_directories` |
+| `workspaces` | `workspaces` | server, acp | runtime log, sessions, state, workspace root; HTTP additionally waits for server | `workspaces`, events, directory browser, HTTP routes |
 | `acp` | `acp_plugin` | acp | `sessions`, `acp_launch`, `runtime_log` | ACP carrier (`acp_agent`) |
-| `server` | `server` | server | `runtime_log` | FastAPI carrier (`server`) |
-| `server.routes.core` | `server.routes` | server | `server`, `server_info` | health/provider/core routes |
-| `server.routes.session` | `session.http` | server | `server`, `sessions`, `server_options`, `workspace_events` | session/workspace/thread HTTP routes |
-| `server.routes.workspaces` | `workspaces.http` | server | `server`, `workspaces`, `workspace_directories`, `workspace_events` | workspace catalog and directory routes |
-| `server.routes.jobs` | `jobs.http` | server | `server`, `sessions` | job listing/status routes |
-| `server.routes.agents` | `agents.http` | server | `server`, `sessions` | Agent catalog and selection routes |
-| `server.routes.llm` | `llm.http` | server | `server`, `llm`, `sessions` | provider/model catalog and selection routes |
-| `server.routes.config` | `config.http` | server | `server`, `sessions` | settings and policy routes |
+| `server` | `server` | server | `runtime_log` | FastAPI carrier and its own health/core routes |
 
 For the exact surface of one row, read the matching page under
 [`plugins/`](plugins/README.md). A service listed here is a composition
@@ -90,7 +78,8 @@ minimal integration test reports `FiberState.PENDING`:
 | `agent_application_factory` | not provided | `create_agent_application` | `create_agent_application` |
 | `acp_launch` | not provided | not provided | `ACPLaunch` |
 
-Use the constructors in `XBotv2.application.services` and
+Use the contracts in `XBotv2.application` and constructors in the owning
+application modules, together with
 `XBotv2.core.paths` in a test harness. `Context(data_dir=...)` supplies the
 XCore `state` service; the Agent test harness must still provide every other
 declared dependency explicitly.

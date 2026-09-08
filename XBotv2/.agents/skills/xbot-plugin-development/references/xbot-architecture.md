@@ -40,6 +40,13 @@ but constructed services and handlers receive narrow typed dependencies and do
 not retain `Context`. Required dependencies are resolved by XCore before
 activation; runtime probing is not a replacement for `inject`.
 
+Each capability has one tree identity and exports `plugin` only from its root
+`plugin.py`. A capability that participates in more than one carrier profile
+uses named `ctx.inject(...)` callbacks inside that root plugin. For example,
+the Agents plugin mounts its Agent runtime when loop dependencies exist and
+mounts its own router when `server` and `sessions` exist. Do not represent
+those facets as `agents/runtime/plugin.py` or `agents/http/plugin.py`.
+
 State namespaces are logical ownership boundaries. StateService alone chooses
 the `plugin_state` layout and serialized model; plugins never join a data path
 or share state files with configuration.

@@ -5,10 +5,10 @@ from XBotv2.config.contracts import (
     UPDATE_POLICY,
     PatchPolicy,
     PolicySnapshot,
+    SettingsPort,
 )
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.config.models import RuntimeConfig
-from XBotv2.config.services import SettingsPort
 
 __all__ = [
     "GET_POLICY",

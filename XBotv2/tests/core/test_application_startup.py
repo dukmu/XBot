@@ -1072,9 +1072,7 @@ class TestApplicationStartupNoPlugins:
         tree = self._make_tree(no_plugins=True)
         ids = {entry.id for entry in tree.entries}
         assert "goal" not in ids
-        assert "tools" in ids
-        assert "agent-catalog" in ids
-        assert "agent-runtime" in ids
+        assert "agents" in ids
         assert "agentloop" in ids
 
     def test_default_mode_includes_optional_capabilities(self):
@@ -1083,9 +1081,7 @@ class TestApplicationStartupNoPlugins:
         ids = {entry.id for entry in tree.entries}
         assert "goal" in ids
         assert "todolist" in ids
-        assert "tools" in ids
-        assert "agent-catalog" in ids
-        assert "agent-runtime" in ids
+        assert "agents" in ids
         assert "agentloop" in ids
 
     def test_empty_plugin_dirs_only_disables_external_discovery(self, tmp_path):

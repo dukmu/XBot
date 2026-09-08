@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from XBotv2.agentloop.events import EventContext, EventPort, Events
-from XBotv2.agentloop.services import ToolGuard
+from XBotv2.agentloop.contracts import ToolGuard
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.tools import (

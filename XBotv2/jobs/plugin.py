@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from xcore import Context
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.errors import OperationError
@@ -15,7 +16,11 @@ from XBotv2.agentloop import AgentLoopDriverPort, Events
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
-from XBotv2.jobs.protocol import task_completion_event, task_updated_event
+from XBotv2.jobs.protocol import (
+    build_tasks_router,
+    task_completion_event,
+    task_updated_event,
+)
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
@@ -28,9 +33,18 @@ from XBotv2.jobs.contracts import (
     TaskSnapshot,
 )
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
+from XBotv2.server import contribute_router
 
 
-class JobsComponent:
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.jobs.http",
+        router=build_tasks_router(sessions=ctx.sessions),
+    )
+
+
+class JobsRuntimeComponent:
     inject = {
         "required": ["commands", "engine"],
     }
@@ -38,7 +52,7 @@ class JobsComponent:
 
     name = "xbot.jobs"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
         registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
         ctx.set("jobs", registry)
@@ -117,4 +131,16 @@ class JobHandlers:
         await self._registry.shutdown()
 
 
-plugin = JobsComponent()
+class JobsPlugin:
+    """Compose Agent job execution and its process HTTP projection."""
+
+    name = "xbot.jobs"
+
+    async def apply(self, ctx: Context, config: object | None = None) -> None:
+        await ctx.plugin(JobsRuntimeComponent(), config)
+        await ctx.inject(["server", "sessions"], mount_http)
+
+
+plugin = JobsPlugin()
+
+__all__ = ["JobsPlugin"]

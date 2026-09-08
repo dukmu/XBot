@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
 from xml.etree import ElementTree
 
 from XBotv2.core.artifacts import ArtifactRef, ArtifactStorePort

@@ -106,10 +106,11 @@ in `plugin.py`.
 ## `plugin.py`
 
 ```python
-from typing import Any
+from collections.abc import Mapping
 
+from pydantic import JsonValue
 from XBotv2.core import Tool, ToolResult
-from xcore import S
+from xcore import Context, S
 
 
 class HelloHandler:
@@ -128,7 +129,7 @@ class HelloPlugin:
         "greeting": S.string().default("Hello"),
     }).strict()
 
-    def apply(self, ctx: Any, config: dict[str, object]) -> None:
+    def apply(self, ctx: Context, config: Mapping[str, JsonValue]) -> None:
         handler = HelloHandler(str(config["greeting"]))
         ctx.tools.register(Tool.from_function(handler.hello, name="hello"))
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.loader.types import PluginOverlay
+from XBotv2.loader.contracts import PluginOverlay
 
 
 def test_initial_config_materializes_packaged_plugin_skill(tmp_path: Path) -> None:

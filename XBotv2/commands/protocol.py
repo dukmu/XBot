@@ -16,7 +16,7 @@ from XBotv2.commands.contracts import (
     LIST_COMMANDS,
 )
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.session.services import SessionsPort
+from XBotv2.session.contracts import SessionsPort
 
 
 class CommandRequest(WireModel):

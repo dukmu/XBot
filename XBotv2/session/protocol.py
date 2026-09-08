@@ -12,12 +12,12 @@ import logging
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal, Protocol
+from typing import AsyncIterator, Literal, Protocol
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     _error_payload,
@@ -38,8 +38,8 @@ from XBotv2.session.event_stream import (
 from XBotv2.session.history import SessionHistoryItem, conversation_replay
 from XBotv2.core.timing import SessionStats, conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
-from XBotv2.session.services import SessionsPort
-from XBotv2.session.types import (
+from XBotv2.session.contracts import SessionsPort
+from XBotv2.session.contracts import (
     AttachmentInput,
     HistoryMutation,
     ImageInput,
@@ -149,8 +149,8 @@ class MessageData(WireModel):
     id: str
     role: Literal["user"]
     content: str = ""
-    images: list[dict[str, Any]] = Field(default_factory=list)
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    images: list[dict[str, JsonValue]] = Field(default_factory=list)
+    artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 
 class HistoryUpdatedData(WireModel):
@@ -207,7 +207,7 @@ _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
 
 def session_event(
     type: SessionEventType,
-    data: dict[str, Any],
+    data: dict[str, JsonValue],
 ) -> ClientEvent:
     """Validate one Session-owned event at its producer boundary."""
     return _validated_client_event(type, data, _SESSION_EVENT_MODELS[type])
@@ -217,7 +217,7 @@ def session_error_event(
     code: str,
     message: str,
     *,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> ClientEvent:
     """Validate a Session-produced generic error event."""
     return _validated_client_event(

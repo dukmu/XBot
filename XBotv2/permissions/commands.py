@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from XBotv2.config import PatchPolicy, SettingsPort
+from XBotv2.config.models import PermissionRuleConfig
 from XBotv2.commands import (
     Command,
     CommandResult,
@@ -119,10 +120,11 @@ def build_permissions_commands(
     )
 
 
-def _grant_lines(grants: tuple[dict[str, Any], ...]) -> list[str]:
+def _grant_lines(grants: tuple[PermissionRuleConfig, ...]) -> list[str]:
     lines = ["Approved session grants (removable by index):"]
     lines.extend(
-        f"  {index}. {json.dumps(rule, ensure_ascii=False, sort_keys=True)}"
+        f"  {index}. "
+        f"{json.dumps(rule.model_dump(mode='json', exclude_none=True), ensure_ascii=False, sort_keys=True)}"
         for index, rule in enumerate(grants, 1)
     )
     if not grants:

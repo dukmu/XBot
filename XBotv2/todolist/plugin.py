@@ -13,6 +13,16 @@ from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.tools import ClientEvent
 from XBotv2.todolist.contracts import GET_TODOS
 from XBotv2.todolist.models import TodoSnapshot, TodoValidationError
+from XBotv2.todolist.protocol import build_router
+from XBotv2.server import contribute_router
+
+
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.todolist.http",
+        router=build_router(sessions=ctx.sessions),
+    )
 
 
 _UPDATE_TODOS_SCHEMA = {
@@ -110,7 +120,7 @@ class TodolistService:
         return await self.snapshot()
 
 
-class TodolistPlugin:
+class TodolistRuntimeComponent:
     inject = ["tools", "state"]
     name = "todolist"
 
@@ -126,6 +136,16 @@ class TodolistPlugin:
                 parameters=_UPDATE_TODOS_SCHEMA,
             ),
         )
+
+
+class TodolistPlugin:
+    """Compose the Agent todo service and its HTTP projection."""
+
+    name = "xbot.todolist"
+
+    async def apply(self, ctx: Context, config: object | None = None) -> None:
+        await ctx.plugin(TodolistRuntimeComponent(), config)
+        await ctx.inject(["server", "sessions"], mount_http)
 
 
 plugin = TodolistPlugin()

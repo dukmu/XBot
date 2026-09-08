@@ -10,7 +10,7 @@ approval belongs to the permission layer).
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
 from XBotv2.config.models import SandboxConfig
@@ -28,7 +28,7 @@ class SandboxComponent:
 
     name = "xbot.sandbox"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         policy = SandboxPolicy(
             SandboxConfig.model_validate((config or {}).get("sandbox") or {}),
             data_root=ctx.data_root,

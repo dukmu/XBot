@@ -15,24 +15,18 @@ no knowledge of individual plugins.
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Callable
+from typing import Callable
 
 from XBotv2.agentloop.events import EventContext, EventPort
-from XBotv2.agentloop.services import ToolGuard
+from XBotv2.agentloop.contracts import ToolGuard, ToolsPort
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.contracts import (
-    LIST_TOOLS,
-    ToolCatalog,
-    ToolDescription,
-    ToolRegistration,
-)
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from xcore import bound_effect, current_plugin_name
 
-class ToolsService:
+class ToolsService(ToolsPort):
     """Plugin-facing tool registry with fiber-scoped auto-unregister.
 
     Holds the tool registry plus the execution-pipeline guards.  A guard
@@ -167,43 +161,3 @@ class ToolsService:
             context_factory=context_factory,
             runtime_log=self._log,
         )
-
-class ToolsComponent:
-    """Register the loop-owned tool service."""
-
-    name = "xbot.agentloop.tools"
-    inject = ["runtime_log"]
-
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        tool_registry = ToolRegistry()
-        service = ToolsService(
-            tool_registry,
-            events=ctx,
-            runtime_log=ctx.runtime_log,
-        )
-        ctx.set(
-            "tools",
-            service,
-        )
-
-        ctx.on(LIST_TOOLS.name, ToolsCatalogHandler(tool_registry).list_tools)
-
-
-class ToolsCatalogHandler:
-    def __init__(self, registry: ToolRegistry) -> None:
-        self._registry = registry
-
-    def list_tools(self, _request: EmptyRequest) -> ToolCatalog:
-        enabled = set(self._registry.names())
-        return ToolCatalog(tools=tuple(
-            ToolDescription(
-                name=entry.tool.name,
-                registered_name=entry.registered_name,
-                namespace=entry.namespace,
-                description=entry.tool.description,
-                parameters=dict(entry.tool.parameters),
-                timeout_seconds=entry.timeout_seconds,
-            )
-            for entry in self._registry.registered_entries()
-            if entry.model_visible and entry.registered_name in enabled
-        ))

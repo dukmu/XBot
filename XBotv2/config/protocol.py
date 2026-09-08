@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import Field, StrictBool, field_validator, model_validator
+from pydantic import Field, JsonValue, StrictBool, field_validator, model_validator
 
 from XBotv2.config.contracts import (
     GET_POLICY,
@@ -15,7 +15,7 @@ from XBotv2.config.contracts import (
 )
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
-from XBotv2.session.services import SessionsPort
+from XBotv2.session.contracts import SessionsPort
 
 
 PermissionDecision = Literal["allow", "deny", "ask"]
@@ -71,12 +71,12 @@ class SessionPolicyPatch(WireModel):
 
 class SessionPolicyResponse(WireModel):
     session_id: str = Field(min_length=1)
-    permissions: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    effective_permissions: dict[str, list[dict[str, Any]]] = Field(
+    permissions: dict[str, list[dict[str, JsonValue]]] = Field(default_factory=dict)
+    effective_permissions: dict[str, list[dict[str, JsonValue]]] = Field(
         default_factory=dict
     )
-    sandbox: dict[str, Any] = Field(default_factory=dict)
-    effective_sandbox: dict[str, Any] = Field(default_factory=dict)
+    sandbox: dict[str, JsonValue] = Field(default_factory=dict)
+    effective_sandbox: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def _policy_response(

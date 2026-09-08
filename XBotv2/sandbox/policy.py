@@ -13,10 +13,13 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Callable, Literal
 
+from pydantic import JsonValue
 from XBotv2.config.models import SandboxConfig
 from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.tools import GuardDecision, ToolCall
+from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 
@@ -121,7 +124,7 @@ class SandboxPolicy:
             timeout_seconds=timeout_seconds,
         )
 
-    async def filesystem(self, operation: str, args: dict[str, Any]) -> str:
+    async def filesystem(self, operation: str, args: dict[str, JsonValue]) -> str:
         resolved = self.resolve_filesystem_args(operation, args)
         request = json.dumps(
             {"operation": operation, "args": resolved}, ensure_ascii=False
@@ -216,7 +219,7 @@ class SandboxPolicy:
     def _filesystem_mount_specs(
         self,
         operation: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
     ) -> list[SandboxMountSpec]:
         """Add per-call mounts for approved paths outside the workspace.
 
@@ -280,8 +283,8 @@ class SandboxPolicy:
     def resolve_filesystem_args(
         self,
         operation: str,
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
+        args: dict[str, JsonValue],
+    ) -> dict[str, JsonValue]:
         resolved = dict(args)
         for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
             value = args.get(field)
@@ -295,8 +298,8 @@ class SandboxPolicy:
     def check_filesystem_access(
         self,
         operation: str,
-        args: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+        args: dict[str, JsonValue],
+    ) -> list[dict[str, JsonValue]]:
         resolved = self.resolve_filesystem_args(operation, args)
         decisions = []
         for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
@@ -317,12 +320,12 @@ class SandboxPolicy:
     def check_tool_access(
         self,
         tool_name: str,
-        args: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+        args: dict[str, JsonValue],
+    ) -> list[dict[str, JsonValue]]:
         operation = filesystem_ops.resolve_operation(tool_name, args)
         return self.check_filesystem_access(operation, args) if operation else []
 
-    def make_guard(self) -> Any:
+    def make_guard(self) -> Callable[[ToolCall, ToolRegistration], GuardDecision | None]:
         """Return a monotonic execution guard for the tool pipeline.
 
         The guard receives ``(tool_call, entry)`` and returns ``None`` to
@@ -334,7 +337,7 @@ class SandboxPolicy:
 
         return self._guard
 
-    def _guard(self, tool_call: Any, _entry: Any) -> Any:
+    def _guard(self, tool_call: ToolCall, _entry: ToolRegistration) -> GuardDecision | None:
         args = dict(tool_call.args or {})
         escalated = (
             tool_call.name == "shell"
@@ -349,8 +352,6 @@ class SandboxPolicy:
             f"{'write' if issue['write'] else 'read'} access: {issue['path']}"
             for issue in issues
         )
-        from XBotv2.core.tools import GuardDecision
-
         return GuardDecision(
             "deny", f"Sandbox denied {details}", source="sandbox"
         )
@@ -424,10 +425,10 @@ class SandboxPolicy:
             )
             self._rules.append(SandboxResourceRule(path=path, access=resource.access))
 
-    def export_config(self) -> dict[str, Any]:
+    def export_config(self) -> dict[str, JsonValue]:
         """Serialize the live sandbox config back to the format
         used by global, session, and workspace configuration."""
-        d: dict[str, Any] = {
+        d: dict[str, JsonValue] = {
             "enabled": self.enabled,
             "network": self._network,
             "external_read": self.external_read,

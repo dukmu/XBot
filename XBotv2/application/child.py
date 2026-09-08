@@ -5,26 +5,28 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Literal
+from pathlib import Path
 
 from XBotv2.application.host import mounted_application
-from XBotv2.application.services import AgentApplicationPort, ChildApplicationRequest
+from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
 from XBotv2.agents import AgentSessionResult, SubagentTurnError
 from XBotv2.persistence.models import ThreadLifecycleRecord
 from XBotv2.persistence import ThreadLifecycleWriterPort
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.providers import BaseProvider
 
 
 @dataclass(slots=True)
 class ChildApplications:
     """Create child Agent applications from one bound parent application."""
 
-    paths: Any
+    paths: RuntimePaths
     provider_name: str
     session_id: str
-    workspace_root: Any
+    workspace_root: Path
     no_plugins: bool
-    plugin_dirs: list[Any] | None
-    llm_override: Any
+    plugin_dirs: list[Path | str] | None
+    llm_override: BaseProvider | None
     parent_thread_id: str
     interactive: bool
     async def spawn(

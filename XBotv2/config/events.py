@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pydantic import JsonValue
 
 from XBotv2.config.models import RuntimeConfig
 
@@ -12,7 +13,7 @@ POLICY_CHANGED = "config/policy-changed"
 
 @dataclass(frozen=True, slots=True)
 class PolicyChanged:
-    policy: dict[str, object]
+    policy: dict[str, JsonValue]
     config: RuntimeConfig
 
 

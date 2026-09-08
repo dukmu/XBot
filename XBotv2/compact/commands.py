@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
+
+from pydantic import JsonValue
 
 from XBotv2.commands import CommandResult
 
@@ -10,10 +12,10 @@ from XBotv2.commands import CommandResult
 class _CompactCommandOwner(Protocol):
     async def _compact_current_history(
         self,
-    ) -> tuple[dict[str, Any] | None, dict[str, Any]]: ...
+    ) -> tuple[dict[str, JsonValue] | None, dict[str, JsonValue]]: ...
 
 
-def compact_result_message(metrics: dict[str, Any]) -> str:
+def compact_result_message(metrics: dict[str, JsonValue]) -> str:
     if not metrics:
         return "Conversation history compacted."
     usage = metrics.get("model_usage") or {}

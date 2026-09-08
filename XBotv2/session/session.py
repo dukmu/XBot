@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import secrets
 import shutil
-from typing import Any, Protocol
+from typing import Protocol
 
 from XBotv2.agentloop import LoopState
 from XBotv2.core.errors import OperationError
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths, SessionPaths
+from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     PREPARE_FORK,
@@ -17,10 +18,10 @@ from XBotv2.session.contracts import (
     PrepareFork,
     SessionStatus,
 )
-from XBotv2.session.types import SessionInfo
+from XBotv2.session.contracts import SessionInfo
 
 
-def fork_persisted_session(paths: Any, source_session_id: str) -> str:
+def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
     """Copy one persisted session to a fresh session id."""
     session_id = _new_fork_id()
     while paths.session(session_id).root.exists():
@@ -63,7 +64,7 @@ class Session:
         events: SessionEventsPort,
         info: SessionInfo,
         paths: RuntimePaths,
-        variables: Any,
+        variables: RuntimeVariables,
         state: LoopState,
         session_paths: SessionPaths,
     ) -> None:

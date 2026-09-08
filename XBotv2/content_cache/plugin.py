@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.content_cache.content_cache import cache_user_message
@@ -75,7 +75,7 @@ class ContentCacheComponent:
     name = "xbot.content_cache"
     Config = CONFIG_SCHEMA
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         service = ContentCacheService(
             ctx.artifacts,
             parse_content_cache_config(config),

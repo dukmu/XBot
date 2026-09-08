@@ -1,4 +1,4 @@
-# `agent-runtime`
+# `agents`
 
 Session-scoped active Agent runtime. Creates the `Engine` (loop instance),
 manages agent/provider/model selection, and registers runtime operations

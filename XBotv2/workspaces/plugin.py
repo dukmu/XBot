@@ -19,6 +19,20 @@ from XBotv2.workspaces.contracts import (
 )
 from XBotv2.workspaces.events import WorkspaceCatalogChange, WorkspaceEventStream
 from XBotv2.workspaces.directories import DirectoryBrowser
+from XBotv2.workspaces.protocol import build_router
+from XBotv2.server import contribute_router
+
+
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.workspaces.http",
+        router=build_router(
+            workspaces=ctx.workspaces,
+            workspace_events=ctx.workspace_events,
+            directories=ctx.workspace_directories,
+        ),
+    )
 
 
 class WorkspaceSessionHandlers:
@@ -69,6 +83,10 @@ class WorkspacesPlugin:
         ctx.set("workspaces", registry)
         ctx.set("workspace_events", stream)
         ctx.set("workspace_directories", DirectoryBrowser(ctx.workspace_root))
+        ctx.inject(
+            ["server", "workspaces", "workspace_events", "workspace_directories"],
+            mount_http,
+        )
 
 
 plugin = WorkspacesPlugin()

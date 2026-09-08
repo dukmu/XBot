@@ -8,27 +8,29 @@ config and are served through ``ctx.llm``.
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
-from XBotv2.config.contracts import PatchPolicy, PolicySnapshot
+from XBotv2.config.contracts import PatchPolicy, PolicySnapshot, SettingsPort
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.config.models import (
     RuntimeConfig,
     UserContext,
 )
 from XBotv2.core.runtime_logging import RuntimeLog
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.application.contracts import ApplicationEventsPort
 
 
-class ConfigService:
+class ConfigService(SettingsPort):
     """Path-bound configuration reader with a resolved user context."""
 
     def __init__(
         self,
-        paths: Any,
+        paths: RuntimePaths,
         *,
         session_id: str,
-        workspace_root: Any,
-        events: Any,
+        workspace_root: Path,
+        events: ApplicationEventsPort,
         runtime_log: RuntimeLog,
         user_context: UserContext | None = None,
     ) -> None:
@@ -42,7 +44,7 @@ class ConfigService:
     def user_context(self) -> UserContext:
         return self._user_context
 
-    def load_runtime_config(self, workspace: Any, session_id: str) -> RuntimeConfig:
+    def load_runtime_config(self, workspace: Path, session_id: str) -> RuntimeConfig:
         from XBotv2.config.loader import load_runtime_config
 
         return load_runtime_config(self.paths, workspace, session_id)

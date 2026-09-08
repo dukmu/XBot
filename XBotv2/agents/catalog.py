@@ -8,11 +8,11 @@ from pathlib import Path
 from xcore import bound_effect, current_plugin_name
 
 from XBotv2.agents.loader import load_definitions
-from XBotv2.agents.contracts import AgentDefinition
+from XBotv2.agents.contracts import AgentCatalogPort, AgentDefinition
 from XBotv2.core.variables import RuntimeVariables
 
 
-class AgentCatalog:
+class AgentCatalog(AgentCatalogPort):
     """Store immutable definitions in base and workspace-overlay layers."""
 
     def __init__(self) -> None:

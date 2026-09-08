@@ -434,6 +434,10 @@ class Registry:
     def __len__(self) -> int:
         return len(self._runtimes)
 
+    def handles(self) -> tuple["PluginHandle", ...]:
+        """Return snapshots for every mounted top-level and nested fiber."""
+        return tuple(PluginHandle(fiber) for fiber in self._all_fibers())
+
     # -- dependency refresh -------------------------------------------------
 
     def _all_fibers(self) -> list["Fiber"]:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Awaitable, Callable
-from typing import Any
-
 from XBotv2.core.tools import ClientEvent, Tool, ToolResult
 from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
 from XBotv2.permissions.approval import request_decision

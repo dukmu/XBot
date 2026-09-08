@@ -1,6 +1,6 @@
 """Public declarations for session identity and runtime management."""
 
-from XBotv2.session.types import (
+from XBotv2.session.contracts import (
     AttachmentInput,
     ArtifactPayload,
     HistoryMutation,
@@ -14,13 +14,19 @@ from XBotv2.session.types import (
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
+    SESSION_RESOURCE_CHANGED,
+    SESSION_RESOURCE_REMOVED,
+    SessionDescriptor,
     SessionExists,
     SessionInfo,
     SessionMode,
     SessionNotFound,
+    SessionResourceChanged,
+    SessionResourceRemoved,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
+    new_session_id,
 )
 
 __all__ = [
@@ -66,13 +72,19 @@ __all__ = [
     "OpenThread",
     "PendingInputUpdate",
     "SendMessage",
+    "SESSION_RESOURCE_CHANGED",
+    "SESSION_RESOURCE_REMOVED",
     "SessionExists",
+    "SessionDescriptor",
     "SessionInfo",
     "SessionNotFound",
+    "SessionResourceChanged",
+    "SessionResourceRemoved",
     "ThreadNotActive",
     "ThreadListResponse",
     "ThreadMessagesResponse",
     "ThreadSummary",
+    "new_session_id",
     "UndoRequest",
     "build_session_commands",
     "session_event",
@@ -88,8 +100,14 @@ _CONTRACT_EXPORTS = {
     "PREPARE_FORK",
     "PrepareFork",
     "SessionStatus",
+    "SessionDescriptor",
+    "SESSION_RESOURCE_CHANGED",
+    "SESSION_RESOURCE_REMOVED",
+    "SessionResourceChanged",
+    "SessionResourceRemoved",
+    "new_session_id",
 }
-_SERVICE_EXPORTS = {"SessionPort", "SessionsPort"}
+_CONTRACT_EXPORTS.update({"SessionPort", "SessionsPort"})
 
 _PROTOCOL_EXPORTS = {
     "AgentConfiguredData",
@@ -128,8 +146,6 @@ def __getattr__(name: str) -> object:
         from XBotv2.session import commands as declarations
     elif name in _CONTRACT_EXPORTS:
         from XBotv2.session import contracts as declarations
-    elif name in _SERVICE_EXPORTS:
-        from XBotv2.session import services as declarations
     elif name in _PROTOCOL_EXPORTS:
         from XBotv2.session import protocol as declarations
     else:

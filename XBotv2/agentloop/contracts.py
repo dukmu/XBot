@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.agentloop.inbox import InboxInput, InboxSink
 from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from pydantic import JsonValue
 
-from XBotv2.core.tools import Tool
-from XBotv2.llm import ModelPort
-from XBotv2.session.types import SessionInfo
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.tools import GuardDecision, Tool, ToolCall
+from XBotv2.session.contracts import SessionInfo
+
+if TYPE_CHECKING:
+    from XBotv2.agentloop.events import EventContext, EventPort
+    from XBotv2.agentloop.inbox import InboxInput, InboxSink, InboxTarget
+    from XBotv2.llm.contracts import ModelPort
 
 DEFAULT_MAX_ITERATIONS = 200
 
@@ -120,7 +126,7 @@ class ToolDescription:
     registered_name: str
     namespace: str
     description: str
-    parameters: dict[str, object]
+    parameters: dict[str, JsonValue]
     timeout_seconds: float | None
 
 
@@ -140,16 +146,105 @@ class ToolRegistration:
     timeout_seconds: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LoopFactoryOptions:
+    """Resolved ports consumed by an Agent loop factory."""
+
+    model_client: ModelPort
+    tools: "ToolsPort"
+    events: EventPort
+    state: LoopState
+    settings: LoopSettings
+    max_iterations: int
+
+
+class AgentLoopDriverPort(Protocol):
+    settings: LoopSettings
+    messages: Sequence[Message]
+    context_window: int
+    pending_input_count: int
+    pending_inputs: Sequence[InboxInput]
+
+    def set_wake_driver(self, callback: Callable[[], None]) -> None: ...
+    async def start_session(self) -> None: ...
+    async def close_session(self) -> None: ...
+    async def discard_inputs(self) -> None: ...
+    async def followup(self, content: str, **kwargs: Any) -> object: ...
+    async def inject(self, content: str, **kwargs: Any) -> object: ...
+    async def steer(self, content: str, **kwargs: Any) -> object: ...
+    async def edit_input(self, message_id: str, content: str) -> InboxInput: ...
+    async def remove_input(self, message_id: str) -> InboxInput: ...
+    async def retarget_input(
+        self,
+        message_id: str,
+        target: InboxTarget,
+    ) -> InboxInput: ...
+    def run_turn(
+        self,
+        content: str,
+        *,
+        request_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> AsyncIterator[dict[str, JsonValue]]: ...
+    def run_pending(
+        self,
+        *,
+        request_id: str = "",
+    ) -> AsyncIterator[dict[str, JsonValue]]: ...
+
+
+ToolGuard = Callable[
+    [ToolCall, ToolRegistration],
+    GuardDecision | None | Awaitable[GuardDecision | None],
+]
+
+
+class ToolsPort(Protocol):
+    def register(
+        self,
+        tool: Tool,
+        *,
+        model_visible: bool = True,
+        timeout_seconds: float | None = None,
+        namespace: str | None = None,
+    ) -> str: ...
+    def unregister(self, name: str) -> bool: ...
+    def guard(self, guard: ToolGuard) -> object: ...
+    def enabled(self) -> tuple[Tool, ...]: ...
+    def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None: ...
+    def names(self) -> tuple[str, ...]: ...
+    def registered_names(self) -> tuple[str, ...]: ...
+    def registrations(self) -> tuple[ToolRegistration, ...]: ...
+    def restrict(self, selectors: list[str] | None) -> tuple[str, ...]: ...
+    def exclude(self, selectors: list[str]) -> tuple[str, ...]: ...
+    async def execute_all(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> list[Message]: ...
+
+
+class AgentLoopFactoryPort(Protocol):
+    def create(self, options: LoopFactoryOptions) -> AgentLoopDriverPort: ...
+
+
 LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)
 
 
 __all__ = [
+    "AgentLoopDriverPort",
+    "AgentLoopFactoryPort",
     "DEFAULT_MAX_ITERATIONS",
     "LIST_TOOLS",
+    "LoopFactoryOptions",
     "LoopSettings",
     "LoopState",
     "ModelRequest",
     "ToolCatalog",
     "ToolDescription",
+    "ToolGuard",
     "ToolRegistration",
+    "ToolsPort",
 ]

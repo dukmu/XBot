@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 
-from xcore import bound_effect, current_plugin_name
+from xcore import Context, bound_effect, current_plugin_name
 
 
 class PromptsService:
@@ -39,7 +39,7 @@ class PromptsComponent:
 
     name = "xbot.prompts"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         ctx.set("prompts", PromptsService(ctx.context_builder))
 
 

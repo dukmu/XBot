@@ -11,17 +11,35 @@ provider-neutral port to the loop.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from pydantic import JsonValue
+from xcore import Context
 
 from XBotv2.llm.service import LlmService, ModelService
+from XBotv2.llm.commands import build_llm_commands
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.llm.contracts import (
     LIST_PROVIDERS,
     ProviderCatalog,
 )
+from XBotv2.llm.protocol import build_router
+from XBotv2.server import contribute_router
 
 
-def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.llm.http",
+        router=build_router(events=ctx, sessions=ctx.sessions),
+    )
+
+
+def mount_commands(ctx: Context) -> None:
+    for command in build_llm_commands(ctx.agent_runtime, ctx.llm):
+        ctx.commands.register(command)
+
+
+def build_llm_service(config: dict[str, JsonValue] | None = None) -> LlmService:
     """Create an ``LlmService`` with the built-in adapters and tree config.
 
     Used by the llm plugin's ``apply`` and by server-root / CLI code that
@@ -51,7 +69,11 @@ class LlmComponent:
     name = "xbot.llm"
     inject = ["runtime_log"]
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(
+        self,
+        ctx: Context,
+        config: Mapping[str, JsonValue] | None = None,
+    ) -> None:
         service = build_llm_service(dict(config or {}))
         ctx.runtime_log.bind("llm").info(
             "provider.catalog.loaded",
@@ -62,6 +84,8 @@ class LlmComponent:
         ctx.set("model", ModelService())
 
         ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
+        ctx.inject(["llm", "agent_runtime", "commands"], mount_commands)
+        ctx.inject(["server", "sessions"], mount_http)
 
 
 class ProviderCatalogHandler:

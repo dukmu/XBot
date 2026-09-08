@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 _ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
 
@@ -47,11 +47,11 @@ class ModelConfig(BaseModel):
     # Vendor-specific request extras (e.g. Anthropic extra_body / OpenAI
     # top-level options) declared per model; adapter-derived parameters are
     # deep-merged underneath these configured values.
-    extra_body: dict[str, Any] = Field(default_factory=dict)
+    extra_body: dict[str, JsonValue] = Field(default_factory=dict)
     input_modalities: list[Literal["text", "image"]] = Field(
         default_factory=lambda: ["text"]
     )
-    mock_responses: list[dict[str, Any]] = Field(default_factory=list)
+    mock_responses: list[dict[str, JsonValue]] = Field(default_factory=list)
 
     @field_validator("input_modalities")
     @classmethod
@@ -127,7 +127,7 @@ def expand_env(value: str) -> str:
     return _ENV.sub(replace, value)
 
 
-def _expand(value: Any) -> Any:
+def _expand(value: JsonValue) -> JsonValue:
     if isinstance(value, str):
         return expand_env(value)
     if isinstance(value, dict):
@@ -138,9 +138,9 @@ def _expand(value: Any) -> Any:
 
 
 def merge_request_extras(
-    derived: dict[str, Any],
-    configured: dict[str, Any],
-) -> dict[str, Any]:
+    derived: dict[str, JsonValue],
+    configured: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
     """Deep-merge adapter-derived request extras under configured values.
 
     Vendor-specific ``extra_body`` standards are declared in the model
@@ -160,7 +160,7 @@ def merge_request_extras(
 
 
 def parse_provider_config(
-    raw: dict[str, Any],
+    raw: dict[str, JsonValue],
     *,
     require_key: bool = True,
 ) -> ProviderConfig:

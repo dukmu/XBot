@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
 import httpx
+from pydantic import JsonValue
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
@@ -93,11 +94,11 @@ class BaseProvider(ABC):
             )
         self.capabilities = ProviderCapabilities(requested)
         self.artifacts = artifacts
-        self.bound_tools: list[dict[str, Any]] = []
+        self.bound_tools: list[dict[str, JsonValue]] = []
 
     def bind_tools(
         self,
-        tools: list[dict[str, Any]],
+        tools: list[dict[str, JsonValue]],
         **_kwargs: Any,
     ) -> BaseProvider:
         clone = copy(self)
@@ -111,8 +112,8 @@ class BaseProvider(ABC):
 
     def _provider_tools(
         self,
-        tools: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        tools: list[dict[str, JsonValue]],
+    ) -> list[dict[str, JsonValue]]:
         return list(tools)
 
     async def astream(

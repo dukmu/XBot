@@ -10,6 +10,7 @@ from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider, InputModality
 from XBotv2.core.tools import ToolCall, ToolCallDelta
 from XBotv2.core.usage import normalize_usage
+from pydantic import JsonValue
 
 
 @dataclass
@@ -25,7 +26,7 @@ class MockLLM(BaseProvider):
 
     def __init__(
         self,
-        responses: list[dict[str, Any]] | None = None,
+        responses: list[dict[str, JsonValue]] | None = None,
         *,
         input_modalities: list[InputModality] | None = None,
         artifacts: ArtifactStorePort | None = None,
@@ -50,8 +51,8 @@ class MockLLM(BaseProvider):
 
     def bind_tools(
         self,
-        tools: list[dict[str, Any]],
-        **_kwargs: Any,
+        tools: list[dict[str, JsonValue]],
+        **_kwargs: object,
     ) -> MockLLM:
         self.bound_tools = list(tools)
         return self
@@ -59,7 +60,7 @@ class MockLLM(BaseProvider):
     async def _astream_once(
         self,
         messages: list[Message],
-        **_kwargs: Any,
+        **_kwargs: object,
     ) -> AsyncIterator[ModelChunk]:
         response = self.next_response()
         result = self.to_response(response)
@@ -82,7 +83,7 @@ class MockLLM(BaseProvider):
     def get_call_messages(self, index: int) -> list[Message]:
         return self.call_history[index]
 
-    def next_response(self) -> dict[str, Any]:
+    def next_response(self) -> dict[str, JsonValue]:
         if self._state.call_count >= len(self.responses):
             raise RuntimeError(
                 f"MockLLM exhausted after {len(self.responses)} responses "
@@ -92,7 +93,7 @@ class MockLLM(BaseProvider):
         self._state.call_count += 1
         return response
 
-    def to_response(self, response: dict[str, Any]) -> ModelResponse:
+    def to_response(self, response: dict[str, JsonValue]) -> ModelResponse:
         return ModelResponse(
             content=str(response.get("content", "")),
             reasoning=str(response.get("reasoning") or ""),
@@ -126,7 +127,7 @@ class MockLLM(BaseProvider):
         )
 
 
-def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
+def normalize_tool_calls(tool_calls: list[dict[str, JsonValue]]) -> list[ToolCall]:
     normalized: list[ToolCall] = []
     for tool_call in tool_calls:
         normalized.append(ToolCall.model_validate({

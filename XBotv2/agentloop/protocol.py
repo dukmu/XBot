@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.usage import UsageData
 from XBotv2.agentloop.contracts import LIST_TOOLS
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.tools import ToolCall
+
+if TYPE_CHECKING:
+    from XBotv2.session.contracts import SessionsPort
 
 
 class ToolInfo(WireModel):
@@ -18,7 +21,7 @@ class ToolInfo(WireModel):
     registered_name: str = Field(min_length=1)
     namespace: str = Field(min_length=1)
     description: str
-    parameters: dict[str, Any]
+    parameters: dict[str, JsonValue]
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
@@ -28,7 +31,7 @@ class ToolListResponse(WireModel):
 
 class AssistantMessageData(WireModel):
     content: str
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_calls: list[dict[str, JsonValue]] = Field(default_factory=list)
     timing: "ModelTimingData | None" = None
 
 
@@ -66,8 +69,8 @@ class ToolCallDeltaItemData(WireModel):
     tool_call_id: str = Field(min_length=1)
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    args_delta: str | dict[str, Any]
-    args: str | dict[str, Any]
+    args_delta: str | dict[str, JsonValue]
+    args: str | dict[str, JsonValue]
     index: int = Field(ge=0)
     replaces_tool_call_id: str | None = None
 
@@ -79,12 +82,12 @@ class ToolCallDeltaData(WireModel):
 class ToolResultData(WireModel):
     tool_call_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    content: Any = ""
+    content: JsonValue = ""
     status: Literal["success", "error", "denied", "cancelled"]
-    data: Any = None
-    error: dict[str, Any] | None = None
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    images: list[dict[str, Any]] = Field(default_factory=list)
+    data: JsonValue = None
+    error: dict[str, JsonValue] | None = None
+    artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
+    images: list[dict[str, JsonValue]] = Field(default_factory=list)
     timing: ToolTimingData | None = None
 
 
@@ -128,14 +131,14 @@ _EVENT_MODELS: dict[str, type[WireModel]] = {
 
 def agentloop_event(
     type: AgentLoopEventType,
-    data: dict[str, Any],
-) -> dict[str, Any]:
+    data: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
     """Validate one Agent-loop-owned event at its producer boundary."""
     payload = _EVENT_MODELS[type].model_validate(data)
     return {"type": type, "data": payload.model_dump(exclude_unset=True)}
 
 
-def build_tools_router(*, sessions: Any) -> APIRouter:
+def build_tools_router(*, sessions: "SessionsPort") -> APIRouter:
     """Read-only tool catalog for the active thread."""
 
     router = APIRouter()

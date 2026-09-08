@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from XBotv2.agents.services import AgentCatalogPort, AgentRuntimePort
+from XBotv2.agents.contracts import AgentCatalogPort, AgentRuntimePort
 from XBotv2.commands import (
     Command,
     CommandResult,
@@ -56,9 +56,9 @@ class AgentCommandHandler:
             target = parts[0]
         if target is None:
             return command_usage("/agent [status|list|use <name>|<name>]")
-        data = await self._runtime.select(target)
+        selected = await self._runtime.select(target)
         return CommandResult(
-            f"Active Agent: {data['agent_name']}.",
+            f"Active Agent: {selected.active}.",
             effects=("thread", "agents", "commands"),
         )
 

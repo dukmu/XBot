@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
+from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.tools import ClientEvent, GuardDecision, ToolCall
 from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
 from XBotv2.permissions import PermissionsPort
@@ -19,7 +20,7 @@ class PermissionGuard:
         self,
         permissions: PermissionsPort,
         approval: ApprovalPort,
-        emit: Callable[[str, Any], Awaitable[Any]],
+        emit: Callable[[str, object], Awaitable[object]],
         apply_decision: Callable[[ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]],
     ) -> None:
         self._permissions = permissions
@@ -27,7 +28,7 @@ class PermissionGuard:
         self._emit = emit
         self._apply_decision = apply_decision
 
-    async def check(self, tool_call: ToolCall, _entry: Any) -> GuardDecision | None:
+    async def check(self, tool_call: ToolCall, _entry: ToolRegistration) -> GuardDecision | None:
         decision, reason = self._permissions.check_tool_call(tool_call)
         DEFAULT_RUNTIME_LOG.bind("permissions").info(
             "permission.checked", call_id=tool_call.id, tool=tool_call.name, decision=decision,

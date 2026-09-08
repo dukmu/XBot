@@ -15,14 +15,25 @@ from XBotv2.commands.contracts import (
     CommandCatalog,
     CommandDescription,
     CommandExecution,
+    CommandsPort,
     EXECUTE_COMMAND,
     ExecuteCommand,
     LIST_COMMANDS,
 )
+from XBotv2.commands.protocol import build_commands_router
+from XBotv2.server import contribute_router
+
+
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.commands.http",
+        router=build_commands_router(sessions=ctx.sessions),
+    )
 from XBotv2.core.operations import EmptyRequest
 
 
-class CommandsService:
+class CommandsService(CommandsPort):
     """Plugin-facing command registry with fiber-scoped auto-unregister."""
 
     def __init__(self) -> None:
@@ -103,6 +114,7 @@ class CommandsComponent:
         operations = CommandOperations(service)
         ctx.on(LIST_COMMANDS.name, operations.list_commands)
         ctx.on(EXECUTE_COMMAND.name, operations.execute_command)
+        ctx.inject(["server", "sessions"], mount_http)
 
 
 plugin = CommandsComponent()

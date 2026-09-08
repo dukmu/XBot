@@ -6,9 +6,26 @@ from xcore import Context
 
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.paths import SessionPaths
+from XBotv2.persistence.store import ThreadPersistence
 
 
-class PersistenceComponent:
+def thread_persistence_factory(
+    session_paths: SessionPaths,
+    *,
+    thread_id: str = "",
+    workspace_root: str = "",
+    provider: str = "",
+) -> ThreadPersistence:
+    return ThreadPersistence.open(
+        session_paths,
+        thread_id=thread_id,
+        workspace_root=workspace_root,
+        provider=provider,
+    )
+
+
+class ThreadPersistenceComponent:
     inject = ["loop_state", "thread_persistence", "runtime_log"]
     name = "xbot.persistence"
 
@@ -44,6 +61,20 @@ class PersistenceComponent:
         ctx.set("thread_metadata", state.metadata)
 
 
-plugin = PersistenceComponent()
+def mount_thread_persistence(ctx: Context) -> None:
+    ThreadPersistenceComponent().apply(ctx)
 
-__all__ = ["PersistenceComponent"]
+
+class PersistencePlugin:
+    """Expose process readers and hydrate thread-local persistent state."""
+
+    name = "xbot.persistence"
+
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        ctx.set("thread_persistence_factory", thread_persistence_factory)
+        ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
+
+
+plugin = PersistencePlugin()
+
+__all__ = ["PersistencePlugin"]

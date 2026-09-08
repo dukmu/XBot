@@ -17,14 +17,17 @@ configured provider lacks a key.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Callable
+from typing import Callable
+from pydantic import JsonValue
 
-from XBotv2.llm.config import ProviderConfig, parse_provider_config
+from XBotv2.llm.config import ModelConfig, ProviderConfig, parse_provider_config
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.llm.contracts import (
+    LlmServicePort,
     ModelDescription,
+    ModelPort,
     ProviderCatalog,
     ProviderDescription,
 )
@@ -32,13 +35,13 @@ from XBotv2.llm.contracts import (
 ProviderFactory = Callable[..., BaseProvider]
 
 
-class LlmService:
+class LlmService(LlmServicePort):
     """Provider route directory with configured provider definitions."""
 
     def __init__(self) -> None:
         self._factories: dict[str, ProviderFactory] = {}
         self._default = "default"
-        self._providers: dict[str, dict[str, Any]] = {}
+        self._providers: dict[str, dict[str, JsonValue]] = {}
 
     def register(self, provider: str, factory: ProviderFactory) -> None:
         if provider in self._factories:
@@ -58,7 +61,7 @@ class LlmService:
     def configure(
         self,
         default: str | None,
-        providers: dict[str, Any] | None,
+        providers: dict[str, dict[str, JsonValue]] | None,
     ) -> None:
         """Store the configured provider definitions from the tree config."""
         self._default = default or "default"
@@ -130,7 +133,7 @@ class LlmService:
     def create(
         self,
         provider_config: ProviderConfig,
-        model_config: Any = None,
+        model_config: "ModelConfig | None" = None,
         *,
         model: str | None = None,
         artifacts: ArtifactStorePort | None = None,
@@ -149,7 +152,7 @@ class LlmService:
         return factory(provider_config, model_config, artifacts=artifacts)
 
 
-class ModelService:
+class ModelService(ModelPort):
     """Mutable binding for the model selected for the active Agent."""
 
     def __init__(self) -> None:
@@ -166,15 +169,15 @@ class ModelService:
 
     def bind_tools(
         self,
-        tools: list[dict[str, Any]],
-        **kwargs: Any,
+        tools: list[dict[str, JsonValue]],
+        **kwargs: object,
     ) -> BaseProvider:
         return self.provider.bind_tools(tools, **kwargs)
 
     async def astream(
         self,
         messages: list[Message],
-        **kwargs: Any,
+        **kwargs: object,
     ) -> AsyncIterator[ModelChunk]:
         async for chunk in self.provider.astream(messages, **kwargs):
             yield chunk

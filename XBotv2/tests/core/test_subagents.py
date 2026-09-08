@@ -16,7 +16,7 @@ from XBotv2.agents import AgentDefinition, AgentSessionResult
 from XBotv2.core import RuntimePaths
 from XBotv2.core.usage import UsageData
 from XBotv2.jobs import JobKind
-from XBotv2.jobs.plugin import JobsComponent
+from XBotv2.jobs.plugin import JobsRuntimeComponent
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.core.messages import ModelChunk
@@ -31,7 +31,7 @@ from XBotv2.permissions.system import (
     normalize_agent_permissions,
 )
 
-from XBotv2.agents.subagents import SubagentLauncher, SubagentRunner
+from XBotv2.subagents.service import SubagentLauncher, SubagentRunner
 
 
 class RuntimeApplication:
@@ -766,7 +766,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
     )
     services.set("commands", CommandsService())
     services.set("engine", parent_engine)
-    JobsComponent().apply(services, {})
+    JobsRuntimeComponent().apply(services, {})
     job_registry = services.jobs
 
     job = await job_registry.create(

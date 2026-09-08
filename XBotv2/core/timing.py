@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from XBotv2.core.messages import Message
@@ -68,7 +66,7 @@ def conversation_stats(messages: Iterable[Message]) -> SessionStats:
     return stats
 
 
-def _timing(value: Any) -> dict[str, float] | None:
+def _timing(value: object) -> dict[str, float] | None:
     if not isinstance(value, Mapping):
         return None
     result: dict[str, float] = {}
@@ -84,13 +82,13 @@ def _timing(value: Any) -> dict[str, float] | None:
     return result
 
 
-def _stats(value: Any) -> SessionStats | None:
+def _stats(value: object) -> SessionStats | None:
     if not isinstance(value, Mapping):
         return None
     return SessionStats.model_validate(value)
 
 
-def _nonnegative_int(value: Any) -> int:
+def _nonnegative_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
     return value

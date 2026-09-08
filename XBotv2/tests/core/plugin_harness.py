@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 
 def mount_ctx(state_store):
     """Real XCore context with the capability services, for plugin tests."""
@@ -103,7 +105,23 @@ def mount_plugin(plugin, state_store, config=None):
     """
     ctx = mount_ctx(state_store)
     plugin.ctx = ctx
-    plugin.apply(ctx, config)
+    result = plugin.apply(ctx, config)
+    if inspect.isawaitable(result):
+        result.close()
+        raise TypeError(
+            "mount_plugin() only supports synchronous plugins; "
+            "use await mount_plugin_async() for an async plugin"
+        )
+    return plugin
+
+
+async def mount_plugin_async(plugin, state_store, config=None):
+    """Mount a plugin through the real XCore lifecycle for async tests."""
+    ctx = mount_ctx(state_store)
+    plugin.ctx = ctx
+    handle = ctx.plugin(plugin, config)
+    await ctx.start()
+    await handle
     return plugin
 
 

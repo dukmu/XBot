@@ -1,8 +1,8 @@
 """Wire models owned by live client interactions."""
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from XBotv2.protocol import WireModel
 from XBotv2.core import ClientEvent
@@ -39,7 +39,7 @@ class UserInputRequiredData(WireModel):
 
 class UserInputResponseRequest(WireModel):
     request_id: str = Field(min_length=1)
-    answer: Any = None
+    answer: JsonValue = None
 
 
 class InteractionRecordedData(WireModel):
@@ -47,7 +47,7 @@ class InteractionRecordedData(WireModel):
     status: Literal["answered", "timeout", "cancelled"]
     decision: Literal["allow", "deny", ""] = ""
     scope: Literal["once", "session", ""] = ""
-    answer: Any = None
+    answer: JsonValue = None
     pending_interactions: list[str] = Field(default_factory=list)
 
 
@@ -65,7 +65,7 @@ InteractionEventType = Literal[
 
 def interaction_recorded_event(
     type: InteractionEventType,
-    data: dict[str, Any],
+    data: dict[str, JsonValue],
 ) -> ClientEvent:
     """Validate a recorded interaction before publishing it."""
     return _validated_client_event(type, data, InteractionRecordedData)

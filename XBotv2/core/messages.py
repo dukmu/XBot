@@ -144,11 +144,11 @@ class Message(_PartBacked):
     name: str
     status: str
     data: JsonValue
-    additional_kwargs: dict[str, Any]
-    response_metadata: dict[str, Any]
-    usage_metadata: dict[str, Any]
+    additional_kwargs: dict[str, JsonValue]
+    response_metadata: dict[str, JsonValue]
+    usage_metadata: dict[str, JsonValue]
     artifact: Any
-    error: dict[str, Any] | None
+    error: dict[str, JsonValue] | None
     client_events: list[ClientEvent]
     turn_complete: bool
     _sealed: bool = field(default=False, init=False, repr=False, compare=False)
@@ -163,14 +163,14 @@ class Message(_PartBacked):
         name: str = "",
         status: str = "",
         data: JsonValue = None,
-        additional_kwargs: dict[str, Any] | None = None,
-        response_metadata: dict[str, Any] | None = None,
-        usage_metadata: dict[str, Any] | None = None,
+        additional_kwargs: dict[str, JsonValue] | None = None,
+        response_metadata: dict[str, JsonValue] | None = None,
+        usage_metadata: dict[str, JsonValue] | None = None,
         artifact: Any = None,
         images: list[ImageContent] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
-        error: dict[str, Any] | None = None,
+        error: dict[str, JsonValue] | None = None,
         client_events: list[ClientEvent] | None = None,
         turn_complete: bool = False,
     ) -> None:
@@ -221,7 +221,7 @@ class Message(_PartBacked):
         self._sealed = True
 
 
-class _FrozenDict(dict[str, Any]):
+class _FrozenDict(dict[str, JsonValue]):
     def _immutable(self, *_args: object, **_kwargs: object) -> None:
         raise RuntimeError("A message in ConversationHistory is immutable")
 
@@ -238,7 +238,7 @@ class _FrozenDict(dict[str, Any]):
         return self
 
 
-class _FrozenList(list[Any]):
+class _FrozenList(list[JsonValue]):
     def _immutable(self, *_args: object, **_kwargs: object) -> None:
         raise RuntimeError("A message in ConversationHistory is immutable")
 
@@ -283,7 +283,7 @@ def _freeze_client_event(event: ClientEvent) -> ClientEvent:
     )
 
 
-def _freeze_object(value: Mapping[str, object]) -> _FrozenDict:
+def _freeze_object(value: Mapping[str, JsonValue]) -> _FrozenDict:
     return _FrozenDict({key: _freeze_json(item) for key, item in value.items()})
 
 
@@ -315,17 +315,17 @@ def _freeze_artifact(value: object) -> object:
 @dataclass(init=False)
 class ModelResponse(_PartBacked):
     parts: list[ContentPart]
-    response_metadata: dict[str, Any]
-    usage_metadata: dict[str, Any]
-    additional_kwargs: dict[str, Any]
+    response_metadata: dict[str, JsonValue]
+    usage_metadata: dict[str, JsonValue]
+    additional_kwargs: dict[str, JsonValue]
 
     def __init__(
         self,
         content: str = "",
         tool_calls: list[ToolCall] | None = None,
-        response_metadata: dict[str, Any] | None = None,
-        usage_metadata: dict[str, Any] | None = None,
-        additional_kwargs: dict[str, Any] | None = None,
+        response_metadata: dict[str, JsonValue] | None = None,
+        usage_metadata: dict[str, JsonValue] | None = None,
+        additional_kwargs: dict[str, JsonValue] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
     ) -> None:
@@ -349,9 +349,9 @@ class ModelChunk:
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_chunks: list[ToolCallDelta] = field(default_factory=list)
-    response_metadata: dict[str, Any] = field(default_factory=dict)
-    usage_metadata: dict[str, Any] = field(default_factory=dict)
-    additional_kwargs: dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    usage_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    additional_kwargs: dict[str, JsonValue] = field(default_factory=dict)
 
 
 __all__ = [

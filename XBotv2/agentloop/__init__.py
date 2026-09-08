@@ -2,23 +2,24 @@
 
 from XBotv2.agentloop.contracts import (
     DEFAULT_MAX_ITERATIONS,
+    AgentLoopDriverPort,
+    AgentLoopFactoryPort,
+    LoopFactoryOptions,
     LoopSettings,
     LoopState,
+    LIST_TOOLS,
     ModelRequest,
+    ToolCatalog,
+    ToolDescription,
     ToolRegistration,
+    ToolGuard,
+    ToolsPort,
 )
 from XBotv2.agentloop.events import (
     EventContext,
     EventPort,
     Events,
     SHORT_CIRCUIT_EVENTS,
-)
-from XBotv2.agentloop.services import (
-    AgentLoopDriverPort,
-    AgentLoopFactoryPort,
-    LoopFactoryOptions,
-    ToolGuard,
-    ToolsPort,
 )
 
 __all__ = [
@@ -35,8 +36,11 @@ __all__ = [
     "LoopFactoryOptions",
     "LoopSettings",
     "LoopState",
+    "LIST_TOOLS",
     "ModelRequest",
     "ToolGuard",
+    "ToolCatalog",
+    "ToolDescription",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",
     "ToolCallsStartedData",

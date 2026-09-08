@@ -9,12 +9,14 @@ from XBotv2.llm.contracts import (
     ProviderCatalog,
     ProviderDescription,
     ProviderSelection,
+    LlmCatalogPort,
+    LlmServicePort,
+    ModelPort,
     SELECT_EFFORT,
     SELECT_PROVIDER,
     SelectEffort,
     SelectProvider,
 )
-from XBotv2.llm.services import LlmCatalogPort, ModelPort
 
 __all__ = [
     "EffortSelection",
@@ -22,6 +24,7 @@ __all__ = [
     "EffortSelectionResponse",
     "LIST_PROVIDERS",
     "LlmCatalogPort",
+    "LlmServicePort",
     "ModelDescription",
     "ModelConfig",
     "ModelPort",

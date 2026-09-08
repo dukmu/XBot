@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from pydantic import JsonValue
+from xcore import Context
 
 from XBotv2.config.models import UserContext
 from XBotv2.config.service import ConfigService
 from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.config.protocol import build_router
+from XBotv2.server import contribute_router
 
 
-class ConfigComponent:
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.config.http",
+        router=build_router(sessions=ctx.sessions),
+    )
+
+
+class ConfigRuntimeComponent:
     """Register the path-bound config reader as ``ctx.settings``.
 
     The user context comes from this plugin's tree config (``user`` block),
@@ -21,7 +33,11 @@ class ConfigComponent:
     name = "xbot.config"
     inject = ["runtime_log", "runtime_paths", "session_launch"]
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(
+        self,
+        ctx: Context,
+        config: Mapping[str, JsonValue] | None = None,
+    ) -> None:
         config = config or {}
         user = UserContext.model_validate(config.get("user") or {})
         settings = ConfigService(
@@ -46,4 +62,20 @@ class ConfigOperations:
         return self._settings.policy()
 
 
-plugin = ConfigComponent()
+class ConfigPlugin:
+    """Compose session-local settings and their HTTP projection."""
+
+    name = "xbot.config"
+
+    async def apply(
+        self,
+        ctx: Context,
+        config: Mapping[str, JsonValue] | None = None,
+    ) -> None:
+        await ctx.plugin(ConfigRuntimeComponent(), config)
+        await ctx.inject(["server", "sessions"], mount_http)
+
+
+plugin = ConfigPlugin()
+
+__all__ = ["ConfigPlugin"]

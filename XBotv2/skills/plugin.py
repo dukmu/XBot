@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import ToolsPort
+from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core import (
     prompt_container,
@@ -17,7 +19,7 @@ from XBotv2.core import (
 )
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.commands import Command
-from XBotv2.core.tools import GuardDecision
+from XBotv2.core.tools import GuardDecision, ToolCall
 
 from .permission_scope import SkillPermissionScope
 from .registry import Skill, SkillRegistry
@@ -218,7 +220,11 @@ class SkillsPlugin:
         self._active_skills.clear()
         self._permission_scope.clear()
 
-    async def _guard_tool_scope(self, tool_call: Any, _entry: Any) -> Any:
+    async def _guard_tool_scope(
+        self,
+        tool_call: ToolCall,
+        _entry: ToolRegistration,
+    ) -> GuardDecision | None:
         if not self._active_skills:
             return
         tool_name = tool_call.name
@@ -233,7 +239,7 @@ class SkillsPlugin:
             )
         return None
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "skills": len(self._registry.list_skills()),

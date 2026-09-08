@@ -51,7 +51,7 @@ async def boot_application(
             ctx.set(name, value)
         handles = mount_plugin_tree(ctx, tree)
         await ctx.start()
-        validate_mounted_tree(handles)
+        validate_mounted_tree(handles, nested=ctx.registry.handles())
         application_log.info(
             "application.booted",
             plugins_running=len(handles),

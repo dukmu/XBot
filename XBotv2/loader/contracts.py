@@ -1,4 +1,4 @@
-"""Validated plugin-tree declarations and configuration overlays."""
+"""Public plugin-tree contracts and validated configuration overlays."""
 
 from __future__ import annotations
 

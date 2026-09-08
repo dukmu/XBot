@@ -6,13 +6,13 @@ from collections.abc import Awaitable, Callable
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.core.tools import ClientEvent
 from XBotv2.permissions.protocol import ApprovalDecision
-from XBotv2.permissions.services import ApprovalPort
+from XBotv2.permissions.contracts import ApprovalPort
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.application.services import ApplicationEventsPort, ClientEventsPort
+from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
 from XBotv2.interactions.interactions import InteractionWaiter
 
 
-class ApprovalService:
+class ApprovalService(ApprovalPort):
     """Permissions-owned transport and validation for live approvals."""
 
     def __init__(self, events: ApplicationEventsPort, client_events: ClientEventsPort) -> None:

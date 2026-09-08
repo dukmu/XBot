@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider
 from XBotv2.core.usage import UsageData
+from XBotv2.core.variables import RuntimeVariables
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+
+if TYPE_CHECKING:
+    from XBotv2.agentloop import AgentLoopDriverPort
+    from XBotv2.config import RuntimeConfig
+    from XBotv2.llm import EffortSelection, ProviderSelection
 
 AgentMode = Literal["primary", "subagent", "all"]
 class AgentDefinition(BaseModel):
@@ -76,6 +83,43 @@ class AgentCatalog:
     agents: tuple[AgentDefinition, ...]
 
 
+class AgentCatalogPort(Protocol):
+    def get(self, name: str) -> AgentDefinition | None: ...
+    def definitions(self) -> tuple[AgentDefinition, ...]: ...
+    def register(self, definition: AgentDefinition, *, overlay: bool = False) -> str: ...
+    def register_markdown(
+        self,
+        directory: Path,
+        *,
+        variables: RuntimeVariables | None = None,
+        overlay: bool = True,
+        owner: str | None = None,
+    ) -> tuple[str, ...]: ...
+    def unregister_owned(
+        self,
+        owner: str | None = None,
+        *,
+        overlay: bool = True,
+    ) -> list[str]: ...
+
+
+class AgentRuntimePort(Protocol):
+    async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort: ...
+    def active_definition(self) -> AgentDefinition | None: ...
+    def current_selection(self) -> AgentSelection: ...
+    def runtime_config(
+        self,
+        definition: AgentDefinition | None = None,
+    ) -> RuntimeConfig: ...
+    async def select(self, name: str) -> AgentSelection: ...
+    async def select_provider(
+        self,
+        name: str,
+        model: str | None = None,
+    ) -> ProviderSelection: ...
+    async def select_effort(self, value: str) -> EffortSelection: ...
+
+
 @dataclass(frozen=True, slots=True)
 class SelectAgent:
     name: str
@@ -103,9 +147,11 @@ SELECT_AGENT = Operation(
 )
 __all__ = [
     "AgentCatalog",
+    "AgentCatalogPort",
     "AgentCreateOptions",
     "AgentDefinition",
     "AgentMode",
+    "AgentRuntimePort",
     "AgentSession",
     "AgentSessionResult",
     "AgentSelection",

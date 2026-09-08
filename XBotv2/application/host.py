@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from xcore import Context
 
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.application.services import (
+from XBotv2.application.contracts import (
     AgentApplicationSnapshot,
     ApplicationEventsPort,
     ClientEventsPort,
@@ -85,7 +85,7 @@ def mounted_application(context: Context) -> MountedAgentApplication:
 class _TranscriptPages:
     """Host projection adapter; model-surface reads remain persistence-internal."""
 
-    def __init__(self, history: object) -> None:
+    def __init__(self, history: ConversationPageReader) -> None:
         self._history = history
 
     def page(self, *, limit: int, cursor: str | None = None):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, Protocol
 
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest, Operation
@@ -45,6 +45,16 @@ class Command:
             raise ValueError("server command requires a handler")
         if self.kind == "prompt" and self.handler is not None:
             raise ValueError("prompt command must not define a handler")
+
+
+class CommandsPort(Protocol):
+    """Slash-command registry mounted as ``ctx.commands``."""
+
+    def register(self, command: Command) -> str: ...
+    def unregister(self, name: str) -> bool: ...
+    def get(self, name: str) -> Command | None: ...
+    def all(self) -> tuple[Command, ...]: ...
+    def __len__(self) -> int: ...
 
 
 def split_command_args(raw_args: str) -> list[str]:
@@ -125,6 +135,7 @@ __all__ = [
     "CommandExecution",
     "CommandHandler",
     "CommandResult",
+    "CommandsPort",
     "EXECUTE_COMMAND",
     "ExecuteCommand",
     "LIST_COMMANDS",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
 from XBotv2.commands import Command
 from XBotv2.agentloop import Events
@@ -28,7 +28,7 @@ class CompactPlugin:
     name = "compact"
     Config = CONFIG_SCHEMA
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         service = CompactService(
             events=ctx,
             model=ctx.model,

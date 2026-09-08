@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from typing import Any, Literal
+from typing import Literal
 
 from XBotv2.core.tools import (
     ClientEvent,
@@ -12,7 +12,7 @@ from XBotv2.core.tools import (
     ToolCall,
     ToolResult,
 )
-from XBotv2.interactions import ClientMessageData
+from XBotv2.interactions import ClientMessageData, InteractionsPort
 
 
 _ASK_USER_SCHEMA = {
@@ -62,7 +62,7 @@ async def ask_user_for_input(
     options: list[dict[str, str]],
     timeout_seconds: float | None = None,
     *,
-    interactions: Any = None,
+    interactions: InteractionsPort | None = None,
     tool_call_id: str = "",
 ) -> ToolResult:
     """Pause this tool call until the client answers one necessary question."""
@@ -93,7 +93,7 @@ async def ask_user_for_input(
     return ToolResult.success(content)
 
 
-def build_ask_user_tool(interactions: Any) -> Tool:
+def build_ask_user_tool(interactions: InteractionsPort) -> Tool:
     """Bind one session's interaction service to its Agent-facing Tool."""
 
     async def invoke(

@@ -8,6 +8,7 @@ prompt fragments; the engine and the prompts component consume it through
 from __future__ import annotations
 
 from typing import Any
+from xcore import Context
 
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.context_builder.events import (
@@ -25,7 +26,7 @@ class ContextBuilderComponent:
     name = "xbot.context_builder"
     inject = ["runtime_log"]
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         builder = ContextBuilder()
         ctx.set("context_builder", builder)
         ctx.on(

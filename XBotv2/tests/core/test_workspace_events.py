@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.protocol import build_session_router
-from XBotv2.session.types import SessionSummary
+from XBotv2.session.contracts import SessionSummary
 from XBotv2.workspaces.events import WorkspaceCursorExpired, WorkspaceEventStream
 
 

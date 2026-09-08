@@ -7,11 +7,12 @@ loop composition.
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
     AgentDefinition,
+    AgentRuntimePort,
     AgentSelection,
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
@@ -27,15 +28,23 @@ from XBotv2.agentloop import (
     LoopState,
 )
 from XBotv2.config import RuntimeConfig
+from XBotv2.config import SettingsPort
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.runtime_logging import RuntimeLog
-from XBotv2.llm import ModelConfig, ProviderConfig
-from XBotv2.agents.services import AgentCatalogPort
+from XBotv2.llm import (
+    EffortSelection,
+    LlmServicePort,
+    ModelConfig,
+    ModelPort,
+    ProviderConfig,
+    ProviderSelection,
+)
+from XBotv2.agents.contracts import AgentCatalogPort
 
 
-class AgentsService:
+class AgentsService(AgentRuntimePort):
     """Compose and reconfigure the active Agent loop."""
 
     def __init__(
@@ -45,12 +54,12 @@ class AgentsService:
         factory: AgentLoopFactoryPort,
         events: ApplicationEventsPort,
         state: LoopState,
-        settings: Any,
-        providers: Any,
-        model: Any,
+        settings: SettingsPort,
+        providers: LlmServicePort,
+        model: ModelPort,
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
-        metadata: Any,
+        metadata: ThreadMetadataState,
         runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog
@@ -228,7 +237,7 @@ class AgentsService:
             self._apply_definition(config, definition)
         return config
 
-    async def activate(self, name: str) -> dict[str, Any]:
+    async def activate(self, name: str) -> AgentSelection:
         """Atomically apply a registered primary Agent to the live driver."""
         definition = self.catalog.get(name)
         if definition is None or definition.mode == "subagent":
@@ -295,19 +304,19 @@ class AgentsService:
             model=model_config.model,
             context_window=config.max_context_tokens,
         )
-        return {
-            "agent": definition,
-            "provider": provider_name,
-            "model": model_config.model,
-            "model_mode": model_config.model_mode,
-            "context_window": config.max_context_tokens,
-        }
+        return AgentSelection(
+            active=definition.name,
+            provider=provider_name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+            context_window=config.max_context_tokens,
+        )
 
     async def select_provider(
         self,
         name: str,
         model: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ProviderSelection:
         """Apply a configured provider (and optional model) to the driver.
 
         ``model`` selects one catalog entry of the provider; unknown model
@@ -358,13 +367,13 @@ class AgentsService:
             model=model_config.model,
             model_mode=model_config.model_mode,
         )
-        return {
-            "provider": name,
-            "model": model_config.model,
-            "model_mode": model_config.model_mode,
-        }
+        return ProviderSelection(
+            provider=name,
+            model=model_config.model,
+            model_mode=model_config.model_mode,
+        )
 
-    async def select_effort(self, value: str) -> dict[str, Any]:
+    async def select_effort(self, value: str) -> EffortSelection:
         """Switch the active model's reasoning effort to an advertised tier.
 
         Only tiers the model advertises in its ``effort`` list are accepted;
@@ -418,15 +427,15 @@ class AgentsService:
             model=model_name,
             reasoning_effort=value,
         )
-        return {
-            "provider": provider_name,
-            "model": model_name,
-            "reasoning_effort": value,
-            "model_mode": model_config.model_mode,
-            "available": tiers,
-        }
+        return EffortSelection(
+            provider=provider_name,
+            model=model_name,
+            reasoning_effort=value,
+            model_mode=model_config.model_mode,
+            available=tuple(tiers),
+        )
 
-    async def select(self, name: str) -> dict[str, Any]:
+    async def select(self, name: str) -> AgentSelection:
         """Activate one primary Agent (caller owns idle-check and turn lock).
 
         Unknown or subagent-only names fail closed with
@@ -438,14 +447,13 @@ class AgentsService:
         engine = self._require_engine()
         if definition.name != engine.settings.agent_name:
             await self.activate(definition.name)
-        return {
-            "active": definition.name,
-            "agent_name": definition.name,
-            "provider": engine.settings.provider,
-            "model": engine.settings.model,
-            "model_mode": engine.settings.model_mode,
-            "context_window": engine.context_window,
-        }
+        return AgentSelection(
+            active=definition.name,
+            provider=engine.settings.provider,
+            model=engine.settings.model,
+            model_mode=engine.settings.model_mode,
+            context_window=engine.context_window,
+        )
 
     def _resolve_definition(
         self,
@@ -508,7 +516,7 @@ class AgentsService:
         return metadata.provider or provider_name
 
     @staticmethod
-    def _restore_definition(data: dict[str, Any]) -> AgentDefinition:
+    def _restore_definition(data: dict[str, JsonValue]) -> AgentDefinition:
         values = dict(data)
         for field_name in ("tools", "disabled_tools"):
             if isinstance(values.get(field_name), list):
@@ -556,7 +564,7 @@ class AgentsService:
                 update={"model": definition.model}
             )
         if definition is not None:
-            updates: dict[str, Any] = {}
+            updates: dict[str, JsonValue] = {}
             if definition.temperature is not None:
                 updates["temperature"] = definition.temperature
             if definition.max_output_tokens is not None:

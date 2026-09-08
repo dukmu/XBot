@@ -20,12 +20,13 @@ API:
 ```python
 from XBotv2.jobs import LIST_TASKS, TaskSnapshot
 from XBotv2.config import RuntimeConfig
-from XBotv2.llm import LlmCatalogPort, ModelConfig, ProviderConfig
+from XBotv2.llm import LlmCatalogPort, LlmServicePort, ModelConfig, ModelPort, ProviderConfig
 ```
 
 Package roots may re-export explicit declaration modules only: `types`,
-`invariants`, `commands`, `events`, `services`, `protocol`, and transitional
-`contracts`.
+`invariants`, `commands`, `events`, `protocol`, and `contracts`. Service
+Protocols belong in `contracts.py`; a second `services.py` declaration layer
+must not duplicate them.
 They must not export concrete registries, services, managers, routers, or
 plugin implementations.
 
@@ -112,7 +113,10 @@ The package root also exports typed operations and DTOs from `contracts.py`
 plus command declarations from `commands.py`. `JobRegistry` and concrete
 output stores remain internal implementations.
 
-The same rule applies to the `llm`, `session`, `permissions`, and `sandbox`
+The LLM root exports `LlmCatalogPort`, `LlmServicePort`, and `ModelPort` from
+its typed contracts module. Concrete services explicitly implement their
+exported Port contract. The same rule applies to the `agentloop`, `agents`,
+`commands`, `config`, `session`, `permissions`, and `sandbox`
 package roots. Packages without an explicit declaration module do not expose
 their concrete implementation through `__init__.py`.
 

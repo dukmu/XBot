@@ -15,22 +15,19 @@ Each page describes one XBot built-in plugin using a consistent format:
 These are quick references, not a replacement for the package's public
 `__init__.py`, protocol models, or tests.
 
-## Agent capabilities (27 plugins)
+## Plugin packages
 
 | Plugin | Page |
 |---|---|
 | `config` | [config.md](config.md) |
 | `persistence` | [persistence.md](persistence.md) |
 | `usage` | [usage.md](usage.md) |
-| `agent-catalog` | [agent-catalog.md](agent-catalog.md) |
+| `agents` | [agents.md](agents.md) |
 | `session` | [session.md](session.md) |
 | `jobs` | [jobs.md](jobs.md) |
 | `commands` | [commands.md](commands.md) |
 | `llm` | [llm.md](llm.md) |
-| `tools` | [tools.md](tools.md) |
 | `agentloop` | [agentloop.md](agentloop.md) |
-| `agent-runtime` | [agent-runtime.md](agent-runtime.md) |
-| `llm-commands` | [llm-commands.md](llm-commands.md) |
 | `context-builder` | [context-builder.md](context-builder.md) |
 | `prompts` | [prompts.md](prompts.md) |
 | `sandbox` | [sandbox.md](sandbox.md) |
@@ -48,22 +45,30 @@ These are quick references, not a replacement for the package's public
 | `workspace-instructions` | [workspace-instructions.md](workspace-instructions.md) |
 | `interactions` | [interactions.md](interactions.md) |
 
-## Process carriers (11 plugins)
+## Carrier-only plugin packages
 
 | Plugin | Page |
 |---|---|
-| `process-persistence` | [process-persistence.md](process-persistence.md) |
-| `process-sessions` | [process-sessions.md](process-sessions.md) |
-| `process-workspaces` | [process-workspaces.md](process-workspaces.md) |
+| `workspaces` | [process-workspaces.md](process-workspaces.md) |
 | `acp-plugin` | [acp-plugin.md](acp-plugin.md) |
 | `server` | [server.md](server.md) |
-| `server-routes-core` | [server-routes-core.md](server-routes-core.md) |
-| `server-routes-session` | [server-routes-session.md](server-routes-session.md) |
-| `server-routes-workspaces` | [server-routes-workspaces.md](server-routes-workspaces.md) |
-| `server-routes-jobs` | [server-routes-jobs.md](server-routes-jobs.md) |
-| `server-routes-agents` | [server-routes-agents.md](server-routes-agents.md) |
-| `server-routes-llm` | [server-routes-llm.md](server-routes-llm.md) |
-| `server-routes-config` | [server-routes-config.md](server-routes-config.md) |
 
-> Process plugins are **not** Agent Tools. They are not needed in an
-> Agent-only profile unless the application explicitly requires them.
+## Detailed facets
+
+These pages describe substantial facets of the plugin above them; they are
+not separate tree entries or plugin packages:
+
+| Owner | Facet pages |
+|---|---|
+| `agents` | [catalog](agent-catalog.md), [runtime](agents.md), [HTTP](server-routes-agents.md) |
+| `agentloop` | [Tool service](tools.md) |
+| `llm` | [commands](llm-commands.md), [HTTP](server-routes-llm.md) |
+| `persistence` | [process reader](process-persistence.md) |
+| `session` | [process manager](process-sessions.md), [HTTP](server-routes-session.md) |
+| `server` | [core HTTP](server-routes-core.md) |
+| `workspaces` | [HTTP](server-routes-workspaces.md) |
+| `jobs` | [HTTP](server-routes-jobs.md) |
+| `config` | [HTTP](server-routes-config.md) |
+
+> Carrier facets are **not** separate plugins or Agent Tools. The owning root
+> plugin activates them only when their declared carrier services exist.

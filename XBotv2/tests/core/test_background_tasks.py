@@ -5,7 +5,7 @@ import pytest
 
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.jobs import JobKind, JobResult
-from XBotv2.jobs.plugin import JobsComponent
+from XBotv2.jobs.plugin import JobsRuntimeComponent
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
 from XBotv2.coretools import shell as shell_module
@@ -61,7 +61,7 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
         runtime_events.append(event.client_event)
 
     ctx.on(RUNTIME_EVENT, record)
-    JobsComponent().apply(ctx, {})
+    JobsRuntimeComponent().apply(ctx, {})
     from XBotv2.jobs import TaskSnapshot
 
     snapshot = TaskSnapshot(

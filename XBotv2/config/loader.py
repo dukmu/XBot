@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 import yaml
 
@@ -34,7 +34,7 @@ def expand_env(value: str) -> str:
     return _ENV.sub(replace, value)
 
 
-def _expand_env(value: Any) -> Any:
+def _expand_env(value: JsonValue) -> JsonValue:
     if isinstance(value, str):
         return expand_env(value)
     if isinstance(value, dict):
@@ -44,7 +44,7 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
-def load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> dict[str, JsonValue]:
     """Read one UTF-8 YAML mapping; a missing file is an empty layer."""
     if not path.exists():
         return {}
@@ -71,7 +71,7 @@ def load_runtime_config(
         ),
         _load_overlay(workspace_config, workspace=workspace),
     ]
-    merged: dict[str, Any] = {}
+    merged: dict[str, JsonValue] = {}
     for layer in layers:
         values = layer.model_dump(exclude_unset=True, exclude_none=True)
         permissions = values.pop("permissions", None)
@@ -109,7 +109,7 @@ def _load_overlay(
     if path is None:
         return ConfigOverlay()
     overlay = ConfigOverlay.model_validate(load_yaml(path))
-    updates: dict[str, Any] = {}
+    updates: dict[str, JsonValue] = {}
     if workspace is not None and overlay.plugin_paths is not None:
         updates["plugin_paths"] = [
             str(_workspace_path(workspace, value))
@@ -118,7 +118,10 @@ def _load_overlay(
     return overlay.model_copy(update=updates) if updates else overlay
 
 
-def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+def _merge(
+    base: dict[str, JsonValue],
+    overlay: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
     merged = dict(base)
     for key, value in overlay.items():
         current = merged.get(key)
@@ -129,7 +132,7 @@ def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def _workspace_path(workspace: Path, value: Any) -> Path:
+def _workspace_path(workspace: Path, value: JsonValue) -> Path:
     path = (workspace / str(value)).resolve()
     try:
         path.relative_to(workspace)

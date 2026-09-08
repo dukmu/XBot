@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
+from pydantic import JsonValue
 
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent
@@ -35,10 +36,10 @@ class InboxInput:
     message_id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
     images: list[ImageContent] = field(default_factory=list)
     artifacts: list[ArtifactRef] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
-SpliceRecorder = Callable[[dict[str, Any]], Awaitable[None]]
+SpliceRecorder = Callable[[dict[str, JsonValue]], Awaitable[None]]
 WakeDriver = Callable[[], None]
 
 
@@ -88,7 +89,7 @@ class AgentInbox:
         message_id: str = "",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> InboxInput:
         target = InboxTarget(target)
         item = InboxInput(

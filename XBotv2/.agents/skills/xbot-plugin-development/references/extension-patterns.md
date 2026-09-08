@@ -313,6 +313,7 @@ carrier so the route and its exception handlers are one fiber-owned effect:
 ```python
 from fastapi import APIRouter
 from XBotv2.server import contribute_router
+from xcore import Context
 
 
 class NotesRoutes:
@@ -323,21 +324,26 @@ class NotesRoutes:
         return await self._notes.list()
 
 
-class NotesHttpPlugin:
-    name = "notes.http"
-    inject = ["server", "notes"]
-
-    async def apply(self, ctx, config=None) -> None:
-        router = APIRouter()
-        routes = NotesRoutes(ctx.notes)
-        router.add_api_route("/notes", routes.list_notes, methods=["GET"])
-        await contribute_router(ctx, owner=self.name, router=router)
+async def mount_http(ctx: Context) -> None:
+    router = APIRouter()
+    routes = NotesRoutes(ctx.notes)
+    router.add_api_route("/notes", routes.list_notes, methods=["GET"])
+    await contribute_router(ctx, owner="notes.http", router=router)
 
 
-plugin = NotesHttpPlugin()
+class NotesPlugin:
+    name = "notes"
+
+    async def apply(self, ctx: Context, config=None) -> None:
+        await ctx.inject(["server", "notes"], mount_http)
+
+
+plugin = NotesPlugin()
 ```
 
-`NotesRoutes` is a named handler whose constructor receives the narrow
+The owning `notes/plugin.py` is the only plugin export. Its named HTTP mount
+waits for the carrier and the domain service without creating a second
+`notes/http/plugin.py` entry. `NotesRoutes` is a named handler whose constructor receives the narrow
 `notes` port; it exposes an `async list_notes()` method. In a real plugin,
 return a typed Pydantic response model and handle domain errors at this
 boundary. Keeping the handler named makes ownership, testing, and cleanup

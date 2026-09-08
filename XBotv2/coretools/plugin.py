@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xcore import Context
 
 from XBotv2.agentloop import Events
 from XBotv2.core.tools import Tool
@@ -23,7 +24,7 @@ class CoreToolsComponent:
 
     name = "xbot.coretools"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         config = config or {}
         artifacts = ctx.artifacts
         result_config = dict(config.get("tool_results") or {})

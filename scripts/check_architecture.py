@@ -32,7 +32,7 @@ PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
 USAGE_PLUGIN = PACKAGE / "usage" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
-AGENT_OPERATIONS = PACKAGE / "agents" / "service_component.py"
+AGENT_OPERATIONS = PACKAGE / "agents" / "plugin.py"
 APPLICATION_AGENTS = PACKAGE / "application" / "agents.py"
 APPLICATION_MODEL = PACKAGE / "application" / "model.py"
 AGENTS_SERVICE = PACKAGE / "agents" / "service.py"
@@ -40,7 +40,7 @@ APPLICATION_CONFIG_SEED = PACKAGE / "application" / "config_seed.py"
 APPLICATION_TREE = PACKAGE / "application" / "tree.py"
 SERVER_APP = PACKAGE / "application" / "server.py"
 HTTP_SERVER = PACKAGE / "server" / "http.py"
-ACP_AGENT = PACKAGE / "acp" / "xbot_agent.py"
+ACP_AGENT = PACKAGE / "acp_plugin" / "xbot_agent.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
     PACKAGE / "agentloop" / "tool_service.py",
@@ -682,7 +682,7 @@ def check_application_startup() -> list[Violation]:
                 "applications consume mounted LLM services; they do not export config readers",
             ))
     tree_source = XCORE_TREE.read_text(encoding="utf-8")
-    for required in ("agents.service_component", "agentloop.factory"):
+    for required in ("name: agents", "name: agentloop"):
         if required not in tree_source:
             violations.append(Violation(
                 XCORE_TREE,

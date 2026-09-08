@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from XBotv2.core import ClientEvent
 from XBotv2.core.tools import _validated_client_event
@@ -61,7 +61,7 @@ _EVENT_MODELS: dict[str, type[WireModel]] = {
 }
 
 
-def compact_event(type: CompactEventType, data: dict[str, Any]) -> ClientEvent:
+def compact_event(type: CompactEventType, data: dict[str, JsonValue]) -> ClientEvent:
     """Validate a Compact-owned event before publishing it through XCore."""
     return _validated_client_event(type, data, _EVENT_MODELS[type])
 

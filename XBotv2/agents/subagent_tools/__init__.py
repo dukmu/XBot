@@ -1,1 +1,0 @@
-"""Subagent tools plugin package."""

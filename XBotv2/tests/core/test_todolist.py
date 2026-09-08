@@ -12,7 +12,7 @@ from XBotv2.agentloop.engine import Engine
 from XBotv2.config.models import RuntimeConfig
 from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.store import ThreadPersistence
-from plugin_harness import mount_ctx, mount_plugin
+from plugin_harness import mount_ctx, mount_plugin_async
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -40,17 +40,17 @@ class _EntryOptions:
         self.namespace = namespace
 
 
-def _mount(plugin, state_store):
-    return mount_plugin(plugin, state_store)
+async def _mount(plugin, state_store):
+    return await mount_plugin_async(plugin, state_store)
 
 
-def make_plugin(state_store) -> TodolistService:
-    component = _mount(TodolistPlugin(), state_store)
+async def make_plugin(state_store) -> TodolistService:
+    component = await _mount(TodolistPlugin(), state_store)
     return component.ctx.todolist
 
 
-def setup_plugin(state_store) -> tuple[TodolistService, SetupContext]:
-    component = _mount(TodolistPlugin(), state_store)
+async def setup_plugin(state_store) -> tuple[TodolistService, SetupContext]:
+    component = await _mount(TodolistPlugin(), state_store)
     return component.ctx.todolist, SetupContext(component)
 
 
@@ -63,8 +63,9 @@ async def plugin_snapshot(plugin: TodolistService) -> list[dict[str, str]]:
     return [item.model_dump(mode="json") for item in snapshot.items]
 
 
-def test_todolist_registers_one_atomic_tool(state_store):
-    _plugin, setup = setup_plugin(state_store)
+@pytest.mark.asyncio
+async def test_todolist_registers_one_atomic_tool(state_store):
+    _plugin, setup = await setup_plugin(state_store)
 
     assert list(setup.tools) == ["update_todos"]
     tool = setup.tools["update_todos"]
@@ -78,7 +79,7 @@ def test_todolist_registers_one_atomic_tool(state_store):
 
 @pytest.mark.asyncio
 async def test_update_todos_atomically_replaces_the_complete_list(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     initial = [
         todo("inspect API", "in_progress"),
         todo("write tests", "pending"),
@@ -106,7 +107,7 @@ async def test_update_todos_atomically_replaces_the_complete_list(state_store):
 
 @pytest.mark.asyncio
 async def test_invalid_list_never_partially_changes_state(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     original = [todo("keep this", "in_progress")]
     await plugin.update_todos(original)
 
@@ -137,7 +138,7 @@ async def test_invalid_list_never_partially_changes_state(state_store):
 
 @pytest.mark.asyncio
 async def test_all_completed_returns_final_list_then_clears_active_state(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     await plugin.update_todos([todo("verify behavior", "in_progress")])
     completed = [todo("verify behavior", "completed")]
 
@@ -150,7 +151,7 @@ async def test_all_completed_returns_final_list_then_clears_active_state(state_s
 
 @pytest.mark.asyncio
 async def test_empty_list_clears_without_requiring_progress_item(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     await plugin.update_todos([todo("obsolete", "in_progress")])
 
     result = await plugin.update_todos([])
@@ -161,7 +162,7 @@ async def test_empty_list_clears_without_requiring_progress_item(state_store):
 
 @pytest.mark.asyncio
 async def test_todolist_rejects_obsolete_id_based_state(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     await state_store.state.namespace("todolist").set("snapshot", {
         "schema_version": 1,
         "items": [
@@ -175,7 +176,7 @@ async def test_todolist_rejects_obsolete_id_based_state(state_store):
 
 @pytest.mark.asyncio
 async def test_todolist_rejects_invalid_persisted_state(state_store):
-    plugin = make_plugin(state_store)
+    plugin = await make_plugin(state_store)
     invalid = {"schema_version": 1, "items": "not-a-list"}
     store = state_store.state.namespace("todolist")
     await store.set("snapshot", invalid)
@@ -222,7 +223,7 @@ async def test_engine_keeps_todo_call_and_result_in_next_model_context(
     state_store,
     temp_workspace: Path,
 ):
-    _plugin, setup = setup_plugin(state_store)
+    _plugin, setup = await setup_plugin(state_store)
     registry = ToolRegistry()
     tool = setup.tools["update_todos"]
     options = setup.options["update_todos"]

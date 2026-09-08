@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 from xcore import Context
 
@@ -23,8 +23,9 @@ from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.application.host import mounted_application
-from XBotv2.application.services import (
+from XBotv2.application.contracts import (
     AgentApplicationPort,
+    ClientEventsPort,
     ParentPermissions,
     SessionLaunch,
 )
@@ -32,29 +33,32 @@ from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.session.contracts import AgentApplicationOptions
-from XBotv2.session.types import new_session_id
+from XBotv2.session.contracts import new_session_id
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.providers import BaseProvider
+from XBotv2.permissions import PermissionsPort
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
 
 async def start_application(
     *,
-    paths,
+    paths: RuntimePaths,
     provider_name: str = "default",
     session_id: str | None = None,
     thread_id: str = "agent",
     workspace_root: Path | str | None = None,
     no_plugins: bool = False,
     plugin_dirs: list[Path | str] | None = None,
-    llm_override=None,
+    llm_override: BaseProvider | None = None,
     selected_agent: str | None = None,
     agent_definition: AgentDefinition | None = None,
-    parent_permission_system=None,
+    parent_permission_system: PermissionsPort | None = None,
     parent_thread_id: str = "",
     is_subagent: bool = False,
     interactive: bool = True,
-    extra_plugins: list[dict[str, Any]] | None = None,
-    client_events=None,
+    extra_plugins: list[dict[str, JsonValue]] | None = None,
+    client_events: ClientEventsPort | None = None,
 ) -> Context:
     """Assemble the XBot runtime on an XCore context.
 

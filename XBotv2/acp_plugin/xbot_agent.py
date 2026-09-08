@@ -74,7 +74,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin import MCP_PLUGIN_ID
-from XBotv2.session.types import (
+from XBotv2.session.contracts import (
     ImageInput,
     OpenSession,
     SendMessage,
@@ -82,7 +82,7 @@ from XBotv2.session.types import (
     ThreadSummary,
     ThreadNotActive,
 )
-from XBotv2.session.services import SessionsPort
+from XBotv2.session.contracts import SessionsPort
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 

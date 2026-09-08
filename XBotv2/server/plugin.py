@@ -10,17 +10,27 @@ from __future__ import annotations
 
 from functools import partial
 import time
-from typing import Any
 
 from fastapi import APIRouter, FastAPI
 from starlette.routing import BaseRoute
-from xcore import Disposer
+from xcore import Context, Disposer
 
 from XBotv2.server.contracts import (
     REGISTER_ROUTE,
     RouteContribution,
 )
 from XBotv2.server.contracts import ServerInfo
+from XBotv2.server.protocol import build_core_router
+
+
+async def mount_core_http(ctx: Context) -> None:
+    await ctx.emit(
+        REGISTER_ROUTE,
+        RouteContribution(
+            owner="xbot.server.http",
+            router=build_core_router(events=ctx, info=ctx.server_info),
+        ),
+    )
 
 
 class WebServer:
@@ -112,7 +122,7 @@ class ServerComponent:
     name = "xbot.server"
     inject = ["runtime_log"]
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: object | None = None) -> None:
         from XBotv2.server.http import create_app
 
         info = ServerInfo(name="xbotv2", started_at=time.monotonic())
@@ -122,6 +132,7 @@ class ServerComponent:
         ctx.on(REGISTER_ROUTE, carrier.register_contribution)
         ctx.set("server_info", info)
         ctx.set("server", app)
+        ctx.inject(["server", "server_info"], mount_core_http)
 
 
 plugin = ServerComponent()

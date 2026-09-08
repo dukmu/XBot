@@ -9,7 +9,7 @@ from typing import Any
 
 from xcore import Context, FiberState, PluginHandle
 
-from XBotv2.loader.types import LoadError, PluginEntry, PluginTree
+from XBotv2.loader.contracts import LoadError, PluginEntry, PluginTree
 
 logger = logging.getLogger("xbotv2.loader")
 
@@ -63,9 +63,17 @@ def mount_plugin_tree(
     return handles
 
 
-def validate_mounted_tree(handles: dict[str, PluginHandle]) -> None:
+def validate_mounted_tree(
+    handles: dict[str, PluginHandle],
+    *,
+    nested: tuple[PluginHandle, ...] = (),
+) -> None:
     """Fail startup when a mounted plugin failed or has unmet dependencies."""
     for entry_id, handle in handles.items():
+        if handle.state is FiberState.FAILED:
+            assert handle.error is not None
+            raise handle.error
+    for handle in nested:
         if handle.state is FiberState.FAILED:
             assert handle.error is not None
             raise handle.error

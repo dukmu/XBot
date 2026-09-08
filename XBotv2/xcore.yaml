@@ -13,6 +13,7 @@
 
 - id: config
   name: config
+  profiles: [agent, server]
   config:
     user:
       user_id: default-user
@@ -22,23 +23,28 @@
 
 - id: persistence
   name: persistence
+  profiles: [agent, server, acp]
 
 - id: usage
   name: usage
 
-- id: agent-catalog
-  name: agents.catalog_provider
+- id: agents
+  name: agents
+  profiles: [agent, server]
 
 - id: session
   name: session
+  profiles: [agent, server, acp]
 
 - id: jobs
   name: jobs
+  profiles: [agent, server]
   config:
     max_concurrent_subagents: 4
 
 - id: commands
   name: commands
+  profiles: [agent, server]
 
 - id: llm
   name: llm
@@ -137,18 +143,9 @@
             reasoning_effort: high
             thinking: enabled
 
-- id: tools
-  name: agentloop.tools
-
 - id: agentloop
-  name: agentloop.runtime
-
-- id: agent-runtime
-  name: agents.runtime
-
-- id: llm-commands
-  name: llm.runtime_commands
-  profiles: [agent]
+  name: agentloop
+  profiles: [agent, server]
 
 - id: context_builder
   name: context_builder
@@ -211,13 +208,14 @@
     workspace_tools: []
 
 - id: subagents
-  name: agents.subagent_tools
+  name: subagents
 
 - id: goal
   name: goal
 
 - id: todolist
   name: todolist
+  profiles: [agent, server]
 
 - id: skills
   name: skills
@@ -248,15 +246,7 @@
   name: interactions
 
 # Process-level Session services shared by carrier profiles.
-- id: process.persistence
-  name: persistence.process
-  profiles: [server, acp]
-
-- id: process.sessions
-  name: session.host
-  profiles: [server, acp]
-
-- id: process.workspaces
+- id: workspaces
   name: workspaces
   profiles: [server, acp]
 
@@ -266,44 +256,4 @@
 
 - id: server
   name: server
-  profiles: [server]
-
-- id: server.routes.core
-  name: server.routes
-  profiles: [server]
-
-- id: server.routes.session
-  name: session.http
-  profiles: [server]
-
-- id: server.routes.workspaces
-  name: workspaces.http
-  profiles: [server]
-
-- id: server.routes.jobs
-  name: jobs.http
-  profiles: [server]
-
-- id: server.routes.agents
-  name: agents.http
-  profiles: [server]
-
-- id: server.routes.llm
-  name: llm.http
-  profiles: [server]
-
-- id: server.routes.config
-  name: config.http
-  profiles: [server]
-
-- id: server.routes.tools
-  name: agentloop.http
-  profiles: [server]
-
-- id: server.routes.commands
-  name: commands.http
-  profiles: [server]
-
-- id: server.routes.todolist
-  name: todolist.http
   profiles: [server]
