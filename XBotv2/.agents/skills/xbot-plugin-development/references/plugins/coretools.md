@@ -81,7 +81,7 @@ ToolResult.success(json.dumps([{"path": "...", "type": "file"|"dir", ...}]))
 ```python
 async def edit(
     path: str,
-    mode: Literal["write", "replace", "patch"] = "write",
+    mode: Literal["write", "replace", "patch"] = "replace",
     content: str | None = None,
     old_text: str | None = None,
     new_text: str | None = None,
@@ -129,13 +129,13 @@ async def search(
     path: str,
     mode: Literal["content", "name"] = "content",
     glob: str | None = None,
-    max_results: int = 20,
+    max_results: int = 200,
     case_sensitive: bool = True,
     literal: bool = False,
     include_hidden: bool = False,
     exclude: list[str] | None = None,
-    max_line_chars: int = 200,
-    kind: Literal["file", "directory", "any"] = "any",
+    max_line_chars: int = 1000,
+    kind: Literal["file", "directory", "any"] = "file",
     *,
     sandbox=None,
 ) -> ToolResult: ...
@@ -158,8 +158,8 @@ async def shell(
     justification: str | None = None,
     *,
     sandbox=None,
-    jobs=None,
-    workspace_root: str = "",
+    job_registry=None,
+    default_cwd: str | None = None,
 ) -> ToolResult: ...
 ```
 
@@ -175,7 +175,7 @@ def make_tool_result_cache_hook(
     cache_threshold_chars: int = 12_000,
     preview_chars: int = 8_000,
     tail_chars: int = 2_000,
-) -> Callable[[EventContext], None]:
+) -> Callable[[EventContext], Awaitable[None]]:
     """After-tool cache hook. Stores oversized results in artifacts."""
 ```
 
@@ -214,10 +214,12 @@ Each tool is registered with the standard `Tool.from_function(...)` shape.
 
 ## On-disk artifacts
 
-Tool results exceeding `cache_threshold_chars` are stored as
-`ArtifactKind.TOOLS_RESULT` in the artifact store. The hook sets
-`ToolResult.data` to a reference when the content is too large for
-direct display.
+Tool messages exceeding `cache_threshold_chars` are stored as
+`ArtifactKind.TOOL_RESULT` in the artifact store. The hook mutates each
+`Message` in `EventContext.tool_results`: it replaces `content`, sets the
+cached/display markers in `additional_kwargs`, and attaches the `ArtifactRef`
+to `message.artifact`. The original tool result is therefore persisted before
+the bounded projection is emitted.
 
 ## Cross-references
 

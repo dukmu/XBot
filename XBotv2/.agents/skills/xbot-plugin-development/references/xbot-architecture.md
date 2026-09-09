@@ -1,9 +1,8 @@
 # XBot Architecture Reference
 
-Primary source when a checkout is available: `XBotv2/docs/architecture.md` and
-`XBotv2/docs/core/core.md`. For pip/uv installations, use the matching bundled
-skill references and inspect the installed `XBotv2` package; this page is a
-decision guide, not a replacement for the version-matched source docs.
+This page is the version-matched architecture guide shipped with the skill.
+Inspect the installed `XBotv2` package when verifying a pip/uv installation;
+the executable package remains authoritative.
 
 ## Ownership Map
 

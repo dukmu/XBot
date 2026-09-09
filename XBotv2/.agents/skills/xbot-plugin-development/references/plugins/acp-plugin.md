@@ -1,10 +1,11 @@
-# `acp-plugin`
+# `acp_plugin`
 
 The ACP stdio carrier — exposes XBot as a stable ACP v1 Agent via
 JSON-RPC over stdin/stdout. Implements the full ACP protocol surface:
 initialize, session management, prompt streaming, MCP server negotiation.
 
-- **Import/profile:** `acp-plugin`, ACP carrier profile.
+- **Tree id/name:** `acp` / `acp_plugin` (the page filename is
+  `acp-plugin.md`); ACP carrier profile only.
 - **Source:** `XBotv2/acp_plugin/plugin.py`,
   `XBotv2/acp_plugin/xbot_agent.py`,
   `XBotv2/acp_plugin/server.py`,

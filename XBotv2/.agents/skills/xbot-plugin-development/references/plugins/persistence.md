@@ -1,60 +1,53 @@
 # `persistence`
 
-Owns the durable conversation state for one thread: the append-only
-trajectory in `messages.jsonl`, the inbox projection, typed metadata,
-and the artifact store. The plugin hydrates the loop state from disk
-on startup; the loop itself pushes subsequent writes through the
-contracts published here.
+Thread-scoped durable state. It owns the append-only conversation trajectory,
+the current surface projection, inbox projection, typed thread metadata,
+plugin state, lifecycle records, and artifact storage.
 
-- **Import/profile:** `persistence`, Agent profile.
-- **Source:** `XBotv2/persistence/plugin.py`,
-  `XBotv2/persistence/store.py`, `XBotv2/persistence/models.py`,
-  `XBotv2/persistence/contracts.py`,
-  `XBotv2/core/filesystem/artifacts.py`.
-- **Injects/provides:** `loop_state`, `thread_persistence`,
-  `runtime_log` → `thread_metadata` (`ThreadMetadataState`).
-- **Subscribes to events:** none in `apply`; the loop engine pushes
-  history writes directly through `ThreadPersistence.history` rather
-  than via the `state/changed` observer event.
-- **Process facet:** the same root `persistence` plugin (server/ACP profiles)
-  publishes the persistence factory; there is no separate host plugin.
+Source: `XBotv2/persistence/plugin.py`, `store.py`, `models.py`,
+`contracts.py`, `XBotv2/core/paths.py`, and `core/artifacts.py`.
 
-## Public data models
+## Composition
 
-### `ThreadPersistence` store (`XBotv2/persistence/store.py`)
+```text
+loop_state + thread_paths + runtime_log
+    -> persistence -> thread_persistence
+```
+
+The same root `persistence` plugin also publishes the process-level factory
+used by server/ACP session management. There is no second persistence host
+plugin.
+
+## Facade and ports
 
 ```python
 class ThreadPersistence:
+    paths: ThreadPaths
     session_id: str
     thread_id: str
     workspace_root: str
     provider: str
     history: MessageHistoryStore
     inbox: InboxStore
-    metadata: MetadataPort
+    metadata: ThreadMetadataStore
+    lifecycle: ThreadLifecycleStore
     artifacts: ArtifactStorePort
-    lifecycle: ThreadLifecyclePort
-    state: StatePort
+    state: StateService
 
     @classmethod
-    def open(
-        cls,
-        session_paths: SessionPaths,
-        *,
-        thread_id: str = "",
-        workspace_root: str = "",
-        provider: str = "",
-    ) -> "ThreadPersistence": ...
-
-    def has_persisted_state(self) -> bool: ...
+    def create(cls, paths: SessionPaths | ThreadPaths, *, thread_id: str,
+               workspace_root: str, provider: str, artifacts=None) -> "ThreadPersistence": ...
+    @classmethod
+    def open(cls, paths: SessionPaths | ThreadPaths, *, thread_id: str,
+             workspace_root: str = "", provider: str = "") -> "ThreadPersistence": ...
 ```
 
-`ThreadPersistence` wraps the per-domain stores (`MessageHistoryStore`,
-`InboxStore`, `ArtifactStore`, `MetadataPort`, `StatePort`) into a
-single facade. The `open()` classmethod reads `thread.json` from the
-`SessionPaths` directory to populate identity fields.
+The public consumer protocols are in `persistence/contracts.py`, notably
+`HistoryPort`, `InboxPersistencePort`, `MetadataPort`, `StatePort`,
+`ThreadLifecyclePort`, and `ThreadPersistencePort`. The inbox protocol is
+named `InboxPersistencePort`; do not invent an `InboxPort` alias.
 
-### `MessageHistoryStore` (`XBotv2/persistence/store.py`)
+## History API
 
 ```python
 class MessageHistoryStore:
@@ -64,221 +57,90 @@ class MessageHistoryStore:
     def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]: ...
     def replace(self, messages: Sequence[Message]) -> None: ...
     def replace_surface(
-        self,
-        source_node_ids: Sequence[str],
-        messages: Sequence[Message],
-        *,
-        operation: str,
-        preserve_transcript: bool,
+        self, source_node_ids: Sequence[str], messages: Sequence[Message], *,
+        operation: str, preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]: ...
-    def record(self, event: str, data: JsonValue) -> None: ...
-    def count(self) -> int: ...
+    def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
     def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage: ...
-    def page_transcript(
-        self, *, limit: int, cursor: str | None = None
-    ) -> ConversationPage: ...
+    def page_transcript(self, *, limit: int, cursor: str | None = None) -> ConversationPage: ...
 ```
 
-`load_surface()` returns `tuple[HistoryNode, ...]` (not `list`).
-`HistoryNode` carries the original `Message` plus its typed `position`.
+`messages.jsonl` is append-only. Undo, clear, regenerate, and compact append
+a `surface_replace` record; they do not rewrite or truncate existing records.
+The `surface_replace` schema is:
 
-### `InboxStore` / `InboxSnapshot` (`XBotv2/persistence/store.py`)
+```json
+{
+  "schema_version": 1,
+  "position": 2,
+  "record_type": "surface_replace",
+  "operation": "compact",
+  "transcript": "preserve",
+  "source_node_ids": ["1", "2"],
+  "messages": [{"role": "user", "parts": []}]
+}
+```
+
+The complete validated shape is `SurfaceReplaceRecord` in
+`persistence/models.py`; each replacement message uses
+`MessagePayloadRecord`. `MessageRecord` adds a contiguous `position` to one
+provider-neutral message. `TrajectoryEventRecord` is a timestamped,
+log-only fact and never enters the current surface.
+
+## Inbox and state
 
 ```python
-@dataclass(frozen=True, slots=True)
-class InboxSnapshot:
-    items: tuple[InboxItem, ...]
-    version: int
-
-@dataclass(frozen=True, slots=True)
-class InboxItem:
-    message_id: str
-    content: str
-    target: Literal["next-turn", "next-step"]
-    source: str
-    images: tuple[ImageInput, ...] = ()
-    artifacts: tuple[ArtifactRef, ...] = ()
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
-
 class InboxStore:
     def load(self) -> list[InboxInput]: ...
     def replace(self, items: Sequence[InboxInput]) -> None: ...
     def reconcile(self, committed_input_ids: set[str]) -> list[InboxInput]: ...
 ```
 
-`InboxItem` is the record type; the loop consumes `InboxInput`
-(defined in `XBotv2.agentloop.inbox`). Both share the same on-disk
-format.
+`InboxSnapshot` and `InboxItemRecord` are frozen Pydantic models with
+`schema_version=1`. Plugin state belongs in the namespaced XCore
+`StateService`, not in the conversation trajectory and not in a second copy
+of history.
 
-### `ArtifactStore` (`XBotv2/core/filesystem/artifacts.py`)
-
-The artifact store lives in `XBotv2.core.filesystem.artifacts`:
+## Artifact contract
 
 ```python
-@dataclass(frozen=True, slots=True)
 class ArtifactRef(BaseModel):
-    kind: str
-    uri: str
-    digest: str
-    size: int
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    id: str
+    media_type: str = "application/octet-stream"
+    name: str = ""
+    kind: ArtifactKind
+    size: int = 0
+    sha256: str = ""
 
-class ArtifactStore:
-    def put(
-        self, kind: str, data: bytes | str, *, name: str | None = None
-    ) -> ArtifactRef: ...
-    def open(self, ref: ArtifactRef) -> BinaryIO: ...
-    def path_for(self, ref: ArtifactRef) -> Path: ...
+class ArtifactStorePort(Protocol):
+    def put(self, kind: ArtifactKind, payload: bytes, *, media_type: str = "application/octet-stream", name: str = "", suffix: str = "") -> ArtifactRef: ...
+    def read(self, artifact: ArtifactRef | str) -> bytes: ...
+    def exists(self, artifact: ArtifactRef | str) -> bool: ...
+    def model_path(self, artifact: ArtifactRef | str) -> str: ...
 ```
 
-The store owns `<thread>/state/artifacts/<kind>/...`; never construct
-this path yourself.
+Use the injected store and `ThreadPaths.artifact_file()`; never construct an
+artifact path from a user or model string.
 
-### Trajectory records (`persistence/models.py`)
-
-Every record carries `schema_version: 1` and a contiguous `position`.
-
-```python
-# MessageRecord — one accepted provider-neutral Message
-{
-    "schema_version": 1,
-    "role": "user",                    # or "assistant" | "tool" | "system"
-    "parts": [...],                    # discriminated union of ContentPart
-    "status": "",
-    "data": None,
-    "tool_call_id": "",
-    "input_id": "",
-    "name": "",
-    "additional_kwargs": {},
-    "response_metadata": {},
-    "usage_metadata": {},
-    "artifact": [],
-    "error": null,
-    "position": 1,
-}
-
-# SurfaceReplaceRecord — undo / clear / regenerate / compact
-{
-    "schema_version": 1,
-    "record_type": "surface_replace",
-    "transcript": "replace" | "preserve",
-    "target_node_ids": [...],
-    "replace_node_ids": [...],
-    "position": 2,
-}
-
-# TrajectoryEventRecord — log-only plugin/runtime fact
-{
-    "schema_version": 1,
-    "record_type": "event",
-    "data": {...},
-    "name": null,
-    "position": 3,
-}
-```
-
-`parts` preserves `text`, `reasoning`, `image`, `tool_call`. Missing
-optional metadata falls back to model defaults — do not assume a legacy
-`content` field.
-
-## What `apply()` does (`persistence/plugin.py:18-50`)
-
-```python
-def apply(self, ctx: Context, config: object | None = None) -> None:
-    state = ctx.loop_state
-    persistence = ctx.thread_persistence
-    nodes = persistence.history.load_surface()
-    messages = [node.message for node in nodes]
-    committed_input_ids = {
-        message.input_id for message in messages if message.input_id
-    }
-    pending_inputs = persistence.inbox.reconcile(committed_input_ids)
-    state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
-    state.resumed = persistence.has_persisted_state()
-    state.metadata = ThreadMetadataState(
-        persistence.metadata.load(), sink=persistence.metadata
-    )
-    state.inbox_items = pending_inputs
-    state.inbox_sink = persistence.inbox
-    state.session.provider = persistence.provider
-    ctx.set("thread_metadata", state.metadata)
-```
-
-It does not register event listeners; the engine is the single writer.
-
-## On-disk layout (per thread)
+## Paths
 
 ```text
-<data_dir>/sessions/<session_id>/threads/<thread_id>/
-├── thread.json                    # typed ThreadMetadata
-└── state/
-    ├── messages.jsonl             # append-only trajectory
-    ├── inbox.json                 # InboxSnapshot
-    ├── plugin_state/state.json    # XCore StateService namespaces
-    └── artifacts/<kind>/...       # ArtifactStore-owned files
+RuntimePaths.session(session_id).thread(thread_id)
+└── thread.json
+    state/messages.jsonl
+    state/inbox.json
+    state/plugin_state/state.json
+    state/artifacts/<kind>/...
 ```
 
-**Never edit this file by hand** — see
-[../session-trace.md](../session-trace.md) for the full schema and
-ownership rules.
+Obtain paths from `ctx.thread_paths`/`ctx.runtime_paths`. The property names
+are `metadata_file`, `messages_file`, `inbox_file`, `plugin_state_file`, and
+`artifacts_dir`; avoid obsolete `thread_json` or `messages_jsonl` names.
 
-## Typical extension: read-only observer
+## Invariants
 
-The plugin itself should not be subclassed. Instead, observe
-`state/changed` or typed session events to react to projection changes:
-
-```python
-from XBotv2.agentloop import Events, EventContext
-
-class HistoryMetrics:
-    name = "history-metrics"
-    inject = ["runtime_log"]
-
-    def apply(self, ctx, config):
-        ctx.on(Events.STATE_CHANGED, self._on_state_change)
-
-    async def _on_state_change(self, event: EventContext) -> None:
-        n = len(event.context_messages or [])
-        ctx.runtime_log.bind("history-metrics").info(
-            "surface.changed", messages=n
-        )
-```
-
-For durable new facts (audit log, plugin state, etc.), use the typed
-`XCore StateService` namespace:
-
-```python
-store = ctx.state.namespace("my-plugin")
-snapshot = await store.get("snapshot")
-await store.set("snapshot", typed_snapshot.model_dump(mode="json"))
-```
-
-## Cross-references
-
-- Depends on: `loop_state`, `thread_persistence`, `runtime_log`.
-- Depended on by: every plugin that reads/writes conversation state;
-  the engine itself for history writes; `compact`, `usage`,
-  `session`, `coretools`, `interactions`.
-- Pairs with: [process-persistence.md](process-persistence.md)
-  (factory host for server/ACP).
-
-## Common pitfalls
-
-- **Appending directly to `messages.jsonl`**: always go through
-  `ThreadPersistence.history` / `InboxStore` / `ArtifactStore`.
-  The codec handles `position`, `schema_version`, and surface
-  reconstruction; hand-edits silently desync.
-- **Duplicating conversation in plugin state**: one typed snapshot
-  per related domain; never store a copy of `messages.jsonl` in
-  `ctx.state.namespace(...)`.
-- **Observing `state/changed` and writing back**: `state/changed`
-  announces the projection change after persistence has already
-  written; observers must not call back into the write path or they
-  will loop.
-- **Trusting `state.resumed` before persistence is mounted**: in
-  tests, mount the persistence component before the engine or set
-  `state.resumed` manually to exercise the resume path.
-- **Constructing a `RuntimePaths` and forgetting the data_dir shape**:
-  always go through `ctx.runtime_paths`; the `ThreadPersistence`
-  factory needs `thread_paths`, which the `session` plugin already
-  provides as `ctx.thread_paths`.
+- Positions in the trajectory are contiguous and start at one.
+- Every persisted record is validated with a strict Pydantic model.
+- History writes go through `ThreadPersistence.history`.
+- Observers may consume persistence events but must not write history again.
+- Runtime-only loop state is not serialized as conversation messages.

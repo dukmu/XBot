@@ -101,8 +101,10 @@ class SkillPermissionScope:
     def check(self, tool_name: str, args: dict[str, Any] | None = None) -> str | None:
         """Return 'deny', 'allow', or None (no opinion).
 
-        Checks against tool name and 'tool(command)' form.
-        Deny patterns take precedence over allow patterns.
+        Checks against tool name and ``tool(command)`` form. The current
+        SkillsPlugin uses the ``deny`` result as an enforcement guard;
+        ``allow`` is diagnostic/precedence data and does not turn an
+        otherwise denied tool into an allow-list.
         """
 
     def clear(self) -> None:
@@ -177,10 +179,14 @@ class SkillsPlugin:
     async def _on_turn_end(self, ctx: EventContext) -> None:
         """Clear active skills and permission scope."""
 
-    async def _guard_tool_scope(self, tool_call: Any, _entry: Any) -> Any:
+    async def _guard_tool_scope(
+        self,
+        tool_call: ToolCall,
+        _entry: ToolRegistration,
+    ) -> GuardDecision | None:
         """Deny tools not allowed by active skills."""
 
-    async def _cleanup_runtime(self) -> None:
+    def _cleanup_runtime(self) -> None:
         """Unregister session skill tools/commands, reset state."""
 
     def diagnostics(self) -> dict[str, Any]: ...
@@ -224,7 +230,7 @@ returns a `prompt_container` that replaces the raw user input.
 
 ```
 APPLICATION_INITIALIZED → discover + register tools/commands
-BEFORE_USER_MESSAGE → intercept /skill-name
+BEFORE_USER_MESSAGE_ACCEPT → intercept /skill-name
 BEFORE_TOOL_SCHEMA_BIND → budget-aware description trimming
 BEFORE_TOOL_CALL → permission scope check
 TURN_END → clear active skills + permission scope
@@ -265,8 +271,16 @@ None directly. Skills are discovered from:
   `name == path.parent.name`. A frontmatter name that differs from
   the directory name causes the skill to be silently skipped.
 - **`allowed-tools` and `xbotv2-disallowed-tools` validation**:
-  invalid patterns raise `ValueError` in `_scan_dir()` and cause
-  the entire skill to be skipped (not just the pattern).
+  invalid patterns cause `_parse()` to reject the skill, so the entire skill
+  is skipped (not just the pattern).
+- **`allowed-tools` is not a global allow-list**: the current guard only
+  rejects a call matching an active skill's `disallowed-tools`. An
+  `allowed-tools` match returns an allow opinion but does not bypass the
+  normal permission and sandbox guards, and an unmatched tool is not denied
+  by SkillsPlugin.
+- **Skills do not request permission interactively**: skill metadata only adds
+  a per-turn scope guard. The standard `permissions` plugin remains the sole
+  source of allow/ask/deny decisions and owns any approval interaction.
 - **Shell injection `` !`cmd` `` requires sandbox**: if
   `sandbox is None` or `not sandbox.enabled`, the command
   produces `[shell injection unavailable: enabled sandbox required]`.

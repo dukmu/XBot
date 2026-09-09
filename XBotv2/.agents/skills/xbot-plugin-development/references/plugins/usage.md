@@ -40,7 +40,7 @@ class UsageService:
 
     async def add(
         self,
-        usage: Mapping[str, object],
+        usage: Mapping[str, JsonValue],
         *,
         update_context: bool = True,
     ) -> dict[str, int] | None:
@@ -68,12 +68,12 @@ class UsageData(BaseModel):
     prompt_cache_write_tokens: int = Field(default=0, ge=0)
 
     @classmethod
-    def from_provider(cls, usage: Mapping[str, object]) -> "UsageData": ...
+    def from_provider(cls, usage: Mapping[str, JsonValue]) -> "UsageData": ...
 
     @classmethod
-    def from_snapshot(cls, snapshot: dict[str, Any]) -> "UsageData": ...
+    def from_snapshot(cls, snapshot: Mapping[str, JsonValue]) -> "UsageData": ...
 
-    def to_snapshot(self) -> dict[str, Any]: ...
+    def to_snapshot(self) -> dict[str, int]: ...
 
     def add(self, delta: "UsageData") -> "UsageData": ...
 
@@ -120,7 +120,7 @@ on the first turn.
 `"snapshot"` as a plain dict:
 
 ```json
-{"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500,
+{"schema_version": 1, "input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500,
  "requests": 1, "context_tokens": 1500}
 ```
 
@@ -151,5 +151,7 @@ class UsageAwarePlugin:
 - **Passing `update_context=False`**: context_tokens are preserved
   from the existing snapshot; useful when a non-request update is
   needed (e.g., context-building changes the effective size).
-- **Expecting `UsageData.from_provider` to handle unknown keys**: it
-  only reads known fields; unknown keys are silently dropped.
+- **Expecting `UsageData.from_provider` to ignore unknown keys**: it
+  rejects any key outside `USAGE_FIELDS` with `ValueError`. Add a typed
+  field and update the derived projections before accepting a provider's
+  new counter.

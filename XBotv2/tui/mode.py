@@ -4,7 +4,8 @@ Single source of truth for the high-level mode the TUI is in. The render log
 and the composer consult this module instead of recomputing state from
 scattered predicates.
 
-See ``docs/protocol/tui_opencode_requirements.md`` §8.
+See ``XBotv2/.agents/skills/xbot-plugin-development`` for the current client
+boundary and interaction contract.
 """
 
 from __future__ import annotations

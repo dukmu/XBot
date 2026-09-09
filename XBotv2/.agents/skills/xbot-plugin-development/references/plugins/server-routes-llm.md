@@ -13,7 +13,7 @@ Registered via `contribute_router()` as `xbot.http.llm`.
 ## Routes (`build_router`)
 
 ```python
-def build_router(*, events: Any, sessions: SessionsPort) -> APIRouter:
+def build_router(*, events: EventPort, sessions: SessionsPort) -> APIRouter:
 ```
 
 ### `GET /providers` → `ProviderCatalog`
@@ -27,25 +27,24 @@ async def list_providers() -> ProviderCatalog:
 `ProviderCatalog` (from `llm/contracts.py`):
 
 ```python
-@dataclass(frozen=True, slots=True)
-class ProviderCatalog:
-    providers: list[ProviderInfo]
-    models: list[ModelInfo]
+class ProviderCatalog(BaseModel):
+    default: str
+    providers: tuple[ProviderDescription, ...] = ()
 
-@dataclass(frozen=True, slots=True)
-class ProviderInfo:
+class ProviderDescription(BaseModel):
     name: str
-    protocol: str
-    base_url: str | None
+    provider: str
+    default_model: str
+    models: tuple[ModelDescription, ...] = ()
 
-@dataclass(frozen=True, slots=True)
-class ModelInfo:
+class ModelDescription(BaseModel):
     model: str
-    context_window: int
-    max_output_tokens: int | None
-    effort: list[str] | None
-    input_modalities: list[str]
-    has_api_key: bool
+    max_context_tokens: int
+    max_output_tokens: int | None = None
+    reasoning_effort: str = ""
+    effort: tuple[str, ...] = ()
+    thinking: str = ""
+    input_modalities: tuple[Literal["text", "image"], ...] = ("text",)
 ```
 
 ### `PUT /sessions/{session_id}/threads/{thread_id}/provider` → `ProviderSelectionResponse`
@@ -116,7 +115,7 @@ class EffortSelectionResponse(WireModel):
 - Depends on: `server` (`contribute_router`), `llm` (`LIST_PROVIDERS`),
   `sessions` (`SessionsPort`).
 - Depended on by: HTTP LLM clients, TUI provider views.
-- Pairs with: `llm` (`LlmCatalogPort`, `ModelPort`), `agent-runtime`
+- Pairs with: `llm` (`LlmCatalogPort`, `ModelPort`), and the `agents` runtime
   (`SELECT_PROVIDER`, `SELECT_EFFORT`).
 
 ## Common pitfalls

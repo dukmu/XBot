@@ -12,6 +12,8 @@ manages agent/provider/model selection, and registers runtime operations
   `llm`, `model`, `tools`, `artifacts`, `loop_state`, `commands`,
   `agent_options`, `thread_metadata`, `runtime_log` → `agent_runtime`
   (`AgentsService`), `engine` (`Engine`).
+- The catalog mount also consumes `data_root`, `variables`, `workspace_root`,
+  and `session_launch` before the runtime mount is created.
 - **Subscribes to events:** none in `register()`; operations registered
   on `LIST_AGENTS`, `SELECT_AGENT`, etc.
 - **Operations:** `LIST_AGENTS`, `SELECT_AGENT`, `SELECT_PROVIDER`,

@@ -140,10 +140,14 @@ invalid nested values fail before `apply`, with a path in
 `SchemaValidationError`. XCore's object `.strict()` discards unknown keys; it
 does not reject them. Keep configuration immutable after startup.
 
-All StateService methods are async and writes are atomic. Namespace views share
-one lock/cache and prefix keys logically. Values must be JSON-compatible. A
-missing key may define a domain's initial state; malformed existing state should
-fail loudly. Prefer one versioned snapshot for mutually consistent fields.
+StateService data operations (`get`, `set`, `delete`, `clear`, `keys`, and
+`all`) are async and writes are atomic. `namespace(prefix)` is synchronous and
+returns another view over the same lock/cache; it does not perform I/O. Values
+must be JSON-compatible. A missing key may define a domain's initial state;
+malformed existing state should fail loudly. Prefer one versioned snapshot for
+mutually consistent fields. Accessing `ctx.state` lazily creates and registers
+the root StateService; constructing `Context(data_dir=...)` alone does not
+read or create its state file.
 
 ## Lifecycle and Cleanup
 
@@ -320,6 +324,7 @@ Isolation creates a distinct service scope:
 
 ```python
 private = ctx.isolate("database")
+label = object()
 shared_a = ctx.isolate("database", label)
 shared_b = ctx.isolate("database", label)
 ```
@@ -411,7 +416,6 @@ must be synchronous and failures are logged rather than propagated:
 | Event | Arguments | Meaning |
 |---|---|---|
 | `internal/status` | `(fiber, old_state)` | fiber state transition |
-| `internal/service` | `(name, value)` | service provide/remove/change |
 | `internal/dispatch` | `(mode, name, args)` | non-internal dispatch trace |
 | `internal/listener` | `(ctx, name, listener, options)` | listener registration interception |
 | `internal/error` | `(fiber, error)` | plugin/effect failure notice |
@@ -505,7 +509,9 @@ write-and-replace. All namespaces over one state file share an asyncio lock and
 cache, so individual writes do not lose unrelated keys. A plugin-level
 `get`-then-`set` sequence is not a transaction; prefer one snapshot or an owner
 service that serializes compound updates. Invalid JSON on disk raises
-`RuntimeError`; unsupported Python values raise `TypeError`.
+`RuntimeError`; unsupported Python values raise the corresponding JSON
+encoding error (`TypeError` for unsupported types and `ValueError` for NaN or
+infinity).
 
 Namespace prefixes are logical ownership, not separate files. StateService is
 a small JSON KV contract, not a general database transaction system: when a
@@ -514,27 +520,31 @@ validated snapshot value.
 
 ## Minimal XBot composition fixtures
 
-`Context(data_dir=tmp_path)` creates XCore's root StateService. It does not
-magically create XBot application services. A plugin test should set only the
+`Context(data_dir=tmp_path)` does not instantiate the StateService until
+`ctx.state` is accessed (or an explicit `state_service=` is supplied). It also
+does not create XBot application services. A plugin test should set only the
 declared dependencies, using the real public implementation ports where
 possible:
 
 ```python
+import xcore
+
+from XBotv2.core.paths import RuntimePaths
+
 paths = RuntimePaths.from_data_dir(tmp_path / "data")
-ctx = Context(data_dir=paths.data_dir)
+ctx = xcore.Context(data_dir=paths.data_dir)
 ctx.set("runtime_paths", paths)
 ctx.set("workspace_root", tmp_path / "workspace")
-ctx.set("data_root", paths.data_dir)
-ctx.set("runtime_log", DEFAULT_RUNTIME_LOG)
-ctx.set("tools", ToolsService(ToolRegistry()))
 ```
 
-Session-level plugins additionally need a `SessionLaunch`, `ThreadPaths`,
-`LoopState`, `ArtifactStore`, or `ThreadPersistence` as specified by their
-`inject` declaration. The constructors and ownership table are in
+Touch `ctx.state` explicitly in a fixture that tests state persistence.
+Session-level XBot plugins additionally need the concrete services listed by
+their `inject` declaration. The constructors and ownership table are in
 [plugins_list.md](plugins_list.md). A test that omits one of these should
 assert `handle.missing_dependencies`; it should not inject `None` solely to
-make the fiber load.
+make the fiber load. For an application-level fixture, call XBot's
+`start_application(...)` so the launcher publishes the complete service set;
+do not copy launcher wiring into every plugin test.
 
 ## Async listeners and blocking work
 

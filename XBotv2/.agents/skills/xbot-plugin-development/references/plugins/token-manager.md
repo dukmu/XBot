@@ -1,17 +1,19 @@
-# `token-manager`
+# `token_manager`
 
 Observes the latest model request and response token usage without
 owning context policy. Provides a diagnostic snapshot of context
 token estimates per turn.
 
-- **Import/profile:** `token-manager`, Agent profile.
+- **Tree id/name:** `token_manager` / `token_manager` (the page filename is
+  `token-manager.md`); Agent profile.
 - **Source:** `XBotv2/token_manager/plugin.py`.
-- **Injects/provides:** `session` → (none directly; registers event
-  listeners only).
+- **Injects/provides:** `session` → no context service. The plugin registers
+  event listeners only; its module-level `plugin` object owns diagnostics.
 - **Subscribes to events:** `model/request-ready` (context token estimate),
   `after/model-response` (provider usage data).
-- **Diagnostics:** `ctx.token_manager.diagnostics()` returns the latest
-  request/response token data.
+- **Diagnostics:** `plugin.diagnostics()` returns the latest request/response
+  token data when called by code that explicitly owns this plugin instance.
+  `ctx.token_manager` is not provided by the current plugin.
 
 ## Public data models
 
@@ -110,15 +112,17 @@ AFTER_MODEL_RESPONSE → ctx.model_response.usage_metadata →
 
 - Depends on: `session`, `agentloop` (`MODEL_REQUEST_READY`,
   `AFTER_MODEL_RESPONSE`).
-- Depended on by: diagnostics, monitoring, `usage` (reads `latest`
-  for context token tracking).
+- Depended on by: diagnostics and monitoring code that explicitly retains
+  the plugin instance. `usage` is independent and persists provider usage;
+  it does not read this plugin's private snapshot.
 - Pairs with: `usage` (cumulative provider usage), `compact`
   (context token budgeting).
 
 ## Common pitfalls
 
-- **`diagnostics()` is the only public API**: the `_latest` dict is
-  internal. Do not read `ctx.token_manager._latest` directly.
+- **No context service is exported**: the `_latest` dict is internal. Do not
+  invent or document `ctx.token_manager`; callers needing diagnostics must
+  hold the plugin instance (or a future explicitly declared service port).
 - **No persistence**: the plugin does not write to disk. For
   persistent token usage, use `usage` instead.
 - **`context_tokens_estimate` is an estimate**: it uses
@@ -127,5 +131,6 @@ AFTER_MODEL_RESPONSE → ctx.model_response.usage_metadata →
 - **`utilization` can be None**: if `context_window` is 0,
   `utilization` is `None` (division by zero guard).
 - **Provider usage keys are optional**: not all providers report
-  `cache_read_input_tokens`, `cache_creation_input_tokens`, etc.
-  Missing keys are silently omitted from `provider_usage`.
+  `cache_read_input_tokens`, `cache_creation_input_tokens`, etc. Missing
+  keys are omitted from `provider_usage`; malformed values are not coerced
+  into valid usage.

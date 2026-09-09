@@ -77,8 +77,10 @@ class AgentDefinition(BaseModel):
 ```
 
 `AgentMode = Literal["primary", "subagent", "all"]`.
-`mode="subagent"` means the agent can be spawned as a subagent;
-`"primary"` is the default agent for the session.
+`mode="primary"` marks an Agent that is not eligible for subagent spawning;
+`"subagent"` marks one that can be spawned, and `"all"` allows both roles.
+The active primary selection is resolved separately by the Agents runtime;
+`mode` is not the default-selection flag.
 
 ### `load_definitions` (`XBotv2/agents/loader.py`)
 
@@ -122,7 +124,8 @@ def mount_catalog(ctx: Context) -> None:
 ```
 
 Three layers: builtins → `data_root/.agents/` → `workspace_root/.agents/`
-(overlay).
+(overlay). The catalog facet also requires the per-session `session_launch`
+service in the application composition.
 
 ## Typical extension: register a custom agent
 
@@ -146,9 +149,9 @@ class CustomAgentPlugin:
 ## Cross-references
 
 - Depends on: `data_root`, `variables`, `workspace_root`.
-- Depended on by: `agent-runtime` (list/select), `subagents` (spawn),
-  `agent-runtime` HTTP routes.
-- Pairs with: `agent-runtime` (selection binding).
+- Depended on by: the `agents` runtime (list/select), `subagents` (spawn),
+  and the `agents` HTTP routes.
+- Pairs with: the `agents` runtime (selection binding).
 
 ## Common pitfalls
 

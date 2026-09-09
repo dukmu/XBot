@@ -135,6 +135,36 @@ class ClientEvent(BaseModel):
     data: dict[str, JsonValue] = Field(default_factory=dict)
 ```
 
+## HTTP projection
+
+The `agentloop` root plugin contributes one read-only server route after the
+`server` and `sessions` services are available:
+
+```python
+@router.get(
+    "/sessions/{session_id}/threads/{thread_id}/tools",
+    operation_id="list_tools",
+)
+async def list_tools_endpoint(
+    session_id: str,
+    thread_id: str,
+) -> ToolListResponse: ...
+
+class ToolListResponse(WireModel):
+    tools: list[ToolInfo] = Field(default_factory=list)
+
+class ToolInfo(WireModel):
+    name: str
+    registered_name: str
+    namespace: str
+    description: str
+    parameters: dict[str, JsonValue]
+    timeout_seconds: float | None = None
+```
+
+The route dispatches the `LIST_TOOLS` operation against the selected active
+thread. It is a catalog projection, not a second Tool execution path.
+
 ## `ToolsService` (`agentloop/tool_service.py:35-170`)
 
 ```python

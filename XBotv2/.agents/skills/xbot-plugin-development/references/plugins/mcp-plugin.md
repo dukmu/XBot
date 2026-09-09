@@ -18,6 +18,13 @@ to XBot runtime capabilities.
 - **Config:** `servers: {<name>: {command|url, ...}}`.
 - **Plugin ID:** `MCP_PLUGIN_ID = "mcp_plugin"`.
 
+Every discovered MCP Tool is registered through the standard `ToolsPort`.
+Consequently the `permissions` guard evaluates its canonical name and final
+arguments exactly like a built-in Tool. MCP does not register a second
+permission requester, add an approval prompt, or bypass the configured
+allow/ask/deny rules. `interactions` is injected only for MCP's user-input
+elicitation callback, which is distinct from permission approval.
+
 ## Public data models
 
 ### `MCPPlugin` (`XBotv2/mcp_plugin/plugin.py:75-250`)
@@ -183,10 +190,14 @@ servers:
 ### Callbacks (`XBotv2/mcp_plugin/callbacks.py`)
 
 ```python
-def client_callbacks(model: Any, interactions: Any, session: Any) -> dict[str, Any]:
+def client_callbacks(
+    model: ModelPort,
+    interactions: InteractionsPort,
+    session: SessionPort,
+) -> dict[str, Any]:
     return {
         "sampling_callback": sample,        # MCP sampling → model.astream()
-        "elicitation_callback": elicit,    # MCP elicitation → interactions.request_user_input()
+        "elicitation_callback": elicit,    # uses RequestContext.request_id
         "list_roots_callback": roots,      # MCP roots → workspace URI
         "logging_callback": log_message,   # MCP logging → logger
     }
@@ -195,12 +206,20 @@ def client_callbacks(model: Any, interactions: Any, session: Any) -> dict[str, A
 - **sampling_callback**: receives `types.SamplingMessage` → calls
   `model.astream(messages)` → returns `types.CreateMessageResult`.
   Only accepts `TextContent`; rejects tool calls in sampling.
-- **elicitation_callback**: receives `types.ElicitRequestURLParams` →
-  calls `interactions.request_user_input(question)` → returns
+- **elicitation_callback**: receives `RequestContext` plus an MCP elicitation
+  params object → calls
+  `interactions.request_user_input(question, source="mcp_elicitation",`
+  `tool_call_id=str(request_context.request_id))` → returns
   `types.ElicitResult(action="accept"|"decline", content=...)`.
 - **list_roots_callback**: returns `types.ListRootsResult` with a
   single root at `workspace.as_uri()`.
 - **logging_callback**: logs at `logger.info()` level.
+
+MCP elicitation is not a separate Agent Tool call. The MCP SDK supplies a
+request context for each server request; its `request_id` is used directly as
+the interaction correlation field. This avoids changing the generic
+interaction contract or fabricating a ToolCall. Requests without an MCP
+request id are cancelled.
 
 ### Resource, Prompt, Completion bridges
 

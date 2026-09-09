@@ -8,13 +8,21 @@ from pathlib import Path
 from typing import Any
 
 from mcp import types
+from mcp.shared.context import RequestContext
 
 from XBotv2.core import Message, prompt_element
+from XBotv2.interactions.contracts import InteractionsPort
+from XBotv2.llm.contracts import ModelPort
+from XBotv2.session.contracts import SessionPort
 
 logger = logging.getLogger("xbotv2.mcp")
 
 
-def client_callbacks(model: Any, interactions: Any, session: Any) -> dict[str, Any]:
+def client_callbacks(
+    model: ModelPort,
+    interactions: InteractionsPort,
+    session: SessionPort,
+) -> dict[str, Any]:
     async def sample(_request_context: Any, params: Any) -> Any:
         messages: list[Message] = []
         if params.systemPrompt:
@@ -54,13 +62,18 @@ def client_callbacks(model: Any, interactions: Any, session: Any) -> dict[str, A
             stopReason="endTurn",
         )
 
-    async def elicit(_request_context: Any, params: Any) -> Any:
+    async def elicit(request_context: RequestContext, params: Any) -> Any:
+        tool_call_id = str(request_context.request_id)
+        if not tool_call_id:
+            logger.error("MCP elicitation request has no request id")
+            return types.ElicitResult(action="cancel")
         question = params.message
         if isinstance(params, types.ElicitRequestURLParams):
             question = f"{question}\n{params.url}"
         result = await interactions.request_user_input(
             question,
             source="mcp_elicitation",
+            tool_call_id=tool_call_id,
         )
         if result.get("status") != "answered":
             return types.ElicitResult(action="cancel")

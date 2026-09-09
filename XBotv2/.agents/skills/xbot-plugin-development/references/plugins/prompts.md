@@ -86,7 +86,7 @@ class MyPlugin:
 
     def apply(self, ctx, config):
         ctx.prompts.add(
-            stage=PromptFragmentStage.CONTEXT_SUFFIX,
+            stage="context_suffix",
             text="Custom instruction text here.",
             source="my-plugin/instructions.md",
         )

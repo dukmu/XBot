@@ -28,7 +28,7 @@ These are quick references, not a replacement for the package's public
 | `commands` | [commands.md](commands.md) |
 | `llm` | [llm.md](llm.md) |
 | `agentloop` | [agentloop.md](agentloop.md) |
-| `context-builder` | [context-builder.md](context-builder.md) |
+| `context_builder` (name `context_builder`) | [context-builder.md](context-builder.md) |
 | `prompts` | [prompts.md](prompts.md) |
 | `sandbox` | [sandbox.md](sandbox.md) |
 | `permissions` | [permissions.md](permissions.md) |
@@ -37,12 +37,12 @@ These are quick references, not a replacement for the package's public
 | `goal` | [goal.md](goal.md) |
 | `todolist` | [todolist.md](todolist.md) |
 | `skills` | [skills.md](skills.md) |
-| `mcp-plugin` | [mcp-plugin.md](mcp-plugin.md) |
-| `content-cache` | [content-cache.md](content-cache.md) |
+| `mcp_plugin` (name `mcp_plugin`) | [mcp-plugin.md](mcp-plugin.md) |
+| `content_cache` (name `content_cache`) | [content-cache.md](content-cache.md) |
 | `compact` | [compact.md](compact.md) |
 | `browser` | [browser.md](browser.md) |
-| `token-manager` | [token-manager.md](token-manager.md) |
-| `workspace-instructions` | [workspace-instructions.md](workspace-instructions.md) |
+| `token_manager` (name `token_manager`) | [token-manager.md](token-manager.md) |
+| `workspace_instructions` (name `workspace_instructions`) | [workspace-instructions.md](workspace-instructions.md) |
 | `interactions` | [interactions.md](interactions.md) |
 
 ## Carrier-only plugin packages
@@ -50,7 +50,7 @@ These are quick references, not a replacement for the package's public
 | Plugin | Page |
 |---|---|
 | `workspaces` | [process-workspaces.md](process-workspaces.md) |
-| `acp-plugin` | [acp-plugin.md](acp-plugin.md) |
+| `acp` (name `acp_plugin`) | [acp-plugin.md](acp-plugin.md) |
 | `server` | [server.md](server.md) |
 
 ## Detailed facets

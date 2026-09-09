@@ -101,7 +101,8 @@ class AgentSelectionResponse(WireModel):
 
 - Depends on: `server` (`contribute_router`), `sessions` (`SessionsPort`).
 - Depended on by: HTTP agent clients, TUI agent views.
-- Pairs with: `agent-catalog` (`LIST_AGENTS`), `agent-runtime` (`SELECT_AGENT`).
+- Pairs with: `agent-catalog` (`LIST_AGENTS`), the `agents` runtime
+  (`SELECT_AGENT`).
 
 ## Common pitfalls
 

@@ -76,11 +76,12 @@ class WebAccess:
     async def search(
         self,
         query: str,
-        max_results: int = 5,
-        freshness: Literal["day", "week", "month", "year"] | None = None,
-        backend: str = "yandex",
-        region: str = "wt-wt",
-        safesearch: str = "moderate",
+        *,
+        max_results: int,
+        freshness: Literal["day", "week", "month", "year"] | None,
+        backend: str,
+        region: str,
+        safesearch: str,
     ) -> ToolResult: ...
 
     async def fetch(self, url: str) -> ToolResult: ...
@@ -104,15 +105,14 @@ structured titles, URLs, snippets, and optional dates.
 class UrlPolicy:
     def __init__(self, allow_private: bool = False) -> None: ...
 
-    def check(self, url: str) -> str | None:
-        """Return None if allowed, or 'denied' + reason if blocked."""
-
-    def is_allowed(self, url: str) -> bool: ...
+    async def check(self, url: str) -> str:
+        """Validate and return the normalized URL, or raise ValueError."""
 ```
 
-Blocks `file://` outside sandbox, `ftp://`, `mailto:`, `data:`,
-private IPs (unless `allow_private=True`), and URLs with embedded
-credentials.
+`UrlPolicy` accepts only `http://` and `https://`, rejects private or
+non-routable destinations unless `allow_private=True`, and rejects URLs with
+embedded credentials. `file://` is handled separately by `BrowserSession`
+through the sandbox's filesystem resolver.
 
 ### `network_available` (`XBotv2/browser/network.py`)
 
@@ -195,8 +195,9 @@ and screenshot metadata.
   Use `browser_press` with `Enter` instead of typing passwords.
 - **`web_search` with sandbox disabled**: if `sandbox is None`
   or `not sandbox.network`, returns `"network_disabled"`.
-- **`browser_open` with private URLs**: blocked by `UrlPolicy`
-  unless `network.allow_private=True` and the IP is not private.
+- **`browser_open` with private URLs**: blocked by `UrlPolicy` unless
+  `network.allow_private=True`; local `file://` URLs are checked by the
+  sandbox filesystem resolver instead.
 - **Not calling `browser_close`**: the Chromium process continues
   until `_dispose()` fires on session cleanup.
 - **`browser_screenshot` without active browser**: if no page

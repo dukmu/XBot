@@ -13,7 +13,8 @@ a synthetic `ToolCall`.
   `EmptyRequest → CommandCatalog`), `commands/execute`
   (`EXECUTE_COMMAND`, `ExecuteCommand → CommandExecution`).
 - **Server routes:** `XBotv2/commands/protocol.py:build_commands_router`
-  exposes GET/POST under `/sessions/{id}/threads/{tid}/commands`.
+  exposes GET/POST under
+  `/sessions/{session_id}/threads/{thread_id}/commands`.
 
 ## Public data models (`commands/contracts.py`)
 
@@ -111,10 +112,10 @@ class CommandCatalog:
 
 ### HTTP routes (built by `build_commands_router`)
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| `GET` | `/sessions/{session_id}/threads/{thread_id}/commands` | — | `CommandListResponse` |
-| `POST` | `/sessions/{session_id}/threads/{thread_id}/commands` | `CommandRequest` | `CommandResponse` |
+| Method | Path | Operation ID | Body | Returns |
+|---|---|---|---|---|
+| `GET` | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | — | `CommandListResponse` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandRequest` | `CommandResponse` |
 
 Both routes are `include_in_schema=False` (internal TUI/web surface).
 
@@ -147,14 +148,11 @@ class CommandResponse(WireModel):
 
 ```python
 class CommandsService:
-    def register(self, command: Command) -> object: ...   # disposer
+    def register(self, command: Command) -> str: ...
     def unregister(self, name: str) -> bool: ...
-    def resolve(self, name: str) -> Command | None: ...
-    def names(self) -> tuple[str, ...]: ...
-    def descriptions(self) -> tuple[CommandDescription, ...]: ...
-    def execute(
-        self, name: str, raw_args: str, *, exclusive: bool = True
-    ) -> CommandResult: ...
+    def get(self, name: str) -> Command | None: ...
+    def all(self) -> tuple[Command, ...]: ...
+    def __len__(self) -> int: ...
 
 class CommandOperations:
     # Handler bindings for LIST_COMMANDS / EXECUTE_COMMAND.

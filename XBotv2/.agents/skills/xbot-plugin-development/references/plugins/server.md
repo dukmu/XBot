@@ -97,6 +97,10 @@ def create_app(
     return app
 ```
 
+The OpenAPI metadata advertises a 422 validation response, while the
+installed `RequestValidationError` handler returns XBot's error envelope
+with HTTP 400 for malformed request payloads.
+
 ### Exception handler mapping (`OperationError → status code`)
 
 | Condition | Status |

@@ -16,6 +16,11 @@ final authority.
 
 ## Read the Fast References First
 
+This skill is self-contained and versioned with the XBot distribution. Project
+documentation and other entry points may link here for detailed contracts,
+plugin behavior, router schemas, and testing workflows; this skill must not
+depend on a checkout-only documentation path.
+
 Do not begin by grepping the whole repository. Read the small index that
 matches the work, then follow the detailed page only when necessary:
 
@@ -137,12 +142,13 @@ the map; the checked-out code and tests are the final contract.
    session boundaries.
 
 If a mounted plugin is `FiberState.PENDING`, inspect
-`handle.missing_dependencies` before changing code. The usual test fixtures
-provide `RuntimePaths.from_data_dir(tmp_path / "data")` as `runtime_paths`, a
-workspace `Path` as `workspace_root`, `paths.data_dir` as `data_root`, and a
-typed `LoopState`/`SessionLaunch`/`ThreadPaths` only when the plugin declares
-those services. Do not satisfy a missing service with `None`; add the service
-at the composition boundary or narrow the plugin's declared dependency.
+`handle.missing_dependencies` before changing code. A minimal fixture commonly
+provides `RuntimePaths.from_data_dir(tmp_path / "data")` as `runtime_paths` and
+a workspace `Path` as `workspace_root`; add the other concrete service named by
+the plugin's actual `inject` declaration (for example `loop_state` or
+`session_launch`) only when that plugin requires it. Do not invent a
+`data_root` service or satisfy a missing dependency with `None`; add the
+service at the composition boundary or narrow the plugin's declaration.
 
 Do not skip directly from a code snippet to editing the user's global plugin
 tree. A first plugin is complete only when all of these checkpoints have
@@ -209,6 +215,10 @@ registered behavior.
 - Reuse built-in services and the standard Tool/guard/event path. Do not create
   a second executor, permission bypass, private wakeup callback, or hard-coded
   dependency on a built-in plugin name.
+- Tool-provider plugins and Skills must not inject a separate permission
+  prompt. Register Tools normally and let the `permissions` guard evaluate the
+  configured name/argument rules; user-input elicitation is a separate
+  interaction contract, not permission approval.
 
 ## Verification
 

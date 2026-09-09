@@ -1,8 +1,7 @@
 # XBot API Reference
 
-Primary source when a checkout is available: `XBotv2/docs/api/public_api.md`,
-`XBotv2/docs/api/api_inventory.md`, and package `__init__.py` files. With a
-pip/uv installation, use the version-matched bundled references and inspect
+This page is the version-matched API guide shipped with the skill. With a
+pip/uv installation, use the bundled references and inspect
 the installed package's `__init__.py`; import from package roots where the
 symbol is documented as public.
 

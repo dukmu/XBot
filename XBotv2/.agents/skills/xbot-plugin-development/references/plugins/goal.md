@@ -61,11 +61,10 @@ class GoalService:
 class GoalSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     objective: str
-    summary: str = ""
-    token_budget: int | None = None
     status: Literal["active", "paused", "complete", "blocked"] = "active"
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
+    summary: str = ""
+    token_budget: int | None = Field(default=None, gt=0)
+    schema_version: Literal[1] = 1
 ```
 
 `GoalStatus = Literal["active", "paused", "complete", "blocked"]`.
@@ -137,8 +136,8 @@ Validates: status is "complete" or "blocked", summary is non-empty
 | `complete` | `<summary>` | Sets status="complete" |
 | `block` | `<summary>` | Sets status="blocked" |
 
-All actions (except `get`) that succeed trigger `await self.start()`
-for continuation.
+Only successful `set` and `resume` actions trigger `await self.start()`;
+`pause`, `clear`, `complete`, and `block` do not schedule another turn.
 
 ## Continuation scheduling
 
@@ -195,7 +194,7 @@ def apply(self, ctx: Context, config: object | None = None) -> None:
 
 ```json
 {"objective": "Do the thing", "status": "active", "token_budget": 1000,
- "created_at": 1234567890.0, "updated_at": 1234567890.0}
+ "summary": "", "schema_version": 1}
 ```
 
 ## Cross-references
@@ -218,6 +217,6 @@ def apply(self, ctx: Context, config: object | None = None) -> None:
   booleans are rejected (since `bool` is a subclass of `int` in Python).
 - **`exclusive=False` on `/goal`**: the command does not close the
   user's pending input — useful for goal management during a turn.
-- **Continuation is only scheduled on non-interrupt turn ends**:
-  if `event.stop_reason == "client_interrupt"`, the goal is paused
-  instead of continued.
+- **Continuation triggers are explicit**: successful `set` and `resume`
+  commands schedule continuation; a non-interrupted `turn/end` also calls
+  `start()`. An interrupted turn pauses the active goal instead.

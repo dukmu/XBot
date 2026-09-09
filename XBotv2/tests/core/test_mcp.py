@@ -258,7 +258,7 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
     )
     roots = await callbacks["list_roots_callback"](None)
     elicited = await callbacks["elicitation_callback"](
-        None,
+        SimpleNamespace(request_id="mcp-request-1"),
         types.ElicitRequestFormParams(
             message="Choose focus",
             requestedSchema={
@@ -280,7 +280,10 @@ async def test_mcp_client_callbacks_bridge_sampling_roots_and_form_elicitation(t
     assert str(roots.roots[0].uri) == tmp_path.resolve().as_uri()
     assert elicited.action == "accept"
     assert elicited.content == {"focus": "focused"}
-    assert requested == [("Choose focus", {"source": "mcp_elicitation"})]
+    assert requested == [("Choose focus", {
+        "source": "mcp_elicitation",
+        "tool_call_id": "mcp-request-1",
+    })]
 
 
 @pytest.mark.asyncio

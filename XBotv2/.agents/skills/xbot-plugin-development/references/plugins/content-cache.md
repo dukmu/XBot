@@ -1,11 +1,12 @@
-# `content-cache`
+# `content_cache`
 
 Caches oversized current user messages as artifacts, replacing the
 message body with a preview at the model request boundary. This frees
 context tokens for the conversation while preserving full content
 access.
 
-- **Import/profile:** `content-cache`, Agent profile.
+- **Tree id/name:** `content_cache` / `content_cache` (the page filename is
+  `content-cache.md`); Agent profile.
 - **Source:** `XBotv2/content_cache/plugin.py`,
   `XBotv2/content_cache/content_cache.py`,
   `XBotv2/content_cache/config.py`.
@@ -53,15 +54,15 @@ class ContentCacheHandler:
 
 ```python
 CONFIG_SCHEMA = S.object({
-    "cache_threshold_chars": S.number().optional(),  # default 12000
-    "preview_chars": S.number().optional(),           # default 8000
+    "cache_threshold_chars": S.number().optional(),  # default 48000
+    "preview_chars": S.number().optional(),           # default 12000
     "tail_chars": S.number().optional(),              # default 2000
 })
 
 @dataclass(frozen=True, slots=True)
 class ContentCacheConfig:
-    cache_threshold_chars: int = 12_000
-    preview_chars: int = 8_000
+    cache_threshold_chars: int = 48_000
+    preview_chars: int = 12_000
     tail_chars: int = 2_000
 ```
 
@@ -72,8 +73,8 @@ def cache_user_message(
     message: Message,
     artifacts: ArtifactStorePort,
     *,
-    cache_threshold_chars: int = 12_000,
-    preview_chars: int = 8_000,
+    cache_threshold_chars: int = 48_000,
+    preview_chars: int = 12_000,
     tail_chars: int = 2_000,
 ) -> tuple[Message, ArtifactRef | None]:
     """Bounce oversized messages to artifact store.

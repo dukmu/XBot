@@ -151,7 +151,7 @@ def classify(owner: str, module: str) -> str:
     if leaf in ALLOWED_DECLARATIONS:
         return "allowed plugin contract"
     if module == f"XBotv2.{imported}":
-        return "package-root API; verify it exports declarations only"
+        return "validated package-root API (__all__)"
     return "IMPLEMENTATION DEPENDENCY"
 
 

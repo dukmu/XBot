@@ -12,11 +12,11 @@ and exposes operations for switching at runtime.
 - **Injects/provides:** `runtime_log` → `llm` (`LLMService`) and
   `model` (`ModelService`).
 - **Subscribes to events:** none in `apply`; the Agent loop drives
-  `model.stream_message(...)` via `ctx.model`.
+  `model.astream(...)` via `ctx.model`.
 
 ## Public data models
 
-### `ProviderConfig` (`XBotv2/llm/config.py`)
+### `ProviderConfig` / `ModelConfig` (`XBotv2/llm/contracts.py`)
 
 ```python
 class ProviderConfig(BaseModel):
@@ -108,15 +108,15 @@ class UsageData(BaseModel):
     prompt_cache_write_tokens: int = Field(default=0, ge=0)
 ```
 
-Preserve unknown provider values via the typed contract; do not
-recalculate token counts.
+Provider usage is validated by the typed contract. Unknown provider fields
+are rejected; add a field to `UsageData` before accepting a new counter.
 
 ### `ProviderCapabilities` (`XBotv2/core/providers.py`)
 
 ```python
 @dataclass
 class ProviderCapabilities:
-    supported_input_modalities: frozenset[InputModality] = field(
+    input_modalities: frozenset[InputModality] = field(
         default=frozenset({"text"})
     )
     # ... other capability flags the adapter advertises
@@ -128,13 +128,11 @@ class ProviderCapabilities:
 class BaseProvider(ABC):
     supported_input_modalities: frozenset[InputModality] = frozenset({"text"})
 
-    async def stream_message(
+    async def astream(
         self,
         messages: list[Message],
         **kwargs: Any,
     ) -> AsyncIterator[ModelChunk]: ...
-
-    def provider_schema(self) -> dict[str, Any]: ...     # JSON Schema fragment
 ```
 
 Adapters in `XBotv2/llm/anthropic.py`, `XBotv2/llm/openai.py`.
@@ -164,12 +162,27 @@ class ModelPort(Protocol):
 ## Provider catalog model (`XBotv2/llm/contracts.py`)
 
 ```python
-class ProviderCatalog:
-    providers: list[ProviderInfo]           # name + protocol + base_url
-    models: list[ModelInfo]                # model id + context window + capabilities
+class ProviderCatalog(BaseModel):
+    default: str
+    providers: tuple[ProviderDescription, ...]
+
+class ProviderDescription(BaseModel):
+    name: str
+    provider: str                 # adapter protocol, e.g. "openai"
+    default_model: str
+    models: tuple[ModelDescription, ...]
+
+class ModelDescription(BaseModel):
+    model: str
+    max_context_tokens: int
+    max_output_tokens: int | None
+    reasoning_effort: str
+    effort: tuple[str, ...]
+    thinking: str
+    input_modalities: tuple[Literal["text", "image"], ...]
 ```
 
-## Slash commands (`/llm`, `/provider`, `/model`, `/effort`, `/thinking`)
+## Slash commands (`/provider`, `/model`, `/effort`)
 
 Registered by the root `XBotv2/llm/plugin.py` using command builders from
 `XBotv2/llm/commands.py`. Each takes a
@@ -180,7 +193,6 @@ single argument and updates the active Agent runtime selection:
 | `/provider <name>` | provider name in catalog | switches `ctx.model` |
 | `/model <id>` | model id within current provider | updates `ModelConfig` |
 | `/effort <tier>` | one of `effort[]` advertised by model | updates `reasoning_effort` |
-| `/thinking <mode>` | provider-defined mode | updates `thinking` |
 
 Selection is session/runtime configuration, not a new provider
 config file.
@@ -194,7 +206,7 @@ from XBotv2.core.messages import Message, ModelChunk
 class MyProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
 
-    async def stream_message(self, messages, **kwargs):
+    async def _astream_once(self, messages, **kwargs):
         # yield ModelChunk instances incrementally
         async for chunk in self._client.stream(messages, **kwargs):
             yield ModelChunk(
@@ -203,8 +215,7 @@ class MyProvider(BaseProvider):
                 finish_reason=chunk.finish_reason,
             )
 
-    def provider_schema(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {...}}
+    # Implement the adapter-specific _astream_once() wire request here.
 ```
 
 A consumer declares `inject = ["llm"]` to access the registry; agents
@@ -213,7 +224,7 @@ read `ctx.model` for the active binding.
 ## Cross-references
 
 - Depends on: `runtime_log`.
-- Depended on by: `agent-runtime` (binds selected provider to the
+- Depended on by: the `agents` runtime (binds selected provider to the
   loop), `usage` (records per-request deltas), `permissions` (model
   context for allow/ask decisions), `compact` (model selection for
   summarization), `subagents` (subagent model override).
@@ -236,4 +247,7 @@ read `ctx.model` for the active binding.
   `effort` tiers, the configured `reasoning_effort` must be one of
   them; otherwise the request errors at model time.
 - **Recalculating token counts in plugin code**: rely on
-  `UsageData` from `ModelResponse.usage`; preserve unknown fields.
+  `UsageData` from `ModelResponse.usage`.
+- **Assuming unknown usage fields are accepted**: `UsageData.from_provider()`
+  rejects fields outside `USAGE_FIELDS`; extend the typed contract first when
+  a provider adds a counter.

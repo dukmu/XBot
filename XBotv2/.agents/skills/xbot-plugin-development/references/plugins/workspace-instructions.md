@@ -1,9 +1,10 @@
-# `workspace-instructions`
+# `workspace_instructions`
 
 Loads `AGENTS.md` from the workspace root and injects it into the
 context builder's system message at the appropriate stage.
 
-- **Import/profile:** `workspace-instructions`, Agent profile.
+- **Tree id/name:** `workspace_instructions` / `workspace_instructions`
+  (the page filename is `workspace-instructions.md`); Agent profile.
 - **Source:** `XBotv2/workspace_instructions/plugin.py`.
 - **Injects/provides:** `variables`, `workspace_root` → (none
   directly; injects into `ContextComponentsBuilt`).
@@ -130,9 +131,9 @@ priority than runtime state but lower priority than core instructions.
   raises if a referenced variable is undefined. Use
   `RuntimeVariables.from_roots(...)` to pre-populate known vars.
 - **No auto-cleanup**: unlike `PromptsService`, this plugin does
-  not use `bound_effect`. The `AGENTS.md` content is read once at
-  startup and cached in the component — it is not re-read on
-  subsequent turns.
+  not use `bound_effect`. The file is read when each
+  `CONTEXT_COMPONENTS_BUILT` event is handled, so changes to `AGENTS.md`
+  are visible on the next context build; it is not a startup-only cache.
 - **`source="workspace_instructions"` in `ContextComponent`**:
   this is a reserved source name. If another plugin uses the same
   source, the context builder's `_render_system_component()` will

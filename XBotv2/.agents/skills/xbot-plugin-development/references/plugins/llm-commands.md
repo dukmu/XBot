@@ -65,7 +65,7 @@ for command in build_llm_commands(ctx.agent_runtime, ctx.llm):
 ### `/effort`
 
 ```
-/effect [<level>]
+/effort [<level>]
 ```
 
 | Subcommand | Args | Behavior |
@@ -114,7 +114,7 @@ class MyLlmCommandsPlugin:
 - Depends on: `agent_runtime` (`AgentRuntimePort`), `llm` (`LlmCatalogPort`),
   `commands`.
 - Depended on by: end-user (slash commands).
-- Pairs with: `llm` (provider catalog + model config), `agent-runtime`
+- Pairs with: `llm` (provider catalog + model config), and the `agents` runtime
   (runtime selection binding).
 
 ## Common pitfalls

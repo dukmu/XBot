@@ -167,10 +167,10 @@ PYTHONPATH=.:XCore uv run python scripts/check_architecture.py
 The architecture check fails when loop/tool code crosses plugin ownership
 boundaries — run it before committing refactors. Documentation starts at
 [`XBotv2/docs/README.md`](XBotv2/docs/README.md), with the
-[architecture](XBotv2/docs/architecture.md), [plugin
-system](XBotv2/docs/plugins/plugins.md), [tools](XBotv2/docs/tools/tools.md),
-and [wire protocol](XBotv2/docs/protocol/protocol.md) as the main entry
-points.
+[plugin system](XBotv2/docs/plugins.md), [security](XBotv2/docs/security.md),
+[persistence](XBotv2/docs/persistence.md), and [HTTP API](XBotv2/docs/http-api.md)
+as the short entry points. Detailed contracts and router references live in
+the bundled `xbot-plugin-development` skill.
 
 ## License
 

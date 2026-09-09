@@ -142,7 +142,7 @@ class ObserverPlugin:
         ctx.on(TASK_COMPLETED, observer.on_completed)
 ```
 
-Emit with `await events.emit(TASK_COMPLETED, TaskCompleted(...))`. Observers
+Emit with `await ctx.emit(TASK_COMPLETED, TaskCompleted(...))`. Observers
 normally return `None`. Use `serial` only when the event contract explicitly
 defines a short-circuit result; use `chain` for a documented transformation
 pipeline and `waterfall` for around-middleware. Do not reuse `EventContext` as

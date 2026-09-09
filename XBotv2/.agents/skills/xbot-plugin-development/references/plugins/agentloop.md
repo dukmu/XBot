@@ -102,7 +102,7 @@ class EventContext:
     model_response: ModelResponse | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call: ToolCall | None = None          # singular, current call
-    args: dict[str, Any] | None = None        # current call's args
+    args: dict[str, JsonValue] | None = None  # current call's args
     tool_result: Message | None = None
     tool_results: list[Message] | None = None
     error: BaseException | None = None
@@ -119,12 +119,20 @@ All in `XBotv2/agentloop/contracts.py`:
 ```python
 @dataclass
 class LoopSettings:
-    model: str
     provider: str
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    reasoning_effort: str | None = None
-    # ... plus capability flags the loop honors
+    model: str = ""
+    model_mode: str = ""
+    context_window: int = 0
+    max_output_tokens: int = 0
+    agent_name: str = "XBotv2"
+    agent_role: str = ""
+    user_name: str = "User"
+    user_id: str = "default-user"
+    developer_instructions: str = ""
+    agent_instructions: str = ""
+    memory: str = ""
+    workspace: str = "."
+    llm_is_override: bool = False
 
 class LoopState:
     # Mutable runtime state initialized with SessionInfo, optional history,

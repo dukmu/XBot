@@ -1,23 +1,30 @@
-# `context-builder`
+# `context_builder`
 
 The prompt context builder — assembles the model-facing system message
 from registered components (core instructions, runtime env, agent
 identity, plugin fragments, memory, history). Exposes events for
 hooking into context construction.
 
-- **Import/profile:** `context-builder`, Agent profile.
+- **Tree id/name:** `context_builder` / `context_builder` (the page filename is
+  `context-builder.md`); no profile restriction is declared in `xcore.yaml`.
 - **Source:** `XBotv2/context_builder/plugin.py`,
   `XBotv2/context_builder/builder.py`,
   `XBotv2/context_builder/contracts.py`,
   `XBotv2/context_builder/events.py`.
-- **Injects/provides:** `runtime_log` → `context_builder` (`ContextBuilder`).
+- **Injects/provides:** `runtime_log` → `context_builder`
+  (`ContextBuilder` instance).
 - **Subscribes to events:** `context/build` (via `ContextBuildHandler`).
-- **Emits:** `after/context-components-build` (`ContextComponentsBuilt`),
-  `after/context-build` (`ContextBuilt`).
+- **Emits:** `after/context-components-build` (`ContextComponentsBuilt`).
+  The Agent loop emits `after/context-build` (`ContextBuilt`) after this
+  handler has produced `event.context_messages`.
 
 ## Public data models
 
-### `ContextBuilder` (`XBotv2/context_builder/builder.py:51-180`)
+### `ContextBuilder` (`XBotv2/context_builder/builder.py`)
+
+`ContextBuilder` is implemented in `builder.py`; it is not re-exported from
+`XBotv2.context_builder`. The plugin root export is the module-level
+`plugin = ContextBuilderComponent()` in `plugin.py`.
 
 ```python
 class ContextBuilder:
@@ -160,7 +167,7 @@ class ContextBuildHandler:
     def __init__(
         self,
         builder: ContextBuilder,
-        events: Any,
+        events: EventPort,
         runtime_log: RuntimeLog,
     ) -> None:
         self._builder = builder
@@ -170,7 +177,11 @@ class ContextBuildHandler:
     async def build(self, event: ContextBuildRequest) -> None:
         components = self._builder.build_components(...)
         event.context_messages = self._builder.messages_from_components(components)
-        await self._events.emit(CONTEXT_COMPONENTS_BUILT, ContextComponentsBuilt(...))
+        await self._events.emit(
+            CONTEXT_COMPONENTS_BUILT,
+            ContextComponentsBuilt(...),
+        )
+        # The engine emits CONTEXT_BUILT after this handler returns.
 ```
 
 ### `CORE_INSTRUCTIONS` (`XBotv2/context_builder/builder.py:17-47`)
@@ -189,13 +200,21 @@ The system instruction hierarchy text:
 ## How `apply()` works
 
 ```python
-def apply(self, ctx, config=None):
-    builder = ContextBuilder()
-    ctx.set("context_builder", builder)
-    ctx.on(
-        BUILD_CONTEXT,
-        ContextBuildHandler(builder, ctx, ctx.runtime_log).build,
-    )
+from xcore import Context
+
+from XBotv2.context_builder.builder import ContextBuilder
+
+class ContextBuilderComponent:
+    name = "xbot.context_builder"
+    inject = ["runtime_log"]
+
+    def apply(self, ctx: Context, config: object | None = None) -> None:
+        builder = ContextBuilder()
+        ctx.set("context_builder", builder)
+        ctx.on(
+            BUILD_CONTEXT,
+            ContextBuildHandler(builder, ctx, ctx.runtime_log).build,
+        )
 ```
 
 ## Context assembly order
@@ -244,7 +263,10 @@ Drops orphaned tool messages (whose `tool_call_id` doesn't match any
 ## Typical extension: register a plugin fragment
 
 ```python
-from XBotv2.context_builder import ContextBuilder, PromptFragmentStage
+from xcore import Context
+
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.context_builder.contracts import PromptFragmentStage
 
 class MyPlugin:
     name = "my-plugin"

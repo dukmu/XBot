@@ -38,14 +38,14 @@ class TodolistService:
 
 ```python
 class TodoSnapshot(BaseModel):
+    schema_version: Literal[1] = 1
     items: tuple[TodoItem, ...] = ()
 
     @classmethod
     def from_items(cls, items: list[dict[str, str]]) -> "TodoSnapshot": ...
-    def projection(self) -> list[dict[str, Any]]: ...
+    def projection(self) -> dict[str, JsonValue]: ...
 
-@dataclass(frozen=True, slots=True)
-class TodoItem:
+class TodoItem(BaseModel):
     content: str
     status: Literal["pending", "in_progress", "completed"]
 ```
@@ -141,6 +141,22 @@ def apply(self, ctx: Context, config: object | None = None) -> None:
 - Depends on: `tools`, `state`, `agentloop` (`GET_TODOS` operation).
 - Depended on by: the Agent (todo management tool).
 - Pairs with: `goal` (both use `StateService` namespace pattern).
+
+## HTTP projection
+
+The server facet exposes the read-only current snapshot through the standard
+operation dispatch path:
+
+```python
+@router.get(
+    "/sessions/{session_id}/threads/{thread_id}/todos",
+    operation_id="get_todos",
+)
+async def get_todos(session_id: str, thread_id: str) -> TodoSnapshot: ...
+```
+
+The update operation remains an Agent tool; clients should not mutate Todo
+state by writing the persistence file or inventing a second HTTP update API.
 
 ## Common pitfalls
 

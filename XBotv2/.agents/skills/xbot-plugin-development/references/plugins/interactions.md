@@ -89,7 +89,7 @@ class InteractionResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     request_id: str
     status: str                       # "answered", "timeout", "cancelled"
-    answer: Any = None
+    answer: JsonValue = None
     decision: str = ""
     scope: str = "once"
     reason: str = ""
@@ -111,16 +111,19 @@ class UserInputRequiredData(WireModel):
     timeout_seconds: float | None = Field(default=None, gt=0)
     resume_supported: bool = False
 
+    # source == "ask_user" additionally requires at least two options.
+    # tool_call_id is non-empty for every wire request.
+
 class UserInputResponseRequest(WireModel):
     request_id: str = Field(min_length=1)
-    answer: Any = None
+    answer: JsonValue = None
 
 class InteractionRecordedData(WireModel):
     request_id: str = Field(min_length=1)
     status: Literal["answered", "timeout", "cancelled"]
     decision: Literal["allow", "deny", ""] = ""
     scope: Literal["once", "session", ""] = ""
-    answer: Any = None
+    answer: JsonValue = None
     pending_interactions: list[str] = Field(default_factory=list)
 
 class InteractionResponse(WireModel):
@@ -265,6 +268,9 @@ ask_user() → interactions.request_user_input() →
   a live client sink and without `timeout_seconds`, the waiter
   returns `"unsupported"` immediately. Always set `timeout_seconds`
   when the client may not respond.
+- **Non-tool interaction sources still need an id**: the wire model requires
+  a non-empty `tool_call_id`. MCP uses its SDK `RequestContext.request_id` as
+  interaction routing metadata; it is not a synthetic ToolCall.
 - **`InteractionWaiter.register()` raises on duplicate**: if the
   same `request_id` is registered twice, `InteractionNotPending`
   is raised. Use unique IDs per request.

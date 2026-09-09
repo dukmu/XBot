@@ -1,7 +1,7 @@
 # XBot Built-In Components
 
 Primary sources in a checkout: `XBotv2/xcore.yaml` and
-`XBotv2/docs/plugins/`. With pip/uv, inspect the installed package's bundled
+the skill's `plugins_list.md`. With pip/uv, inspect the installed package's bundled
 `xcore.yaml` (when present) and use the version-matched XBot documentation.
 Reuse these capabilities instead of reimplementing a parallel path.
 
@@ -52,8 +52,8 @@ call host subprocess/file APIs when a built-in capability is the requirement.
 The interaction plugin owns waiting and cancellation; do not create a private
 client event or waiter.
 
-For component-specific behavior, read the corresponding page in
-`XBotv2/docs/plugins/` before depending on it. Check the current tree because
+For component-specific behavior, read the corresponding section in
+the matching plugin reference before depending on it. Check the current tree because
 profiles and disabled entries can change what is mounted in a given process.
 
 Before adding a service, search package-root exports and the built-in tree.

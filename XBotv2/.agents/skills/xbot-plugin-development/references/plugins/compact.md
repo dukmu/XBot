@@ -18,7 +18,7 @@ free context tokens while preserving recent conversation state.
   `usage` → `compact` (`CompactService`).
 - **Subscribes to events:** `before/context` (manual trigger via
   `_on_before_context`), `before/model-request` (automatic trigger).
-- **Emits:** `pre/compact` (`BeforeCompact`), `post/compact`
+- **Emits:** `before/compact` (`BeforeCompact`), `after/compact`
   (`AfterCompact`), `session/history-changed` (`HistoryChanged`).
 - **Tool:** `compact` (requests manual compaction).
 - **Command:** `/compact` (immediate compaction).
@@ -35,8 +35,8 @@ class CompactService:
         self,
         *,
         events: CompactEventsPort,
-        model: Any,
-        state: Any,
+        model: ModelPort,
+        state: LoopState,
         usage: UsagePort,
         config: CompactConfig,
     ) -> None:
@@ -60,7 +60,7 @@ class CompactService:
     def request_manual_compaction(self) -> None:
         """Flag manual compaction; consumed on next BEFORE_CONTEXT."""
 
-    def _consume_manual_request(self, session: Any = None) -> bool:
+    def _consume_manual_request(self) -> bool:
         """Return True if a manual request was consumed."""
 
     async def _compact_command(self, raw_args: str) -> CommandResult:
@@ -84,7 +84,7 @@ class CompactService:
         context_limit: int | None = None,
         max_context_tokens: int | None = None,
         output_reservation: int | None = None,
-        stable_prefix: Message | Sequence[Any] | None = None,
+        stable_prefix: Sequence[Message] | None = None,
         removable_estimate: int | None = None,
     ) -> dict[str, Any] | None:
         """Build and execute a compaction proposal.
@@ -155,7 +155,7 @@ class UsagePort(Protocol):
 ### `BeforeCompact` / `AfterCompact`
 
 ```python
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class BeforeCompact:
     messages: list[Message]
     session: SessionInfo | None
@@ -166,12 +166,12 @@ class AfterCompact:
     messages: tuple[Message, ...]
     session: SessionInfo | None
     reason: str
-    metrics: dict[str, Any]
+    metrics: dict[str, JsonValue]
     previous_message_count: int
     current_message_count: int
 
-PRE_COMPACT = "pre/compact"
-POST_COMPACT = "post/compact"
+PRE_COMPACT = "before/compact"
+POST_COMPACT = "after/compact"
 ```
 
 `BeforeCompact` is dispatched via `ctx.serial` — the first

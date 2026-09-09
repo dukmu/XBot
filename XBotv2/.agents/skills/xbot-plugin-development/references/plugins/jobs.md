@@ -21,6 +21,10 @@ model-facing tools; they never hold job state themselves.
   `session/close`, `prepare/fork`.
 - **Commands:** `/tasks` (list), `/task` (stop/stopall).
 
+The root export is `plugin = JobsPlugin()` in `XBotv2/jobs/plugin.py`.
+`JobsPlugin` composes `JobsRuntimeComponent` and its HTTP contribution; the
+runtime component is not a second tree entry.
+
 ## Public data models
 
 ### `JobRegistry` (`XBotv2/jobs/registry.py:59-340`)
@@ -245,8 +249,8 @@ class TextOutputStorePort(OutputStore, Protocol):
 ```python
 TaskCallback = Callable[[TaskSnapshot], Awaitable[None]]
 
-@dataclass(frozen=True, slots=True)
-class TaskSnapshot:
+class TaskSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str = Field(min_length=1)
     kind: Literal["shell", "agent"] = "shell"
     command: str = ""
@@ -282,14 +286,14 @@ class _OutputFactory:
     def create_text(text: str = "") -> TextOutputStore: ...
 ```
 
-### `JobsComponent` / `JobHandlers`
+### `JobsRuntimeComponent` / `JobHandlers`
 
 ```python
-class JobsComponent:
+class JobsRuntimeComponent:
     inject = {"required": ["commands", "engine"]}
     name = "xbot.jobs"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: Mapping[str, object] | None = None) -> None:
         max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
         registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
         ctx.set("jobs", registry)
@@ -304,6 +308,10 @@ class JobsComponent:
         ctx.on(PREPARE_FORK, handlers.prepare_fork)
         ctx.on(Events.SESSION_CLOSE, handlers.close)
 ```
+
+The root `JobsPlugin` composes this runtime component and contributes the HTTP
+facet when `server` and `sessions` are available; they are not separate tree
+plugins.
 
 ### `build_jobs_commands`
 
@@ -394,5 +402,8 @@ the engine and publishes `completion_notice` to the client.
   unlike `get()` which raises `KeyError`. Use `get_or_none()` in
   tool handlers.
 - **`list()` newest first**: `items.sort(key=lambda job: job.created_at, reverse=True)`.
+- **`list(recursive=True)` is not a recursive descendant walk**: the current
+  registry selects jobs with any non-null `parent_job_id`; it does not compute
+  the transitive child closure. Do not describe this flag as a tree traversal.
 - **`TaskSnapshot.kind` maps SUBAGENT → "agent"**: the protocol
   layer uses different kind names than the internal `JobKind`.

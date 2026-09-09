@@ -130,7 +130,7 @@ class PolicyChanged:
     policy: dict[str, JsonValue]
     config: RuntimeConfig
 
-POLICY_CHANGED = "config/policy/changed"
+POLICY_CHANGED = "config/policy-changed"
 ```
 
 ### `StrictModel`
