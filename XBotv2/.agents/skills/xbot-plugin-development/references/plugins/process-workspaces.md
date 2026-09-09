@@ -8,7 +8,6 @@ archive/unarchive operations, and workspace event subscription.
 - **Source:** `XBotv2/workspaces/plugin.py`,
   `XBotv2/workspaces/service.py`,
   `XBotv2/workspaces/events.py`,
-  `XBotv2/workspaces/models.py`,
   `XBotv2/workspaces/contracts.py`,
   `XBotv2/workspaces/directories.py`.
 - **Injects/provides:** `workspace_root`, `runtime_log` → `workspaces`
@@ -101,9 +100,9 @@ class WorkspaceSessionMoveInvalid(ValueError): ...
 class WorkspaceSessionNotFound(LookupError): ...
 ```
 
-> Note: `WorkspaceSessionMoveInvalid` and `WorkspaceSessionNotFound` are
-> defined in `XBotv2.workspaces.service`. `WorkspaceNotFound` is also
-> in `service.py` and is a `LookupError` (not `ValueError`).
+These public errors and directory/workspace models are defined in
+`XBotv2.workspaces.contracts`; the registry and directory browser remain
+internal implementations.
 
 ## `WorkspaceRegistry` (`XBotv2/workspaces/service.py`)
 

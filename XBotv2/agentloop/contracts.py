@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
+import uuid
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from XBotv2.core.history import ConversationHistory
@@ -19,10 +21,31 @@ from XBotv2.session.contracts import SessionInfo
 
 if TYPE_CHECKING:
     from XBotv2.agentloop.events import EventContext, EventPort
-    from XBotv2.agentloop.inbox import InboxInput, InboxSink, InboxTarget
     from XBotv2.llm.contracts import ModelPort
 
 DEFAULT_MAX_ITERATIONS = 200
+
+
+class InboxTarget(str, Enum):
+    NEXT_TURN = "next-turn"
+    NEXT_STEP = "next-step"
+
+
+@dataclass(slots=True)
+class InboxInput:
+    """One uniquely identified model-visible input."""
+
+    content: str
+    target: InboxTarget
+    source: str = "user"
+    message_id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
+    images: list[ImageContent] = field(default_factory=list)
+    artifacts: list[ArtifactRef] = field(default_factory=list)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+
+
+class InboxSink(Protocol):
+    def replace(self, items: Sequence[InboxInput]) -> None: ...
 
 
 class LoopState:
@@ -237,6 +260,9 @@ __all__ = [
     "AgentLoopDriverPort",
     "AgentLoopFactoryPort",
     "DEFAULT_MAX_ITERATIONS",
+    "InboxInput",
+    "InboxSink",
+    "InboxTarget",
     "LIST_TOOLS",
     "LoopFactoryOptions",
     "LoopSettings",

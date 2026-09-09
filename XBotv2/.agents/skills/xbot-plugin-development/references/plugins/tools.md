@@ -6,9 +6,9 @@ request goes through this plugin's pipeline:
 permissions → dispatch → `AFTER_TOOL_CALL`. A Tool that bypasses this
 path loses permissions, sandboxing, schema checks, and event observers.
 
-- **Import/profile:** tree id `tools`, import name `agentloop.tools`,
+- **Import/profile:** owned by the `agentloop` tree entry,
   Agent profile.
-- **Source:** `XBotv2/agentloop/tools/plugin.py`,
+- **Source:** `XBotv2/agentloop/plugin.py`,
   `XBotv2/agentloop/tool_service.py`, `XBotv2/agentloop/tool_registry.py`,
   `XBotv2/core/tools.py`.
 - **Injects/provides:** `runtime_log` → `tools` (`ToolsService`).
@@ -46,10 +46,7 @@ class ToolResult(BaseModel):
         content: str = "",
         *,
         data: JsonValue = None,
-        artifacts: tuple[ArtifactRef, ...] = (),
         images: tuple[ImageContent, ...] = (),
-        client_events: tuple[ClientEvent, ...] = (),
-        turn_complete: bool = False,
     ) -> "ToolResult": ...
 
     @classmethod
@@ -59,9 +56,12 @@ class ToolResult(BaseModel):
         message: str,
         *,
         retryable: bool = False,
-        details: dict[str, JsonValue] | None = None,
     ) -> "ToolResult": ...
 ```
+
+Construct `ToolResult(...)` directly when a result also needs artifacts,
+client events, a pre-built `ToolError`, or exceptional `turn_complete` control;
+the convenience constructors intentionally cover only their signatures above.
 
 `status` drives the next turn decision. `artifacts` and `images` are
 logical references; ArtifactStore resolves model-facing file paths to absolute
@@ -89,8 +89,9 @@ class GuardDecision:
     client_events: tuple[ClientEvent, ...] = ()
 ```
 
-Return from `ToolGuard.allow(call) -> GuardDecision | None`. `None`
-means "no opinion" — the chain continues.
+`ToolGuard` is a callable receiving `(ToolCall, ToolRegistration)` and returning
+`GuardDecision | None` (directly or awaitably). `None` means "no opinion" —
+the chain continues.
 
 ### `Tool`
 
@@ -99,9 +100,8 @@ class Tool:
     name: str
     description: str
     parameters: dict[str, Any]        # JSON Schema fragment
+    function: Callable[..., Any]
     tool_call_parameter: str | None = None
-    namespace: str | None = None
-    timeout_seconds: float | None = None
 
     @classmethod
     def from_function(
@@ -109,7 +109,6 @@ class Tool:
         function: Callable[..., Any],
         *,
         name: str | None = None,
-        tool_call_parameter: str | None = "tool_call",
     ) -> "Tool": ...
 ```
 
@@ -117,12 +116,16 @@ class Tool:
 **All keyword-only parameters that are not `tool_call` MUST be
 constructor-injected, not signature-injected.**
 
-`tool_call_parameter` (default `"tool_call"`):
-- If set, the callable may declare a keyword-only
+`Tool.from_function()` detects invocation metadata from the annotated
+signature:
+- The callable may declare one keyword-only
   `tool_call: ToolCall` parameter; the engine passes the rewritten
   call after `BEFORE_TOOL_CALL`. The parameter is omitted from the
   provider schema.
-- Set to `None` to omit entirely.
+- If the callable does not declare it, no invocation metadata is injected.
+
+Namespace, model visibility, and timeout are registration metadata on
+`ToolsPort.register(...)`, not fields of `Tool`.
 
 ### `ClientEvent` (subset used by Tools)
 
@@ -140,6 +143,7 @@ class ToolsService:
         self,
         tool: Tool,
         *,
+        model_visible: bool = True,
         namespace: str | None = None,
         timeout_seconds: float | None = None,
     ) -> str: ...                              # returns registration name
@@ -162,27 +166,24 @@ class ToolsService:
     def exclude(self, selectors: list[str]) -> tuple[str, ...]: ...
 
     def guard(self, guard: ToolGuard) -> object: ...   # returns disposer
-    def guards(self) -> tuple[ToolGuard, ...]: ...
 ```
 
 Registration is **fiber-owned**: `ctx.tools.register(...)` ties cleanup
 to the current XCore fiber and unregisters automatically on unload.
 A guard added with `guard(...)` returns a disposer for explicit removal.
 
-## `ToolGuard` Protocol
+## `ToolGuard` callable
 
 ```python
-class ToolGuard(Protocol):
-    def allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any],
-        *,
-        tool_call: ToolCall | None = None,
-    ) -> GuardDecision | None: ...
+ToolGuard = Callable[
+    [ToolCall, ToolRegistration],
+    GuardDecision | None | Awaitable[GuardDecision | None],
+]
 ```
 
-Run before permission checks; short-circuits with `GuardDecision(action="deny")`.
+Guards run in registration order after final argument validation and before
+Tool dispatch. Permissions and sandbox restrictions participate through this
+same monotonic guard chain; a denial cannot be turned back into an allow.
 
 ## `ToolRegistration`
 

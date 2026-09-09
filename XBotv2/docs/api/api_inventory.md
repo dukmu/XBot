@@ -23,10 +23,10 @@ from XBotv2.config import RuntimeConfig
 from XBotv2.llm import LlmCatalogPort, LlmServicePort, ModelConfig, ModelPort, ProviderConfig
 ```
 
-Package roots may re-export explicit declaration modules only: `types`,
-`invariants`, `commands`, `events`, `protocol`, and `contracts`. Service
-Protocols belong in `contracts.py`; a second `services.py` declaration layer
-must not duplicate them.
+Package roots may re-export explicit declaration modules only: `contracts`,
+`events`, and `protocol`. Service Protocols and public domain data models
+belong in `contracts.py`; command implementations, storage codecs, services,
+managers, and plugin classes remain internal.
 They must not export concrete registries, services, managers, routers, or
 plugin implementations.
 
@@ -76,7 +76,8 @@ plugin implementations.
 ## Agents Declarations (`XBotv2.agents`)
 
 The Agents plugin owns Agent definitions, creation options, catalog and
-selection operations, child-session protocols, and subagent errors. These
+selection operations. Child application contracts belong to
+`XBotv2.application`; subagent-specific errors belong to `XBotv2.subagents`. These
 declarations are exported from `XBotv2.agents`; concrete catalogs, loaders,
 services, and subagent runners remain internal.
 

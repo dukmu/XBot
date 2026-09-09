@@ -7,9 +7,11 @@ and SSE event streaming. Registered via `contribute_router()` as
 
 - **Import/profile:** `server-routes-workspaces`, server profile.
 - **Source:** `XBotv2/workspaces/protocol.py`,
-  `XBotv2/workspaces/http/plugin.py`.
+  `XBotv2/workspaces/plugin.py` (`mount_http`).
 - **Injects/provides:** none (uses `contribute_router`).
-- **Subscribes to events:** `http/route` (`REGISTER_ROUTE`).
+- **Registration:** the owning root plugin waits for `server`, `workspaces`,
+  `workspace_events`, and `workspace_directories`, then contributes the router
+  as one fiber-owned server effect.
 
 ## Routes (`build_router`)
 

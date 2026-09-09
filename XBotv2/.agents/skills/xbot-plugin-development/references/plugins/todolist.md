@@ -5,7 +5,6 @@ thread that persists across turns and is validated on each update.
 
 - **Import/profile:** `todolist`, Agent profile.
 - **Source:** `XBotv2/todolist/plugin.py`,
-  `XBotv2/todolist/models.py`,
   `XBotv2/todolist/contracts.py`.
 - **Injects/provides:** `tools`, `state` → `todolist`
   (`TodolistService`).
@@ -35,7 +34,7 @@ class TodolistService:
     async def get_snapshot(self, _request: EmptyRequest) -> TodoSnapshot: ...
 ```
 
-### `TodoSnapshot` (`XBotv2/todolist/models.py`)
+### `TodoSnapshot` (`XBotv2/todolist/contracts.py`)
 
 ```python
 class TodoSnapshot(BaseModel):

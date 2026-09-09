@@ -12,7 +12,7 @@ from XBotv2.core import Tool, ToolResult
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.tools import ClientEvent
 from XBotv2.todolist.contracts import GET_TODOS
-from XBotv2.todolist.models import TodoSnapshot, TodoValidationError
+from XBotv2.todolist.contracts import TodoSnapshot, TodoValidationError
 from XBotv2.todolist.protocol import build_router
 from XBotv2.server import contribute_router
 

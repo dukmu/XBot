@@ -8,7 +8,14 @@ from XBotv2.config.contracts import (
     SettingsPort,
 )
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import PermissionRuleConfig, RuntimeConfig, SandboxConfig
+from XBotv2.config.protocol import (
+    PermissionDecision,
+    SandboxKey,
+    SandboxValue,
+    SessionPolicyPatch,
+    SessionPolicyResponse,
+)
 
 __all__ = [
     "GET_POLICY",
@@ -17,7 +24,9 @@ __all__ = [
     "PermissionDecision",
     "PolicyChanged",
     "PolicySnapshot",
+    "PermissionRuleConfig",
     "RuntimeConfig",
+    "SandboxConfig",
     "SandboxKey",
     "SandboxValue",
     "SessionPolicyPatch",
@@ -25,19 +34,3 @@ __all__ = [
     "SettingsPort",
     "UPDATE_POLICY",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "PermissionDecision",
-    "SandboxKey",
-    "SandboxValue",
-    "SessionPolicyPatch",
-    "SessionPolicyResponse",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.config import protocol
-
-    return getattr(protocol, name)

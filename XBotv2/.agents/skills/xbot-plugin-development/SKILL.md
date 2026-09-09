@@ -110,7 +110,10 @@ the map; the checked-out code and tests are the final contract.
 1. State the plugin's user-visible job and whether it needs a Tool, command,
    prompt fragment, event observer, service, or protocol route.
 2. Choose the owning package boundary. A plugin owns its implementation and
-   state; shared declarations belong in the owner package's public root.
+   state; public service/data contracts belong in `contracts.py`, event names
+   and payloads in `events.py`, and wire DTOs/routes in `protocol.py`. The
+   package root may explicitly re-export selected declarations as its stable
+   facade, but never an implementation.
 3. Declare required services with `inject`; XCore gates activation until every
    dependency exists. Use an optional dependency only for a documented feature
    mode where absence is valid, and resolve it once at the composition boundary.

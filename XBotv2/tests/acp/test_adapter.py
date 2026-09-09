@@ -20,8 +20,7 @@ from acp.schema import (
 
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
-from XBotv2.session.history import conversation_replay
-from XBotv2.session.event_stream import SessionEventFrame
+from XBotv2.session.contracts import SessionEventFrame, conversation_replay
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message

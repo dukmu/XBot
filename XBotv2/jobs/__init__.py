@@ -1,6 +1,5 @@
 """Public declarations for the background-jobs plugin."""
 
-from XBotv2.jobs.commands import JobsCommandPort, build_jobs_commands
 from XBotv2.jobs.contracts import (
     TERMINAL_STATES,
     CancelResult,
@@ -14,6 +13,7 @@ from XBotv2.jobs.contracts import (
     JobResult,
     JobRunner,
     JobRunnerContext,
+    JobsCommandPort,
     JobsPort,
     JobStatus,
     JobSummary,
@@ -31,6 +31,13 @@ from XBotv2.jobs.contracts import (
     WaitMode,
     WaitResult,
     parse_job_status,
+)
+from XBotv2.jobs.protocol import (
+    TaskCompletionData,
+    TaskListResponse,
+    TaskStopResponse,
+    task_completion_event,
+    task_updated_event,
 )
 
 __all__ = [
@@ -66,24 +73,7 @@ __all__ = [
     "TextOutputStorePort",
     "WaitMode",
     "WaitResult",
-    "build_jobs_commands",
     "parse_job_status",
     "task_completion_event",
     "task_updated_event",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "TaskCompletionData",
-    "TaskListResponse",
-    "TaskStopResponse",
-    "task_completion_event",
-    "task_updated_event",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.jobs import protocol
-
-    return getattr(protocol, name)

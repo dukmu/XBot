@@ -17,6 +17,11 @@ from XBotv2.commands.contracts import (
     guard_command,
     split_command_args,
 )
+from XBotv2.commands.protocol import (
+    CommandListResponse,
+    CommandRequest,
+    CommandResponse,
+)
 __all__ = [
     "Command",
     "CommandCatalog",
@@ -37,17 +42,3 @@ __all__ = [
     "guard_command",
     "split_command_args",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "CommandListResponse",
-    "CommandRequest",
-    "CommandResponse",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.commands import protocol
-
-    return getattr(protocol, name)

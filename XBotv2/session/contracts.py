@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
+from operator import not_
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from XBotv2.core.artifacts import ArtifactRef, ImageContent
 from XBotv2.core.history import ConversationPage
 from XBotv2.core.messages import Message
 from XBotv2.core.operations import Operation
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.timing import SessionStats
-from XBotv2.core.tools import ClientEvent
+from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
+from XBotv2.core.timing import SessionStats, TIMING_METADATA_KEY
+from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.core.usage import UsageData
 
 if TYPE_CHECKING:
@@ -24,7 +27,6 @@ if TYPE_CHECKING:
     from XBotv2.application import AgentApplicationPort
     from XBotv2.core.providers import BaseProvider
     from XBotv2.permissions import PermissionsPort
-    from XBotv2.session.event_stream import SessionEventFrame
 
 
 SessionMode = Literal["new", "resume"]
@@ -46,6 +48,16 @@ class ThreadNotActive(RuntimeError):
     """The thread exists on disk but has no live runtime."""
 
 
+class SessionEventCursorExpired(LookupError):
+    def __init__(self, cursor: int, oldest: int) -> None:
+        super().__init__(
+            f"Session event cursor {cursor} expired; "
+            f"oldest available sequence is {oldest}"
+        )
+        self.cursor = cursor
+        self.oldest = oldest
+
+
 @dataclass
 class SessionInfo:
     """Mutable identity and counters for one active Agent thread."""
@@ -57,6 +69,72 @@ class SessionInfo:
     turn_count: int = 0
     event_count: int = 0
     status: str = "active"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEventFrame:
+    sequence: int
+    request_id: str
+    event: ClientEvent
+
+
+class SessionHistoryItem(BaseModel):
+    """Transport-neutral projection of one visible conversation record."""
+
+    role: Literal["user", "assistant", "tool"]
+    content: str = ""
+    reasoning: str = Field(default="", exclude_if=not_)
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str = ""
+    input_id: str = Field(default="", exclude=True)
+    status: str = ""
+    data: JsonValue = None
+    images: tuple[ImageContent, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    error: dict[str, JsonValue] | None = None
+    runtime: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    timing: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda value: value is None)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def conversation_replay(messages: Iterable[Message]) -> tuple[SessionHistoryItem, ...]:
+    replay: list[SessionHistoryItem] = []
+    for message in messages:
+        if message.role not in {"user", "assistant", "tool"}:
+            continue
+        additional = message.additional_kwargs or {}
+        content = str(message.content or "")
+        if message.role == "tool" and additional.get(MESSAGE_FORMAT_KEY):
+            content = tool_result_display_content(content)
+        runtime_value = additional.get("runtime_input")
+        timing = message.response_metadata.get(TIMING_METADATA_KEY)
+        replay.append(SessionHistoryItem(
+            role=message.role,
+            content=content,
+            reasoning=message.reasoning if message.role == "assistant" else "",
+            tool_calls=tuple(message.tool_calls or ()),
+            tool_call_id=message.tool_call_id or "",
+            input_id=message.input_id or "",
+            status=message.status or "",
+            data=message.data,
+            images=tuple(message.images),
+            artifacts=_artifacts(message),
+            error=message.error if message.role == "tool" else None,
+            runtime=(
+                {str(key): str(value) for key, value in runtime_value.items()}
+                if isinstance(runtime_value, dict)
+                else None
+            ),
+            timing=dict(timing) if isinstance(timing, Mapping) else None,
+        ))
+    return tuple(replay)
+
+
+def _artifacts(message: Message) -> tuple[ArtifactRef, ...]:
+    values = tuple(message.artifact or ())
+    if not all(isinstance(value, ArtifactRef) for value in values):
+        raise TypeError("Session history artifacts must be ArtifactRef values")
+    return values
 
 
 class ImageInput(BaseModel):
@@ -429,8 +507,11 @@ __all__ = [
     "SESSION_RESOURCE_REMOVED",
     "SendMessage",
     "SessionDescriptor",
+    "SessionEventFrame",
+    "SessionEventCursorExpired",
     "SessionExists",
     "SessionInfo",
+    "SessionHistoryItem",
     "SessionMode",
     "SessionNotFound",
     "SessionResourceChanged",
@@ -441,5 +522,6 @@ __all__ = [
     "SessionSummary",
     "ThreadNotActive",
     "ThreadSummary",
+    "conversation_replay",
     "new_session_id",
 ]

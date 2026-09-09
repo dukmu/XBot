@@ -30,7 +30,8 @@ from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
+from XBotv2.agentloop.contracts import InboxInput, InboxTarget
+from XBotv2.agentloop.inbox import AgentInbox
 from XBotv2.agentloop.protocol import agentloop_event
 from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
 from XBotv2.agentloop.contracts import (

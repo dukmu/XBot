@@ -17,20 +17,20 @@ from XBotv2.core.history import (
     page_messages,
 )
 from XBotv2.core.messages import Message
+from XBotv2.core.metadata import ThreadMetadata
 from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop.inbox import InboxInput
+from XBotv2.agentloop.contracts import InboxInput
 from XBotv2.persistence.models import (
     InboxSnapshot,
     MessagePayloadRecord,
     MessageRecord,
     SurfaceReplaceRecord,
     TrajectoryEventRecord,
-    ThreadLifecycleRecord,
-    ThreadMetadata,
     utc_now,
 )
+from XBotv2.persistence.contracts import ThreadLifecycleRecord
 from xcore.state import StateService
 
 

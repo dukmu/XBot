@@ -14,6 +14,9 @@ from XBotv2.agentloop.contracts import (
     ToolRegistration,
     ToolGuard,
     ToolsPort,
+    InboxInput,
+    InboxSink,
+    InboxTarget,
 )
 from XBotv2.agentloop.events import (
     EventContext,
@@ -21,7 +24,21 @@ from XBotv2.agentloop.events import (
     Events,
     SHORT_CIRCUIT_EVENTS,
 )
-
+from XBotv2.agentloop.protocol import (
+    AgentLoopEventType,
+    AssistantMessageData,
+    AssistantMessageDeltaData,
+    InputRejectedData,
+    ToolCallDeltaData,
+    ToolCallDeltaItemData,
+    ToolCallsStartedData,
+    ToolInfo,
+    ToolListResponse,
+    ToolResultData,
+    TurnCancelledData,
+    TurnData,
+    agentloop_event,
+)
 __all__ = [
     "AgentLoopDriverPort",
     "AgentLoopEventType",
@@ -29,6 +46,9 @@ __all__ = [
     "DEFAULT_MAX_ITERATIONS",
     "EventContext",
     "EventPort",
+    "InboxInput",
+    "InboxSink",
+    "InboxTarget",
     "Events",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
@@ -54,27 +74,3 @@ __all__ = [
     "SHORT_CIRCUIT_EVENTS",
     "agentloop_event",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "AgentLoopEventType",
-    "AssistantMessageData",
-    "AssistantMessageDeltaData",
-    "InputRejectedData",
-    "ToolCallDeltaData",
-    "ToolCallDeltaItemData",
-    "ToolCallsStartedData",
-    "ToolInfo",
-    "ToolListResponse",
-    "ToolResultData",
-    "TurnCancelledData",
-    "TurnData",
-    "agentloop_event",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.agentloop import protocol
-
-    return getattr(protocol, name)

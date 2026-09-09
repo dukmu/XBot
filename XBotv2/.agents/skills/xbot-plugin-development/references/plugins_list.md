@@ -30,13 +30,13 @@ overlays preserve omitted fields. `config` is recursively merged; `name`,
 | `context_builder` | `context_builder` | agent | `runtime_log` | `context_builder`; context assembly |
 | `prompts` | `prompts` | agent | `context_builder` | `prompts`; prompt fragment registry |
 | `sandbox` | `sandbox` | agent | thread paths, session, tools, data/workspace roots, variables, commands, settings | `sandbox`; sandbox guard and context facts |
-| `permissions` | `permissions` | agent | session/launch, parent permissions, tools, client_events, variables, commands, settings, state | `permissions`, `approval`; guard, approval waiter, persistent grants and policy commands |
+| `permissions` | `permissions` | agent | session/launch, parent permissions, tools, client_events, interactions, variables, commands, settings, state | `permissions`, `approval`; guard, approval waiter, persistent grants and policy commands |
 | `coretools` | `coretools` | agent | tools, session, artifacts, sandbox, jobs, workspace root | filesystem/Shell Tools and result-cache hook |
 | `subagents` | `subagents` | agent | session, catalog, child applications, permissions, jobs, tools, prompts, persistence | subagent Tools and prompt catalog |
 | `goal` | `goal` | agent | tools, commands, engine, state | `goal`; objective Tools, `/goal`, status slot |
 | `todolist` | `todolist` | agent, server | Agent: tools/state; server: sessions | Todo Tool/state and HTTP routes |
 | `skills` | `skills` | agent | tools, commands, sandbox, runtime paths | discovered skill Tools and prompt commands |
-| `mcp_plugin` | `mcp_plugin` | agent | tools, model, interactions, session | configured MCP Tools/resources/prompts |
+| `mcp_plugin` | `mcp_plugin` | agent | tools, model, interactions, session | configured MCP Tools/resources/prompts; public id in `mcp_plugin/contracts.py` |
 | `content_cache` | `content_cache` | agent | artifacts | current oversized-user-input provider projection |
 | `compact` | `compact` | agent | tools, commands, model, loop state, usage | compaction Tool/command and history events |
 | `browser` | `browser` | agent | tools, session, sandbox, artifacts | Web research and isolated browser Tools |

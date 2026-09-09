@@ -8,11 +8,10 @@ that route plugins (HTTP, ACP) call into.
 This is **not** the Agent-profile per-thread `session` service — see
 [session.md](session.md) for that one.
 
-- **Import/profile:** import `session.host`, server/ACP profiles
-  (tree id is `process.sessions`).
-- **Source:** `XBotv2/session/host/plugin.py`,
-  `XBotv2/session/manager.py`, `XBotv2/session/services.py`,
-  `XBotv2/session/contracts.py`, `XBotv2/session/types.py`.
+- **Import/profile:** this is a facet of the root `session` plugin in the
+  server/ACP profiles; there is no separate `process.sessions` tree entry.
+- **Source:** `XBotv2/session/plugin.py`, `XBotv2/session/manager.py`,
+  `XBotv2/session/contracts.py`, and `XBotv2/session/protocol.py`.
 - **Injects/provides:** `thread_persistence_factory`,
   `runtime_paths`, `agent_application_factory`, `workspace_root`,
   `runtime_log` → `sessions` (process `SessionManager`).
@@ -93,7 +92,7 @@ class ThreadSummary:
 
 ### `SendMessage` / `PendingInputData` / `PendingInputUpdate` / `RegenerateMessage`
 
-All in `session/types.py`. `SendMessage` is the streaming input shape:
+All in `session/contracts.py`. `SendMessage` is the streaming input shape:
 `session_id`, `thread_id`, `content`, optional `images` /
 `artifacts` / `model_override` / `plugin_configs`.
 
@@ -333,8 +332,7 @@ Routes never touch the file system directly; they call into
 
 - Depends on: `thread_persistence_factory`, `runtime_paths`,
   `agent_application_factory`, `workspace_root`, `runtime_log`.
-- Depended on by: every `server.routes.*` plugin that exposes a
-  session/workspace route, `acp-plugin`, `workspaces`.
+- Depended on by: owner-mounted protocol facets, `acp-plugin`, and `workspaces`.
 - Pairs with: [session.md](session.md) (per-thread Agent session),
   [process-workspaces.md](process-workspaces.md) (workspace catalog).
 

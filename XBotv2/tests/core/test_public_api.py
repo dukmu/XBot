@@ -11,7 +11,8 @@ from pydantic import ValidationError
 
 import XBotv2.core as public_api
 
-from XBotv2.agents import AgentDefinition, AgentSession
+from XBotv2.agents import AgentDefinition
+from XBotv2.application import ChildApplication
 from XBotv2.context_builder import ContextComponent
 from XBotv2.core import (
     ArtifactKind,
@@ -101,9 +102,8 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "PermissionDecided",
         "PermissionRequested",
         "PermissionsPort",
-        "build_permissions_commands",
     }
-    assert sandbox.__all__ == ["build_sandbox_commands"]
+    assert sandbox.__all__ == []
     assert set(session.__all__) >= {
         "AgentApplicationFactory",
         "SessionsPort",
@@ -136,8 +136,6 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "AgentDefinition",
         "AgentMode",
         "AgentRuntimePort",
-        "AgentSession",
-        "AgentSessionResult",
     }
     assert set(config.__all__) >= {
         "PatchPolicy",
@@ -216,7 +214,7 @@ def test_public_api_exports_core_extension_types():
         request_id="request-1",
     ).request_id == "request-1"
     assert AgentDefinition(name="sample", description="Sample").name == "sample"
-    assert inspect.isclass(AgentSession)
+    assert inspect.isclass(ChildApplication)
 
 
 def test_public_job_contract_excludes_registry_runtime_state():

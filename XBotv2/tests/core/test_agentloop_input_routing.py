@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from XBotv2.session.runtime import SessionRuntime
-from XBotv2.session.history import conversation_replay
+from XBotv2.session.contracts import conversation_replay
 from XBotv2.application.app import start_application
 from XBotv2.application.host import mounted_application
 from XBotv2.core.paths import RuntimePaths

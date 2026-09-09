@@ -1,11 +1,11 @@
 """Public declarations for the configured model-provider plugin."""
 
-from XBotv2.llm.commands import build_llm_commands
-from XBotv2.llm.config import ModelConfig, ProviderConfig
 from XBotv2.llm.contracts import (
     EffortSelection,
     LIST_PROVIDERS,
     ModelDescription,
+    ModelConfig,
+    ProviderConfig,
     ProviderCatalog,
     ProviderDescription,
     ProviderSelection,
@@ -16,6 +16,12 @@ from XBotv2.llm.contracts import (
     SELECT_PROVIDER,
     SelectEffort,
     SelectProvider,
+)
+from XBotv2.llm.protocol import (
+    EffortSelectionRequest,
+    EffortSelectionResponse,
+    ProviderSelectionRequest,
+    ProviderSelectionResponse,
 )
 
 __all__ = [
@@ -38,20 +44,4 @@ __all__ = [
     "SELECT_PROVIDER",
     "SelectEffort",
     "SelectProvider",
-    "build_llm_commands",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "EffortSelectionRequest",
-    "EffortSelectionResponse",
-    "ProviderSelectionRequest",
-    "ProviderSelectionResponse",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.llm import protocol
-
-    return getattr(protocol, name)

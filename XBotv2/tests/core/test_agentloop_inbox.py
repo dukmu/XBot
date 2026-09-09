@@ -2,7 +2,8 @@
 
 import pytest
 
-from XBotv2.agentloop.inbox import AgentInbox, InboxTarget
+from XBotv2.agentloop.contracts import InboxTarget
+from XBotv2.agentloop.inbox import AgentInbox
 
 
 class MemoryInboxSink:

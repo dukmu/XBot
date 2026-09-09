@@ -29,15 +29,14 @@ async def start_server_application(
         no_plugins=no_plugins,
     )
 
+    ctx = Context(data_dir=paths.data_dir)
+    ctx.set("runtime_paths", paths)
+    ctx.set("workspace_root", options.workspace_root)
+    ctx.set("server_options", options)
+    ctx.set("agent_application_factory", create_agent_application)
     return await boot_application(
+        ctx=ctx,
         tree=tree,
-        data_dir=paths.data_dir,
-        services={
-            "runtime_paths": paths,
-            "workspace_root": options.workspace_root,
-            "server_options": options,
-            "agent_application_factory": create_agent_application,
-        },
     )
 
 

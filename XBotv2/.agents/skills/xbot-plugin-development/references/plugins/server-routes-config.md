@@ -6,9 +6,10 @@ and sandbox settings. Registered via `contribute_router()` as
 
 - **Import/profile:** `server-routes-config`, server profile.
 - **Source:** `XBotv2/config/protocol.py`,
-  `XBotv2/config/http/plugin.py`.
+  `XBotv2/config/plugin.py` (`mount_http`).
 - **Injects/provides:** none (uses `contribute_router`).
-- **Subscribes to events:** `http/route` (`REGISTER_ROUTE`).
+- **Registration:** the owning root plugin waits for `server` and `sessions`,
+  then contributes the router as one fiber-owned server effect.
 
 ## Routes (`build_router`)
 

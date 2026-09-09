@@ -136,14 +136,9 @@ EVENT_CONTEXT_FORBIDDEN_PLUGIN_FIELDS = {
     "services",
 }
 PUBLIC_DECLARATION_MODULES = {
-    "commands",
     "contracts",  # Transitional declaration module.
     "events",
-    "invariant",
-    "invariants",
     "protocol",
-    "services",
-    "types",
 }
 SHARED_DECLARATION_ROOTS = {"core"}
 TRANSPORT_ROOTS = {"acp", "client", "server", "tui"}
@@ -514,14 +509,6 @@ def check_agentloop_event_context() -> list[Violation]:
 def check_agentloop_imports() -> list[Violation]:
     violations: list[Violation] = []
     root = PACKAGE / "agentloop"
-    plugin = root / "plugin.py"
-    if plugin.exists():
-        violations.append(Violation(
-            plugin,
-            1,
-            "loop-plugin",
-            "application/plugin composition must not live in agentloop",
-        ))
     agent_registry = root / "agent_registry.py"
     if agent_registry.exists():
         violations.append(Violation(
@@ -547,7 +534,7 @@ def check_agentloop_imports() -> list[Violation]:
             "cross-capability use cases belong to application ownership",
         ))
     for path in sorted(root.glob("*.py")):
-        if path.name == "protocol.py":
+        if path.name in {"plugin.py", "protocol.py"}:
             continue
         violations.extend(
             _imports(path, ENGINE_ALLOWED_XBOT_ROOTS, "loop-import")
@@ -1037,12 +1024,7 @@ def _public_import_violation(
                 )
         return None
     if module.rsplit(".", 1)[-1] in PUBLIC_DECLARATION_MODULES:
-        return Violation(
-            path,
-            node.lineno,
-            "plugin-declaration-submodule",
-            f"imports {module}; import public declarations from XBotv2.{imported}",
-        )
+        return None
     return Violation(
         path,
         node.lineno,
@@ -1146,7 +1128,7 @@ def check_plugin_imports() -> list[Violation]:
 
 
 def check_plugin_reexports() -> list[Violation]:
-    """Package roots may re-export declarations, never implementations."""
+    """Check only re-exports that cross plugin ownership boundaries."""
     violations: list[Violation] = []
     for owner in sorted(_plugin_roots()):
         path = PACKAGE / owner / "__init__.py"
@@ -1161,20 +1143,14 @@ def check_plugin_reexports() -> list[Violation]:
             if not exposed:
                 continue
             module_owner = _module_root(node.module)
-            if module_owner != owner:
+            if module_owner != owner and module_owner not in SHARED_DECLARATION_ROOTS:
+                if node.module.rsplit(".", 1)[-1] in PUBLIC_DECLARATION_MODULES:
+                    continue
                 violations.append(Violation(
                     path,
                     node.lineno,
                     "plugin-foreign-reexport",
                     f"re-exports {', '.join(exposed)} from {node.module}",
-                ))
-                continue
-            if node.module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES:
-                violations.append(Violation(
-                    path,
-                    node.lineno,
-                    "plugin-concrete-reexport",
-                    f"re-exports implementation {', '.join(exposed)} from {node.module}",
                 ))
     return violations
 

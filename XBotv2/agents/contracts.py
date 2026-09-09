@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider
-from XBotv2.core.usage import UsageData
 from XBotv2.core.variables import RuntimeVariables
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
@@ -42,26 +41,6 @@ class AgentDefinition(BaseModel):
         if not value.strip():
             raise ValueError("Agent description must not be empty")
         return value
-
-
-class SubagentAgentError(RuntimeError):
-    code = "agent_not_found"
-
-
-class SubagentTurnError(RuntimeError):
-    code = "subagent_failed"
-
-
-@dataclass(frozen=True, slots=True)
-class AgentSessionResult:
-    final_response: str
-    usage: UsageData = field(default_factory=UsageData)
-
-
-class AgentSession(Protocol):
-    async def wait(self) -> AgentSessionResult: ...
-
-    async def cancel(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,12 +131,8 @@ __all__ = [
     "AgentDefinition",
     "AgentMode",
     "AgentRuntimePort",
-    "AgentSession",
-    "AgentSessionResult",
     "AgentSelection",
     "LIST_AGENTS",
     "SELECT_AGENT",
     "SelectAgent",
-    "SubagentAgentError",
-    "SubagentTurnError",
 ]

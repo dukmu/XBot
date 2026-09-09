@@ -3,6 +3,10 @@
 from XBotv2.session.contracts import (
     AttachmentInput,
     ArtifactPayload,
+    AgentApplicationFactory,
+    AgentApplicationOptions,
+    HISTORY_CHANGED,
+    HistoryChanged,
     HistoryMutation,
     ImageInput,
     InteractionReceipt,
@@ -10,23 +14,55 @@ from XBotv2.session.contracts import (
     OpenedSession,
     OpenSession,
     OpenThread,
+    PREPARE_FORK,
     PendingInputData,
     PendingInputUpdate,
+    PrepareFork,
     RegenerateMessage,
     SendMessage,
     SESSION_RESOURCE_CHANGED,
     SESSION_RESOURCE_REMOVED,
     SessionDescriptor,
+    SessionEventFrame,
     SessionExists,
     SessionInfo,
+    SessionHistoryItem,
     SessionMode,
     SessionNotFound,
     SessionResourceChanged,
     SessionResourceRemoved,
+    SessionPort,
+    SessionsPort,
+    SessionStatus,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
+    conversation_replay,
     new_session_id,
+)
+from XBotv2.session.protocol import (
+    AgentConfiguredData,
+    CloseResponse,
+    DeleteSessionResponse,
+    ForkResponse,
+    HistoryMutationResponse,
+    HistoryUpdatedData,
+    InterruptResponse,
+    MessageData,
+    MessageRequest,
+    OpenSessionRequest,
+    OpenSessionResponse,
+    OpenThreadRequest,
+    PendingInputListResponse,
+    PendingInputUpdateRequest,
+    RegenerateRequest,
+    SessionEventType,
+    SessionListResponse,
+    ThreadListResponse,
+    ThreadMessagesResponse,
+    UndoRequest,
+    session_error_event,
+    session_event,
 )
 
 __all__ = [
@@ -58,6 +94,8 @@ __all__ = [
     "RegenerateRequest",
     "SessionsPort",
     "SessionHistoryItem",
+    "SessionEventFrame",
+    "conversation_replay",
     "SessionListResponse",
     "SessionEventType",
     "SessionMode",
@@ -86,69 +124,6 @@ __all__ = [
     "ThreadSummary",
     "new_session_id",
     "UndoRequest",
-    "build_session_commands",
     "session_event",
     "session_error_event",
 ]
-
-_COMMAND_EXPORTS = {"build_session_commands"}
-_CONTRACT_EXPORTS = {
-    "AgentApplicationFactory",
-    "AgentApplicationOptions",
-    "HISTORY_CHANGED",
-    "HistoryChanged",
-    "PREPARE_FORK",
-    "PrepareFork",
-    "SessionStatus",
-    "SessionDescriptor",
-    "SESSION_RESOURCE_CHANGED",
-    "SESSION_RESOURCE_REMOVED",
-    "SessionResourceChanged",
-    "SessionResourceRemoved",
-    "new_session_id",
-}
-_CONTRACT_EXPORTS.update({"SessionPort", "SessionsPort"})
-
-_PROTOCOL_EXPORTS = {
-    "AgentConfiguredData",
-    "AttachmentInput",
-    "CloseResponse",
-    "DeleteSessionResponse",
-    "ForkResponse",
-    "HistoryMutationResponse",
-    "HistoryUpdatedData",
-    "ImageInput",
-    "InterruptResponse",
-    "MessageData",
-    "MessageRequest",
-    "OpenSessionRequest",
-    "OpenSessionResponse",
-    "OpenThreadRequest",
-    "PendingInputData",
-    "PendingInputListResponse",
-    "PendingInputUpdateRequest",
-    "RegenerateRequest",
-    "SessionEventType",
-    "SessionHistoryItem",
-    "SessionListResponse",
-    "SessionSummary",
-    "ThreadListResponse",
-    "ThreadMessagesResponse",
-    "ThreadSummary",
-    "UndoRequest",
-    "session_error_event",
-    "session_event",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name in _COMMAND_EXPORTS:
-        from XBotv2.session import commands as declarations
-    elif name in _CONTRACT_EXPORTS:
-        from XBotv2.session import contracts as declarations
-    elif name in _PROTOCOL_EXPORTS:
-        from XBotv2.session import protocol as declarations
-    else:
-        raise AttributeError(name)
-
-    return getattr(declarations, name)

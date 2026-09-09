@@ -7,15 +7,16 @@ from XBotv2.workspaces.contracts import (
     WORKSPACE_RESOURCE_CHANGED,
     WORKSPACE_RESOURCE_REMOVED,
     WorkspaceOrderChanged,
+    WorkspaceListing,
+    WorkspaceNotFound,
+    WorkspaceRecord,
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
-)
-from XBotv2.workspaces.models import WorkspaceListing, WorkspaceRecord, WorkspaceSnapshot, WorkspaceView
-from XBotv2.workspaces.service import (
-    WorkspaceNotFound,
-    WorkspaceRegistry,
     WorkspaceSessionMoveInvalid,
     WorkspaceSessionNotFound,
+    WorkspaceSnapshot,
+    WorkspaceView,
+    WorkspacesPort,
 )
 
 __all__ = [
@@ -27,7 +28,6 @@ __all__ = [
     "WorkspaceNotFound",
     "WorkspaceListing",
     "WorkspaceRecord",
-    "WorkspaceRegistry",
     "WorkspaceSnapshot",
     "WorkspaceSessionMoveInvalid",
     "WorkspaceSessionNotFound",
@@ -35,4 +35,5 @@ __all__ = [
     "WorkspaceResourceChanged",
     "WorkspaceResourceRemoved",
     "WorkspaceView",
+    "WorkspacesPort",
 ]

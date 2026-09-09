@@ -15,7 +15,7 @@ from xcore import S
 
 from .mcp_client import MCPClient
 from .callbacks import client_callbacks
-from .invariants import MCP_PLUGIN_ID
+from .contracts import MCP_PLUGIN_ID
 from .tool import MCPTool
 
 import logging

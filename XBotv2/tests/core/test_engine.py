@@ -9,7 +9,7 @@ from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.coretools.shell import shell_tools
 from XBotv2.jobs.registry import JobRegistry
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 import xcore
 from XBotv2.tests.helpers import make_engine as helpers_make_engine
 from XBotv2.tests.helpers import make_tool_ctx

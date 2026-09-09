@@ -141,7 +141,7 @@ async def start_application(
         is_subagent=is_subagent,
     )
 
-    services: dict[str, object] = {
+    services = {
         "runtime_paths": paths,
         "agent_options": agent_options,
         "session_launch": SessionLaunch(
@@ -169,16 +169,20 @@ async def start_application(
     }
 
     try:
-        plugin_ctx = await boot_application(
-            tree=tree,
+        plugin_ctx = Context(
             data_dir=thread_paths.plugin_state_dir,
             state_service=(
                 thread_persistence.state
                 if thread_persistence is not None
                 else None
             ),
+        )
+        for name, service in services.items():
+            plugin_ctx.set(name, service)
+        plugin_ctx = await boot_application(
+            ctx=plugin_ctx,
+            tree=tree,
             plugin_dirs=plugin_dirs,
-            services=services,
         )
         await plugin_ctx.agent_runtime.announce_initialized()
 

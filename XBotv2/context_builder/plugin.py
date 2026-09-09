@@ -7,9 +7,9 @@ prompt fragments; the engine and the prompts component consume it through
 
 from __future__ import annotations
 
-from typing import Any
 from xcore import Context
 
+from XBotv2.agentloop import EventPort
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.context_builder.events import (
     BUILD_CONTEXT,
@@ -39,7 +39,7 @@ class ContextBuildHandler:
     def __init__(
         self,
         builder: ContextBuilder,
-        events: Any,
+        events: EventPort,
         runtime_log: RuntimeLog,
     ) -> None:
         self._builder = builder

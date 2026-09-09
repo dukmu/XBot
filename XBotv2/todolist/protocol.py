@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.todolist.contracts import GET_TODOS
-from XBotv2.todolist.models import TodoSnapshot
+from XBotv2.todolist.contracts import TodoSnapshot
 
 
 def build_router(*, sessions: SessionsPort) -> APIRouter:

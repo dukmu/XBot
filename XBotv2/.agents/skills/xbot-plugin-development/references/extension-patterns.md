@@ -199,26 +199,16 @@ For related fields, store a versioned snapshot under one key instead of
 writing several keys that can describe different moments.
 
 ```python
-from dataclasses import dataclass
-from typing import Any
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True, slots=True)
-class Checklist:
-    version: int
+class Checklist(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal[1] = 1
     items: tuple[str, ...]
-
-    def to_json(self) -> dict[str, object]:
-        return {"version": self.version, "items": list(self.items)}
-
-    @classmethod
-    def from_json(cls, raw: Any) -> "Checklist":
-        if not isinstance(raw, dict) or raw.get("version") != 1:
-            raise ValueError("unsupported checklist state")
-        items = raw.get("items")
-        if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
-            raise ValueError("checklist items must be strings")
-        return cls(version=1, items=tuple(items))
 ```
 
 ```python
@@ -228,10 +218,10 @@ class ChecklistStore:
 
     async def load(self) -> Checklist:
         raw = await self._state.get("snapshot")
-        return Checklist(1, ()) if raw is None else Checklist.from_json(raw)
+        return Checklist(items=()) if raw is None else Checklist.model_validate(raw)
 
     async def save(self, checklist: Checklist) -> None:
-        await self._state.set("snapshot", checklist.to_json())
+        await self._state.set("snapshot", checklist.model_dump(mode="json"))
 ```
 
 `None` is valid here because an absent persisted key is an explicit initial

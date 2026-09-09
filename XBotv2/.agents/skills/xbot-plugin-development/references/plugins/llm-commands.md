@@ -4,9 +4,10 @@ Slash commands for runtime provider, model, and reasoning effort selection.
 These are **runtime commands**, not provider config changes — they
 switch the active `ModelPort` binding in the current session.
 
-- **Import/profile:** `llm-commands`, Agent profile.
-- **Source:** `XBotv2/llm/commands.py`,
-  `XBotv2/llm/runtime_commands/plugin.py` (registration).
+- **Import/profile:** Agent-profile facet of the root `llm` plugin; it is not a
+  separate tree entry.
+- **Source:** `XBotv2/llm/commands.py`; registration is in
+  `XBotv2/llm/plugin.py`.
 - **Injects/provides:** `agent_runtime` (`AgentRuntimePort`), `llm`
   (`LlmCatalogPort`).
 - **Operations:** none — pure `Command` registration.
@@ -25,17 +26,14 @@ def build_llm_commands(
 
 Returns a tuple of exactly 3 `Command` objects.
 
-### `Command` registration (runtime_commands/plugin.py)
+### `Command` registration (`llm/plugin.py`)
 
-The commands are registered in `build_llm_runtime_commands()` which
-calls `build_llm_commands()`:
+The root plugin waits for `agent_runtime`, `llm`, and `commands`, then registers
+the tuple returned by `build_llm_commands()`.
 
 ```python
-def build_llm_runtime_commands(
-    runtime: AgentRuntimePort,
-    llm: LlmCatalogPort,
-) -> tuple[Command, ...]:
-    return build_llm_commands(runtime, llm)
+for command in build_llm_commands(ctx.agent_runtime, ctx.llm):
+    ctx.commands.register(command)
 ```
 
 ## Slash commands
@@ -80,12 +78,12 @@ def build_llm_runtime_commands(
 Commands delegate to `AgentRuntimePort`:
 
 ```python
-selected = runtime.current_selection()    # -> SessionSelection
-await runtime.select_provider(name, model=model)  # -> dict[str, str]
-await runtime.select_effort(tier)         # -> dict[str, str]
+selected = runtime.current_selection()    # -> AgentSelection
+await runtime.select_provider(name, model=model)  # -> ProviderSelection
+await runtime.select_effort(tier)         # -> EffortSelection
 ```
 
-`SessionSelection` (from `agents/services.py`) carries `provider`,
+`AgentSelection` (from `XBotv2.agents`) carries `provider`,
 `model`, and `model_mode` attributes.
 
 ## Typical extension: add a custom LLM command

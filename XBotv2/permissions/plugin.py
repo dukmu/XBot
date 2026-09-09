@@ -18,7 +18,7 @@ from xcore.state import StateService
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured, AgentDefinition
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.config.models import PermissionRuleConfig
+from XBotv2.config import PermissionRuleConfig
 from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.permissions.contracts import PermissionsPort
@@ -184,6 +184,7 @@ class PermissionsComponent:
         "parent_permissions",
         "tools",
         "client_events",
+        "interactions",
         "variables",
         "commands",
         "settings",
@@ -195,7 +196,11 @@ class PermissionsComponent:
 
     def apply(self, ctx: Context, config: object | None = None) -> None:
         config = config or {}
-        approval = ApprovalService(ctx, ctx.client_events)
+        approval = ApprovalService(
+            ctx,
+            ctx.client_events,
+            ctx.interactions.create_waiter(),
+        )
         ctx.set("approval", approval)
         ctx.dispose(ctx.client_events.register_waiter("permission_request", approval.waiter))
         ctx.on(Events.SESSION_CLOSE, approval.session_closed)

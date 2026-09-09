@@ -3,14 +3,63 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from datetime import datetime, timezone
+from typing import Literal, Protocol
 
-from XBotv2.agentloop.inbox import InboxInput
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from XBotv2.agentloop.contracts import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.history import ConversationPage, HistoryNode
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
-from XBotv2.persistence.models import ThreadLifecycleRecord, ThreadMetadata
+from XBotv2.core.metadata import ThreadMetadata
+
+
+class ThreadLifecycleRecord(BaseModel):
+    """Durable lifecycle entry shared with child-application orchestration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    event: Literal["started", "completed", "failed", "cancelled"]
+    thread_id: str
+    parent_thread_id: str
+    agent: str
+    timestamp: str
+    error: str = ""
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _validate_timestamp(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise TypeError("timestamp must be a string")
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("timestamp must be an ISO 8601 timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value
+
+    @classmethod
+    def create(
+        cls,
+        event: Literal["started", "completed", "failed", "cancelled"],
+        *,
+        thread_id: str,
+        parent_thread_id: str,
+        agent: str,
+        error: str = "",
+    ) -> "ThreadLifecycleRecord":
+        return cls(
+            event=event,
+            thread_id=thread_id,
+            parent_thread_id=parent_thread_id,
+            agent=agent,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            error=error,
+        )
 
 
 class HistoryPort(Protocol):
@@ -58,7 +107,9 @@ class MetadataPort(Protocol):
     def save(self, metadata: ThreadMetadata) -> None: ...
 
 
-class InboxPort(Protocol):
+class InboxPersistencePort(Protocol):
+    """Durable inbox operations owned by the persistence plugin."""
+
     def load(self) -> list[InboxInput]: ...
 
     def replace(self, items: Sequence[InboxInput]) -> None: ...
@@ -97,7 +148,7 @@ class ThreadPersistencePort(Protocol):
     state: StatePort
     artifacts: ArtifactStorePort
     metadata: MetadataPort
-    inbox: InboxPort
+    inbox: InboxPersistencePort
     lifecycle: ThreadLifecyclePort
 
     def has_persisted_state(self) -> bool: ...
@@ -116,10 +167,11 @@ class ThreadPersistenceFactory(Protocol):
 
 __all__ = [
     "HistoryPort",
-    "InboxPort",
+    "InboxPersistencePort",
     "MetadataPort",
     "StatePort",
     "ThreadLifecyclePort",
+    "ThreadLifecycleRecord",
     "ThreadLifecycleWriterPort",
     "ThreadPersistenceFactory",
     "ThreadPersistencePort",

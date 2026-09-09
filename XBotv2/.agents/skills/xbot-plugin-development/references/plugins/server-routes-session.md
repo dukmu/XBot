@@ -5,31 +5,29 @@ routes. Registered via `contribute_router()` as `xbot.http.session`.
 
 - **Import/profile:** `server-routes-session`, server profile.
 - **Source:** `XBotv2/session/protocol.py`,
-  `XBotv2/session/http/plugin.py`.
+  `XBotv2/session/plugin.py` (`mount_http`).
 - **Injects/provides:** none (uses `contribute_router`).
-- **Subscribes to events:** `http/route` (`REGISTER_ROUTE`).
+- **Registration:** the owning root plugin waits for `server`, `sessions`,
+  `server_options`, and `workspace_events`, then contributes the router and
+  its exception handlers as one fiber-owned server effect.
 
-## Router registration (`XBotv2/session/http/plugin.py`)
+## Router registration (`XBotv2/session/plugin.py`)
 
 ```python
-class SessionHttpPlugin:
-    name = "xbot.http.session"
-    inject = ["server", "sessions", "server_options", "workspace_events"]
-
-    async def apply(self, ctx, config=None):
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_session_router(
-                sessions=ctx.sessions,
-                options=ctx.server_options,
-                workspace_events=ctx.workspace_events,
-            ),
-            exception_handlers=(
-                (SessionNotFound, _session_not_found),
-                (ThreadNotActive, _thread_not_active),
-            ),
-        )
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.session.http",
+        router=build_session_router(
+            sessions=ctx.sessions,
+            options=ctx.server_options,
+            workspace_events=ctx.workspace_events,
+        ),
+        exception_handlers=(
+            (SessionNotFound, _session_not_found),
+            (ThreadNotActive, _thread_not_active),
+        ),
+    )
 ```
 
 ## Routes (`build_session_router`) — `XBotv2/session/protocol.py`

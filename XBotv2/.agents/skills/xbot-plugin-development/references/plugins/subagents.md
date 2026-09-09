@@ -6,8 +6,8 @@ Model-facing subagent job tools. Spawns child sessions via the
 reading, and cancelling subagent jobs.
 
 - **Import/profile:** `subagents`, Agent profile.
-- **Source:** `XBotv2/agents/subagents.py`,
-  `XBotv2/agents/subagent_tools/plugin.py`.
+- **Source:** `XBotv2/subagents/plugin.py` (the only plugin export),
+  `XBotv2/subagents/contracts.py`, and `XBotv2/subagents/service.py`.
 - **Injects/provides:** `session`, `agent_catalog`, `child_applications`,
   `permissions`, `client_events`, `jobs`, `tools`, `prompts`,
   `thread_persistence` → (none directly; registers Tools).
@@ -17,7 +17,7 @@ reading, and cancelling subagent jobs.
 
 ## Public data models
 
-### `SubagentLauncher` (`XBotv2/agents/subagents.py:30-62`)
+### `SubagentLauncher` (`XBotv2/subagents/service.py`)
 
 ```python
 class SubagentLauncher:
@@ -28,8 +28,8 @@ class SubagentLauncher:
         session: SessionPort,
         children: ChildApplicationsPort,
         lifecycle: ThreadLifecycleWriterPort,
-        parent_permissions: object,
-        client_events: object | None,
+        parent_permissions: PermissionsPort,
+        client_events: ClientEventsPort | None,
     ) -> None:
         self._catalog = catalog
         self._session = session
@@ -37,7 +37,7 @@ class SubagentLauncher:
         self._lifecycle = lifecycle
         self._parent_permissions = parent_permissions
         self._client_events = client_events
-        self._active: list[AgentSession] = []
+        self._active: list[ChildApplication] = []
 
     async def spawn_subagent(
         self,
@@ -45,28 +45,28 @@ class SubagentLauncher:
         prompt: str,
         *,
         parent_job_id: str | None = None,
-    ) -> AgentSession: ...
+    ) -> ChildApplication: ...
 ```
 
 `spawn_subagent()` validates the agent exists and is not `mode="primary"`,
 then calls `self._children.spawn(ChildApplicationRequest(...))` and
 appends the result to `self._active`.
 
-### `SubagentRunner` (`XBotv2/agents/subagents.py:65-94`)
+### `SubagentRunner` (`XBotv2/subagents/service.py`)
 
 ```python
 class SubagentRunner:
     def __init__(
         self,
         *,
-        session: Any,
+        session: SessionPort,
         agent: str,
         prompt: str,
     ) -> None:
         self.session = session
         self.agent = agent
         self.prompt = prompt
-        self._child: AgentSession | None = None
+        self._child: ChildApplication | None = None
 
     async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult: ...
     async def cancel(self, job: Job) -> None: ...
@@ -77,7 +77,7 @@ then `await session.wait()` and stores the final response in
 `ctx.primary_output`. Returns `JobResult(summary="Subagent {agent} completed",
 data={"agent": agent, "usage": ...})`.
 
-### `SubagentTools` (`XBotv2/agents/subagents.py:97-190`)
+### `SubagentTools` (`XBotv2/subagents/service.py`)
 
 ```python
 class SubagentTools:
@@ -112,11 +112,11 @@ class SubagentTools:
     async def cancel_subagent(self, id: str) -> ToolResult: ...
 ```
 
-### `SubagentCatalogPrompt` (`XBotv2/agents/subagents.py:193-210`)
+### `SubagentCatalogPrompt` (`XBotv2/subagents/service.py`)
 
 ```python
 class SubagentCatalogPrompt:
-    def __init__(self, catalog: AgentCatalogPort, prompts: Any) -> None:
+    def __init__(self, catalog: AgentCatalogPort, prompts: PromptsPort) -> None:
         self._catalog = catalog
         self._prompts = prompts
 
@@ -137,50 +137,22 @@ class SubagentCatalogPrompt:
         )
 ```
 
-## `SubagentsPlugin` (`XBotv2/agents/subagent_tools/plugin.py`)
+## `SubagentsPlugin` (`XBotv2/subagents/plugin.py`)
 
 ```python
+class SubagentsRuntimeComponent:
+    inject = [
+        "session", "agent_catalog", "child_applications", "permissions",
+        "client_events", "jobs", "tools", "prompts", "thread_persistence",
+    ]
+    name = "xbot.subagents"
+
 class SubagentsPlugin:
-    inject = {
-        "required": [
-            "session", "agent_catalog", "child_applications",
-            "permissions", "client_events", "jobs", "tools", "prompts",
-        ],
-        "optional": ["thread_persistence"],
-    }
-    name = "agents.subagents"
+    name = "xbot.subagents"
     Config = S.object({"timeout_seconds": S.number().optional()})
 
-    def apply(self, ctx, config=None) -> None:
-        if not ctx.has("thread_persistence"):
-            return
-        timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
-        catalog: AgentCatalogPort = ctx.agent_catalog
-        prompts = ctx.prompts
-        ctx.on(APPLICATION_INITIALIZED, SubagentCatalogPrompt(catalog, prompts).publish)
-        handlers = SubagentTools(
-            registry=ctx.jobs,
-            catalog=catalog,
-            launcher=SubagentLauncher(
-                catalog=catalog,
-                session=ctx.session,
-                children=ctx.child_applications,
-                lifecycle=ctx.thread_persistence.lifecycle,
-                parent_permissions=ctx.permissions,
-                client_events=ctx.client_events,
-            ),
-        )
-        ctx.tools.register(
-            Tool.from_function(handlers.spawn_subagent),
-            timeout_seconds=timeout_seconds,
-        )
-        for handler in (
-            handlers.list_subagents,
-            handlers.wait_subagent,
-            handlers.read_subagent,
-            handlers.cancel_subagent,
-        ):
-            ctx.tools.register(Tool.from_function(handler))
+    async def apply(self, ctx, config=None) -> None:
+        await ctx.plugin(SubagentsRuntimeComponent(), config)
 ```
 
 ## Job lifecycle
@@ -197,45 +169,50 @@ spawn_subagent() → registry.create(kind=SUBAGENT) →
 `read_subagent()` reads from `job.result.output_store` (a
 `TextOutputStorePort`).
 
-## Typical extension: spawn and wait
+## Typical extension: register a subagent definition
 
 ```python
-from XBotv2.core import Tool, ToolResult
+from XBotv2.agents import AgentCatalogPort, AgentDefinition
 
-class OrchestratorPlugin:
-    inject = ["tools"]
+class RegisterReviewAgent:
+    def __init__(self, catalog: AgentCatalogPort) -> None:
+        self._catalog = catalog
 
-    def apply(self, ctx, config):
-        async def analyze(code: str) -> ToolResult:
-            result = await ctx.tools.dispatch(
-                "spawn_subagent", {"agent": "default", "prompt": code}
-            )
-            job_id = result.split("(")[1].split(")")[0]
-            # wait for completion
-            await ctx.tools.dispatch(
-                "wait_subagent", {"ids": [job_id], "mode": "any"}
-            )
-            # read output
-            resp = await ctx.tools.dispatch(
-                "read_subagent", {"id": job_id}
-            )
-            return ToolResult.success(resp.content)
+    def register(self) -> None:
+        self._catalog.register(AgentDefinition(
+            name="reviewer",
+            description="Review a focused change for correctness.",
+            mode="subagent",
+            prompt="Inspect the requested scope and report concrete defects.",
+        ), overlay=True)
+
+class ReviewAgentPlugin:
+    inject = ["agent_catalog"]
+
+    def apply(self, ctx, config=None) -> None:
+        RegisterReviewAgent(ctx.agent_catalog).register()
 ```
+
+Do not call `spawn_subagent` through a private `ctx.tools.dispatch` shortcut;
+`ToolsPort` deliberately exposes the standard registration/execution surface,
+not a second name-based executor. The Agent requests the built-in subagent
+Tools. Application code that owns child lifecycle uses
+`ChildApplicationsPort` directly.
 
 ## Cross-references
 
 - Depends on: `session`, `agent_catalog`, `child_applications`,
   `permissions`, `client_events`, `jobs`, `tools`, `prompts`,
-  `thread_persistence`, `agentloop` (`APPLICATION_INITIALIZED`).
+  `thread_persistence`, and application `APPLICATION_INITIALIZED`.
 - Depended on by: the Agent (spawn/list/wait/read/cancel tools).
-- Pairs with: `agent-catalog` (subagent definitions), `jobs`
-  (SUBAGENT job registry), `agent-runtime` (agent selection).
+- Pairs with: the agents catalog, `jobs` (SUBAGENT job registry), and the
+  application-owned child lifecycle.
 
 ## Common pitfalls
 
-- **`thread_persistence` not available**: `apply()` returns early
-  if `ctx.has("thread_persistence")` is False. No tools are
-  registered in that case.
+- **`thread_persistence` not available**: the internal runtime component stays
+  `PENDING`; no tools are registered. It does not probe `ctx.has()` or silently
+  degrade.
 - **Using `mode="all"` on `wait_subagent` with no SUBAGENT jobs**:
   resolves to an empty list → returns
   `"subagent_not_found"` error.

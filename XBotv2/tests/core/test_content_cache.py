@@ -6,7 +6,7 @@ import pytest
 import xcore
 
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 from XBotv2.content_cache.content_cache import (
     DEFAULT_CACHE_THRESHOLD_CHARS,
     cache_user_message,

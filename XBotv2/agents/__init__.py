@@ -7,16 +7,18 @@ from XBotv2.agents.contracts import (
     AgentDefinition,
     AgentMode,
     AgentRuntimePort,
-    AgentSession,
-    AgentSessionResult,
     AgentSelection,
     LIST_AGENTS,
     SELECT_AGENT,
     SelectAgent,
-    SubagentAgentError,
-    SubagentTurnError,
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
+from XBotv2.agents.protocol import (
+    AgentInfo,
+    AgentListResponse,
+    AgentSelectionRequest,
+    AgentSelectionResponse,
+)
 
 __all__ = [
     "AGENT_CONFIGURED",
@@ -30,28 +32,9 @@ __all__ = [
     "AgentSelection",
     "AgentMode",
     "AgentRuntimePort",
-    "AgentSession",
-    "AgentSessionResult",
     "AgentSelectionRequest",
     "AgentSelectionResponse",
     "LIST_AGENTS",
     "SELECT_AGENT",
     "SelectAgent",
-    "SubagentAgentError",
-    "SubagentTurnError",
 ]
-
-_PROTOCOL_EXPORTS = {
-    "AgentInfo",
-    "AgentListResponse",
-    "AgentSelectionRequest",
-    "AgentSelectionResponse",
-}
-
-
-def __getattr__(name: str) -> object:
-    if name not in _PROTOCOL_EXPORTS:
-        raise AttributeError(name)
-    from XBotv2.agents import protocol
-
-    return getattr(protocol, name)

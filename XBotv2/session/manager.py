@@ -45,7 +45,6 @@ from XBotv2.session.contracts import (
     SessionsPort,
 )
 from XBotv2.session.event_stream import (
-    SessionEventFrame,
     SessionEventSubscription,
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
@@ -63,6 +62,7 @@ from XBotv2.session.contracts import (
     RegenerateMessage,
     SendMessage,
     SessionExists,
+    SessionEventFrame,
     SessionNotFound,
     SessionSummary,
     ThreadNotActive,
@@ -1361,4 +1361,3 @@ __all__ = [
     "session_summary",
     "thread_summary",
 ]
-

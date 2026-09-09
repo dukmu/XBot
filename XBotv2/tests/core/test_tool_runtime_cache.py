@@ -14,7 +14,7 @@ from XBotv2.coretools.filesystem import (
     read,
     search,
 )
-from XBotv2.config.models import (
+from XBotv2.config.contracts import (
     SandboxConfig,
     SandboxResourceConfig
 )
@@ -43,6 +43,7 @@ from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
 from XBotv2.permissions.approval import ApprovalService
+from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.interactions.plugin import InteractionsService
 from XBotv2.tests.helpers import make_tool_ctx
@@ -279,7 +280,7 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
     client_events.set_sink(approve)
-    approval = ApprovalService(service_ctx, client_events)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -553,7 +554,7 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
     client_events.set_sink(approve)
-    approval = ApprovalService(service_ctx, client_events)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,

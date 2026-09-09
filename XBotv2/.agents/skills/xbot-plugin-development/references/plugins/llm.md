@@ -5,9 +5,8 @@ provider+model at session start, surfaces a typed catalog for the UI,
 and exposes operations for switching at runtime.
 
 - **Import/profile:** `llm`, Agent and server profiles.
-- **Source:** `XBotv2/llm/plugin.py`, `XBotv2/llm/services.py`,
+- **Source:** `XBotv2/llm/plugin.py`, `XBotv2/llm/contracts.py`,
   `XBotv2/llm/config.py`, `XBotv2/llm/commands.py`,
-  `XBotv2/llm/runtime_commands/plugin.py`,
   `XBotv2/llm/anthropic.py`, `XBotv2/llm/openai.py`,
   `XBotv2/core/providers.py`, `XBotv2/core/usage.py`.
 - **Injects/provides:** `runtime_log` → `llm` (`LLMService`) and
@@ -172,7 +171,8 @@ class ProviderCatalog:
 
 ## Slash commands (`/llm`, `/provider`, `/model`, `/effort`, `/thinking`)
 
-Registered by `XBotv2/llm/runtime_commands/plugin.py`. Each takes a
+Registered by the root `XBotv2/llm/plugin.py` using command builders from
+`XBotv2/llm/commands.py`. Each takes a
 single argument and updates the active Agent runtime selection:
 
 | Command | Argument | Effect |
@@ -228,9 +228,10 @@ read `ctx.model` for the active binding.
 - **Reimplementing `ProviderConfig.resolve`**: use it; it fails closed
   on unknown model names instead of silently reusing another model's
   settings.
-- **Mutating `ProviderConfig.models` at runtime**: validation is
-  one-shot at parse; reload via `replace_rules` rather than list
-  surgery.
+- **Mutating `ProviderConfig.models` at runtime**: provider configuration is
+  validated startup input. Apply a supported configuration update at the
+  composition boundary instead of mutating a parsed model in place; there is
+  no LLM `replace_rules` API.
 - **Ignoring `reasoning_effort` validation**: if a model declares
   `effort` tiers, the configured `reasoning_effort` must be one of
   them; otherwise the request errors at model time.

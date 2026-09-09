@@ -5,7 +5,7 @@ layers. Each agent has a `name`, `description`, `mode`, optional
 provider/model/temperature overrides, permissions, and tool selections.
 
 - **Import/profile:** `agent-catalog`, Agent profile.
-- **Source:** `XBotv2/agents/catalog_component.py`,
+- **Source:** `XBotv2/agents/plugin.py` (`mount_catalog`),
   `XBotv2/agents/catalog.py`,
   `XBotv2/agents/loader.py`,
   `XBotv2/agents/builtins.py`,
@@ -97,10 +97,10 @@ Pre-defined agents shipped with XBot. `apply()` in the catalog component
 registers them first, then loads `.agents/` from `data_root/.agents`,
 then loads workspace `.agents/` as overlay.
 
-## How `apply()` works (`AgentCatalogComponent`)
+## How catalog mounting works (`agents/plugin.py`)
 
 ```python
-def apply(self, ctx: Context, config: object | None = None) -> None:
+def mount_catalog(ctx: Context) -> None:
     catalog = AgentCatalog()
     definitions = {
         d.name: d for d in BUILTIN_AGENT_DEFINITIONS
@@ -133,7 +133,7 @@ class CustomAgentPlugin:
     name = "custom-agent"
     inject = ["agent_catalog"]
 
-    def apply(self, ctx, config):
+    def apply(self, ctx, config=None):
         ctx.agent_catalog.register(AgentDefinition(
             name="code-reviewer",
             description="Reviews code changes",

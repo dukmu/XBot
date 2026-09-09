@@ -26,20 +26,19 @@ async def start_acp_application(
     ensure_initial_config(paths)
     tree = load_acp_tree(paths=paths)
 
+    ctx = Context(data_dir=paths.data_dir)
+    ctx.set("runtime_paths", paths)
+    ctx.set("workspace_root", Path(paths.data_dir).resolve())
+    ctx.set("agent_application_factory", create_agent_application)
+    ctx.set("acp_launch", ACPLaunch(
+        provider_name=provider_name,
+        no_plugins=no_plugins,
+        selected_agent=selected_agent,
+        llm_override=llm_override,
+    ))
     return await boot_application(
+        ctx=ctx,
         tree=tree,
-        data_dir=paths.data_dir,
-        services={
-            "runtime_paths": paths,
-            "workspace_root": Path(paths.data_dir).resolve(),
-            "agent_application_factory": create_agent_application,
-            "acp_launch": ACPLaunch(
-            provider_name=provider_name,
-            no_plugins=no_plugins,
-            selected_agent=selected_agent,
-            llm_override=llm_override,
-            ),
-        },
     )
 
 

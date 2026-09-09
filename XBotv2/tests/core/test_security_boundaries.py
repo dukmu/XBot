@@ -257,7 +257,7 @@ async def test_sandbox_cannot_read_or_modify_host_tmp(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_deny_and_policy_directory_are_os_enforced(tmp_path):
-    from XBotv2.config.models import SandboxConfig, SandboxResourceConfig
+    from XBotv2.config.contracts import SandboxConfig, SandboxResourceConfig
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

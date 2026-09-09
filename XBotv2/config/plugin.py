@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pydantic import JsonValue
 from xcore import Context
 
-from XBotv2.config.models import UserContext
+from XBotv2.config.contracts import UserContext
 from XBotv2.config.service import ConfigService
 from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
 from XBotv2.core.operations import EmptyRequest

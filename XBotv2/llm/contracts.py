@@ -6,12 +6,89 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider
-from XBotv2.llm.config import ModelConfig, ProviderConfig
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+
+
+class ModelConfig(BaseModel):
+    """Sampling, capacity, and capability settings for one model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1)
+    temperature: float | None = None
+    max_context_tokens: int = Field(default=32_000, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    reasoning_effort: str | None = None
+    effort: list[str] | None = None
+    thinking: str | None = Field(default=None, min_length=1)
+    extra_body: dict[str, JsonValue] = Field(default_factory=dict)
+    input_modalities: list[Literal["text", "image"]] = Field(
+        default_factory=lambda: ["text"]
+    )
+    mock_responses: list[dict[str, JsonValue]] = Field(default_factory=list)
+
+    @field_validator("input_modalities")
+    @classmethod
+    def _validate_input_modalities(cls, value: list[str]) -> list[str]:
+        if "text" not in value:
+            raise ValueError("input_modalities must include text")
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def _validate_effort_tiers(self) -> "ModelConfig":
+        if (
+            self.effort
+            and self.reasoning_effort is not None
+            and self.reasoning_effort not in self.effort
+        ):
+            raise ValueError(
+                f"reasoning_effort {self.reasoning_effort!r} must be one of "
+                f"the advertised effort tiers: {', '.join(self.effort)}"
+            )
+        return self
+
+    @property
+    def model_mode(self) -> str:
+        return self.reasoning_effort or self.thinking or ""
+
+
+class ProviderConfig(BaseModel):
+    """One provider endpoint and its model catalog."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protocol: str = "openai"
+    base_url: str | None = None
+    api_key: str | None = None
+    default_model: str
+    models: list[ModelConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_catalog(self) -> "ProviderConfig":
+        if not self.models:
+            raise ValueError("models must list at least one model")
+        names = {model.model for model in self.models}
+        if self.default_model not in names:
+            raise ValueError(
+                f"default_model {self.default_model!r} is not listed in models: "
+                + ", ".join(sorted(names))
+            )
+        return self
+
+    def resolve(self, model: str | None = None) -> ModelConfig:
+        name = model or self.default_model
+        for candidate in self.models:
+            if candidate.model == name:
+                return candidate
+        raise ValueError(
+            f"Unknown model {name!r} for protocol {self.protocol!r}; "
+            "configured models: " + ", ".join(m.model for m in self.models)
+        )
 
 
 class ModelDescription(BaseModel):

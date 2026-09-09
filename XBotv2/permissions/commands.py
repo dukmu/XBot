@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from XBotv2.config import PatchPolicy, SettingsPort
-from XBotv2.config.models import PermissionRuleConfig
+from XBotv2.config import PermissionRuleConfig
 from XBotv2.commands import (
     Command,
     CommandResult,

@@ -4,37 +4,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class DirectoryNotFound(FileNotFoundError):
-    pass
-
-
-class DirectoryNotReadable(PermissionError):
-    pass
+from XBotv2.workspaces.contracts import (
+    DirectoriesPort,
+    DirectoryEntry,
+    DirectoryListing,
+    DirectoryNotFound,
+    DirectoryNotReadable,
+)
 
 
-class DirectoryEntry(BaseModel):
-    name: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    hidden: bool
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class DirectoryListing(BaseModel):
-    path: str = Field(min_length=1)
-    parent: str | None
-    home: str = Field(min_length=1)
-    separator: Literal["/", "\\"]
-    entries: tuple[DirectoryEntry, ...]
-    truncated: bool
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class DirectoryBrowser:
+class DirectoryBrowser(DirectoriesPort):
     """List server-side directories without exposing file contents."""
 
     def __init__(self, default_path: Path | str, *, limit: int = 500) -> None:
@@ -80,8 +59,4 @@ class DirectoryBrowser:
 
 __all__ = [
     "DirectoryBrowser",
-    "DirectoryEntry",
-    "DirectoryListing",
-    "DirectoryNotFound",
-    "DirectoryNotReadable",
 ]

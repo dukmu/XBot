@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 from xcore import Context
 
-from XBotv2.agents import AgentDefinition, AgentSessionResult
+from XBotv2.agents import AgentDefinition
+from XBotv2.application import ChildApplicationResult
 from XBotv2.core import RuntimePaths
 from XBotv2.core.usage import UsageData
 from XBotv2.jobs import JobKind
@@ -674,11 +675,11 @@ class _ChildSession:
         self.output = output
         self.closed = False
 
-    async def wait(self) -> AgentSessionResult:
+    async def wait(self) -> ChildApplicationResult:
         if self.release is not None:
             await self.release.wait()
         self.closed = True
-        return AgentSessionResult(
+        return ChildApplicationResult(
             final_response=self.output,
             usage=UsageData(total_tokens=12),
         )

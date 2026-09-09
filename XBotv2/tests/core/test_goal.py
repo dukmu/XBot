@@ -17,7 +17,7 @@ from XBotv2.agentloop import EventContext, Events
 from XBotv2.context_builder import ContextComponent
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.store import ThreadPersistence
 from plugin_harness import mount_ctx, mount_plugin

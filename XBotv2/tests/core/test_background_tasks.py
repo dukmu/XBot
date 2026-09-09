@@ -16,8 +16,9 @@ from XBotv2.agentloop.tool_runtime import execute_tools
 from XBotv2.agentloop import Events
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.permissions.approval import ApprovalService
+from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.application.client_events import ClientEventRouter
-from XBotv2.config.models import SandboxConfig
+from XBotv2.config.contracts import SandboxConfig
 from XBotv2.tests.helpers import make_tool_ctx
 import xcore
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -286,7 +287,7 @@ async def test_escalated_background_shell_requires_approval(
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
     client_events.set_sink(approve)
-    approval = ApprovalService(service_ctx, client_events)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -335,7 +336,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
     client_events.set_sink(deny)
-    approval = ApprovalService(service_ctx, client_events)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,

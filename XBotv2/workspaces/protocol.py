@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Literal, Protocol
+from typing import Literal
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
@@ -20,12 +20,19 @@ from XBotv2.session.contracts import (
     SessionResourceChanged,
     SessionResourceRemoved,
 )
-from XBotv2.workspaces import (
+from XBotv2.workspaces.contracts import (
+    DirectoriesPort,
+    DirectoryListing,
+    DirectoryNotFound,
+    DirectoryNotReadable,
     WorkspaceListing,
     WorkspaceNotFound,
     WorkspaceSessionMoveInvalid,
     WorkspaceSessionNotFound,
     WorkspaceView,
+    WorkspaceEventSubscription,
+    WorkspaceEventsPort,
+    WorkspacesPort,
 )
 from XBotv2.workspaces.contracts import (
     ArchivedSessionsChanged,
@@ -37,57 +44,6 @@ from XBotv2.workspaces.events import (
     WorkspaceCursorExpired,
     WorkspaceEventFrame,
 )
-from XBotv2.workspaces.directories import (
-    DirectoryListing,
-    DirectoryNotFound,
-    DirectoryNotReadable,
-)
-
-
-class WorkspacesPort(Protocol):
-    async def list(self) -> WorkspaceListing: ...
-
-    async def create(self, path: str) -> tuple[WorkspaceView, bool]: ...
-
-    async def rename(self, workspace_id: str, title: str) -> WorkspaceView: ...
-
-    async def delete(self, workspace_id: str) -> bool: ...
-
-    async def insert_before(
-        self,
-        workspace_id: str,
-        before_workspace_id: str | None,
-    ) -> tuple[str, ...]: ...
-
-    async def insert_session_before(
-        self,
-        workspace_id: str,
-        session_id: str,
-        before_session_id: str | None,
-    ) -> WorkspaceView: ...
-
-    async def set_archived(
-        self,
-        session_id: str,
-        archived: bool,
-    ) -> tuple[str, ...]: ...
-
-
-class WorkspaceEventSubscription(Protocol):
-    def __aiter__(self) -> "WorkspaceEventSubscription": ...
-    async def __anext__(self) -> WorkspaceEventFrame: ...
-    async def aclose(self) -> None: ...
-
-
-class WorkspaceEventsPort(Protocol):
-    @property
-    def sequence(self) -> int: ...
-
-    def subscribe(self, after: int) -> WorkspaceEventSubscription: ...
-
-
-class DirectoriesPort(Protocol):
-    def list(self, path: str | None = None) -> DirectoryListing: ...
 
 
 class WorkspaceListResponse(WireModel):

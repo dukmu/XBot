@@ -20,12 +20,14 @@ import os
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import JsonValue
+
+from XBotv2.llm.contracts import ModelConfig, ProviderConfig
 
 _ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
 
 
-class ModelConfig(BaseModel):
+'''class ModelConfig(BaseModel):
     """Sampling, capacity, and capability settings for one specific model."""
 
     model_config = ConfigDict(extra="forbid")
@@ -115,6 +117,7 @@ class ProviderConfig(BaseModel):
             f"Unknown model {name!r} for protocol {self.protocol!r}; "
             "configured models: " + ", ".join(m.model for m in self.models)
         )
+    '''
 
 
 def expand_env(value: str) -> str:

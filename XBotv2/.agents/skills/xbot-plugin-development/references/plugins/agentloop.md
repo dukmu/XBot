@@ -4,16 +4,16 @@ The Agent reasoning loop. Owns turn sequencing, dispatches every named
 event on the XCore context, and constructs the `Engine` after all
 launch facts are composed.
 
-- **Import/profile:** tree id `agentloop`, import name `agentloop.runtime`,
+- **Import/profile:** tree id/import name `agentloop`,
   Agent profile.
-- **Source:** `XBotv2/agentloop/runtime/plugin.py`,
+- **Source:** `XBotv2/agentloop/plugin.py`,
   `XBotv2/agentloop/factory.py`, `XBotv2/agentloop/engine.py`,
   `XBotv2/agentloop/events.py`.
 - **Injects/provides:** `runtime_log` → `agent_loop_factory`, which
   publishes the constructed loop as `ctx.engine`.
 - **Subscribes to events:** none in `apply`; the loop *emits* events.
-- **Emits:** every `Events.*` name — see
-  [../events-catalog.md](../events-catalog.md).
+- **Emits:** the `Events.*` names summarized below; the authoritative list is
+  `XBotv2/agentloop/events.py`.
 
 ## Public data models
 
@@ -112,7 +112,7 @@ class EventContext:
     request_id: str = ""
 ```
 
-### `LoopSettings` / `LoopState` / `ModelRequest` / `ModelResponse`
+### `LoopSettings` / `LoopState` / `ModelRequest`
 
 All in `XBotv2/agentloop/contracts.py`:
 
@@ -126,28 +126,19 @@ class LoopSettings:
     reasoning_effort: str | None = None
     # ... plus capability flags the loop honors
 
-@dataclass
 class LoopState:
+    # Mutable runtime state initialized with SessionInfo, optional history,
+    # metadata, inbox values/sink, and RuntimeVariables.
     session: SessionInfo
     history: ConversationHistory
-    inbox_items: list[InboxItem]
-    metadata: ThreadMetadataState
+    inbox_items: list[InboxInput]
     resumed: bool
-    # ... plus runtime counters
 
 @dataclass
 class ModelRequest:
     messages: list[Message]
     tools: list[Tool]
-    settings: LoopSettings
-    # ...
-
-@dataclass
-class ModelResponse:
-    message: Message | None
-    usage: UsageData | None
-    finish_reason: str | None
-    # ...
+    llm: ModelPort
 ```
 
 ## `EventPort` consumer Protocol
@@ -229,7 +220,7 @@ usage accounting are owned by [persistence.md](persistence.md) and
 - Depended on by: every plugin that observes events; `tools`,
   `permissions`, `coretools`, `compact`, `usage`, `persistence`,
   `token_manager` all listen on `Events.*`.
-- Pairs with: [agent-runtime.md](agent-runtime.md) (composition that
+- Pairs with: [agents.md](agents.md) (composition that
   wires selection + loop), [session.md](session.md) (per-thread
   identity for events).
 

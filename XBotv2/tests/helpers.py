@@ -97,7 +97,7 @@ def make_engine(
     composition does.
     """
     from XBotv2.agentloop.engine import Engine
-    from XBotv2.config.models import RuntimeConfig
+    from XBotv2.config.contracts import RuntimeConfig
     from XBotv2.agentloop import LoopSettings, LoopState
     from XBotv2.core.history import ConversationHistory
     from XBotv2.session import SessionInfo

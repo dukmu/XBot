@@ -9,16 +9,13 @@ from typing import Annotated, TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.messages import ContentPart, ImageContent, Message
 
 MESSAGE_SCHEMA_VERSION = 1
 TRAJECTORY_SCHEMA_VERSION = 1
-THREAD_LIFECYCLE_SCHEMA_VERSION = 1
 INBOX_SCHEMA_VERSION = 1
 
-if TYPE_CHECKING:
-    from XBotv2.agentloop.inbox import InboxInput
+from XBotv2.agentloop.contracts import InboxInput, InboxTarget
 
 
 def utc_now() -> str:
@@ -135,35 +132,6 @@ class TrajectoryEventRecord(_TimestampedRecord):
         return value
 
 
-class ThreadLifecycleRecord(_TimestampedRecord):
-    schema_version: Literal[1] = THREAD_LIFECYCLE_SCHEMA_VERSION
-    event: Literal["started", "completed", "failed", "cancelled"]
-    thread_id: str
-    parent_thread_id: str
-    agent: str
-    error: str = ""
-
-    @classmethod
-    def create(
-        cls,
-        event: Literal["started", "completed", "failed", "cancelled"],
-        *,
-        thread_id: str,
-        parent_thread_id: str,
-        agent: str,
-        error: str = "",
-    ) -> "ThreadLifecycleRecord":
-        if event not in {"started", "completed", "failed", "cancelled"}:
-            raise ValueError(f"Unsupported thread lifecycle event: {event!r}")
-        return cls(
-            event=event,
-            thread_id=thread_id,
-            parent_thread_id=parent_thread_id,
-            agent=agent,
-            timestamp=utc_now(),
-            error=error,
-        )
-
 class InboxItemRecord(PersistenceRecord):
     message_id: str
     content: str
@@ -186,8 +154,6 @@ class InboxItemRecord(PersistenceRecord):
         )
 
     def to_input(self) -> "InboxInput":
-        from XBotv2.agentloop.inbox import InboxInput, InboxTarget
-
         return InboxInput(
             message_id=self.message_id,
             content=self.content,
@@ -251,6 +217,4 @@ __all__ = [
     "MessageRecord",
     "SurfaceReplaceRecord",
     "TrajectoryEventRecord",
-    "ThreadLifecycleRecord",
-    "ThreadMetadata",
 ]

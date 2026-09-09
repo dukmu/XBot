@@ -12,13 +12,15 @@ import uuid
 from xcore.state import StateService
 
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.workspaces.models import (
+from XBotv2.workspaces.contracts import (
     WorkspaceRecord,
     WorkspaceListing,
     WorkspaceSnapshot,
     WorkspaceView,
-)
-from XBotv2.workspaces.contracts import (
+    WorkspaceNotFound,
+    WorkspaceSessionMoveInvalid,
+    WorkspaceSessionNotFound,
+    WorkspacesPort,
     ARCHIVED_SESSIONS_CHANGED,
     ArchivedSessionsChanged,
     WORKSPACE_ORDER_CHANGED,
@@ -28,20 +30,6 @@ from XBotv2.workspaces.contracts import (
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
 )
-
-
-class WorkspaceNotFound(LookupError):
-    def __init__(self, workspace_id: str) -> None:
-        super().__init__(f"Workspace {workspace_id!r} was not found")
-        self.workspace_id = workspace_id
-
-
-class WorkspaceSessionNotFound(LookupError):
-    pass
-
-
-class WorkspaceSessionMoveInvalid(ValueError):
-    pass
 
 
 class SessionSummary(Protocol):
@@ -57,7 +45,7 @@ class ResourceEvents(Protocol):
     async def emit(self, event: str, *args: object) -> None: ...
 
 
-class WorkspaceRegistry:
+class WorkspaceRegistry(WorkspacesPort):
     """Own Workspace identity, ordering, titles, and session membership."""
 
     def __init__(

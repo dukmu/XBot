@@ -15,7 +15,7 @@ from XBotv2.core.timing import (
 )
 from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.llm.mock import MockLLM
-from XBotv2.session.history import conversation_replay
+from XBotv2.session.contracts import conversation_replay
 from XBotv2.tests.helpers import make_engine
 
 

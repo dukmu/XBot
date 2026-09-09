@@ -14,9 +14,10 @@ from XBotv2.core import (
     context_token_limit,
     estimate_messages_tokens,
 )
-from XBotv2.agentloop import EventContext, Events, LoopSettings
+from XBotv2.agentloop import EventContext, Events, LoopSettings, LoopState
 from XBotv2.commands import CommandResult
-from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
+from XBotv2.llm.contracts import ModelPort
+from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionInfo
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
@@ -57,8 +58,8 @@ class CompactService:
         self,
         *,
         events: CompactEventsPort,
-        model: Any,
-        state: Any,
+        model: ModelPort,
+        state: LoopState,
         usage: UsagePort,
         config: CompactConfig,
     ) -> None:
@@ -85,8 +86,7 @@ class CompactService:
     def request_manual_compaction(self) -> None:
         self._manual_requested = True
 
-    def _consume_manual_request(self, session: Any = None) -> bool:
-        del session
+    def _consume_manual_request(self) -> bool:
         if not self._manual_requested:
             return False
         self._manual_requested = False
@@ -122,7 +122,7 @@ class CompactService:
         return result, metrics
 
     async def _on_before_context(self, ctx: EventContext):
-        if not self._consume_manual_request(ctx.session):
+        if not self._consume_manual_request():
             return None
         messages = list(ctx.messages)
         proposal = await self._compact(
@@ -339,7 +339,7 @@ class CompactService:
         context_limit: int | None = None,
         max_context_tokens: int | None = None,
         output_reservation: int | None = None,
-        stable_prefix: Message | Sequence[Any] | None = None,
+        stable_prefix: Message | Sequence[Message] | None = None,
         removable_estimate: int | None = None,
     ) -> dict[str, Any] | None:
         if stable_prefix is None:
@@ -396,7 +396,7 @@ class CompactService:
         self,
         reason: str,
         metrics: dict[str, Any],
-        session: Any,
+        session: SessionInfo,
     ) -> None:
         self._compactions += 1
         self._last_reason = reason

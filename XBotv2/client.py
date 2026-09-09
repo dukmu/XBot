@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 
 import httpx
+from pydantic import JsonValue
 
 from XBotv2.agents import (
     AgentListResponse,
@@ -418,7 +419,7 @@ class XBotClient:
         thread_id: str,
         *,
         request_id: str,
-        answer: Any,
+        answer: JsonValue,
     ) -> InteractionResponse:
         return await self._request(
             "POST",

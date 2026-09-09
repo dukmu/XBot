@@ -1,6 +1,11 @@
 """Public declarations for live client interactions."""
 
-from XBotv2.interactions.contracts import InteractionsPort
+from XBotv2.interactions.contracts import (
+    InteractionNotPending,
+    InteractionResult,
+    InteractionWaiterPort,
+    InteractionsPort,
+)
 from XBotv2.interactions.protocol import (
     ClientMessageData,
     InteractionRecordedData,
@@ -17,6 +22,9 @@ __all__ = [
     "InteractionRecordedData",
     "InteractionEventType",
     "InteractionResponse",
+    "InteractionNotPending",
+    "InteractionResult",
+    "InteractionWaiterPort",
     "InteractionsPort",
     "UserInputOption",
     "UserInputRequiredData",

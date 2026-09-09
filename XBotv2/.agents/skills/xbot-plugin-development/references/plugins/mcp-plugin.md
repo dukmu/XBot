@@ -10,7 +10,7 @@ to XBot runtime capabilities.
   `XBotv2/mcp_plugin/mcp_client.py`,
   `XBotv2/mcp_plugin/tool.py`,
   `XBotv2/mcp_plugin/callbacks.py`,
-  `XBotv2/mcp_plugin/invariants.py`.
+  `XBotv2/mcp_plugin/contracts.py`.
 - **Injects/provides:** `tools`, `model`, `interactions`,
   `session` → (none directly; registers Tools).
 - **Subscribes to events:** `application/initialized` (MCP server

@@ -31,11 +31,6 @@ from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationPage
 from XBotv2.core.tools import ClientEvent, _validated_client_event
-from XBotv2.session.event_stream import (
-    SessionEventCursorExpired,
-    SessionEventFrame,
-)
-from XBotv2.session.history import SessionHistoryItem, conversation_replay
 from XBotv2.core.timing import SessionStats, conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.contracts import SessionsPort
@@ -52,12 +47,16 @@ from XBotv2.session.contracts import (
     RegenerateMessage,
     SendMessage,
     SessionExists,
+    SessionEventFrame,
+    SessionEventCursorExpired,
+    SessionHistoryItem,
     SessionNotFound,
     SessionMode,
     SessionDescriptor,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
+    conversation_replay,
 )
 
 logger = logging.getLogger("xbotv2.api")

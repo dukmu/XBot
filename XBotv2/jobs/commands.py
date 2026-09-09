@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
-from XBotv2.jobs.contracts import TaskSnapshot
+from XBotv2.jobs.contracts import JobsCommandPort, TaskSnapshot
 
 from XBotv2.commands import (
     Command,
@@ -12,16 +11,6 @@ from XBotv2.commands import (
     guard_command,
     split_command_args,
 )
-
-
-class JobsCommandPort(Protocol):
-    def snapshots(self) -> list[TaskSnapshot]: ...
-
-    def get_or_none(self, job_id: str) -> object | None: ...
-
-    async def cancel(self, job_id: str) -> object: ...
-
-    async def stop_all(self) -> list[dict[str, object]]: ...
 
 
 def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:

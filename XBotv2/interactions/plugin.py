@@ -14,7 +14,7 @@ import uuid
 from pydantic import JsonValue
 
 from XBotv2.interactions.interactions import InteractionWaiter
-from XBotv2.interactions.contracts import InteractionsPort
+from XBotv2.interactions.contracts import InteractionsPort, InteractionWaiterPort
 from XBotv2.interactions import UserInputRequiredData
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
@@ -34,8 +34,11 @@ class InteractionsService(InteractionsPort):
         self._waiter = InteractionWaiter()
 
     @property
-    def waiter(self) -> InteractionWaiter:
+    def waiter(self) -> InteractionWaiterPort:
         return self._waiter
+
+    def create_waiter(self) -> InteractionWaiterPort:
+        return InteractionWaiter()
 
     def session_closed(self, _event: EventContext) -> None:
         self._waiter.cancel_all("session_closed")

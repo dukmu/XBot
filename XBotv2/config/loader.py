@@ -10,7 +10,7 @@ from pydantic import JsonValue
 import yaml
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.models import (
+from XBotv2.config.contracts import (
     ConfigOverlay,
     RuntimeConfig,
 )

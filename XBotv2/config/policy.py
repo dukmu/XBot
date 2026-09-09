@@ -9,7 +9,7 @@ from pydantic import JsonValue
 
 import yaml
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.models import config_dict
+from XBotv2.config.contracts import config_dict
 
 
 _PERMISSION_DECISIONS = ("deny", "allow", "ask")

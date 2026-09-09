@@ -210,7 +210,7 @@ subagent tools (`spawn_subagent`, `list_subagents`, `wait_subagent`,
 sees a generic `task`/`job` tool. List and wait responses carry only lightweight
 metadata; bulk output is read through the explicit `read_*` tools, each bounded
 by character limits. The application-owned `ChildApplications` service starts
-and closes child Agent applications and returns the Agents plugin's `AgentSession`
+and closes child Agent applications and returns an application-owned `ChildApplication`
 contract; `session/` keeps only session identity and the child hierarchy.
 
 ### Runtime events (`agentloop/events.py`)

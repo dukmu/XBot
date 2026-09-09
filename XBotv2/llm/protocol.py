@@ -17,7 +17,7 @@ from XBotv2.llm.contracts import (
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
-from XBotv2.agentloop.events import EventPort
+from XBotv2.agentloop import EventPort
 
 
 class ProviderSelectionRequest(WireModel):

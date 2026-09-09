@@ -1,30 +1,20 @@
 from XBotv2.persistence.contracts import (
     HistoryPort,
-    InboxPort,
+    InboxPersistencePort,
     MetadataPort,
     StatePort,
     ThreadPersistenceFactory,
     ThreadPersistencePort,
     ThreadLifecycleWriterPort,
     ThreadLifecyclePort,
-)
-from XBotv2.persistence.models import (
-    InboxItemRecord,
-    InboxSnapshot,
-    MessageRecord,
     ThreadLifecycleRecord,
-    ThreadMetadata,
 )
 
 __all__ = [
     "HistoryPort",
-    "InboxPort",
-    "InboxItemRecord",
-    "InboxSnapshot",
-    "MessageRecord",
+    "InboxPersistencePort",
     "MetadataPort",
     "StatePort",
-    "ThreadMetadata",
     "ThreadLifecycleRecord",
     "ThreadLifecycleWriterPort",
     "ThreadLifecyclePort",

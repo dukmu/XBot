@@ -15,6 +15,8 @@ from XBotv2.core import (
     estimate_messages_tokens,
 )
 from XBotv2.core.timing import SESSION_STATS_METADATA_KEY, conversation_stats
+from XBotv2.llm.contracts import ModelPort
+from XBotv2.session.contracts import SessionInfo
 
 from XBotv2.compact.history import compact_prefix_end, history_chars
 from XBotv2.compact.protocol import compact_event
@@ -45,10 +47,10 @@ def _response_trace(response: ModelResponse) -> dict[str, Any]:
 
 async def build_compaction_proposal(
     *,
-    model: Any,
+    model: ModelPort,
     record_usage: UsageRecorder,
     publish_runtime_event: RuntimePublisher,
-    session: Any,
+    session: SessionInfo,
     messages: list[Message],
     reason: str,
     keep_recent_turns: int,
@@ -59,7 +61,7 @@ async def build_compaction_proposal(
     context_limit: int | None = None,
     max_context_tokens: int | None = None,
     output_reservation: int | None = None,
-    stable_prefix: Sequence[Any] = (),
+    stable_prefix: Sequence[Message] = (),
     removable_estimate: int | None = None,
     record_trajectory: TrajectoryRecorder | None = None,
 ) -> dict[str, Any] | None:

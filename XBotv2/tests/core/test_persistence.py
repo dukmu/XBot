@@ -9,16 +9,15 @@ from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.tools import ToolCall
-from XBotv2.agentloop.inbox import InboxInput, InboxTarget
+from XBotv2.agentloop.contracts import InboxInput, InboxTarget
 from XBotv2.persistence.models import (
     MessageRecord,
-    ThreadLifecycleRecord,
-    ThreadMetadata,
 )
+from XBotv2.persistence import ThreadLifecycleRecord
 from XBotv2.persistence.store import ThreadPersistence
 
 

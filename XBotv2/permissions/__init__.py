@@ -1,6 +1,5 @@
 """Public declarations for the tool-permission policy plugin."""
 
-from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.events import (
     PERMISSION_DECIDED,
     PERMISSION_REQUESTED,
@@ -25,5 +24,4 @@ __all__ = [
     "PermissionResponseRequest",
     "PermissionsPort",
     "RequestedPermissionData",
-    "build_permissions_commands",
 ]

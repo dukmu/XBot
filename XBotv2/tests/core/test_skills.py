@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 
 
 @pytest.fixture

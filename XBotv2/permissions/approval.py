@@ -9,16 +9,21 @@ from XBotv2.permissions.protocol import ApprovalDecision
 from XBotv2.permissions.contracts import ApprovalPort
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
-from XBotv2.interactions.interactions import InteractionWaiter
+from XBotv2.interactions import InteractionWaiterPort
 
 
 class ApprovalService(ApprovalPort):
     """Permissions-owned transport and validation for live approvals."""
 
-    def __init__(self, events: ApplicationEventsPort, client_events: ClientEventsPort) -> None:
+    def __init__(
+        self,
+        events: ApplicationEventsPort,
+        client_events: ClientEventsPort,
+        waiter: InteractionWaiterPort,
+    ) -> None:
         self._events = events
         self._client_events = client_events
-        self.waiter = InteractionWaiter()
+        self.waiter = waiter
 
     def session_closed(self, _event: EventContext) -> None:
         self.waiter.cancel_all("session_closed")

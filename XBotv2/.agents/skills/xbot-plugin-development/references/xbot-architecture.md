@@ -12,7 +12,8 @@ decision guide, not a replacement for the version-matched source docs.
 | ReAct loop and generic Tool execution | `XBotv2/agentloop` | loop hooks and `ToolsPort` |
 | Shared messages, `Tool`, `ToolCall`, `ToolResult` | `XBotv2/core` | stable data contracts |
 | Session/thread identity and runtime | `XBotv2/session` | session services and protocol |
-| Agent definitions and child applications | `XBotv2/agents` | Agent declarations and typed events |
+| Agent definitions and active Agent selection | `XBotv2/agents` | Agent declarations and typed events |
+| Child application lifecycle | `XBotv2/application` | `ChildApplication*` contracts |
 | Prompt assembly | `XBotv2/context_builder` | typed context components |
 | Transport routes and wire models | owning package `protocol.py` | FastAPI/transport router |
 | Permission, sandbox, interaction, persistence | their named plugins | declared services and typed events |

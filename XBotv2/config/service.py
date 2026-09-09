@@ -12,7 +12,7 @@ from pathlib import Path
 
 from XBotv2.config.contracts import PatchPolicy, PolicySnapshot, SettingsPort
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.config.models import (
+from XBotv2.config.contracts import (
     RuntimeConfig,
     UserContext,
 )

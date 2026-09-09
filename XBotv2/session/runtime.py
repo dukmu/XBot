@@ -10,7 +10,7 @@ from typing import AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.agentloop.inbox import InboxInput, InboxTarget
+from XBotv2.agentloop.contracts import InboxInput, InboxTarget
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
@@ -21,14 +21,18 @@ from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
-from XBotv2.session.history import conversation_replay
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.paths import RuntimePaths
 from pydantic import JsonValue
 
 from XBotv2.core.tools import ClientEvent
 from XBotv2.interactions import interaction_recorded_event
-from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionPort
+from XBotv2.session.contracts import (
+    HISTORY_CHANGED,
+    HistoryChanged,
+    SessionPort,
+    conversation_replay,
+)
 from XBotv2.session.event_stream import (
     SessionEventStream,
     SessionEventSubscription,

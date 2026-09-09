@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from XBotv2.core.messages import Message
 
@@ -13,6 +13,23 @@ PromptFragmentStage = Literal[
     "system_rules",
     "context_suffix",
 ]
+
+
+class PromptFragmentRegistry(Protocol):
+    def register_fragment(
+        self,
+        stage: PromptFragmentStage,
+        plugin_name: str,
+        text: str,
+        *,
+        source: str | None = None,
+    ) -> None: ...
+
+    def unregister_fragment(
+        self,
+        stage: PromptFragmentStage,
+        plugin_name: str,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,4 +45,4 @@ class ContextComponent:
     message: Message | None = None
 
 
-__all__ = ["ContextComponent", "PromptFragmentStage"]
+__all__ = ["ContextComponent", "PromptFragmentStage", "PromptFragmentRegistry"]

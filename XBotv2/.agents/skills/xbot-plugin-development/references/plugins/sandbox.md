@@ -18,7 +18,8 @@ consume its capabilities; Agent-facing Tools must not expose policy mutation.
 
 ## Configuration
 
-`SandboxConfig` is owned by `XBotv2.config.models`:
+`SandboxConfig` is owned by `XBotv2.config.contracts` and exported from
+`XBotv2.config`:
 
 | Field | Default | Meaning |
 |---|---|---|

@@ -30,6 +30,7 @@ from XBotv2.jobs.contracts import (
     WaitResult,
     WaitMode,
     JobRunner,
+    JobsPort,
     TaskSnapshot,
 )
 from XBotv2.jobs.runner import JobContext
@@ -56,7 +57,7 @@ _MAX_SNAPSHOT_COMMAND = 1_000
 _MAX_SUBAGENT_PROMPT_PREVIEW = 100
 
 
-class JobRegistry:
+class JobRegistry(JobsPort):
     """One shared lifecycle store for all jobs owned by an engine."""
 
     def __init__(

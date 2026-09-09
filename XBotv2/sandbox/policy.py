@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from pydantic import JsonValue
-from XBotv2.config.models import SandboxConfig
+from XBotv2.config import SandboxConfig
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.tools import GuardDecision, ToolCall
 from XBotv2.agentloop.contracts import ToolRegistration

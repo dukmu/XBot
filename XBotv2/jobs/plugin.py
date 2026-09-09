@@ -7,12 +7,11 @@ output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 from __future__ import annotations
 
 import json
-from typing import Any
 from xcore import Context
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import AgentLoopDriverPort, Events
+from XBotv2.agentloop import AgentLoopDriverPort, EventPort, Events
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
@@ -73,7 +72,7 @@ class JobHandlers:
         self,
         registry: JobRegistry,
         engine: AgentLoopDriverPort,
-        events: Any,
+        events: EventPort,
     ) -> None:
         self._registry = registry
         self._engine = engine
@@ -127,7 +126,7 @@ class JobHandlers:
                 retryable=True,
             )
 
-    async def close(self, _event: Any) -> None:
+    async def close(self, _event: object) -> None:
         await self._registry.shutdown()
 
 

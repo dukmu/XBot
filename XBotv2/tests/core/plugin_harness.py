@@ -16,7 +16,7 @@ def mount_ctx(state_store):
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.config.models import SandboxConfig
+    from XBotv2.config.contracts import SandboxConfig
 
     class TestInteractions:
         async def request_user_input(self, *_args, **_kwargs):

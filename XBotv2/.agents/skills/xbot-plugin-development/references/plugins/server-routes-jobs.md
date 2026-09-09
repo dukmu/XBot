@@ -4,25 +4,22 @@ Background task (job) HTTP routes — list tasks, stop one, stop all.
 Registered via `contribute_router()` as `xbot.http.jobs`.
 
 - **Import/profile:** `server-routes-jobs`, server profile.
-- **Source:** `XBotv2/jobs/http/plugin.py` (registration),
+- **Source:** `XBotv2/jobs/plugin.py` (`mount_http`),
   `XBotv2/jobs/protocol.py` (routes),
   `XBotv2/jobs/contracts.py` (data models).
 - **Injects/provides:** none (uses `contribute_router`).
-- **Subscribes to events:** `http/route` (`REGISTER_ROUTE`).
+- **Registration:** the owning root plugin waits for `server` and `sessions`,
+  then contributes the router as one fiber-owned server effect.
 
-## Router registration (`XBotv2/jobs/http/plugin.py`)
+## Router registration (`XBotv2/jobs/plugin.py`)
 
 ```python
-class JobsHttpPlugin:
-    name = "xbot.http.jobs"
-    inject = ["server", "sessions"]
-
-    async def apply(self, ctx, config=None):
-        await contribute_router(
-            ctx,
-            owner=self.name,
-            router=build_tasks_router(sessions=ctx.sessions),
-        )
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.jobs.http",
+        router=build_tasks_router(sessions=ctx.sessions),
+    )
 ```
 
 ## Routes (`build_tasks_router`) — `XBotv2/jobs/protocol.py`

@@ -8,7 +8,6 @@ and handles session-level policy patches (permissions + sandbox).
 - **Source:** `XBotv2/config/plugin.py`,
   `XBotv2/config/service.py`,
   `XBotv2/config/contracts.py`,
-  `XBotv2/config/models.py`,
   `XBotv2/config/policy.py`,
   `XBotv2/config/loader.py`,
   `XBotv2/config/events.py`.
@@ -23,16 +22,16 @@ and handles session-level policy patches (permissions + sandbox).
 ### `ConfigService` (`XBotv2/config/service.py:27-67`)
 
 ```python
-class ConfigService:
+class ConfigService(SettingsPort):
     """Path-bound configuration reader with a resolved user context."""
 
     def __init__(
         self,
-        paths: Any,
+        paths: RuntimePaths,
         *,
         session_id: str,
-        workspace_root: Any,
-        events: Any,
+        workspace_root: Path,
+        events: ApplicationEventsPort,
         runtime_log: RuntimeLog,
         user_context: UserContext | None = None,
     ) -> None:
@@ -45,7 +44,7 @@ class ConfigService:
     def user_context(self) -> UserContext: ...
 
     def load_runtime_config(
-        self, workspace: Any, session_id: str
+        self, workspace: Path, session_id: str
     ) -> RuntimeConfig: ...
 
     def policy(self) -> PolicySnapshot: ...
@@ -56,7 +55,7 @@ class ConfigService:
 `policy()` calls `load_runtime_config` internally to resolve permissions
 and sandbox; `update_policy()` emits `POLICY_CHANGED` after persisting.
 
-### `UserContext` (`XBotv2/config/models.py:14-19`)
+### `UserContext` (`XBotv2/config/contracts.py`)
 
 ```python
 class UserContext(StrictModel):
@@ -68,7 +67,7 @@ class UserContext(StrictModel):
 
 Loaded from the plugin tree's `user` block, not a separate file.
 
-### `RuntimeConfig` (`XBotv2/config/models.py:74-92`)
+### `RuntimeConfig` (`XBotv2/config/contracts.py`)
 
 ```python
 class RuntimeConfig(StrictModel):
@@ -93,7 +92,7 @@ class RuntimeConfig(StrictModel):
     max_output_tokens: int | None = None
 
     @property
-    def plugin_configs(self) -> dict[str, dict[str, Any]]:
+    def plugin_configs(self) -> dict[str, dict[str, JsonValue]]:
         return {
             name: entry.config
             for name, entry in self.plugins.items()
@@ -106,15 +105,15 @@ class RuntimeConfig(StrictModel):
 ```python
 @dataclass(frozen=True, slots=True)
 class PolicySnapshot:
-    policy: dict[str, object]
-    effective_permissions: dict[str, object]
-    effective_sandbox: dict[str, object]
+    policy: dict[str, JsonValue]
+    effective_permissions: dict[str, JsonValue]
+    effective_sandbox: dict[str, JsonValue]
 
 @dataclass(frozen=True, slots=True)
 class PatchPolicy:
     permissions: dict[str, str] | None = None
     remove_permissions: tuple[str, ...] = ()
-    sandbox: dict[str, object] | None = None
+    sandbox: dict[str, JsonValue] | None = None
     remove_sandbox: tuple[str, ...] = ()
 
 GET_POLICY = Operation("config/policy/get", EmptyRequest, PolicySnapshot)
@@ -128,7 +127,7 @@ UPDATE_POLICY = Operation(
 ```python
 @dataclass(frozen=True, slots=True)
 class PolicyChanged:
-    policy: dict[str, object]
+    policy: dict[str, JsonValue]
     config: RuntimeConfig
 
 POLICY_CHANGED = "config/policy/changed"
@@ -160,7 +159,7 @@ class SandboxConfig(StrictModel):
 
 class PluginConfig(StrictModel):
     enabled: bool = True
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, JsonValue] = Field(default_factory=dict)
 ```
 
 ## How `apply()` works (`plugin.py:18-50`)
@@ -211,7 +210,7 @@ class PolicyAwareTool:
     def apply(self, ctx, config):
         snap = ctx.settings.policy()
         effective = snap.effective_permissions
-        # effective is a dict[str, Any] — policy snapshot only
+        # effective is a dict[str, JsonValue] — policy snapshot only
         ...
 ```
 
@@ -226,7 +225,7 @@ class PolicyAwareTool:
 
 ## Common pitfalls
 
-- **Importing `RuntimeConfig` from `models.py` and using it for runtime
+- **Importing `RuntimeConfig` from an internal module and using it for runtime
   checks**: `ConfigService.policy()` returns `PolicySnapshot` (only
   sandbox + permissions). If you need the full `RuntimeConfig`, call
   `load_runtime_config(workspace, session_id)` directly.

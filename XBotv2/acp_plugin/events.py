@@ -15,7 +15,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
-from XBotv2.session.history import SessionHistoryItem
+from XBotv2.session import SessionHistoryItem
 
 
 class ACPEventMapper:

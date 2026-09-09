@@ -4,31 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import dataclass
-
 from XBotv2.core.tools import ClientEvent
 from XBotv2.core.replay import (
     ReplaySubscriber,
     ReplaySubscription,
     fan_out,
 )
-
-
-class SessionEventCursorExpired(LookupError):
-    def __init__(self, cursor: int, oldest: int) -> None:
-        super().__init__(
-            f"Session event cursor {cursor} expired; "
-            f"oldest available sequence is {oldest}"
-        )
-        self.cursor = cursor
-        self.oldest = oldest
-
-
-@dataclass(frozen=True, slots=True)
-class SessionEventFrame:
-    sequence: int
-    request_id: str
-    event: ClientEvent
+from XBotv2.session.contracts import SessionEventCursorExpired, SessionEventFrame
 
 
 class SessionEventSubscription(ReplaySubscription[SessionEventFrame]):
@@ -111,8 +93,6 @@ class SessionEventStream:
 
 
 __all__ = [
-    "SessionEventCursorExpired",
-    "SessionEventFrame",
     "SessionEventStream",
     "SessionEventSubscription",
 ]

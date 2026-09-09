@@ -9,8 +9,8 @@ from pathlib import Path
 
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
-from XBotv2.agents import AgentSessionResult, SubagentTurnError
-from XBotv2.persistence.models import ThreadLifecycleRecord
+from XBotv2.application import ChildApplicationError, ChildApplicationResult
+from XBotv2.persistence import ThreadLifecycleRecord
 from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
@@ -66,7 +66,7 @@ class ChildApplications:
 
 @dataclass(slots=True)
 class ChildApplicationSession:
-    """Run and release a child application through the AgentSession contract."""
+    """Run and release a child application through its public handle."""
 
     application: AgentApplicationPort
     prompt: str
@@ -78,7 +78,7 @@ class ChildApplicationSession:
     def record_started(self) -> None:
         self._record("started")
 
-    async def wait(self) -> AgentSessionResult:
+    async def wait(self) -> ChildApplicationResult:
         engine = self.application.driver
         await engine.start_session()
         output = ""
@@ -107,13 +107,13 @@ class ChildApplicationSession:
             error = close_error
         if error:
             self._record("failed", error=error)
-            raise SubagentTurnError(error)
+            raise ChildApplicationError(error)
         if not output:
             error = "Subagent completed without an assistant response"
             self._record("failed", error=error)
-            raise SubagentTurnError(error)
+            raise ChildApplicationError(error)
         self._record("completed")
-        return AgentSessionResult(final_response=output, usage=usage)
+        return ChildApplicationResult(final_response=output, usage=usage)
 
     async def cancel(self) -> None:
         """The owning job cancels ``wait``; its cancellation path closes us."""

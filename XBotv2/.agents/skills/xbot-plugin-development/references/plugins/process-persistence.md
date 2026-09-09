@@ -1,13 +1,12 @@
 # `process-persistence`
 
-Process-level persistence host — provides the on-disk reader factory
-(`ThreadPersistence`) for server/ACP carriers. Enables session
-management to read inactive thread summaries, policy, and metadata
-without importing `persistence` internals.
+Process-level persistence facet — the root persistence plugin provides the
+typed reader factory used by server/ACP session management. The same root
+plugin also hydrates an active Agent thread when its thread-local dependencies
+become available; there is no second host/process plugin.
 
-- **Import/profile:** `process.persistence`, server/ACP profiles.
-- **Source:** `XBotv2/persistence/process/plugin.py`,
-  `XBotv2/persistence/host.py`,
+- **Import/profile:** tree id/import name `persistence`, server/ACP profiles.
+- **Source:** `XBotv2/persistence/plugin.py`,
   `XBotv2/persistence/contracts.py`,
   `XBotv2/persistence/store.py`.
 - **Injects/provides:** (none) → `thread_persistence_factory` (Callable).
@@ -17,7 +16,7 @@ without importing `persistence` internals.
 
 ## Public data models
 
-### `thread_persistence_factory` (`XBotv2/persistence/host.py:14-28`)
+### `thread_persistence_factory` (`XBotv2/persistence/plugin.py`)
 
 ```python
 def thread_persistence_factory(
@@ -40,20 +39,17 @@ def thread_persistence_factory(
     )
 ```
 
-### `PersistenceHost` (`XBotv2/persistence/host.py:31-40`)
+### Root plugin composition (`XBotv2/persistence/plugin.py`)
 
 ```python
-class PersistenceHost:
-    """Provide inactive-thread persistence readers to session management."""
-
-    name = "xbot.persistence.host"
-
+class PersistencePlugin:
     def apply(self, ctx: Context, config: object | None = None) -> None:
         ctx.set("thread_persistence_factory", thread_persistence_factory)
+        ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
 ```
 
-The host sets `thread_persistence_factory` on the XCore context.
-Agent-profile plugins receive `thread_persistence` (a single
+The root plugin sets `thread_persistence_factory` on every selected profile.
+Agent applications receive `thread_persistence` (a single
 `ThreadPersistence` instance for the active thread) from
 `persistence/plugin.py`, not from this host.
 
@@ -204,10 +200,12 @@ Same `RuntimePaths` layout as `process-sessions.md`:
 ```python
 def apply(self, ctx: Context, config: object | None = None) -> None:
     ctx.set("thread_persistence_factory", thread_persistence_factory)
+    ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
 ```
 
-The host is a one-line setter. It does not register events, tools,
-commands, or services. It simply exposes the factory callable.
+The process facet is the factory setter. The dependency-gated Agent facet
+hydrates `loop_state` from `thread_persistence`, restores history, inbox and
+metadata, and exposes `thread_metadata`. Both are owned by the same root plugin.
 
 ## Cross-references
 
@@ -219,11 +217,8 @@ commands, or services. It simply exposes the factory callable.
 
 ## Common pitfalls
 
-- **This is the host factory, not the Agent persistence plugin**: the
-  Agent-profile `persistence` plugin (`persistence/plugin.py`)
-  hydrates `loop_state` from a single `ThreadPersistence`. The
-  host is for server/ACP carriers that need to read inactive
-  threads.
+- **Do not create a second persistence host plugin**: process factory and
+  Agent hydration are dependency-gated facets of `persistence/plugin.py`.
 - **Never open session files directly from a route plugin**: use
   `SessionsPort` for all session reads. The factory is only for
   process-level metadata operations (listing sessions, reading

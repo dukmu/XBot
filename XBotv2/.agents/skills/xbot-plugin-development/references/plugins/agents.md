@@ -4,13 +4,10 @@ Session-scoped active Agent runtime. Creates the `Engine` (loop instance),
 manages agent/provider/model selection, and registers runtime operations
 (`LIST_AGENTS`, `SELECT_AGENT`, `SELECT_PROVIDER`, `SELECT_EFFORT`).
 
-- **Import/profile:** `agent-runtime`, Agent profile.
-- **Source:** `XBotv2/agents/runtime/plugin.py`,
-  `XBotv2/agents/service_component.py`,
-  `XBotv2/agents/service.py`,
-  `XBotv2/agents/services.py` (Protocols),
-  `XBotv2/agents/contracts.py`,
-  `XBotv2/agents/commands.py` (runtime commands).
+- **Import/profile:** tree id/import name `agents`; Agent and server profiles.
+- **Source:** `XBotv2/agents/plugin.py` (the only plugin export),
+  `contracts.py`, `events.py`, `protocol.py`, `catalog.py`, `service.py`, and
+  `commands.py`.
 - **Injects/provides:** `agent_catalog`, `agent_loop_factory`, `settings`,
   `llm`, `model`, `tools`, `artifacts`, `loop_state`, `commands`,
   `agent_options`, `thread_metadata`, `runtime_log` → `agent_runtime`
@@ -20,41 +17,41 @@ manages agent/provider/model selection, and registers runtime operations
 - **Operations:** `LIST_AGENTS`, `SELECT_AGENT`, `SELECT_PROVIDER`,
   `SELECT_EFFORT`.
 
-## Public data models
+## Public contracts and internal implementation
 
 ### `AgentsService` (`XBotv2/agents/service.py`)
 
 ```python
-class AgentsService:
+class AgentsService(AgentRuntimePort):
     def __init__(
         self,
         catalog: AgentCatalogPort,
-        factory: Any,
-        events: Any,
-        state: Any,
-        settings: Any,
-        providers: Any,
-        model: Any,
-        tools: Any,
-        artifacts: Any,
-        metadata: Any,
+        factory: AgentLoopFactoryPort,
+        events: ApplicationEventsPort,
+        state: LoopState,
+        settings: SettingsPort,
+        providers: LlmServicePort,
+        model: ModelPort,
+        tools: ToolsPort,
+        artifacts: ArtifactStorePort,
+        metadata: ThreadMetadataState,
         runtime_log: RuntimeLog,
     ) -> None: ...
 
-    async def create(self, options: AgentCreateOptions) -> Engine: ...
+    async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort: ...
 
     def current_selection(self) -> AgentSelection: ...
 
-    async def select(self, name: str) -> dict[str, Any]: ...
+    async def select(self, name: str) -> AgentSelection: ...
 
     async def select_provider(
         self, name: str, model: str | None = None
-    ) -> dict[str, Any]: ...
+    ) -> ProviderSelection: ...
 
-    async def select_effort(self, value: str) -> dict[str, Any]: ...
+    async def select_effort(self, value: str) -> EffortSelection: ...
 ```
 
-### `AgentRuntimeOperations` (`service_component.py:20-81`)
+### `AgentRuntimeOperations` (`plugin.py`)
 
 ```python
 class AgentRuntimeOperations:
@@ -117,23 +114,18 @@ class AgentCreateOptions:
     is_subagent: bool = False
 ```
 
-### `AgentCatalog` / `AgentSession` / `AgentSessionResult`
+### `AgentCatalog`
 
 ```python
 @dataclass(frozen=True, slots=True)
 class AgentCatalog:
     active: str
     agents: tuple[AgentDefinition, ...]
-
-class AgentSession(Protocol):
-    async def wait(self) -> AgentSessionResult: ...
-    async def cancel(self) -> None: ...
-
-@dataclass(frozen=True, slots=True)
-class AgentSessionResult:
-    final_response: str
-    usage: UsageData = field(default_factory=UsageData)
 ```
+
+Child application handles do not belong to the Agent catalog. Import
+`ChildApplication`, `ChildApplicationResult`, and `ChildApplicationsPort`
+from `XBotv2.application` when implementing a child-runtime owner.
 
 ### `LIST_AGENTS` / `SELECT_AGENT` / `SELECT_PROVIDER` / `SELECT_EFFORT`
 
@@ -147,7 +139,7 @@ SELECT_EFFORT = Operation("llm/select-effort", SelectEffort, EffortSelection)
 ## How `apply()` works
 
 ```python
-async def apply(self, ctx: Context, config: object | None = None) -> None:
+async def mount_runtime(ctx: Context) -> None:
     service = AgentsService(
         catalog=ctx.agent_catalog,
         factory=ctx.agent_loop_factory,
@@ -162,36 +154,43 @@ async def apply(self, ctx: Context, config: object | None = None) -> None:
     AgentRuntimeOperations(service, ctx.agent_catalog).register(ctx)
 ```
 
-Creates the `Engine`, registers operations, and registers runtime
-commands (`/agent` etc.) in one step.
+The root `AgentsPlugin.apply()` mounts this named callback only when its Agent
+dependencies exist, mounts `mount_catalog` for catalog dependencies, and
+mounts the capability's HTTP router when `server` and `sessions` exist.
 
 ## Typical extension: list available agents
 
 ```python
-from XBotv2.agents.contracts import LIST_AGENTS, AgentCatalog
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.agents import LIST_AGENTS, AgentCatalog
+from XBotv2.core.operations import EmptyRequest, OperationContext, dispatch_operation
+
+class AgentAwareHandler:
+    def __init__(self, events: OperationContext):
+        self._events = events
+
+    async def inspect(self, _event) -> None:
+        catalog = await dispatch_operation(self._events, LIST_AGENTS, EmptyRequest())
+        # catalog is AgentCatalog: catalog.active, catalog.agents
+        ...
 
 class AgentAwarePlugin:
-    inject = ["agent_runtime", "session"]
-
     def apply(self, ctx, config):
-        async def on_start(event):
-            catalog = await ctx.agent_runtime.dispatch(
-                event.session.session_id if event.session else "",
-                "", LIST_AGENTS, EmptyRequest()
-            )
-            # catalog is AgentCatalog — catalog.active, catalog.agents
-            ...
+        handler = AgentAwareHandler(ctx)
+        ctx.on("example/inspect-agents", handler.inspect)
 ```
+
+For cross-plugin requests, prefer the typed `LIST_AGENTS` operation through an
+`OperationContext`; do not assume `AgentRuntimePort` exposes a generic
+`dispatch` method and do not retain `ctx` in a nested closure.
 
 ## Cross-references
 
 - Depends on: `agent_catalog`, `agent_loop_factory`, `settings`,
   `llm`, `model`, `tools`, `artifacts`, `loop_state`, `commands`,
   `agent_options`, `thread_metadata`, `runtime_log`.
-- Depended on by: `llm-commands` (delegates to `AgentRuntimePort`),
-  `subagents` (agent creation), `agent-runtime` HTTP routes.
-- Pairs with: `agent-catalog` (definition source), `agentloop`
+- Depended on by: the LLM command facet (delegates to `AgentRuntimePort`) and
+  the Agents-owned HTTP facet.
+- Pairs with: its catalog facet, `subagents`, and `agentloop`
   (creates the Engine).
 
 ## Common pitfalls

@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from pydantic import BaseModel, ConfigDict, JsonValue
 
+from pydantic import JsonValue
 
-class InteractionNotPending(RuntimeError):
-    """Raised when a response targets no live interaction request."""
-
-
-class InteractionResult(BaseModel):
-    request_id: str
-    status: str
-    answer: JsonValue = None
-    decision: str = ""
-    scope: str = "once"
-    reason: str = ""
-    model_config = ConfigDict(extra="forbid", frozen=True)
+from XBotv2.interactions.contracts import (
+    InteractionNotPending,
+    InteractionResult,
+)
 
 
 class InteractionWaiter:

@@ -1,12 +1,13 @@
 # `session`
 
 The per-thread Agent session — its identity, paths, and loop state. This
-plugin is the Agent-profile counterpart to `process.sessions` (the
-process-wide `SessionManager` for server/ACP carriers).
+plugin also mounts the process-wide `SessionManager` facet for server/ACP
+carriers when its carrier dependencies exist.
 
-- **Import/profile:** `session`, Agent profile.
+- **Import/profile:** `session`, Agent/server/ACP profiles.
 - **Source:** `XBotv2/session/plugin.py`, `XBotv2/session/session.py`,
-  `XBotv2/session/types.py`, `XBotv2/session/commands.py`.
+  `XBotv2/session/contracts.py`, `XBotv2/session/protocol.py`, and
+  `XBotv2/session/commands.py`.
 - **Injects/provides:** `runtime_paths`, `session_launch`, `commands`,
   `artifacts` → `session`, `paths`, `thread_paths`, `loop_state`,
   `workspace_root`, `data_root`, `variables`, `thread_metadata`.
@@ -16,7 +17,7 @@ process-wide `SessionManager` for server/ACP carriers).
 
 ## Public data models
 
-### `SessionInfo` (`XBotv2/session/types.py`)
+### `SessionInfo` (`XBotv2/session/contracts.py`)
 
 ```python
 @dataclass
@@ -34,7 +35,7 @@ class SessionInfo:
 `EventContext.session` carries this exact type — *not* the `Session`
 object. Get `event.session.session_id` for the closing thread.
 
-### `SessionLaunch` (`XBotv2/application/services.py`)
+### `SessionLaunch` (`XBotv2/application/contracts.py`)
 
 ```python
 @dataclass(frozen=True, slots=True)

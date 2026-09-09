@@ -32,6 +32,7 @@ from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
+from XBotv2.sandbox.contracts import SandboxPort
 
 _FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
 
@@ -180,7 +181,7 @@ async def _read_media(
     url: str | None,
     data: str | None,
     media_type: str | None,
-    sandbox: Any,
+    sandbox: SandboxPort | None,
     artifacts: ArtifactStorePort | None,
 ) -> ToolResult:
     """Open one media item by type and make it visible to the model.
@@ -244,7 +245,7 @@ async def _read_media(
 async def _read_image_path(
     path: str,
     media_type: str | None,
-    sandbox: Any,
+    sandbox: SandboxPort | None,
 ) -> tuple[bytes, str | None, dict[str, Any]]:
     data = await _operation("read_bytes", {"path": path}, sandbox)
     if not data.get("ok"):
@@ -275,7 +276,7 @@ async def _read_image_path(
 async def _read_image_url(
     url: str,
     media_type: str | None,
-    sandbox: Any,
+    sandbox: SandboxPort | None,
 ) -> tuple[bytes, str | None, dict[str, Any]]:
     if sandbox is not None and not sandbox.network:
         raise _ImageError(
@@ -625,7 +626,7 @@ async def search(
 
 
 def filesystem_tools(
-    sandbox: Any,
+    sandbox: SandboxPort | None,
     artifacts: ArtifactStorePort | None = None,
 ) -> tuple[Tool, ...]:
     """Build the merged filesystem Tools for one session sandbox."""
@@ -648,7 +649,7 @@ def filesystem_tools(
 async def _structured_operation(
     operation: str,
     args: dict[str, Any],
-    sandbox: Any,
+    sandbox: SandboxPort | None,
 ) -> ToolResult:
     data = await _operation(operation, args, sandbox)
     if not data.get("ok"):
@@ -661,7 +662,7 @@ async def _structured_operation(
 async def _operation(
     operation: str,
     args: dict[str, Any],
-    sandbox: Any,
+    sandbox: SandboxPort | None,
 ) -> dict[str, Any]:
     resolved = _resolved_args(operation, args, sandbox)
     path = resolved.get("path")
@@ -715,7 +716,7 @@ async def _operation(
 def _resolved_args(
     operation: str,
     args: dict[str, Any],
-    sandbox: Any,
+    sandbox: SandboxPort | None,
 ) -> dict[str, Any]:
     if sandbox is not None:
         return sandbox.resolve_filesystem_args(operation, args)

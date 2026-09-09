@@ -16,8 +16,8 @@ contracts published here.
 - **Subscribes to events:** none in `apply`; the loop engine pushes
   history writes directly through `ThreadPersistence.history` rather
   than via the `state/changed` observer event.
-- **Server counterpart:** `process.persistence` (server/ACP) hosts
-  the persistence factory.
+- **Process facet:** the same root `persistence` plugin (server/ACP profiles)
+  publishes the persistence factory; there is no separate host plugin.
 
 ## Public data models
 

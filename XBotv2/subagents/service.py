@@ -9,20 +9,20 @@ Agent definition registration belongs to the independent catalog plugins.
 
 from __future__ import annotations
 
-from typing import Any
-
 from XBotv2.agents.contracts import AgentCatalogPort
 from XBotv2.application import (
     APPLICATION_INITIALIZED,
     ApplicationInitialized,
+    ChildApplication,
     ChildApplicationRequest,
     ChildApplicationsPort,
+    ClientEventsPort,
 )
 from XBotv2.core import (
     Tool,
     ToolResult,
 )
-from XBotv2.agents import AgentSession, SubagentAgentError
+from XBotv2.subagents.contracts import SubagentAgentError
 from XBotv2.jobs import (
     Job,
     JobKind,
@@ -34,6 +34,8 @@ from XBotv2.jobs import (
     parse_job_status,
 )
 from XBotv2.persistence import ThreadLifecycleWriterPort
+from XBotv2.permissions import PermissionsPort
+from XBotv2.prompts.contracts import PromptsPort
 from XBotv2.session.contracts import SessionPort
 
 _MAX_PROMPT_PREVIEW = 100
@@ -50,8 +52,8 @@ class SubagentLauncher:
         session: SessionPort,
         children: ChildApplicationsPort,
         lifecycle: ThreadLifecycleWriterPort,
-        parent_permissions: object,
-        client_events: object | None,
+        parent_permissions: PermissionsPort,
+        client_events: ClientEventsPort | None,
     ) -> None:
         self._catalog = catalog
         self._session = session
@@ -59,7 +61,7 @@ class SubagentLauncher:
         self._lifecycle = lifecycle
         self._parent_permissions = parent_permissions
         self._client_events = client_events
-        self._active: list[AgentSession] = []
+        self._active: list[ChildApplication] = []
 
     async def spawn_subagent(
         self,
@@ -67,7 +69,7 @@ class SubagentLauncher:
         prompt: str,
         *,
         parent_job_id: str | None = None,
-    ) -> AgentSession:
+    ) -> ChildApplication:
         del parent_job_id
         definition = self._catalog.get(agent)
         if definition is None or definition.mode == "primary":
@@ -94,14 +96,14 @@ class SubagentRunner:
     def __init__(
         self,
         *,
-        session: Any,
+        session: SessionPort,
         agent: str,
         prompt: str,
     ) -> None:
         self.session = session
         self.agent = agent
         self.prompt = prompt
-        self._child: AgentSession | None = None
+        self._child: ChildApplication | None = None
 
     async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
         session = await self.session.spawn_subagent(
@@ -240,7 +242,7 @@ class SubagentTools:
 
 
 class SubagentCatalogPrompt:
-    def __init__(self, catalog: AgentCatalogPort, prompts: Any) -> None:
+    def __init__(self, catalog: AgentCatalogPort, prompts: PromptsPort) -> None:
         self._catalog = catalog
         self._prompts = prompts
 

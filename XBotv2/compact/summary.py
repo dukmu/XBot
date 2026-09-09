@@ -8,9 +8,11 @@ from typing import Any
 from XBotv2.core import (
     MESSAGE_FORMAT_KEY,
     Message,
+    ModelResponse,
     prompt_container,
     prompt_element,
 )
+from XBotv2.llm.contracts import ModelPort
 
 
 _SUMMARY_HEADING = "## Conversation Summary"
@@ -21,8 +23,8 @@ def summary_request(
     messages: Sequence[Message],
     max_chars: int,
     *,
-    stable_prefix: Message | Sequence[Any] | None = None,
-) -> list[Any]:
+    stable_prefix: Message | Sequence[Message] | None = None,
+) -> list[Message]:
     instruction = (
         "Summarize the supplied older conversation for future continuation. "
         "Preserve the current objective and constraints, human corrections, accepted "
@@ -37,7 +39,7 @@ def summary_request(
         f"{max_chars} characters."
     )
     if stable_prefix is None:
-        stable: tuple[Any, ...] = ()
+        stable: tuple[Message, ...] = ()
     elif isinstance(stable_prefix, Message):
         stable = (stable_prefix,)
     else:
@@ -131,11 +133,11 @@ def model_usage(usage: Mapping[str, Any] | None) -> dict[str, int]:
     return result
 
 
-async def invoke_llm(llm: Any, messages: list[Any]) -> Any:
+async def invoke_llm(llm: ModelPort, messages: list[Message]) -> ModelResponse:
     """Run one unbound auxiliary model call for compaction."""
     from XBotv2.core.messages import merge_model_chunk
 
-    aggregate: Any = None
+    aggregate: ModelResponse | None = None
     async for chunk in llm.astream(messages):
         aggregate = merge_model_chunk(aggregate, chunk)
     if aggregate is None:

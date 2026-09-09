@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.agents import AgentDefinition, AgentSession
+from XBotv2.agents import AgentDefinition
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message
 from XBotv2.core.usage import UsageData
+from XBotv2.interactions.contracts import InteractionWaiterPort
 from XBotv2.core.history import ConversationHistory, ConversationPageReader
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
@@ -54,36 +55,6 @@ class ApplicationEventsPort(OperationContext, Protocol):
     def on(self, event: str, callback: Callable[..., object], **kwargs: Any) -> object: ...
 
     async def emit(self, event: str, *args: object) -> None: ...
-
-
-class InteractionResultPort(Protocol):
-    request_id: str
-    status: str
-    answer: JsonValue | None
-    decision: str
-    scope: str
-    reason: str
-
-
-class InteractionWaiterPort(Protocol):
-    def register(self, request_id: str) -> object: ...
-
-    async def wait_registered(
-        self,
-        request_id: str,
-        pending: object,
-        timeout_seconds: float | None,
-    ) -> InteractionResultPort: ...
-
-    def answer(self, request_id: str, **values: object) -> InteractionResultPort: ...
-
-    def cancel(
-        self,
-        request_id: str,
-        reason: str = "cancelled",
-    ) -> InteractionResultPort: ...
-
-    def pending_request_ids(self) -> list[str]: ...
 
 
 class ClientEventSink(Protocol):
@@ -181,12 +152,28 @@ class ChildApplicationRequest:
     client_events: ClientEventsPort | None
 
 
+@dataclass(frozen=True, slots=True)
+class ChildApplicationResult:
+    final_response: str
+    usage: UsageData = field(default_factory=UsageData)
+
+
+class ChildApplication(Protocol):
+    async def wait(self) -> ChildApplicationResult: ...
+
+    async def cancel(self) -> None: ...
+
+
+class ChildApplicationError(RuntimeError):
+    code = "child_application_failed"
+
+
 class ChildApplicationsPort(Protocol):
     async def spawn(
         self,
         request: ChildApplicationRequest,
         lifecycle: ThreadLifecycleWriterPort,
-    ) -> AgentSession: ...
+    ) -> ChildApplication: ...
 
 
 __all__ = [
@@ -195,10 +182,12 @@ __all__ = [
     "ApplicationEventsPort",
     "COLLECT_STATUS_SLOTS",
     "ChildApplicationRequest",
+    "ChildApplication",
+    "ChildApplicationError",
+    "ChildApplicationResult",
     "ChildApplicationsPort",
     "ClientEventSink",
     "ClientEventsPort",
-    "InteractionResultPort",
     "InteractionWaiterPort",
     "LoopStateView",
     "ParentPermissions",

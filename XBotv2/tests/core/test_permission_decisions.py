@@ -12,6 +12,7 @@ from XBotv2.permissions.approval import ApprovalService
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.plugin import PermissionHandlers, PermissionsService
 from XBotv2.permissions.tools import request_tool_permission
+from XBotv2.interactions.interactions import InteractionWaiter
 
 
 class Events:
@@ -42,7 +43,7 @@ async def test_real_approval_boundary_rejects_invalid_responses(tmp_path, respon
     handlers = PermissionHandlers(service, events.emit)
     with pytest.raises(ValueError):
         await request_tool_permission(
-            "probe", {}, "test", approval=ApprovalService(events, Client(response)),
+            "probe", {}, "test", approval=ApprovalService(events, Client(response), InteractionWaiter()),
             apply_permission_decision=handlers.apply_decision,
         )
     assert await store.all() == {}
@@ -54,7 +55,7 @@ async def test_concurrent_grants_survive_restart_without_duplicates(tmp_path):
     path = tmp_path / "state.json"
     service = PermissionsService({}, RuntimeVariables(), StateService(path=path))
     handlers = PermissionHandlers(service, events.emit)
-    approval = ApprovalService(events, Client({"decision": "allow", "scope": "session"}))
+    approval = ApprovalService(events, Client({"decision": "allow", "scope": "session"}), InteractionWaiter())
     await asyncio.gather(*(
         request_tool_permission(
             tool, {}, "test", approval=approval,
@@ -101,7 +102,7 @@ async def test_failed_grant_write_does_not_authorize_or_publish_success(tmp_path
     with pytest.raises(OSError, match="write failed"):
         await request_tool_permission(
             "probe", {}, "test",
-            approval=ApprovalService(events, Client({"decision": "allow", "scope": "session"})),
+            approval=ApprovalService(events, Client({"decision": "allow", "scope": "session"}), InteractionWaiter()),
             apply_permission_decision=handlers.apply_decision,
         )
     assert service.check("probe") == "ask"

@@ -196,6 +196,16 @@ class JobsPort(Protocol):
     async def cancel(self, job_id: JobId) -> CancelResult: ...
 
 
+class JobsCommandPort(Protocol):
+    def snapshots(self) -> list[TaskSnapshot]: ...
+
+    def get_or_none(self, job_id: str) -> object | None: ...
+
+    async def cancel(self, job_id: str) -> object: ...
+
+    async def stop_all(self) -> list[dict[str, object]]: ...
+
+
 class TaskSnapshot(BaseModel):
     task_id: str = Field(min_length=1)
     kind: Literal["shell", "agent"] = "shell"
@@ -246,6 +256,7 @@ __all__ = [
     "JobRunner",
     "JobRunnerContext",
     "JobsPort",
+    "JobsCommandPort",
     "JobStatus",
     "JobSummary",
     "LIST_TASKS",
