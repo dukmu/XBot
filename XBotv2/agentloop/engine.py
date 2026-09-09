@@ -698,17 +698,21 @@ class Engine(AgentLoopDriverPort):
             response_metadata[REQUEST_PROVIDER_KEY] = (
                 self.session.provider
             )
+            response_id = f"assistant-{self.turn_count}-{iteration}"
+            response_additional = dict(response.additional_kwargs)
+            response_additional["xbot_message_id"] = response_id
             response_msg = Message(
                 role="assistant",
                 parts=response.parts,
                 usage_metadata=response.usage_metadata,
                 response_metadata=response_metadata,
-                additional_kwargs=response.additional_kwargs,
+                additional_kwargs=response_additional,
             )
             response_history = [*self.messages, response_msg]
             yield agentloop_event(
                 "assistant_message",
                 {
+                    "id": response_id,
                     "content": content,
                     "tool_calls": [
                         call.model_dump(mode="json") for call in response.tool_calls

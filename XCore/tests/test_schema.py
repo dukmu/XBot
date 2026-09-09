@@ -111,3 +111,24 @@ def test_schema_immutability_of_builders():
 def test_optional_on_whole_schema():
     schema = S.number().optional()
     assert schema.validate(None) is None
+
+
+def test_schema_to_json_schema_preserves_generic_form_contract():
+    from xcore.schema import schema_to_json_schema
+
+    schema = S.object({
+        "mode": S.enum(["safe", "fast"]).default("safe"),
+        "enabled": S.boolean().description("Enable the feature"),
+        "limit": S.number().optional(),
+    }).strict()
+
+    assert schema_to_json_schema(schema) == {
+        "type": "object",
+        "properties": {
+            "mode": {"enum": ["safe", "fast"], "default": "safe"},
+            "enabled": {"type": "boolean", "description": "Enable the feature"},
+            "limit": {"type": "number"},
+        },
+        "required": ["enabled"],
+        "additionalProperties": False,
+    }

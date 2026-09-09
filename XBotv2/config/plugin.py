@@ -18,7 +18,7 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.config.http",
-        router=build_router(sessions=ctx.sessions),
+        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths),
     )
 
 
@@ -73,7 +73,7 @@ class ConfigPlugin:
         config: Mapping[str, JsonValue] | None = None,
     ) -> None:
         await ctx.plugin(ConfigRuntimeComponent(), config)
-        await ctx.inject(["server", "sessions"], mount_http)
+        await ctx.inject(["server", "sessions", "runtime_paths"], mount_http)
 
 
 plugin = ConfigPlugin()

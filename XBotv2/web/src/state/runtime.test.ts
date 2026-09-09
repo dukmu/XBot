@@ -84,6 +84,35 @@ describe("runtimeReducer", () => {
     expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 500 });
   });
 
+  it("keeps turn lifecycle events in the same ordered timeline as output", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("assistant_message", { content: "answer", tool_calls: [] }),
+        event("turn_finished", { turn: 1 }),
+      ],
+    });
+
+    expect(state.entries.map((entry) => entry.kind === "runtime" ? entry.event : entry.kind)).toEqual([
+      "turn_started", "message", "turn_finished",
+    ]);
+  });
+
+  it("keeps rejected input visible in the activity timeline", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("input_rejected", { reason: "turn is busy" }) },
+    );
+
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: "notice",
+      level: "error",
+      content: "turn is busy",
+    });
+  });
+
   it("keeps a newer live usage projection ahead of a stale thread refresh", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
@@ -137,6 +166,26 @@ describe("runtimeReducer", () => {
       source: "task-1",
       event: "notification",
       content: "job finished with result 42",
+    });
+  });
+
+  it("keeps a live source-tagged message as runtime context", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const live = event("message", {
+      id: "context-1",
+      role: "user",
+      content: "workspace facts",
+      runtime: { source: "workspace", event: "instructions" },
+    });
+    state = runtimeReducer(state, { type: "event", event: live });
+    state = runtimeReducer(state, { type: "event", event: live });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "runtime",
+      id: "runtime:context-1",
+      source: "workspace",
+      event: "instructions",
     });
   });
 
@@ -210,6 +259,7 @@ describe("runtimeReducer", () => {
         data: null, error: null, artifacts: [], images: [],
       }],
       nextCursor: null,
+      expectedCursor: "20",
     });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
     expect(state.historyCursor).toBeNull();
@@ -231,6 +281,7 @@ describe("runtimeReducer", () => {
         data: null, error: null, artifacts: [], images: [],
       }],
       nextCursor: null,
+      expectedCursor: "10",
     });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual([
       "old question", "live answer",
@@ -497,6 +548,147 @@ describe("runtimeReducer", () => {
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
+  });
+
+  it("projects permission decisions onto the pending tool call", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_request", {
+        request_id: "permission:call-1",
+        tool_call: { id: "call-1", name: "shell", args: { command: "pwd" } },
+      }),
+    });
+    expect(state.entries).toMatchObject([{
+      kind: "tool",
+      toolCallId: "call-1",
+      status: "pending",
+      permissionRequestId: "permission:call-1",
+    }]);
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_response_recorded", {
+        request_id: "permission:call-1",
+        decision: "allow",
+      }),
+    });
+    expect(state.entries[0]).toMatchObject({ status: "approved" });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_denied", {
+        request_id: "permission:call-1",
+        reason: "sandbox",
+      }),
+    });
+    expect(state.entries[0]).toMatchObject({ status: "denied" });
+  });
+
+  it("keeps compaction in the activity timeline", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("compaction_started", {}),
+        event("compaction_completed", {}),
+      ],
+    });
+    expect(state.entries.filter((entry) => entry.kind === "runtime").map((entry) => entry.event)).toEqual([
+      "compaction_started", "compaction_completed",
+    ]);
+  });
+
+  it("rebuilds context and one compact marker from durable trajectory", () => {
+    const message = {
+      role: "user" as const,
+      content: "Injected instructions",
+      tool_calls: [], tool_call_id: "", status: "", data: null,
+      error: null, artifacts: [], images: [],
+      runtime: { source: "skills", event: "inject" },
+    };
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [
+        { position: 1, kind: "message", message_id: "context-1", message },
+        { position: 2, kind: "event", event: "compaction/start", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:00Z" },
+        { position: 3, kind: "event", event: "compaction/summary", data: { compaction_id: "c1", summary: "summary" }, timestamp: "2026-01-01T00:00:01Z" },
+        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [] },
+        { position: 5, kind: "event", event: "compaction/end", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:02Z" },
+      ],
+    });
+
+    expect(state.entries).toHaveLength(2);
+    expect(state.entries[0]).toMatchObject({ kind: "runtime", source: "skills", content: "Injected instructions" });
+    expect(state.entries[1]).toMatchObject({ kind: "runtime", source: "compact", event: "compaction/end" });
+  });
+
+  it("does not duplicate a durable assistant message replayed by the live stream", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "assistant-1",
+        message: {
+          id: "assistant-1",
+          role: "assistant",
+          content: "finished while reconnecting",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        id: "assistant-1",
+        content: "finished while reconnecting",
+        tool_calls: [],
+      }),
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+  });
+
+  it("reprojects a compact marker when history is replaced", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("history_updated", {
+        operation: "compact:automatic",
+        history: [],
+        history_cursor: "compact-1",
+      }),
+    });
+
+    expect(state.entries).toMatchObject([{
+      kind: "runtime",
+      source: "compact",
+      event: "compact:automatic",
+      content: "Conversation history compacted",
+      id: "event:1:history_updated",
+    }]);
+  });
+
+  it("ignores an older page response after the history cursor advanced", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened, history_cursor: "10",
+    } });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("history_updated", { history: [], history_cursor: "20" }),
+    });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "stale", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+      expectedCursor: "10",
+    });
+    expect(state.entries).toEqual([]);
+    expect(state.historyCursor).toBe("20");
   });
 
   it("reconciles provisional streamed tool ids with the executed call", () => {

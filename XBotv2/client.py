@@ -17,6 +17,9 @@ from XBotv2.agents import (
 from XBotv2.agentloop import ToolListResponse
 from XBotv2.config import (
     PermissionDecision,
+    PatchPluginConfig,
+    PluginConfigCatalog,
+    PluginConfigScope,
     SandboxKey,
     SandboxValue,
     SessionPolicyPatch,
@@ -63,6 +66,7 @@ from XBotv2.session import (
     SessionSummary,
     ThreadListResponse,
     ThreadMessagesResponse,
+    ThreadTrajectoryResponse,
     ThreadSummary,
     UndoRequest,
 )
@@ -203,6 +207,35 @@ class XBotClient:
             ),
         )
 
+    async def list_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        scope: PluginConfigScope = "workspace",
+    ) -> PluginConfigCatalog:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/plugin-config",
+            PluginConfigCatalog,
+            params={"scope": scope},
+        )
+
+    async def update_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        patch: PatchPluginConfig,
+    ) -> PluginConfigCatalog:
+        return await self._request(
+            "PATCH",
+            f"{_thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
+            PluginConfigCatalog,
+            patch,
+            params={"scope": patch.scope},
+        )
+
     async def fork_session(self, session_id: str) -> ForkResponse:
         return await self._request(
             "POST", f"/sessions/{_segment(session_id)}/fork", ForkResponse
@@ -322,6 +355,25 @@ class XBotClient:
             "GET",
             f"{_thread_path(session_id, thread_id)}/messages",
             ThreadMessagesResponse,
+            params={
+                key: value
+                for key, value in {"cursor": cursor, "limit": limit}.items()
+                if value is not None
+            },
+        )
+
+    async def list_trajectory(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 160,
+    ) -> ThreadTrajectoryResponse:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/trajectory",
+            ThreadTrajectoryResponse,
             params={
                 key: value
                 for key, value in {"cursor": cursor, "limit": limit}.items()

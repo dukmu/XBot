@@ -32,6 +32,7 @@ describe("SessionEventConnection", () => {
       onEvent: (value) => received.push(value),
       onConnection: vi.fn(),
       onDisconnect: (_error, retrying) => disconnected.push(retrying),
+      onResetRequired: vi.fn(),
     };
     const connection = new SessionEventConnection(transport, async () => undefined);
 
@@ -62,6 +63,7 @@ describe("SessionEventConnection", () => {
       onEvent: vi.fn(),
       onConnection: vi.fn(),
       onDisconnect: vi.fn(),
+      onResetRequired: vi.fn(),
     };
     const connection = new SessionEventConnection(transport, async () => undefined);
 
@@ -88,10 +90,12 @@ describe("SessionEventConnection", () => {
       },
     };
     const disconnects: boolean[] = [];
+    const reset = vi.fn();
     const listener: SessionEventListener = {
       onEvent: vi.fn(),
       onConnection: vi.fn(),
       onDisconnect: (_error, retrying) => disconnects.push(retrying),
+      onResetRequired: reset,
     };
     const connection = new SessionEventConnection(transport, async () => undefined);
 
@@ -99,6 +103,31 @@ describe("SessionEventConnection", () => {
     await vi.waitFor(() => expect(disconnects).toEqual([false]));
 
     expect(calls).toBe(1);
+    expect(reset).toHaveBeenCalledOnce();
+    connection.stop();
+  });
+
+  it("requests a baseline when the replay stream skips a sequence", async () => {
+    const reset = vi.fn();
+    const disconnected: boolean[] = [];
+    const transport = {
+      async *streamEvents() {
+        yield { ...({ type: "usage", data: {} } as ServerEvent), sequence: 6 };
+      },
+    };
+    const listener: SessionEventListener = {
+      onEvent: vi.fn(),
+      onConnection: vi.fn(),
+      onDisconnect: (_error, retrying) => disconnected.push(retrying),
+      onResetRequired: reset,
+    };
+    const connection = new SessionEventConnection(transport, async () => undefined);
+
+    connection.start(session, listener);
+    await vi.waitFor(() => expect(reset).toHaveBeenCalledOnce());
+
+    expect(listener.onEvent).not.toHaveBeenCalled();
+    expect(disconnected).toEqual([false]);
     connection.stop();
   });
 });

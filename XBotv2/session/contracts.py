@@ -8,12 +8,18 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
 from operator import not_
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
+from typing import Annotated, TYPE_CHECKING, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.core.artifacts import ArtifactRef, ImageContent
-from XBotv2.core.history import ConversationPage
+from XBotv2.core.history import (
+    ConversationPage,
+    TrajectoryEvent,
+    TrajectoryMessage,
+    TrajectoryPage,
+    TrajectorySurfaceReplace,
+)
 from XBotv2.core.messages import Message
 from XBotv2.core.operations import Operation
 from XBotv2.core.paths import RuntimePaths
@@ -97,6 +103,45 @@ class SessionHistoryItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class SessionTrajectoryMessage(BaseModel):
+    position: int = Field(ge=1)
+    kind: Literal["message"] = "message"
+    message_id: str = ""
+    message: SessionHistoryItem
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SessionTrajectorySurfaceReplace(BaseModel):
+    position: int = Field(ge=1)
+    kind: Literal["surface_replace"] = "surface_replace"
+    operation: str
+    transcript: Literal["preserve", "replace"]
+    source_node_ids: tuple[str, ...]
+    messages: tuple[SessionHistoryItem, ...]
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SessionTrajectoryEvent(BaseModel):
+    position: int = Field(ge=1)
+    kind: Literal["event"] = "event"
+    event: str
+    data: dict[str, JsonValue]
+    timestamp: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+SessionTrajectoryItem = Annotated[
+    SessionTrajectoryMessage | SessionTrajectorySurfaceReplace | SessionTrajectoryEvent,
+    Field(discriminator="kind"),
+]
+
+
+class SessionTrajectoryPage(BaseModel):
+    items: tuple[SessionTrajectoryItem, ...]
+    next_cursor: str | None = None
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 def conversation_replay(messages: Iterable[Message]) -> tuple[SessionHistoryItem, ...]:
     replay: list[SessionHistoryItem] = []
     for message in messages:
@@ -128,6 +173,39 @@ def conversation_replay(messages: Iterable[Message]) -> tuple[SessionHistoryItem
             timing=dict(timing) if isinstance(timing, Mapping) else None,
         ))
     return tuple(replay)
+
+
+def trajectory_replay(page: TrajectoryPage) -> SessionTrajectoryPage:
+    items: list[SessionTrajectoryItem] = []
+    for item in page.items:
+        if isinstance(item, TrajectoryMessage):
+            replay = conversation_replay((item.message,))
+            if replay:
+                items.append(SessionTrajectoryMessage(
+                    position=item.position,
+                    message_id=(
+                        item.message.input_id
+                        or str(item.message.additional_kwargs.get("xbot_message_id") or "")
+                        or item.message.tool_call_id
+                    ),
+                    message=replay[0],
+                ))
+        elif isinstance(item, TrajectorySurfaceReplace):
+            items.append(SessionTrajectorySurfaceReplace(
+                position=item.position,
+                operation=item.operation,
+                transcript=item.transcript,
+                source_node_ids=item.source_node_ids,
+                messages=conversation_replay(item.messages),
+            ))
+        elif isinstance(item, TrajectoryEvent):
+            items.append(SessionTrajectoryEvent(
+                position=item.position,
+                event=item.event,
+                data=item.data,
+                timestamp=item.timestamp,
+            ))
+    return SessionTrajectoryPage(items=tuple(items), next_cursor=page.next_cursor)
 
 
 def _artifacts(message: Message) -> tuple[ArtifactRef, ...]:
@@ -409,6 +487,14 @@ class SessionsPort(Protocol):
         cursor: str | None,
         limit: int | None,
     ) -> ConversationPage: ...
+    async def trajectory_page(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+    ) -> SessionTrajectoryPage: ...
     async def artifact(
         self,
         session_id: str,
@@ -512,6 +598,11 @@ __all__ = [
     "SessionExists",
     "SessionInfo",
     "SessionHistoryItem",
+    "SessionTrajectoryEvent",
+    "SessionTrajectoryItem",
+    "SessionTrajectoryMessage",
+    "SessionTrajectoryPage",
+    "SessionTrajectorySurfaceReplace",
     "SessionMode",
     "SessionNotFound",
     "SessionResourceChanged",
@@ -523,5 +614,6 @@ __all__ = [
     "ThreadNotActive",
     "ThreadSummary",
     "conversation_replay",
+    "trajectory_replay",
     "new_session_id",
 ]

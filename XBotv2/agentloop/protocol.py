@@ -30,6 +30,7 @@ class ToolListResponse(WireModel):
 
 
 class AssistantMessageData(WireModel):
+    id: str = ""
     content: str
     tool_calls: list[dict[str, JsonValue]] = Field(default_factory=list)
     timing: "ModelTimingData | None" = None

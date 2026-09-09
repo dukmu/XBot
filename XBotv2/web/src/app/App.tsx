@@ -32,7 +32,13 @@ export function App() {
   const [composerDraft, setComposerDraft] = useState<{ id: number; value: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const recordSubmittedInput = useCallback((content: string) => {
+    setInputHistory((current) => current[current.length - 1] === content
+      ? current
+      : [...current, content].slice(-100));
+  }, []);
   const commands = useMemo(() => commandCatalog(runtime.commands), [runtime.commands]);
 
   useEffect(() => {
@@ -290,6 +296,8 @@ export function App() {
                 usage={state.usage}
                 contextWindow={state.current.context_window}
                 onSend={sendComposerInput}
+                inputHistory={inputHistory}
+                onSubmitted={recordSubmittedInput}
                 onInterrupt={runtime.interrupt}
               />
             </div>
@@ -339,6 +347,12 @@ export function App() {
             setThemePreference(preference);
             window.localStorage.setItem("xbot.theme", preference);
           }}
+          sessionId={state.current?.session_id}
+          threadId={state.current?.thread_id}
+          loadSessionPolicy={runtime.loadSessionPolicy}
+          updateSessionPolicy={runtime.updateSessionPolicy}
+          loadPluginConfig={runtime.loadPluginConfig}
+          updatePluginConfig={runtime.updatePluginConfig}
           onClose={closeSettings}
         />
       )}

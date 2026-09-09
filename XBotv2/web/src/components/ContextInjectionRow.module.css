@@ -3,6 +3,33 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.lifecycle {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  gap: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.lifecycle svg {
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.lifecycle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lifecycle code {
+  flex: none;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
 .row summary {
   display: flex;
   align-items: center;
@@ -45,4 +72,6 @@
 @media (max-width: 580px) {
   .row summary { min-height: 22px; font-size: 13px; }
   .body { padding: 3px 0 3px 18px; font-size: 12px; }
+  .lifecycle { min-height: 22px; font-size: 12px; }
+  .lifecycle code { font-size: 10px; }
 }

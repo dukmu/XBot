@@ -21,9 +21,54 @@ test("opens DSh-style client and server settings and applies the theme locally",
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#ffffff");
 
   await settings.getByRole("button", { name: "Server" }).click();
-  await expect(page.getByRole("dialog", { name: "Server settings" })).toContainText("Read-only preview");
+  await expect(page.getByRole("dialog", { name: "Server settings" })).toContainText("Open a session");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Server settings" })).toHaveCount(0);
+});
+
+test("loads and saves the active session security policy", async ({ page }) => {
+  await openDemoSession(page);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Server" }).click();
+  await expect(page.getByText("Session security policy")).toBeVisible();
+  const request = page.waitForRequest((candidate) => (
+    candidate.method() === "PATCH"
+    && candidate.url().endsWith("/sessions/demo-session/policy")
+  ));
+  await page.getByLabel("Network access").selectOption("false");
+  await page.getByLabel("Permission Tool name").fill("shell");
+  await page.getByLabel("Permission decision").selectOption("allow");
+  await page.getByRole("button", { name: "Save server policy" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    permissions: { shell: "allow" },
+    sandbox: { network: false },
+  });
+  await expect(page.getByRole("dialog", { name: "Server settings" }).getByRole("status")).toContainText("Saved");
+});
+
+test("edits plugin configuration through the declared schema catalog", async ({ page }) => {
+  await openDemoSession(page);
+  if ((page.viewportSize()?.width || 0) <= 820) {
+    await page.getByRole("button", { name: "Open sessions" }).click();
+  }
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Server" }).click();
+  const dialog = page.getByRole("dialog", { name: "Server settings" });
+  await expect(dialog.getByRole("heading", { name: "Plugin configuration" })).toBeVisible();
+  const compact = dialog.getByRole("button", { name: "compact Schema available" });
+  await expect(compact).toBeVisible();
+  await compact.click();
+  const request = page.waitForRequest((candidate) => (
+    candidate.method() === "PATCH"
+    && candidate.url().endsWith("/plugin-config/compact?scope=workspace")
+  ));
+  await dialog.getByLabel("Plugin configuration JSON").fill('{"automatic":false}');
+  await dialog.getByRole("button", { name: "Save plugin configuration" }).click();
+  expect((await request).postDataJSON()).toMatchObject({ config: { automatic: false } });
+  await expect(dialog.getByText("Saved")).toBeVisible();
 });
 
 test("collapses to the DSh rail and expands into focused session search", async ({ page }) => {
@@ -79,7 +124,7 @@ test("answers a permission request through the interaction endpoint", async ({ p
 
   await expect(page.getByRole("heading", { name: "Approval required" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Approval required" })).toHaveCount(1);
-  await expect(page.getByText("filesystem_write", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Approval required" }).locator(".permission-tool strong")).toHaveText("filesystem_write");
   await page.getByRole("button", { name: "Allow once" }).click();
   await expect(page.getByRole("heading", { name: "Approval required" })).toBeHidden();
 });
@@ -147,6 +192,20 @@ test("restores historical sessions and their workspaces", async ({ page }) => {
     await expect(page.getByRole("main").getByTitle("/workspace/XBot")).toBeVisible();
   }
   await expect(page.getByText("Inspect API boundaries", { exact: true })).toBeVisible();
+});
+
+test("opens a subagent as an independent thread with its own history", async ({ page }) => {
+  await openDemoSession(page);
+  const mobile = (page.viewportSize()?.width || 0) <= 820;
+  if (mobile) await page.getByRole("button", { name: "Open sessions" }).click();
+  const request = page.waitForRequest((candidate) => (
+    candidate.method() === "POST"
+    && candidate.url().endsWith("/sessions/demo-session/threads")
+    && candidate.postDataJSON().thread_id === "subagent-research"
+  ));
+  await page.getByRole("button", { name: /researcher.*subagent-research/ }).click();
+  await request;
+  await expect(page.getByText("Subagent inspected the persistence boundary.", { exact: true })).toBeVisible();
 });
 
 test("renames and removes a workspace without deleting its sessions", async ({ page }) => {
@@ -635,6 +694,14 @@ async function mockProtocol(page: Page) {
   let workspaceOrder = ["ws-xbot", "ws-history"];
   let xbotSessionOrder = ["demo-session", "second-session"];
   let demoSessionTitle = "Demo session";
+  let regenerated = false;
+  let cleared = false;
+  let sessionPolicy = {
+    enabled: true, network: true, external_read: "readonly", external_write: "deny",
+    workspace_read: "allow", workspace_write: "allow",
+  };
+  let pluginConfigRevision = "plugin-config-rev-1";
+  let pluginConfig = { automatic: true };
   const archivedSessions = new Set<string>();
   let pendingInputs: Array<{
     message_id: string;
@@ -705,6 +772,49 @@ async function mockProtocol(page: Page) {
         }],
       }],
     });
+    if (path === "/sessions/demo-session/policy" && method === "GET") return json(route, {
+      session_id: "demo-session", permissions: {}, effective_permissions: {}, sandbox: {}, effective_sandbox: sessionPolicy,
+    });
+    if (path === "/sessions/demo-session/policy" && method === "PATCH") {
+      sessionPolicy = { ...sessionPolicy, ...(request.postDataJSON().sandbox || {}) };
+      return json(route, {
+        session_id: "demo-session", permissions: {}, effective_permissions: {}, sandbox: request.postDataJSON().sandbox || {}, effective_sandbox: sessionPolicy,
+      });
+    }
+    if (path === "/sessions/demo-session/threads/agent/plugin-config" && method === "GET") {
+      return json(route, {
+        scope: url.searchParams.get("scope") || "workspace",
+        workspace_root: "/workspace/XBot",
+        revision: pluginConfigRevision,
+        applies_to: "new_sessions",
+        plugins: [
+          {
+            plugin_id: "compact", name: "compact", editable: true,
+            config_schema: { type: "object", properties: { automatic: { type: "boolean" } } },
+            scope_config: pluginConfig, effective_config: pluginConfig, unavailable_reason: null,
+          },
+          {
+            plugin_id: "llm", name: "llm", editable: false, config_schema: null,
+            scope_config: {}, effective_config: {}, unavailable_reason: "No producer schema declared",
+          },
+        ],
+      });
+    }
+    if (path === "/sessions/demo-session/threads/agent/plugin-config/compact" && method === "PATCH") {
+      const body = request.postDataJSON() as { revision: string; config: { automatic: boolean } };
+      pluginConfig = body.config;
+      pluginConfigRevision = "plugin-config-rev-2";
+      return json(route, {
+        scope: url.searchParams.get("scope") || "workspace",
+        workspace_root: "/workspace/XBot", revision: pluginConfigRevision,
+        applies_to: "new_sessions",
+        plugins: [{
+          plugin_id: "compact", name: "compact", editable: true,
+          config_schema: { type: "object", properties: { automatic: { type: "boolean" } } },
+          scope_config: pluginConfig, effective_config: pluginConfig, unavailable_reason: null,
+        }],
+      });
+    }
     if (path === "/workspaces" && method === "GET") return json(route, {
       items: [
         { workspace_id: "ws-xbot", path: "/workspace/XBot", title: xbotWorkspaceTitle, session_ids: xbotSessionOrder.filter((id) => !deletedSessions.has(id)), created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
@@ -771,6 +881,9 @@ async function mockProtocol(page: Page) {
         Number(payload.history_limit || 0),
       ));
     }
+    if (path === "/sessions/demo-session/threads" && method === "POST") {
+      return json(route, openSubagentSession());
+    }
     if (path === "/sessions/demo-session/threads") return json(route, {
       session_id: "demo-session",
       threads: [{
@@ -789,6 +902,22 @@ async function mockProtocol(page: Page) {
         usage: usage(),
         pending_interactions: [],
         status_slots: { goal: "active" },
+      }, {
+        session_id: "demo-session",
+        thread_id: "subagent-research",
+        status: "inactive",
+        kind: "subagent",
+        turn_status: "idle",
+        parent_thread_id: "agent",
+        agent: "researcher",
+        provider: "minimax",
+        model: "Minimax-M3",
+        model_mode: "high",
+        context_window: 32000,
+        message_count: 2,
+        usage: usage(),
+        pending_interactions: [],
+        status_slots: {},
       }],
     });
     if (path === "/sessions/history-session/threads") return json(route, {
@@ -911,6 +1040,28 @@ async function mockProtocol(page: Page) {
         },
       });
     }
+    if (path.endsWith("/trajectory") && method === "GET") {
+      const sessionId = path.split("/")[2];
+      const threadId = path.split("/")[4];
+      const opened = threadId === "subagent-research" ? openSubagentSession() : openSession(sessionId);
+      const history = cleared && sessionId === "demo-session" ? [] : regenerated && sessionId === "demo-session" ? [
+        { role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+        { role: "assistant", content: "Regenerated from the persisted input.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+      ] : opened.history;
+      const all = history.map((message, index) => ({
+        position: index + 1,
+        kind: "message",
+        message_id: `history-${index + 1}`,
+        message,
+      }));
+      const end = Number(url.searchParams.get("cursor") || all.length);
+      const limit = Number(url.searchParams.get("limit") || all.length);
+      const start = Math.max(0, end - limit);
+      return json(route, {
+        items: all.slice(start, end),
+        next_cursor: start ? String(start) : null,
+      });
+    }
     if (path.endsWith("/messages") && method === "GET") {
       const sessionId = path.split("/")[2];
       const all = openSession(sessionId).history;
@@ -924,9 +1075,11 @@ async function mockProtocol(page: Page) {
     }
     if (path.endsWith("/history/clear") && method === "POST") {
       demoMessageCount = 0;
+      cleared = true;
       return json(route, { messages: [] });
     }
     if (path.endsWith("/history/regenerate") && method === "POST") {
+      regenerated = true;
       const events = [
         { type: "history_updated", data: { operation: "regenerate", turns: 1, history: [] } },
         { type: "message", data: { id: "regen-user", role: "user", content: "Inspect API boundaries", images: [], artifacts: [] } },
@@ -1159,6 +1312,19 @@ function openSession(sessionId = "demo-session", workspaceOverride = "", history
     history: history.slice(start).map((item) => ({ images: [], ...item })),
     history_cursor: start ? String(start) : null,
     event_cursor: 0,
+  };
+}
+
+function openSubagentSession() {
+  return {
+    ...openSession("demo-session"),
+    thread_id: "subagent-research",
+    agent_name: "researcher",
+    history: [
+      { role: "user", content: "Inspect persistence", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+      { role: "assistant", content: "Subagent inspected the persistence boundary.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+    ],
+    history_cursor: null,
   };
 }
 

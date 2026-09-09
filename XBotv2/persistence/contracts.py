@@ -6,11 +6,11 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
 from XBotv2.agentloop.contracts import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import ConversationPage, HistoryNode
+from XBotv2.core.history import ConversationPage, HistoryNode, TrajectoryPage
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.metadata import ThreadMetadata
@@ -82,7 +82,7 @@ class HistoryPort(Protocol):
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]: ...
 
-    def record(self, event: str, data: dict[str, object]) -> None: ...
+    def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
 
     def count(self) -> int: ...
 
@@ -99,6 +99,13 @@ class HistoryPort(Protocol):
         limit: int,
         cursor: str | None = None,
     ) -> ConversationPage: ...
+
+    def page_trajectory(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> TrajectoryPage: ...
 
 
 class MetadataPort(Protocol):

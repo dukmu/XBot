@@ -3,6 +3,307 @@
 This backlog tracks the next architecture iterations. It is ordered to reduce
 ambiguity before large implementation changes.
 
+## 0. WebUI Stability Audit (2026-09-09, discovery and implementation status)
+
+This section records the WebUI investigation and the first implementation
+pass. It deliberately separates fixes that are now present from the remaining
+DSH-level design work; a passing test suite is not treated as proof that the
+interactive contract is complete.
+
+### First implementation pass
+
+The following concrete defects have been addressed in the current working
+tree:
+
+- Session event connections reject duplicate and non-contiguous sequences and
+  request a baseline reopen when the cursor expires. The client does not
+  silently continue from a broken replay cursor.
+- Older-history responses carry the cursor they were requested for. A stale
+  page is discarded instead of being prepended over a newer live projection.
+- Composer input history supports ArrowUp/ArrowDown independently from server
+  conversation history.
+- Permission requests upsert their tool row and permission responses update
+  that row's state, so a delayed result cannot leave an approval request
+  invisible or permanently indistinguishable from a running tool.
+- Compact lifecycle notifications are projected as runtime entries and the
+  durable trajectory page restores them after a cold reopen.
+- Agent task updates refresh child-thread summaries when the event identifies
+  a child thread.
+- Baseline reconciliation is serialized per active session. A cursor gap,
+  expired cursor, and a concurrent older-page failure cannot start competing
+  `openSession` calls; deleting the active session also clears the reconciliation
+  target. Navigation now stops the previous stream before a new session/thread
+  load, so a stale stream cannot reconcile the wrong session while navigation is
+  in progress.
+
+The following are explicitly **not** claimed as complete: a DSH-style
+definition registry and live buffer, full subagent session navigation, or a
+live-reload plugin settings system. A first server-backed plugin settings
+surface now exists below, but it is intentionally limited to declared XCore
+schemas and global/workspace overlays.
+
+### Schema-driven plugin settings
+
+The server now exposes a revisioned `PluginConfigCatalog` and PATCH endpoint.
+It discovers entries from the actual loaded plugin tree, projects producer
+schemas to JSON Schema, and marks plugins without a declared `Config` as
+read-only. The WebUI uses one generic JSON editor and never branches on a
+plugin name. Writes are atomic, optimistic-concurrency checked, and explicitly
+apply to new sessions rather than pretending to hot-reload running plugins.
+
+Remaining work is deliberate: pass external plugin directories into the
+catalog, provide a separate secret/write-only contract, and surface provider
+configuration only when its producer exposes a validated schema. Plugin-local
+parser rules that are not represented by the XCore schema also need to be
+reported by the server instead of guessed in the client.
+The implementation must not add an event for every context-builder execution.
+
+### Unified activity projection, first step
+
+Turn lifecycle events (`turn_started`, `turn_finished`, and
+`turn_cancelled`) now enter the same client timeline as user/assistant/tool
+entries. Compact lifecycle entries use the same runtime-node path, while
+persisted runtime messages continue to render their producer and event
+provenance. This is a client projection of existing events only; it is not a
+new persistence protocol and it does not make context-builder internals
+visible. Live source-tagged `message` events now use the same runtime projection
+as replayed history and retain a stable event-derived identity, so a reconnect
+or duplicate frame cannot turn one injected context record into a user message
+or duplicate node. The server `MessageData` contract accepts the optional
+runtime provenance without changing ordinary user-message payloads, and claimed
+non-user inbox inputs now populate that provenance on the live message event.
+Lifecycle runtime nodes use `event:<sequence>:<type>` identities, while
+source-tagged messages use `runtime:<message-id>`. The live claimed-message path now reuses the
+session runtime's `_message_event` builder for ordinary and source-tagged
+messages, including typed image/artifact serialization; it does not maintain a
+second payload assembly path. A `history_updated` operation beginning with
+`compact:` now re-adds a compact marker after the authoritative history
+replacement, so the marker is not lost when the live stream reports the
+compaction result.
+
+Lifecycle nodes are now visible status rows instead of empty disclosure
+controls. In the WebUI a user can immediately see when a turn starts, ends, is
+cancelled, or when history compaction completes. Long context payloads remain
+expandable because they are secondary detail. The UI still has no dedicated
+trajectory tab.
+
+### Durable trajectory page
+
+The append-only `messages.jsonl` now has a typed, cursor-paginated read path
+through persistence, `SessionsPort`, HTTP, the Python SDK, and the Web client.
+It exposes ordinary messages, deterministic surface replacements, and log-only
+events without exposing the persistence JSON codec. Appending records does not
+invalidate an older trajectory cursor.
+
+On session open the Web client loads the latest trajectory page and derives the
+visible stream from it. Non-user inputs retain their source and appear as
+context rather than user chat. Compaction start, summary, replacement, and end
+records with the same `compaction_id` collapse into one durable row; the
+original human transcript stays visible for transcript-preserving compaction.
+Undo and clear replacements are folded as destructive transcript edits. Older
+pages are accepted only for the cursor that requested them and the combined
+window is reprojected, so delayed pages cannot overwrite a newer baseline.
+
+Remaining limitation: live SSE frames are still reduced after the durable
+baseline instead of first entering a shared raw-event window. Gap recovery
+reopens the authoritative baseline. A trajectory refresh now records the
+latest observed event sequence and discards/retries its response if a newer
+frame arrived while it was in flight, so it cannot overwrite that live frame.
+There is still no DSH-style raw buffer or pluggable event-definition registry;
+no per-context-build events were added.
+
+Final assistant messages now carry a deterministic thread-local message ID,
+which is persisted with the message and exposed by the trajectory record (not
+by the older message-page contract). User inputs retain their inbox ID and Tool
+records retain their call ID. The Web reducer uses those IDs to suppress a
+frame replayed after its durable counterpart was already loaded; this closes
+the common reconnect duplication without comparing message text.
+
+### Subagent thread navigation
+
+Persisted child threads already share the session thread catalog. The sidebar
+now presents them as named subagent rows with their thread identity and running
+indicator, and selecting one opens that child through the normal thread API so
+it gets its own trajectory, event stream, usage, and header state. Desktop and
+mobile browser coverage exercises the actual navigation and child history.
+
+This is not yet DSH's resident multi-session cluster: switching threads stops
+the previous Web stream, and the sidebar does not aggregate recursive child
+usage, elapsed time, or diagnostics into a separate subagent catalog. Those are
+remaining enhancements rather than hidden behavior.
+
+### Server settings, first connected surface
+
+The Web settings dialog no longer presents a fake server preview. With an
+active session it reads the existing typed session-policy endpoint and can
+persist sandbox enablement, network/access modes, and an exact Tool permission
+decision. Only fields changed from the effective baseline are written into the
+session overlay. Every sandbox field has an explicit `inherit` choice, and an
+exact Tool permission can likewise be returned to `inherit`; those choices
+remove the session-local key instead of copying the current effective
+global/workspace value. The resulting policy is applied through the Config
+plugin and remains consistent after the session restarts.
+
+The policy editor remains session-scoped. Plugin configuration is now exposed
+through the separate schema-described, revision-checked catalog below; it is
+not mixed into the policy model. Provider secrets still require write-only
+slots before they can be safely exposed, and the catalog intentionally does
+not claim live reload for running sessions.
+
+History-changing server commands now refresh this trajectory projection rather
+than falling back to the older message page. Concurrent refresh requests are
+coalesced only while a request is active and then run once more, rather than
+silently losing the later request.
+
+### Evidence collected
+
+- `npm test -- --run` in `XBotv2/web`: **90 tests passed in 21 files**.
+- `npm run build` in `XBotv2/web`: TypeScript and Vite production build passed.
+- The Playwright mock suite completed with **71 passed and 1 skipped** (72
+  tests; the skip is an existing environment-dependent case).
+- The full integration suite completed with **140 passed** when socket tests were run
+  with the required host permission. The sandbox-only run reported socket
+  `PermissionError` failures and is not treated as application evidence.
+- Focused Python protocol/session event checks passed (**28 tests**). A later
+  combined run also exposed two environment/repository conditions that are
+  recorded rather than hidden: the current checkout lacks
+  `docs/api/api_inventory.md`, and socket-backed integration tests require the
+  host permission used by the earlier 88-test run.
+- The full core suite completed with **717 passed** after removing the stale
+  test dependency on the deleted `docs/api/api_inventory.md`. Public exports
+  remain checked for uniqueness and resolvability; API behavior is covered by
+  typed contract and OpenAPI assertions instead of a duplicated Markdown list.
+- The requested llama.cpp host was probed without a connection on the usual
+  ports 8080, 8000, and 1234. No real-provider result is claimed; the
+  conclusions below use source inspection, existing mock tests, and protocol
+  reasoning.
+
+### Confirmed defects and high-risk paths
+
+The body of each item preserves the evidence recorded during the original
+audit. The heading is the current status; implemented behavior and remaining
+limits are described in the sections above.
+
+1. **Resolved: session event recovery could leave the UI stale.**
+   `web/src/client/SessionEventConnection.ts` retries transport failures but
+   terminates permanently on `session_event_cursor_expired`. It does not
+   rebuild the session baseline or reopen the stream, unlike
+   `WorkspaceEventConnection`, which calls `onResetRequired()` and refreshes
+   both catalogs. The server stream is bounded (`SessionEventStream` and its
+   subscriber queue are capacity 512); a slow tab or a long event burst can
+   detach a subscriber and surface cursor expiry. There is also no sequence
+   gap check in the Web client. This explains “refresh fixes it”, and can lose
+   the latest tool/result/usage event from the visible projection until a
+   manual resume.
+
+2. **Resolved for durable pages: history pagination was not revision-aware.**
+   `useXBot.loadEarlier()` captures one old cursor and blindly prepends the
+   returned page. `runtimeReducer.history_prepend` performs no message/node
+   identity de-duplication and has no relation to the active event sequence.
+   A concurrent append, clear/undo/regenerate, or compaction changes the
+   server history revision; the next page can then be rejected as an invalid
+   cursor, overlap the current projection, or be applied beside a newer
+   live projection. `history_updated` replaces the entire visible list and
+   resets the cursor, so already-loaded older pages disappear after a command
+   or mutation. This is a correctness issue, not merely a loading animation
+   issue; the acceptance test must cover append + page, mutation + page, and
+   reconnect during page load.
+
+3. **Partially resolved: steering has a real step-boundary latency window.**
+   The Web client decides `queue` vs `steer` from its local `turnRunning` and
+   outstanding POST map (`web/src/state/useXBot.ts`). The server puts steering
+   input in the `next-step` inbox and only claims it at an engine step
+   boundary; `_request_wakeup()` deliberately does not preempt a locked turn.
+   The POST response is drained but not used for rendering, while the
+   resumable session stream is authoritative. If the stream is delayed,
+   disconnected, or the local running flag is stale, the user sees a delayed
+   or apparently missing steer even though it is durable in the inbox. The
+   fix must define and display accepted/claimed/consumed phases rather than
+   masking this with another poll loop.
+
+4. **Resolved for persisted facts: runtime/event history was not one semantic timeline.**
+   `runtimeReducer.applyEvent` has no cases for `compaction_started`,
+   `compaction_completed`, or `compaction_failed`, although the compact plugin
+   publishes all three and the TUI consumes them. Unknown events are silently
+   ignored. Context building emits internal XCore events
+   (`before/context`, `after/context`, `after/context-build`) but no Web
+   projection; only persisted runtime user messages become
+   `ContextInjectionRow`s. Consequently user input, assistant output, tool
+   calls/results, context injection, and compaction cannot be inspected as one
+   ordered conceptual stream in WebUI. This is a missing event contract, not
+   a React rendering omission.
+
+5. **Resolved: permission events did not reconcile the Web Tool row.**
+   `permission_request` only appends an interaction dialog in
+   `runtimeReducer`; it does not upsert the supplied `tool_call` or mark an
+   existing call as “pending approval”. `permission_response_recorded` removes
+   the dialog, and `permission_denied` adds a notice, but neither changes the
+   tool entry status. The TUI does this association by request id. If the
+   subsequent `tool_result` is delayed or missed by the session stream, WebUI
+   shows a tool as pending/running forever. This is a concrete explanation for
+   the reported “tool still running although thinking/text already arrived”.
+
+6. **Resolved: Tool results were present but hidden by default
+   (medium).**
+   `tool_result` is handled and the existing unit/E2E mocks prove that result,
+   data, errors, artifacts, and bounded output can render. The result body is
+   inside a collapsed `<details>` element and the summary only shows a short
+   argument/status preview. Thus a normal user can reasonably report “no
+   result” even when the event arrived. This is a presentation/affordance
+   gap; do not “fix” it by adding a second transport or duplicating results.
+
+7. **Resolved: the Composer had no submitted-input history.**
+   `Composer.tsx` handles ArrowUp/ArrowDown only for command suggestions. The
+   application stores no sent-input ring and no key path loads prior user
+   submissions. Pressing Up after a message therefore cannot recall the last
+   input; this is independent of persisted conversation history.
+
+8. **Partially resolved: subagents are navigable child threads, not a DSH-style
+   concurrent session surface (confirmed design gap).**
+   The server persists subagent threads and `/sessions/{id}/threads` returns
+   them. WebUI renders them only under the currently selected session and
+   refreshes the thread list indirectly after an `agent` task event. There is
+   no cross-thread live event aggregation, subagent-specific title/status
+   surface, or independent open/close/resume view while the parent remains
+   visible. A missed `task_updated`/cursor recovery leaves a newly spawned
+   thread absent until refresh or re-open. The implementation should align
+   with DSH’s explicit subagent/session navigation rather than inventing a
+   second session store.
+
+9. **Partially resolved: server settings and plugin configuration are now
+   connected.**
+   `SettingsDialog.ServerSettings` edits the typed session policy and also
+   consumes the revisioned plugin-config catalog. The catalog projects loaded
+   producer schemas, effective/layer values, and validation errors through
+   HTTP; global and workspace writes are atomic and optimistic-concurrency
+   checked. It deliberately does not hot-reload running sessions. External
+   plugin directories, session-local plugin-config writes, and write-only
+   provider secret slots remain open design work.
+
+10. **Resolved or recorded: smaller correctness/maintainability signals.**
+    `session/protocol.py::_open_session_response` contains a duplicate history
+    assignment. It is currently harmless, but it indicates the transport
+    boundary needs a focused audit before pagination changes. More broadly,
+    the Web reducer silently ignores unknown event types, and
+    `SessionEventConnection` reports `onConnection(true)` before the first
+    frame is received; both can make status indicators more optimistic than
+    the actual stream.
+
+### Priority and acceptance gates for the next implementation phase
+
+1. Add a raw live buffer around baseline replacement so frames received during
+   trajectory loading are folded once without a transient reset.
+2. Evolve child-thread navigation into a resident session cluster with
+   recursive subagent usage, elapsed time, diagnostics, and background updates.
+3. Extend the revisioned plugin-config catalog with external plugin
+   directories, a session-local layer where appropriate, and write-only secret
+   slots. Keep controls generated from producer-owned schemas.
+4. Make steering acceptance, claim, and consumption phases explicit in the UI
+   without changing the Agent loop's step-boundary semantics.
+
+The status labels above reflect implemented behavior and focused acceptance
+paths, not the existence of green tests alone.
+
 ## 1. API Inventory And Behavior Gate
 
 - Keep `api.__all__`, `api_inventory.md`, and public API tests aligned.

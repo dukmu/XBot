@@ -375,7 +375,10 @@ function SessionItem({
                       title={thread.thread_id}
                     >
                       {thread.kind === "subagent" ? <GitBranch size={13} /> : <Bot size={13} />}
-                      <span>{thread.thread_id === "agent" ? (thread.agent || "agent") : shortId(thread.thread_id)}</span>
+                      <span className="thread-copy">
+                        <b>{thread.kind === "subagent" ? (thread.agent || "subagent") : (thread.agent || "agent")}</b>
+                        {thread.kind === "subagent" && <small>{shortId(thread.thread_id)}</small>}
+                      </span>
                       {thread.turn_status === "running" && <i className="activity-dot" />}
                     </button>
                   ))}

@@ -50,6 +50,13 @@ reads the effective surface, while `page_transcript()` reads the explicit
 human-history projection. Cursors are opaque and invalidated by a relevant
 surface revision.
 
+`HistoryPort.page_trajectory()` reads a contiguous append-order record window.
+Its cursor is deliberately stable across later appends. HTTP and SDK clients
+use `GET /sessions/{session_id}/threads/{thread_id}/trajectory`; its
+discriminated items are transport projections rather than the on-disk codec.
+Use this endpoint for a recoverable activity UI, fold `surface_replace`
+records, and never infer trajectory events from the current message surface.
+
 An ordinary message record contains `role`, `status`, `data`, discriminated
 `parts`, `tool_call_id`, `input_id`, `name`, `additional_kwargs`,
 `response_metadata`, `usage_metadata`, `artifact`, and `error`. The `parts`

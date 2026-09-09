@@ -21,10 +21,12 @@ interface ComposerProps {
   usage: UsageData;
   contextWindow: number;
   onSend: (content: string, attachments: PendingAttachment[]) => Promise<boolean>;
+  inputHistory: string[];
+  onSubmitted: (content: string) => void;
   onInterrupt: () => Promise<void>;
 }
 
-export function Composer({ running, disabled, commands, draft, allowImages, usage, contextWindow, onSend, onInterrupt }: ComposerProps) {
+export function Composer({ running, disabled, commands, draft, allowImages, usage, contextWindow, onSend, inputHistory, onSubmitted, onInterrupt }: ComposerProps) {
   const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -33,6 +35,8 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   const [caret, setCaret] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<PendingAttachment | null>(null);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const historyDraft = useRef("");
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -55,6 +59,7 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
   useEffect(() => {
     if (!draft) return;
     setContent(draft.value);
+    setHistoryIndex(null);
     setCaret(draft.value.length);
     setCommandMenuOpen(false);
     requestAnimationFrame(() => textarea.current?.focus());
@@ -71,6 +76,8 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
     if (!await onSend(value, submitted)) {
       setContent((current) => current || value);
       setAttachments((current) => [...submitted, ...current]);
+    } else if (value) {
+      onSubmitted(value);
     }
   };
 
@@ -201,6 +208,7 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
           aria-label="Message XBot"
           onChange={(event) => {
             setContent(event.target.value);
+            setHistoryIndex(null);
             setCaret(event.target.selectionStart);
             setCommandMenuOpen(true);
           }}
@@ -230,6 +238,35 @@ export function Composer({ running, disabled, commands, draft, allowImages, usag
             if (suggestions.length && event.key === "ArrowUp") {
               event.preventDefault();
               setCommandIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
+              return;
+            }
+            if (!suggestions.length && event.key === "ArrowUp" && inputHistory.length) {
+              const atStart = event.currentTarget.selectionStart === 0;
+              if (atStart || !content) {
+                event.preventDefault();
+                const next = historyIndex === null
+                  ? inputHistory.length - 1
+                  : Math.max(0, historyIndex - 1);
+                if (historyIndex === null) historyDraft.current = content;
+                setHistoryIndex(next);
+                setContent(inputHistory[next]);
+                requestAnimationFrame(() => {
+                  const element = textarea.current;
+                  element?.setSelectionRange(element.value.length, element.value.length);
+                });
+                return;
+              }
+            }
+            if (!suggestions.length && event.key === "ArrowDown" && historyIndex !== null) {
+              event.preventDefault();
+              if (historyIndex >= inputHistory.length - 1) {
+                setHistoryIndex(null);
+                setContent(historyDraft.current);
+              } else {
+                const next = historyIndex + 1;
+                setHistoryIndex(next);
+                setContent(inputHistory[next]);
+              }
               return;
             }
             if (suggestions.length && event.key === "Tab") {

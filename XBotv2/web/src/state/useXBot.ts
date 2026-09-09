@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { XBotApi, XBotApiError } from "../api/client";
-import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, TaskData, ThreadSummary } from "../api/types";
+import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, SessionPolicyPatch, TaskData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { WorkspaceManager } from "../client/WorkspaceManager";
 import { SessionCatalog } from "../client/SessionCatalog";
@@ -24,6 +24,12 @@ export function useXBot() {
   const navigationGeneration = useRef(0);
   const commandInFlight = useRef(false);
   const sessionMutationInFlight = useRef(false);
+  const currentSessionRef = useRef<OpenSessionResponse | null>(null);
+  const latestEventSequenceRef = useRef(0);
+  const reconcileSessionRef = useRef<(() => void) | null>(null);
+  const refreshTrajectoryRef = useRef<(() => void) | null>(null);
+  const trajectoryRefreshPending = useRef(false);
+  const reconcileInFlight = useRef(false);
   const navigationBlocked = state.loading || commandRunning;
   const navigationBlockMessage = state.loading
     ? "Wait for the active session operation before switching sessions."
@@ -41,11 +47,28 @@ export function useXBot() {
   }, []);
 
   const runtimeEvents = useMemo(() => new RuntimeEventController(api, {
-    onEvents: (events) => dispatch({ type: "events", events }),
+    onEvents: (events) => {
+      for (const event of events) {
+        latestEventSequenceRef.current = Math.max(latestEventSequenceRef.current, event.sequence);
+      }
+      dispatch({ type: "events", events });
+      if (events.some((event) => event.type === "history_updated")) {
+        trajectoryRefreshPending.current = true;
+      }
+      if (
+        trajectoryRefreshPending.current
+        && events.some((event) => ["turn_finished", "turn_cancelled", "error"].includes(event.type))
+      ) {
+        refreshTrajectoryRef.current?.();
+      }
+    },
     onThreads: (threads) => dispatch({ type: "threads", threads }),
     onTaskExpired: (taskId) => dispatch({ type: "remove_task", taskId }),
     onConnection: (connected) => dispatch({ type: "event_stream", value: connected }),
     onError: reportError,
+    onResetRequired: () => {
+      reconcileSessionRef.current?.();
+    },
   }), [api, reportError]);
   const workspaceCatalog = useMemo(() => new WorkspaceCatalogController(
     api,
@@ -69,7 +92,9 @@ export function useXBot() {
 
   const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
     if (generation !== navigationGeneration.current) return;
-    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>];
+    currentSessionRef.current = session;
+    latestEventSequenceRef.current = session.event_cursor;
+    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
     try {
       resources = await Promise.all([
         api.listThreads(session.session_id),
@@ -80,14 +105,16 @@ export function useXBot() {
           if (error instanceof XBotApiError && error.code === "capability_unavailable") return [];
           throw error;
         }),
+        api.listTrajectory(session.session_id, session.thread_id, { limit: 160 }),
       ]);
     } catch (error) {
       throw error;
     }
-    const [threads, agents, tasks, availableCommands, todos] = resources;
+    const [threads, agents, tasks, availableCommands, todos, trajectory] = resources;
     if (generation !== navigationGeneration.current) return;
     resetStreamingState();
     dispatch({ type: "opened", session });
+    dispatch({ type: "trajectory", items: trajectory.items, nextCursor: trajectory.next_cursor });
     dispatch({ type: "threads", threads });
     const activeThread = threads.find((thread) => thread.thread_id === session.thread_id);
     if (activeThread) dispatch({ type: "thread_synced", thread: activeThread });
@@ -98,6 +125,55 @@ export function useXBot() {
     setNotification("");
     startEventStream(session, generation, activeThread?.turn_status === "running");
   }, [api, resetStreamingState, startEventStream]);
+  const activateSessionRef = useRef(activate);
+  activateSessionRef.current = activate;
+  const trajectoryRefreshInFlight = useRef(false);
+  const refreshTrajectory = useCallback(() => {
+    const current = currentSessionRef.current;
+    if (!current) return;
+    if (trajectoryRefreshInFlight.current) {
+      trajectoryRefreshPending.current = true;
+      return;
+    }
+    trajectoryRefreshPending.current = false;
+    const generation = navigationGeneration.current;
+    const eventSequence = latestEventSequenceRef.current;
+    trajectoryRefreshInFlight.current = true;
+    void api.listTrajectory(current.session_id, current.thread_id, { limit: 160 })
+      .then((page) => {
+        if (generation !== navigationGeneration.current) return;
+        if (eventSequence !== latestEventSequenceRef.current) {
+          trajectoryRefreshPending.current = true;
+          return;
+        }
+        dispatch({ type: "trajectory", items: page.items, nextCursor: page.next_cursor });
+      })
+      .catch((error) => {
+        if (generation === navigationGeneration.current) reportError(error);
+      })
+      .finally(() => {
+        trajectoryRefreshInFlight.current = false;
+        if (trajectoryRefreshPending.current) refreshTrajectoryRef.current?.();
+      });
+  }, [api, reportError]);
+  refreshTrajectoryRef.current = refreshTrajectory;
+  const reconcileSession = useCallback(() => {
+    const current = currentSessionRef.current;
+    if (!current || reconcileInFlight.current) return;
+    const generation = navigationGeneration.current;
+    reconcileInFlight.current = true;
+    void api.openSession({
+      sessionId: current.session_id,
+      threadId: current.thread_id,
+      workspaceRoot: current.workspace_root,
+      mode: "resume",
+    }).then((session) => activateSessionRef.current?.(session, generation))
+      .catch((error) => reportError(error))
+      .finally(() => {
+        reconcileInFlight.current = false;
+      });
+  }, [api, reportError]);
+  reconcileSessionRef.current = reconcileSession;
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -141,6 +217,9 @@ export function useXBot() {
     if (!id) return;
     const previous = state.current;
     const generation = ++navigationGeneration.current;
+    resetStreamingState();
+    currentSessionRef.current = null;
+    reconcileInFlight.current = false;
     dispatch({ type: "loading", value: true });
     try {
       const threads = await api.listThreads(id);
@@ -164,7 +243,7 @@ export function useXBot() {
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, navigationBlockMessage, navigationBlocked, notify, refreshSessions, reportError, startEventStream, state.current]);
+  }, [activate, api, navigationBlockMessage, navigationBlocked, notify, refreshSessions, reportError, resetStreamingState, startEventStream, state.current]);
 
   const createSession = useCallback(async (workspaceRoot: string) => {
     const requestedWorkspace = workspaceRoot.trim();
@@ -183,6 +262,9 @@ export function useXBot() {
     }
     const previous = state.current;
     const generation = ++navigationGeneration.current;
+    resetStreamingState();
+    currentSessionRef.current = null;
+    reconcileInFlight.current = false;
     dispatch({ type: "loading", value: true });
     try {
       if (targetWorkspace) await workspaceManager.create(targetWorkspace);
@@ -202,7 +284,7 @@ export function useXBot() {
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, workspaceCatalog, navigationBlockMessage, navigationBlocked, notify, openExistingSession, refreshSessions, reportError, startEventStream, state.current, workspaceManager, workspaces]);
+  }, [activate, api, resetStreamingState, workspaceCatalog, navigationBlockMessage, navigationBlocked, notify, openExistingSession, refreshSessions, reportError, startEventStream, state.current, workspaceManager, workspaces]);
 
   const renameWorkspace = useCallback(async (workspaceId: string, title: string) => {
     try {
@@ -254,6 +336,27 @@ export function useXBot() {
     api.listDirectories(path, signal)
   ), [api]);
 
+  const loadSessionPolicy = useCallback((sessionId: string) => (
+    api.getSessionPolicy(sessionId)
+  ), [api]);
+
+  const updateSessionPolicy = useCallback((sessionId: string, patch: SessionPolicyPatch) => (
+    api.updateSessionPolicy(sessionId, patch)
+  ), [api]);
+
+  const loadPluginConfig = useCallback((sessionId: string, threadId: string, scope: PluginConfigScope) => (
+    api.listPluginConfig(sessionId, threadId, scope)
+  ), [api]);
+
+  const updatePluginConfig = useCallback((
+    sessionId: string,
+    threadId: string,
+    pluginId: string,
+    scope: PluginConfigScope,
+    revision: string,
+    config: Record<string, unknown>,
+  ) => api.updatePluginConfig(sessionId, threadId, pluginId, scope, revision, config), [api]);
+
   const selectThread = useCallback(async (thread: ThreadSummary) => {
     if (!state.current || thread.thread_id === state.current.thread_id) return;
     if (navigationBlocked) {
@@ -266,6 +369,9 @@ export function useXBot() {
     }
     const previous = state.current;
     const generation = ++navigationGeneration.current;
+    resetStreamingState();
+    currentSessionRef.current = null;
+    reconcileInFlight.current = false;
     dispatch({ type: "loading", value: true });
     try {
       const session = thread.kind === "main"
@@ -286,7 +392,7 @@ export function useXBot() {
     } finally {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
-  }, [activate, api, commandRunning, navigationBlocked, notify, reportError, startEventStream, state.current, state.loading]);
+  }, [activate, api, commandRunning, navigationBlocked, notify, reportError, resetStreamingState, startEventStream, state.current, state.loading]);
 
   const sendMessage = useCallback(async (
     rawContent: string,
@@ -413,18 +519,25 @@ export function useXBot() {
     const generation = navigationGeneration.current;
     dispatch({ type: "history_loading", value: true });
     try {
-      const page = await api.listMessages(current.session_id, current.thread_id, {
+      const page = await api.listTrajectory(current.session_id, current.thread_id, {
         cursor,
         limit: 80,
       });
       if (generation !== navigationGeneration.current) return;
       dispatch({
-        type: "history_prepend",
-        history: page.messages,
+        type: "trajectory_prepend",
+        items: page.items,
         nextCursor: page.next_cursor,
+        expectedCursor: cursor,
       });
     } catch (error) {
-      if (generation === navigationGeneration.current) reportError(error);
+      if (generation === navigationGeneration.current) {
+        if (error instanceof XBotApiError && error.code === "invalid_cursor") {
+          reconcileSessionRef.current?.();
+        } else {
+          reportError(error);
+        }
+      }
     } finally {
       if (generation === navigationGeneration.current) {
         dispatch({ type: "history_loading", value: false });
@@ -536,13 +649,9 @@ export function useXBot() {
     const current = state.current;
     const generation = navigationGeneration.current;
     try {
-      const result = await api.undoHistory(current.session_id, current.thread_id, count);
+      await api.undoHistory(current.session_id, current.thread_id, count);
       if (generation !== navigationGeneration.current) return;
-      dispatch({
-        type: "history",
-        history: result.messages,
-        nextCursor: result.history_cursor ?? null,
-      });
+      refreshTrajectory();
       const threads = await api.listThreads(current.session_id);
       if (generation !== navigationGeneration.current) return;
       dispatch({ type: "threads", threads });
@@ -552,7 +661,7 @@ export function useXBot() {
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error);
     }
-  }, [api, notify, refreshSessions, reportError, state.current, state.turnRunning]);
+  }, [api, notify, refreshSessions, refreshTrajectory, reportError, state.current, state.turnRunning]);
 
   const clear = useCallback(async () => {
     if (!state.current) return;
@@ -563,9 +672,9 @@ export function useXBot() {
     const current = state.current;
     const generation = navigationGeneration.current;
     try {
-      const result = await api.clearHistory(current.session_id, current.thread_id);
+      await api.clearHistory(current.session_id, current.thread_id);
       if (generation !== navigationGeneration.current) return;
-      dispatch({ type: "history", history: result.messages, nextCursor: null });
+      refreshTrajectory();
       const threads = await api.listThreads(current.session_id);
       if (generation !== navigationGeneration.current) return;
       dispatch({ type: "threads", threads });
@@ -575,7 +684,7 @@ export function useXBot() {
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error);
     }
-  }, [api, notify, refreshSessions, reportError, state.current, state.turnRunning]);
+  }, [api, notify, refreshSessions, refreshTrajectory, reportError, state.current, state.turnRunning]);
 
   const forkSession = useCallback(async (sessionId: string) => {
     if (navigationBlocked) {
@@ -634,6 +743,8 @@ export function useXBot() {
       if (generation !== navigationGeneration.current) return;
       if (deletingCurrent) {
         ++navigationGeneration.current;
+        currentSessionRef.current = null;
+        reconcileInFlight.current = false;
         resetStreamingState();
         setCommands([]);
         setNotification("");
@@ -682,8 +793,8 @@ export function useXBot() {
       if (result.data.status === "error") return result.data;
       const effects = new Set(result.data.effects);
       try {
-        const [history, thread, agents, tasks, availableCommands] = await Promise.all([
-          effects.has("history") ? api.listMessages(
+        const [trajectory, thread, agents, tasks, availableCommands] = await Promise.all([
+          effects.has("history") ? api.listTrajectory(
             current.session_id,
             current.thread_id,
             { limit: 160 },
@@ -695,10 +806,10 @@ export function useXBot() {
           effects.has("sessions") ? sessionCatalog.refresh() : null,
         ]);
         if (generation !== navigationGeneration.current) return null;
-        if (history) dispatch({
-          type: "history",
-          history: history.messages,
-          nextCursor: history.next_cursor,
+        if (trajectory) dispatch({
+          type: "trajectory",
+          items: trajectory.items,
+          nextCursor: trajectory.next_cursor,
         });
         if (thread) {
           dispatch({
@@ -786,6 +897,10 @@ export function useXBot() {
     stopAllTasks,
     refreshSessions,
     listDirectories,
+    loadSessionPolicy,
+    updateSessionPolicy,
+    loadPluginConfig,
+    updatePluginConfig,
     clearNotification: () => setNotification(""),
     clearError: () => dispatch({ type: "clear_error" }),
   };

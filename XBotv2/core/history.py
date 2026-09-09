@@ -6,8 +6,8 @@ import base64
 import binascii
 import json
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
-from typing import Protocol, overload
+from dataclasses import dataclass, field
+from typing import Literal, Protocol, TypeAlias, overload
 from uuid import uuid4
 
 from XBotv2.core.messages import Message
@@ -30,6 +30,41 @@ class HistoryNode:
 
     node_id: str
     message: Message
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryMessage:
+    position: int
+    message: Message
+    kind: Literal["message"] = field(default="message", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectorySurfaceReplace:
+    position: int
+    operation: str
+    transcript: Literal["preserve", "replace"]
+    source_node_ids: tuple[str, ...]
+    messages: tuple[Message, ...]
+    kind: Literal["surface_replace"] = field(default="surface_replace", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryEvent:
+    position: int
+    event: str
+    data: dict[str, JsonValue]
+    timestamp: str
+    kind: Literal["event"] = field(default="event", init=False)
+
+
+TrajectoryItem: TypeAlias = TrajectoryMessage | TrajectorySurfaceReplace | TrajectoryEvent
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryPage:
+    items: tuple[TrajectoryItem, ...]
+    next_cursor: str | None = None
 
 
 class ConversationPageReader(Protocol):
@@ -352,7 +387,13 @@ __all__ = [
     "ConversationPage",
     "ConversationPageReader",
     "HistoryCursorInvalid",
+    "HistoryNode",
     "HistorySink",
+    "TrajectoryEvent",
+    "TrajectoryItem",
+    "TrajectoryMessage",
+    "TrajectoryPage",
+    "TrajectorySurfaceReplace",
     "decode_history_cursor",
     "encode_history_cursor",
     "page_messages",

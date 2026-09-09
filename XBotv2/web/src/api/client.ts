@@ -8,14 +8,20 @@ import {
   type DirectoryListingData,
   type HistoryItem,
   type ImageInput,
+  type JsonObject,
   type MessagePage,
   type OpenSessionResponse,
   type PendingInput,
+  type PluginConfigCatalog,
+  type PluginConfigScope,
   type ProviderInfo,
   type ServerEvent,
   type SessionListData,
+  type SessionPolicy,
+  type SessionPolicyPatch,
   type SessionSummary,
   type TaskData,
+  type TrajectoryPage,
   type TodoItemData,
   type ThreadSummary,
   type WorkspaceData,
@@ -151,6 +157,40 @@ export class XBotApi {
     return result.threads;
   }
 
+  getSessionPolicy(sessionId: string): Promise<SessionPolicy> {
+    return this.request("GET", `/sessions/${segment(sessionId)}/policy`);
+  }
+
+  updateSessionPolicy(sessionId: string, patch: SessionPolicyPatch): Promise<SessionPolicy> {
+    return this.request("PATCH", `/sessions/${segment(sessionId)}/policy`, patch);
+  }
+
+  listPluginConfig(
+    sessionId: string,
+    threadId: string,
+    scope: PluginConfigScope,
+  ): Promise<PluginConfigCatalog> {
+    return this.request(
+      "GET",
+      `${threadPath(sessionId, threadId)}/plugin-config?scope=${scope}`,
+    );
+  }
+
+  updatePluginConfig(
+    sessionId: string,
+    threadId: string,
+    pluginId: string,
+    scope: PluginConfigScope,
+    revision: string,
+    config: JsonObject,
+  ): Promise<PluginConfigCatalog> {
+    return this.request(
+      "PATCH",
+      `${threadPath(sessionId, threadId)}/plugin-config/${segment(pluginId)}?scope=${scope}`,
+      { revision, config },
+    );
+  }
+
   getThread(sessionId: string, threadId: string): Promise<ThreadSummary> {
     return this.request("GET", `${threadPath(sessionId, threadId)}`);
   }
@@ -218,6 +258,38 @@ export class XBotApi {
     return {
       ...result,
       messages: this.decorateHistory(sessionId, threadId, result.messages),
+    };
+  }
+
+  async listTrajectory(
+    sessionId: string,
+    threadId: string,
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<TrajectoryPage> {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const result = await this.request<TrajectoryPage>(
+      "GET",
+      `${threadPath(sessionId, threadId)}/trajectory${query.size ? `?${query}` : ""}`,
+    );
+    return {
+      ...result,
+      items: result.items.map((item) => {
+        if (item.kind === "message") {
+          return {
+            ...item,
+            message: {
+              ...this.decorateHistory(sessionId, threadId, [item.message])[0],
+              id: item.message_id,
+            },
+          };
+        }
+        if (item.kind === "surface_replace") {
+          return { ...item, messages: this.decorateHistory(sessionId, threadId, item.messages) };
+        }
+        return item;
+      }),
     };
   }
 

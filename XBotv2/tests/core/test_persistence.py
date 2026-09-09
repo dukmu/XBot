@@ -271,6 +271,22 @@ class TestMessageHistoryStore:
         with pytest.raises(HistoryCursorInvalid, match="current history"):
             persistence.history.page(limit=1, cursor=latest.next_cursor)
 
+    def test_trajectory_pages_preserve_append_order_and_cursor(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="one")])
+        persistence.history.record("compaction/start", {"compaction_id": "c1"})
+        latest = persistence.history.page_trajectory(limit=1)
+
+        persistence.history.append([Message(role="assistant", content="two")])
+        older = persistence.history.page_trajectory(
+            limit=2,
+            cursor=latest.next_cursor,
+        )
+
+        assert [(item.position, item.kind) for item in latest.items] == [(2, "event")]
+        assert [(item.position, item.kind) for item in older.items] == [(1, "message")]
+        assert older.next_cursor is None
+
     def test_compact_preserves_transcript_cursor_but_invalidates_surface_cursor(
         self,
         tmp_path,

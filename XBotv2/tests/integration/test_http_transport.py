@@ -133,6 +133,7 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         older = await sdk.list_messages(
             "sdk-client", "main", limit=1, cursor=latest.next_cursor
         )
+        trajectory = await sdk.list_trajectory("sdk-client", "main")
         regenerated = [
             event
             async for event in sdk.regenerate_message(
@@ -157,6 +158,7 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         ]
         assert [item.content for item in latest.messages] == ["sdk answer"]
         assert [item.content for item in older.messages] == ["sdk question"]
+        assert [item.kind for item in trajectory.items] == ["message", "message"]
         assert regenerated[-1].type == "end"
         assert [item.content for item in regenerated_messages.messages] == [
             "sdk question", "sdk regenerated",
@@ -4477,6 +4479,46 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     assert resumed.status_code == 200
     resumed_ctx = await http_app.state.manager.get("sandbox-persist", "t")
     assert resumed_ctx.application._context.sandbox.network is True
+
+
+@pytest.mark.asyncio
+async def test_http_plugin_config_catalog_is_schema_driven_and_revisioned(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
+    opened = await client.post(
+        "/sessions", json={"session_id": "plugin-config", "thread_id": "t"}
+    )
+    assert opened.status_code == 200
+
+    listed = await client.get(
+        "/sessions/plugin-config/threads/t/plugin-config",
+        params={"scope": "global"},
+    )
+    assert listed.status_code == 200
+    catalog = listed.json()
+    compact = next(item for item in catalog["plugins"] if item["plugin_id"] == "compact")
+    assert compact["editable"] is True
+    assert compact["config_schema"]["type"] == "object"
+    llm = next(item for item in catalog["plugins"] if item["plugin_id"] == "llm")
+    assert llm["editable"] is False
+
+    updated = await client.patch(
+        "/sessions/plugin-config/threads/t/plugin-config/compact",
+        params={"scope": "global"},
+        json={"revision": catalog["revision"], "config": {"automatic": False}},
+    )
+    assert updated.status_code == 200
+    compact = next(item for item in updated.json()["plugins"] if item["plugin_id"] == "compact")
+    assert compact["scope_config"] == {"automatic": False}
+
+    conflict = await client.patch(
+        "/sessions/plugin-config/threads/t/plugin-config/compact",
+        params={"scope": "global"},
+        json={"revision": catalog["revision"], "config": {"automatic": True}},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "plugin_config_conflict"
 
 
 @pytest.mark.asyncio

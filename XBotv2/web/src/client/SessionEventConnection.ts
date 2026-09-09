@@ -7,6 +7,8 @@ export interface SessionEventListener {
   onEvent(event: ServerEvent): void;
   onConnection(connected: boolean): void;
   onDisconnect(error: unknown, retrying: boolean): void;
+  /** The replay cursor can no longer describe a contiguous stream. */
+  onResetRequired(): void;
 }
 
 export class SessionEventConnection {
@@ -41,7 +43,6 @@ export class SessionEventConnection {
     let attempt = 0;
     let cursor = session.event_cursor;
     while (this.isCurrent(controller, generation)) {
-      listener.onConnection(true);
       try {
         for await (const event of this.api.streamEvents(
           session.session_id,
@@ -50,9 +51,20 @@ export class SessionEventConnection {
           controller.signal,
         )) {
           if (!this.isCurrent(controller, generation)) return;
+          if (event.sequence <= cursor) continue;
+          if (event.sequence !== cursor + 1) {
+            listener.onConnection(false);
+            listener.onResetRequired();
+            listener.onDisconnect(
+              new Error(`Session event stream gap: expected ${cursor + 1}, received ${event.sequence}`),
+              false,
+            );
+            return;
+          }
           attempt = 0;
+          listener.onConnection(true);
           listener.onEvent(event);
-          cursor = Math.max(cursor, event.sequence);
+          cursor = event.sequence;
         }
         if (!this.isCurrent(controller, generation)) return;
         listener.onConnection(false);
@@ -61,6 +73,7 @@ export class SessionEventConnection {
         if (!this.isCurrent(controller, generation)) return;
         if (error instanceof XBotApiError && error.code === "session_event_cursor_expired") {
           listener.onConnection(false);
+          listener.onResetRequired();
           listener.onDisconnect(error, false);
           return;
         }

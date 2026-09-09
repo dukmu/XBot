@@ -14,6 +14,13 @@ from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
     ConversationPage,
     HistoryNode,
+    HistoryCursorInvalid,
+    TrajectoryEvent,
+    TrajectoryMessage,
+    TrajectoryPage,
+    TrajectorySurfaceReplace,
+    decode_history_cursor,
+    encode_history_cursor,
     page_messages,
 )
 from XBotv2.core.messages import Message
@@ -181,6 +188,23 @@ class MessageHistoryStore:
             out_of_range="History cursor is outside the current history",
         )
 
+    def page_trajectory(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> TrajectoryPage:
+        records = self._records()
+        revision = f"{self._cursor_scope}:trajectory"
+        end = len(records) if cursor is None else decode_history_cursor(cursor, revision)
+        if end < 0 or end > len(records):
+            raise HistoryCursorInvalid("Trajectory cursor is outside the current history")
+        start = max(0, end - limit)
+        return TrajectoryPage(
+            items=tuple(_trajectory_item(record) for record in records[start:end]),
+            next_cursor=encode_history_cursor(revision, start) if start else None,
+        )
+
     def _cursor_revision(
         self,
         records: Sequence[TrajectoryRecord],
@@ -251,6 +275,27 @@ class MessageHistoryStore:
 
 
 TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
+
+
+def _trajectory_item(record: TrajectoryRecord) -> (
+    TrajectoryMessage | TrajectorySurfaceReplace | TrajectoryEvent
+):
+    if isinstance(record, MessageRecord):
+        return TrajectoryMessage(record.position, record.to_message())
+    if isinstance(record, SurfaceReplaceRecord):
+        return TrajectorySurfaceReplace(
+            record.position,
+            record.operation,
+            record.transcript,
+            record.source_node_ids,
+            tuple(message.to_message() for message in record.messages),
+        )
+    return TrajectoryEvent(
+        record.position,
+        record.event,
+        record.data,
+        record.timestamp,
+    )
 
 
 def _trajectory_record(value: Mapping[str, object]) -> TrajectoryRecord:

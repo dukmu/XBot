@@ -4,17 +4,28 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import Field, JsonValue, StrictBool, field_validator, model_validator
 
 from XBotv2.config.contracts import (
     GET_POLICY,
     UPDATE_POLICY,
     PatchPolicy,
+    PatchPluginConfig,
     PolicySnapshot,
+    PluginConfigCatalog,
+    PluginConfigScope,
 )
+from XBotv2.config.plugin_catalog import (
+    PluginConfigConflict,
+    PluginConfigUnavailable,
+    plugin_config_catalog,
+    update_plugin_config,
+)
+from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
+from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.session.contracts import SessionsPort
 
 
@@ -79,6 +90,11 @@ class SessionPolicyResponse(WireModel):
     effective_sandbox: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class PluginConfigPatchRequest(WireModel):
+    revision: str = Field(min_length=1)
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 def _policy_response(
     session_id: str,
     snapshot: PolicySnapshot,
@@ -92,7 +108,7 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort) -> APIRouter:
+def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -125,6 +141,51 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         )
         return _policy_response(session_id, snapshots[0])
 
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config",
+        operation_id="list_plugin_config",
+    )
+    async def list_plugin_config(
+        session_id: str,
+        thread_id: str,
+        scope: PluginConfigScope = Query(default="workspace"),
+    ) -> PluginConfigCatalog:
+        thread = await sessions.thread_summary(session_id, thread_id)
+        try:
+            return plugin_config_catalog(paths, thread.workspace_root, scope)
+        except ValueError as exc:
+            raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
+
+    @router.patch(
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}",
+        operation_id="update_plugin_config",
+    )
+    async def patch_plugin_config(
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        payload: PluginConfigPatchRequest,
+        scope: PluginConfigScope = Query(default="workspace"),
+    ) -> PluginConfigCatalog:
+        thread = await sessions.thread_summary(session_id, thread_id)
+        try:
+            return update_plugin_config(
+                paths,
+                thread.workspace_root,
+                plugin_id,
+                PatchPluginConfig(
+                    scope=scope,
+                    revision=payload.revision,
+                    config=payload.config,
+                ),
+            )
+        except PluginConfigConflict as exc:
+            raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc
+        except PluginConfigUnavailable as exc:
+            raise HttpServerError("plugin_config_unavailable", str(exc), status=400) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
+
     return router
 
 
@@ -134,5 +195,6 @@ __all__ = [
     "SandboxValue",
     "SessionPolicyPatch",
     "SessionPolicyResponse",
+    "PluginConfigPatchRequest",
     "build_router",
 ]

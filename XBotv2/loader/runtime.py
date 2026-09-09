@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from xcore import Context, FiberState, PluginHandle
+from xcore.plugin import resolve_plugin
 
 from XBotv2.loader.contracts import LoadError, PluginEntry, PluginTree
 
@@ -104,6 +105,20 @@ def _fresh_plugin(plugin: Any, entry: PluginEntry) -> Any:
         ) from error
 
 
+def plugin_config_schema(entry: PluginEntry) -> Any:
+    """Return the producer-declared schema for one resolved tree entry.
+
+    Importing a plugin to inspect its declaration never mounts it or executes
+    its lifecycle.  Configuration clients use this only to describe the same
+    ``Config`` object that XCore validates during application boot.
+    """
+    plugin = _fresh_plugin(_import_plugin(entry.name), entry)
+    definition = resolve_plugin(plugin)
+    if definition is None:
+        raise TypeError(f"plugin {entry.id!r} has no XCore plugin definition")
+    return definition.config_schema
+
+
 def _import_plugin(name: str) -> Any:
     candidates = (
         f"XBotv2.{name}.plugin",
@@ -147,6 +162,7 @@ def _is_module(value: Any) -> bool:
 
 __all__ = [
     "mount_plugin_tree",
+    "plugin_config_schema",
     "resolve_plugin_from_module",
     "validate_mounted_tree",
 ]

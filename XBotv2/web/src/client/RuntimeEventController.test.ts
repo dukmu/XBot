@@ -6,7 +6,7 @@ describe("RuntimeEventController", () => {
   it("publishes high-frequency deltas as one timed batch", async () => {
     vi.useFakeTimers();
     const batches: ServerEvent[][] = [];
-    const events = [event("assistant_message_delta"), event("tool_call_delta")];
+    const events = [event("assistant_message_delta", 1), event("tool_call_delta", 2)];
     const api = {
       async *streamEvents() {
         yield events[0];
@@ -49,10 +49,28 @@ describe("RuntimeEventController", () => {
     controller.stop();
     vi.useRealTimers();
   });
+
+  it("refreshes thread summaries when a subagent task changes", async () => {
+    vi.useFakeTimers();
+    const listThreads = vi.fn(async () => []);
+    const api = { async *streamEvents() { await new Promise(() => undefined); }, listThreads };
+    const controller = new RuntimeEventController(api, listener({}));
+
+    controller.start({ session_id: "s", thread_id: "t", event_cursor: 0 } as OpenSessionResponse, 1);
+    controller.handle({
+      ...event("task_updated"),
+      session_id: "s",
+      data: { kind: "subagent", thread_id: "child-1" },
+    }, 1);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listThreads).toHaveBeenCalledWith("s");
+    controller.stop();
+    vi.useRealTimers();
+  });
 });
 
-function event(type: ServerEvent["type"]): ServerEvent {
-  return { type, data: {} } as ServerEvent;
+function event(type: ServerEvent["type"], sequence = 1): ServerEvent {
+  return { type, data: {}, sequence } as ServerEvent;
 }
 
 function listener(overrides: Partial<RuntimeEventListener>): RuntimeEventListener {
@@ -62,6 +80,7 @@ function listener(overrides: Partial<RuntimeEventListener>): RuntimeEventListene
     onTaskExpired: () => undefined,
     onConnection: () => undefined,
     onError: () => undefined,
+    onResetRequired: () => undefined,
     ...overrides,
   };
 }

@@ -444,6 +444,24 @@ summary:focus-visible {
   color: var(--purple);
 }
 
+.thread-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.thread-copy b,
+.thread-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-copy b { font-weight: 550; }
+.thread-copy small { color: var(--muted); }
+
 .activity-dot {
   width: 6px;
   height: 6px;

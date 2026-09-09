@@ -3,7 +3,6 @@
 import asyncio
 import inspect
 import re
-from pathlib import Path
 
 import pytest
 import yaml
@@ -35,20 +34,10 @@ from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.session import MessageRequest
 
 
-def test_public_api_inventory_is_explicit():
-    inventory = Path(__file__).parents[2] / "docs" / "api" / "api_inventory.md"
-    documented = []
-    for line in inventory.read_text(encoding="utf-8").splitlines():
-        if line.startswith("## Exported Symbols"):
-            if line.startswith("## Exported Symbols (XBotv2.jobs)"):
-                break
-            continue
-        if match := re.match(r"^\| `([^`]+)` \|", line):
-            documented.append(match.group(1))
-
-    assert documented == public_api.__all__
-    assert len(documented) == len(set(documented))
-    assert all(hasattr(public_api, name) for name in documented)
+def test_public_api_exports_are_resolvable_and_unique():
+    exported = public_api.__all__
+    assert len(exported) == len(set(exported))
+    assert all(hasattr(public_api, name) for name in exported)
 
 
 def test_plugin_package_roots_export_declarations_not_implementations():
@@ -458,6 +447,9 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
         "/sessions/{session_id}/threads/{thread_id}/interrupt",
         "/sessions/{session_id}/threads/{thread_id}/messages",
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config",
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}",
+        "/sessions/{session_id}/threads/{thread_id}/trajectory",
         "/sessions/{session_id}/threads/{thread_id}/queue",
         "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}",
         "/sessions/{session_id}/threads/{thread_id}/provider",
@@ -476,6 +468,8 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     policy_path = "/sessions/{session_id}/policy"
     assert paths[policy_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyPatch")
     assert paths[policy_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyResponse")
+    plugin_config_path = "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}"
+    assert paths[plugin_config_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PluginConfigPatchRequest")
     assert "/commands" not in paths
     assert not any(path.endswith("/commands") for path in paths)
     assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")

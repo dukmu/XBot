@@ -66,6 +66,19 @@ def _pending_input_snapshot(item: InboxInput) -> PendingInputData:
     )
 
 
+def _runtime_message_data(
+    source: str,
+    metadata: dict[str, JsonValue],
+) -> dict[str, str] | None:
+    """Project non-user inbox provenance onto the live message event."""
+    if source == "user":
+        return None
+    event = metadata.get("kind")
+    if not isinstance(event, str) or not event:
+        event = "continuation" if metadata.get("continuation") else "injected"
+    return {"source": source, "event": event}
+
+
 @dataclass
 class TurnResponse:
     """A detachable compatibility view of the authoritative event stream."""
@@ -217,15 +230,22 @@ class SessionRuntime(SessionPort):
             metadata = item.get("metadata")
             if not isinstance(metadata, dict) or not metadata.get("defer_message_event"):
                 continue
-            self._publish_runtime_event(session_event(
-                "message",
-                {
-                    "id": str(item.get("message_id") or ""),
-                    "role": "user",
-                    "content": str(item.get("content") or ""),
-                    "images": item.get("images") if isinstance(item.get("images"), list) else [],
-                    "artifacts": item.get("artifacts") if isinstance(item.get("artifacts"), list) else [],
-                },
+            source = str(item.get("source") or "user")
+            runtime = _runtime_message_data(source, metadata)
+            images = [
+                ImageContent.model_validate(value)
+                for value in item.get("images", [])
+            ]
+            artifacts = [
+                ArtifactRef.model_validate(value)
+                for value in item.get("artifacts", [])
+            ]
+            self._publish_runtime_event(self._message_event(
+                str(item.get("message_id") or ""),
+                str(item.get("content") or ""),
+                images,
+                artifacts,
+                runtime=runtime,
             ))
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
@@ -238,17 +258,19 @@ class SessionRuntime(SessionPort):
         content: str,
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
+        *,
+        runtime: dict[str, str] | None = None,
     ) -> ClientEvent:
-        return session_event(
-            "message",
-            {
-                "id": message_id,
-                "role": "user",
-                "content": content,
-                "images": [image.model_dump(mode="json") for image in images or []],
-                "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts or []],
-            },
-        )
+        data: dict[str, JsonValue] = {
+            "id": message_id,
+            "role": "user",
+            "content": content,
+            "images": [image.model_dump(mode="json") for image in images or []],
+            "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts or []],
+        }
+        if runtime is not None:
+            data["runtime"] = runtime
+        return session_event("message", data)
 
     def _publish_message_event(
         self,

@@ -64,10 +64,12 @@ from XBotv2.session.contracts import (
     SessionExists,
     SessionEventFrame,
     SessionNotFound,
+    SessionTrajectoryPage,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
     new_session_id,
+    trajectory_replay,
 )
 from XBotv2.core.operations import (
     Operation,
@@ -779,6 +781,24 @@ class SessionManager(SessionsPort):
             messages=page.messages,
             next_cursor=page.next_cursor,
         )
+
+    async def trajectory_page(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+    ) -> SessionTrajectoryPage:
+        session = self.paths.session(session_id)
+        if not session.has_thread(thread_id):
+            raise SessionNotFound(f"{session_id}/{thread_id}")
+        persistence = self._thread_persistence(session, thread_id=thread_id)
+        try:
+            page = persistence.history.page_trajectory(limit=limit, cursor=cursor)
+        except HistoryCursorInvalid as exc:
+            raise OperationError("invalid_cursor", str(exc)) from exc
+        return trajectory_replay(page)
 
     async def artifact(
         self,

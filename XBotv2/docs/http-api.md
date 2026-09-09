@@ -39,6 +39,7 @@ protocol handshake is `POST /hello`.
 | Method | Path | Operation | Result |
 |---|---|---|---|
 | GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `ThreadMessagesResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `ThreadTrajectoryResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
 | POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | SSE turn stream |
 | POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
@@ -53,6 +54,12 @@ protocol handshake is `POST /hello`.
 thread, request, event type, and typed data. The event stream is replayable
 from an opaque `after` cursor; an expired cursor is an explicit conflict, not
 silent truncation.
+
+The trajectory endpoint is the cold-replay source for clients that present a
+unified activity stream. Its opaque cursor remains valid when new records are
+appended. Each item is a discriminated `message`, `surface_replace`, or `event`
+record with a monotonic `position`; clients fold replacement records instead
+of treating them as additional chat messages.
 
 Request/response schemas, cursor constraints, error codes, and router examples
 are intentionally maintained in the skill rather than duplicated here.
@@ -112,6 +119,28 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 | GET | `/sessions/{session_id}/threads/{thread_id}/tasks` | `list_tasks` | `TaskListResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop` | `stop_task` | `TaskStopResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/tasks/stop` | `stop_all_tasks` | `TaskStopResponse` |
+
+## Plugin configuration
+
+| Method | Path | Operation | Result |
+|---|---|---|---|
+| GET | `/sessions/{session_id}/threads/{thread_id}/plugin-config?scope=workspace\|global` | `list_plugin_config` | `PluginConfigCatalog` |
+| PATCH | `/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}?scope=workspace\|global` | `update_plugin_config` | updated `PluginConfigCatalog` |
+
+The catalog is built from the loaded plugin tree. Each entry carries the
+plugin-declared JSON Schema, the raw configuration at the selected layer, the
+effective merged value, and an opaque content revision. The Web client uses
+the same generic editor for every plugin; it does not contain plugin-name
+specific controls. A PATCH must send the revision returned by GET, so a stale
+tab receives `plugin_config_conflict` rather than overwriting another edit.
+
+`global` writes the data-directory overlay and `workspace` writes the active
+workspace overlay. The update is validated against the declared XCore schema,
+written atomically, and applies to newly created or reopened sessions. It is
+not a live reload mechanism. Plugins without a producer `Config` schema are
+listed but explicitly read-only. Provider secrets, external plugin directories,
+and plugin-specific constraints not expressible by the declared schema remain
+server-owned limitations rather than being guessed by the client.
 
 ## Workspaces and directories
 

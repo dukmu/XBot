@@ -108,6 +108,7 @@ export interface ThreadSummary {
 
 export interface HistoryItem {
   role: "user" | "assistant" | "tool";
+  id?: string;
   content: string;
   reasoning?: string;
   tool_calls: JsonObject[];
@@ -149,8 +150,80 @@ export interface PendingInput {
   artifact_count: number;
 }
 
+export type PermissionDecision = "allow" | "deny" | "ask";
+export type SandboxAccess = "allow" | "deny" | "readonly" | "readwrite";
+
+export interface SessionPolicy {
+  session_id: string;
+  permissions: Record<string, JsonObject[]>;
+  effective_permissions: Record<string, JsonObject[]>;
+  sandbox: JsonObject;
+  effective_sandbox: JsonObject;
+}
+
+export interface SessionPolicyPatch {
+  permissions?: Record<string, PermissionDecision>;
+  remove_permissions?: string[];
+  sandbox?: JsonObject;
+  remove_sandbox?: string[];
+}
+
+export type PluginConfigScope = "global" | "workspace";
+
+export interface PluginConfigDescriptor {
+  plugin_id: string;
+  name: string;
+  editable: boolean;
+  config_schema: JsonObject | null;
+  scope_config: JsonObject;
+  effective_config: JsonObject;
+  unavailable_reason: string;
+}
+
+export interface PluginConfigCatalog {
+  scope: PluginConfigScope;
+  workspace_root: string;
+  revision: string;
+  applies_to: "new_sessions";
+  plugins: PluginConfigDescriptor[];
+}
+
 export interface MessagePage {
   messages: HistoryItem[];
+  next_cursor: string | null;
+}
+
+export interface TrajectoryMessageItem {
+  position: number;
+  kind: "message";
+  message_id: string;
+  message: HistoryItem;
+}
+
+export interface TrajectorySurfaceReplaceItem {
+  position: number;
+  kind: "surface_replace";
+  operation: string;
+  transcript: "preserve" | "replace";
+  source_node_ids: string[];
+  messages: HistoryItem[];
+}
+
+export interface TrajectoryEventItem {
+  position: number;
+  kind: "event";
+  event: string;
+  data: JsonObject;
+  timestamp: string;
+}
+
+export type TrajectoryItem =
+  | TrajectoryMessageItem
+  | TrajectorySurfaceReplaceItem
+  | TrajectoryEventItem;
+
+export interface TrajectoryPage {
+  items: TrajectoryItem[];
   next_cursor: string | null;
 }
 

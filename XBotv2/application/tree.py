@@ -33,6 +33,8 @@ def load_agent_tree(
     no_plugins: bool,
     plugin_dirs: list[Path | str] | None,
     extra_plugins: list[dict[str, JsonValue]] | None,
+    include_global: bool = True,
+    include_workspace: bool = True,
 ) -> PluginTree:
     """Compose the Agent tree in global, workspace, then session order."""
     excluded = frozenset(
@@ -47,14 +49,14 @@ def load_agent_tree(
         tree = PluginTree([*tree.entries, *external_entries])
 
     plugins_file = paths.config_dir / "plugins.yaml"
-    if plugins_file.exists():
+    if include_global and plugins_file.exists():
         tree = tree.patched_with(
             PluginOverlay.from_yaml(plugins_file),
             excluded=excluded,
             allow_new=not no_plugins,
         )
     workspace_plugins = Path(workspace_root) / ".xbot" / "plugins.yaml"
-    if workspace_plugins.exists():
+    if include_workspace and workspace_plugins.exists():
         tree = tree.patched_with(
             PluginOverlay.from_yaml(workspace_plugins),
             excluded=excluded,

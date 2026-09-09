@@ -1211,6 +1211,32 @@ body {
 .server-settings-preview code { max-width: 68%; overflow: hidden; color: var(--dsw-alias-label-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .server-settings-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .server-settings-readonly { color: var(--dsw-alias-state-warn-primary) !important; }
+.server-settings-form { display: grid; gap: 8px; margin-top: 14px; }
+.server-settings-form > label { display: flex; min-height: 36px; align-items: center; justify-content: space-between; gap: 12px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.server-settings-form select,
+.server-settings-form input[type="text"],
+.permission-rule-editor input { min-width: 0; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+.server-settings-form select { min-width: 112px; padding: 6px 8px; }
+.permission-rule-editor { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 8px; margin-top: 6px; }
+.permission-rule-editor input { padding: 7px 9px; }
+.settings-save-status { min-height: 16px; color: var(--dsw-alias-label-tertiary); }
+.plugin-config-panel { min-width: 0; }
+.plugin-config-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.plugin-config-toolbar label { display: flex; align-items: center; gap: 8px; }
+.plugin-config-toolbar select { min-width: 112px; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+.plugin-config-layout { display: grid; grid-template-columns: minmax(130px, 0.38fr) minmax(0, 1fr); gap: 12px; margin-top: 14px; }
+.plugin-config-list { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.plugin-config-list button { display: grid; gap: 3px; min-width: 0; padding: 8px; border: 1px solid transparent; border-radius: 7px; text-align: left; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.plugin-config-list button:hover, .plugin-config-list button.selected { border-color: var(--dsw-alias-border-l1); background: var(--dsw-specific-tip); color: var(--dsw-alias-label-primary); }
+.plugin-config-list strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-config-list small, .plugin-config-editor-heading small { color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.plugin-config-editor { display: grid; gap: 9px; min-width: 0; }
+.plugin-config-editor-heading { display: grid; gap: 3px; color: var(--dsw-alias-label-primary); font-size: 13px; }
+.plugin-config-json { display: grid; gap: 5px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.plugin-config-json textarea { min-height: 180px; width: 100%; resize: vertical; padding: 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 7px; outline: none; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.plugin-config-json textarea:focus { border-color: var(--dsw-alias-state-business-primary); }
+.plugin-config-editor details { color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.plugin-config-editor pre { max-height: 180px; margin: 7px 0 0; overflow: auto; padding: 8px; border-radius: 7px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 @media (max-width: 760px) {
   .brand-row { height: 48px; padding: 8px 10px; }
@@ -1259,6 +1285,8 @@ body {
   .theme-option-icon { width: 26px; height: 26px; }
   .theme-option-copy { gap: 2px; }
   .theme-option-check { top: 14px; right: 10px; }
+  .plugin-config-layout { grid-template-columns: 1fr; }
+  .plugin-config-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 580px) {

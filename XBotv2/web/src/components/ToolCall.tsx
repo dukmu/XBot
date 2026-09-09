@@ -19,7 +19,7 @@ export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
     >
       <summary>
         <span className="tool-status-icon">
-          {running ? <LoaderCircle size={14} className="spin" /> : tool.status === "success" ? <Check size={14} /> : <X size={14} />}
+          {running ? <LoaderCircle size={14} className="spin" /> : tool.status === "success" || tool.status === "approved" ? <Check size={14} /> : <X size={14} />}
         </span>
         <span className="tool-name">{tool.name}</span>
         <i className="tool-separator" aria-hidden />
@@ -107,6 +107,7 @@ function Detail({ label, value }: { label: string; value: unknown }) {
 
 function toolSummary(tool: ToolEntry, todos: TodoItem[] | null): string {
   if (tool.status === "denied") return "denied";
+  if (tool.status === "approved") return "approved";
   if (tool.status === "error") return "failed";
   if (todos) {
     const completed = todos.filter((item) => item.status === "completed").length;

@@ -37,6 +37,7 @@ The exact request and response models are declared in
 | `POST` | `/sessions/{session_id}/threads` | `open_thread` | `OpenSessionResponse` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}` | `get_thread` | `ThreadSummary` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | `ThreadMessagesResponse` |
+| `GET` | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | `ThreadTrajectoryResponse` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | binary artifact |
 | `POST` | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
 | `POST` | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutationResponse` |
@@ -106,6 +107,16 @@ class ThreadMessagesResponse(WireModel):
     messages: list[SessionHistoryItem]
     next_cursor: str | None = None
 
+class ThreadTrajectoryResponse(WireModel):
+    session_id: str
+    thread_id: str
+    items: list[
+        SessionTrajectoryMessage
+        | SessionTrajectorySurfaceReplace
+        | SessionTrajectoryEvent
+    ]
+    next_cursor: str | None = None
+
 class PendingInputListResponse(WireModel):
     session_id: str
     thread_id: str
@@ -119,6 +130,11 @@ class HistoryMutationResponse(WireModel):
     session_stats: SessionStats
     history_cursor: str | None = None
 ```
+
+`SessionTrajectoryMessage.message_id` is the stable user, assistant, or Tool
+correlation key used when a durable page overlaps event-stream replay. It is
+trajectory metadata and is intentionally not added to the legacy
+`ThreadMessagesResponse` projection.
 
 `OpenSessionResponse` and `SessionDescriptor` are Pydantic models. The
 response contains the resolved runtime descriptor, a projected history page,

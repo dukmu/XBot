@@ -168,6 +168,35 @@ class PolicySnapshot:
     effective_sandbox: dict[str, JsonValue]
 
 
+PluginConfigScope = Literal["global", "workspace"]
+
+
+class PluginConfigDescriptor(StrictModel):
+    """One plugin configuration declaration projected for a generic client."""
+
+    plugin_id: str
+    name: str
+    editable: bool
+    config_schema: dict[str, JsonValue] | None = None
+    scope_config: dict[str, JsonValue] = Field(default_factory=dict)
+    effective_config: dict[str, JsonValue] = Field(default_factory=dict)
+    unavailable_reason: str = ""
+
+
+class PluginConfigCatalog(StrictModel):
+    scope: PluginConfigScope
+    workspace_root: str
+    revision: str
+    applies_to: Literal["new_sessions"] = "new_sessions"
+    plugins: list[PluginConfigDescriptor] = Field(default_factory=list)
+
+
+class PatchPluginConfig(StrictModel):
+    scope: PluginConfigScope
+    revision: str = Field(min_length=1)
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class PatchPolicy:
     permissions: dict[str, str] | None = None
@@ -207,7 +236,11 @@ __all__ = [
     "PluginConfig",
     "UPDATE_POLICY",
     "PatchPolicy",
+    "PatchPluginConfig",
     "PolicySnapshot",
+    "PluginConfigCatalog",
+    "PluginConfigDescriptor",
+    "PluginConfigScope",
     "RuntimeConfig",
     "SandboxConfig",
     "SandboxResourceConfig",

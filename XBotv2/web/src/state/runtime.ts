@@ -14,6 +14,7 @@ import {
   type TodoItemData,
   type ThreadSummary,
   type ToolCall,
+  type TrajectoryItem,
   type UsageData,
   type SessionStatsData,
 } from "../api/types";
@@ -28,6 +29,7 @@ export interface MessageEntry {
   reasoning: string;
   streaming: boolean;
   images: MessageImage[];
+  messageId: string;
 }
 
 export interface MessageImage {
@@ -42,6 +44,7 @@ export interface RuntimeEntry {
   source: string;
   event: string;
   content: string;
+  messageId?: string;
 }
 
 export interface ToolEntry {
@@ -56,6 +59,7 @@ export interface ToolEntry {
   error: JsonObject | null;
   artifacts: JsonObject[];
   images: JsonObject[];
+  permissionRequestId?: string;
 }
 
 export interface NoticeEntry {
@@ -79,6 +83,8 @@ export interface RuntimeState {
   assistantDraft: MessageEntry | null;
   historyCursor: string | null;
   historyLoading: boolean;
+  trajectory: TrajectoryItem[];
+  trajectoryLoaded: boolean;
   tasks: Record<string, TaskData>;
   todos: TodoItemData[];
   interactions: InteractionRequest[];
@@ -107,8 +113,10 @@ export type RuntimeAction =
   | { type: "session_deleted"; sessionId: string }
   | { type: "thread_synced"; thread: ThreadSummary }
   | { type: "history"; history: HistoryItem[]; nextCursor?: string | null }
-  | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null }
+  | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
+  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null }
+  | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "tasks"; tasks: TaskData[] }
   | { type: "todos"; todos: TodoItemData[] }
   | { type: "pending_inputs"; items: PendingInput[] }
@@ -140,6 +148,8 @@ export const initialRuntimeState: RuntimeState = {
   assistantDraft: null,
   historyCursor: null,
   historyLoading: false,
+  trajectory: [],
+  trajectoryLoaded: false,
   tasks: {},
   todos: [],
   interactions: [],
@@ -178,6 +188,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         assistantDraft: null,
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
+        trajectory: [],
+        trajectoryLoaded: false,
         usage: normalizeUsage(action.session.usage),
         sessionStats: normalizeSessionStats(action.session.session_stats),
         interactions: [],
@@ -203,6 +215,8 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         assistantDraft: null,
         historyCursor: null,
         historyLoading: false,
+        trajectory: [],
+        trajectoryLoaded: false,
         tasks: {},
         todos: [],
         interactions: [],
@@ -236,6 +250,9 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
       };
     case "history_prepend": {
+      if (action.expectedCursor !== state.historyCursor) {
+        return { ...state, historyLoading: false };
+      }
       return {
         ...state,
         entries: [...historyEntries(action.history), ...state.entries],
@@ -245,6 +262,28 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     }
     case "history_loading":
       return { ...state, historyLoading: action.value };
+    case "trajectory":
+      return {
+        ...state,
+        trajectory: action.items,
+        trajectoryLoaded: true,
+        entries: trajectoryEntries(action.items),
+        historyCursor: action.nextCursor,
+      };
+    case "trajectory_prepend": {
+      if (action.expectedCursor !== state.historyCursor) {
+        return { ...state, historyLoading: false };
+      }
+      const trajectory = [...action.items, ...state.trajectory];
+      const live = state.entries.filter((entry) => !entry.id.startsWith("trajectory:"));
+      return {
+        ...state,
+        trajectory,
+        entries: [...trajectoryEntries(trajectory), ...live],
+        historyCursor: action.nextCursor,
+        historyLoading: false,
+      };
+    }
     case "tasks":
       return {
         ...state,
@@ -269,7 +308,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         turnRunning: true,
         entries: [
           ...state.entries,
-          { ...messageEntry("user", action.content), id: action.id, images: action.images },
+          { ...messageEntry("user", action.content), id: action.id, messageId: action.id, images: action.images },
         ],
       };
     case "user_message_failed":
@@ -341,6 +380,10 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         turnRunning: true,
+        entries: [
+          ...state.entries,
+          runtimeEntry("turn", event.type, `Turn ${numberValue(data.turn) || "?"} started`, eventIdentity(event)),
+        ],
         sessionStats: updateLiveTurn(state.sessionStats, data.turn),
         current: updateSlots(state.current, data.status_slots),
       };
@@ -349,7 +392,17 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         turnRunning: false,
-        entries: commitAssistantDraft(state.entries, state.assistantDraft),
+        entries: [
+          ...commitAssistantDraft(state.entries, state.assistantDraft),
+          runtimeEntry(
+            "turn",
+            event.type,
+            event.type === "turn_cancelled"
+              ? `Turn ${numberValue(data.turn) || "?"} cancelled`
+              : `Turn ${numberValue(data.turn) || "?"} finished`,
+            eventIdentity(event),
+          ),
+        ],
         assistantDraft: null,
         current: updateSlots(state.current, data.status_slots),
         sessionStats: Object.hasOwn(data, "session_stats")
@@ -373,6 +426,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           state.assistantDraft,
           stringValue(data.content),
           arrayValue(data.tool_calls),
+          stringValue(data.id),
         ),
         assistantDraft: null,
         sessionStats: addAssistantTiming(state.sessionStats, data.timing),
@@ -390,20 +444,35 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         current: updateSlots(state.current, data.status_slots),
       };
     case "permission_request":
-      return queueInteraction(state, permissionRequest(data));
+      return queueInteraction({
+        ...state,
+        entries: upsertPermissionTool(state.entries, data),
+      }, permissionRequest(data));
     case "user_input_required":
       return queueInteraction(state, userInputRequest(data));
     case "permission_response_recorded":
     case "user_input_recorded":
       return {
         ...state,
+        entries: event.type === "permission_response_recorded"
+          ? updatePermissionTool(state.entries, data, stringValue(data.decision) === "deny" ? "denied" : "approved")
+          : state.entries,
         interactions: state.interactions.filter((item) => item.request_id !== stringValue(data.request_id)),
       };
     case "permission_denied":
+    {
+      const entries = updatePermissionTool(state.entries, data, "denied");
       return {
         ...state,
-        entries: [...state.entries, noticeEntry(stringValue(data.reason) || "Permission denied", "error")],
+        entries: [...entries, noticeEntry(stringValue(data.reason) || "Permission denied", "error")],
       };
+    }
+    case "compaction_started":
+      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Compacting conversation history…", eventIdentity(event))] };
+    case "compaction_completed":
+      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Conversation history compacted", eventIdentity(event))] };
+    case "compaction_failed":
+      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
     case "usage":
       return {
         ...state,
@@ -425,32 +494,71 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
         current: updateSlots(state.current, data.status_slots),
       };
+    case "input_rejected":
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          noticeEntry(stringValue(data.reason) || "Input rejected", "error"),
+        ],
+        turnRunning: false,
+      };
     case "message": {
       const id = stringValue(data.id);
       if (!id || stringValue(data.role) !== "user") return state;
-      const index = state.entries.findIndex((entry) => entry.id === id);
+      const runtime = objectValue(data.runtime);
+      const runtimeSource = stringValue(runtime.source);
+      const runtimeEvent = stringValue(runtime.event);
+      const runtimeId = runtimeSource ? `runtime:${id}` : "";
+      const index = state.entries.findIndex((entry) => (
+        entry.id === id
+        || ((entry.kind === "message" || entry.kind === "runtime") && entry.messageId === id)
+        || (runtimeId !== "" && entry.id === runtimeId)
+      ));
       if (index >= 0) return state;
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== id),
         entries: [
           ...state.entries,
-          {
-            ...messageEntry("user", stringValue(data.content)),
-            id,
-            images: historyAttachments(
-              arrayValue(data.images) as ImageReference[],
-              arrayValue(data.artifacts).map(objectValue),
-            ),
-          },
+          runtimeSource
+            ? runtimeEntry(runtimeSource, runtimeEvent || "message", stringValue(data.content), runtimeId)
+            : {
+              ...messageEntry("user", stringValue(data.content)),
+              id,
+              images: historyAttachments(
+                arrayValue(data.images) as ImageReference[],
+                arrayValue(data.artifacts).map(objectValue),
+              ),
+            },
         ],
       };
     }
     case "history_updated": {
       const history = arrayValue(data.history) as HistoryItem[];
+      const operation = stringValue(data.operation);
+      const entries = historyEntries(history);
+      if (operation.startsWith("compact:")) {
+        entries.push(runtimeEntry(
+          "compact",
+          operation,
+          "Conversation history compacted",
+          eventIdentity(event),
+        ));
+      }
+      if (state.trajectoryLoaded) {
+        return {
+          ...state,
+          assistantDraft: null,
+          historyCursor: null,
+          sessionStats: Object.hasOwn(data, "session_stats")
+            ? normalizeSessionStats(data.session_stats)
+            : state.sessionStats,
+        };
+      }
       return {
         ...state,
-        entries: historyEntries(history),
+        entries,
         assistantDraft: null,
         historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
         sessionStats: Object.hasOwn(data, "session_stats")
@@ -500,11 +608,13 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
           source: item.runtime.source ?? "runtime",
           event: item.runtime.event ?? "message",
           content: item.content,
+          messageId: item.id || "",
         });
         continue;
       }
       entries.push({
         ...messageEntry("user", item.content),
+        messageId: item.id || "",
         images: historyAttachments(item.images, item.artifacts),
       });
       continue;
@@ -513,6 +623,7 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
       if (item.content || item.reasoning) {
         entries.push({
           ...messageEntry("assistant", item.content),
+          messageId: item.id || "",
           reasoning: item.reasoning || "",
         });
       }
@@ -530,6 +641,96 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
     });
   }
   return entries;
+}
+
+interface TrajectoryGroup {
+  nodeId: string;
+  entries: TimelineEntry[];
+}
+
+export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
+  const groups: TrajectoryGroup[] = [];
+  const lineage = new Map<string, string[]>();
+  for (const item of items) {
+    if (item.kind === "message") {
+      const nodeId = String(item.position);
+      groups.push({ nodeId, entries: positionedEntries(item.position, [item.message]) });
+      lineage.set(nodeId, [nodeId]);
+      continue;
+    }
+    if (item.kind === "event") {
+      if (item.event.startsWith("compaction/")) {
+        upsertCompactionGroup(groups, item.position, stringValue(item.data.compaction_id), item.event, item.data);
+        continue;
+      }
+      groups.push({
+        nodeId: `event:${item.position}`,
+        entries: [runtimeEntry(
+          "trajectory",
+          item.event,
+          trajectoryEventContent(item.event, item.data),
+          `trajectory:${item.position}:event`,
+        )],
+      });
+      continue;
+    }
+
+    const replacements = item.messages.map((message, index) => ({
+      nodeId: `${item.position}:${index}`,
+      entries: positionedEntries(item.position, [message], `replacement:${index}`),
+    }));
+    const sourceIds = item.source_node_ids.flatMap((source) => lineage.get(source) ?? [source]);
+    if (item.transcript === "preserve") {
+      if (replacements.length === 1) lineage.set(replacements[0].nodeId, sourceIds);
+      const compactionId = item.operation.startsWith("compact:") ? item.operation.slice(8) : "";
+      upsertCompactionGroup(groups, item.position, compactionId, item.operation, {});
+      continue;
+    }
+    const indexes = sourceIds
+      .map((source) => groups.findIndex((group) => group.nodeId === source))
+      .filter((index) => index >= 0);
+    const insertAt = indexes.length ? Math.min(...indexes) : groups.length;
+    for (const index of [...indexes].sort((left, right) => right - left)) groups.splice(index, 1);
+    groups.splice(insertAt, 0, ...replacements);
+    for (const replacement of replacements) lineage.set(replacement.nodeId, [replacement.nodeId]);
+  }
+  return groups.flatMap((group) => group.entries);
+}
+
+function upsertCompactionGroup(
+  groups: TrajectoryGroup[],
+  position: number,
+  compactionId: string,
+  event: string,
+  data: JsonObject,
+): void {
+  const nodeId = `compact:${compactionId || position}`;
+  const existing = groups.findIndex((group) => group.nodeId === nodeId);
+  const previous = existing >= 0 ? groups[existing].entries[0] : undefined;
+  const content = stringValue(data.error)
+    || stringValue(data.summary)
+    || (previous?.kind === "runtime" ? previous.content : "")
+    || (event.endsWith("/start") ? "Compacting conversation history…" : "Conversation history compacted");
+  const entry = runtimeEntry("compact", event, content, `trajectory:${position}:compact`);
+  if (existing >= 0) groups[existing] = { nodeId, entries: [entry] };
+  else groups.push({ nodeId, entries: [entry] });
+}
+
+function positionedEntries(position: number, history: HistoryItem[], suffix = "message"): TimelineEntry[] {
+  return historyEntries(history).map((entry, index) => ({
+    ...entry,
+    id: `trajectory:${position}:${suffix}:${index}`,
+  }));
+}
+
+function trajectoryEventContent(event: string, data: JsonObject): string {
+  if (event === "compaction/summary") {
+    return stringValue(data.summary) || "Conversation summary created";
+  }
+  if (event === "compaction/end") {
+    return stringValue(data.error) || "Conversation compaction completed";
+  }
+  return stringValue(data.message) || event;
 }
 
 function updateAssistantDraft(
@@ -552,12 +753,16 @@ function applyAssistantMessage(
   draft: MessageEntry | null,
   content: string,
   calls: unknown[],
+  messageId: string,
 ): TimelineEntry[] {
+  if (messageId && entries.some((entry) => entry.kind === "message" && entry.messageId === messageId)) {
+    return upsertToolCalls(entries, calls);
+  }
   let copy = entries;
   if (draft) {
-    copy = [...copy, { ...draft, content: content || draft.content, streaming: false }];
+    copy = [...copy, { ...draft, content: content || draft.content, streaming: false, messageId }];
   } else if (content) {
-    copy = [...copy, messageEntry("assistant", content)];
+    copy = [...copy, { ...messageEntry("assistant", content), messageId }];
   }
   copy = upsertToolCalls(copy, calls);
   return copy;
@@ -607,6 +812,7 @@ function upsertToolCalls(entries: TimelineEntry[], rawCalls: unknown[]): Timelin
       error: current?.error ?? null,
       artifacts: current?.artifacts ?? [],
       images: current?.images ?? [],
+      permissionRequestId: current?.permissionRequestId,
     };
     if (existing >= 0) copy[existing] = next;
     else copy.push(next);
@@ -673,6 +879,37 @@ function applyToolResult(entries: TimelineEntry[], data: JsonObject): TimelineEn
   }
   return copy;
 }
+
+function upsertPermissionTool(entries: TimelineEntry[], data: JsonObject): TimelineEntry[] {
+  const call = objectValue(data.tool_call);
+  const id = stringValue(call.id) || stringValue(call.tool_call_id);
+  if (!id) return entries;
+  const next = upsertToolCalls(entries, [{ id, name: call.name, args: call.args }]);
+  return next.map((entry) => entry.kind === "tool" && entry.toolCallId === id
+    ? {
+      ...entry,
+      status: entry.status === "success" || entry.status === "error" ? entry.status : "pending",
+      permissionRequestId: stringValue(data.request_id),
+    }
+    : entry);
+}
+
+function updatePermissionTool(entries: TimelineEntry[], data: JsonObject, status: string): TimelineEntry[] {
+  const requestId = stringValue(data.request_id);
+  if (!requestId) return entries;
+  return entries.map((entry) => entry.kind === "tool" && entry.permissionRequestId === requestId
+    ? { ...entry, status }
+    : entry);
+}
+
+function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {
+  return { id: id || nextId("runtime"), kind: "runtime", source, event, content, messageId: "" };
+}
+
+function eventIdentity(event: ServerEvent): string {
+  return `event:${event.sequence}:${event.type}`;
+}
+
 
 function queueInteraction(state: RuntimeState, request: InteractionRequest): RuntimeState {
   if (!request.request_id || state.interactions.some((item) => item.request_id === request.request_id)) return state;
@@ -862,7 +1099,7 @@ function runtimeSession(session: OpenSessionResponse): RuntimeSession {
 }
 
 function messageEntry(role: "user" | "assistant", content: string): MessageEntry {
-  return { id: nextId(role), kind: "message", role, content, reasoning: "", streaming: false, images: [] };
+  return { id: nextId(role), kind: "message", role, content, reasoning: "", streaming: false, images: [], messageId: "" };
 }
 
 function noticeEntry(content: string, level: "info" | "error"): NoticeEntry {

@@ -10,6 +10,7 @@ export interface RuntimeEventListener {
   onTaskExpired(taskId: string): void;
   onConnection(connected: boolean): void;
   onError(error: unknown): void;
+  onResetRequired(): void;
 }
 
 export class RuntimeEventController {
@@ -31,13 +32,20 @@ export class RuntimeEventController {
 
   start(session: SessionAddress, generation: number, running = false): void {
     this.generation = generation;
+    let resetRequested = false;
     this.connection.start(session, {
       onEvent: (event) => this.handle(event, generation),
       onConnection: (connected) => {
         if (this.isCurrent(generation)) this.listener.onConnection(connected);
       },
       onDisconnect: (error, retrying) => {
-        if (this.isCurrent(generation) && !retrying) this.listener.onError(error);
+        if (this.isCurrent(generation) && !retrying && !resetRequested) this.listener.onError(error);
+      },
+      onResetRequired: () => {
+        if (this.isCurrent(generation)) {
+          resetRequested = true;
+          this.listener.onResetRequired();
+        }
       },
     });
     if (running) this.startLiveRefresh(session.session_id, generation);
@@ -126,7 +134,7 @@ export class RuntimeEventController {
         this.taskTimers.delete(taskId);
       }, 4000));
     }
-    if (event.data.kind !== "agent" || !event.session_id) return;
+    if (!event.session_id || (event.data.kind !== "agent" && !event.data.thread_id)) return;
     if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
     this.threadRefreshTimer = window.setTimeout(() => {
       this.threadRefreshTimer = null;

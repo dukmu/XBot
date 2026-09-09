@@ -278,6 +278,59 @@ class SchemaNamespace:
 S = SchemaNamespace()
 
 
+def schema_to_json_schema(schema: Schema) -> dict[str, Any]:
+    """Project an ``S`` declaration into the JSON Schema used by UI clients.
+
+    Validation remains owned by :meth:`Schema.validate`; this projection is a
+    descriptive contract for generic configuration clients, not a second
+    validator.
+    """
+    result = _schema_json(schema)
+    if schema._description is not None:
+        result["description"] = schema._description
+    if schema._default is not _MISSING:
+        result["default"] = copy.deepcopy(schema._default)
+    return result
+
+
+def _schema_json(schema: Schema) -> dict[str, Any]:
+    if isinstance(schema, AnySchema):
+        return {}
+    if isinstance(schema, ConstSchema):
+        return {"const": copy.deepcopy(schema._value)}
+    if isinstance(schema, StringSchema):
+        return {"type": "string"}
+    if isinstance(schema, NumberSchema):
+        return {"type": "number"}
+    if isinstance(schema, BooleanSchema):
+        return {"type": "boolean"}
+    if isinstance(schema, ArraySchema):
+        return {"type": "array", "items": schema_to_json_schema(schema._item)}
+    if isinstance(schema, ObjectSchema):
+        properties = {
+            key: schema_to_json_schema(value)
+            for key, value in schema._shape.items()
+        }
+        required = [
+            key
+            for key, value in schema._shape.items()
+            if not value._optional and value._default is _MISSING
+        ]
+        result: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": not schema._strict,
+        }
+        if required:
+            result["required"] = required
+        return result
+    if isinstance(schema, UnionSchema):
+        return {"anyOf": [schema_to_json_schema(branch) for branch in schema._branches]}
+    if isinstance(schema, EnumSchema):
+        return {"enum": copy.deepcopy(schema._values)}
+    raise TypeError(f"Unsupported schema type: {type(schema).__name__}")
+
+
 def validate_config(
     config_schema: Any, raw_config: Any, default: Any = None
 ) -> Any:
@@ -300,6 +353,7 @@ def validate_config(
 __all__ = [
     "S",
     "Schema",
+    "schema_to_json_schema",
     "validate_config",
     "SchemaValidationError",
 ]

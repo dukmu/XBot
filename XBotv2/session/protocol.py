@@ -54,6 +54,7 @@ from XBotv2.session.contracts import (
     SessionMode,
     SessionDescriptor,
     SessionSummary,
+    SessionTrajectoryItem,
     ThreadNotActive,
     ThreadSummary,
     conversation_replay,
@@ -112,6 +113,13 @@ class ThreadMessagesResponse(WireModel):
     next_cursor: str | None = None
 
 
+class ThreadTrajectoryResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    items: list[SessionTrajectoryItem] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class UndoRequest(WireModel):
     count: int = Field(default=1, ge=1)
     history_limit: int | None = Field(default=None, ge=1, le=500)
@@ -150,6 +158,7 @@ class MessageData(WireModel):
     content: str = ""
     images: list[dict[str, JsonValue]] = Field(default_factory=list)
     artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
+    runtime: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class HistoryUpdatedData(WireModel):
@@ -587,6 +596,29 @@ def build_session_router(
         )
 
     @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/trajectory",
+        operation_id="list_trajectory",
+    )
+    async def list_trajectory_endpoint(
+        session_id: str,
+        thread_id: str,
+        cursor: str | None = None,
+        limit: int = Query(default=160, ge=1, le=500),
+    ) -> ThreadTrajectoryResponse:
+        page = await sessions.trajectory_page(
+            session_id,
+            thread_id,
+            cursor=cursor,
+            limit=limit,
+        )
+        return ThreadTrajectoryResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            items=list(page.items),
+            next_cursor=page.next_cursor,
+        )
+
+    @router.get(
         "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}",
         operation_id="get_artifact",
     )
@@ -879,6 +911,7 @@ __all__ = [
     "SessionSummary",
     "ThreadListResponse",
     "ThreadMessagesResponse",
+    "ThreadTrajectoryResponse",
     "ThreadSummary",
     "UndoRequest",
     "build_session_router",
