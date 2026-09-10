@@ -9,6 +9,7 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any
 
+from pydantic import JsonValue
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
@@ -133,10 +134,13 @@ def status_renderable(
         segments.insert(activity_index, (activity, ""))
 
     if width >= 80:
-        # "in" is the full prompt sent to the provider (uncached + cache-read);
+        # "in" is the full prompt sent to the provider, including cache I/O;
         # deepseek reports uncached input as 0 when everything is cached.
         full_input = (
-            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+            usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+            + usage.get("prompt_cache_write_tokens", 0)
         )
         detailed_tokens = (
             f"tokens:{_compact_count(total)} "
@@ -595,6 +599,13 @@ def _tool_argument_summary(tool: TuiTool) -> str:
 
 def tool_detail(tool: TuiTool) -> str:
     parts: list[str] = []
+    todo = _todo_projection(tool)
+    if todo is not None:
+        parts.append("plan:\n" + "\n".join(
+            f"  {_todo_marker(str(item.get('status') or ''))} "
+            f"{str(item.get('content') or '')}"
+            for item in todo
+        ))
     if tool.args_finalized and tool.args:
         parts.append(f"args: {format_value(tool.args, indent=2)}")
     elif tool.args_finalized and tool.args_streaming:
@@ -607,8 +618,6 @@ def tool_detail(tool: TuiTool) -> str:
         parts.append(tool.permission_reason)
     if tool.result:
         parts.append(f"result: {tool.result}")
-    if tool.data is not None:
-        parts.append(f"data: {format_value(tool.data, indent=2)}")
     if tool.error:
         parts.append(f"error: {format_value(tool.error, indent=2)}")
     if tool.artifacts:
@@ -616,6 +625,24 @@ def tool_detail(tool: TuiTool) -> str:
     if tool.images:
         parts.append(f"images: {format_value(tool.images, indent=2)}")
     return "\n".join(parts)
+
+
+def _todo_projection(tool: TuiTool) -> list[dict[str, JsonValue]] | None:
+    data = tool.data
+    if not isinstance(data, dict) or data.get("kind") != "todo_snapshot":
+        return None
+    items = data.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return None
+    return items
+
+
+def _todo_marker(status: str) -> str:
+    if status == "completed":
+        return "[x]"
+    if status == "in_progress":
+        return "[>]"
+    return "[ ]"
 
 
 def entry_widget(kind: str, title: str, body: str, *, reasoning: str = "") -> Vertical:

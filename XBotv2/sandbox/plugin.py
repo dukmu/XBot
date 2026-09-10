@@ -10,40 +10,53 @@ approval belongs to the permission layer).
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
-from XBotv2.core.events import Events
+from XBotv2.config import POLICY_CHANGED, PolicyChanged
+from XBotv2.context_builder import BEFORE_CONTEXT_BUILD, ContextBuildRequest
+from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.sandbox.commands import SANDBOX_COMMANDS
+from XBotv2.sandbox.commands import build_sandbox_commands
 
 
 class SandboxComponent:
     inject = [
-        "storage", "session", "tools", "data_root", "variables",
-        "workspace_root", "commands",
+        "thread_paths", "session", "tools", "data_root", "variables",
+        "workspace_root", "commands", "settings",
     ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
     name = "xbot.sandbox"
+    Config = SandboxConfig
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: SandboxConfig) -> None:
         policy = SandboxPolicy(
-            (config or {}).get("sandbox"),
+            config,
             data_root=ctx.data_root,
             workspace_root=ctx.workspace_root,
-            session_root=ctx.storage.root,
+            session_root=ctx.thread_paths.state_dir,
             variables=ctx.variables,
         )
         ctx.set("sandbox", policy)
         ctx.tools.guard(policy.make_guard())
-        for command in SANDBOX_COMMANDS:
+        for command in build_sandbox_commands(ctx.settings):
             ctx.commands.register(command)
+        handlers = SandboxHandlers(policy)
+        ctx.on(POLICY_CHANGED, handlers.update_policy)
+        ctx.on(BEFORE_CONTEXT_BUILD, handlers.contribute_context, prepend=True)
 
-        async def contribute_context(event: Any) -> None:
-            if event.context_kwargs is not None:
-                event.context_kwargs["sandbox_summary"] = policy.describe()
 
-        ctx.on(Events.BEFORE_CONTEXT_BUILD, contribute_context, prepend=True)
+class SandboxHandlers:
+    def __init__(self, policy: SandboxPolicy) -> None:
+        self._policy = policy
+
+    async def update_policy(self, event: PolicyChanged) -> None:
+        self._policy.replace_config(
+            SandboxConfig.model_validate(event.effective_sandbox)
+        )
+
+    async def contribute_context(self, event: ContextBuildRequest) -> None:
+        event.sandbox_summary = self._policy.describe()
 
 
 plugin = SandboxComponent()

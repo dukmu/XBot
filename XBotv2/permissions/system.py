@@ -8,19 +8,30 @@ filesystem paths. Path expressions may contain runtime-variable references.
 from __future__ import annotations
 
 import re
+import json
 import fnmatch
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from pydantic import BaseModel, JsonValue
 
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.filesystem.operations import PATH_ACCESS, resolve_operation
+from XBotv2.core.tools import ToolCall
+from XBotv2.permissions.contracts import (
+    PermissionConfig,
+    PermissionDecision,
+    PermissionsPort,
+)
+from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
+from XBotv2.permissions.patterns import compile_pattern, fullmatch, matching_budget
+from XBotv2.permissions.rules import effective_args
 
-PermissionDecision = Literal["allow", "deny", "ask"]
 _DECISIONS = {"allow", "deny", "ask"}
 
 
-def normalize_agent_permissions(value: Any) -> dict[str, list[dict[str, str]]]:
+def normalize_agent_permissions(
+    value: str | Mapping[str, JsonValue] | None,
+) -> dict[str, list[dict[str, str]]]:
     """Normalize an Agent definition's raw permission overlay.
 
     Accepts the ``permission`` / ``permissions`` frontmatter shapes: a whole
@@ -35,7 +46,7 @@ def normalize_agent_permissions(value: Any) -> dict[str, list[dict[str, str]]]:
         if value not in _DECISIONS:
             raise ValueError(f"Invalid permission decision: {value!r}")
         return {value: [{"tool": ".*"}]}
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         raise ValueError(
             f"Agent permissions must be a mapping or decision: {value!r}"
         )
@@ -68,14 +79,27 @@ class PermissionRule:
 def _matches_name_and_params(
     rule: PermissionRule,
     tool_name: str,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
 ) -> bool:
-    if not re.fullmatch(rule.tool_pattern, tool_name):
+    if not fullmatch(rule.tool_pattern, tool_name):
         return False
     return all(
-        name in args and re.fullmatch(pattern, str(args[name]))
+        name in args and fullmatch(pattern, _permission_value(args[name]))
         for name, pattern in rule.param_patterns.items()
     )
+
+
+def _permission_value(value: JsonValue) -> str:
+    """Use canonical JSON for structured arguments and stable scalar text."""
+    if isinstance(value, (Mapping, list, tuple)):
+        try:
+            return json.dumps(
+                value, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Permission parameters must be JSON-compatible") from exc
+    return str(value)
 
 
 def _one_shot_rule(
@@ -89,7 +113,7 @@ def _one_shot_rule(
         for name, pattern in param_patterns.items()
     }
     for pattern in patterns.values():
-        re.compile(pattern)
+        compile_pattern(pattern)
     return PermissionRule(
         tool_pattern=re.escape(tool_name),
         param_patterns=patterns,
@@ -107,17 +131,18 @@ class PermissionSystem:
 
     def __init__(
         self,
-        config: Any | None = None,
+        config: PermissionConfig | Mapping[str, JsonValue] | None = None,
         *,
         default_decision: PermissionDecision = "ask",
         variables: RuntimeVariables | None = None,
+        parent: PermissionsPort | None = None,
     ) -> None:
         self.default_decision = default_decision
         self.variables = variables or RuntimeVariables()
-        self.config: Any = config  # original rules (dict / model) for consumers
-        self._deny_rules: list[PermissionRule] = []
-        self._allow_rules: list[PermissionRule] = []
-        self._ask_rules: list[PermissionRule] = []
+        self.parent = parent
+        self._rules: dict[PermissionDecision, list[PermissionRule]] = {
+            decision: [] for decision in ("deny", "allow", "ask")
+        }
         self._once_grants: list[PermissionRule] = []
 
         if config is not None:
@@ -127,36 +152,35 @@ class PermissionSystem:
     # Config loading
     # ------------------------------------------------------------------
 
-    def _load_config(self, config: Any) -> None:
-        if hasattr(config, "model_dump"):
+    def _load_config(
+        self,
+        config: PermissionConfig | Mapping[str, JsonValue],
+    ) -> None:
+        if isinstance(config, BaseModel):
             data = config.model_dump()
-        elif isinstance(config, dict):
-            data = config
+        elif isinstance(config, Mapping):
+            data = dict(config)
         else:
-            return
+            raise TypeError("Permission configuration must be a mapping")
 
-        for rule_data in data.get("deny", []):
-            self._deny_rules.append(self._parse_rule(rule_data, "deny"))
-        for rule_data in data.get("allow", []):
-            self._allow_rules.append(self._parse_rule(rule_data, "allow"))
-        for rule_data in data.get("ask", []):
-            self._ask_rules.append(self._parse_rule(rule_data, "ask"))
+        for decision, rules in self._rules.items():
+            rules.extend(
+                self._parse_rule(rule, decision)
+                for rule in data.get(decision, [])
+            )
 
-    def add_rule(self, decision: PermissionDecision, rule_data: dict[str, Any]) -> None:
+    def add_rule(self, decision: PermissionDecision, rule_data: dict[str, JsonValue]) -> None:
         """Add one live permission rule to the in-memory policy."""
         rule = self._parse_rule(rule_data, decision)
-        target = {
-            "deny": self._deny_rules,
-            "allow": self._allow_rules,
-            "ask": self._ask_rules,
-        }[decision]
-        target.insert(0, rule)
+        self._rules[decision].insert(0, rule)
 
-    def replace_rules(self, config: Any | None) -> None:
+    def replace_rules(
+        self,
+        config: PermissionConfig | Mapping[str, JsonValue] | None,
+    ) -> None:
         """Replace configured rules without invalidating shared references."""
-        self._deny_rules.clear()
-        self._allow_rules.clear()
-        self._ask_rules.clear()
+        for rules in self._rules.values():
+            rules.clear()
         if config is not None:
             self._load_config(config)
 
@@ -170,7 +194,7 @@ class PermissionSystem:
 
     def _parse_rule(
         self,
-        data: dict,
+        data: dict[str, JsonValue],
         decision: PermissionDecision,
     ) -> PermissionRule:
         tool_pattern = str(data.get("tool", ".*"))
@@ -184,20 +208,15 @@ class PermissionSystem:
             if not isinstance(paths, str):
                 raise ValueError("Permission paths must be a regular expression")
             try:
-                re.compile(self.variables.expand_regex(
+                compile_pattern(self.variables.expand_regex(
                     paths,
                     source="permission paths",
                 ))
-            except re.error as exc:
+            except ValueError as exc:
                 raise ValueError(f"Invalid permission path regex: {exc}") from exc
-        try:
-            re.compile(tool_pattern)
-            for pattern in param_patterns.values():
-                re.compile(str(pattern))
-        except re.error as exc:
-            raise ValueError(
-                f"Invalid permission regular expression: {exc}"
-            ) from exc
+        compile_pattern(tool_pattern)
+        for pattern in param_patterns.values():
+            compile_pattern(str(pattern))
         return PermissionRule(
             tool_pattern=tool_pattern,
             param_patterns={
@@ -212,12 +231,57 @@ class PermissionSystem:
     # Check
     # ------------------------------------------------------------------
 
-    def check(self, tool_name: str, args: dict[str, Any] | None = None) -> PermissionDecision:
+    def check(self, tool_name: str, args: dict[str, JsonValue] | None = None) -> PermissionDecision:
         """Check whether *tool_name* with *args* is allowed.
 
-        Returns "allow", "deny", or "ask".
+        Returns "allow", "deny", or "ask" without consuming authorization.
         """
-        args = args or {}
+        with matching_budget():
+            args = effective_args(tool_name, args or {}, self.variables.get("workspace"))
+            if self.parent is not None:
+                return self._check_intersection(tool_name, args)
+            return self._check_local(tool_name, args)
+
+    def _check_local(
+        self,
+        tool_name: str,
+        args: dict[str, JsonValue],
+        *,
+        use_grants: bool = True,
+    ) -> PermissionDecision:
+        grant_index = next(
+            (
+                index
+                for index, grant in enumerate(self._once_grants)
+                if self._rule_matches(grant, tool_name, args)
+            ),
+            None,
+        ) if use_grants else None
+
+        # Deny always wins
+        for rule in self._rules["deny"]:
+            if self._rule_matches(rule, tool_name, args):
+                return "deny"
+
+        if grant_index is not None:
+            return "allow"
+
+        # Allow checked second
+        for rule in self._rules["allow"]:
+            if self._rule_matches(rule, tool_name, args):
+                return "allow"
+
+        # Ask checked third
+        for rule in self._rules["ask"]:
+            if self._rule_matches(rule, tool_name, args):
+                return "ask"
+
+        return self.default_decision
+
+    def _check_intersection(
+        self, tool_name: str, args: dict[str, JsonValue]
+    ) -> PermissionDecision:
+        parent_decision = self.parent.check(tool_name, args)
         grant_index = next(
             (
                 index
@@ -226,34 +290,30 @@ class PermissionSystem:
             ),
             None,
         )
-
-        # Deny always wins
-        for rule in self._deny_rules:
-            if self._rule_matches(rule, tool_name, args):
-                if grant_index is not None:
-                    self._once_grants.pop(grant_index)
-                return "deny"
-
+        child_decision = self._check_local(tool_name, args, use_grants=False)
+        if "deny" in {parent_decision, child_decision}:
+            return "deny"
         if grant_index is not None:
-            self._once_grants.pop(grant_index)
             return "allow"
+        if "ask" in {parent_decision, child_decision}:
+            return "ask"
+        return "allow"
 
-        # Allow checked second
-        for rule in self._allow_rules:
-            if self._rule_matches(rule, tool_name, args):
-                return "allow"
-
-        # Ask checked third
-        for rule in self._ask_rules:
-            if self._rule_matches(rule, tool_name, args):
-                return "ask"
-
-        return self.default_decision
+    def consume_once(self, tool_name: str, args: dict[str, JsonValue]) -> None:
+        """Consume at the permission guard, never during a policy preview."""
+        with matching_budget():
+            args = effective_args(tool_name, args, self.variables.get("workspace"))
+            for index, grant in enumerate(self._once_grants):
+                if self._rule_matches(grant, tool_name, args):
+                    self._once_grants.pop(index)
+                    return
+            if self.parent is not None:
+                self.parent.consume_once(tool_name, args)
 
     def explicit_allow(
         self,
         tool_name: str,
-        args: dict[str, Any] | None = None,
+        args: dict[str, JsonValue] | None = None,
         *,
         constrain_param: str | None = None,
     ) -> bool:
@@ -266,35 +326,45 @@ class PermissionSystem:
         (e.g. sandbox escalation).  Used for actions that must be approved
         by a human unless a rule deliberately permits them.
         """
-        args = args or {}
-        if any(
-            (constrain_param is None or constrain_param in grant.param_patterns)
-            and self._rule_matches(grant, tool_name, args)
-            for grant in self._once_grants
-        ):
-            return True
-        return any(
-            (constrain_param is None or constrain_param in rule.param_patterns)
-            and self._rule_matches(rule, tool_name, args)
-            for rule in self._allow_rules
-        )
+        with matching_budget():
+            args = effective_args(tool_name, args or {}, self.variables.get("workspace"))
+            if self.parent is not None and self.parent.explicit_allow(
+                tool_name, args, constrain_param=constrain_param
+            ):
+                return True
+            if any(
+                (constrain_param is None or constrain_param in grant.param_patterns)
+                and self._rule_matches(grant, tool_name, args)
+                for grant in self._once_grants
+            ):
+                return True
+            return any(
+                (constrain_param is None or constrain_param in rule.param_patterns)
+                and self._rule_matches(rule, tool_name, args)
+                for rule in self._rules["allow"]
+            )
 
     # ------------------------------------------------------------------
     # Tool-call policy
     # ------------------------------------------------------------------
 
-    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
+    def check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
         """Return the plugin-local policy decision and human-facing reason."""
+        with matching_budget():
+            return self._check_tool_call(tool_call)
+
+    def _check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
         tool_name = tool_call.name
         args = dict(tool_call.args or {})
         escalated = (
             tool_name == "shell"
             and args.get("sandbox_permissions") == "require_escalated"
         )
-        decision = self.check(tool_name, args)
-        if escalated and decision == "allow" and not self.explicit_allow(
+        escape_allowed = not escalated or self.explicit_allow(
             tool_name, args, constrain_param="sandbox_permissions"
-        ):
+        )
+        decision = self.check(tool_name, args)
+        if escalated and decision == "allow" and not escape_allowed:
             decision = "ask"
         if decision == "deny":
             return decision, f"Permission denied for tool: {tool_name}"
@@ -307,6 +377,7 @@ class PermissionSystem:
             )
         if decision == "ask":
             return decision, f"Permission approval required for tool: {tool_name}."
+        self.consume_once(tool_name, args)
         return decision, ""
 
     # ------------------------------------------------------------------
@@ -317,7 +388,7 @@ class PermissionSystem:
         self,
         rule: PermissionRule,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
     ) -> bool:
         if not _matches_name_and_params(rule, tool_name, args):
             return False
@@ -329,7 +400,7 @@ class PermissionSystem:
         self,
         pattern: str,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, JsonValue],
     ) -> bool:
         operation = resolve_operation(tool_name, args)
         fields = PATH_ACCESS.get(operation or "", ())
@@ -366,105 +437,6 @@ class PermissionSystem:
             if root is not None:
                 if not resolved.is_relative_to(root):
                     return False
-            elif expanded is not None and not re.fullmatch(expanded, str(resolved)):
+            elif expanded is not None and not fullmatch(expanded, str(resolved)):
                 return False
         return True
-
-
-class PermissionIntersection:
-    """Return the more restrictive decision from parent and child policy."""
-
-    def __init__(self, parent: Any, child: Any) -> None:
-        self.parent = parent
-        self.child = child
-        self._once_grants: list[PermissionRule] = []
-
-    @property
-    def config(self) -> Any:
-        """The child (session-scoped) rules for consumers."""
-        return self.child.config
-
-    def grant_once(
-        self,
-        tool_name: str,
-        param_patterns: dict[str, str],
-    ) -> None:
-        """Allow one matching call unless either policy explicitly denies it."""
-        self._once_grants.append(_one_shot_rule(tool_name, param_patterns))
-
-    def check(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-    ) -> PermissionDecision:
-        args = args or {}
-        decisions = {
-            self.parent.check(tool_name, args),
-            self.child.check(tool_name, args),
-        }
-        grant_index = next(
-            (
-                index
-                for index, grant in enumerate(self._once_grants)
-                if _matches_name_and_params(grant, tool_name, args)
-            ),
-            None,
-        )
-        if "deny" in decisions:
-            if grant_index is not None:
-                self._once_grants.pop(grant_index)
-            return "deny"
-        if grant_index is not None:
-            self._once_grants.pop(grant_index)
-            return "allow"
-        if "ask" in decisions:
-            return "ask"
-        return "allow"
-
-    def explicit_allow(
-        self,
-        tool_name: str,
-        args: dict[str, Any] | None = None,
-        *,
-        constrain_param: str | None = None,
-    ) -> bool:
-        """Whether either policy explicitly permits the call.
-
-        See :meth:`PermissionSystem.explicit_allow` for *constrain_param*.
-        """
-        args = args or {}
-        if any(
-            (constrain_param is None or constrain_param in grant.param_patterns)
-            and _matches_name_and_params(grant, tool_name, args)
-            for grant in self._once_grants
-        ):
-            return True
-        return self.parent.explicit_allow(
-            tool_name, args, constrain_param=constrain_param
-        ) or self.child.explicit_allow(tool_name, args, constrain_param=constrain_param)
-
-    def check_tool_call(self, tool_call: Any) -> tuple[PermissionDecision, str]:
-        """Apply intersection policy with the same escalation constraint."""
-        tool_name = tool_call.name
-        args = dict(tool_call.args or {})
-        escalated = (
-            tool_name == "shell"
-            and args.get("sandbox_permissions") == "require_escalated"
-        )
-        decision = self.check(tool_name, args)
-        if escalated and decision == "allow" and not self.explicit_allow(
-            tool_name, args, constrain_param="sandbox_permissions"
-        ):
-            decision = "ask"
-        if decision == "deny":
-            return decision, f"Permission denied for tool: {tool_name}"
-        if decision == "ask" and escalated:
-            justification = str(args.get("justification") or "").strip()
-            return decision, (
-                f"Sandbox escape requires human approval: {justification}"
-                if justification
-                else "Sandbox escape requires human approval."
-            )
-        if decision == "ask":
-            return decision, f"Permission approval required for tool: {tool_name}."
-        return decision, ""

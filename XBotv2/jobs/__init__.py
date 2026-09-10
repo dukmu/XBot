@@ -1,30 +1,81 @@
-"""Unified runtime job subsystem.
+"""Public declarations for the background-jobs plugin."""
 
-Internal jobs (subagent, shell, and future kinds) share one lifecycle model so
-the registry owns waiting, cancellation, output storage, and cleanup. Domain
-adapters implement a ``JobRunner`` and expose typed, model-facing tools; the
-generic ``job``/``task`` vocabulary never reaches the model.
-"""
-
-from XBotv2.jobs.output import (
-    CombinedShellOutput,
+from XBotv2.jobs.contracts import (
+    JobsConfig,
+    TERMINAL_STATES,
+    CancelResult,
+    Job,
+    JobError,
+    JobId,
+    JobKind,
+    JobNotFound,
+    JobOutputFactoryPort,
+    JobRegistryClosed,
+    JobResult,
+    JobRunner,
+    JobRunnerContext,
+    JobsCommandPort,
+    JobsPort,
+    JobStatus,
+    JobSummary,
+    LIST_TASKS,
+    MAX_SUMMARY_CHARS,
     OutputChunk,
     OutputStore,
-    StreamOutputStore,
-    TextOutputStore,
+    STOP_ALL_TASKS,
+    STOP_TASK,
+    StopTask,
+    StoppedTasks,
+    TaskCatalog,
+    TaskSnapshot,
+    TextOutputStorePort,
+    WaitMode,
+    WaitResult,
+    parse_job_status,
 )
-from XBotv2.jobs.registry import JobRegistry, job_summary, normalize_error
-from XBotv2.jobs.runner import JobContext, JobRunner
+from XBotv2.jobs.protocol import (
+    TaskCompletionData,
+    TaskListResponse,
+    TaskStopResponse,
+    task_completion_event,
+    task_updated_event,
+)
 
 __all__ = [
-    "CombinedShellOutput",
-    "JobContext",
-    "JobRegistry",
+    "CancelResult",
+    "Job",
+    "JobsConfig",
+    "JobError",
+    "JobId",
+    "JobKind",
+    "JobNotFound",
+    "JobOutputFactoryPort",
+    "JobRegistryClosed",
+    "JobResult",
     "JobRunner",
+    "JobRunnerContext",
+    "JobsPort",
+    "JobStatus",
+    "JobSummary",
+    "JobsCommandPort",
+    "LIST_TASKS",
+    "MAX_SUMMARY_CHARS",
     "OutputChunk",
     "OutputStore",
-    "StreamOutputStore",
-    "TextOutputStore",
-    "job_summary",
-    "normalize_error",
+    "STOP_ALL_TASKS",
+    "STOP_TASK",
+    "StopTask",
+    "StoppedTasks",
+    "TaskCatalog",
+    "TaskCompletionData",
+    "TaskListResponse",
+    "TaskSnapshot",
+    "TaskStopResponse",
+    "TERMINAL_STATES",
+    "TextOutputStorePort",
+    "WaitMode",
+    "WaitResult",
+    "parse_job_status",
+    "task_completion_event",
+    "task_updated_event",
 ]

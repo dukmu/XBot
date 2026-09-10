@@ -1,5 +1,3 @@
-"""Sandboxing: the sandbox policy and its helpers."""
+"""Public declarations for the sandbox execution policy plugin."""
 
-from XBotv2.sandbox.policy import SandboxPolicy
-
-__all__ = ["SandboxPolicy"]
+__all__ = []

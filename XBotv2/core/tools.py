@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
-if TYPE_CHECKING:
-    from XBotv2.core.messages import ImageContent
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+from XBotv2.core.artifacts import ArtifactRef, ImageContent
 
 
 @dataclass(frozen=True)
@@ -24,93 +24,62 @@ class GuardDecision:
     action: Literal["deny"] = "deny"
     reason: str = ""
     source: str = "guard"
-    client_events: tuple[dict[str, Any], ...] = ()
+    client_events: tuple["ClientEvent", ...] = ()
 
 
-@dataclass(frozen=True)
-class ToolCall:
-    id: str
-    name: str
-    args: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any], *, default_id: str = "") -> "ToolCall":
-        return cls(
-            id=str(value.get("id") or default_id),
-            name=str(value.get("name") or ""),
-            args=dict(value.get("args") or {}),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "args": self.args, "type": "tool_call"}
+class ToolCall(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+    type: Literal["tool_call"] = "tool_call"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True)
-class ToolCallDelta:
+class ToolCallDelta(BaseModel):
     index: int
     id: str = ""
     name: str = ""
     args: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "index": self.index,
-            "id": self.id,
-            "name": self.name,
-            "args": self.args,
-            "type": "tool_call_chunk",
-        }
+    type: Literal["tool_call_chunk"] = "tool_call_chunk"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True)
-class ToolError:
+class ToolError(BaseModel):
     code: str
     message: str
     retryable: bool = False
-    details: dict[str, JsonValue] = field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    def to_dict(self) -> dict[str, JsonValue]:
-        return {
-            "code": self.code,
-            "message": self.message,
-            "retryable": self.retryable,
-            "details": self.details,
-        }
+class ClientEvent(BaseModel):
+    type: str = Field(min_length=1)
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True)
-class ClientEvent:
-    type: str
-    data: dict[str, JsonValue] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, JsonValue]:
-        return {"type": self.type, "data": self.data}
-
-
-@dataclass(frozen=True)
-class ArtifactRef:
-    id: str
-    media_type: str = "application/octet-stream"
-    name: str = ""
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "id": self.id,
-            "media_type": self.media_type,
-            "name": self.name,
-        }
+def _validated_client_event(
+    event_type: str,
+    data: Mapping[str, object],
+    model: type[BaseModel],
+) -> ClientEvent:
+    """Validate one typed event payload and return its client envelope."""
+    payload = model.model_validate(data)
+    return ClientEvent(
+        type=event_type,
+        data=payload.model_dump(mode="json", exclude_unset=True),
+    )
 
 
-@dataclass(frozen=True)
-class ToolResult:
+class ToolResult(BaseModel):
     status: Literal["success", "error", "denied", "cancelled"] = "success"
     content: str = ""
     data: JsonValue = None
     error: ToolError | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
-    images: tuple["ImageContent", ...] = ()
+    images: tuple[ImageContent, ...] = ()
     client_events: tuple[ClientEvent, ...] = ()
     turn_complete: bool = False
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
     def success(
@@ -118,7 +87,7 @@ class ToolResult:
         content: str = "",
         *,
         data: JsonValue = None,
-        images: tuple["ImageContent", ...] = (),
+        images: tuple[ImageContent, ...] = (),
     ) -> "ToolResult":
         return cls(content=content, data=data, images=images)
 
@@ -129,7 +98,7 @@ class ToolResult:
         return cls(
             status="error",
             content=message,
-            error=ToolError(code, message, retryable),
+            error=ToolError(code=code, message=message, retryable=retryable),
         )
 
 
@@ -139,7 +108,7 @@ class Tool:
     description: str
     function: Callable[..., Any]
     parameters: dict[str, Any]
-    injected_parameters: tuple[str, ...] = ()
+    tool_call_parameter: str | None = None
 
     @classmethod
     def from_function(cls, function: Callable[..., Any], *, name: str | None = None) -> "Tool":
@@ -149,30 +118,52 @@ class Tool:
             type_hints = get_type_hints(function)
         except (NameError, TypeError):
             type_hints = {}
-        injected = tuple(
+        tool_call_parameters = tuple(
             parameter_name
             for parameter_name, parameter in signature.parameters.items()
-            if parameter.kind == parameter.KEYWORD_ONLY
-            and parameter.default is not inspect.Parameter.empty
+            if type_hints.get(parameter_name, parameter.annotation)
+            is ToolCall
         )
+        if len(tool_call_parameters) > 1:
+            raise TypeError("a Tool may declare only one ToolCall parameter")
+        if tool_call_parameters:
+            parameter = signature.parameters[tool_call_parameters[0]]
+            if parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
+                raise TypeError("a ToolCall parameter must be keyword-only")
         return cls(
             name=name or function.__name__,
             description=description,
             function=function,
-            parameters=_parameters_schema(signature, type_hints),
-            injected_parameters=injected,
+            parameters=_parameters_schema(
+                signature,
+                type_hints,
+                excluded=frozenset(tool_call_parameters),
+            ),
+            tool_call_parameter=(
+                tool_call_parameters[0] if tool_call_parameters else None
+            ),
         )
 
-    def invoke(self, args: dict[str, Any], **injected: Any) -> Any:
-        result = self.function(**args, **self._injected(injected))
+    def invoke(
+        self,
+        args: dict[str, Any],
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> Any:
+        result = self.function(**args, **self._tool_call(tool_call))
         if inspect.isawaitable(result):
             import asyncio
 
             return asyncio.run(result)
         return result
 
-    async def ainvoke(self, args: dict[str, Any], **injected: Any) -> Any:
-        kwargs = {**args, **self._injected(injected)}
+    async def ainvoke(
+        self,
+        args: dict[str, Any],
+        *,
+        tool_call: ToolCall | None = None,
+    ) -> Any:
+        kwargs = {**args, **self._tool_call(tool_call)}
         if inspect.iscoroutinefunction(self.function):
             return await self.function(**kwargs)
 
@@ -191,41 +182,38 @@ class Tool:
             },
         }
 
-    def _injected(self, values: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in values.items() if key in self.injected_parameters}
+    def _tool_call(
+        self,
+        tool_call: ToolCall | None,
+    ) -> dict[str, ToolCall]:
+        if self.tool_call_parameter is None:
+            return {}
+        if tool_call is None:
+            raise TypeError(f"Tool {self.name!r} requires its ToolCall")
+        return {self.tool_call_parameter: tool_call}
 
 
-def provider_tool_schema(tool: Any) -> Any:
-    if isinstance(tool, Tool):
-        return tool.provider_schema()
-    if hasattr(tool, "provider_schema"):
-        return tool.provider_schema()
-    return tool
+def provider_tool_schema(tool: Tool) -> dict[str, Any]:
+    return tool.provider_schema()
 
 
-def tool_parameters_schema(tool: Any) -> dict[str, Any]:
-    """Return one JSON Schema for XBot and compatible external tools."""
-    if isinstance(tool, Tool):
-        return tool.parameters
-    args_schema = getattr(tool, "args_schema", None)
-    if hasattr(args_schema, "model_json_schema"):
-        return args_schema.model_json_schema()
-    if isinstance(args_schema, dict):
-        return args_schema
-    properties = getattr(tool, "args", None)
-    if isinstance(properties, dict):
-        return {"type": "object", "properties": properties}
-    return {"type": "object", "properties": {}}
+def tool_parameters_schema(tool: Tool) -> dict[str, Any]:
+    """Return the JSON Schema declared by one registered XBot ``Tool``."""
+    return tool.parameters
 
 
 def _parameters_schema(
     signature: inspect.Signature,
     type_hints: dict[str, Any] | None = None,
+    *,
+    excluded: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     required: list[str] = []
     accepts_extra = False
     for name, parameter in signature.parameters.items():
+        if name in excluded:
+            continue
         if parameter.kind == parameter.VAR_KEYWORD:
             accepts_extra = True
             continue
@@ -288,7 +276,6 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
 __all__ = [
     "ArtifactRef",
     "ClientEvent",
-    "JsonValue",
     "Tool",
     "ToolCall",
     "ToolCallDelta",

@@ -1,16 +1,25 @@
 import asyncio
+import json
 
 import pytest
 
-from XBotv2.core.jobs import JobKind, JobResult
-from XBotv2.jobs import JobRegistry
+from XBotv2.application import RUNTIME_EVENT
+from XBotv2.jobs import JobKind, JobResult
+from XBotv2.jobs.plugin import JobsRuntimeComponent
+from XBotv2.jobs.contracts import JobsConfig
+from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
-from XBotv2.coretools.shell import SHELL_TOOLS, run_shell_command
+from XBotv2.coretools import shell as shell_module
+from XBotv2.coretools.shell import run_shell_command, shell_tools
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
-from XBotv2.permission_request.service import ApprovalService
+from XBotv2.agentloop import Events
+from XBotv2.commands.plugin import CommandsService
+from XBotv2.permissions.approval import ApprovalService
+from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.application.client_events import ClientEventRouter
+from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.tests.helpers import make_tool_ctx
 import xcore
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -18,24 +27,70 @@ from XBotv2.sandbox.policy import SandboxPolicy
 
 def make_tools(temp_workspace, *, sandbox=None):
     registry = JobRegistry()
-    tools = {tool.name: tool for tool in SHELL_TOOLS}
+    tools = {
+        tool.name: tool
+        for tool in shell_tools(sandbox, registry, str(temp_workspace))
+    }
     return registry, tools
 
 
 def invoke(tools, name, args, registry, sandbox=None):
-    return tools[name].ainvoke(
-        args, job_registry=registry, sandbox=sandbox, sandbox_policy=sandbox
-    )
+    del registry, sandbox
+    return tools[name].ainvoke(args)
 
 
 def patch_shell_executor(monkeypatch, replacement):
-    """Patch the executor used by the already-imported singleton tools."""
-    shell_tool = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
-    monkeypatch.setitem(
-        shell_tool.function.__globals__,
-        "run_shell_command",
-        replacement,
+    """Patch the executor resolved by session-bound shell Tools."""
+    monkeypatch.setattr(shell_module, "run_shell_command", replacement)
+
+
+@pytest.mark.asyncio
+async def test_jobs_plugin_owns_updates_and_completion_delivery():
+    class Engine:
+        def __init__(self):
+            self.injected = []
+
+        async def inject(self, content, **kwargs):
+            self.injected.append((content, kwargs))
+
+    ctx = xcore.Context()
+    engine = Engine()
+    ctx.set("commands", CommandsService())
+    ctx.set("engine", engine)
+    runtime_events = []
+
+    async def record(event):
+        runtime_events.append(event.client_event)
+
+    ctx.on(RUNTIME_EVENT, record)
+    JobsRuntimeComponent().apply(ctx, JobsConfig())
+    from XBotv2.jobs import TaskSnapshot
+
+    snapshot = TaskSnapshot(
+        task_id="sh_1",
+        kind="shell",
+        command="printf x",
+        cwd="/workspace",
+        status="completed",
+        created_at=1.0,
+        started_at=2.0,
+        finished_at=3.0,
+        output="x",
     )
+
+    assert ctx.jobs.on_update is not None
+    assert ctx.jobs.on_complete is not None
+    await ctx.jobs.on_update(snapshot)
+    await ctx.jobs.on_complete(snapshot)
+
+    assert [event.type for event in runtime_events] == [
+        "task_updated",
+        "completion_notice",
+    ]
+    assert runtime_events[1].data["kind"] == "background_task"
+    assert len(engine.injected) == 1
+    assert engine.injected[0][1]["source"] == "sh_1"
+    assert "background_task" in engine.injected[0][0]
 
 
 @pytest.mark.asyncio
@@ -54,16 +109,18 @@ async def test_background_shell_lifecycle_and_read(temp_workspace, monkeypatch):
     started = await invoke(
         tools, "shell", {"command": "printf background-output", "background": True}, registry
     )
-    job_id = started.data["id"]
+    # Content is "Started <job_id>" — extract the job ID
+    job_id = started.content.split("Started ")[1]
     waited = await invoke(tools, "wait_shell", {"ids": [job_id]}, registry)
-    assert waited.data["ready"][0]["status"] == "completed"
-    assert waited.data["pending"] == []
-    assert waited.data["timed_out"] is False
+    waited_data = json.loads(waited.content)
+    assert waited_data["ready"][0]["status"] == "completed"
+    assert waited_data["pending"] == []
+    assert waited_data["timed_out"] is False
     read = await invoke(tools, "read_shell", {"id": job_id}, registry)
-    assert read.data["content"] == "background-output"
-    assert read.data["eof"] is True
+    assert read.content == "background-output"
     listed = await invoke(tools, "list_shells", {}, registry)
-    assert [item["id"] for item in listed.data["shells"]] == [job_id]
+    listed_data = json.loads(listed.content)
+    assert [item["id"] for item in listed_data["shells"]] == [job_id]
 
 
 @pytest.mark.asyncio
@@ -113,7 +170,7 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         registry,
         sandbox=object(),
     )
-    await invoke(tools, "wait_shell", {"ids": [background.data["id"]]}, registry)
+    await invoke(tools, "wait_shell", {"ids": [background.content.split("Started ")[1]]}, registry)
 
     assert foreground.status == "success"
     assert foreground.content == "output"
@@ -134,15 +191,14 @@ async def test_snapshot_bounds_output_but_read_keeps_full_content(
     started = await invoke(
         tools, "shell", {"command": "generate output", "background": True}, registry
     )
-    job = registry.get(started.data["id"])
-    await job.runner_task
+    job = registry.get(started.content.split("Started ")[1])
     await registry.wait([job.id])
 
-    assert len(registry.snapshot(job)["output"]) < 2_100
+    assert len(registry.snapshot(job).output) < 2_100
     read = await invoke(
         tools, "read_shell", {"id": job.id, "max_bytes": 20_000}, registry
     )
-    assert read.data["content"] == full_output
+    assert read.content == full_output
 
 
 @pytest.mark.asyncio
@@ -153,7 +209,7 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
     patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
-    job = registry.get(started.data["id"])
+    job = registry.get(started.content.split("Started ")[1])
     while job.status.value != "running":
         await asyncio.sleep(0)
 
@@ -163,7 +219,7 @@ async def test_cancel_shell_stops_process(temp_workspace, monkeypatch):
 
     assert result.status == "success"
     assert job.status.value == "cancelled"
-    assert job.runner_task.done()
+    assert (await registry.wait([job.id])).pending == []
 
 
 @pytest.mark.asyncio
@@ -186,7 +242,7 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
 
     await asyncio.wait_for(registry.shutdown(), timeout=1)
 
-    assert registry.get_or_none(started.data["id"]) is None
+    assert registry.get_or_none(started.content.split("Started ")[1]) is None
     assert completions == []
 
 
@@ -200,8 +256,8 @@ async def test_wait_shell_returns_exit_code_for_completed_job(
     patch_shell_executor(monkeypatch, run)
     registry, tools = make_tools(temp_workspace)
     started = await invoke(tools, "shell", {"command": "true", "background": True}, registry)
-    waited = await invoke(tools, "wait_shell", {"ids": [started.data["id"]]}, registry)
-    assert waited.data["ready"][0]["exit_code"] == 0
+    waited = await invoke(tools, "wait_shell", {"ids": [started.content.split("Started ")[1]]}, registry)
+    assert json.loads(waited.content)["ready"][0]["exit_code"] == 0
 
 
 @pytest.mark.asyncio
@@ -213,24 +269,26 @@ async def test_escalated_background_shell_requires_approval(
 
     patch_shell_executor(monkeypatch, run)
     sandbox = SandboxPolicy(
-        {"enabled": True, "external_write": "ask"},
+        SandboxConfig(enabled=True, external_write="deny"),
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
     job_registry = JobRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
-        injected={"sandbox": sandbox, "job_registry": job_registry},
-    )
+    registry.register(next(
+        tool
+        for tool in shell_tools(sandbox, job_registry, str(temp_workspace))
+        if tool.name == "shell"
+    ))
     events = []
 
-    async def approve(event):
-        events.append(event)
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        events.append(event.model_dump(mode="json"))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -239,7 +297,7 @@ async def test_escalated_background_shell_requires_approval(
         base=service_ctx,
     )
     results = await ctx.tools.execute_all(
-        [ToolCall("c1", "shell", {
+        [ToolCall(id="c1", name="shell", args={
             "command": "pwd",
             "background": True,
             "sandbox_permissions": "require_escalated",
@@ -252,7 +310,7 @@ async def test_escalated_background_shell_requires_approval(
     assert "Need host access." in events[0]["data"]["reason"]
     job = job_registry.get("sh_1")
     assert job.metadata["escalated"] is True
-    await job.runner_task
+    await job_registry.wait([job.id])
     assert job.status.value == "completed"
 
 
@@ -261,23 +319,25 @@ async def test_denied_background_shell_escalation_creates_no_job(
     temp_workspace,
 ):
     sandbox = SandboxPolicy(
-        {"enabled": True, "external_write": "ask"},
+        SandboxConfig(enabled=True, external_write="deny"),
         workspace_root=str(temp_workspace),
     )
     registry = ToolRegistry()
     job_registry = JobRegistry()
-    registry.register(
-        next(tool for tool in SHELL_TOOLS if tool.name == "shell"),
-        injected={"sandbox": sandbox, "job_registry": job_registry},
-    )
+    registry.register(next(
+        tool
+        for tool in shell_tools(sandbox, job_registry, str(temp_workspace))
+        if tool.name == "shell"
+    ))
 
-    async def deny(event):
+    async def deny(event, **_kwargs):
         del event
-        return "rejected"
+        return {"status": "answered", "decision": "deny", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(deny)
+    client_events = ClientEventRouter()
+    client_events.set_sink(deny)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -286,7 +346,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
         base=service_ctx,
     )
     results = await ctx.tools.execute_all(
-        [ToolCall("c1", "shell", {
+        [ToolCall(id="c1", name="shell", args={
             "command": "pwd",
             "background": True,
             "sandbox_permissions": "require_escalated",

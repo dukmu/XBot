@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
-from typing import Any
-
+from XBotv2.agentloop import EventContext
+from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
+from XBotv2.core.messages import Message
 from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
     DISPLAY_CONTENT_KEY,
     cached_content_prompt,
+    content_preview,
 )
 
 
-DEFAULT_MAX_INLINE_CHARS = 12000
-DEFAULT_PREVIEW_CHARS = 4000
-DEFAULT_TAIL_CHARS = 1000
+DEFAULT_CACHE_THRESHOLD_CHARS = 12_000
+DEFAULT_PREVIEW_CHARS = 8_000
+DEFAULT_TAIL_CHARS = 2_000
 
 
 def make_tool_result_cache_hook(
-    state_store: Any,
+    artifacts: ArtifactStorePort,
     *,
-    max_inline_chars: int = DEFAULT_MAX_INLINE_CHARS,
+    cache_threshold_chars: int = DEFAULT_CACHE_THRESHOLD_CHARS,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
+    tail_chars: int = DEFAULT_TAIL_CHARS,
 ):
     """Create an AFTER_TOOLS hook that caches large tool message contents.
 
@@ -30,55 +31,48 @@ def make_tool_result_cache_hook(
     emits the bounded message instead of the full output.
     """
 
-    async def cache_large_tool_results(ctx: Any) -> None:
+    if cache_threshold_chars < 1:
+        raise ValueError("cache_threshold_chars must be positive")
+    if preview_chars < 0 or preview_chars > cache_threshold_chars:
+        raise ValueError(
+            "preview_chars must be between zero and cache_threshold_chars"
+        )
+    if tail_chars < 0 or tail_chars > preview_chars:
+        raise ValueError("tail_chars must be between zero and preview_chars")
+
+    async def cache_large_tool_results(ctx: EventContext) -> None:
         if not ctx.tool_results:
             return None
 
-        cache_dir = Path(state_store.artifacts_dir) / "tool_results"
         for message in ctx.tool_results:
-            candidate = _cache_candidate(message, max_inline_chars)
+            candidate = _cache_candidate(message, cache_threshold_chars)
             if candidate is None:
                 continue
             content, suffix = candidate
 
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            tool_call_id = getattr(message, "tool_call_id", "tool")
-            name = _safe_name(tool_call_id)
-            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            path = cache_dir / f"{name}-{digest[:16]}.{suffix}"
-            if not path.exists():
-                path.write_text(content, encoding="utf-8")
-            cache_path = Path("session") / path.relative_to(Path(state_store.root))
+            tool_call_id = message.tool_call_id or "tool"
+            stored = artifacts.put(
+                ArtifactKind.TOOL_RESULT,
+                content.encode("utf-8"),
+                media_type="application/json" if suffix == "json" else "text/plain",
+                name=f"{_safe_name(tool_call_id)}.{suffix}",
+                suffix=f".{suffix}",
+            )
+            cache_path = stored.id
             replacement = _format_cached_result(
                 content=content,
                 cache_path=cache_path,
-                max_inline_chars=max_inline_chars,
+                cache_threshold_chars=cache_threshold_chars,
                 preview_chars=preview_chars,
+                tail_chars=tail_chars,
+                sha256=stored.sha256,
             )
-            reference = {
-                "cached": True,
-                "cache_path": str(cache_path),
-                "original_chars": len(content),
-                "sha256": digest,
-            }
             message.content = replacement
             message.additional_kwargs[CACHED_CONTENT_KEY] = True
             message.additional_kwargs[DISPLAY_CONTENT_KEY] = (
                 f"Tool result cached at {cache_path} ({len(content)} characters)."
             )
-            artifact = {
-                "kind": "cached_tool_result",
-                "tool_call_id": tool_call_id,
-                **reference,
-                "inline_chars": len(replacement),
-            }
-            message.artifact = artifact
-
-            if hasattr(state_store, "append_event"):
-                state_store.append_event(
-                    "tool_result_cached",
-                    artifact,
-                )
+            message.artifact = [stored]
 
         return None
 
@@ -88,15 +82,17 @@ def make_tool_result_cache_hook(
 def _format_cached_result(
     *,
     content: str,
-    cache_path: Path,
-    max_inline_chars: int,
+    cache_path: str,
+    cache_threshold_chars: int,
     preview_chars: int,
+    tail_chars: int,
+    sha256: str,
 ) -> str:
-    preview_chars = max(0, min(preview_chars, len(content)))
-    tail_chars = min(DEFAULT_TAIL_CHARS, preview_chars)
-    head_chars = preview_chars - tail_chars
-    head = content[:head_chars]
-    tail = content[-tail_chars:] if tail_chars else ""
+    head, tail = content_preview(
+        content,
+        preview_chars=preview_chars,
+        tail_chars=tail_chars,
+    )
     omitted = len(content) - len(head) - len(tail)
     return cached_content_prompt(
         kind="tool_result",
@@ -105,15 +101,14 @@ def _format_cached_result(
         omitted_chars=omitted,
         beginning=head,
         ending=tail,
-        sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        inline_limit_chars=max_inline_chars,
+        sha256=sha256,
+        inline_limit_chars=len(head) + len(tail),
+        cache_threshold_chars=cache_threshold_chars,
     )
 
 
-def _cache_candidate(message: Any, limit: int) -> tuple[str, str] | None:
-    content = getattr(message, "content", "")
-    if not isinstance(content, str):
-        content = str(content)
+def _cache_candidate(message: Message, limit: int) -> tuple[str, str] | None:
+    content = message.content
     return (content, "txt") if len(content) > limit else None
 
 

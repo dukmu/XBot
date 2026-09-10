@@ -1,121 +1,577 @@
-"""Persistent message store.
-
-Manages messages.jsonl and runtime event records. Artifact and plugin-state
-files belong to the inherited thread storage capability.
-"""
+"""Filesystem adapters composed as one thread persistence service."""
 
 from __future__ import annotations
 
 import json
 import os
-import tempfile
-from datetime import datetime, timezone
+import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
-import yaml
-
-from XBotv2.core.messages import Message, part_from_dict
+from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.core.filesystem.atomic import write_text_atomic
+from XBotv2.core.history import (
+    ConversationPage,
+    HistoryNode,
+    HistoryCursorInvalid,
+    TrajectoryEvent,
+    TrajectoryMessage,
+    TrajectoryPage,
+    TrajectorySurfaceReplace,
+    decode_history_cursor,
+    encode_history_cursor,
+    page_messages,
+)
+from XBotv2.core.messages import Message
+from XBotv2.core.metadata import ThreadMetadata
+from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
-from XBotv2.filesystem.storage import ThreadStorage
-_PERSISTED_XBOT_KWARGS = {"xbotv2_message_format"}
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.agentloop.contracts import InboxInput
+from XBotv2.persistence.models import (
+    InboxSnapshot,
+    MessagePayloadRecord,
+    MessageRecord,
+    SurfaceReplaceRecord,
+    TrajectoryEventRecord,
+    utc_now,
+)
+from XBotv2.persistence.contracts import ThreadLifecycleRecord
+from xcore.state import StateService
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+class MessageHistoryStore:
+    """Append-only trajectory store with one deterministic message surface."""
 
-
-def message_to_dict(msg: Message) -> dict[str, Any]:
-    d: dict[str, Any] = {
-        "role": msg.role,
-        "status": msg.status,
-    }
-    d["parts"] = [part.to_dict() for part in msg.parts]
-    if msg.name:
-        d["name"] = msg.name
-    if msg.tool_call_id:
-        d["tool_call_id"] = msg.tool_call_id
-    if msg.additional_kwargs:
-        kwargs = {
-            k: v for k, v in msg.additional_kwargs.items()
-            if not str(k).startswith("xbotv2_") or k in _PERSISTED_XBOT_KWARGS
-        }
-        if kwargs:
-            d["additional_kwargs"] = _json_safe(kwargs)
-    if msg.response_metadata:
-        d["response_metadata"] = _json_safe(msg.response_metadata)
-    if msg.usage_metadata:
-        d["usage_metadata"] = _json_safe(msg.usage_metadata)
-    if msg.artifact is not None:
-        d["artifact"] = _json_safe(msg.artifact)
-    if msg.data is not None:
-        d["data"] = _json_safe(msg.data)
-    if msg.error is not None:
-        d["error"] = _json_safe(msg.error)
-    return d
-
-
-def dict_to_message(d: dict[str, Any]) -> Message:
-    raw_parts = d.get("parts")
-    if not isinstance(raw_parts, list):
-        raise ValueError("Persisted message requires a parts list")
-    return Message(
-        role=d.get("role", "assistant"),
-        parts=[part_from_dict(part) for part in raw_parts],
-        status=d.get("status", ""),
-        tool_call_id=d.get("tool_call_id", ""),
-        name=d.get("name", ""),
-        additional_kwargs=dict(d.get("additional_kwargs") or {}),
-        response_metadata=dict(d.get("response_metadata") or {}),
-        usage_metadata=dict(d.get("usage_metadata") or {}),
-        artifact=d.get("artifact"),
-        data=d.get("data"),
-        error=d.get("error"),
-    )
-
-
-def _json_safe(value: Any) -> Any:
-    try:
-        json.dumps(value, ensure_ascii=False)
-        return value
-    except TypeError:
-        if isinstance(value, dict):
-            return {str(k): _json_safe(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [_json_safe(v) for v in value]
-        return str(value)
-
-
-def _thread_paths(paths: SessionPaths, thread_id: str) -> ThreadPaths:
-    current = paths.thread(thread_id)
-    legacy = (
-        thread_id == "agent"
-        and (paths.root / "state").exists()
-        and not current.state_dir.exists()
-    )
-    return paths.thread(thread_id, legacy=legacy)
-
-
-class CoreStateStore(ThreadStorage):
     def __init__(
         self,
-        paths: SessionPaths | ThreadPaths,
-        *,
-        thread_id: str,
-        workspace_root: str,
-        provider: str,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
-        if isinstance(paths, SessionPaths):
-            paths = _thread_paths(paths, thread_id)
-        super().__init__(paths, workspace_root=workspace_root)
-        self.provider = provider
+        self._path = paths.messages_file
+        self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
+        self._log = runtime_log
+        self._next_position = 1
 
-        self.messages_path = paths.messages_file
-        self._max_msg_id = 0
-        # References to the messages already persisted in the journal.
-        # None means unknown (rebuilt from disk on the next sync).
-        self._persisted_refs: list[Message] | None = None
-        self._persisted_fingerprints: list[int] | None = None
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> list[Message]:
+        started = time.perf_counter()
+        nodes = self.load_surface()
+        messages = [node.message for node in nodes]
+        self._log.debug(
+            "persistence.history.loaded",
+            messages=len(messages),
+            duration_ms=round((time.perf_counter() - started) * 1000, 3),
+        )
+        return messages
+
+    def load_transcript(self) -> list[Message]:
+        """Derive the human transcript without hiding compacted conversation."""
+        return [node.message for node in _fold_transcript(self._records())]
+
+    def load_surface(self) -> tuple[HistoryNode, ...]:
+        records = self._records()
+        self._next_position = len(records) + 1
+        return _fold_surface(records)
+
+    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
+        if not messages:
+            return ()
+        self._ensure_loaded_id()
+        records = [
+            MessageRecord.from_message(message, self._next_position + index)
+            for index, message in enumerate(messages)
+        ]
+        self._append_records(records)
+        self._next_position += len(records)
+        self._log.debug(
+            "persistence.history.appended",
+            messages=len(records),
+            next_position=self._next_position,
+        )
+        return tuple(
+            HistoryNode(str(record.position), message)
+            for record, message in zip(records, messages, strict=True)
+        )
+
+    def replace(self, messages: Sequence[Message]) -> None:
+        surface = self.load_surface()
+        if not surface:
+            self.append(messages)
+            return
+        self.replace_surface(
+            tuple(node.node_id for node in surface),
+            messages,
+            operation="replace",
+            preserve_transcript=False,
+        )
+
+    def replace_surface(
+        self,
+        source_node_ids: Sequence[str],
+        messages: Sequence[Message],
+        *,
+        operation: str,
+        preserve_transcript: bool,
+    ) -> tuple[HistoryNode, ...]:
+        records = self._records()
+        self._next_position = len(records) + 1
+        record = SurfaceReplaceRecord(
+            position=self._next_position,
+            operation=operation,
+            transcript="preserve" if preserve_transcript else "replace",
+            source_node_ids=tuple(source_node_ids),
+            messages=tuple(
+                MessagePayloadRecord.from_message(message) for message in messages
+            ),
+        )
+        # Both projections must accept the transition before it becomes durable.
+        prospective = [*records, record]
+        _fold_surface(prospective)
+        _fold_transcript(prospective)
+        self._append_records((record,))
+        self._next_position = record.position + 1
+        self._log.info(
+            "persistence.surface.replaced",
+            operation=operation,
+            source_nodes=len(source_node_ids),
+            replacement_nodes=len(messages),
+        )
+        return tuple(
+            HistoryNode(f"{record.position}:{index}", message)
+            for index, message in enumerate(messages)
+        )
+
+    def record(self, event: str, data: dict[str, JsonValue]) -> None:
+        self.load_surface()
+        record = TrajectoryEventRecord(
+            position=self._next_position,
+            event=event,
+            data=data,
+            timestamp=utc_now(),
+        )
+        self._append_records((record,))
+        self._next_position += 1
+        self._log.debug("persistence.trajectory.event", trajectory_event=event)
+
+    def count(self) -> int:
+        return len(self.load_surface())
+
+    def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
+        records = self._records()
+        nodes = _fold_surface(records)
+        return page_messages(
+            tuple(node.message for node in nodes),
+            revision=self._cursor_revision(records, "surface"),
+            limit=limit,
+            cursor=cursor,
+            out_of_range="History cursor is outside the current history",
+        )
+
+    def page_transcript(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> ConversationPage:
+        records = self._records()
+        nodes = _fold_transcript(records)
+        return page_messages(
+            tuple(node.message for node in nodes),
+            revision=self._cursor_revision(records, "transcript"),
+            limit=limit,
+            cursor=cursor,
+            out_of_range="History cursor is outside the current history",
+        )
+
+    def page_trajectory(
+        self,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> TrajectoryPage:
+        records = self._records()
+        revision = f"{self._cursor_scope}:trajectory"
+        end = len(records) if cursor is None else decode_history_cursor(cursor, revision)
+        if end < 0 or end > len(records):
+            raise HistoryCursorInvalid("Trajectory cursor is outside the current history")
+        start = max(0, end - limit)
+        return TrajectoryPage(
+            items=tuple(_trajectory_item(record) for record in records[start:end]),
+            next_cursor=encode_history_cursor(revision, start) if start else None,
+        )
+
+    def _cursor_revision(
+        self,
+        records: Sequence[TrajectoryRecord],
+        projection: str,
+    ) -> str:
+        generation = max((
+            record.position
+            for record in records
+            if isinstance(record, SurfaceReplaceRecord)
+            and (
+                projection == "surface"
+                or record.transcript == "replace"
+            )
+        ), default=0)
+        return f"{self._cursor_scope}:{projection}:{generation}"
+
+    def has_history(self) -> bool:
+        return self._path.exists() and self._path.stat().st_size > 0
+
+    def _ensure_loaded_id(self) -> None:
+        if (
+            self._next_position == 1
+            and self._path.exists()
+            and self._path.stat().st_size
+        ):
+            self.load_surface()
+
+    def _records(self) -> list[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord]:
+        records = [
+            _trajectory_record(raw)
+            for raw in _read_jsonl(self._path, "messages.jsonl")
+        ]
+        positions = [record.position for record in records]
+        if positions != list(range(1, len(records) + 1)):
+            raise ValueError("Trajectory positions must be contiguous and start at 1")
+        return records
+
+    def _append_records(
+        self,
+        records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
+    ) -> None:
+        payload = "".join(
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
+            for record in records
+        ).encode("utf-8")
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self._path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+        original_size = os.fstat(descriptor).st_size
+        try:
+            if original_size:
+                with self._path.open("rb") as stream:
+                    stream.seek(-1, os.SEEK_END)
+                    if stream.read(1) != b"\n":
+                        raise ValueError("messages.jsonl ends with an incomplete record")
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                if written == 0:
+                    raise OSError("Trajectory append made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        except BaseException:
+            os.ftruncate(descriptor, original_size)
+            os.fsync(descriptor)
+            raise
+        finally:
+            os.close(descriptor)
+
+
+TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
+
+
+def _trajectory_item(record: TrajectoryRecord) -> (
+    TrajectoryMessage | TrajectorySurfaceReplace | TrajectoryEvent
+):
+    if isinstance(record, MessageRecord):
+        return TrajectoryMessage(record.position, record.to_message())
+    if isinstance(record, SurfaceReplaceRecord):
+        return TrajectorySurfaceReplace(
+            record.position,
+            record.operation,
+            record.transcript,
+            record.source_node_ids,
+            tuple(message.to_message() for message in record.messages),
+        )
+    return TrajectoryEvent(
+        record.position,
+        record.event,
+        record.data,
+        record.timestamp,
+    )
+
+
+def _trajectory_record(value: Mapping[str, JsonValue]) -> TrajectoryRecord:
+    record_type = value.get("record_type")
+    if record_type is None:
+        return MessageRecord.model_validate(value)
+    if record_type == "surface_replace":
+        return SurfaceReplaceRecord.model_validate(value)
+    if record_type == "event":
+        return TrajectoryEventRecord.model_validate(value)
+    raise ValueError(f"Unknown trajectory record type: {record_type!r}")
+
+
+def _fold_surface(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
+    surface: list[HistoryNode] = []
+    for record in records:
+        if isinstance(record, MessageRecord):
+            surface.append(HistoryNode(str(record.position), record.to_message()))
+        elif isinstance(record, SurfaceReplaceRecord):
+            _replace_nodes(
+                surface,
+                record.source_node_ids,
+                _replacement_nodes(record),
+                position=record.position,
+                scope="Surface",
+                source_term="source nodes",
+            )
+    for node in surface:
+        node.message.seal()
+    return tuple(surface)
+
+
+def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
+    """Fold only explicit user history edits; compaction remains model-only."""
+    transcript: list[HistoryNode] = []
+    lineage: dict[str, tuple[str, ...]] = {}
+    for record in records:
+        if isinstance(record, MessageRecord):
+            node_id = str(record.position)
+            transcript.append(HistoryNode(node_id, record.to_message()))
+            lineage[node_id] = (node_id,)
+        elif isinstance(record, SurfaceReplaceRecord):
+            sources = tuple(
+                origin
+                for source in record.source_node_ids
+                for origin in lineage.get(source, (source,))
+            )
+            replacements = _replacement_nodes(record)
+            if record.transcript == "preserve":
+                if len(replacements) != 1:
+                    raise ValueError(
+                        "Transcript-preserving replacement must produce one surface node"
+                    )
+                lineage[replacements[0].node_id] = sources
+                continue
+            _replace_nodes(
+                transcript,
+                sources,
+                replacements,
+                position=record.position,
+                scope="Transcript",
+                source_term="sources",
+            )
+            for node in replacements:
+                lineage[node.node_id] = (node.node_id,)
+    for node in transcript:
+        node.message.seal()
+    return tuple(transcript)
+
+
+def _replacement_nodes(record: SurfaceReplaceRecord) -> list[HistoryNode]:
+    return [
+        HistoryNode(f"{record.position}:{index}", payload.to_message())
+        for index, payload in enumerate(record.messages)
+    ]
+
+
+def _replace_nodes(
+    nodes: list[HistoryNode],
+    source_ids: Sequence[str],
+    replacements: Sequence[HistoryNode],
+    *,
+    position: int,
+    scope: str,
+    source_term: str,
+) -> None:
+    if not source_ids:
+        raise ValueError(f"{scope} replacement at {position} has no {source_term}")
+    try:
+        start = next(
+            index
+            for index, node in enumerate(nodes)
+            if node.node_id == source_ids[0]
+        )
+    except StopIteration as exc:
+        raise ValueError(f"{scope} replacement at {position} {source_term} are not current") from exc
+    current = [node.node_id for node in nodes[start:start + len(source_ids)]]
+    if current != list(source_ids):
+        raise ValueError(f"{scope} replacement at {position} {source_term} are not current")
+    nodes[start:start + len(source_ids)] = replacements
+
+
+class ThreadMetadataStore:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
+        self._path = paths.metadata_file
+        self._log = runtime_log
+
+    def load(self) -> ThreadMetadata:
+        raw = _read_json(self._path, "thread metadata")
+        if raw is None:
+            return ThreadMetadata()
+        return ThreadMetadata.model_validate(raw)
+
+    def save(self, metadata: ThreadMetadata) -> None:
+        write_text_atomic(
+            self._path,
+            json.dumps(metadata.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        )
+        self._log.debug("persistence.metadata.saved")
+
+
+class InboxStore:
+    """Atomic projection of inputs not yet committed to conversation history."""
+
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
+        self._path = paths.inbox_file
+        self._log = runtime_log
+
+    def load(self) -> list[InboxInput]:
+        raw = _read_json(self._path, "inbox snapshot")
+        if raw is None:
+            return []
+        return InboxSnapshot.model_validate(raw).to_inputs()
+
+    def replace(self, items: Sequence[InboxInput]) -> None:
+        snapshot = InboxSnapshot.from_inputs(items)
+        write_text_atomic(
+            self._path,
+            json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        )
+        self._log.debug("persistence.inbox.replaced", items=len(items))
+
+    def reconcile(self, committed_input_ids: set[str]) -> list[InboxInput]:
+        stored = self.load()
+        pending = [
+            item for item in stored if item.message_id not in committed_input_ids
+        ]
+        if len(pending) != len(stored):
+            self.replace(pending)
+        self._log.debug(
+            "persistence.inbox.reconciled",
+            stored=len(stored),
+            committed=len(stored) - len(pending),
+            pending=len(pending),
+        )
+        return pending
+
+
+class ThreadLifecycleStore:
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+    ) -> None:
+        self._path = paths.session.threads_log
+        self._log = runtime_log
+
+    def append(self, record: ThreadLifecycleRecord) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = (
+            json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        descriptor = os.open(
+            self._path,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o644,
+        )
+        try:
+            written = os.write(descriptor, payload)
+            if written != len(payload):
+                raise OSError(
+                    f"Incomplete lifecycle append: {written}/{len(payload)} bytes"
+                )
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        self._log.debug(
+            "persistence.lifecycle.appended",
+            bytes=len(payload),
+        )
+
+    def load(self) -> list[ThreadLifecycleRecord]:
+        return [
+            ThreadLifecycleRecord.model_validate(raw)
+            for raw in _read_jsonl(self._path, "thread lifecycle")
+        ]
+
+
+def _read_json(path: Path, name: str) -> Mapping[str, JsonValue] | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {name} JSON") from exc
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name.capitalize()} must be an object")
+    return value
+
+
+def _read_jsonl(path: Path, name: str) -> list[Mapping[str, JsonValue]]:
+    if not path.exists():
+        return []
+    records: list[Mapping[str, JsonValue]] = []
+    with path.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid {name} record at line {line_number}"
+                ) from exc
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{name} line {line_number} must be an object")
+            records.append(value)
+    return records
+
+
+class ThreadPersistence:
+    """Typed persistence composition for one session thread."""
+
+    def __init__(
+        self,
+        paths: ThreadPaths,
+        *,
+        state: StateService,
+        workspace_root: str = "",
+        provider: str = "",
+        artifacts: ArtifactStorePort | None = None,
+    ) -> None:
+        self.paths = paths
+        self.session_id = paths.session_id
+        self.thread_id = paths.thread_id
+        self.workspace_root = workspace_root
+        self.provider = provider
+        runtime_log = DEFAULT_RUNTIME_LOG.bind(
+            "persistence",
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+        )
+        self.history = MessageHistoryStore(paths, runtime_log)
+        self.artifacts: ArtifactStorePort = (
+            artifacts
+            if artifacts is not None
+            else ArtifactStore(paths, runtime_log)
+        )
+        self.metadata = ThreadMetadataStore(paths, runtime_log)
+        self.inbox = InboxStore(paths, runtime_log)
+        self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
+        self.state = state
+
+    def has_persisted_state(self) -> bool:
+        return (
+            self.history.has_history()
+            or self.paths.metadata_file.exists()
+            or self.paths.inbox_file.exists()
+            or self.paths.plugin_state_file.exists()
+        )
 
     @classmethod
     def create(
@@ -125,279 +581,45 @@ class CoreStateStore(ThreadStorage):
         thread_id: str,
         workspace_root: str,
         provider: str,
-    ) -> "CoreStateStore":
-        thread_paths = (
-            _thread_paths(paths, thread_id)
-            if isinstance(paths, SessionPaths)
-            else paths
-        )
+        artifacts: ArtifactStorePort | None = None,
+    ) -> "ThreadPersistence":
+        thread_paths = _thread_paths(paths, thread_id)
         thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
-        thread_paths.plugin_states_dir.mkdir(exist_ok=True)
-        thread_paths.artifacts_dir.mkdir(exist_ok=True)
+        return cls(
+            thread_paths,
+            state=StateService(path=thread_paths.plugin_state_file),
+            workspace_root=workspace_root,
+            provider=provider,
+            artifacts=artifacts,
+        )
 
-        store = cls(
-            paths=thread_paths,
-            thread_id=thread_id,
+    @classmethod
+    def open(
+        cls,
+        paths: SessionPaths | ThreadPaths,
+        *,
+        thread_id: str,
+        workspace_root: str = "",
+        provider: str = "",
+    ) -> "ThreadPersistence":
+        """Open an inactive thread with one private StateService instance."""
+        thread_paths = _thread_paths(paths, thread_id)
+        return cls(
+            thread_paths,
+            state=StateService(path=thread_paths.plugin_state_file),
             workspace_root=workspace_root,
             provider=provider,
         )
-        if not store.messages_path.exists():
-            store.messages_path.touch()
-        return store
-
-    def append_messages(self, messages: list[Message]) -> int:
-        if not messages:
-            return 0
-        _discard_incomplete_tail(self.messages_path)
-        with open(self.messages_path, "a", encoding="utf-8") as stream:
-            for msg in messages:
-                d = message_to_dict(msg)
-                d["msg_id"] = self._next_message_id()
-                d["ts"] = now_iso()
-                stream.write(json.dumps(d, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        if self._persisted_refs is not None:
-            self._persisted_refs.extend(messages)
-            assert self._persisted_fingerprints is not None
-            self._persisted_fingerprints.extend(
-                message.fingerprint() for message in messages
-            )
-        return len(messages)
-
-    def sync_messages(self, messages: list[Message]) -> int:
-        """Persist a normal history extension without rewriting the journal.
-
-        Fast path: when the already-persisted prefix is unchanged (message
-        identity), append only the new tail. If the caller rebuilt the message
-        objects (e.g. after resume), fall back to a content comparison and
-        still append only the delta; a diverged history degrades to a
-        checkpoint so nothing is silently lost.
-        """
-        if not messages:
-            return 0
-        refs = self._persisted_refs
-        if refs is None:
-            refs = self._persisted_refs = self.read_messages()
-            self._persisted_fingerprints = [
-                message.fingerprint() for message in refs
-            ]
-        k = len(refs)
-        if len(messages) >= k and all(
-            a is b for a, b in zip(messages, refs)
-        ):
-            assert self._persisted_fingerprints is not None
-            current = [message.fingerprint() for message in messages[:k]]
-            if current != self._persisted_fingerprints:
-                self.append_checkpoint(messages, reason="sync")
-                return len(messages)
-            new = messages[k:]
-            if new:
-                self.append_messages(new)
-            return len(messages)
-        serialized = [message_to_dict(message) for message in messages]
-        previous_payloads = [message_to_dict(message) for message in refs]
-        if serialized[:len(previous_payloads)] == previous_payloads:
-            self.append_messages(messages[len(previous_payloads):])
-            self._persisted_refs = list(messages)
-            self._persisted_fingerprints = [
-                message.fingerprint() for message in messages
-            ]
-            return len(messages)
-        self.append_checkpoint(messages, reason="sync")
-        return len(messages)
-
-    def append_checkpoint(
-        self,
-        messages: list[Message],
-        *,
-        reason: str,
-    ) -> None:
-        self._append_record({
-            "record_type": "history_checkpoint",
-            "reason": reason,
-            "messages": [message_to_dict(message) for message in messages],
-        })
-        self._persisted_refs = list(messages)
-        self._persisted_fingerprints = [
-            message.fingerprint() for message in messages
-        ]
-
-    def append_undo(self, turns: int) -> None:
-        if turns < 1:
-            raise ValueError("Undo turns must be positive")
-        self._append_record({
-            "record_type": "history_undo",
-            "turns": turns,
-        })
-        # Undo rewrites history on replay; the persisted baseline is unknown
-        # until the next sync rebuilds it from the journal.
-        self._persisted_refs = None
-        self._persisted_fingerprints = None
-
-    def append_clear(self) -> None:
-        self._append_record({"record_type": "history_clear"})
-        self._persisted_refs = []
-        self._persisted_fingerprints = []
-
-    def append_event(self, event: str, data: dict[str, Any]) -> None:
-        """Append one generic durable runtime event."""
-        self._append_record({
-            "record_type": "runtime_event",
-            "event": str(event),
-            "data": _json_safe(data),
-        })
-
-    def read_events(self, event: str | None = None) -> list[dict[str, Any]]:
-        """Read generic runtime events in journal order."""
-        return [
-            {
-                "type": str(entry.get("event") or ""),
-                "data": dict(entry.get("data") or {}),
-            }
-            for entry in _iter_jsonl(self.messages_path)
-            if entry.get("record_type") == "runtime_event"
-            and (event is None or entry.get("event") == event)
-        ]
-
-    def read_messages(self) -> list[Message]:
-        entries = list(_iter_jsonl(self.messages_path))
-        checkpoint = next(
-            (
-                index
-                for index in range(len(entries) - 1, -1, -1)
-                if entries[index].get("record_type") == "history_checkpoint"
-            ),
-            None,
-        )
-        if checkpoint is None:
-            messages: list[Message] = []
-            replay = entries
-        else:
-            messages = [
-                dict_to_message(item)
-                for item in entries[checkpoint].get("messages") or []
-            ]
-            replay = entries[checkpoint + 1:]
-        for entry in replay:
-            record_type = entry.get("record_type")
-            if record_type is None:
-                messages.append(dict_to_message(entry))
-            elif record_type == "history_undo":
-                messages = _undo_turns(messages, int(entry.get("turns") or 0))
-            elif record_type == "history_clear":
-                messages = []
-            elif record_type in {"history_checkpoint", "runtime_event"}:
-                continue
-            else:
-                raise ValueError(f"Unknown message journal record: {record_type}")
-        return messages
-
-    def message_count(self) -> int:
-        return len(self.read_messages())
-
-    def has_existing_session(self) -> bool:
-        return next(_iter_jsonl(self.messages_path), None) is not None
-
-    def read_thread_metadata(self) -> dict[str, Any]:
-        if not self.paths.metadata_file.exists():
-            return {}
-        data = yaml.safe_load(self.paths.metadata_file.read_text(encoding="utf-8"))
-        if data is None:
-            return {}
-        if not isinstance(data, dict):
-            raise ValueError("Thread metadata must contain a mapping")
-        return data
-
-    def write_thread_metadata(self, data: dict[str, Any]) -> None:
-        self.paths.root.mkdir(parents=True, exist_ok=True)
-        _atomic_write_yaml(self.paths.metadata_file, data)
-
-    def _next_message_id(self) -> int:
-        if self._max_msg_id == 0 and self.messages_path.exists():
-            for d in _iter_jsonl(self.messages_path):
-                mid = max(d.get("msg_id", 0), d.get("record_id", 0))
-                if mid > self._max_msg_id:
-                    self._max_msg_id = mid
-        self._max_msg_id += 1
-        return self._max_msg_id
-
-    def _append_record(self, record: dict[str, Any]) -> None:
-        _discard_incomplete_tail(self.messages_path)
-        record = dict(record)
-        record["record_id"] = self._next_message_id()
-        record["ts"] = now_iso()
-        with self.messages_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-
-def _undo_turns(messages: list[Message], turns: int) -> list[Message]:
-    if turns <= 0:
-        return messages
-    user_indexes = [
-        index for index, message in enumerate(messages) if message.role == "user"
-    ]
-    if turns >= len(user_indexes):
-        return []
-    return messages[:user_indexes[-turns]]
 
 
-def _iter_jsonl(path: Path):
-    if not path.exists():
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                yield json.loads(text)
-            except json.JSONDecodeError:
-                if not line.endswith("\n"):
-                    return
-                raise
+def _thread_paths(paths: SessionPaths | ThreadPaths, thread_id: str) -> ThreadPaths:
+    return paths.thread(thread_id) if isinstance(paths, SessionPaths) else paths
 
 
-def _discard_incomplete_tail(path: Path) -> None:
-    if not path.exists() or path.stat().st_size == 0:
-        return
-    with path.open("rb+") as stream:
-        stream.seek(-1, os.SEEK_END)
-        if stream.read(1) == b"\n":
-            return
-        position = stream.tell() - 1
-        while position > 0:
-            size = min(4096, position)
-            position -= size
-            stream.seek(position)
-            chunk = stream.read(size)
-            newline = chunk.rfind(b"\n")
-            if newline >= 0:
-                position += newline + 1
-                break
-        else:
-            position = 0
-        stream.truncate(position)
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f"{path.stem}-",
-        suffix=".yaml.tmp",
-        dir=path.parent,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            yaml.safe_dump(data, stream, default_flow_style=False, sort_keys=False, encoding="utf-8", allow_unicode=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_name, path)
-    except BaseException:
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise
+__all__ = [
+    "InboxStore",
+    "MessageHistoryStore",
+    "ThreadMetadataStore",
+    "ThreadLifecycleStore",
+    "ThreadPersistence",
+]

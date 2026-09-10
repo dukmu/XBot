@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_USAGE, type OpenSessionResponse, type ServerEvent } from "../api/types";
+import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
 const opened: OpenSessionResponse = {
@@ -13,8 +13,11 @@ const opened: OpenSessionResponse = {
   model_mode: "",
   context_window: 1000,
   usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10 },
+  session_stats: { ...EMPTY_SESSION_STATS },
   history: [],
+  event_cursor: 0,
   status_slots: {},
+  pending_inputs: [],
 };
 
 function event(type: string, data: Record<string, unknown>): ServerEvent {
@@ -30,10 +33,413 @@ function event(type: string, data: Record<string, unknown>): ServerEvent {
 }
 
 describe("runtimeReducer", () => {
+  it("replaces session timing from authoritative terminal events", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("turn_finished", {
+        turn: 1,
+        session_stats: {
+          turns: 1, steps: 2, llm_ms: 1200, tool_ms: 300,
+          ttft_ms: 200, ttft_steps: 1, decode_ms: 1000, decode_tokens: 25,
+        },
+      }) },
+    );
+
+    expect(state.sessionStats).toMatchObject({
+      turns: 1,
+      steps: 2,
+      llm_ms: 1200,
+      tool_ms: 300,
+      decode_tokens: 25,
+    });
+  });
+
+  it("projects model and tool timing as soon as their events arrive", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        content: "live",
+        tool_calls: [],
+        timing: { llm_ms: 100, ttft_ms: 25, decode_ms: 75 },
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 10, output_tokens: 5, total_tokens: 15, context_tokens: 500 }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_result", {
+        tool_call_id: "call-1", name: "shell", content: "ok", status: "success",
+        timing: { duration_ms: 40 },
+      }),
+    });
+
+    expect(state.sessionStats).toMatchObject({
+      turns: 1, steps: 1, llm_ms: 100, tool_ms: 40,
+      ttft_ms: 25, ttft_steps: 1, decode_ms: 75, decode_tokens: 5,
+    });
+    expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 500 });
+  });
+
+  it("keeps turn lifecycle events in the same ordered timeline as output", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("assistant_message", { content: "answer", tool_calls: [] }),
+        event("turn_finished", { turn: 1 }),
+      ],
+    });
+
+    expect(state.entries.map((entry) => entry.kind === "runtime" ? entry.event : entry.kind)).toEqual([
+      "turn_started", "message", "turn_finished",
+    ]);
+  });
+
+  it("keeps rejected input visible in the activity timeline", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("input_rejected", { reason: "turn is busy" }) },
+    );
+
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: "notice",
+      level: "error",
+      content: "turn is busy",
+    });
+  });
+
+  it("keeps a newer live usage projection ahead of a stale thread refresh", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 20, output_tokens: 5, total_tokens: 25, context_tokens: 700 }),
+    });
+    state = runtimeReducer(state, { type: "threads", threads: [{
+      session_id: opened.session_id,
+      thread_id: opened.thread_id,
+      status: "active",
+      kind: "main",
+      turn_status: "running",
+      parent_thread_id: "",
+      agent: opened.agent_name,
+      provider: opened.provider,
+      model: opened.model,
+      model_mode: opened.model_mode,
+      context_window: opened.context_window,
+      message_count: 0,
+      usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10, context_tokens: 400 },
+      session_stats: { ...EMPTY_SESSION_STATS },
+      pending_interactions: [],
+      status_slots: {},
+    }] });
+
+    expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
+  });
+
+  it("renders injected model context with provenance and content, not as a user", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "history",
+      history: [{
+        role: "user",
+        content: "job finished with result 42",
+        tool_calls: [],
+        tool_call_id: "",
+        status: "",
+        data: null,
+        error: null,
+        artifacts: [],
+        images: [],
+        runtime: { source: "task-1", event: "notification" },
+      }],
+      nextCursor: null,
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "runtime",
+      source: "task-1",
+      event: "notification",
+      content: "job finished with result 42",
+    });
+  });
+
+  it("keeps a live source-tagged message as runtime context", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const live = event("message", {
+      id: "context-1",
+      role: "user",
+      content: "workspace facts",
+      runtime: { source: "workspace", event: "instructions" },
+    });
+    state = runtimeReducer(state, { type: "event", event: live });
+    state = runtimeReducer(state, { type: "event", event: live });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "runtime",
+      id: "runtime:context-1",
+      source: "workspace",
+      event: "instructions",
+    });
+  });
+
+  it("restores persisted assistant reasoning with its visible response", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "history",
+      history: [{
+        role: "assistant",
+        content: "final answer",
+        reasoning: "inspect the state",
+        tool_calls: [],
+        tool_call_id: "",
+        status: "",
+        data: null,
+        error: null,
+        artifacts: [],
+        images: [],
+      }],
+      nextCursor: null,
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "message",
+      role: "assistant",
+      content: "final answer",
+      reasoning: "inspect the state",
+      streaming: false,
+    });
+  });
+
+  it("uses authoritative history and message events without duplicating optimistic input", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "user_message",
+      id: "request-1",
+      content: "hello",
+      images: [],
+    });
+    expect(state.turnRunning).toBe(true);
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", { id: "request-1", role: "user", content: "hello" }),
+    });
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("history_updated", {
+        operation: "regenerate",
+        turns: 1,
+        history: [],
+      }),
+    });
+    expect(state.entries).toEqual([]);
+  });
+
+  it("prepends one server page and advances its cursor", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened,
+      history_cursor: "20",
+      history: [{
+        role: "assistant", content: "new", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+    } });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "old", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+      expectedCursor: "20",
+    });
+    expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
+    expect(state.historyCursor).toBeNull();
+    expect(state.current).not.toHaveProperty("history");
+  });
+
+  it("keeps live entries when an older persisted page is prepended", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened, history_cursor: "10",
+    } });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", { content: "live answer", tool_calls: [] }),
+    });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+      expectedCursor: "10",
+    });
+    expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual([
+      "old question", "live answer",
+    ]);
+  });
+
+  it("projects Todo state from its authoritative client event", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("todo_updated", {
+        kind: "todo_snapshot",
+        schema_version: 1,
+        items: [
+          { content: "implement", status: "in_progress" },
+          { content: "verify", status: "pending" },
+        ],
+      }),
+    });
+    expect(state.todos).toEqual([
+      { content: "implement", status: "in_progress" },
+      { content: "verify", status: "pending" },
+    ]);
+  });
+
+  it("keeps pending input authoritative across queue events and turn failure", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("queue_updated", { items: [{
+        message_id: "queued-1",
+        content: "continue later",
+        target: "next-turn",
+        source: "user",
+        image_count: 0,
+        artifact_count: 0,
+      }] }),
+    });
+    expect(state.pendingInputs).toHaveLength(1);
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("turn_failed", { message: "provider unavailable" }),
+    });
+    expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-1"]);
+  });
+
+  it("projects accepted, claimed, and consumed delivery phases", () => {
+    const item = {
+      message_id: "queued-1", content: "continue later", target: "next-turn" as const,
+      source: "user", image_count: 0, artifact_count: 0,
+    };
+    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [item] });
+    expect(state.deliveryStates["queued-1"]).toBe("accepted");
+    state = runtimeReducer(state, { type: "event", event: event("input_claimed", { message_ids: ["queued-1"] }) });
+    expect(state.deliveryStates["queued-1"]).toBe("claimed");
+    state = runtimeReducer(state, { type: "event", event: event("input_consumed", { message_ids: ["queued-1"] }) });
+    expect(state.deliveryStates["queued-1"]).toBe("consumed");
+    expect(state.pendingInputs).toEqual([]);
+  });
+
+  it("removes only the optimistic queue item when its request fails", () => {
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
+        message_id: "queued-1", content: "continue later", target: "next-turn",
+        source: "user", image_count: 0, artifact_count: 0,
+      }, {
+        message_id: "queued-2", content: "keep this", target: "next-turn",
+        source: "user", image_count: 0, artifact_count: 0,
+      }] }),
+      { type: "pending_input_failed", messageId: "queued-1" },
+    );
+    expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-2"]);
+  });
+
+  it("removes a steered input when its delivery message reaches the transcript", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
+      message_id: "steer-1", content: "interrupt with this", target: "next-step",
+      source: "user", image_count: 0, artifact_count: 0,
+    }] });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", { id: "steer-1", role: "user", content: "interrupt with this" }),
+    });
+    expect(state.pendingInputs).toEqual([]);
+    expect(state.entries).toHaveLength(1);
+  });
+
+  it("detaches all thread projections when the current session is deleted", () => {
+    const state = runtimeReducer(
+      {
+        ...runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+        loading: true,
+      },
+      { type: "session_deleted", sessionId: opened.session_id },
+    );
+
+    expect(state).toMatchObject({
+      loading: false,
+      sessionAttached: false,
+      eventStreamConnected: false,
+      current: null,
+      entries: [],
+      threads: [],
+    });
+  });
+
+  it("synchronizes thread metadata without replacing the attached workspace", () => {
+    const thread: ThreadSummary = {
+      session_id: "session-1",
+      thread_id: "agent",
+      status: "active",
+      kind: "main",
+      turn_status: "idle",
+      parent_thread_id: "",
+      agent: "reviewer",
+      provider: "openai",
+      model: "gpt",
+      model_mode: "high",
+      context_window: 2000,
+      message_count: 4,
+      usage: { ...EMPTY_USAGE, total_tokens: 25, context_tokens: 20 },
+      session_stats: { ...EMPTY_SESSION_STATS },
+      pending_interactions: [],
+      status_slots: { goal: "active" },
+      workspace_root: "/updated",
+    };
+    const state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "thread_synced", thread },
+    );
+
+    expect(state.current).toMatchObject({
+      agent_name: "reviewer", provider: "openai", model: "gpt", workspace_root: "/workspace",
+    });
+    expect(state.usage).toMatchObject({ total_tokens: 25, context_tokens: 20 });
+  });
+
+  it("adopts the running state of a session selected mid-turn", () => {
+    const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const thread = {
+      session_id: "session-1", thread_id: "agent", status: "active" as const,
+      kind: "main" as const, turn_status: "running" as const, parent_thread_id: "",
+      agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+      context_window: 1000, message_count: 2, usage: opened.usage,
+      session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+    };
+
+    expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
+  });
+
   it("assembles streaming reasoning and assistant content once", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const committedEntries = state.entries;
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { reasoning: "inspect " }) });
+    expect(state.entries).toBe(committedEntries);
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "hello" }) });
+    expect(state.entries).toBe(committedEntries);
+    expect(state.entries).toEqual([]);
+    expect(state.assistantDraft).toMatchObject({ content: "hello", reasoning: "inspect " });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message", { content: "hello", tool_calls: [] }) });
 
     expect(state.entries).toHaveLength(1);
@@ -42,6 +448,25 @@ describe("runtimeReducer", () => {
       role: "assistant",
       content: "hello",
       reasoning: "inspect ",
+      streaming: false,
+    });
+    expect(state.assistantDraft).toBeNull();
+  });
+
+  it("applies a streaming batch in wire order", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("assistant_message_delta", { content: "hello " }),
+        event("assistant_message_delta", { content: "world" }),
+        event("assistant_message", { content: "hello world", tool_calls: [] }),
+      ],
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "message",
+      content: "hello world",
       streaming: false,
     });
   });
@@ -56,6 +481,9 @@ describe("runtimeReducer", () => {
         total_tokens: 45,
         requests: 1,
         context_tokens: 250,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 10,
+        prompt_cache_write_tokens: 4,
       }),
     });
 
@@ -65,7 +493,23 @@ describe("runtimeReducer", () => {
       total_tokens: 55,
       requests: 1,
       context_tokens: 250,
+      cache_read_input_tokens: 30,
+      cache_creation_input_tokens: 10,
+      prompt_cache_write_tokens: 4,
     });
+
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", {
+        input_tokens: 0,
+        output_tokens: 1,
+        total_tokens: 1,
+        requests: 1,
+        context_tokens: 0,
+      }),
+    });
+    expect(state.usage.context_tokens).toBe(0);
+    expect(state.usage.total_tokens).toBe(56);
   });
 
   it("queues interactions in event order and resolves one at a time", () => {
@@ -118,6 +562,304 @@ describe("runtimeReducer", () => {
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
+  });
+
+  it("projects permission decisions onto the pending tool call", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_request", {
+        request_id: "permission:call-1",
+        tool_call: { id: "call-1", name: "shell", args: { command: "pwd" } },
+      }),
+    });
+    expect(state.entries).toMatchObject([{
+      kind: "tool",
+      toolCallId: "call-1",
+      status: "pending",
+      permissionRequestId: "permission:call-1",
+    }]);
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_response_recorded", {
+        request_id: "permission:call-1",
+        decision: "allow",
+      }),
+    });
+    expect(state.entries[0]).toMatchObject({ status: "approved" });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("permission_denied", {
+        request_id: "permission:call-1",
+        reason: "sandbox",
+      }),
+    });
+    expect(state.entries[0]).toMatchObject({ status: "denied" });
+  });
+
+  it("keeps compaction in the activity timeline", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("compaction_started", {}),
+        event("compaction_completed", {}),
+      ],
+    });
+    expect(state.entries.filter((entry) => entry.kind === "runtime").map((entry) => entry.event)).toEqual([
+      "compaction_started", "compaction_completed",
+    ]);
+  });
+
+  it("rebuilds context and one compact marker from durable trajectory", () => {
+    const message = {
+      role: "user" as const,
+      content: "Injected instructions",
+      tool_calls: [], tool_call_id: "", status: "", data: null,
+      error: null, artifacts: [], images: [],
+      runtime: { source: "skills", event: "inject" },
+    };
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [
+        { position: 1, kind: "message", message_id: "context-1", message },
+        { position: 2, kind: "event", event: "compaction/start", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:00Z" },
+        { position: 3, kind: "event", event: "compaction/summary", data: { compaction_id: "c1", summary: "summary" }, timestamp: "2026-01-01T00:00:01Z" },
+        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [] },
+        { position: 5, kind: "event", event: "compaction/end", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:02Z" },
+      ],
+    });
+
+    expect(state.entries).toHaveLength(2);
+    expect(state.entries[0]).toMatchObject({ kind: "runtime", source: "skills", content: "Injected instructions" });
+    expect(state.entries[1]).toMatchObject({ kind: "runtime", source: "compact", event: "compaction/end" });
+  });
+
+  it("does not duplicate a durable assistant message replayed by the live stream", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "assistant-1",
+        message: {
+          id: "assistant-1",
+          role: "assistant",
+          content: "finished while reconnecting",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        id: "assistant-1",
+        content: "finished while reconnecting",
+        tool_calls: [],
+      }),
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+  });
+
+  it("keeps live entries while a newer trajectory baseline is applied", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        id: "assistant-live", content: "arrived during refresh", tool_calls: [],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    const first = state.entries.find((entry) =>
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "first"
+    );
+    expect(first?.origin).toBe("trajectory");
+    expect(state.entries.some((entry) =>
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "arrived during refresh"
+    )).toBe(true);
+  });
+
+  it("does not duplicate an accepted user message when trajectory catches up", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "same input",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", {
+        id: "user-1", role: "user", content: "same input", images: [], artifacts: [],
+      }),
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+  });
+
+  it("folds raw events captured during the trajectory request after the baseline", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: "cursor-2",
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+      bufferedEvents: [event("assistant_message", {
+        id: "assistant-buffered", content: "arrived during baseline", tool_calls: [],
+      })],
+    });
+
+    expect(state.entries.some((entry) => (
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "arrived during baseline"
+    ))).toBe(true);
+  });
+
+  it("reprojects a compact marker when history is replaced", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("history_updated", {
+        operation: "compact:automatic",
+        history: [],
+        history_cursor: "compact-1",
+      }),
+    });
+
+    expect(state.entries).toMatchObject([{
+      kind: "runtime",
+      source: "compact",
+      event: "compact:automatic",
+      content: "Conversation history compacted",
+      id: "event:1:history_updated",
+    }]);
+  });
+
+  it("ignores an older page response after the history cursor advanced", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
+      ...opened, history_cursor: "10",
+    } });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("history_updated", { history: [], history_cursor: "20" }),
+    });
+    state = runtimeReducer(state, {
+      type: "history_prepend",
+      history: [{
+        role: "user", content: "stale", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], images: [],
+      }],
+      nextCursor: null,
+      expectedCursor: "10",
+    });
+    expect(state.entries).toEqual([]);
+    expect(state.historyCursor).toBe("20");
+  });
+
+  it("reconciles provisional streamed tool ids with the executed call", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_call_delta", {
+        tool_calls: [{
+          tool_call_id: "tool_0",
+          name: "shell",
+          args_delta: '{"command":"pwd"}',
+          index: 0,
+        }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_call_delta", {
+        tool_calls: [{
+          tool_call_id: "call_shell",
+          replaces_tool_call_id: "tool_0",
+          name: "shell",
+          args_delta: "",
+          index: 0,
+        }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_calls_started", {
+        tool_calls: [{ id: "call_shell", name: "shell", args: { command: "pwd" } }],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("tool_result", {
+        tool_call_id: "call_shell",
+        name: "shell",
+        content: "/workspace",
+        status: "success",
+      }),
+    });
+
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "tool",
+      toolCallId: "call_shell",
+      status: "success",
+      result: "/workspace",
+    });
+  });
+
+  it("closes a turn and preserves a visible error when the stream fails", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "partial" }) });
+    state = runtimeReducer(state, { type: "event", event: event("error", { message: "provider failed" }) });
+
+    expect(state.turnRunning).toBe(false);
+    expect(state.entries.at(-1)).toMatchObject({ kind: "notice", level: "error", content: "provider failed" });
+    expect(state.entries.find((entry) => entry.kind === "message")).toMatchObject({ streaming: false });
   });
 
   it("renders a persisted tool result even when its call is outside display history", () => {

@@ -8,11 +8,11 @@ data — the permissions plugin owns their validation and normalization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 import yaml
+from pydantic import JsonValue, TypeAdapter
 
-from XBotv2.core import AgentDefinition, RuntimeVariables
+from XBotv2.agents.contracts import AgentDefinition
+from XBotv2.core import RuntimeVariables
 
 _FRONTMATTER = "---"
 _FIELDS = {
@@ -56,9 +56,13 @@ def load_definition(
     marker = text.find(f"\n{_FRONTMATTER}\n", len(_FRONTMATTER) + 1)
     if marker < 0:
         raise ValueError(f"Agent definition has unclosed frontmatter: {path}")
-    metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
-    if not isinstance(metadata, dict):
+    raw_metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
+    if not isinstance(raw_metadata, dict):
         raise ValueError(f"Agent frontmatter must be a mapping: {path}")
+    try:
+        metadata = TypeAdapter(dict[str, JsonValue]).validate_python(raw_metadata)
+    except ValueError as exc:
+        raise ValueError(f"Agent frontmatter must contain JSON values: {path}") from exc
     unknown = set(metadata) - _FIELDS
     if unknown:
         raise ValueError(
@@ -96,7 +100,7 @@ def load_definition(
 
 
 def parse_tools(
-    value: Any,
+    value: JsonValue,
     path: Path,
 ) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
     """Parse the ``tools`` selector into visible/disabled tool names.
@@ -120,7 +124,7 @@ def parse_tools(
 
 
 def parse_model(
-    metadata: dict[str, Any],
+    metadata: dict[str, JsonValue],
     path: Path,
 ) -> tuple[str | None, str | None]:
     provider = str(metadata["provider"]) if metadata.get("provider") else None
@@ -135,13 +139,13 @@ def parse_model(
     return provider or model_provider, model_name
 
 
-def _optional_float(metadata: dict[str, Any], name: str) -> float | None:
+def _optional_float(metadata: dict[str, JsonValue], name: str) -> float | None:
     value = metadata.get(name)
     return float(value) if value is not None else None
 
 
 def _optional_int(
-    metadata: dict[str, Any],
+    metadata: dict[str, JsonValue],
     name: str,
     *,
     alias: str | None = None,

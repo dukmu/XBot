@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import JsonValue
+from xcore import Context
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     calibrated_context_tokens,
 )
+from XBotv2.agentloop import EventContext, Events
 
 
 class TokenManagerPlugin:
@@ -16,33 +16,28 @@ class TokenManagerPlugin:
     name = "token_manager"
 
     def __init__(self) -> None:
-        self._latest: dict[str, Any] = {}
+        self._latest: dict[str, JsonValue] = {}
 
-    async def on_load(self, config: dict[str, Any]) -> None:
-        del config
-
-    async def on_unload(self) -> None:
-        self._latest = {}
-
-    def apply(self, ctx, config=None) -> None:
-        self.ctx = ctx
-        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_model_request)
+    def apply(
+        self,
+        ctx: Context,
+        config: dict[str, JsonValue] | None = None,
+    ) -> None:
+        ctx.on(Events.MODEL_REQUEST_READY, self._on_model_request_ready)
         ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 
-    async def _on_before_model_request(self, ctx: EventContext) -> None:
-        request = ctx.model_request or {}
-        messages = list(request.get("messages") or [])
-        tools = list(request.get("tools") or [])
-        context_window = int(
-            getattr(ctx.config, "context_window", None)
-            or getattr(ctx.config, "max_context_tokens", 0)
-            or 0
-        )
+    async def _on_model_request_ready(self, ctx: EventContext) -> None:
+        request = ctx.model_request
+        messages = list(request.messages) if request is not None else []
+        tools = list(request.tools) if request is not None else []
+        if ctx.settings is None or ctx.session is None:
+            raise RuntimeError("Token manager requires a complete request context")
+        context_window = int(ctx.settings.context_window or 0)
         context_tokens, raw_estimate, source = calibrated_context_tokens(
             messages,
             tools,
             list(ctx.messages),
-            provider=str(getattr(ctx.session, "provider", "") or ""),
+            provider=ctx.session.provider,
             context_window=context_window,
         )
         self._latest = {
@@ -59,7 +54,9 @@ class TokenManagerPlugin:
         }
 
     async def _on_after_model_response(self, ctx: EventContext) -> None:
-        usage = getattr(ctx.model_response, "usage_metadata", None) or {}
+        if ctx.model_response is None:
+            raise RuntimeError("Token manager requires a model response")
+        usage = ctx.model_response.usage_metadata
         self._latest["provider_usage"] = {
             key: int(usage[key])
             for key in (
@@ -74,7 +71,7 @@ class TokenManagerPlugin:
             if usage.get(key) is not None
         }
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "mode": "observe_only",

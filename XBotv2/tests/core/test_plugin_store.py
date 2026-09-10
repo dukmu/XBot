@@ -12,20 +12,20 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.persistence.store import CoreStateStore
+from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.paths import RuntimePaths
 from plugin_harness import mount_ctx
 
 
 def _state_file(tmp_path) -> Path:
     return (
-        RuntimePaths.from_data_dir(tmp_path).session("s").thread("t").state_dir
+        RuntimePaths.from_data_dir(tmp_path).session("s").thread("t").plugin_state_dir
         / "state.json"
     )
 
 
-def _core_store(tmp_path) -> CoreStateStore:
-    return CoreStateStore.create(
+def _core_store(tmp_path) -> ThreadPersistence:
+    return ThreadPersistence.create(
         RuntimePaths.from_data_dir(tmp_path).session("s"),
         thread_id="t",
         workspace_root="/workspace",

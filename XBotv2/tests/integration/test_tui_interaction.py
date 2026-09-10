@@ -32,7 +32,6 @@ import pytest
 
 from XBotv2.tui.command import CommandRegistry
 from XBotv2.tui.completion_popup import CompletionPopup
-from XBotv2.tui.terminal import CommandOutcome
 from XBotv2.tui.textual_client import XBotTextualApp
 
 
@@ -81,7 +80,7 @@ class _ScriptedSession:
                 "parameters": {},
             }
             for name in (
-                "status", "provider", "model", "effort", "reload", "agent",
+                "status", "provider", "model", "effort", "agent",
                 "clear", "undo", "fork", "tasks", "task", "permission",
                 "sandbox",
             )
@@ -117,6 +116,61 @@ class _ScriptedSession:
         return {
             "type": "permission_response_recorded",
             "data": {"request_id": request_id, "decision": decision, "scope": scope},
+        }
+
+
+class _SwitchableSession(_ScriptedSession):
+    def __init__(self):
+        super().__init__()
+        self.sessions = [
+            {
+                "session_id": "old-session",
+                "status": "inactive",
+                "thread_count": 1,
+                "workspace_root": "/work/old",
+                "title": "Old work",
+            },
+            {
+                "session_id": "other-session",
+                "status": "inactive",
+                "thread_count": 1,
+                "workspace_root": "/work/other",
+                "title": "Other work",
+            },
+        ]
+        self.switches: list[dict[str, str]] = []
+
+    async def list_sessions(self):
+        return {"sessions": self.sessions}
+
+    async def list_threads(self, session_id):
+        return {
+            "session_id": session_id,
+            "threads": [{
+                "session_id": session_id,
+                "thread_id": "main",
+                "kind": "main",
+                "workspace_root": "/work/other",
+            }],
+        }
+
+    async def switch(self, *, session_id, thread_id, workspace_root=None, mode="resume"):
+        self.session_id = session_id or "new-session"
+        self.thread_id = thread_id
+        self.switches.append({
+            "session_id": self.session_id,
+            "thread_id": thread_id,
+            "workspace_root": workspace_root or "",
+            "mode": mode,
+        })
+        return {
+            "session_id": self.session_id,
+            "thread_id": thread_id,
+            "agent_name": "OtherBot",
+            "workspace_root": workspace_root or "/work/other",
+            "provider": "mock",
+            "model": "mock",
+            "history": [{"role": "user", "content": "restored"}],
         }
 
 
@@ -258,7 +312,7 @@ async def test_status_bar_uses_open_session_metadata() -> None:
     async with app.run_test(headless=True, size=(120, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
 
         status = app.query_one("#status_bar")
@@ -312,7 +366,7 @@ async def test_resumed_assistant_history_uses_markdown_rendering() -> None:
     async with app.run_test(headless=True, size=(80, 24)) as pilot:
         for _ in range(10):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
 
         assert isinstance(app.query_one(".user .body", Static).content, Text)
@@ -982,6 +1036,51 @@ async def test_slash_status_appends_state_notice(scripted_session) -> None:
     assert scripted_session.sent == []
 
 
+@pytest.mark.asyncio
+async def test_session_command_lists_and_switches_workspace() -> None:
+    session = _SwitchableSession()
+    app = XBotTextualApp(session_id="current", thread_id="agent")
+    app.session = session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        for _ in range(5):
+            await pilot.pause()
+            if app._session_attached:
+                break
+
+        composer = app.query_one("#input")
+        composer.load_text("/session")
+        await app.submit_composer()
+        await pilot.pause()
+        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
+        assert listing and "old-session" in listing[-1].text
+        assert "/work/old" in listing[-1].text
+
+        composer.load_text("/session list")
+        await app.submit_composer()
+        await pilot.pause()
+        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
+        assert len(listing) == 2
+        assert session.switches == []
+
+        composer.load_text("/session other-session")
+        await app.submit_composer()
+        for _ in range(10):
+            await pilot.pause()
+            if app.state.session_id == "other-session" and app.state.status == "Ready":
+                break
+
+        assert session.switches == [{
+            "session_id": "other-session",
+            "thread_id": "main",
+            "workspace_root": "/work/other",
+            "mode": "resume",
+        }]
+        assert app.state.session_id == "other-session"
+        assert app.state.thread_id == "main"
+        assert app.state.workspace_root == "/work/other"
+        assert [message.content for message in app.state.messages] == ["restored"]
+
+
 # ----------------------------------------------------------------------
 # Command palette (Ctrl+P)
 # ----------------------------------------------------------------------
@@ -1011,7 +1110,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         names = {spec.name for spec in app.commands.search("")}
         assert {"help", "clear-screen", "exit"} <= names
         assert {
-            "status", "provider", "model", "effort", "reload", "agent",
+            "status", "provider", "model", "effort", "agent",
             "clear", "undo", "fork", "tasks", "task", "permission", "sandbox",
         } <= names
 
@@ -1063,7 +1162,7 @@ async def test_command_palette_scrolls_to_long_server_command_list() -> None:
     async with app.run_test(headless=True, size=(60, 20)) as pilot:
         for _ in range(5):
             await pilot.pause()
-            if app._connected:
+            if app._session_attached:
                 break
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -1248,6 +1347,32 @@ async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
 
 
 @pytest.mark.asyncio
+async def test_resumed_reasoning_is_rendered_as_a_collapsible_block(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.restore_history([{
+            "role": "assistant",
+            "content": "Persisted answer",
+            "reasoning": "Persisted thought",
+            "tool_calls": [],
+        }])
+        await app._render_replay_window()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        assert block.collapsed is True
+        assert "Persisted thought" in str(
+            block.query_one(".reasoning", Static).content
+        )
+
+
+@pytest.mark.asyncio
 async def test_assistant_markdown_survives_streaming_updates(scripted_session) -> None:
     from rich.markdown import Markdown
     from textual.widgets import Static
@@ -1422,7 +1547,7 @@ async def test_thinking_and_details_commands_control_current_and_future_blocks(
                 "type": "tool_calls_started",
                 "data": {
                     "tool_calls": [
-                        {"id": "c2", "name": "read_file", "args": {"path": "README.md"}}
+                        {"id": "c2", "name": "read", "args": {"path": "README.md"}}
                     ]
                 },
             }

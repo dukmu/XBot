@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -57,7 +58,11 @@ def _log_task_failure(task: asyncio.Task) -> None:
         return
     exc = task.exception()
     if exc is not None:
-        logger.error("internal listener failed: %s", exc, exc_info=exc)
+        logger.error(
+            "internal listener failed error_type=%s",
+            type(exc).__name__,
+            exc_info=exc,
+        )
 
 
 @dataclass
@@ -136,6 +141,14 @@ class EventBus:
                 self._wildcards.append((pattern, [hook]))
         else:
             self._exact.setdefault(event, []).append(hook)
+        logger.debug(
+            "listener.registered event=%s owner=%s callback=%s once=%s global=%s",
+            event,
+            owner.fiber.name,
+            _callback_name(callback),
+            once,
+            global_,
+        )
 
         def disposer() -> bool:
             return self.unregister(event, callback)
@@ -149,6 +162,12 @@ class EventBus:
                 if hook.callback is callback and not hook.disposed:
                     hook.disposed = True
                     del hooks[index]
+                    logger.debug(
+                        "listener.unregistered event=%s owner=%s callback=%s",
+                        event,
+                        hook.owner.fiber.name,
+                        _callback_name(callback),
+                    )
                     return True
         return False
 
@@ -192,18 +211,69 @@ class EventBus:
             result.append(hook)
         return result
 
+    def _candidate_count(self, event: str) -> int:
+        """Count live matching hooks without evaluating user filters."""
+        hooks = list(self._exact.get(event, ()))
+        for pattern, wildcard_hooks in self._wildcards:
+            if _match_event(event, pattern):
+                hooks.extend(wildcard_hooks)
+        return sum(not hook.disposed for hook in hooks)
+
     @staticmethod
     async def _invoke(hook: Hook, args: tuple[Any, ...]) -> Any:
-        result = hook.callback(*args)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+        started = time.perf_counter()
+        owner = hook.owner.fiber.name
+        callback = _callback_name(hook.callback)
+        logger.debug(
+            "event.handler.start event=%s owner=%s callback=%s",
+            hook.event,
+            owner,
+            callback,
+        )
+        try:
+            result = hook.callback(*args)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except asyncio.CancelledError:
+            logger.debug(
+                "event.handler.cancelled event=%s owner=%s callback=%s",
+                hook.event,
+                owner,
+                callback,
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "event.handler.error event=%s owner=%s callback=%s error_type=%s",
+                hook.event,
+                owner,
+                callback,
+                type(exc).__name__,
+                exc_info=exc,
+            )
+            raise
+        finally:
+            logger.debug(
+                "event.handler.finish event=%s owner=%s callback=%s duration_ms=%.3f",
+                hook.event,
+                owner,
+                callback,
+                (time.perf_counter() - started) * 1000,
+            )
 
     # -- public (async) dispatch -------------------------------------------
 
     def _announce(self, mode: str, event: str, args: tuple[Any, ...]) -> None:
         """Emit ``internal/dispatch`` diagnostics for non-internal events."""
         if not event.startswith("internal/"):
+            logger.debug(
+                "event.dispatch mode=%s event=%s candidates=%d args=%d",
+                mode,
+                event,
+                self._candidate_count(event),
+                len(args),
+            )
             self._emit_sync("internal/dispatch", mode, event, args)
 
     async def emit(self, event: str, *args: Any) -> None:
@@ -292,7 +362,10 @@ class EventBus:
                     task.add_done_callback(_log_task_failure)
             except Exception as exc:  # noqa: BLE001 - internal bus must not raise
                 logger.error(
-                    "listener for %r failed: %s", event, exc, exc_info=True
+                    "listener for %r failed error_type=%s",
+                    event,
+                    type(exc).__name__,
+                    exc_info=True,
                 )
 
     def _bail_sync(self, event: str, *args: Any) -> Any:
@@ -302,7 +375,10 @@ class EventBus:
                 result = hook.callback(*args)
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "listener for %r failed: %s", event, exc, exc_info=True
+                    "listener for %r failed error_type=%s",
+                    event,
+                    type(exc).__name__,
+                    exc_info=True,
                 )
                 continue
             if is_bailed(result):
@@ -316,6 +392,10 @@ class EventBus:
         for hooks in self._collect_hook_lists(event):
             count += sum(1 for hook in hooks if not hook.disposed)
         return count
+
+
+def _callback_name(callback: Callable[..., Any]) -> str:
+    return getattr(callback, "__qualname__", type(callback).__qualname__)
 
 
 __all__ = ["Disposer", "EventBus", "is_bailed"]

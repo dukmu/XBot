@@ -7,7 +7,7 @@
 
 - `ctx.plugin()` 只注册（fiber 进入 `pending`）。加载由两条路径触发：
   1. `await ctx.start()`：置 active → **迭代不动点**加载所有依赖满足的
-     pending/failed fiber（直到无进展；等待中的保持 pending，不报错）→
+     pending fiber（直到无进展；等待中的保持 pending，不报错）→
      `emit("ready")`。
   2. 运行期服务变化（`set`/`unset`/提供方状态迁移）：满足的 pending fiber 立即
      加载；运行中且依赖丢失的 fiber 回滚到 pending。**仅在 active 时生效**（start

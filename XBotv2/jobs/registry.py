@@ -12,9 +12,9 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable
 
-from XBotv2.core.jobs import (
+from XBotv2.jobs.contracts import (
     TERMINAL_STATES,
     CancelResult,
     Job,
@@ -28,14 +28,17 @@ from XBotv2.core.jobs import (
     JobSummary,
     MAX_SUMMARY_CHARS,
     WaitResult,
+    WaitMode,
+    JobRunner,
+    JobsPort,
+    TaskSnapshot,
 )
-from XBotv2.jobs.runner import JobContext, JobRunner
+from XBotv2.jobs.runner import JobContext
+from pydantic import JsonValue
 
 logger = logging.getLogger("xbotv2.jobs")
 
-JobSnapshot = dict[str, Any]
-TaskCallback = Callable[[JobSnapshot], Awaitable[None]]
-WaitMode = Literal["any", "all"]
+TaskCallback = Callable[[TaskSnapshot], Awaitable[None]]
 
 # Client-facing kind names preserved for the protocol / TUI task surface.
 _PROTOCOL_KIND = {
@@ -54,7 +57,7 @@ _MAX_SNAPSHOT_COMMAND = 1_000
 _MAX_SUBAGENT_PROMPT_PREVIEW = 100
 
 
-class JobRegistry:
+class JobRegistry(JobsPort):
     """One shared lifecycle store for all jobs owned by an engine."""
 
     def __init__(
@@ -64,6 +67,9 @@ class JobRegistry:
         prefix: str = "job",
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
+        self._completion_events: dict[JobId, asyncio.Event] = {}
+        self._runners: dict[JobId, JobRunner] = {}
+        self._tasks: dict[JobId, asyncio.Task[None]] = {}
         self._next_id = 1
         self._prefix = prefix
         self._limits: dict[JobKind, asyncio.Semaphore] = {
@@ -71,7 +77,7 @@ class JobRegistry:
             for kind, limit in (limits or {}).items()
         }
         self._closing = False
-        # Session wiring hooks; both receive a protocol-facing snapshot dict.
+        # Session wiring hooks; both receive a protocol-facing snapshot.
         self.on_update: TaskCallback | None = None
         self.on_complete: TaskCallback | None = None
 
@@ -87,7 +93,7 @@ class JobRegistry:
         self,
         *,
         kind: JobKind,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         parent_job_id: JobId | None = None,
         name: str | None = None,
     ) -> Job:
@@ -101,9 +107,9 @@ class JobRegistry:
             parent_job_id=parent_job_id,
             name=name,
             metadata=dict(metadata or {}),
-            completion_event=asyncio.Event(),
         )
         self._jobs[job.id] = job
+        self._completion_events[job.id] = asyncio.Event()
         await self._notify_update(job)
         return job
 
@@ -112,7 +118,8 @@ class JobRegistry:
         job = self._require(job_id)
         if job.status is not JobStatus.PENDING:
             raise ValueError(f"Job {job_id} is not pending")
-        job.runner_task = asyncio.create_task(
+        self._runners[job.id] = runner
+        self._tasks[job.id] = asyncio.create_task(
             self._execute(job, runner),
             name=f"xbotv2-{job.id}",
         )
@@ -187,7 +194,7 @@ class JobRegistry:
         jobs: list[Job],
         timeout: float | None,
     ) -> WaitResult:
-        events = [job.completion_event for job in jobs if job.completion_event]
+        events = [self._completion_events[job.id] for job in jobs]
         timed_out = False
         if events:
             try:
@@ -199,13 +206,7 @@ class JobRegistry:
                 timed_out = True
             except asyncio.CancelledError:
                 raise
-        ready = [job for job in jobs if job.terminal]
-        pending = [job.id for job in jobs if not job.terminal]
-        return WaitResult(
-            ready=[job_summary(job) for job in ready],
-            pending=pending,
-            timed_out=timed_out,
-        )
+        return self._wait_result(jobs, timed_out)
 
     async def _wait_any(
         self,
@@ -214,9 +215,8 @@ class JobRegistry:
     ) -> WaitResult:
         active = [job for job in jobs if not job.terminal]
         done_tasks = [
-            asyncio.create_task(job.completion_event.wait())
+            asyncio.create_task(self._completion_events[job.id].wait())
             for job in active
-            if job.completion_event is not None
         ]
         timed_out = False
         if done_tasks:
@@ -233,11 +233,13 @@ class JobRegistry:
             timed_out = not done
             for task in pending:
                 task.cancel()
-        ready = [job for job in jobs if job.terminal]
-        pending = [job.id for job in jobs if not job.terminal]
+        return self._wait_result(jobs, timed_out)
+
+    @staticmethod
+    def _wait_result(jobs: list[Job], timed_out: bool) -> WaitResult:
         return WaitResult(
-            ready=[job_summary(job) for job in ready],
-            pending=pending,
+            ready=[job_summary(job) for job in jobs if job.terminal],
+            pending=[job.id for job in jobs if not job.terminal],
             timed_out=timed_out,
         )
 
@@ -249,15 +251,19 @@ class JobRegistry:
         """Cancel a job idempotently. Terminal jobs are left untouched."""
         job = self._require(job_id)
         if job.terminal:
-            return CancelResult(job_id, job.status.value, cancelled=False)
+            return CancelResult(
+                id=job_id, status=job.status.value, cancelled=False
+            )
         if job.status is JobStatus.PENDING:
-            self._finish(job, JobStatus.CANCELLED)
-            return CancelResult(job_id, job.status.value, cancelled=True)
+            await self._finish(job, JobStatus.CANCELLED)
+            return CancelResult(id=job_id, status=job.status.value, cancelled=True)
 
-        runner_task = job.runner_task
+        runner_task = self._tasks.get(job.id)
         if runner_task is None or runner_task.done():
-            return CancelResult(job_id, job.status.value, cancelled=False)
-        runner = getattr(job, "runner", None)
+            return CancelResult(
+                id=job_id, status=job.status.value, cancelled=False
+            )
+        runner = self._runners.get(job.id)
         if runner is not None:
             try:
                 await runner.cancel(job)
@@ -265,25 +271,27 @@ class JobRegistry:
                 logger.exception("runner.cancel failed for job %s", job_id)
         runner_task.cancel()
         await asyncio.gather(runner_task, return_exceptions=True)
-        return CancelResult(job_id, job.status.value, cancelled=True)
+        return CancelResult(id=job_id, status=job.status.value, cancelled=True)
 
     def remove(self, job_id: JobId) -> None:
         """Drop one terminal job and its outputs from the registry."""
         job = self._jobs.pop(job_id, None)
         if job is None:
             return
-        job.completion_event = None
+        self._completion_events.pop(job_id, None)
+        self._runners.pop(job_id, None)
+        self._tasks.pop(job_id, None)
         job.result = None
         job.metadata.clear()
 
-    async def stop_all(self) -> list[JobSnapshot]:
+    async def stop_all(self) -> list[TaskSnapshot]:
         """Cancel every non-terminal job and return their final snapshots."""
         active = [job for job in self._jobs.values() if not job.terminal]
         for job in active:
             await self.cancel(job.id)
         return [self.snapshot(job) for job in active]
 
-    async def shutdown(self) -> list[JobSnapshot]:
+    async def shutdown(self) -> list[TaskSnapshot]:
         """Cancel all non-terminal jobs; drop terminal jobs' outputs."""
         self._closing = True
         # Suppress completion notices: shutdown is not an ordinary completion.
@@ -302,8 +310,7 @@ class JobRegistry:
     # ------------------------------------------------------------------
 
     async def _execute(self, job: Job, runner: JobRunner) -> None:
-        ctx = JobContext(self, job)
-        job.runner = runner
+        ctx = JobContext()
         semaphore = self._limits.get(job.kind)
         acquired = False
         try:
@@ -326,18 +333,18 @@ class JobRegistry:
                 semaphore.release()
             if job.result is None and ctx.primary_output is not None:
                 job.result = JobResult(output_store=ctx.primary_output)
-            self._finish(job, job.status)
+            await self._finish(job, job.status)
 
-    def _finish(self, job: Job, status: JobStatus) -> None:
+    async def _finish(self, job: Job, status: JobStatus) -> None:
         job.status = status
         job.finished_at = time.time()
-        if job.completion_event is not None:
-            job.completion_event.set()
-        # Publish the terminal state so live clients (e.g. the TUI task panel)
-        # see the task leave "running"; ``on_complete`` alone only produces a
-        # completion notice that the TUI does not apply to its task map.
-        asyncio.create_task(self._notify_update(job))
-        asyncio.create_task(self._notify_complete(job))
+        # A completion waiter observes the fully published terminal transition,
+        # not merely the runner having stopped.
+        await self._notify_update(job)
+        await self._notify_complete(job)
+        event = self._completion_events.get(job.id)
+        if event is not None:
+            event.set()
 
     # ------------------------------------------------------------------
     # Notification
@@ -365,40 +372,39 @@ class JobRegistry:
     # Snapshot / rendering
     # ------------------------------------------------------------------
 
-    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot:
-        """Protocol/TUI-facing snapshot dict with bounded bulk fields."""
+    def snapshot(self, job: Job, *, full_output: bool = False) -> TaskSnapshot:
+        """Build one bounded client-facing task snapshot."""
         metadata = job.metadata
         if job.kind is JobKind.SHELL:
-            command = str(metadata.get("command") or "")
             cwd = str(metadata.get("cwd") or "")
             agent = ""
             thread_id = ""
         else:
-            command = str(metadata.get("command") or "")
             cwd = ""
             agent = str(metadata.get("agent") or "")
             thread_id = str(metadata.get("thread_id") or "")
+        command = str(metadata.get("command") or "")
         output = self._snapshot_output(job, full_output=full_output)
         error = str(job.error.message if job.error is not None else "")
-        return {
-            "task_id": job.id,
-            "kind": _PROTOCOL_KIND[job.kind],
-            "command": command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
-            "cwd": cwd,
-            "status": _PROTOCOL_STATUS[job.status],
-            "created_at": job.created_at,
-            "started_at": job.started_at or 0.0,
-            "finished_at": job.finished_at or 0.0,
-            "output": output,
-            "error": _preview(error, _MAX_SNAPSHOT_OUTPUT),
-            "agent": agent,
-            "thread_id": thread_id,
-            "usage": dict(
+        return TaskSnapshot(
+            task_id=job.id,
+            kind=_PROTOCOL_KIND[job.kind],
+            command=command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
+            cwd=cwd,
+            status=_PROTOCOL_STATUS[job.status],
+            created_at=job.created_at,
+            started_at=job.started_at or 0.0,
+            finished_at=job.finished_at or 0.0,
+            output=output,
+            error=_preview(error, _MAX_SNAPSHOT_OUTPUT),
+            agent=agent,
+            thread_id=thread_id,
+            usage=dict(
                 (job.result.data.get("usage") if job.result is not None else {}) or {}
             ),
-        }
+        )
 
-    def snapshots(self) -> list[JobSnapshot]:
+    def snapshots(self) -> list[TaskSnapshot]:
         """Snapshot every live job in registration order."""
         return [self.snapshot(job) for job in self.all()]
 
@@ -407,10 +413,7 @@ class JobRegistry:
         result = job.result
         if result is None or result.output_store is None:
             return ""
-        text = getattr(result.output_store, "all", None)
-        if text is None:
-            return ""
-        value = text()
+        value = result.output_store.all()
         return value if full_output else _preview(value, _MAX_SNAPSHOT_OUTPUT)
 
     def _next_job_id(self, kind: JobKind) -> JobId:
@@ -441,7 +444,6 @@ def job_summary(job: Job) -> JobSummary:
         kind=job.kind.value,
         status=job.status.value,
         name=job.name,
-        created_at=job.created_at,
         elapsed_ms=job.elapsed_ms,
         parent_job_id=job.parent_job_id,
         summary=summary,

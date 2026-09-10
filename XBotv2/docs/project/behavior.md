@@ -82,10 +82,10 @@ meaningful while preserving immediate tool-result durability.
 The plugin lifecycle should become the reference implementation for extension
 authors:
 
-- load config and external resources in `on_load`;
-- register all declared resources through setup capabilities;
-- record runtime registrations so unload and rollback are complete;
-- release resources in `on_unload`;
+- declare required services through `inject`;
+- consume validated config and register resources in `apply`;
+- return or register disposers for external resources;
+- let the owning XCore fiber remove registrations and run cleanup;
 - expose diagnostics without reaching into core internals.
 
 ## Built-in Extension Direction

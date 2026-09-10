@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
+
+from pydantic import JsonValue
 
 CommandKind = Literal["client", "server", "prompt"]
 
@@ -18,7 +20,7 @@ class CommandSpec:
     raw: str = ""
     display_label: str = ""
     short_label: str = ""
-    parameters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, JsonValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.short_label:
@@ -39,6 +41,7 @@ _CLIENT_ALIASES: dict[str, str] = {
     "/clear-screen": "clear-screen", "/cls": "clear-screen", "/help": "help",
     "/thinking": "thinking", "/details": "details",
     "/attach": "attach",
+    "/session": "session",
 }
 
 _CLIENT_COMMANDS: dict[str, CommandSpec] = {
@@ -79,11 +82,23 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/attach <path> | /attach clear",
         raw="/attach",
     ),
+    "session": CommandSpec(
+        name="session",
+        kind="client",
+        description="List, resume, or create sessions",
+        usage="/session [list | <session-id> [workspace] | new [workspace]]",
+        raw="/session",
+        parameters={
+            "list": "List persisted sessions",
+            "<session-id>": "Resume a persisted session",
+            "new [workspace]": "Create a session in a workspace",
+        },
+    ),
 }
 _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
 _CLIENT_SEARCH_ORDER = (
-    "help", "clear-screen", "thinking", "details", "attach", "exit",
+    "help", "session", "clear-screen", "thinking", "details", "attach", "exit",
 )
 
 

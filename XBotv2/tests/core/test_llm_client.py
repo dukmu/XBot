@@ -10,14 +10,17 @@ from XBotv2.llm.anthropic import (
     normalize_anthropic_usage,
 )
 from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
-from XBotv2.llm.openai import OpenAICompatibleProvider, openai_messages
+from XBotv2.llm.openai import (
+    OpenAICompatibleProvider,
+    normalize_openai_usage,
+    openai_messages,
+)
 from XBotv2.llm.config import merge_request_extras, parse_provider_config
 from XBotv2.core.messages import (
     ImageContent,
     Message,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
 from XBotv2.agentloop.internal_messages import structure_tool_message
@@ -69,7 +72,7 @@ def test_generic_openai_messages_do_not_invent_reasoning_extensions():
     msg = Message(
         role="assistant",
         content="",
-        tool_calls=[ToolCall("c1", "shell", {"command": "ls"})],
+        tool_calls=[ToolCall(id="c1", name="shell", args={"command": "ls"})],
         reasoning="private reasoning",
     )
     out = openai_messages([msg])
@@ -97,8 +100,8 @@ def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
         Message(
             role="assistant",
             tool_calls=[
-                ToolCall("c1", "first", {}),
-                ToolCall("c2", "second", {}),
+                ToolCall(id="c1", name="first", args={}),
+                ToolCall(id="c2", name="second", args={}),
             ],
         ),
         Message(role="tool", tool_call_id="c1", content="one"),
@@ -161,7 +164,7 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
     _system, messages = anthropic_request_messages([
         Message(
             role="assistant",
-            tool_calls=[ToolCall("call-1", "sample", {})],
+            tool_calls=[ToolCall(id="call-1", name="sample", args={})],
         ),
         Message(role="tool", tool_call_id="call-1", content="result"),
         Message(role="assistant", content=""),
@@ -190,7 +193,7 @@ def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks
 
 
 def test_provider_adapters_encode_canonical_image_content():
-    image = ImageContent("artifacts/media/image", "image/png", 3)
+    image = ImageContent(path="artifacts/media/image", media_type="image/png", size=3)
     message = Message(role="user", content="inspect", images=[image])
 
     openai = openai_messages(
@@ -222,12 +225,12 @@ def test_provider_adapters_encode_canonical_image_content():
     ]
 
 
-def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
+def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it(artifact_store):
     message = Message(
         role="tool",
         content="image loaded",
         tool_call_id="call-1",
-        images=[ImageContent("artifacts/media/image", "image/png", 3)],
+        images=[ImageContent(path="artifacts/media/image", media_type="image/png", size=3)],
     )
 
     _system, anthropic = anthropic_request_messages(
@@ -241,13 +244,13 @@ def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it():
         role="user",
         content="inspect",
         artifact=[{
-            "id": "artifacts/attachments/hash/sample.bin",
+            "id": "attachments/sample.bin",
             "name": "sample.bin",
             "media_type": "application/octet-stream",
             "size": 6,
         }],
-    )])
-    assert "session/artifacts/attachments/hash/sample.bin" in uploaded[0]["content"]
+    )], artifacts=artifact_store)
+    assert artifact_store.model_path("attachments/sample.bin") in uploaded[0]["content"]
 
 
 def test_anthropic_usage_values_preserve_cache_context_tokens():
@@ -264,6 +267,26 @@ def test_anthropic_usage_values_preserve_cache_context_tokens():
         "context_tokens": 850,
         "cache_read_input_tokens": 700,
         "cache_creation_input_tokens": 50,
+    }
+
+
+def test_deepseek_cache_miss_remains_uncached_input():
+    usage = SimpleNamespace(
+        prompt_tokens=283,
+        completion_tokens=69,
+        total_tokens=352,
+        prompt_cache_hit_tokens=256,
+        prompt_cache_miss_tokens=27,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=256),
+    )
+
+    assert normalize_openai_usage(usage) == {
+        "input_tokens": 27,
+        "output_tokens": 69,
+        "total_tokens": 352,
+        "requests": 1,
+        "context_tokens": 283,
+        "cache_read_input_tokens": 256,
     }
 
 
@@ -342,6 +365,7 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
             return FakeStream()
 
     provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.artifacts = None
     provider.model = "model"
     provider.temperature = 0.2
     provider.max_output_tokens = 100
@@ -364,17 +388,17 @@ async def test_anthropic_raw_stream_tolerates_null_delta_usage():
     }
     assert final.content == ""
     assert final.tool_calls == [
-        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
     ]
     assert final.additional_kwargs == {}
     assert final.parts == [
         ReasoningPart(
-            "check",
-            {"anthropic": {"signature": "signed"}},
+            text="check",
+            provider_data={"anthropic": {"signature": "signed"}},
         ),
-        ToolCallPart(ToolCall(
-            "call-1", "filesystem_read", {"path": "notes.md"}
-        )),
+        ToolCall(
+            id="call-1", name="filesystem_read", args={"path": "notes.md"}
+        ),
     ]
     assert final.usage_metadata == {
         "input_tokens": 10,
@@ -463,6 +487,7 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
             return FakeResponse()
 
     provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.artifacts = None
     provider.model = "model"
     provider.temperature = 0.2
     provider.max_output_tokens = None
@@ -486,14 +511,14 @@ async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
     assert final.content == "done"
     assert final.additional_kwargs == {}
     assert final.parts == [
-        ReasoningPart("check"),
-        TextPart("done"),
-        ToolCallPart(ToolCall(
-            "call-1", "filesystem_read", {"path": "notes.md"}
-        )),
+        ReasoningPart(text="check"),
+        TextPart(text="done"),
+        ToolCall(
+            id="call-1", name="filesystem_read", args={"path": "notes.md"}
+        ),
     ]
     assert final.tool_calls == [
-        ToolCall("call-1", "filesystem_read", {"path": "notes.md"})
+        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
     ]
     assert final.usage_metadata == {
         "input_tokens": 4,
@@ -616,6 +641,7 @@ async def test_anthropic_extra_body_merges_vendor_config():
             return FakeStream()
 
     provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.artifacts = None
     provider.model = "m"
     provider.temperature = 0.0
     provider.max_output_tokens = 10
@@ -676,6 +702,7 @@ async def test_openai_extra_body_merges_vendor_config():
             return FakeResponse()
 
     provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.artifacts = None
     provider.model = "m"
     provider.temperature = 0.0
     provider.max_output_tokens = None

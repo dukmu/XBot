@@ -1,5 +1,5 @@
 import { Check, ShieldAlert, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { InteractionRequest } from "../api/types";
 
 interface InteractionDialogProps {
@@ -15,6 +15,11 @@ interface InteractionDialogProps {
 export function InteractionDialog({ request, pendingCount, onResolve }: InteractionDialogProps) {
   const [answer, setAnswer] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setAnswer("");
+    setSubmitting(false);
+  }, [request.request_id]);
 
   const submit = async (value: unknown, scope: "once" | "session" = "once") => {
     setSubmitting(true);
@@ -49,7 +54,7 @@ export function InteractionDialog({ request, pendingCount, onResolve }: Interact
               <button disabled={submitting} className="secondary-button danger" onClick={() => void submit("deny")}>
                 <X size={15} /> Deny
               </button>
-              <button disabled={submitting} className="secondary-button" onClick={() => void submit("allow")}>
+              <button autoFocus disabled={submitting} className="secondary-button" onClick={() => void submit("allow")}>
                 <Check size={15} /> Allow once
               </button>
               <button disabled={submitting} className="primary-button" onClick={() => void submit("allow", "session")}>
@@ -59,8 +64,8 @@ export function InteractionDialog({ request, pendingCount, onResolve }: Interact
           </>
         ) : request.options.length > 0 ? (
           <div className="choice-list">
-            {request.options.map((option) => (
-              <button key={option.label} disabled={submitting} onClick={() => void submit(option.label)}>
+            {request.options.map((option, index) => (
+              <button key={option.label} autoFocus={index === 0} disabled={submitting} onClick={() => void submit(option.label)}>
                 <strong>{option.label}</strong>
                 <span>{option.description}</span>
               </button>

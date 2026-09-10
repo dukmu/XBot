@@ -1,0 +1,4 @@
+interface:
+  display_name: "XBot Plugin Development"
+  short_description: "Develop XBotv2 plugins with typed boundaries"
+  default_prompt: "Use $xbot-plugin-development to design or implement an XBotv2 plugin."

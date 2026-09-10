@@ -5,7 +5,9 @@ import asyncio
 import pytest
 
 from XBotv2.session.runtime import SessionRuntime
-from XBotv2.application import start_application
+from XBotv2.session.contracts import conversation_replay
+from XBotv2.application.app import start_application
+from XBotv2.application.host import mounted_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import Tool
 from XBotv2.llm.mock import MockLLM
@@ -39,8 +41,9 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         llm_override=provider,
     )
     engine = services.engine
-    services.permissions.configure({"allow": [{"tool": ".*"}]})
-    engine.tools.registry.register(Tool.from_function(blocker))
+    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    engine.tools.register(Tool.from_function(blocker))
+    application = mounted_application(services)
     runtime = SessionRuntime(
         "inbox-routing",
         "agent",
@@ -48,7 +51,7 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         paths,
         str(temp_workspace),
         False,
-        services,
+        application,
         engine,
     )
 
@@ -70,8 +73,8 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
     ]
     assert not runtime.pending_responses
     assert engine.pending_input_count == 0
-    assert first_events[-1]["type"] == "tool_result"
-    assert second_events[-1]["type"] == "turn_finished"
+    assert first_events[-1].type == "tool_result"
+    assert second_events[-1].type == "turn_finished"
 
 
 @pytest.mark.asyncio
@@ -89,6 +92,7 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         llm_override=MockLLM(),
     )
     engine = services.engine
+    application = mounted_application(services)
     runtime = SessionRuntime(
         "durable-inbox",
         "agent",
@@ -96,10 +100,15 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         paths,
         str(temp_workspace),
         False,
-        services,
+        application,
         engine,
     )
-    await engine.inject("job finished", source="job", message_id="job-1")
+    await engine.inject(
+        "job finished",
+        source="job",
+        message_id="job-1",
+        metadata={"kind": "completion"},
+    )
 
     assert engine.pending_input_count == 1
     assert runtime.wakeup_task is None
@@ -122,6 +131,15 @@ async def test_injected_notification_is_durable_and_does_not_wake(
     assert [message.content for message in resumed.messages] == [
         "job finished", "continue", "observed",
     ]
+    assert resumed.messages[0].additional_kwargs["runtime_input"] == {
+        "source": "job",
+        "event": "completion",
+    }
+    assert conversation_replay(resumed.messages)[0].runtime == {
+        "source": "job",
+        "event": "completion",
+    }
+    assert "runtime_input" not in resumed.messages[1].additional_kwargs
     assert events[-1]["type"] == "turn_finished"
     await resumed_services.stop()
     await services.stop()

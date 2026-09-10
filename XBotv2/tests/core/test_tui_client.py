@@ -46,21 +46,17 @@ async def test_clear_dispatch_distinguishes_screen_and_history_commands():
 
 
 @pytest.mark.asyncio
-async def test_remote_command_replaces_tui_history_from_command_result():
+async def test_remote_command_dispatch_shows_command_notice():
     from XBotv2.tui.textual_client import XBotTextualApp
 
-    history = [{"role": "user", "content": "kept"}]
-
     class Handler:
-        _connected = True
+        _session_attached = True
         session = type("Session", (), {"run_command": AsyncMock(
             return_value={
                 "data": {
                     "command": "undo",
                     "status": "ok",
                     "message": "Removed 1 conversation turn.",
-                    "data": {"removed_turns": 1},
-                    "history": history,
                 }
             }
         )})()
@@ -77,56 +73,44 @@ async def test_remote_command_replaces_tui_history_from_command_result():
         name="undo", kind="server", description="undo", raw="/undo",
     ))
 
-    handler._cmd_clear.assert_awaited_once()
-    assert [(message.role, message.content) for message in handler.state.messages] == [
-        ("user", "kept"),
-    ]
     handler._append_local_notice.assert_awaited_once_with(
         "/undo", "Removed 1 conversation turn."
     )
 
 
-@pytest.mark.asyncio
-async def test_remote_command_refreshes_status_metadata() -> None:
-    from XBotv2.tui.textual_client import XBotTextualApp
+def test_history_updated_event_restores_tui_history() -> None:
+    state = TuiState()
+    state.apply_event({
+        "type": "history_updated",
+        "data": {
+            "history": [{"role": "user", "content": "kept"}],
+            "operation": "undo",
+            "turns": 1,
+        },
+    })
 
-    class Handler:
-        _connected = True
-        session = type("Session", (), {"run_command": AsyncMock(
-            return_value={
-                "data": {
-                    "command": "provider",
-                    "status": "ok",
-                    "message": "Provider switched.",
-                    "data": {
-                        "provider": "minimax",
-                        "workspace_root": "/repo",
-                    },
-                }
-            }
-        )})()
-        state = TuiState(provider="old", workspace_root="/old")
-        _append_local_notice = AsyncMock()
-        _refresh_status = Mock()
+    assert [(message.role, message.content) for message in state.messages] == [
+        ("user", "kept"),
+    ]
 
-        def _record_error(self, error):
-            raise AssertionError(error)
 
-    handler = Handler()
-    await XBotTextualApp._dispatch_remote_command(
-        handler,
-        CommandSpec(
-            name="provider",
-            kind="server",
-            description="switch provider",
-            args="use minimax",
-            raw="/provider use minimax",
-        ),
-    )
+def test_agent_configured_event_refreshes_status_metadata() -> None:
+    state = TuiState(provider="old", workspace_root="/old")
+    state.apply_event({
+        "type": "agent_configured",
+        "data": {
+            "provider": "minimax",
+            "model": "m3",
+            "model_mode": "reasoning",
+            "context_window": 32000,
+        },
+    })
 
-    assert handler.state.provider == "minimax"
-    assert handler.state.workspace_root == "/repo"
-    handler._refresh_status.assert_called_once_with()
+    assert state.provider == "minimax"
+    assert state.model == "m3"
+    assert state.model_mode == "reasoning"
+    assert state.context_window == 32000
+    assert state.workspace_root == "/old"
 
 
 @pytest.mark.asyncio
@@ -134,7 +118,7 @@ async def test_invalid_remote_syntax_is_a_notice_not_tui_error() -> None:
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
-        _connected = True
+        _session_attached = True
         session = type("Session", (), {"run_command": AsyncMock(
             side_effect=ValueError("Usage: /undo [count]")
         )})()
@@ -175,7 +159,7 @@ def test_tui_state_applies_protocol_events_and_renders_lines():
         ),
         _frame("tool_result", {"tool_call_id": "call_1", "content": "cached result", "status": "success"}),
         _frame("client_message", {"message": "heads up"}),
-        _frame("usage", {"total": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}}),
+        _frame("usage", {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "requests": 1}),
         _frame("turn_finished", {"turn": 1}),
     ]
 
@@ -190,18 +174,10 @@ def test_tui_state_applies_protocol_events_and_renders_lines():
     assert state.notices[-1].kind == "client_message"
     assert state.usage["total_tokens"] == 15
 
-    rendered = "\n".join(state.lines(width=80, height=12))
-    assert "TestBot> hello world" in rendered
-    assert "Tool filesystem_read [success]" in rendered
-    assert "cached result" in rendered
-    assert "Notice> heads up" in rendered
-    assert "Tokens 15" in rendered
-
-
-def test_tui_state_applies_usage_totals():
+def test_tui_state_applies_flat_usage_delta():
     state = TuiState()
 
-    state.apply_event(_frame("usage", {"total": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}}))
+    state.apply_event(_frame("usage", {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20, "requests": 2}))
 
     assert state.usage == {
         "input_tokens": 12,
@@ -210,6 +186,7 @@ def test_tui_state_applies_usage_totals():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
 
 
@@ -225,7 +202,6 @@ def test_tool_details_preserve_full_structured_result():
             "name": "example",
             "status": "error",
             "content": content,
-            "data": {"count": 2},
             "error": {"code": "failed", "message": "bad input"},
             "artifacts": [
                 {"id": "artifact-1", "name": "report.txt", "media_type": "text/plain"}
@@ -239,9 +215,36 @@ def test_tool_details_preserve_full_structured_result():
     assert len(tool.summary) < len(content)
     assert tool.result == content
     assert content in detail
-    assert '"count": 2' in detail
     assert '"code": "failed"' in detail
     assert "report.txt" in detail
+
+
+def test_todo_tool_details_use_current_snapshot_projection():
+    from XBotv2.tui.textual_widgets import tool_detail
+
+    state = TuiState()
+    state.apply_event({
+        "type": "tool_result",
+        "data": {
+            "tool_call_id": "todo-1",
+            "name": "update_todos",
+            "status": "success",
+            "content": "Todo list updated.",
+            "data": {
+                "kind": "todo_snapshot",
+                "schema_version": 1,
+                "items": [
+                    {"content": "Inspect", "status": "completed"},
+                    {"content": "Implement", "status": "in_progress"},
+                ],
+            },
+        },
+    })
+
+    detail = tool_detail(state.tools["todo-1"])
+
+    assert "[x] Inspect" in detail
+    assert "[>] Implement" in detail
 
 
 def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
@@ -270,6 +273,7 @@ def test_tui_state_restores_resumed_message_and_tool_history():
         {
             "role": "assistant",
             "content": "reading",
+            "reasoning": "inspect the file first",
             "tool_calls": [
                 {"id": "call_1", "name": "filesystem_read", "args": {"path": "a.txt"}}
             ],
@@ -279,7 +283,6 @@ def test_tui_state_restores_resumed_message_and_tool_history():
             "content": "contents",
             "tool_call_id": "call_1",
             "status": "success",
-            "data": {"bytes": 8},
             "error": {"code": "warning", "message": "partial"},
             "artifacts": [
                 {"id": "artifact-1", "name": "a.txt", "media_type": "text/plain"}
@@ -299,15 +302,40 @@ def test_tui_state_restores_resumed_message_and_tool_history():
         ("assistant", "reading"),
         ("assistant", "done"),
     ]
+    assert state.messages[1].reasoning == "inspect the file first"
     assert state.tools["call_1"].name == "filesystem_read"
     assert state.tools["call_1"].status == "success"
     assert state.tools["call_1"].summary == "contents"
-    assert state.tools["call_1"].data == {"bytes": 8}
     assert state.tools["call_1"].error["code"] == "warning"
     assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
     assert [(notice.kind, notice.text) for notice in state.notices] == [
         ("tasks:completed", "tasks completed"),
     ]
+
+
+def test_tui_state_replaces_history_without_stale_tool_indexes():
+    state = TuiState()
+    state.restore_history([
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [{"id": "call-1", "name": "shell", "args": {"command": "pwd"}}],
+        },
+    ])
+    state.restore_history([
+        {"role": "user", "content": "second"},
+        {
+            "role": "assistant",
+            "content": "new",
+            "tool_calls": [{"id": "call-1", "name": "shell", "args": {"command": "ls"}}],
+        },
+    ])
+
+    assert [message.content for message in state.messages] == ["second", "new"]
+    assert state.turn == 1
+    assert state.tools["call-1"].args == {"command": "ls"}
+    assert len([entry for entry in state.transcript if entry.kind == "tool"]) == 1
 
 
 def test_tui_state_appends_assistant_deltas_to_one_message():
@@ -555,9 +583,7 @@ def test_tui_state_turn_finished_clears_waiting_state_but_keeps_history():
     assert state.status == "Ready"
     assert state.pending_user_input_payload is None
     assert state.notices[-1].kind == "user_input_required"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Question> Proceed?" in rendered
-    assert "Options:" not in rendered
+    assert state.notices[-1].text == "Proceed?"
 
 
 def test_tui_state_turn_finished_clears_pending_and_denial_status():
@@ -594,8 +620,7 @@ def test_tui_state_renders_interaction_response_acknowledgements():
 
     assert state.status == "Ready"
     assert state.notices[-1].kind == "user_input_recorded"
-    rendered = "\n".join(state.lines(width=80, height=8))
-    assert "Answer> user_input:c1" in rendered
+    assert state.notices[-1].text == "user_input:c1"
 
     # Permission requests attach to tool widgets now, not notices
     state.tools["c2"] = TuiTool(tool_call_id="c2", name="shell")
@@ -653,15 +678,11 @@ def test_tui_state_permission_denied_keeps_active_turn_running():
     assert state.status == "Running"
 
 
-def test_tui_fallback_wrap_preserves_explicit_newlines():
+def test_tui_notice_preserves_explicit_newlines():
     state = TuiState()
     state.append_notice("client_message", "first line\nsecond line")
 
-    rendered = state.lines(width=80, height=8)
-
-    assert any("first line" in line for line in rendered)
-    assert any("second line" in line for line in rendered)
-    assert not any("first line second line" in line for line in rendered)
+    assert state.notices[-1].text == "first line\nsecond line"
 
 
 @pytest.mark.parametrize(
@@ -751,14 +772,10 @@ def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatch):
-    """HttpTransport must preserve UTF-8 payload in tui.http trace events.
+async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypatch):
+    """The TUI HTTP boundary must preserve UTF-8 trace payloads."""
 
-    Replaces the legacy ``test_protocol_trace_records_unicode_frames``
-    stdio test now that stdio is removed (docs v2.2).
-    """
-
-    from XBotv2.tui.transport_http import HttpTransport
+    from XBotv2.client import XBotClient
 
     trace_path = tmp_path / "http-trace.jsonl"
     monkeypatch.setenv("XBOT_TUI_TRACE", str(trace_path))
@@ -795,14 +812,15 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
 
             return Resp()
 
-        def stream(self, method, path, json=None, timeout=None):
+        def stream(self, method, path, json=None, params=None, timeout=None):
+            del params
             return self._stream
 
         async def aclose(self):
             return None
 
-    client = HttpTransport("http://127.0.0.1:4096")
-    client._client._http = FakeClient([
+    client = XBotClient("http://127.0.0.1:4096")
+    client._http = FakeClient([
         "event: assistant_message",
         "id: 1",
         "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",
@@ -813,13 +831,23 @@ async def test_http_transport_trace_records_unicode_payload(tmp_path, monkeypatc
         "",
     ])
 
+    session = TerminalSession(client=client, session_id="s", thread_id="t")
     events: list[dict[str, Any]] = []
-    async for event in client.send_message(
-        session_id="s", thread_id="t", content="当前磁盘用了多少",
-        request_id="r",
-    ):
+    async for _event in session.send_message("当前磁盘用了多少"):
+        pass
+    client._http._stream = FakeStream([
+        "event: assistant_message",
+        "id: 1",
+        "data: {\"type\":\"assistant_message\",\"data\":{\"content\":\"\\u6536\\u5230\\uff1a\\u5f53\\u524d\\u78c1\\u76d8\\u7528\\u4e86\\u591a\\u5c11\"}}",
+        "",
+        "event: end",
+        "id: 2",
+        "data: {\"type\":\"end\",\"data\":{\"status\":\"ok\"}}",
+        "",
+    ])
+    async for event in session.session_events():
         events.append(event)
-    await client.close()
+    await session.disconnect()
 
     records = [
         json.loads(line)
@@ -1056,6 +1084,7 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
     assert app.state.context_input_tokens == 8_000
     assert app.state.model_mode == ""
@@ -1113,12 +1142,10 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
             yield {
                 "type": "usage",
                 "data": {
-                    "total": {
-                        "input_tokens": 12,
-                        "output_tokens": 8,
-                        "total_tokens": 20,
-                        "requests": 1,
-                    }
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "total_tokens": 20,
+                    "requests": 1,
                 },
             }
             yield {"type": "turn_finished", "data": {"turn": 1}}
@@ -1396,6 +1423,9 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
             await pilot.pause()
         assert scroll_ends == 0, (
             "scroll_end must not fire while the user is not at the bottom"
+        )
+        assert len(stream.children) == 0, (
+            "live entries should stay out of the DOM while reading older content"
         )
 
         # At the bottom: follow behavior is preserved.
@@ -2187,28 +2217,31 @@ def test_permission_decision_parser_supports_scopes():
 
 
 @pytest.mark.asyncio
-async def test_terminal_session_only_yields_live_interaction_events():
-    class FakeTransport:
-        async def hello(self, *, session_id, thread_id):
-            return {"session_id": session_id, "thread_id": thread_id}
+async def test_terminal_session_uses_shared_events_for_turn_delivery():
+    class FakeClient:
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
 
         async def open_session(self, *, session_id, thread_id, workspace_root=None, mode=None):
             del workspace_root, mode
-            return {"session_id": session_id, "thread_id": thread_id, "status": "ready"}
+            return Mock(model_dump=lambda: {
+                "session_id": session_id, "thread_id": thread_id, "status": "ready"
+            })
 
-        def send_message(self, *, session_id, thread_id, content, request_id):
+        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, request_id, images
             async def _events():
-                yield {"type": "turn_started", "data": {"turn": 1}}
-                yield {
-                    "type": "permission_request",
-                    "data": {"request_id": "permission:c1", "reason": "approve?"},
-                }
-                yield {
-                    "type": "user_input_required",
-                    "data": {"request_id": "user_input:c2", "question": "continue?"},
-                }
-                yield {"type": "turn_finished", "data": {"turn": 1}}
-                yield {"type": "end", "data": {"status": "ok"}}
+                from XBotv2.protocol import server_event
+                yield server_event(type="turn_started", data={"turn": 1})
+                yield server_event(type="permission_request", data={
+                    "request_id": "permission:c1", "reason": "approve?"
+                })
+                yield server_event(type="user_input_required", data={
+                    "request_id": "user_input:c2", "question": "continue?"
+                })
+                yield server_event(type="turn_finished", data={"turn": 1})
+                yield server_event(type="end", data={"status": "ok"})
 
             return _events()
 
@@ -2227,36 +2260,34 @@ async def test_terminal_session_only_yields_live_interaction_events():
         async def close(self):
             return None
 
-    session = TerminalSession(transport=FakeTransport(), session_id="s", thread_id="t")
+    session = TerminalSession(client=FakeClient(), session_id="s", thread_id="t")
     await session.connect()
 
     events = [event async for event in session.send_message("run")]
 
-    assert [event["type"] for event in events] == [
-        "turn_started",
-        "permission_request",
-        "user_input_required",
-        "turn_finished",
-    ]
+    assert events == []
 
 
 @pytest.mark.asyncio
 async def test_terminal_session_passes_explicit_resume_mode():
     opened = {}
 
-    class FakeTransport:
-        async def hello(self, *, session_id, thread_id):
-            return {"session_id": session_id, "thread_id": thread_id}
+    class FakeClient:
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
 
         async def open_session(self, **payload):
             opened.update(payload)
-            return {"session_id": payload["session_id"], "history": []}
+            return Mock(model_dump=lambda: {
+                "session_id": payload["session_id"], "history": []
+            })
 
         async def close(self):
             return None
 
     session = TerminalSession(
-        transport=FakeTransport(),
+        client=FakeClient(),
         session_id="existing",
         session_mode="resume",
         agent="builder",
@@ -2270,26 +2301,72 @@ async def test_terminal_session_passes_explicit_resume_mode():
 
 
 @pytest.mark.asyncio
+async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
+    class FakeClient:
+        def __init__(self):
+            self.fail = False
+            self.shutdown_calls = 0
+
+        async def hello(self, *, client_name, session_id, thread_id):
+            del client_name
+            return Mock(session_id=session_id, thread_id=thread_id)
+
+        async def open_session(self, **payload):
+            if self.fail:
+                raise RuntimeError("open failed")
+            return Mock(model_dump=lambda: payload)
+
+        async def shutdown(self, **_payload):
+            self.shutdown_calls += 1
+
+        async def close(self):
+            return None
+
+    client = FakeClient()
+    session = TerminalSession(
+        client=client,
+        session_id="old",
+        thread_id="main",
+    )
+    await session.connect()
+    await session.switch(
+        session_id="new",
+        thread_id="agent",
+        workspace_root="/workspace",
+    )
+
+    assert (session.session_id, session.thread_id) == ("new", "agent")
+    assert client.shutdown_calls == 0
+
+    client.fail = True
+    with pytest.raises(RuntimeError, match="open failed"):
+        await session.switch(session_id="broken", thread_id="agent")
+
+    assert (session.session_id, session.thread_id) == ("new", "agent")
+    await session.disconnect()
+    assert client.shutdown_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_terminal_session_consumes_transport_end_sentinel():
-    class FakeTransport:
-        def send_message(self, *, session_id, thread_id, content, request_id):
+    class FakeClient:
+        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, request_id, images
             async def _events():
-                yield {"type": "turn_started", "data": {"turn": 1}}
-                yield {"type": "turn_finished", "data": {"turn": 1}}
-                yield {"type": "end", "data": {"status": "ok"}}
+                from XBotv2.protocol import server_event
+                yield server_event(type="turn_started", data={"turn": 1})
+                yield server_event(type="turn_finished", data={"turn": 1})
+                yield server_event(type="end", data={"status": "ok"})
 
             return _events()
 
     session = TerminalSession(
-        transport=FakeTransport(), session_id="s", thread_id="t"
+        client=FakeClient(), session_id="s", thread_id="t"
     )
 
     events = [event async for event in session.send_message("run")]
 
-    assert [event["type"] for event in events] == [
-        "turn_started",
-        "turn_finished",
-    ]
+    assert events == []
 
 
 def test_tui_modules_do_not_import_core():
@@ -2372,13 +2449,7 @@ def test_tui_state_closes_failed_turn_without_hiding_error():
     assert state.status == "Running"
 
 
-def test_tui_state_renders_error_with_visible_label_in_lines():
-    """When the transcript is rendered into plain lines (e.g. for
-    snapshot tests or log capture), the error
-    must be visible with a leading ``Error>`` marker — *not* buried
-    as a normal message.
-    """
-
+def test_tui_state_records_error_in_transcript():
     state = TuiState()
     state.apply_event(
         {
@@ -2396,13 +2467,8 @@ def test_tui_state_renders_error_with_visible_label_in_lines():
         }
     )
 
-    rendered = state.lines(width=120, height=30)
-    flat = "\n".join(rendered)
-    # The error must be visible in the transcript body, not just the
-    # status row at the top.
-    body_rows = "\n".join(rendered[3:-2])
-    assert "Error>" in body_rows
-    assert "Bad tool message order" in body_rows
+    assert state.errors == ["Bad tool message order"]
+    assert state.transcript[-1] == TuiTranscriptEntry(kind="error", key="0")
 
 
 @pytest.mark.asyncio
@@ -2662,13 +2728,11 @@ def test_apply_usage_updates_turn_usage_from_flat_data():
         "requests": 2,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
+        "prompt_cache_write_tokens": 0,
     }
 
 
-def test_apply_usage_with_delta_still_works():
-    """The ``delta`` / ``total`` sub-key format (used by the older
-    integration tests) must keep working.
-    """
+def test_usage_event_accumulates_once():
 
     state = TuiState()
     state.apply_event({"type": "turn_started", "data": {"turn": 1}})
@@ -2676,10 +2740,7 @@ def test_apply_usage_with_delta_still_works():
     state.apply_event(
         {
             "type": "usage",
-            "data": {
-                "delta": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
-                "total": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
-            },
+            "data": {"input_tokens": 100, "output_tokens": 25, "total_tokens": 125, "requests": 1},
         }
     )
 
@@ -2687,24 +2748,22 @@ def test_apply_usage_with_delta_still_works():
     assert state.turn_usage["input_tokens"] == 100
 
 
-def test_usage_delta_without_input_tokens_keeps_context_usage():
+def test_usage_accepts_zero_context_tokens():
     state = TuiState(context_input_tokens=120)
 
     state.apply_event(
         {
             "type": "usage",
             "data": {
-                "delta": {"output_tokens": 3, "total_tokens": 3},
-                "total": {
-                    "input_tokens": 120,
-                    "output_tokens": 3,
-                    "total_tokens": 123,
-                },
+                "input_tokens": 0,
+                "output_tokens": 3,
+                "total_tokens": 3,
+                "context_tokens": 0,
             },
         }
     )
 
-    assert state.context_input_tokens == 120
+    assert state.context_input_tokens == 0
 
 
 def test_usage_prefers_effective_context_tokens():
@@ -2752,26 +2811,25 @@ def test_usage_accumulates_cache_read_into_session_totals():
     assert full_input == 9694
 
 
-def test_usage_compaction_total_includes_cache_keys():
-    """The compaction ``total`` replacement path must also set cache keys."""
+def test_usage_accumulates_all_cache_keys():
 
     state = TuiState()
     state.apply_event({
         "type": "usage",
         "data": {
-            "total": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "total_tokens": 150,
-                "requests": 1,
-                "cache_read_input_tokens": 40,
-                "cache_creation_input_tokens": 10,
-            },
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "requests": 1,
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 10,
+            "prompt_cache_write_tokens": 5,
         },
     })
     assert state.usage["input_tokens"] == 100
     assert state.usage["cache_read_input_tokens"] == 40
     assert state.usage["cache_creation_input_tokens"] == 10
+    assert state.usage["prompt_cache_write_tokens"] == 5
 
 
 def test_usage_turn_cycle_with_cache_heavy_provider_does_not_error():

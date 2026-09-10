@@ -2,73 +2,43 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Literal
 
-from XBotv2.core.tools import ToolCall, ToolCallDelta
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-
-@dataclass(frozen=True, slots=True)
-class ImageContent:
-    """A session-relative image artifact attached to a message."""
-
-    path: str
-    media_type: str
-    size: int
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "ImageContent":
-        return cls(
-            path=str(value.get("path") or ""),
-            media_type=str(value.get("media_type") or "application/octet-stream"),
-            size=int(value.get("size") or 0),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "media_type": self.media_type,
-            "size": self.size,
-        }
+from XBotv2.core.artifacts import ArtifactRef, ImageContent
+from XBotv2.core.tools import ClientEvent, ToolCall, ToolCallDelta
 
 
-@dataclass(frozen=True, slots=True)
-class TextPart:
+class TextPart(BaseModel):
+    type: Literal["text"] = "text"
     text: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": "text", "text": self.text}
-
-
-@dataclass(frozen=True, slots=True)
-class ReasoningPart:
+class ReasoningPart(BaseModel):
+    type: Literal["reasoning"] = "reasoning"
     text: str
-    provider_data: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"type": "reasoning", "text": self.text}
-        if self.provider_data:
-            data["provider_data"] = self.provider_data
-        return data
+    provider_data: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-@dataclass(frozen=True, slots=True)
-class ImagePart:
-    image: ImageContent
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": "image", **self.image.to_dict()}
+class ImagePart(ImageContent):
+    type: Literal["image"] = "image"
 
 
-@dataclass(frozen=True, slots=True)
-class ToolCallPart:
-    call: ToolCall
-
-    def to_dict(self) -> dict[str, Any]:
-        return self.call.to_dict()
-
-
-ContentPart = TextPart | ReasoningPart | ImagePart | ToolCallPart
+ContentPart = TextPart | ReasoningPart | ImagePart | ToolCall
+ArtifactValue = ArtifactRef | Mapping[str, JsonValue]
+ArtifactInput = (
+    ArtifactValue
+    | list[ArtifactValue]
+    | tuple[ArtifactValue, ...]
+    | None
+)
 
 
 def merge_model_chunk(
@@ -91,22 +61,6 @@ def merge_model_chunk(
     return aggregate
 
 
-def part_from_dict(value: dict[str, Any]) -> ContentPart:
-    part_type = value.get("type")
-    if part_type == "text":
-        return TextPart(str(value.get("text") or ""))
-    if part_type == "reasoning":
-        return ReasoningPart(
-            str(value.get("text") or ""),
-            dict(value.get("provider_data") or {}),
-        )
-    if part_type == "image":
-        return ImagePart(ImageContent.from_dict(value))
-    if part_type == "tool_call":
-        return ToolCallPart(ToolCall.from_dict(value))
-    raise ValueError(f"Unknown message content part: {part_type!r}")
-
-
 def _content_parts(
     *,
     content: str = "",
@@ -116,11 +70,16 @@ def _content_parts(
 ) -> list[ContentPart]:
     parts: list[ContentPart] = []
     if reasoning:
-        parts.append(ReasoningPart(reasoning))
+        parts.append(ReasoningPart(text=reasoning))
     if content:
-        parts.append(TextPart(content))
-    parts.extend(ImagePart(image) for image in images or [])
-    parts.extend(ToolCallPart(call) for call in tool_calls or [])
+        parts.append(TextPart(text=content))
+    parts.extend(
+        ImagePart.model_validate(image, from_attributes=True) for image in images or []
+    )
+    parts.extend(
+        ToolCall.model_validate(call, from_attributes=True)
+        for call in tool_calls or []
+    )
     return parts
 
 
@@ -143,7 +102,7 @@ class _PartBacked:
             part for part in self.parts if not isinstance(part, TextPart)
         ]
         if value:
-            self.parts.insert(min(index, len(self.parts)), TextPart(value))
+            self.parts.insert(min(index, len(self.parts)), TextPart(text=value))
 
     @property
     def reasoning(self) -> str:
@@ -157,41 +116,49 @@ class _PartBacked:
             part for part in self.parts if not isinstance(part, ReasoningPart)
         ]
         if value:
-            self.parts.insert(0, ReasoningPart(value))
+            self.parts.insert(0, ReasoningPart(text=value))
 
     @property
     def tool_calls(self) -> list[ToolCall]:
         return [
-            part.call for part in self.parts if isinstance(part, ToolCallPart)
+            part for part in self.parts if isinstance(part, ToolCall)
         ]
 
     @tool_calls.setter
     def tool_calls(self, value: list[ToolCall]) -> None:
         self.parts = [
-            part for part in self.parts if not isinstance(part, ToolCallPart)
+            part for part in self.parts if not isinstance(part, ToolCall)
         ]
-        self.parts.extend(ToolCallPart(call) for call in value)
+        self.parts.extend(
+            ToolCall.model_validate(call, from_attributes=True) for call in value
+        )
 
     @property
     def images(self) -> list[ImageContent]:
-        return [part.image for part in self.parts if isinstance(part, ImagePart)]
+        return [
+            ImageContent(path=part.path, media_type=part.media_type, size=part.size)
+            for part in self.parts
+            if isinstance(part, ImagePart)
+        ]
 
 
 @dataclass(init=False)
 class Message(_PartBacked):
     role: str
-    parts: list[ContentPart]
+    parts: Sequence[ContentPart]
     tool_call_id: str
+    input_id: str
     name: str
     status: str
-    additional_kwargs: dict[str, Any]
-    response_metadata: dict[str, Any]
-    usage_metadata: dict[str, Any]
-    artifact: Any
-    data: Any
-    error: dict[str, Any] | None
-    client_events: list[dict[str, Any]]
+    data: JsonValue
+    additional_kwargs: dict[str, JsonValue]
+    response_metadata: dict[str, JsonValue]
+    usage_metadata: dict[str, JsonValue]
+    artifact: ArtifactInput
+    error: dict[str, JsonValue] | None
+    client_events: list[ClientEvent]
     turn_complete: bool
+    _sealed: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -199,31 +166,36 @@ class Message(_PartBacked):
         content: str = "",
         tool_calls: list[ToolCall] | None = None,
         tool_call_id: str = "",
+        input_id: str = "",
         name: str = "",
         status: str = "",
-        additional_kwargs: dict[str, Any] | None = None,
-        response_metadata: dict[str, Any] | None = None,
-        usage_metadata: dict[str, Any] | None = None,
-        artifact: Any = None,
+        data: JsonValue = None,
+        additional_kwargs: dict[str, JsonValue] | None = None,
+        response_metadata: dict[str, JsonValue] | None = None,
+        usage_metadata: dict[str, JsonValue] | None = None,
+        artifact: ArtifactInput = None,
         images: list[ImageContent] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
-        data: Any = None,
-        error: dict[str, Any] | None = None,
-        client_events: list[dict[str, Any]] | None = None,
+        error: dict[str, JsonValue] | None = None,
+        client_events: list[ClientEvent] | None = None,
         turn_complete: bool = False,
     ) -> None:
+        self._sealed = False
         self.role = role
         self.tool_call_id = tool_call_id
+        self.input_id = input_id
         self.name = name
         self.status = status
+        self.data = data
         self.additional_kwargs = dict(additional_kwargs or {})
         self.response_metadata = dict(response_metadata or {})
         self.usage_metadata = dict(usage_metadata or {})
         self.artifact = artifact
-        self.data = data
         self.error = dict(error) if error is not None else None
-        self.client_events = list(client_events or [])
+        self.client_events = [
+            ClientEvent.model_validate(event) for event in (client_events or [])
+        ]
         self.turn_complete = turn_complete
         if parts is not None:
             self.parts = list(parts)
@@ -235,41 +207,132 @@ class Message(_PartBacked):
             tool_calls=tool_calls,
         )
 
-    def fingerprint(self) -> int:
-        """Cheap stable fingerprint for persisted-message change detection.
+    def __setattr__(self, name: str, value: object) -> None:
+        if name != "_sealed" and self._sealed:
+            raise RuntimeError("A message in ConversationHistory is immutable")
+        object.__setattr__(self, name, value)
 
-        ``str`` hashes are cached, so fingerprinting large message content is
-        much cheaper than serializing it while still catching in-place edits.
-        """
-        return hash((
-            self.role,
-            str(self.content or ""),
-            self.tool_call_id,
-            self.status,
-            self.name,
-            len(self.parts),
-            len(self.additional_kwargs or {}),
-            len(self.usage_metadata or {}),
-            len(self.response_metadata or {}),
-            self.data is not None,
-            self.error is not None,
-        ))
+    def seal(self) -> None:
+        if self._sealed:
+            return
+        self.parts = _FrozenList(_freeze_part(part) for part in self.parts)
+        self.additional_kwargs = _freeze_object(self.additional_kwargs)
+        self.response_metadata = _freeze_object(self.response_metadata)
+        self.usage_metadata = _freeze_object(self.usage_metadata)
+        self.data = _freeze_json(self.data)
+        self.artifact = _freeze_artifact(self.artifact)
+        self.error = _freeze_object(self.error) if self.error is not None else None
+        self.client_events = _FrozenList(
+            _freeze_client_event(event) for event in self.client_events
+        )
+        self._sealed = True
 
+
+class _FrozenDict(dict[str, JsonValue]):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("A message in ConversationHistory is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> "_FrozenDict":
+        return self
+
+
+class _FrozenList(list[JsonValue]):
+    def _immutable(self, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("A message in ConversationHistory is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> "_FrozenList":
+        return self
+
+
+def _freeze_part(part: ContentPart) -> ContentPart:
+    if isinstance(part, ReasoningPart):
+        return ReasoningPart.model_construct(
+            type="reasoning",
+            text=part.text,
+            provider_data=_freeze_object(part.provider_data),
+        )
+    if isinstance(part, ToolCall):
+        return ToolCall.model_construct(
+            id=part.id,
+            name=part.name,
+            args=_freeze_object(part.args),
+            type="tool_call",
+        )
+    return part
+
+
+def _freeze_client_event(event: ClientEvent) -> ClientEvent:
+    return ClientEvent.model_construct(
+        type=event.type,
+        data=_freeze_object(event.data),
+    )
+
+
+def _freeze_object(value: Mapping[str, JsonValue]) -> _FrozenDict:
+    return _FrozenDict({key: _freeze_json(item) for key, item in value.items()})
+
+
+def _freeze_json(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_freeze_json(item) for item in value)
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Message JSON object keys must be strings")
+        return _freeze_object(value)
+    raise TypeError(
+        f"Message persisted fields must be JSON-compatible, got {type(value).__name__}"
+    )
+
+
+def _freeze_artifact(value: ArtifactInput) -> ArtifactInput:
+    if isinstance(value, ArtifactRef):
+        return value
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_freeze_artifact(item) for item in value)
+    if isinstance(value, Mapping):
+        return _freeze_object(value)
+    if value is None:
+        return None
+    raise TypeError(f"Unsupported message artifact value: {type(value).__name__}")
 
 @dataclass(init=False)
 class ModelResponse(_PartBacked):
     parts: list[ContentPart]
-    response_metadata: dict[str, Any]
-    usage_metadata: dict[str, Any]
-    additional_kwargs: dict[str, Any]
+    response_metadata: dict[str, JsonValue]
+    usage_metadata: dict[str, JsonValue]
+    additional_kwargs: dict[str, JsonValue]
 
     def __init__(
         self,
         content: str = "",
         tool_calls: list[ToolCall] | None = None,
-        response_metadata: dict[str, Any] | None = None,
-        usage_metadata: dict[str, Any] | None = None,
-        additional_kwargs: dict[str, Any] | None = None,
+        response_metadata: dict[str, JsonValue] | None = None,
+        usage_metadata: dict[str, JsonValue] | None = None,
+        additional_kwargs: dict[str, JsonValue] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
     ) -> None:
@@ -293,9 +356,9 @@ class ModelChunk:
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_chunks: list[ToolCallDelta] = field(default_factory=list)
-    response_metadata: dict[str, Any] = field(default_factory=dict)
-    usage_metadata: dict[str, Any] = field(default_factory=dict)
-    additional_kwargs: dict[str, Any] = field(default_factory=dict)
+    response_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    usage_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    additional_kwargs: dict[str, JsonValue] = field(default_factory=dict)
 
 
 __all__ = [
@@ -307,6 +370,4 @@ __all__ = [
     "ModelResponse",
     "ReasoningPart",
     "TextPart",
-    "ToolCallPart",
-    "part_from_dict",
 ]

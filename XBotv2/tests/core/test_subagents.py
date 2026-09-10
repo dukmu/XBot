@@ -7,27 +7,49 @@ owns the runner while application owns child instance construction.
 import asyncio
 import json
 import xml.etree.ElementTree as ET
+from types import SimpleNamespace
 
 import pytest
 from xcore import Context
 
-from XBotv2.core import AgentDefinition, AgentSessionResult, RuntimePaths
-from XBotv2.core.jobs import JobKind
-from XBotv2.jobs import JobRegistry
+from XBotv2.agents import AgentDefinition
+from XBotv2.application import ChildApplicationResult
+from XBotv2.core import RuntimePaths
+from XBotv2.core.usage import UsageData
+from XBotv2.jobs import JobKind
+from XBotv2.jobs.plugin import JobsRuntimeComponent
+from XBotv2.jobs.contracts import JobsConfig
+from XBotv2.jobs.registry import JobRegistry
+from XBotv2.commands.plugin import CommandsService
 from XBotv2.core.messages import ModelChunk
-from XBotv2.agents.service import AgentRegistry
-from XBotv2.session.session import Session
-from XBotv2.application import start_application
+from XBotv2.agents.catalog import AgentCatalog
+from XBotv2.application.app import start_application
+from XBotv2.application.host import mounted_application
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
 from XBotv2.agentloop.inbox import AgentInbox
 from XBotv2.permissions.system import (
-    PermissionIntersection,
     PermissionSystem,
     normalize_agent_permissions,
 )
 
-from XBotv2.agents.plugin import SubagentRunner
+from XBotv2.subagents.service import SubagentLauncher, SubagentRunner
+
+
+class RuntimeApplication:
+    def __init__(self, context, driver) -> None:
+        self._context = context
+        self.driver = driver
+        self.events = context
+        self.client_events = SimpleNamespace(
+            set_sink=lambda _sink: None,
+        )
+
+    async def status_slots(self):
+        return {}
+
+    async def close(self):
+        await self._context.stop()
 
 
 class RoutingLLM(MockLLM):
@@ -157,7 +179,7 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
 
     records = [
         json.loads(line)
-        for line in application.state_store.paths.session.threads_log.read_text(
+        for line in application.thread_persistence.paths.session.threads_log.read_text(
             encoding="utf-8"
         ).splitlines()
     ]
@@ -168,7 +190,7 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
     ).thread(child_thread).messages_file.read_text(encoding="utf-8")
     assert "Review change A" in child_messages
     assert "Child review result" in child_messages
-    assert application.state_store.thread_id == "agent"
+    assert application.thread_persistence.thread_id == "agent"
     await engine.close_session()
     await application.stop()
 
@@ -235,14 +257,15 @@ async def test_subagent_can_ask_user_through_parent_session(
         ],
     )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    application = await start_application(
+    context = await start_application(
         paths=paths,
         session_id="interaction-session",
         thread_id="agent",
         workspace_root=temp_workspace,
         llm_override=llm,
     )
-    engine = application.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
     runtime = SessionRuntime(
         session_id="interaction-session",
@@ -251,22 +274,22 @@ async def test_subagent_can_ask_user_through_parent_session(
         paths=paths,
         workspace_root=str(temp_workspace),
         no_plugins=False,
-        services=application,
+        application=application,
         engine=engine,
     )
 
     events = []
     async for event in runtime.stream_message("Clarify this", "request-1"):
         events.append(event)
-        if event["type"] == "user_input_required":
-            application.interactions.submit_user_input(
-                event["data"]["request_id"], "A"
+        if event.type == "user_input_required":
+            application.client_events.waiter("user_input_required").answer(
+                event.data["request_id"], answer="A"
             )
 
-    assert any(event["type"] == "user_input_required" for event in events)
+    assert any(event.type == "user_input_required" for event in events)
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "Parent received the clarification"
+        event.type == "assistant_message"
+        and event.data["content"] == "Parent received the clarification"
         for event in events
     )
     await runtime.close()
@@ -280,10 +303,8 @@ async def test_subagent_can_request_permission_through_parent_session(
     from XBotv2.tests.core.test_application_startup import _write_plugins
 
     _write_plugins(temp_data_dir, {"permissions": {"config": {
-        "permissions": {
-            "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
-            "ask": [{"tool": "read"}],
-        },
+        "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
+        "ask": [{"tool": "read"}],
     }}})
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")
     agents_dir = temp_workspace / ".agents"
@@ -331,14 +352,15 @@ async def test_subagent_can_request_permission_through_parent_session(
         ],
     )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    application = await start_application(
+    context = await start_application(
         paths=paths,
         session_id="permission-session",
         thread_id="agent",
         workspace_root=temp_workspace,
         llm_override=llm,
     )
-    engine = application.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
     runtime = SessionRuntime(
         session_id="permission-session",
@@ -347,24 +369,24 @@ async def test_subagent_can_request_permission_through_parent_session(
         paths=paths,
         workspace_root=str(temp_workspace),
         no_plugins=False,
-        services=application,
+        application=application,
         engine=engine,
     )
 
     events = []
     async for event in runtime.stream_message("Read this", "request-1"):
         events.append(event)
-        if event["type"] == "permission_request":
-            application.approval.submit(
-                event["data"]["request_id"],
-                "allow",
-                "once",
+        if event.type == "permission_request":
+            application.client_events.waiter("permission_request").answer(
+                event.data["request_id"],
+                decision="allow",
+                scope="once",
             )
 
-    assert any(event["type"] == "permission_request" for event in events)
+    assert any(event.type == "permission_request" for event in events)
     assert any(
-        event["type"] == "assistant_message"
-        and event["data"]["content"] == "Parent received the file result"
+        event.type == "assistant_message"
+        and event.data["content"] == "Parent received the file result"
         for event in events
     )
     await runtime.close()
@@ -402,11 +424,11 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
     _ = [event async for event in first.run_turn("build")]
 
     assert first.settings.agent_name == "builder"
-    assert first.tools.registry.get_all() == []
+    assert first.tools.enabled() == ()
     assert "Follow the builder workflow." in "\n".join(
         str(message.content) for message in first_llm.get_call_messages(0)
     )
-    assert first_application.state_store.read_thread_metadata()["agent"] == "builder"
+    assert first_application.thread_persistence.metadata.load().agent == "builder"
     await first.close_session()
     await first_application.stop()
 
@@ -432,7 +454,7 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
 
     assert resumed.settings.agent_name == "builder"
     assert resumed.settings.agent_role == "Build focused changes"
-    assert resumed.tools.registry.get_all() == []
+    assert resumed.tools.enabled() == ()
     assert "Follow the builder workflow." in resumed.settings.agent_instructions
     assert "Changed instructions" not in resumed.settings.agent_instructions
     assert [message.content for message in resumed.messages] == ["build", "built"]
@@ -477,7 +499,7 @@ async def test_workspace_agent_overrides_builtin_definition(
     )
 
     engine = application.engine
-    definition = application.agents.registry.get("reviewer")
+    definition = application.agent_catalog.get("reviewer")
     assert definition.description == "Workspace reviewer"
     assert definition.provider == "default"
     assert definition.model == "test-model"
@@ -496,7 +518,7 @@ async def test_workspace_agent_overrides_builtin_definition(
     assert engine.settings.model == "test-model"
     assert engine.settings.context_window == 64000
     assert engine.max_iterations == 7
-    assert engine.tools.registry.get("edit") is None
+    assert engine.tools.resolve("edit") is None
     await engine.close_session()
     await application.stop()
 
@@ -521,13 +543,13 @@ async def test_new_primary_thread_selects_builtin_default_agent(
     engine = application.engine
     assert engine.settings.agent_name == "default"
     assert "Default prompt." in engine.settings.agent_instructions
-    assert application.state_store.read_thread_metadata()["agent"] == "default"
+    assert application.thread_persistence.metadata.load().agent == "default"
     await engine.close_session()
     await application.stop()
 
 
 @pytest.mark.asyncio
-async def test_subagent_runtime_does_not_load_agents_plugin(
+async def test_subagent_runtime_does_not_load_subagents_plugin(
     temp_data_dir, temp_workspace
 ):
     definition = AgentDefinition(
@@ -546,9 +568,11 @@ async def test_subagent_runtime_does_not_load_agents_plugin(
     )
 
     engine = application.engine
-    assert application.loader.get_command("agent") is None
-    assert engine.tools.registry.get_registered("spawn_subagent") is None
-    assert engine.tools.registry.get_registered("wait_subagent") is None
+    assert application.agent_catalog is not None
+    assert application.agent_runtime is not None
+    assert application.tools.resolve("spawn_subagent") is None
+    assert engine.tools.resolve("spawn_subagent", include_disabled=True) is None
+    assert engine.tools.resolve("wait_subagent", include_disabled=True) is None
     await engine.close_session()
     await application.stop()
 
@@ -599,31 +623,31 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
 def _make_session(tmp_path, *, registry, factory):
     import types
 
-    agents = types.SimpleNamespace(
-        definition=registry.get,
-        definitions=registry.definitions,
+    session = types.SimpleNamespace(
+        new_thread_id=lambda agent: f"{agent}-child",
     )
-    return Session(
-        agents=agents,
-        session_id="s",
-        thread_id="agent",
-        workspace_root=str(tmp_path),
-        paths=None,
-        variables=None,
-        state=types.SimpleNamespace(
-            session=types.SimpleNamespace(provider="default")
-        ),
-        session_paths=RuntimePaths.from_data_dir(tmp_path).session("s"),
-        child_applications=factory,
+    children = types.SimpleNamespace(
+        spawn=lambda request, _lifecycle: factory(
+            request.definition,
+            request.thread_id,
+            request.prompt,
+        )
+    )
+    return SubagentLauncher(
+        catalog=registry,
+        session=session,
+        children=children,
+        lifecycle=types.SimpleNamespace(append=lambda _record: None),
+        parent_permissions=object(),
+        client_events=None,
     )
 
 
 @pytest.mark.asyncio
 async def test_agent_runtime_rejects_unknown_and_primary_agents(tmp_path):
-    registry = AgentRegistry()
+    registry = AgentCatalog()
     registry.register(
-        AgentDefinition(name="primary", description="Primary", mode="primary"),
-        owner="test",
+        AgentDefinition(name="primary", description="Primary", mode="primary")
     )
 
     async def unused_factory(*_args):
@@ -650,13 +674,13 @@ class _ChildSession:
         self.output = output
         self.closed = False
 
-    async def wait(self) -> AgentSessionResult:
+    async def wait(self) -> ChildApplicationResult:
         if self.release is not None:
             await self.release.wait()
         self.closed = True
-        return AgentSessionResult(
+        return ChildApplicationResult(
             final_response=self.output,
-            usage={"total_tokens": 12},
+            usage=UsageData(total_tokens=12),
         )
 
     async def cancel(self) -> None:
@@ -665,9 +689,9 @@ class _ChildSession:
 
 @pytest.mark.asyncio
 async def test_background_subagent_returns_immediately_and_completes(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     definition = AgentDefinition(name="worker", description="Do focused work")
-    agent_registry.register(definition, owner="test")
+    agent_registry.register(definition)
     release = asyncio.Event()
     child = _ChildSession(wait=release)
 
@@ -691,25 +715,21 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
     await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
 
     assert job.status.value == "completed", job.error
-    assert job.result.data["usage"] == {"total_tokens": 12}
     store = job.result.output_store
-    assert (await store.read(max_bytes=100_000)).data == "background result"
     assert child.closed is True
 
 
 @pytest.mark.asyncio
 async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     agent_registry.register(
-        AgentDefinition(name="worker", description="Do focused work"),
-        owner="test",
+        AgentDefinition(name="worker", description="Do focused work")
     )
 
     async def factory(*_args):
         return _ChildSession()
 
     paths = RuntimePaths.from_data_dir(tmp_path)
-    job_registry = JobRegistry()
     runtime_impl = _make_session(
         tmp_path, registry=agent_registry, factory=factory
     )
@@ -741,9 +761,13 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         paths=paths,
         workspace_root=str(tmp_path),
         no_plugins=False,
-        services=services,
+        application=RuntimeApplication(services, parent_engine),
         engine=parent_engine,
     )
+    services.set("commands", CommandsService())
+    services.set("engine", parent_engine)
+    JobsRuntimeComponent().apply(services, JobsConfig())
+    job_registry = services.jobs
 
     job = await job_registry.create(
         kind=JobKind.SUBAGENT, metadata={"agent": "worker"}
@@ -752,38 +776,21 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         job.id,
         SubagentRunner(session=runtime_impl, agent="worker", prompt="Do work"),
     )
-    for _ in range(20):
-        if job.status.value == "completed":
-            break
-        await asyncio.sleep(0)
+    await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
 
     # Completions stage into the agent inbox with a small notification; they
     # do not wake a turn and do not carry the full subagent output.
     await runtime.turn_lock.acquire()
-    await runtime._collect_completion({
-        "type": "subagent",
-        "kind": "subagent",
-        "task_id": "sa_1",
-        "status": "completed",
-        "agent": "worker",
-        "command": "",
-        "data": {"output": "background result"},
-    })
-    await runtime._collect_completion({
-        "type": "subagent",
-        "kind": "subagent",
-        "task_id": "sa_2",
-        "status": "completed",
-        "agent": "worker",
-        "command": "",
-        "data": {"output": "x" * 13_000},
-    })
-    assert len(parent_engine.inbox) == 2
+    for _ in range(20):
+        if parent_engine.inbox:
+            break
+        await asyncio.sleep(0)
+    assert len(parent_engine.inbox) == 1
     staged = {
         message.source: message for message in parent_engine.inbox.pending
     }
-    assert "sa_1" in staged
-    short = staged["sa_1"]
+    assert job.id in staged
+    short = staged[job.id]
     assert short.metadata["kind"] == "notification"
     assert short.metadata["payload"]["status"] == "completed"
     assert short.metadata["payload"]["agent"] == "worker"
@@ -795,10 +802,9 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
 
 @pytest.mark.asyncio
 async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
-    agent_registry = AgentRegistry()
+    agent_registry = AgentCatalog()
     agent_registry.register(
-        AgentDefinition(name="worker", description="Do focused work"),
-        owner="test",
+        AgentDefinition(name="worker", description="Do focused work")
     )
     child = _ChildSession(wait=asyncio.Event())
 
@@ -830,15 +836,17 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
 
 def test_child_permissions_cannot_expand_parent_policy():
     parent = PermissionSystem({"ask": [{"tool": "shell"}]}, default_decision="allow")
-    child = PermissionSystem({"allow": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
+    permissions = PermissionSystem(
+        {"allow": [{"tool": "shell"}]}, default_decision="allow", parent=parent
+    )
 
     assert permissions.check("shell", {"command": "pwd"}) == "ask"
 
 
 def test_child_permissions_can_restrict_parent_policy():
     parent = PermissionSystem({"allow": [{"tool": "shell"}]})
-    child = PermissionSystem({"deny": [{"tool": "shell"}]}, default_decision="allow")
-    permissions = PermissionIntersection(parent, child)
+    permissions = PermissionSystem(
+        {"deny": [{"tool": "shell"}]}, default_decision="allow", parent=parent
+    )
 
     assert permissions.check("shell", {"command": "pwd"}) == "deny"

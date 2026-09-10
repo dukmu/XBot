@@ -1,6 +1,7 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
+import types
 from pathlib import Path
 
 import pytest
@@ -12,15 +13,15 @@ def parse(argv: list[str]) -> argparse.Namespace:
     return cli._parse_args(argv)[1]
 
 
-def test_default_command_is_terminal():
+def test_default_command_is_tui():
     args = parse([])
 
-    assert args.command == "terminal"
+    assert args.command == "tui"
     assert args.provider == "default"
     assert args.thread == "agent"
 
 
-@pytest.mark.parametrize("command", ["serve", "tui", "web", "terminal"])
+@pytest.mark.parametrize("command", ["serve", "tui", "web"])
 def test_named_commands(command):
     args = parse([command, "--provider", "minimax", "--workspace", "work"])
 
@@ -40,7 +41,7 @@ def test_workspace_defaults_to_startup_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("XBOT_WORKSPACE", "/ignored/environment/workspace")
     monkeypatch.chdir(tmp_path)
 
-    args = parse(["terminal"])
+    args = parse(["tui"])
 
     assert args.workspace is None
     assert cli._workspace_root(args) == tmp_path.resolve()
@@ -170,9 +171,28 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from XBotv2.protocol import http_server
+    from XBotv2.server import http
 
-    monkeypatch.setattr(http_server, "create_app", lambda **_kwargs: object())
+    class _FakeApp:
+        def __init__(self) -> None:
+            self.state = types.SimpleNamespace(manager=object())
+            self.routes: list[object] = []
+            self.exception_handlers: dict[object, object] = {}
+
+        def include_router(self, router: object) -> None:
+            self.routes.append(router)
+
+        def exception_handler(self, exc_class: object):
+            def _decorate(handler):
+                self.exception_handlers[exc_class] = handler
+                return handler
+
+            return _decorate
+
+        def add_exception_handler(self, exc_class: object, handler: object) -> None:
+            self.exception_handlers[exc_class] = handler
+
+    monkeypatch.setattr(http, "create_app", lambda **_kwargs: _FakeApp())
     served = {}
     monkeypatch.setattr(
         uvicorn,
@@ -187,48 +207,3 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
     assert socket_path.parent.is_dir()
     assert served["uds"] == str(socket_path)
-
-
-@pytest.mark.asyncio
-async def test_terminal_permission_choice_can_apply_to_session(monkeypatch):
-    async def read_input(_function, _prompt):
-        return "a"
-
-    monkeypatch.setattr(cli.asyncio, "to_thread", read_input)
-
-    result = await cli._terminal_interaction({
-        "type": "permission_request",
-        "data": {
-            "request_id": "permission:c1",
-            "tool_call": {"name": "filesystem_write"},
-        },
-    })
-
-    assert result == {
-        "request_id": "permission:c1",
-        "status": "answered",
-        "decision": "allow",
-        "scope": "session",
-    }
-
-
-@pytest.mark.asyncio
-async def test_terminal_user_choice_returns_option_label(monkeypatch):
-    async def read_input(_function, _prompt):
-        return "2"
-
-    monkeypatch.setattr(cli.asyncio, "to_thread", read_input)
-
-    result = await cli._terminal_interaction({
-        "type": "user_input_required",
-        "data": {
-            "request_id": "user_input:c1",
-            "question": "Which mode?",
-            "options": [
-                {"label": "Fast", "description": "Use fewer tokens"},
-                {"label": "Thorough", "description": "Inspect more files"},
-            ],
-        },
-    })
-
-    assert result["answer"] == "Thorough"

@@ -1,0 +1,113 @@
+import { XBotApi, XBotApiError } from "../api/client";
+import type { OpenSessionResponse, ServerEvent } from "../api/types";
+
+type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
+
+export interface SessionEventListener {
+  onEvent(event: ServerEvent): void;
+  onConnection(connected: boolean): void;
+  onDisconnect(error: unknown, retrying: boolean): void;
+  /** The replay cursor can no longer describe a contiguous stream. */
+  onResetRequired(): void;
+}
+
+export class SessionEventConnection {
+  private controller: AbortController | null = null;
+  private generation = 0;
+
+  constructor(
+    private readonly api: Pick<XBotApi, "streamEvents">,
+    private readonly retryDelay = defaultRetryDelay,
+  ) {}
+
+  start(session: SessionAddress, listener: SessionEventListener): void {
+    this.stop();
+    const generation = this.generation;
+    const controller = new AbortController();
+    this.controller = controller;
+    void this.consume(session, listener, controller, generation);
+  }
+
+  stop(): void {
+    this.generation += 1;
+    this.controller?.abort();
+    this.controller = null;
+  }
+
+  private async consume(
+    session: SessionAddress,
+    listener: SessionEventListener,
+    controller: AbortController,
+    generation: number,
+  ): Promise<void> {
+    let attempt = 0;
+    let cursor = session.event_cursor;
+    while (this.isCurrent(controller, generation)) {
+      try {
+        for await (const event of this.api.streamEvents(
+          session.session_id,
+          session.thread_id,
+          cursor,
+          controller.signal,
+        )) {
+          if (!this.isCurrent(controller, generation)) return;
+          if (event.sequence <= cursor) continue;
+          if (event.sequence !== cursor + 1) {
+            listener.onConnection(false);
+            listener.onResetRequired();
+            listener.onDisconnect(
+              new Error(`Session event stream gap: expected ${cursor + 1}, received ${event.sequence}`),
+              false,
+            );
+            return;
+          }
+          attempt = 0;
+          listener.onConnection(true);
+          listener.onEvent(event);
+          cursor = event.sequence;
+        }
+        if (!this.isCurrent(controller, generation)) return;
+        listener.onConnection(false);
+        listener.onDisconnect(new Error("Session event stream ended unexpectedly"), true);
+      } catch (error) {
+        if (!this.isCurrent(controller, generation)) return;
+        if (error instanceof XBotApiError && error.code === "session_event_cursor_expired") {
+          listener.onConnection(false);
+          listener.onResetRequired();
+          listener.onDisconnect(error, false);
+          return;
+        }
+        const retrying = isRetryable(error);
+        listener.onConnection(false);
+        listener.onDisconnect(error, retrying);
+        if (!retrying) return;
+      }
+      attempt += 1;
+      try {
+        await this.retryDelay(Math.min(250 * 2 ** (attempt - 1), 4000), controller.signal);
+      } catch {
+        return;
+      }
+    }
+  }
+
+  private isCurrent(controller: AbortController, generation: number): boolean {
+    return !controller.signal.aborted
+      && controller === this.controller
+      && generation === this.generation;
+  }
+}
+
+function isRetryable(error: unknown): boolean {
+  return !(error instanceof XBotApiError) || error.retryable;
+}
+
+function defaultRetryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, milliseconds);
+    signal.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    }, { once: true });
+  });
+}

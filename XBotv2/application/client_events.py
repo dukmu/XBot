@@ -7,11 +7,13 @@ feature plugin that may need a client response.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Callable
+from functools import partial
 
+from XBotv2.application.contracts import ClientEventSink, InteractionWaiterPort
+from pydantic import JsonValue
 
-ClientEventSink = Callable[..., Awaitable[dict[str, Any]]]
+from XBotv2.core.tools import ClientEvent
 
 
 class ClientEventRouter:
@@ -20,7 +22,7 @@ class ClientEventRouter:
     def __init__(self, parent: "ClientEventRouter | None" = None) -> None:
         self._parent = parent
         self._sink: ClientEventSink | None = None
-        self._waiters: dict[str, Any] = {}
+        self._waiters: dict[str, InteractionWaiterPort] = {}
 
     def set_sink(self, sink: ClientEventSink | None) -> ClientEventSink | None:
         previous = self._sink
@@ -29,11 +31,11 @@ class ClientEventRouter:
 
     async def request(
         self,
-        event: dict[str, Any],
+        event: ClientEvent,
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         if self._sink is not None:
             return await self._sink(
                 event,
@@ -48,23 +50,27 @@ class ClientEventRouter:
             )
         return None
 
-    def register_waiter(self, event_type: str, waiter: Any) -> Callable[[], bool]:
+    def register_waiter(
+        self,
+        event_type: str,
+        waiter: InteractionWaiterPort,
+    ) -> Callable[[], bool]:
         if event_type in self._waiters:
             raise ValueError(f"client event waiter already registered: {event_type}")
         self._waiters[event_type] = waiter
 
-        def dispose() -> bool:
-            return self._waiters.pop(event_type, None) is waiter
+        return partial(self._unregister_waiter, event_type, waiter)
 
-        return dispose
+    def _unregister_waiter(
+        self, event_type: str, waiter: InteractionWaiterPort
+    ) -> bool:
+        return self._waiters.pop(event_type, None) is waiter
 
-    def waiter(self, event_type: str) -> Any | None:
+    def waiter(self, event_type: str) -> InteractionWaiterPort | None:
         return self._waiters.get(event_type)
 
     def pending_request_ids(self) -> list[str]:
         pending: list[str] = []
         for waiter in self._waiters.values():
-            request_ids = getattr(waiter, "pending_request_ids", None)
-            if callable(request_ids):
-                pending.extend(request_ids())
+            pending.extend(waiter.pending_request_ids())
         return pending

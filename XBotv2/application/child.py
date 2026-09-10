@@ -3,71 +3,62 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
 
-from XBotv2.core.agents import AgentSessionResult, SubagentTurnError
-from XBotv2.core.paths import SessionPaths
+from XBotv2.application.host import mounted_application
+from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
+from XBotv2.application import ChildApplicationError, ChildApplicationResult
+from XBotv2.persistence import ThreadLifecycleRecord
+from XBotv2.persistence import ThreadLifecycleWriterPort
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.providers import BaseProvider
 
 
 @dataclass(slots=True)
 class ChildApplications:
     """Create child Agent applications from one bound parent application."""
 
-    paths: Any
+    paths: RuntimePaths
     provider_name: str
     session_id: str
-    workspace_root: Any
-    plugin_dirs: list[Any] | None
-    llm_override: Any
+    workspace_root: Path
+    no_plugins: bool
+    plugin_dirs: list[Path | str] | None
+    llm_override: BaseProvider | None
     parent_thread_id: str
     interactive: bool
-    session_paths: SessionPaths
-    _parent: Any = None
-
-    def bind(self, parent: Any) -> None:
-        self._parent = parent
-
-    async def __call__(
+    async def spawn(
         self,
-        definition: Any,
-        child_thread_id: str,
-        prompt: str,
+        request: ChildApplicationRequest,
+        lifecycle: ThreadLifecycleWriterPort,
     ) -> "ChildApplicationSession":
-        if self._parent is None:
-            raise RuntimeError("child application factory is not bound")
         from XBotv2.application.app import start_application
 
         child_ctx = await start_application(
             paths=self.paths,
-            provider_name=definition.provider or self.provider_name,
+            provider_name=request.definition.provider or self.provider_name,
             session_id=self.session_id,
-            thread_id=child_thread_id,
+            thread_id=request.thread_id,
             workspace_root=self.workspace_root,
+            no_plugins=self.no_plugins,
             plugin_dirs=self.plugin_dirs,
             llm_override=self.llm_override,
-            agent_definition=definition,
-            parent_permission_system=self._parent.get(
-                "permissions", strict=False
-            ),
+            agent_definition=request.definition,
+            parent_permission_system=request.parent_permissions,
             parent_thread_id=self.parent_thread_id,
             is_subagent=True,
             interactive=self.interactive,
-            client_events=(
-                self._parent.client_events if self.interactive else None
-            ),
+            client_events=request.client_events if self.interactive else None,
         )
         child = ChildApplicationSession(
-            context=child_ctx,
-            prompt=prompt,
-            agent=definition.name,
-            thread_id=child_thread_id,
-            session_paths=self.session_paths,
+            application=mounted_application(child_ctx),
+            prompt=request.prompt,
+            agent=request.definition.name,
+            thread_id=request.thread_id,
             parent_thread_id=self.parent_thread_id,
+            lifecycle=lifecycle,
         )
         child.record_started()
         return child
@@ -75,20 +66,20 @@ class ChildApplications:
 
 @dataclass(slots=True)
 class ChildApplicationSession:
-    """Run and release a child application through the AgentSession contract."""
+    """Run and release a child application through its public handle."""
 
-    context: Any
+    application: AgentApplicationPort
     prompt: str
     agent: str
     thread_id: str
-    session_paths: SessionPaths
     parent_thread_id: str
+    lifecycle: ThreadLifecycleWriterPort
 
     def record_started(self) -> None:
         self._record("started")
 
-    async def wait(self) -> AgentSessionResult:
-        engine = self.context.engine
+    async def wait(self) -> ChildApplicationResult:
+        engine = self.application.driver
         await engine.start_session()
         output = ""
         error = ""
@@ -110,49 +101,47 @@ class ChildApplicationSession:
             self._record("cancelled", error=error)
             raise
 
-        usage_service = self.context.get("usage", strict=False)
-        usage = usage_service.snapshot() if usage_service is not None else {}
+        usage = self.application.usage.snapshot()
         close_error = await self._close()
         if close_error and not error:
             error = close_error
         if error:
             self._record("failed", error=error)
-            raise SubagentTurnError(error)
+            raise ChildApplicationError(error)
         if not output:
             error = "Subagent completed without an assistant response"
             self._record("failed", error=error)
-            raise SubagentTurnError(error)
+            raise ChildApplicationError(error)
         self._record("completed")
-        return AgentSessionResult(final_response=output, usage=usage)
+        return ChildApplicationResult(final_response=output, usage=usage)
 
     async def cancel(self) -> None:
         """The owning job cancels ``wait``; its cancellation path closes us."""
 
     async def _close(self) -> str:
         try:
-            await self.context.engine.close_session()
+            await self.application.driver.close_session()
         except Exception as exc:  # noqa: BLE001 - close errors become results
             return f"Subagent close failed: {exc}"
         finally:
-            await self.context.stop()
+            await self.application.close()
         return ""
 
-    def _record(self, event: str, *, error: str = "") -> None:
-        path = self.session_paths.threads_log
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "event": event,
-            "thread_id": self.thread_id,
-            "parent_thread_id": self.parent_thread_id,
-            "agent": self.agent,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if error:
-            record["error"] = error
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+    def _record(
+        self,
+        event: Literal["started", "completed", "failed", "cancelled"],
+        *,
+        error: str = "",
+    ) -> None:
+        self.lifecycle.append(
+            ThreadLifecycleRecord.create(
+                event,
+                thread_id=self.thread_id,
+                parent_thread_id=self.parent_thread_id,
+                agent=self.agent,
+                error=error,
+            )
+        )
 
 
 __all__ = ["ChildApplicationSession", "ChildApplications"]

@@ -15,6 +15,7 @@ export interface ImageReference {
   path: string;
   media_type: string;
   size: number;
+  url?: string;
 }
 
 export interface UsageData {
@@ -23,6 +24,20 @@ export interface UsageData {
   total_tokens: number;
   requests: number;
   context_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  prompt_cache_write_tokens: number;
+}
+
+export interface SessionStatsData {
+  turns: number;
+  steps: number;
+  llm_ms: number;
+  tool_ms: number;
+  ttft_ms: number;
+  ttft_steps: number;
+  decode_ms: number;
+  decode_tokens: number;
 }
 
 export interface SessionSummary {
@@ -30,6 +45,44 @@ export interface SessionSummary {
   status: "active" | "inactive";
   active_threads: number;
   thread_count: number;
+  blank: boolean;
+  workspace_root?: string;
+  title?: string;
+}
+
+export interface SessionListData {
+  sessions: SessionSummary[];
+  event_cursor: number;
+}
+
+export interface WorkspaceData {
+  workspace_id: string;
+  path: string;
+  title: string;
+  session_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceListData {
+  items: WorkspaceData[];
+  archived_session_ids: string[];
+  event_cursor: number;
+}
+
+export interface DirectoryEntryData {
+  name: string;
+  path: string;
+  hidden: boolean;
+}
+
+export interface DirectoryListingData {
+  path: string;
+  parent: string | null;
+  home: string;
+  separator: "/" | "\\";
+  entries: DirectoryEntryData[];
+  truncated: boolean;
 }
 
 export interface ThreadSummary {
@@ -46,13 +99,18 @@ export interface ThreadSummary {
   context_window: number;
   message_count: number;
   usage: UsageData;
+  session_stats: SessionStatsData;
   pending_interactions: string[];
   status_slots: Record<string, string>;
+  workspace_root?: string;
+  title?: string;
 }
 
 export interface HistoryItem {
   role: "user" | "assistant" | "tool";
+  id?: string;
   content: string;
+  reasoning?: string;
   tool_calls: JsonObject[];
   tool_call_id: string;
   status: string;
@@ -61,6 +119,7 @@ export interface HistoryItem {
   artifacts: JsonObject[];
   images: ImageReference[];
   runtime?: Record<string, string> | null;
+  timing?: Record<string, number> | null;
 }
 
 export interface OpenSessionResponse {
@@ -74,17 +133,115 @@ export interface OpenSessionResponse {
   model_mode: string;
   context_window: number;
   usage: UsageData;
+  session_stats: SessionStatsData;
   history: HistoryItem[];
+  history_cursor?: string | null;
+  event_cursor: number;
   status_slots: Record<string, string>;
+  pending_inputs: PendingInput[];
+}
+
+export interface PendingInput {
+  message_id: string;
+  content: string;
+  target: "next-turn" | "next-step";
+  source: string;
+  image_count: number;
+  artifact_count: number;
+}
+
+export type PermissionDecision = "allow" | "deny" | "ask";
+export type SandboxAccess = "allow" | "deny" | "readonly" | "readwrite";
+
+export interface SessionPolicy {
+  session_id: string;
+  permissions: Record<string, JsonObject[]>;
+  effective_permissions: Record<string, JsonObject[]>;
+  sandbox: JsonObject;
+  effective_sandbox: JsonObject;
+}
+
+export interface SessionPolicyPatch {
+  permissions?: Record<string, PermissionDecision>;
+  remove_permissions?: string[];
+  sandbox?: JsonObject;
+  remove_sandbox?: string[];
+}
+
+export type PluginConfigScope = "global" | "workspace" | "session";
+
+export interface PluginConfigDescriptor {
+  plugin_id: string;
+  name: string;
+  editable: boolean;
+  config_schema: JsonObject | null;
+  scope_config: JsonObject;
+  effective_config: JsonObject;
+  unavailable_reason: string;
+}
+
+export interface PluginConfigCatalog {
+  scope: PluginConfigScope;
+  workspace_root: string;
+  revision: string;
+  applies_to: "new_sessions" | "current_session";
+  plugins: PluginConfigDescriptor[];
+}
+
+export interface MessagePage {
+  messages: HistoryItem[];
+  next_cursor: string | null;
+}
+
+export interface TrajectoryMessageItem {
+  position: number;
+  kind: "message";
+  message_id: string;
+  message: HistoryItem;
+}
+
+export interface TrajectorySurfaceReplaceItem {
+  position: number;
+  kind: "surface_replace";
+  operation: string;
+  transcript: "preserve" | "replace";
+  source_node_ids: string[];
+  messages: HistoryItem[];
+}
+
+export interface TrajectoryEventItem {
+  position: number;
+  kind: "event";
+  event: string;
+  data: JsonObject;
+  timestamp: string;
+}
+
+export type TrajectoryItem =
+  | TrajectoryMessageItem
+  | TrajectorySurfaceReplaceItem
+  | TrajectoryEventItem;
+
+export interface TrajectoryPage {
+  items: TrajectoryItem[];
+  next_cursor: string | null;
 }
 
 export interface ProviderInfo {
   name: string;
   provider: string;
+  default_model: string;
+  models: ModelInfo[];
+}
+
+export interface ModelInfo {
   model: string;
-  max_tokens: number;
+  max_context_tokens: number;
+  max_output_tokens: number | null;
   reasoning_effort: string;
-  thinking_enabled: boolean;
+  effort: string[];
+  thinking: string;
+  input_modalities: ("text" | "image")[];
 }
 
 export interface AgentInfo {
@@ -94,6 +251,30 @@ export interface AgentInfo {
   provider: string;
   model: string;
   context_window: number;
+}
+
+export interface CommandInfo {
+  name: string;
+  slash: string;
+  kind: "client" | "server" | "prompt";
+  description: string;
+  usage: string;
+  examples: string[];
+  parameters: Record<string, unknown>;
+}
+
+export type CommandEffect = "history" | "thread" | "agents" | "tasks" | "commands" | "sessions";
+
+export interface CommandResultData {
+  command: string;
+  status: "ok" | "error";
+  message: string;
+  effects: CommandEffect[];
+}
+
+export interface CommandResult {
+  type: "command_result";
+  data: CommandResultData;
 }
 
 export interface TaskData {
@@ -110,6 +291,11 @@ export interface TaskData {
   agent: string;
   thread_id: string;
   usage: Record<string, unknown>;
+}
+
+export interface TodoItemData {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
 }
 
 export interface ToolCall {
@@ -169,4 +355,18 @@ export const EMPTY_USAGE: UsageData = {
   total_tokens: 0,
   requests: 0,
   context_tokens: 0,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 0,
+  prompt_cache_write_tokens: 0,
+};
+
+export const EMPTY_SESSION_STATS: SessionStatsData = {
+  turns: 0,
+  steps: 0,
+  llm_ms: 0,
+  tool_ms: 0,
+  ttft_ms: 0,
+  ttft_steps: 0,
+  decode_ms: 0,
+  decode_tokens: 0,
 };

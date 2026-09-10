@@ -21,10 +21,15 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger("xcore.state")
 
 
 def _validate_jsonable(value: Any) -> None:
@@ -85,17 +90,32 @@ class StateService:
         else:
             data = {}
         self._shared.data = data
+        logger.debug(
+            "state.loaded path=%s keys=%d",
+            path,
+            len(data),
+        )
         return data
 
     async def _persist(self, data: dict[str, Any]) -> None:
         path = self._shared.path
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        descriptor, temporary = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
         )
-        os.replace(tmp, path)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
 
     # -- public API ---------------------------------------------------------
 
@@ -116,8 +136,17 @@ class StateService:
         full_key = self._full_key(key)
         async with self._shared.lock:
             data = await self._ensure_loaded()
-            data[full_key] = value
-            await self._persist(data)
+            updated = copy.deepcopy(data)
+            updated[full_key] = copy.deepcopy(value)
+            await self._persist(updated)
+            self._shared.data = updated
+            logger.debug(
+                "state.persisted operation=set path=%s namespace=%s key=%s keys=%d",
+                self._shared.path,
+                self._prefix,
+                key,
+                len(updated),
+            )
 
     async def delete(self, key: str) -> None:
         """Remove one key and persist immediately (no-op when absent)."""
@@ -125,20 +154,37 @@ class StateService:
         async with self._shared.lock:
             data = await self._ensure_loaded()
             if full_key in data:
-                del data[full_key]
-                await self._persist(data)
+                updated = copy.deepcopy(data)
+                del updated[full_key]
+                await self._persist(updated)
+                self._shared.data = updated
+                logger.debug(
+                    "state.persisted operation=delete path=%s namespace=%s key=%s keys=%d",
+                    self._shared.path,
+                    self._prefix,
+                    key,
+                    len(updated),
+                )
 
     async def clear(self) -> None:
         """Remove every key in this view's namespace and persist."""
         async with self._shared.lock:
             data = await self._ensure_loaded()
+            updated = copy.deepcopy(data)
             if self._prefix:
-                affected = [k for k in data if k.startswith(self._prefix)]
+                affected = [k for k in updated if k.startswith(self._prefix)]
                 for key in affected:
-                    del data[key]
+                    del updated[key]
             else:
-                data.clear()
-            await self._persist(data)
+                updated.clear()
+            await self._persist(updated)
+            self._shared.data = updated
+            logger.debug(
+                "state.persisted operation=clear path=%s namespace=%s keys=%d",
+                self._shared.path,
+                self._prefix,
+                len(updated),
+            )
 
     async def keys(self) -> list[str]:
         """Snapshot of the keys visible in this view (unprefixed)."""

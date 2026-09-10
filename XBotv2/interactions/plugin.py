@@ -9,47 +9,39 @@ events through an installable live sink (the protocol) or the waiter.
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 import uuid
+from pydantic import JsonValue
 
-from XBotv2.interactions.interactions import InteractionResult, InteractionWaiter
-from XBotv2.core.events import EventContext, Events
+from XBotv2.interactions.interactions import InteractionWaiter
+from XBotv2.interactions.contracts import InteractionsPort, InteractionWaiterPort
+from XBotv2.interactions import UserInputRequiredData
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
+from XBotv2.core.tools import ClientEvent
 
 
-class InteractionsService:
+class InteractionsService(InteractionsPort):
     """Per-engine interaction coordination with an installable event sink."""
 
-    def __init__(self, ctx: Any, client_events: Any) -> None:
-        self.ctx = ctx
-        self.client_events = client_events
+    def __init__(
+        self,
+        events: ApplicationEventsPort,
+        client_events: ClientEventsPort,
+    ) -> None:
+        self._events = events
+        self._client_events = client_events
         self._waiter = InteractionWaiter()
 
     @property
-    def waiter(self) -> InteractionWaiter:
+    def waiter(self) -> InteractionWaiterPort:
         return self._waiter
 
-    # ------------------------------------------------------------------
-    # Session-facing API
-    # ------------------------------------------------------------------
+    def create_waiter(self) -> InteractionWaiterPort:
+        return InteractionWaiter()
 
-    def submit_user_input(self, request_id: str, answer: Any) -> InteractionResult:
-        return self._waiter.answer(request_id, answer=answer)
-
-    def cancel_user_input(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        return self._waiter.cancel(request_id, reason)
-
-    def cancel_pending_user_inputs(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self._waiter.cancel_all(reason)
-
-    def pending_user_input_request_ids(self) -> list[str]:
-        return self._waiter.pending_request_ids()
-
-    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
-        return self._waiter.cancel_all(reason)
-
-    # ------------------------------------------------------------------
-    # User-input interaction (ask_user and friends)
-    # ------------------------------------------------------------------
+    def session_closed(self, _event: EventContext) -> None:
+        self._waiter.cancel_all("session_closed")
 
     async def request_user_input(
         self,
@@ -59,7 +51,7 @@ class InteractionsService:
         source: str = "interaction",
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """Publish and resolve one user-input request owned by this plugin.
 
         The caller owns ``CLIENT_EVENT`` dispatch (the tool pipeline emits
@@ -72,22 +64,23 @@ class InteractionsService:
         ``unsupported``).
         """
         request_id = f"user_input:{tool_call_id or uuid.uuid4().hex}"
-        client_event = {
-            "type": "user_input_required",
-            "data": {
-                "request_id": request_id,
-                "tool_call_id": tool_call_id,
-                "source": source,
-                "question": question,
-                "options": list(options or []),
-                "timeout_seconds": timeout_seconds,
-            },
-        }
-        await self.ctx.emit(
+        payload = UserInputRequiredData(
+            request_id=request_id,
+            tool_call_id=tool_call_id,
+            source=source,
+            question=question,
+            options=list(options or []),
+            timeout_seconds=timeout_seconds,
+        )
+        client_event = ClientEvent(
+            type="user_input_required",
+            data=payload.model_dump(),
+        )
+        await self._events.emit(
             Events.CLIENT_EVENT,
             EventContext(client_event=client_event),
         )
-        sink_result = await self.client_events.request(
+        sink_result = await self._client_events.request(
             client_event,
             timeout_seconds=timeout_seconds,
             tool_call_id=tool_call_id,
@@ -103,7 +96,7 @@ class InteractionsService:
                 "reason": "live_user_input_unsupported",
             }
         return {
-            "answer": getattr(result, "answer", ""),
+            "answer": result.answer,
             "request_id": result.request_id,
             "status": result.status,
             "reason": result.reason,
@@ -113,25 +106,23 @@ class InteractionsService:
 class InteractionsComponent:
     """Register the interactions service as ``ctx.interactions``."""
 
-    inject = ["tools", "client_events"]
+    inject = ["tools", "client_events", "session_launch"]
     name = "xbot.interactions"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        config = config or {}
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = InteractionsService(ctx, ctx.client_events)
         ctx.set("interactions", service)
         ctx.dispose(ctx.client_events.register_waiter(
             "user_input_required", service.waiter
         ))
-        from XBotv2.interactions.tools import ask_user, send_message
+        from XBotv2.interactions.tools import build_ask_user_tool, send_message
 
         ctx.tools.register(send_message)
-        if bool(config.get("interactive", True)):
-            ctx.tools.register(ask_user, injected={"interactions": service})
-        ctx.on(
-            Events.SESSION_CLOSE,
-            lambda _event: service.cancel_all("session_closed"),
-        )
+        if ctx.session_launch.interactive:
+            ctx.tools.register(build_ask_user_tool(service))
+        ctx.on(Events.SESSION_CLOSE, service.session_closed)
 
 
 plugin = InteractionsComponent()

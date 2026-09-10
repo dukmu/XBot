@@ -2,59 +2,65 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
-from XBotv2.core.events import EventContext, Events
-from XBotv2.core.tools import GuardDecision
+from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.core.tools import ClientEvent, GuardDecision, ToolCall
+from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
+from XBotv2.permissions import PermissionsPort
+from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
+from XBotv2.permissions.approval import request_decision
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 
 
-def make_permission_guard(
-    permissions: Any,
-    approval: Any,
-    emit: Callable[[str, Any], Awaitable[Any]],
-    *,
-    record_decision: Callable[[dict[str, Any], str, str], Awaitable[None]] | None = None,
-) -> Any:
-    """Build a guard that resolves tri-state policy inside this plugin."""
+class PermissionGuard:
+    """Resolve tri-state policy through explicit permission dependencies."""
 
-    async def guard(tool_call: Any, _entry: Any) -> GuardDecision | None:
-        decision, reason = permissions.check_tool_call(tool_call)
+    def __init__(
+        self,
+        permissions: PermissionsPort,
+        approval: ApprovalPort,
+        emit: Callable[[str, object], Awaitable[object]],
+        apply_decision: Callable[[ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]],
+    ) -> None:
+        self._permissions = permissions
+        self._approval = approval
+        self._emit = emit
+        self._apply_decision = apply_decision
+
+    async def check(self, tool_call: ToolCall, _entry: ToolRegistration) -> GuardDecision | None:
+        decision, reason = self._permissions.check_tool_call(tool_call)
+        DEFAULT_RUNTIME_LOG.bind("permissions").info(
+            "permission.checked", call_id=tool_call.id, tool=tool_call.name, decision=decision,
+        )
         if decision == "allow":
             return None
         if decision == "deny":
             return GuardDecision("deny", reason, source="permissions")
-        event = {
-            "type": "permission_request",
-            "data": {
-                "request_id": f"permission:{tool_call.id}",
-                "source": "permission_system",
-                "tool_call": tool_call.to_dict(),
-                "decision": "ask",
-                "reason": reason,
-                "resume_supported": False,
-            },
-        }
-        await emit(
-            Events.PERMISSION_REQUEST,
-            EventContext(
+        payload = PermissionRequestData(
+            request_id=f"permission:{tool_call.id}",
+            source="permission_system",
+            tool_call=tool_call,
+            decision="ask",
+            reason=reason,
+            resume_supported=False,
+        )
+        event = ClientEvent(
+            type="permission_request",
+            data=payload.model_dump(exclude_none=True),
+        )
+        await self._emit(
+            PERMISSION_REQUESTED,
+            PermissionRequested(
                 tool_call=tool_call,
                 client_event=event,
             ),
         )
-        result = await approval.request(event) if approval is not None else {
-            "status": "unavailable",
-            "decision": "",
-            "scope": "once",
-        }
-        if str(result.get("decision") or "") != "allow":
+        result = await request_decision(self._approval, event, self._apply_decision)
+        if result.decision != "allow" or self._permissions.check(tool_call.name, tool_call.args) == "deny":
             return GuardDecision(
                 "deny",
                 reason or f"Permission denied for tool: {tool_call.name}",
                 source="permissions",
             )
-        scope = str(result.get("scope") or "once")
-        if scope == "session" and record_decision is not None:
-            await record_decision(event, "allow", scope)
         return None
-
-    return guard

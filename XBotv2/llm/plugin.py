@@ -11,13 +11,34 @@ provider-neutral port to the loop.
 
 from __future__ import annotations
 
-from typing import Any
+from xcore import Context
 
 from XBotv2.llm.service import LlmService, ModelService
-from XBotv2.llm.commands import LLM_COMMANDS
+from XBotv2.llm.commands import build_llm_commands
+from XBotv2.core.operations import EmptyRequest
+from XBotv2.llm.contracts import (
+    LlmConfig,
+    LIST_PROVIDERS,
+    ProviderCatalog,
+)
+from XBotv2.llm.protocol import build_router
+from XBotv2.server import contribute_router
 
 
-def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.llm.http",
+        router=build_router(events=ctx, sessions=ctx.sessions),
+    )
+
+
+def mount_commands(ctx: Context) -> None:
+    for command in build_llm_commands(ctx.agent_runtime, ctx.llm):
+        ctx.commands.register(command)
+
+
+def build_llm_service(config: LlmConfig | None = None) -> LlmService:
     """Create an ``LlmService`` with the built-in adapters and tree config.
 
     Used by the llm plugin's ``apply`` and by server-root / CLI code that
@@ -27,15 +48,14 @@ def build_llm_service(config: dict[str, Any] | None = None) -> LlmService:
     from XBotv2.llm.mock import create_mock_provider
     from XBotv2.llm.openai import create_openai_provider
 
-    config = config or {}
+    config = config or LlmConfig()
     service = LlmService()
     service.register("mock", create_mock_provider)
     service.register("openai", create_openai_provider)
     service.register("anthropic", create_anthropic_provider)
-    service.configure(
-        config.get("default"),
-        config.get("providers"),
-    )
+    service.configure(config.default, config.model_dump(mode="json")["providers"])
+    for name in service.names():
+        service.provider_config(name, require_key=False)
     return service
 
 
@@ -43,15 +63,35 @@ class LlmComponent:
     """Register the provider route directory as ``ctx.llm``."""
 
     name = "xbot.llm"
+    inject = ["runtime_log"]
+    Config = LlmConfig
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        ctx.set("llm", build_llm_service(dict(config or {})))
+    def apply(
+        self,
+        ctx: Context,
+        config: LlmConfig,
+    ) -> None:
+        service = build_llm_service(config)
+        ctx.runtime_log.bind("llm").info(
+            "provider.catalog.loaded",
+            providers=list(service.names()),
+            configured_default=config.default,
+        )
+        ctx.set("llm", service)
         ctx.set("model", ModelService())
-        # The server host mounts this component without a command registry;
-        # register the LLM commands only where the session tree provides one.
-        if ctx.has("commands"):
-            for command in LLM_COMMANDS:
-                ctx.commands.register(command)
+
+        ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
+        ctx.inject(["llm", "agent_runtime", "commands"], mount_commands)
+        ctx.inject(["server", "sessions"], mount_http)
+
+
+class ProviderCatalogHandler:
+    def __init__(self, service: LlmService) -> None:
+        self._service = service
+
+    def list_providers(self, _request: EmptyRequest) -> ProviderCatalog:
+        return self._service.catalog()
+
 
 
 plugin = LlmComponent()

@@ -1,32 +1,21 @@
-"""Runner contract that adapts a workload to the unified job lifecycle.
+"""Internal JobRunner context and output factory.
 
-A JobRunner implements one concrete job kind (subagent, shell, future remote
-worker). It never manages its own status, waiting, cancellation, or storage;
-the JobRegistry owns all lifecycle state. ``cancel`` may be called while the
-runner is active so the runner can release external resources; the registry
-then cancels the runner task itself.
+Public runner contracts live in ``jobs.contracts``; this module implements the
+context created by JobRegistry for one execution.
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Protocol
-
-from XBotv2.core.jobs import Job, JobResult
-from XBotv2.jobs.output import StreamOutputStore, TextOutputStore
+from XBotv2.jobs.contracts import TextOutputStorePort
+from XBotv2.jobs.output import TextOutputStore
 
 
 class JobContext:
     """Capabilities a runner uses while executing one job."""
 
-    def __init__(self, registry: Any, job: Job) -> None:
-        self.registry = registry
-        self.job = job
+    def __init__(self) -> None:
         self.outputs = _OutputFactory()
-        self.primary_output = None
-
-    def set_handle(self, handle: Any) -> None:
-        self.job.runtime_handle = handle
+        self.primary_output: TextOutputStorePort | None = None
 
 
 class _OutputFactory:
@@ -36,17 +25,5 @@ class _OutputFactory:
     def create_text(text: str = "") -> TextOutputStore:
         return TextOutputStore(text)
 
-    @staticmethod
-    def create_stream() -> StreamOutputStore:
-        return StreamOutputStore()
 
-
-class JobRunner(Protocol):
-    """Executes one job kind against a JobContext."""
-
-    async def run(self, job: Job, ctx: JobContext) -> JobResult: ...
-
-    async def cancel(self, job: Job) -> None: ...
-
-
-__all__ = ["JobContext", "JobRunner"]
+__all__ = ["JobContext"]

@@ -1,19 +1,33 @@
-"""Live client interaction coordination (``ctx.interactions``)."""
+"""Public declarations for live client interactions."""
 
-from __future__ import annotations
-
-from XBotv2.interactions.interactions import (
-    InteractionDisconnected,
+from XBotv2.interactions.contracts import (
     InteractionNotPending,
     InteractionResult,
-    InteractionWaiter,
-    UserInputDisconnected,
+    InteractionWaiterPort,
+    InteractionsPort,
+)
+from XBotv2.interactions.protocol import (
+    ClientMessageData,
+    InteractionRecordedData,
+    InteractionEventType,
+    InteractionResponse,
+    UserInputOption,
+    UserInputRequiredData,
+    UserInputResponseRequest,
+    interaction_recorded_event,
 )
 
 __all__ = [
-    "InteractionDisconnected",
+    "ClientMessageData",
+    "InteractionRecordedData",
+    "InteractionEventType",
+    "InteractionResponse",
     "InteractionNotPending",
     "InteractionResult",
-    "InteractionWaiter",
-    "UserInputDisconnected",
+    "InteractionWaiterPort",
+    "InteractionsPort",
+    "UserInputOption",
+    "UserInputRequiredData",
+    "UserInputResponseRequest",
+    "interaction_recorded_event",
 ]

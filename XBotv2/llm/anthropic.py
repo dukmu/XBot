@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, AsyncIterator, Callable
+from pydantic import JsonValue
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import (
     ContentPart,
     Message,
@@ -14,12 +15,12 @@ from XBotv2.core.messages import (
     ModelResponse,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall
 from XBotv2.core.providers import BaseProvider
-from XBotv2.llm.base import attachment_prompt, usage_metadata
+from XBotv2.llm.base import attachment_prompt, tool_content, usage_metadata
 from XBotv2.llm.config import merge_request_extras
+from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
@@ -34,11 +35,11 @@ class AnthropicProvider(BaseProvider):
         max_output_tokens: int,
         reasoning_effort: str | None = None,
         thinking: str | None = None,
-        extra_body: dict[str, Any] | None = None,
+        extra_body: dict[str, JsonValue] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
-        media_root: str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         from anthropic import AsyncAnthropic
 
@@ -51,9 +52,9 @@ class AnthropicProvider(BaseProvider):
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
             input_modalities=input_modalities,
-            media_root=media_root,
+            artifacts=artifacts,
         )
-        kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
@@ -61,8 +62,8 @@ class AnthropicProvider(BaseProvider):
 
     def _provider_tools(
         self,
-        tools: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        tools: list[dict[str, JsonValue]],
+    ) -> list[dict[str, JsonValue]]:
         return [anthropic_tool_schema(tool) for tool in tools]
 
     async def _astream_once(
@@ -73,8 +74,9 @@ class AnthropicProvider(BaseProvider):
         system, request_messages = anthropic_request_messages(
             messages,
             image_loader=self.read_image,
+            artifacts=self.artifacts,
         )
-        api_kwargs: dict[str, Any] = {
+        api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
             "messages": request_messages,
             "max_tokens": self.max_output_tokens,
@@ -85,7 +87,7 @@ class AnthropicProvider(BaseProvider):
             api_kwargs["system"] = system
         if self.bound_tools:
             api_kwargs["tools"] = self.bound_tools
-        derived_extra_body: dict[str, Any] = {}
+        derived_extra_body: dict[str, JsonValue] = {}
         if self.reasoning_effort:
             derived_extra_body["reasoning_effort"] = self.reasoning_effort
         if self.thinking:
@@ -97,9 +99,9 @@ class AnthropicProvider(BaseProvider):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        tool_blocks: dict[int, dict[str, Any]] = {}
+        tool_blocks: dict[int, dict[str, JsonValue]] = {}
         tool_json: dict[int, list[str]] = {}
-        content_blocks: dict[int, dict[str, Any]] = {}
+        content_blocks: dict[int, dict[str, JsonValue]] = {}
         usage_values = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -237,7 +239,8 @@ def anthropic_request_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
-) -> tuple[str, list[dict[str, Any]]]:
+    artifacts: ArtifactStorePort | None = None,
+) -> tuple[str, list[dict[str, JsonValue]]]:
     system = "\n\n".join(
         message.content
         for message in messages
@@ -246,6 +249,7 @@ def anthropic_request_messages(
     return system, anthropic_messages(
         messages,
         image_loader=image_loader,
+        artifacts=artifacts,
     )
 
 
@@ -253,24 +257,25 @@ def anthropic_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+    artifacts: ArtifactStorePort | None = None,
+) -> list[dict[str, JsonValue]]:
+    result: list[dict[str, JsonValue]] = []
     for message in messages:
         role = message.role
         if role == "system":
             continue
         content = message.content
-        blocks: list[dict[str, Any]] = []
+        blocks: list[dict[str, JsonValue]] = []
         target_role = "assistant" if role == "assistant" else "user"
         if role == "tool":
-            tool_content = _parts_to_anthropic(
+            tool_blocks = _parts_to_anthropic(
                 message.parts,
                 image_loader=image_loader,
             )
-            block: dict[str, Any] = {
+            block: dict[str, JsonValue] = {
                 "type": "tool_result",
                 "tool_use_id": message.tool_call_id,
-                "content": tool_content if message.images else content,
+                "content": tool_blocks if message.images else tool_content(message, artifacts),
             }
             if (message.status or "success") != "success":
                 block["is_error"] = True
@@ -285,7 +290,7 @@ def anthropic_messages(
                 message.parts,
                 image_loader=image_loader,
             ))
-            attachments = attachment_prompt(message)
+            attachments = attachment_prompt(message, artifacts)
             if attachments:
                 blocks.append({"type": "text", "text": attachments})
         if not blocks:
@@ -297,12 +302,12 @@ def anthropic_messages(
     return result
 
 
-def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
+def _response_parts(blocks: dict[int, dict[str, JsonValue]]) -> list[ContentPart]:
     parts: list[ContentPart] = []
     for block in (blocks[index] for index in sorted(blocks)):
         block_type = block.get("type")
         if block_type == "text":
-            parts.append(TextPart(str(block.get("text") or "")))
+            parts.append(TextPart(text=str(block.get("text") or "")))
         elif block_type == "thinking":
             provider_data = {}
             if block.get("signature"):
@@ -310,20 +315,22 @@ def _response_parts(blocks: dict[int, dict[str, Any]]) -> list[ContentPart]:
                     "anthropic": {"signature": block["signature"]}
                 }
             parts.append(ReasoningPart(
-                str(block.get("thinking") or ""),
-                provider_data,
+                text=str(block.get("thinking") or ""),
+                provider_data=provider_data,
             ))
         elif block_type == "redacted_thinking":
             parts.append(ReasoningPart(
-                "",
-                {"anthropic": {"redacted_data": block.get("data", "")}},
+                text="",
+                provider_data={
+                    "anthropic": {"redacted_data": block.get("data", "")}
+                },
             ))
         elif block_type == "tool_use":
-            parts.append(ToolCallPart(ToolCall(
+            parts.append(ToolCall(
                 id=str(block.get("id") or ""),
                 name=str(block.get("name") or ""),
                 args=dict(block.get("input") or {}),
-            )))
+            ))
     return parts
 
 
@@ -331,36 +338,36 @@ def _parts_to_anthropic(
     parts: list[ContentPart],
     *,
     image_loader: Callable[[str], str] | None,
-) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
+) -> list[dict[str, JsonValue]]:
+    blocks: list[dict[str, JsonValue]] = []
     for part in parts:
         if isinstance(part, TextPart):
             blocks.append({"type": "text", "text": part.text})
-        elif isinstance(part, ToolCallPart):
+        elif isinstance(part, ToolCall):
             blocks.append({
                 "type": "tool_use",
-                "id": part.call.id,
-                "name": part.call.name,
-                "input": part.call.args,
+                "id": part.id,
+                "name": part.name,
+                "input": part.args,
             })
         elif isinstance(part, ImagePart):
             if image_loader is None:
                 raise ValueError("Image loader is required for image content")
-            if part.image.media_type not in {
+            if part.media_type not in {
                 "image/gif",
                 "image/jpeg",
                 "image/png",
                 "image/webp",
             }:
                 raise ValueError(
-                    f"Unsupported Anthropic image type: {part.image.media_type}"
+                    f"Unsupported Anthropic image type: {part.media_type}"
                 )
             blocks.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": part.image.media_type,
-                    "data": image_loader(part.image.path),
+                    "media_type": part.media_type,
+                    "data": image_loader(part.path),
                 },
             })
         elif isinstance(part, ReasoningPart):
@@ -379,7 +386,7 @@ def _parts_to_anthropic(
     return blocks
 
 
-def anthropic_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+def anthropic_tool_schema(tool: dict[str, JsonValue]) -> dict[str, JsonValue]:
     function = tool.get("function", tool)
     return {
         "name": function.get("name", ""),
@@ -420,59 +427,28 @@ def _merge_anthropic_usage(total: dict[str, int], usage: Any) -> None:
             total[key] = int(value)
 
 
-def _parse_tool_args(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 __all__ = ["AnthropicProvider"]
 
 
-def create_anthropic_provider(provider_config, model_config, *, media_root=None):
+def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
     """Factory for the anthropic protocol route.
 
     ``provider_config`` is the adapter instance (endpoint + credentials);
     ``model_config`` is the selected specific model from its catalog.
     """
-    from XBotv2.llm.config import expand_env
-    from XBotv2.llm.client import _require_api_key, _retry_settings
-
     protocol = provider_config.protocol
-    api_key = expand_env(provider_config.api_key or "")
-    base_url = (
-        expand_env(provider_config.base_url)
-        if provider_config.base_url
-        else None
-    )
     if model_config.max_output_tokens is None:
         raise ValueError(
             "Anthropic protocol providers require max_output_tokens "
             f"for model {model_config.model!r}"
         )
-    _require_api_key(protocol, model_config.model, api_key)
-    max_retries, retry_backoff_factor = _retry_settings()
-    logging.getLogger("llm").info(
+    logging.getLogger("xbotv2.llm").info(
         "creating anthropic provider=%s model=%s", protocol, model_config.model
     )
     return AnthropicProvider(
-        model=model_config.model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=model_config.temperature,
-        max_output_tokens=model_config.max_output_tokens,
-        reasoning_effort=model_config.reasoning_effort,
-        thinking=model_config.thinking,
-        extra_body=model_config.extra_body,
-        max_retries=max_retries,
-        retry_backoff_factor=retry_backoff_factor,
-        input_modalities=model_config.input_modalities,
-        media_root=media_root,
+        **_provider_arguments(provider_config, model_config),
+        artifacts=artifacts,
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_anthropic_provider"]
+__all__ = ["AnthropicProvider", "create_anthropic_provider"]

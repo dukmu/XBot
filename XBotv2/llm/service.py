@@ -16,22 +16,32 @@ configured provider lacks a key.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Callable
+from collections.abc import AsyncIterator
+from typing import Callable
+from pydantic import JsonValue
 
-from XBotv2.llm.config import ProviderConfig, parse_provider_config
+from XBotv2.llm.config import ModelConfig, ProviderConfig, parse_provider_config
 from XBotv2.core.providers import BaseProvider
+from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.core.messages import Message, ModelChunk
+from XBotv2.llm.contracts import (
+    LlmServicePort,
+    ModelDescription,
+    ModelPort,
+    ProviderCatalog,
+    ProviderDescription,
+)
 
 ProviderFactory = Callable[..., BaseProvider]
 
 
-class LlmService:
+class LlmService(LlmServicePort):
     """Provider route directory with configured provider definitions."""
 
     def __init__(self) -> None:
         self._factories: dict[str, ProviderFactory] = {}
         self._default = "default"
-        self._providers: dict[str, dict[str, Any]] = {}
+        self._providers: dict[str, dict[str, JsonValue]] = {}
 
     def register(self, provider: str, factory: ProviderFactory) -> None:
         if provider in self._factories:
@@ -51,7 +61,7 @@ class LlmService:
     def configure(
         self,
         default: str | None,
-        providers: dict[str, Any] | None,
+        providers: dict[str, dict[str, JsonValue]] | None,
     ) -> None:
         """Store the configured provider definitions from the tree config."""
         self._default = default or "default"
@@ -64,33 +74,35 @@ class LlmService:
         """Name of the provider used when no provider is selected."""
         return self._default
 
-    def validate_catalog(self, paths: Any, workspace_root: Any) -> dict[str, Any]:
-        """Fail-closed validation of the merged provider catalog.
-
-        Owned by the LLM service so a system soft restart can reject an
-        invalid catalog before any tree entry is re-applied.  Returns the
-        validated merged catalog.
-        """
-        from XBotv2.core.errors import OperationError
-        from XBotv2.llm.config import merged_provider_config, parse_provider_config
-
-        merged = merged_provider_config(paths, Path(workspace_root))
-        errors: list[str] = []
-        for name, raw in (merged.get("providers") or {}).items():
-            try:
-                parse_provider_config(dict(raw), require_key=False)
-            except Exception as error:  # noqa: BLE001 - report catalog errors
-                errors.append(f"{name}: {error}")
-        if errors:
-            raise OperationError(
-                "config_invalid",
-                "Provider catalog is invalid: " + "; ".join(errors),
-            )
-        return merged
-
     def names(self) -> tuple[str, ...]:
         """Configured provider names (minimax / deepseek / ...)."""
         return tuple(self._providers)
+
+    def catalog(self) -> ProviderCatalog:
+        return ProviderCatalog(
+            default=self.default_name(),
+            providers=tuple(
+                ProviderDescription(
+                    name=name,
+                    provider=provider.protocol,
+                    default_model=provider.default_model,
+                    models=tuple(
+                        ModelDescription(
+                            model=model.model,
+                            max_context_tokens=model.max_context_tokens,
+                            max_output_tokens=model.max_output_tokens,
+                            reasoning_effort=model.reasoning_effort or "",
+                            effort=tuple(model.effort or ()),
+                            thinking=model.thinking or "",
+                            input_modalities=tuple(model.input_modalities),
+                        )
+                        for model in provider.models
+                    ),
+                )
+                for name in self.names()
+                for provider in (self.provider_config(name, require_key=False),)
+            ),
+        )
 
     def provider_config(
         self,
@@ -121,10 +133,10 @@ class LlmService:
     def create(
         self,
         provider_config: ProviderConfig,
-        model_config: Any = None,
+        model_config: "ModelConfig | None" = None,
         *,
         model: str | None = None,
-        media_root: str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> BaseProvider:
         """Create a provider client: protocol -> adapter instance -> model.
 
@@ -137,10 +149,10 @@ class LlmService:
         factory = self._factories.get(protocol)
         if factory is None:
             raise ValueError(f"Unknown protocol implementation: {protocol!r}")
-        return factory(provider_config, model_config, media_root=media_root)
+        return factory(provider_config, model_config, artifacts=artifacts)
 
 
-class ModelService:
+class ModelService(ModelPort):
     """Mutable binding for the model selected for the active Agent."""
 
     def __init__(self) -> None:
@@ -155,8 +167,20 @@ class ModelService:
             raise RuntimeError("model port is not bound")
         return self._provider
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.provider, name)
+    def bind_tools(
+        self,
+        tools: list[dict[str, JsonValue]],
+        **kwargs: object,
+    ) -> BaseProvider:
+        return self.provider.bind_tools(tools, **kwargs)
+
+    async def astream(
+        self,
+        messages: list[Message],
+        **kwargs: object,
+    ) -> AsyncIterator[ModelChunk]:
+        async for chunk in self.provider.astream(messages, **kwargs):
+            yield chunk
 
 
 __all__ = ["LlmService", "ModelService"]

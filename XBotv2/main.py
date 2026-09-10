@@ -16,7 +16,7 @@ from XBotv2.core.paths import RuntimePaths
 __version__ = "0.2.0"
 
 
-_COMMANDS = {"serve", "tui", "web", "once", "terminal", "acp"}
+_COMMANDS = {"serve", "tui", "web", "once", "acp"}
 _WEB_STATIC_ROOT = Path(__file__).resolve().parent / "web_dist"
 # $HOME/.local/state/xbotv2 is the default state dir on Linux
 # on Windows, it will be %LOCALAPPDATA%\xbotv2\state
@@ -63,7 +63,7 @@ def _common_parser() -> argparse.ArgumentParser:
         "--no-plugins",
         action="store_true",
         default=str(_env("NO_PLUGINS", "")).lower() in {"1", "true", "yes"},
-        help="disable plugin discovery",
+        help="disable optional Agent capabilities and external plugins",
     )
     parser.add_argument(
         "--log-level",
@@ -88,11 +88,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--version", action="version", version=f"xbot {__version__}"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-
-    terminal = commands.add_parser(
-        "terminal", parents=[common], help="run the basic interactive terminal"
-    )
-    terminal.set_defaults(command="terminal")
 
     tui = commands.add_parser(
         "tui", parents=[common], help="run the Textual client"
@@ -157,11 +152,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    """Default invocations without a named command to terminal mode."""
+    """Default invocations without a named command to TUI mode."""
     if argv in (["-h"], ["--help"], ["--version"]):
         return argv
     if not argv or argv[0] not in _COMMANDS:
-        return ["terminal", *argv]
+        return ["tui", *argv]
     return argv
 
 
@@ -192,12 +187,10 @@ def main(argv: list[str] | None = None):
             _run_tui(args)
         elif args.command == "web":
             _run_web(args)
-        elif args.command == "terminal":
-            asyncio.run(_terminal_loop(args))
         elif args.command == "once":
             asyncio.run(_run_once(args))
         elif args.command == "acp":
-            from XBotv2.acp import run_acp
+            from XBotv2.acp_plugin.server import run_acp
 
             asyncio.run(run_acp(
                 data_dir=args.data_dir,
@@ -214,7 +207,7 @@ def main(argv: list[str] | None = None):
 def _run_server(args) -> None:
     """Run the HTTP/SSE server with uvicorn."""
 
-    if not getattr(args, "uds", None):
+    if not args.uds:
         logging.getLogger("xbotv2").info(
             "starting server mode data_dir=%s workspace=%s provider=%s bind=%s port=%s",
             args.data_dir, _workspace_root(args), args.provider, args.bind, args.port,
@@ -244,7 +237,7 @@ def _run_server(args) -> None:
         no_plugins=args.no_plugins,
     ))
     app = root_ctx.server
-    uds = getattr(args, "uds", None)
+    uds = args.uds
     try:
         if uds:
             uds_path = Path(uds).expanduser()
@@ -252,12 +245,12 @@ def _run_server(args) -> None:
             uvicorn.run(
                 app,
                 uds=str(uds_path),
-                log_level="warning",
+                log_config=None,
                 ws="none",
             )
         else:
             uvicorn.run(
-                app, host=args.bind, port=args.port, log_level="warning", ws="none"
+                app, host=args.bind, port=args.port, log_config=None, ws="none"
             )
     finally:
         asyncio.run(root_ctx.stop())
@@ -276,29 +269,7 @@ def _run_tui(args) -> None:
         args.log_level,
     )
 
-    server_url = args.server
-    uds_path: str | None = getattr(args, "uds", None)
-    spawned_server: subprocess.Popen | None = None
-
-    if server_url is None:
-        if uds_path is None:
-            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-{os.getpid()}.sock"
-        server_url = "http://localhost"
-        args.uds = uds_path
-        spawned_server = _spawn_server(args)
-        if not _wait_for_health(server_url, timeout=15.0, uds_path=uds_path):
-            print(f"Error: spawned server at {uds_path} did not become healthy", file=sys.stderr)
-            if spawned_server is not None:
-                if spawned_server.poll() is not None:
-                    _, err = spawned_server.communicate(timeout=1)
-                    if err:
-                        print("Server stderr:", file=sys.stderr)
-                        for line in err.decode("utf-8", errors="replace").splitlines()[-20:]:
-                            print(f"  {line}", file=sys.stderr)
-                spawned_server.terminate()
-                spawned_server.wait()
-            _cleanup_socket(uds_path)
-            sys.exit(2)
+    server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
 
     from XBotv2.tui.textual_client import TextualTuiClient
 
@@ -314,13 +285,7 @@ def _run_tui(args) -> None:
     try:
         asyncio.run(client.run())
     finally:
-        if spawned_server is not None:
-            spawned_server.terminate()
-            try:
-                spawned_server.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                spawned_server.kill()
-            _cleanup_socket(uds_path)
+        _cleanup_spawned_server(spawned_server, uds_path)
 
 
 def _run_web(args) -> None:
@@ -336,24 +301,7 @@ def _run_web(args) -> None:
     if args.web_bind != "127.0.0.1":
         raise SystemExit("Error: Web mode only supports --web-bind 127.0.0.1")
 
-    api_url = args.server or "http://localhost"
-    uds_path = args.uds
-    spawned_server: subprocess.Popen | None = None
-    if args.server is None:
-        if uds_path is None:
-            uds_path = f"{_DEFAULT_STATE_DIR}/xbotv2-web-{os.getpid()}.sock"
-        args.uds = uds_path
-        spawned_server = _spawn_server(args)
-        if not _wait_for_health(api_url, timeout=15.0, uds_path=uds_path):
-            if spawned_server.poll() is not None:
-                _, error = spawned_server.communicate(timeout=1)
-                if error:
-                    print(error.decode("utf-8", errors="replace"), file=sys.stderr)
-            _stop_process(spawned_server)
-            _cleanup_socket(uds_path)
-            raise SystemExit(
-                f"Error: spawned server at {uds_path} did not become healthy"
-            )
+    api_url, uds_path, spawned_server = _local_server(args, "xbotv2-web")
 
     try:
         import uvicorn
@@ -372,13 +320,21 @@ def _run_web(args) -> None:
             app,
             host=args.web_bind,
             port=args.web_port,
-            log_level="warning",
+            log_config=None,
             ws="none",
         )
     finally:
-        if spawned_server is not None:
-            _stop_process(spawned_server)
-            _cleanup_socket(uds_path)
+        _cleanup_spawned_server(spawned_server, uds_path)
+
+
+def _cleanup_spawned_server(
+    process: subprocess.Popen | None,
+    uds_path: str | None,
+) -> None:
+    if process is None:
+        return
+    _stop_process(process)
+    _cleanup_socket(uds_path)
 
 
 def _cleanup_socket(path: str | None) -> None:
@@ -387,6 +343,30 @@ def _cleanup_socket(path: str | None) -> None:
             os.unlink(path)
         except OSError:
             pass
+
+
+def _local_server(
+    args: argparse.Namespace,
+    socket_prefix: str,
+) -> tuple[str, str | None, subprocess.Popen | None]:
+    if args.server is not None:
+        return args.server, args.uds, None
+    uds_path = args.uds or (
+        f"{_DEFAULT_STATE_DIR}/{socket_prefix}-{os.getpid()}.sock"
+    )
+    args.uds = uds_path
+    process = _spawn_server(args)
+    if _wait_for_health("http://localhost", timeout=15.0, uds_path=uds_path):
+        return "http://localhost", uds_path, process
+    if process.poll() is not None:
+        _, error = process.communicate(timeout=1)
+        if error:
+            print(error.decode("utf-8", errors="replace"), file=sys.stderr)
+    _stop_process(process)
+    _cleanup_socket(uds_path)
+    raise SystemExit(
+        f"Error: spawned server at {uds_path} did not become healthy"
+    )
 
 
 def _stop_process(process: subprocess.Popen) -> None:
@@ -480,150 +460,26 @@ def _workspace_root(args) -> Path:
     return Path(getattr(args, "workspace", None) or Path.cwd()).resolve()
 
 
-async def _terminal_loop(args):
-    """Direct engine terminal session — reads from stdin, prints responses."""
-    from XBotv2.application import start_application
-
-    print(f"XBotv2 [{args.provider}] workspace={_workspace_root(args)} — type /quit to exit\n")
-
-    try:
-        services = await start_application(
-            paths=RuntimePaths.from_data_dir(args.data_dir),
-            provider_name=args.provider,
-            session_id=getattr(args, "session", None),
-            thread_id=getattr(args, "thread", "agent"),
-            workspace_root=str(_workspace_root(args)),
-            plugin_dirs=[] if args.no_plugins else None,
-            selected_agent=getattr(args, "agent", None),
-        )
-        engine = services.engine
-        await engine.start_session()
-        from XBotv2.session.runtime import install_client_event_sink
-
-        install_client_event_sink(services, _terminal_interaction)
-    except Exception as exc:
-        print(f"Error starting engine: {exc}")
-        return
-
-    while True:
-        try:
-            user_input = input("> ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye.")
-            break
-
-        if not user_input.strip():
-            continue
-        if user_input.strip() == "/quit":
-            print("Goodbye.")
-            break
-
-        try:
-            async for event in engine.run_turn(user_input):
-                etype = event.get("type", "")
-                data = event.get("data", {})
-
-                if etype == "assistant_message":
-                    content = data.get("content", "")
-                    tool_calls = data.get("tool_calls")
-                    if content:
-                        print(content)
-                    if tool_calls:
-                        print(f"\n[tool calls: {len(tool_calls)}]")
-                elif etype == "tool_result":
-                    tc_id = data.get("tool_call_id", "")
-                    content = data.get("content", "")
-                    print(f"  [{tc_id}]: {content[:200]}")
-                elif etype == "client_message":
-                    print(f"\n[message] {data.get('message', '')}")
-                elif etype == "permission_request":
-                    print(f"\n[approval required] {data.get('reason', '')}")
-                elif etype == "permission_denied":
-                    print(f"\n[permission denied] {data.get('reason', '')}")
-                elif etype == "user_input_required":
-                    print(f"\n[question] {data.get('question', '')}")
-                elif etype == "error":
-                    print(f"\nError: {data.get('message', 'unknown')}")
-        except Exception as exc:
-            print(f"\nError: {exc}")
-
-    try:
-        await engine.close_session()
-    finally:
-        await services.stop()
-
-
-async def _terminal_interaction(
-    event: dict,
-    *,
-    timeout_seconds: float | None = None,
-    tool_call_id: str = "",
-) -> dict:
-    """Resolve one live Engine interaction through stdin."""
-    del timeout_seconds, tool_call_id
-    event_type = str(event.get("type") or "")
-    data = event.get("data") or {}
-    request_id = str(data.get("request_id") or "")
-    try:
-        if event_type == "permission_request":
-            call = data.get("tool_call") or {}
-            tool = call.get("name") or "tool"
-            answer = await asyncio.to_thread(
-                input,
-                f"\nAllow {tool}? [y] once / [a] session / [N] deny: ",
-            )
-            choice = answer.strip().lower()
-            return {
-                "request_id": request_id,
-                "status": "answered",
-                "decision": "allow"
-                if choice in {"y", "yes", "a", "always"}
-                else "deny",
-                "scope": "session" if choice in {"a", "always"} else "once",
-            }
-
-        options = data.get("options") or []
-        print(f"\n{data.get('question', 'Input required')}")
-        for index, option in enumerate(options, 1):
-            label = option.get("label", "") if isinstance(option, dict) else str(option)
-            description = option.get("description", "") if isinstance(option, dict) else ""
-            suffix = f" - {description}" if description else ""
-            print(f"  {index}. {label}{suffix}")
-        answer = await asyncio.to_thread(input, "Select an option: ")
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
-            selected = options[int(answer) - 1]
-            answer = (
-                selected.get("label", "")
-                if isinstance(selected, dict)
-                else str(selected)
-            )
-        return {"request_id": request_id, "status": "answered", "answer": answer}
-    except (EOFError, KeyboardInterrupt):
-        return {
-            "request_id": request_id,
-            "status": "cancelled",
-            "reason": "terminal_input_cancelled",
-        }
-
-
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.application import start_application
+    from XBotv2.application.app import start_application
+    from XBotv2.application.host import mounted_application
     from XBotv2.session.runtime import SessionRuntime
 
-    services = await start_application(
+    context = await start_application(
         paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
         session_id=getattr(args, "session", None),
         thread_id=getattr(args, "thread", "agent"),
         workspace_root=str(_workspace_root(args)),
-        plugin_dirs=[] if args.no_plugins else None,
+        no_plugins=args.no_plugins,
         selected_agent=getattr(args, "agent", None),
         interactive=False,
     )
-    engine = services.engine
+    application = mounted_application(context)
+    engine = application.driver
     await engine.start_session()
-    session = services.loop_state.session
+    session = context.loop_state.session
     runtime = SessionRuntime(
         session_id=session.session_id,
         thread_id=session.thread_id,
@@ -631,7 +487,7 @@ async def _run_once(args):
         paths=RuntimePaths.from_data_dir(args.data_dir),
         workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
-        services=services,
+        application=application,
         engine=engine,
         interactive=False,
     )

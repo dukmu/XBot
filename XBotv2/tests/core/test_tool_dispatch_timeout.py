@@ -46,7 +46,7 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
 
     started = time.monotonic()
     results = await execute_tools(
-        [ToolCall("call_1", "slow", {})],
+        [ToolCall(id="call_1", name="slow", args={})],
         registry,
     )
 
@@ -72,8 +72,8 @@ async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
     registry.register(Tool.from_function(choose))
 
     results = await execute_tools([
-        ToolCall("call_1", "choose", {"options": [["nested"]]}),
-        ToolCall("call_2", "choose", {"options": ["valid"], "extra": True}),
+        ToolCall(id="call_1", name="choose", args={"options": [["nested"]]}),
+        ToolCall(id="call_2", name="choose", args={"options": ["valid"], "extra": True}),
     ], registry)
 
     assert invoked is False

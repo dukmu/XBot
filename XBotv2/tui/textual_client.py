@@ -1,8 +1,4 @@
-"""Textual HTTP/SSE TUI client.
-
-This frontend talks to ``xbotv2 serve`` through ``TerminalSession``
-and does not import runtime engine or application-startup modules.
-"""
+"""Textual HTTP/SSE client over ``TerminalSession``."""
 
 from __future__ import annotations
 
@@ -15,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import JsonValue
+
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -26,6 +24,7 @@ from XBotv2.tui.client import (
     TuiNotice,
     TuiState,
     TuiTranscriptEntry,
+    _effective_context_tokens,
     _parse_permission_decision,
 )
 from XBotv2.tui.command import (
@@ -74,7 +73,7 @@ _REPLAY_BATCH = 50
 _MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
 
 
-logger = logging.getLogger("tui")
+logger = logging.getLogger("xbotv2.tui")
 
 
 def _kind_tag(kind: str) -> str:
@@ -167,7 +166,9 @@ class XBotTextualApp(App[None]):
         self.state = TuiState(session_id=self.session.session_id, thread_id=self.session.thread_id)
         self._answers: asyncio.Queue[str] = asyncio.Queue()
         self._permission_decisions: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-        self._connected = False
+        self._server_reachable = False
+        self._session_attached = False
+        self._event_stream_connected = False
         self._request_sequence = 0
         self._pending_messages: dict[int, str] = {}
         # Windowed transcript: ``state.transcript[_window_start:_window_end]``
@@ -188,6 +189,8 @@ class XBotTextualApp(App[None]):
         self._active_choice_index = 0
         self._pending_stream_deltas = 0
         self._stream_timer: asyncio.Task | None = None
+        self._tool_refresh_timer: asyncio.Task | None = None
+        self._deferred_tool_ids: set[str] = set()
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
         self._replay_loading = False
@@ -200,6 +203,7 @@ class XBotTextualApp(App[None]):
         self._history_index: int | None = None
         self._spinner_index = 0
         self._activity_timer = None
+        self._session_events_worker = None
         self._reasoning_expanded = False
         self._tool_details_expanded = False
         self._pending_images: list[tuple[str, dict[str, str]]] = []
@@ -276,7 +280,10 @@ class XBotTextualApp(App[None]):
 
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
-        if self._connected:
+        await self._cancel_tool_refresh_timer()
+        self._deferred_tool_ids.clear()
+        self._stop_session_events()
+        if self._server_reachable:
             await self.session.disconnect()
 
     @on(Collapsible.Toggled)
@@ -294,44 +301,9 @@ class XBotTextualApp(App[None]):
             self.state.status = "Connecting"
             self._refresh_all()
             session = await self.session.connect()
-            if isinstance(session, dict):
-                self.state.session_id = str(
-                    session.get("session_id") or self.state.session_id
-                )
-                self.state.thread_id = str(
-                    session.get("thread_id") or self.state.thread_id
-                )
-                self.state.agent_name = str(
-                    session.get("agent_name") or self.state.agent_name
-                )
-                self.state.workspace_root = str(session.get("workspace_root") or "")
-                self.state.provider = str(session.get("provider") or "")
-                self.state.model = str(session.get("model") or "")
-                self.state.model_mode = str(
-                    session.get("model_mode") or ""
-                )
-                slots = session.get("status_slots")
-                if isinstance(slots, dict):
-                    self.state.status_slots = {
-                        str(name): str(value) for name, value in slots.items()
-                    }
-                self.state.context_window = int(session.get("context_window") or 0)
-                usage = session.get("usage")
-                if isinstance(usage, dict):
-                    for key in self.state.usage:
-                        self.state.usage[key] = int(usage.get(key) or 0)
-                    self.state.context_input_tokens = int(
-                        usage.get("context_tokens")
-                        or usage.get("input_tokens")
-                        or 0
-                    )
-            history = session.get("history") if isinstance(session, dict) else None
-            if isinstance(history, list):
-                self.state.restore_history(history)
-                # Replay windowed: mount only the most recent entries so a
-                # long resumed session does not pay full DOM construction on
-                # startup. The full history stays in state for lazy loading.
-                await self._render_replay_window()
+            self._server_reachable = True
+            await self._apply_open_session(session)
+            self._session_attached = True
             try:
                 payload = await self.session.list_commands()
                 commands = payload.get("commands") if isinstance(payload, dict) else []
@@ -339,17 +311,54 @@ class XBotTextualApp(App[None]):
                     self.commands.merge_server(commands)
             except Exception:
                 logger.exception("failed to load server commands")
-            self._connected = True
             self.state.status = "Ready"
             self._refresh_all()
-            if hasattr(self.session, "session_events"):
-                self.run_worker(
-                    self._collect_session_events,
-                    exclusive=False,
-                    name="session_events",
-                )
+            self._start_session_events()
         except Exception as exc:
             self._record_error(exc)
+
+    async def _apply_open_session(self, session: dict[str, JsonValue] | None) -> None:
+        if isinstance(session, dict):
+            self.state.session_id = str(session.get("session_id") or self.state.session_id)
+            self.state.thread_id = str(session.get("thread_id") or self.state.thread_id)
+            self.state.agent_name = str(session.get("agent_name") or self.state.agent_name)
+            self.state.workspace_root = str(session.get("workspace_root") or "")
+            self.state.provider = str(session.get("provider") or "")
+            self.state.model = str(session.get("model") or "")
+            self.state.model_mode = str(session.get("model_mode") or "")
+            slots = session.get("status_slots")
+            if isinstance(slots, dict):
+                self.state.status_slots = {str(name): str(value) for name, value in slots.items()}
+            self.state.context_window = int(session.get("context_window") or 0)
+            usage = session.get("usage")
+            if isinstance(usage, dict):
+                for key in self.state.usage:
+                    self.state.usage[key] = int(usage.get(key) or 0)
+                self.state.context_input_tokens = _effective_context_tokens(usage)
+            history = session.get("history")
+            if isinstance(history, list):
+                self.state.restore_history(history)
+                await self._render_replay_window()
+
+    def _start_session_events(self) -> None:
+        if not hasattr(self.session, "session_events"):
+            return
+        self._stop_session_events()
+        self._event_stream_connected = True
+        self._session_events_worker = self.run_worker(
+            self._collect_session_events,
+            exclusive=False,
+            name="session_events",
+        )
+
+    def _stop_session_events(self) -> None:
+        worker = self._session_events_worker
+        self._session_events_worker = None
+        self._event_stream_connected = False
+        if worker is not None and not getattr(worker, "is_finished", False):
+            cancel = getattr(worker, "cancel", None)
+            if callable(cancel):
+                cancel()
 
     async def submit_composer(self) -> None:
         composer = self.query_one("#input", ComposerTextArea)
@@ -383,7 +392,7 @@ class XBotTextualApp(App[None]):
             self._interaction_response_pending = True
             self._resolve_active_choice(f"typed: {parsed['decision']} ({parsed['scope']})")
             return
-        if not self._connected:
+        if not self._session_attached:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
 
@@ -413,13 +422,7 @@ class XBotTextualApp(App[None]):
         )
 
     def action_clear_input(self) -> None:
-        """ESC handler: interrupt the running turn or clear the composer.
-
-        Per OpenCode convention (design doc §2.3.1: ``session_interrupt
-        = escape``): while a turn is in progress, ESC cancels it.
-        Otherwise (composer is free), ESC clears the composer text
-        like the old behaviour.
-        """
+        """Interrupt a turn or clear the composer."""
 
         if self.state.turn_active or self._pending_messages:
             self.action_interrupt_turn()
@@ -442,47 +445,32 @@ class XBotTextualApp(App[None]):
         self.exit()
 
     def action_interrupt_turn(self) -> None:
-        """Cancel the running turn via the HTTP /interrupt endpoint.
-        Textual's action system does not auto-await coroutine
-        actions. We schedule the actual HTTP round-trip on a
-        worker. The worker is ``exclusive=False`` so the in-flight
-        message streams keep running. We bind to a unique
-        worker name so re-pressing ESC does not stack workers.
-        """
-
-        # Build a fresh coroutine each call so ESC spam doesn't
-        # reuse a finished one.
-        async def _do() -> None:
-            try:
-                result = await self.session.transport.interrupt(
-                    session_id=self.session.session_id,
-                    thread_id=self.session.thread_id,
-                )
-            except Exception:  # noqa: BLE001 — worker must not raise
-                return
-            if not self.is_mounted:
-                return
-            if result.get("cancelled"):
-                self.state.status = "Interrupting..."
-                self._refresh_status()
-            elif self.state.turn_active:
-                self.state.status = "Running"
-                self._refresh_status()
+        """Schedule one non-exclusive interrupt request."""
 
         self.run_worker(
-            _do(),
+            self._interrupt_turn(),
             exclusive=False,
             name="tui_interrupt",
             description="ESC: cancel running turn",
         )
 
-    def action_copy_last(self) -> None:
-        """Copy the most recent assistant reply as plain text.
+    async def _interrupt_turn(self) -> None:
+        try:
+            result = await self.session.interrupt()
+        except Exception:  # noqa: BLE001 — worker must not raise
+            return
+        if not self.is_mounted:
+            return
+        if result.get("cancelled"):
+            self.state.status = "Interrupting..."
+        elif self.state.turn_active:
+            self.state.status = "Running"
+        else:
+            return
+        self._refresh_status()
 
-        The TUI itself does not support text selection; this keyboard shortcut
-        (and the ``/copy`` command) lets the user pull text out of the app
-        when the terminal cannot select rendered content.
-        """
+    def action_copy_last(self) -> None:
+        """Copy the latest assistant reply as plain text."""
         assistant = [m for m in self.state.messages if m.role == "assistant"]
         if not assistant:
             self._copy_feedback(0)
@@ -507,15 +495,7 @@ class XBotTextualApp(App[None]):
         self.push_screen(CommandPalette(registry=self.commands))
 
     def _current_tui_mode(self) -> Mode:
-        """Derive the high-level Mode from existing TUI state predicates.
-
-        Single source for mode classification; the rest of the app consults
-        this method instead of re-running the same boolean ladder.
-
-        Renamed from ``_current_mode`` to avoid clashing with Textual's
-        built-in ``App.current_mode`` (a string property used by its
-        mode system, unrelated to ours).
-        """
+        """Derive one keyboard-dispatch mode from protocol state."""
 
         if self._choice_mode_active():
             return Mode.CHOOSING
@@ -552,13 +532,118 @@ class XBotTextualApp(App[None]):
         if spec.name == "attach":
             await self._cmd_attach(spec.args)
             return
+        if spec.name == "session":
+            await self._cmd_session(spec.args)
+            return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
         await self._dispatch_remote_command(spec)
 
+    async def _cmd_session(self, args: str) -> None:
+        """List or switch sessions using the same persisted session API as WebUI."""
+        if not self._server_reachable:
+            await self._append_local_notice("/session", "Not connected")
+            return
+        try:
+            values = shlex.split(args)
+        except ValueError as exc:
+            await self._append_local_notice("/session", str(exc))
+            return
+        if not values or (
+            len(values) == 1 and values[0].lower() in {"list", "ls"}
+        ):
+            try:
+                payload = await self.session.list_sessions()
+            except Exception as exc:
+                self._record_error(exc)
+                return
+            sessions = payload.get("sessions") if isinstance(payload, dict) else []
+            if not sessions:
+                await self._append_local_notice("Sessions", "No persisted sessions")
+                return
+            lines = []
+            for item in sessions:
+                sid = str(item.get("session_id") or "")
+                title = str(item.get("title") or "")
+                workspace = str(item.get("workspace_root") or "")
+                suffix = f"  {workspace}" if workspace else ""
+                lines.append(f"{sid}{('  ' + title) if title else ''}{suffix}")
+            await self._append_local_notice("Sessions", "\n".join(lines))
+            return
+        if values[0].lower() == "new":
+            if len(values) > 2:
+                await self._append_local_notice(
+                    "/session", "Usage: /session [<session-id> [workspace] | new [workspace]]"
+                )
+                return
+            workspace = values[1] if len(values) > 1 else self.state.workspace_root or None
+            mode = "new"
+            session_id = None
+        else:
+            if len(values) > 2:
+                await self._append_local_notice(
+                    "/session", "Usage: /session [<session-id> [workspace] | new [workspace]]"
+                )
+                return
+            session_id = values[0]
+            try:
+                threads_payload = await self.session.list_threads(session_id)
+            except Exception as exc:
+                self._record_error(exc)
+                return
+            threads = threads_payload.get("threads") if isinstance(threads_payload, dict) else []
+            main = next((item for item in threads if item.get("kind") == "main"), None)
+            if main is None and threads:
+                main = threads[0]
+            if main is None:
+                await self._append_local_notice("/session", f"Session has no resumable threads: {session_id}")
+                return
+            thread_id = str(main.get("thread_id") or "agent")
+            workspace = values[1] if len(values) > 1 else str(main.get("workspace_root") or "") or None
+            mode = "resume"
+        if self.state.turn_active or self._pending_messages:
+            await self._append_local_notice("/session", "Finish or interrupt the active turn before switching")
+            return
+        try:
+            self._stop_session_events()
+            opened = await self.session.switch(
+                session_id=session_id,
+                thread_id=thread_id if session_id else "agent",
+                workspace_root=workspace,
+                mode=mode,
+            )
+            self._cancel_interaction_response()
+            self._pending_images.clear()
+            self._history_index = None
+            await self._cmd_clear()
+            self.state = TuiState(
+                session_id=self.session.session_id,
+                thread_id=self.session.thread_id,
+            )
+            self.commands.reset()
+            await self._apply_open_session(opened)
+            try:
+                payload = await self.session.list_commands()
+                commands = payload.get("commands") if isinstance(payload, dict) else []
+                if isinstance(commands, list):
+                    self.commands.merge_server(commands)
+            except Exception:
+                logger.exception("failed to load server commands after session switch")
+            self._session_attached = True
+            self.state.status = "Ready"
+            self._refresh_all()
+            self._start_session_events()
+            await self._append_local_notice(
+                "/session",
+                f"Switched to {self.state.session_id} ({self.state.workspace_root or 'workspace unavailable'})",
+            )
+        except Exception as exc:
+            self._start_session_events()
+            self._record_error(exc)
+
     async def _dispatch_remote_command(self, spec: CommandSpec) -> None:
-        if not self._connected:
+        if not self._session_attached:
             await self._append_local_notice("Not connected", "Server is not ready yet.")
             return
         if spec.kind == "prompt":
@@ -577,60 +662,29 @@ class XBotTextualApp(App[None]):
             )
             data = result.get("data") if isinstance(result, dict) else {}
             message = str(data.get("message") or result)
-            command_data = data.get("data")
-            metadata = command_data if isinstance(command_data, dict) else data
-            history = data.get("history")
         except ValueError as exc:
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
         except Exception as exc:
             self._record_error(exc)
             return
-        if isinstance(metadata, dict):
-            metadata_changed = False
-            if metadata.get("agent_name"):
-                self.state.agent_name = str(metadata["agent_name"])
-                metadata_changed = True
-            if metadata.get("provider"):
-                self.state.provider = str(metadata["provider"])
-                metadata_changed = True
-            if metadata.get("model"):
-                self.state.model = str(metadata["model"])
-                metadata_changed = True
-            if "model_mode" in metadata:
-                self.state.model_mode = str(metadata["model_mode"] or "")
-                metadata_changed = True
-            slots = metadata.get("status_slots")
-            if isinstance(slots, dict):
-                self.state.status_slots = {
-                    str(name): str(value) for name, value in slots.items()
-                }
-                metadata_changed = True
-            if "context_window" in metadata:
-                self.state.context_window = int(metadata["context_window"] or 0)
-                metadata_changed = True
-            if metadata.get("workspace_root"):
-                self.state.workspace_root = str(metadata["workspace_root"])
-                metadata_changed = True
-            if metadata_changed:
-                self._refresh_status()
-        if isinstance(history, list):
-            await self._cmd_clear()
-            self.state.restore_history(history)
-            await self._render_new_transcript_entries()
         await self._append_local_notice(f"/{spec.name}", message)
 
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
 
+        await self._clear_rendered_transcript()
+        self.state.reset_history()
+        await self._render_new_transcript_entries()
+        self._refresh_all()
+
+    async def _clear_rendered_transcript(self) -> None:
+        """Remove mounted transcript widgets without mutating protocol state."""
+        await self._cancel_tool_refresh_timer()
+        self._deferred_tool_ids.clear()
         stream = self._safe_query_one("#transcript", VerticalScroll)
         if stream is not None:
             await stream.remove_children()
-        self.state.transcript.clear()
-        self.state.messages.clear()
-        self.state.tools.clear()
-        self.state.notices.clear()
-        self.state.errors.clear()
         self._window_start = 0
         self._window_end = 0
         self._mounted_entry_widgets.clear()
@@ -644,8 +698,6 @@ class XBotTextualApp(App[None]):
         self._resolved_choice_keys.clear()
         self._active_choice_key = None
         self._active_choice_index = 0
-        await self._render_new_transcript_entries()
-        self._refresh_all()
 
     async def _cmd_attach(self, args: str) -> None:
         try:
@@ -777,9 +829,9 @@ class XBotTextualApp(App[None]):
             # running turn finishes; this self-retry is race-free (no reliance
             # on a cross-worker flush at turn_finished).
             self._refresh_all()
-            while self.state.turn_active and self._connected:
+            while self.state.turn_active and self._session_attached:
                 await asyncio.sleep(0.1)
-            if not self._connected:
+            if not self._session_attached:
                 return
         self._pending_messages.pop(sequence, None)
         self._refresh_all()
@@ -795,22 +847,7 @@ class XBotTextualApp(App[None]):
         try:
             async for event in self.session.session_events():
                 try:
-                    if event.get("type") == "message":
-                        data = event.get("data") or {}
-                        if data.get("role") == "user":
-                            # Render accepted inputs in the order the server
-                            # published them on this single stream, and pop the
-                            # matching entry from the local queue at the same
-                            # time so the queue panel clears at delivery.
-                            content = str(data.get("content") or "")
-                            self._pop_pending_message(content)
-                            self.state.append_message("user", content)
-                            await self._render_new_transcript_entries()
-                            self._refresh_all()
-                        continue
-                    self.state.apply_event(event)
-                    await self._handle_stream_event(event)
-                    await self._start_interaction_response(event)
+                    await self._consume_stream_event(event, pop_pending=True)
                 except Exception:  # noqa: BLE001
                     # A single malformed event must not abort the stream,
                     # otherwise the turn state (e.g. turn_active) stays stuck.
@@ -820,6 +857,8 @@ class XBotTextualApp(App[None]):
         except Exception as exc:  # noqa: BLE001
             if self.is_mounted:
                 self._record_error(exc)
+        finally:
+            self._event_stream_connected = False
 
     async def _collect_response(
         self,
@@ -827,12 +866,7 @@ class XBotTextualApp(App[None]):
         *,
         images: list[dict[str, str]] | None = None,
     ) -> bool:
-        """Consume one message stream (turn events, tool events, reply).
-
-        The user text itself is rendered by the shared event stream's
-        ``message`` event, not here. Returns True when the input was rejected
-        (no fold boundary before the turn ended) so the caller retries.
-        """
+        """Consume one stream; report inputs rejected before a fold boundary."""
         rejected = False
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
@@ -844,20 +878,10 @@ class XBotTextualApp(App[None]):
             async for event in stream:
                 logger.debug("tui.collect_response event type=%s", event.get("type"))
                 try:
-                    if event.get("type") == "input_rejected":
-                        rejected = True
-                        continue
-                    if event.get("type") == "message":
-                        data = event.get("data") or {}
-                        if data.get("role") == "user":
-                            self.state.append_message(
-                                "user", str(data.get("content") or "")
-                            )
-                            await self._render_new_transcript_entries()
-                        continue
-                    self.state.apply_event(event)
-                    await self._handle_stream_event(event)
-                    await self._start_interaction_response(event)
+                    rejected = (
+                        await self._consume_stream_event(event)
+                        or rejected
+                    )
                 except Exception:  # noqa: BLE001
                     # Keep consuming the stream: a single bad event must not
                     # skip turn_finished/turn_cancelled and leave turn_active
@@ -868,7 +892,36 @@ class XBotTextualApp(App[None]):
             self._record_error(exc)
         return rejected
 
-    async def _submit_live_input(self, payload: dict[str, Any]) -> None:
+    async def _consume_stream_event(
+        self,
+        event: dict[str, JsonValue],
+        *,
+        pop_pending: bool = False,
+    ) -> bool:
+        """Apply one transport event and return whether input was rejected."""
+        event_type = event.get("type")
+        if event_type == "input_rejected":
+            return True
+        if event_type == "message":
+            data = event.get("data") or {}
+            if data.get("role") == "user":
+                # The session event stream is authoritative for accepted
+                # queued inputs; the message stream is authoritative for the
+                # request currently being consumed.
+                content = str(data.get("content") or "")
+                if pop_pending:
+                    self._pop_pending_message(content)
+                self.state.append_message("user", content)
+                await self._render_new_transcript_entries()
+                if pop_pending:
+                    self._refresh_all()
+                return False
+        self.state.apply_event(event)
+        await self._handle_stream_event(event)
+        await self._start_interaction_response(event)
+        return False
+
+    async def _submit_live_input(self, payload: dict[str, JsonValue]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")
         answer = await self._answers.get()
         await self.session.submit_user_input(
@@ -876,7 +929,7 @@ class XBotTextualApp(App[None]):
             answer,
         )
 
-    async def _submit_live_permission(self, payload: dict[str, Any]) -> None:
+    async def _submit_live_permission(self, payload: dict[str, JsonValue]) -> None:
         self._set_input_placeholder("Choose an inline approval option, or type a decision")
         response = await self._permission_decisions.get()
         await self.session.respond_permission(
@@ -885,7 +938,7 @@ class XBotTextualApp(App[None]):
             scope=str(response.get("scope") or "once"),
         )
 
-    async def _start_interaction_response(self, event: dict[str, Any]) -> None:
+    async def _start_interaction_response(self, event: dict[str, JsonValue]) -> None:
         event_type = str(event.get("type") or "")
         payload = event.get("data") if isinstance(event.get("data"), dict) else {}
         if event_type not in {"permission_request", "user_input_required"}:
@@ -946,10 +999,7 @@ class XBotTextualApp(App[None]):
             task.cancel()
 
     def _safe_query_one(self, selector: str, expect_type: type | None = None) -> Any:
-        """``query_one`` that returns ``None`` instead of raising when the
-        widget is unmounting or not found.  All DOM lookups in
-        tear-down-safe code should go through this method.
-        """
+        """Query a widget that may be unmounted or absent."""
 
         if not self.is_mounted:
             return None
@@ -1099,7 +1149,7 @@ class XBotTextualApp(App[None]):
             container.display = task_panel.display or queue_panel.display
             container.set_class(self.size.height < 24, "compact")
 
-    async def _handle_stream_event(self, event: dict[str, Any]) -> None:
+    async def _handle_stream_event(self, event: dict[str, JsonValue]) -> None:
         event_type = str(event.get("type") or "")
         refresh_input = False
         if event_type == "turn_started":
@@ -1109,6 +1159,7 @@ class XBotTextualApp(App[None]):
             self._cancel_interaction_response()
             self._resolve_active_choice("request ended")
             await self._cancel_stream_timer()
+            await self._flush_tool_refresh()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
             refresh_input = True
@@ -1116,6 +1167,7 @@ class XBotTextualApp(App[None]):
             self._cancel_interaction_response()
             self._resolve_active_choice("request cancelled")
             await self._cancel_stream_timer()
+            await self._flush_tool_refresh()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
             self._refresh_status()
@@ -1132,14 +1184,22 @@ class XBotTextualApp(App[None]):
             await self._cancel_stream_timer()
             await self._refresh_streaming_assistant_widget()
         elif event_type == "tool_call_delta":
-            await self._refresh_changed_tool_widgets()
+            self._deferred_tool_ids.update(self.state._changed_tool_ids)
+            self._schedule_tool_refresh()
+            self._refresh_status()
+            return
         elif event_type == "tool_calls_started":
+            await self._flush_tool_refresh()
             await self._refresh_changed_tool_widgets()
         elif event_type == "tool_result":
+            await self._flush_tool_refresh()
             await self._refresh_changed_tool_widgets()
         elif event_type == "task_updated":
             self._refresh_task_panel()
+        elif event_type == "history_updated":
+            await self._clear_rendered_transcript()
         elif event_type == "permission_request":
+            await self._flush_tool_refresh()
             await self._render_new_transcript_entries()
             await self._refresh_changed_tool_widgets()
             refresh_input = True
@@ -1193,14 +1253,42 @@ class XBotTextualApp(App[None]):
                 pass
             self._stream_timer = None
 
-    async def _render_replay_window(self) -> None:
-        """Mount only the tail of a resumed history on startup.
+    def _schedule_tool_refresh(self) -> None:
+        if self._tool_refresh_timer is None:
+            self._tool_refresh_timer = asyncio.create_task(
+                self._delayed_tool_refresh()
+            )
 
-        Long sessions replay hundreds of entries; constructing a widget for
-        every one of them stalls startup. We render a bounded window around
-        the end (where the user lands after resume) and leave older entries
-        in ``state.transcript`` for lazy loading on scroll.
-        """
+    async def _delayed_tool_refresh(self) -> None:
+        try:
+            await asyncio.sleep(0.05)
+            self._tool_refresh_timer = None
+            await self._flush_tool_refresh()
+        except asyncio.CancelledError:
+            pass
+
+    async def _cancel_tool_refresh_timer(self) -> None:
+        task = self._tool_refresh_timer
+        self._tool_refresh_timer = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _flush_tool_refresh(self) -> None:
+        ids = set(self._deferred_tool_ids)
+        self._deferred_tool_ids.clear()
+        task = self._tool_refresh_timer
+        if task is not None and task is not asyncio.current_task():
+            await self._cancel_tool_refresh_timer()
+        if ids:
+            await self._render_new_transcript_entries()
+            await self._refresh_changed_tool_widgets(ids)
+
+    async def _render_replay_window(self) -> None:
+        """Mount a bounded tail of resumed history."""
         total = len(self.state.transcript)
         if total <= _REPLAY_WINDOW:
             self._window_start = 0
@@ -1212,13 +1300,7 @@ class XBotTextualApp(App[None]):
         await self._render_new_transcript_entries()
 
     async def _load_earlier_replay(self) -> None:
-        """Shift the window to an earlier batch of replayed history.
-
-        Called when the user scrolls to the top of the transcript. Mounts the
-        batch immediately before the current window, drops the newest entries
-        from the far end to keep the mounted window bounded, and keeps the
-        viewport stable by compensating the scroll offset.
-        """
+        """Shift the bounded replay window to an earlier batch."""
         if self._replay_loading or self._window_start <= 0:
             return
         self._replay_loading = True
@@ -1251,12 +1333,7 @@ class XBotTextualApp(App[None]):
             self._replay_loading = False
 
     async def _load_newer_replay(self) -> None:
-        """Shift the window forward to re-mount the newest entries.
-
-        Called when the user scrolls back to the bottom after entries were
-        dropped while loading earlier history. Mounts the next batch of the
-        live tail and drops the oldest entries to keep the window bounded.
-        """
+        """Shift the bounded replay window toward the live tail."""
         async with self._render_lock:
             stream = self.query_one("#transcript", VerticalScroll)
             if self._window_end >= len(self.state.transcript):
@@ -1283,6 +1360,12 @@ class XBotTextualApp(App[None]):
             # bottom; never yank the viewport while reading older entries.
             follow = stream.is_vertical_scroll_end
             self._transcript_follow = follow
+            # Keep live updates in state while the user is reading older
+            # content. They are mounted in bounded batches when the user
+            # returns to the bottom, so a long-running turn cannot grow the
+            # Textual DOM behind the user's back.
+            if not follow:
+                return False
             await self._mount_entries(stream, self._window_end, end)
             self._window_end = end
             await self._drop_leading_excess(stream, follow)
@@ -1300,12 +1383,7 @@ class XBotTextualApp(App[None]):
         *,
         prepend: bool = False,
     ) -> list[Any]:
-        """Mount ``transcript[start:end]`` as widgets and track them.
-
-        ``prepend`` inserts the batch before the current first child (used when
-        loading earlier history); otherwise widgets are appended at the end.
-        Returns the successfully mounted widgets (in entry order).
-        """
+        """Mount and track one transcript slice in entry order."""
         widgets: list[Any] = []
         reference = stream.children[0] if prepend and stream.children else None
         for entry in self.state.transcript[start:end]:
@@ -1340,11 +1418,7 @@ class XBotTextualApp(App[None]):
         )
 
     async def _drop_leading_excess(self, stream: VerticalScroll, follow: bool) -> int:
-        """Drop the oldest mounted entries when the window exceeds the cap.
-
-        Only trims while following the tail; while the user is scrolled up the
-        window may grow so their viewport never moves.
-        """
+        """Bound the mounted tail without moving a historical viewport."""
         if not follow:
             return 0
         excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
@@ -1636,7 +1710,10 @@ class XBotTextualApp(App[None]):
         elapsed = self._turn_elapsed()
         usage = self.state.turn_usage
         full_input = (
-            usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+            usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+            + usage.get("prompt_cache_write_tokens", 0)
         )
         marker = "done" if final else spinner(self._spinner_index)
         verb = "completed" if final else "working"
@@ -1713,12 +1790,7 @@ class XBotTextualApp(App[None]):
         return None
 
     def _trim_message_widgets(self) -> None:
-        """Drop the oldest cached message widgets beyond the cap.
-
-        Only the cache is pruned here; mounted widgets stay in the DOM until
-        they naturally scroll away. This bounds memory and repeated lookups
-        without churning visible entries.
-        """
+        """Bound the widget cache without removing mounted entries."""
         while len(self._message_widgets) > _MAX_MESSAGE_WIDGETS:
             oldest = next(iter(self._message_widgets))
             self._message_widgets.pop(oldest, None)
@@ -1729,14 +1801,7 @@ class XBotTextualApp(App[None]):
             self._tool_widgets.pop(oldest, None)
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
-        """Synchronously refresh the cached tool widget in place.
-
-        Used by ``_widget_for_entry`` to make sure a reused
-        widget body matches the current tool state.  Only the
-        title and body widgets are updated — choice widgets are
-        not touched here; ``_sync_tool_permission_choices``
-        (async) handles those.
-        """
+        """Refresh cached tool content; the async path owns choices."""
         tool = self.state.tools.get(tool_call_id)
         widget = self._tool_widgets.get(tool_call_id)
         if tool is None or widget is None:
@@ -1757,12 +1822,15 @@ class XBotTextualApp(App[None]):
                 )
             )
 
-    async def _refresh_changed_tool_widgets(self) -> None:
+    async def _refresh_changed_tool_widgets(
+        self, tool_ids: set[str] | None = None
+    ) -> None:
         for old_id, new_id in self.state._tool_id_renames.items():
             widget = self._tool_widgets.pop(old_id, None)
             if widget is not None:
                 self._tool_widgets[new_id] = widget
-        for tool_call_id in list(self.state._changed_tool_ids):
+        changed_ids = tool_ids if tool_ids is not None else self.state._changed_tool_ids
+        for tool_call_id in list(changed_ids):
             await self._refresh_tool_widget(tool_call_id)
 
     async def _refresh_streaming_assistant_widget(self) -> None:
@@ -1790,13 +1858,7 @@ class XBotTextualApp(App[None]):
     async def _apply_streaming_message_widget(
         self, widget: Any, message: TuiMessage
     ) -> None:
-        """Render reasoning + content of a streaming message into *widget*.
-
-        Reasoning (when present) goes into a separate ``.reasoning``
-        Static so the user can distinguish model thinking from the
-        final reply. The body always reflects the visible content
-        only — never a concatenation of reasoning + content.
-        """
+        """Render separate reasoning and visible-content blocks."""
         reasoning = self._query_child_first(widget, ".reasoning")
         if message.reasoning:
             if reasoning is not None:

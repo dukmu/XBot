@@ -1,5 +1,7 @@
 """Focused behavior tests for the built-in Browser plugin."""
 
+import json
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -31,10 +33,10 @@ class NoNetworkSandbox(FakeBrowserSandbox):
 
 
 @pytest.mark.asyncio
-async def test_browser_open_http_uses_unified_network_guard(tmp_path):
+async def test_browser_open_http_uses_unified_network_guard(tmp_path, artifact_store):
     browser = BrowserSession(
         policy=UrlPolicy(),
-        artifacts_dir=tmp_path,
+        artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
     )
@@ -84,7 +86,9 @@ async def test_web_search_normalizes_ddgs_results(monkeypatch):
         await access.close()
 
     assert result.status == "success"
-    assert result.data["results"] == [{
+    # The data is now embedded in content as JSON
+    payload = json.loads(result.content.split("\n\n")[1])
+    assert payload["results"] == [{
         "title": "XBot project",
         "url": "https://example.com/xbot",
         "snippet": "Readable Agent runtime",
@@ -124,13 +128,13 @@ async def test_web_search_reports_ddgs_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_browser_file_url_resolves_inside_sandbox(tmp_path):
+async def test_browser_file_url_resolves_inside_sandbox(tmp_path, artifact_store):
     page = tmp_path / "page.html"
     page.write_text("<h1>local</h1>", encoding="utf-8")
     sandbox = FakeBrowserSandbox(tmp_path)
     browser = BrowserSession(
         policy=UrlPolicy(),
-        artifacts_dir=tmp_path,
+        artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
     )
@@ -141,12 +145,14 @@ async def test_browser_file_url_resolves_inside_sandbox(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_browser_file_url_rejects_path_outside_sandbox(tmp_path):
+async def test_browser_file_url_rejects_path_outside_sandbox(
+    tmp_path, artifact_store
+):
     outside = tmp_path.parent / "outside.html"
     sandbox = FakeBrowserSandbox(tmp_path)
     browser = BrowserSession(
         policy=UrlPolicy(),
-        artifacts_dir=tmp_path,
+        artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
     )
@@ -156,7 +162,7 @@ async def test_browser_file_url_rejects_path_outside_sandbox(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_browser_open_accepts_file_url_with_sandbox(tmp_path):
+async def test_browser_open_accepts_file_url_with_sandbox(tmp_path, artifact_store):
     class FakeBrowser(BrowserSession):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -176,7 +182,7 @@ async def test_browser_open_accepts_file_url_with_sandbox(tmp_path):
     page.write_text("<h1>local</h1>", encoding="utf-8")
     browser = FakeBrowser(
         policy=UrlPolicy(),
-        artifacts_dir=tmp_path,
+        artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
     )
@@ -234,9 +240,11 @@ async def test_web_fetch_extracts_readable_html():
 
     assert result.status == "success"
     assert "Release notes" in result.content
-    assert result.data["content_type"] == "text/html"
-    assert result.data["url"].endswith("/article")
-    assert result.data["untrusted"] is True
+    # The metadata is embedded as JSON after the content
+    payload = json.loads(result.content.split("\n\n")[-1])
+    assert payload["content_type"] == "text/html"
+    assert payload["url"].endswith("/article")
+    assert payload["untrusted"] is True
 
 
 @pytest.mark.asyncio
@@ -273,7 +281,8 @@ async def test_web_fetch_follows_redirects_and_limits_response_size():
         server.server_close()
 
     assert redirected.status == "success"
-    assert redirected.data["url"].endswith("/final")
+    payload = json.loads(redirected.content.split("\n\n")[-1])
+    assert payload["url"].endswith("/final")
     assert "redirect complete" in redirected.content
     assert oversized.status == "error"
     assert oversized.error is not None

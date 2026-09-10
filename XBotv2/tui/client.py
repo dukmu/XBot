@@ -7,7 +7,20 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from textwrap import shorten
-from typing import Any
+from pydantic import JsonValue
+
+from XBotv2.core.usage import INPUT_USAGE_FIELDS, USAGE_COUNTER_FIELDS
+
+def _empty_usage_counters() -> dict[str, int]:
+    return {key: 0 for key in USAGE_COUNTER_FIELDS}
+
+
+def _effective_context_tokens(usage: dict[str, JsonValue], previous: int = 0) -> int:
+    if "context_tokens" in usage:
+        return int(usage.get("context_tokens") or 0)
+    if any(key in usage for key in INPUT_USAGE_FIELDS):
+        return sum(int(usage.get(key) or 0) for key in INPUT_USAGE_FIELDS)
+    return previous
 
 
 @dataclass
@@ -16,7 +29,6 @@ class TuiMessage:
     content: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
-    # True while assistant content is still streaming.
     streaming: bool = False
 
 
@@ -30,36 +42,24 @@ class TuiTranscriptEntry:
 class TuiTool:
     tool_call_id: str
     name: str
-    args: dict[str, Any] = field(default_factory=dict)
+    args: dict[str, JsonValue] = field(default_factory=dict)
     args_preview: str = ""
     args_streaming: str = ""
     args_finalized: bool = False
     status: str = "pending"
     summary: str = ""
     result: str = ""
-    data: Any = None
-    error: dict[str, Any] | None = None
-    artifacts: list[dict[str, Any]] = field(default_factory=list)
-    images: list[dict[str, Any]] = field(default_factory=list)
-    # Wall-clock seconds between ``tool_calls_started`` and
-    # ``tool_result``. Set when the result arrives. While pending,
-    # the value is the live elapsed (see ``elapsed()``).
+    data: JsonValue = None
+    error: dict[str, JsonValue] | None = None
+    artifacts: list[dict[str, JsonValue]] = field(default_factory=list)
+    images: list[dict[str, JsonValue]] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
-    # Permission state — set when the engine sends a
-    # ``permission_request`` for this tool. The TUI renders
-    # inline approval choices inside the tool widget instead of
-    # creating a separate notice entry.
     permission_pending: bool = False
     permission_request_id: str = ""
     permission_reason: str = ""
 
     def elapsed(self, now: float | None = None) -> float:
-        """Return seconds since the tool started.
-
-        Returns 0.0 if the tool never started (defensive default).
-        """
-
         if self.started_at <= 0:
             return 0.0
         end = self.finished_at if self.finished_at > 0 else (now or self.started_at)
@@ -95,7 +95,7 @@ class TuiNotice:
     kind: str
     text: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass
@@ -111,22 +111,8 @@ class TuiState:
     context_window: int = 0
     context_input_tokens: int = 0
     status: str = "Disconnected"
-    usage: dict[str, int] = field(default_factory=lambda: {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-    })
-    turn_usage: dict[str, int] = field(default_factory=lambda: {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-    })
+    usage: dict[str, int] = field(default_factory=_empty_usage_counters)
+    turn_usage: dict[str, int] = field(default_factory=_empty_usage_counters)
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
     tasks: dict[str, TuiTask] = field(default_factory=dict)
@@ -136,15 +122,15 @@ class TuiState:
     turn: int = 0
     turn_active: bool = False
     compaction_active: bool = False
-    pending_user_input_payload: dict[str, Any] | None = None
-    pending_permission_payload: dict[str, Any] | None = None
+    pending_user_input_payload: dict[str, JsonValue] | None = None
+    pending_permission_payload: dict[str, JsonValue] | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
     _streaming_assistant_index: int | None = None
     _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
     _changed_tool_ids: set[str] = field(default_factory=set)
     _tool_id_renames: dict[str, str] = field(default_factory=dict)
 
-    def apply_event(self, event: dict[str, Any]) -> None:
+    def apply_event(self, event: dict[str, JsonValue]) -> None:
         self._changed_tool_ids.clear()
         self._tool_id_renames.clear()
         event_type = str(event.get("type") or "")
@@ -166,14 +152,7 @@ class TuiState:
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
             self._clear_pending_interactions(tool_status="cancelled")
-            self.turn_usage = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "requests": 0,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-            }
+            self.turn_usage = _empty_usage_counters()
             self._streaming_assistant_index = None
             self._streaming_tool_ids.clear()
             self._refresh_status(reset_terminal=True)
@@ -192,24 +171,25 @@ class TuiState:
             self._refresh_status()
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
+            reasoning = str(data.get("reasoning") or "")
             tool_calls = data.get("tool_calls")
-            if content.strip():
+            if content.strip() or reasoning:
                 if self._streaming_assistant_index is not None:
                     index = self._streaming_assistant_index
                     self._streaming_assistant_index = None
                     try:
                         message = self.messages[index]
-                        message.content = content
+                        if content:
+                            message.content = content
+                        if reasoning:
+                            message.reasoning = reasoning
                         message.streaming = False
                     except IndexError:
                         pass
                 else:
                     self.append_message("assistant", content)
+                    self.messages[-1].reasoning = reasoning
             elif tool_calls:
-                # Reset the streaming index so the next LLM call
-                # creates a fresh message entry. Reasoning (if any)
-                # was already streamed; the tool widget itself tells
-                # the user the model is acting.
                 self._streaming_assistant_index = None
             self._apply_tool_calls(tool_calls)
             self._streaming_tool_ids.clear()
@@ -236,8 +216,8 @@ class TuiState:
             tool.status = str(data.get("status") or "completed")
             content = data.get("content") or data.get("summary") or ""
             tool.result = format_value(content)
-            tool.summary = _preview(content)
             tool.data = data.get("data")
+            tool.summary = _preview(content)
             tool.error = data.get("error") if isinstance(data.get("error"), dict) else None
             artifacts = data.get("artifacts")
             tool.artifacts = [
@@ -248,9 +228,6 @@ class TuiState:
                 dict(image) for image in data.get("images") or []
                 if isinstance(image, dict)
             ]
-            # Mark the wall-clock end of this tool call so the
-            # transcript can show "shell success  0.4s" (per user
-            # request: per-tool latency in the entry title).
             tool.finished_at = time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
             self._changed_tool_ids.add(tool.tool_call_id)
@@ -291,9 +268,6 @@ class TuiState:
             self._refresh_status()
         elif event_type == "compaction_completed":
             self.compaction_active = False
-            usage = data.get("usage")
-            if isinstance(usage, dict):
-                self._apply_usage({"total": usage})
             self._refresh_status(reset_terminal=True)
             if data.get("reason") == "automatic":
                 metrics = data.get("metrics") or {}
@@ -386,9 +360,33 @@ class TuiState:
                 tool.permission_pending = False
                 tool.status = decision if decision else "approved"
                 self._changed_tool_ids.add(tool.tool_call_id)
+        elif event_type == "history_updated":
+            history = data.get("history")
+            if isinstance(history, list):
+                self.restore_history(history)
+            self._refresh_status()
+        elif event_type == "agent_configured":
+            if data.get("agent_name"):
+                self.agent_name = str(data["agent_name"])
+            if data.get("provider"):
+                self.provider = str(data["provider"])
+            if data.get("model"):
+                self.model = str(data["model"])
+            if "model_mode" in data:
+                self.model_mode = str(data["model_mode"] or "")
+            if "context_window" in data:
+                self.context_window = int(data["context_window"] or 0)
+            self._refresh_status()
         elif event_type == "error":
             self._clear_pending_interactions(tool_status="failed")
+            self.turn_active = False
             self.compaction_active = False
+            if self._streaming_assistant_index is not None:
+                try:
+                    self.messages[self._streaming_assistant_index].streaming = False
+                except IndexError:
+                    pass
+            self._streaming_assistant_index = None
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
@@ -399,8 +397,9 @@ class TuiState:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
-    def restore_history(self, history: list[dict[str, Any]]) -> None:
+    def restore_history(self, history: list[dict[str, JsonValue]]) -> None:
         """Rebuild the visible transcript from a resumed session."""
+        self.reset_history()
         for item in history:
             role = str(item.get("role") or "")
             if role == "user":
@@ -433,6 +432,7 @@ class TuiState:
                     "type": "assistant_message",
                     "data": {
                         "content": str(item.get("content") or ""),
+                        "reasoning": str(item.get("reasoning") or ""),
                         "tool_calls": item.get("tool_calls") or [],
                     },
                 })
@@ -449,6 +449,25 @@ class TuiState:
                         "images": item.get("images") or [],
                     },
                 })
+
+    def reset_history(self) -> None:
+        """Clear conversation-derived state before a new history snapshot."""
+        self.messages.clear()
+        self.tools.clear()
+        self.notices.clear()
+        self.errors.clear()
+        self.transcript.clear()
+        self._tool_transcript_keys.clear()
+        self._streaming_assistant_index = None
+        self._streaming_tool_ids.clear()
+        self._changed_tool_ids.clear()
+        self._tool_id_renames.clear()
+        self.pending_user_input_payload = None
+        self.pending_permission_payload = None
+        self.turn = 0
+        self.turn_active = False
+        self.compaction_active = False
+        self.turn_usage = _empty_usage_counters()
 
     def append_assistant_delta(self, content: str, reasoning: str = "") -> None:
         if not content and not reasoning:
@@ -472,7 +491,7 @@ class TuiState:
         kind: str,
         text: str,
         *,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, JsonValue] | None = None,
     ) -> None:
         self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
@@ -524,130 +543,28 @@ class TuiState:
             self.tasks.pop(task_id, None)
         return bool(expired)
 
-    def lines(self, *, width: int, height: int) -> list[str]:
-        width = max(20, width)
-        height = max(5, height)
-        lines = [
-            f"XBotv2  {self.session_id}/{self.thread_id}  {self.status}"[:width],
-            f"Agent {self.agent_name}  Turn {self.turn}  Tokens {self.usage['total_tokens']}"[:width],
-            "=" * min(width, 200),
-        ]
-
-        body_height = max(1, height - 5)
-        body = self._transcript_lines(width, body_height) or ["No messages yet."]
-        for index in range(body_height):
-            lines.append((body[index] if index < len(body) else "")[:width])
-
-        lines.append("-" * min(width, 200))
-        lines.append("[Enter] send  /exit quit"[:width])
-        return lines[:height]
-
-    def _transcript_lines(self, width: int, height: int) -> list[str]:
-        lines: list[str] = []
-        for entry in self.transcript:
-            if entry.kind == "message":
-                try:
-                    message = self.messages[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                label = self.agent_name if message.role == "assistant" else "You"
-                if message.reasoning:
-                    lines.extend(_wrap(f"{label} (thinking)> {message.reasoning}", width))
-                lines.extend(_wrap(f"{label}> {message.content}", width))
-            elif entry.kind == "tool":
-                tool = self.tools.get(entry.key)
-                if tool is None:
-                    continue
-                lines.append(shorten(f"Tool {tool.name} [{tool.status}]", width=width, placeholder="..."))
-                # Show finalized args (clean dict repr) when available;
-                # fall back to the raw streaming buffer so the user
-                # still sees something mid-stream. Avoids
-                # ``{"command": "cu`` flicker in narrow terminals.
-                preview = tool.args_preview if tool.args_finalized else tool.args_streaming
-                detail = " | ".join(part for part in (preview, tool.summary) if part)
-                if detail:
-                    lines.extend(_wrap(f"  {detail}", width))
-            elif entry.kind == "error":
-                try:
-                    error = self.errors[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                lines.extend(_wrap(f"Error> {error}", width))
-            elif entry.kind == "notice":
-                try:
-                    notice = self.notices[int(entry.key)]
-                except (ValueError, IndexError):
-                    continue
-                lines.extend(_wrap(f"{_notice_label(notice.kind)}> {notice.text}", width))
-        return lines[-height:]
-
-    def _apply_tool_calls(self, tool_calls: Any) -> None:
+    def _apply_tool_calls(self, tool_calls: JsonValue) -> None:
         if not isinstance(tool_calls, list):
             return
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
-            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
-            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
-            if raw_id:
-                tool_call_id = str(raw_id)
-                previous_id = self._streaming_tool_ids.get(stream_index)
-                if (
-                    previous_id
-                    and previous_id != tool_call_id
-                    and _is_provisional_tool_id(previous_id)
-                ):
-                    self._rename_tool(previous_id, tool_call_id)
-                self._streaming_tool_ids[stream_index] = tool_call_id
-            else:
-                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
-                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
-            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
-            # tool_calls_started carries the FINAL parsed args (dict).
-            # Replace the streaming preview with the clean dict repr
-            # and mark finalized so the title/body no longer show the
-            # raw partial JSON string.
+            tool_call_id, tool = self._streaming_tool(raw_tool, index)
             final_args = raw_tool.get("args") or raw_tool.get("arguments")
             if final_args:
                 if isinstance(final_args, dict):
                     tool.args = dict(final_args)
                 tool.args_preview = _preview(final_args)
                 tool.args_finalized = True
-            tool.status = "pending"
-            # Stamp the start of this tool call only on the FIRST
-            # tool_calls_started event for this id — re-firing the
-            # same call (e.g. on resume) should not reset the clock.
-            if tool.started_at <= 0:
-                tool.started_at = time.monotonic()
-            self._ensure_tool_transcript(tool_call_id)
-            self._changed_tool_ids.add(tool_call_id)
+            self._mark_tool_pending(tool)
 
-    def _apply_tool_call_delta(self, tool_calls: Any) -> None:
+    def _apply_tool_call_delta(self, tool_calls: JsonValue) -> None:
         if not isinstance(tool_calls, list):
             return
         for index, raw_tool in enumerate(tool_calls):
             if not isinstance(raw_tool, dict):
                 continue
-            stream_index = int(raw_tool.get("index") if raw_tool.get("index") is not None else index)
-            raw_id = raw_tool.get("tool_call_id") or raw_tool.get("id")
-            if raw_id:
-                tool_call_id = str(raw_id)
-                previous_id = str(
-                    raw_tool.get("replaces_tool_call_id")
-                    or self._streaming_tool_ids.get(stream_index)
-                    or ""
-                )
-                if (
-                    previous_id
-                    and previous_id != tool_call_id
-                    and _is_provisional_tool_id(previous_id)
-                ):
-                    self._rename_tool(previous_id, tool_call_id)
-                self._streaming_tool_ids[stream_index] = tool_call_id
-            else:
-                tool_call_id = self._streaming_tool_ids.get(stream_index, f"tool_{stream_index}")
-                self._streaming_tool_ids.setdefault(stream_index, tool_call_id)
-            tool = self._tool(tool_call_id, name=str(raw_tool.get("name") or "tool"))
+            _, tool = self._streaming_tool(raw_tool, index)
             # Accumulate raw JSON in args_streaming only. The
             # title and body keep args_preview empty until the
             # tool_calls_started event delivers the parsed dict —
@@ -662,49 +579,49 @@ class TuiState:
                 tool.args_streaming = f"{tool.args_streaming}{args}"
             elif args:
                 tool.args_streaming = str(args)
-            tool.status = "pending"
-            if tool.started_at <= 0:
-                tool.started_at = time.monotonic()
-            self._ensure_tool_transcript(tool_call_id)
-            self._changed_tool_ids.add(tool_call_id)
+            self._mark_tool_pending(tool)
 
-    def _apply_usage(self, data: dict[str, Any]) -> None:
-        has_total = isinstance(data.get("total"), dict)
-        usage = data.get("total") if has_total else data
-        delta = data.get("delta") if isinstance(data.get("delta"), dict) else None
-        if not isinstance(usage, dict):
-            return
-        current = delta if isinstance(delta, dict) else usage
-        if "context_tokens" in current or "input_tokens" in current:
-            self.context_input_tokens = int(
-                current.get("context_tokens") or current.get("input_tokens") or 0
-            )
-        keys = (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "requests",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
+    def _streaming_tool(
+        self,
+        raw: dict[str, JsonValue],
+        default_index: int,
+    ) -> tuple[str, TuiTool]:
+        index = int(raw.get("index") if raw.get("index") is not None else default_index)
+        raw_id = raw.get("tool_call_id") or raw.get("id")
+        tool_call_id = str(raw_id or self._streaming_tool_ids.get(index) or f"tool_{index}")
+        previous_id = str(
+            raw.get("replaces_tool_call_id")
+            or self._streaming_tool_ids.get(index)
+            or ""
         )
-        for key in keys:
-            val = int(usage.get(key) or 0)
-            if key in usage:
-                if has_total:
-                    self.usage[key] = val
-                else:
-                    self.usage[key] = self.usage.get(key, 0) + val
-            # When no ``delta`` sub-key exists, treat the flat data
-            # itself as the delta — the engine sends one ``usage``
-            # event per LLM call, and each event carries the current
-            # provider-side consumption, which IS the turn-level delta.
-            if isinstance(delta, dict):
-                if key in delta:
-                    self.turn_usage[key] = self.turn_usage.get(key, 0) + int(
-                        delta.get(key) or 0
-                    )
-            elif key in usage:
-                self.turn_usage[key] = self.turn_usage.get(key, 0) + val
+        if (
+            previous_id
+            and previous_id != tool_call_id
+            and _is_provisional_tool_id(previous_id)
+        ):
+            self._rename_tool(previous_id, tool_call_id)
+        self._streaming_tool_ids[index] = tool_call_id
+        return tool_call_id, self._tool(
+            tool_call_id, name=str(raw.get("name") or "tool")
+        )
+
+    def _mark_tool_pending(self, tool: TuiTool) -> None:
+        tool.status = "pending"
+        if tool.started_at <= 0:
+            tool.started_at = time.monotonic()
+        self._ensure_tool_transcript(tool.tool_call_id)
+        self._changed_tool_ids.add(tool.tool_call_id)
+
+    def _apply_usage(self, data: dict[str, JsonValue]) -> None:
+        self.context_input_tokens = _effective_context_tokens(
+            data, self.context_input_tokens
+        )
+        for key in USAGE_COUNTER_FIELDS:
+            if key not in data:
+                continue
+            value = int(data.get(key) or 0)
+            self.usage[key] += value
+            self.turn_usage[key] += value
 
     def _tool(self, tool_call_id: str, *, name: str) -> TuiTool:
         if tool_call_id not in self.tools:
@@ -760,7 +677,7 @@ def _is_provisional_tool_id(tool_call_id: str) -> bool:
     return tool_call_id.startswith("tool_")
 
 
-def _preview(value: Any, *, width: int = 120) -> str:
+def _preview(value: JsonValue, *, width: int = 120) -> str:
     """Render a short, single-line-friendly preview of ``value``.
 
     Newlines are preserved and each line is independently shortened. Tool
@@ -774,7 +691,7 @@ def _preview(value: Any, *, width: int = 120) -> str:
     )
 
 
-def format_value(value: Any, *, indent: int | None = None) -> str:
+def format_value(value: JsonValue, *, indent: int | None = None) -> str:
     if isinstance(value, str):
         return value
     try:
@@ -786,51 +703,6 @@ def format_value(value: Any, *, indent: int | None = None) -> str:
         )
     except TypeError:
         return str(value)
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    if width <= 0:
-        return [""]
-    lines: list[str] = []
-    for source_line in text.splitlines() or [""]:
-        lines.extend(_wrap_line(source_line, width))
-    return lines
-
-
-def _wrap_line(text: str, width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        if len(word) > width:
-            if current:
-                lines.append(current)
-                current = ""
-            lines.extend(word[index : index + width] for index in range(0, len(word), width))
-            continue
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def _notice_label(kind: str) -> str:
-    labels = {
-        "client_message": "Notice",
-        "permission_request": "Approval",
-        "permission_denied": "Denied",
-        "user_input_required": "Question",
-        "user_input_recorded": "Answer",
-        "permission_response_recorded": "Approval",
-    }
-    return labels.get(kind, "Event")
 
 
 def _parse_permission_decision(text: str) -> dict[str, str]:

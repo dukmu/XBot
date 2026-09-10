@@ -3,26 +3,49 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
 import time
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
+from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
+from XBotv2.agentloop import AgentLoopDriverPort
+from XBotv2.agentloop.contracts import InboxInput, InboxTarget
+from XBotv2.application import (
+    RUNTIME_EVENT,
+    AgentApplicationPort,
+    RuntimeEvent,
+)
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.errors import OperationError
-from XBotv2.core.events import EventContext, Events
-from XBotv2.core.prompts import prompt_container, prompt_element
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.core.timing import conversation_stats
 from XBotv2.core.paths import RuntimePaths
-logger = logging.getLogger("xbotv2.session")
+from pydantic import JsonValue
+
+from XBotv2.core.tools import ClientEvent
+from XBotv2.interactions import interaction_recorded_event
+from XBotv2.session.contracts import (
+    HISTORY_CHANGED,
+    HistoryChanged,
+    SessionPort,
+    conversation_replay,
+)
+from XBotv2.session.event_stream import (
+    SessionEventStream,
+    SessionEventSubscription,
+)
+from XBotv2.session.protocol import session_error_event, session_event
+from XBotv2.session.contracts import PendingInputData
 
 
 class SessionBusy(RuntimeError):
     """The live session cannot accept the requested concurrent operation."""
 
 
-def require_idle(ctx: Any, action: str) -> None:
+def require_idle(ctx: "SessionRuntime", action: str) -> None:
     """Reject engine-mutating operations while a turn is active."""
     if ctx.turn_lock.locked():
         raise OperationError(
@@ -32,17 +55,75 @@ def require_idle(ctx: Any, action: str) -> None:
         )
 
 
+def _pending_input_snapshot(item: InboxInput) -> PendingInputData:
+    return PendingInputData(
+        message_id=item.message_id,
+        content=item.content,
+        target=item.target.value,
+        source=item.source,
+        image_count=len(item.images),
+        artifact_count=len(item.artifacts),
+    )
+
+
+def _runtime_message_data(
+    source: str,
+    metadata: dict[str, JsonValue],
+) -> dict[str, str] | None:
+    """Project non-user inbox provenance onto the live message event."""
+    if source == "user":
+        return None
+    event = metadata.get("kind")
+    if not isinstance(event, str) or not event:
+        event = "continuation" if metadata.get("continuation") else "injected"
+    return {"source": source, "event": event}
+
+
 @dataclass
-class PendingResponse:
-    """Transport-only reply waiter keyed by an agent-inbox message id."""
+class TurnResponse:
+    """A detachable compatibility view of the authoritative event stream."""
 
     message_id: str
     request_id: str
-    events: asyncio.Queue[dict[str, Any] | None]
+    events: asyncio.Queue[ClientEvent | None] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=512),
+        init=False,
+    )
+    attached: bool = True
+
+    def emit(self, event: ClientEvent) -> None:
+        if not self.attached:
+            return
+        try:
+            self.events.put_nowait(event)
+        except asyncio.QueueFull:
+            self._overflow()
+
+    def finish(self) -> None:
+        if not self.attached:
+            return
+        try:
+            self.events.put_nowait(None)
+        except asyncio.QueueFull:
+            self._overflow()
+
+    def detach(self) -> None:
+        self.attached = False
+        while not self.events.empty():
+            self.events.get_nowait()
+
+    def _overflow(self) -> None:
+        self.detach()
+        self.events.put_nowait(session_error_event(
+            "response_stream_overflow",
+            "The POST response consumer fell behind; resume from the "
+            "Session event cursor.",
+        ))
+        self.events.put_nowait(None)
 
 
 @dataclass
-class SessionRuntime:
+class SessionRuntime(SessionPort):
     """Protocol streams and one concrete agent-loop driver."""
 
     session_id: str
@@ -51,144 +132,230 @@ class SessionRuntime:
     paths: RuntimePaths
     workspace_root: str
     no_plugins: bool
-    services: Any
-    engine: Any
+    application: AgentApplicationPort
+    engine: AgentLoopDriverPort
+    runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG
     interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     turn_task: asyncio.Task | None = None
     wakeup_task: asyncio.Task | None = None
     # Protocol routing only. Input content lives exclusively in engine.inbox.
-    pending_responses: dict[str, PendingResponse] = field(default_factory=dict)
-    response_output: asyncio.Queue[dict[str, Any] | None] | None = None
-    session_events: asyncio.Queue[dict[str, Any] | None] | None = None
+    pending_responses: dict[str, TurnResponse] = field(default_factory=dict)
+    event_stream: SessionEventStream = field(default_factory=SessionEventStream)
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
-    # ``message`` events published before the event stream attaches; flushed
-    # on connect so early inputs are never lost.
-    _pending_message_events: list[dict[str, Any]] = field(default_factory=list)
     _wakeup_requested: bool = False
+    _active_router: "TurnEventRouter | None" = field(default=None, init=False)
+    _log: RuntimeLog = field(init=False)
 
     def __post_init__(self) -> None:
+        self._log = self.runtime_log.bind(
+            "session",
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+        )
         self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
-        self.services.on(Events.INBOX_SPLICE, self._on_runtime_event)
-        self.services.on(Events.RUNTIME_EVENT, self._on_runtime_event)
-        self.services.on(Events.JOB_UPDATED, self._on_job_updated)
-        self.services.on(Events.JOB_COMPLETED, self._on_job_completed)
+        events = self.application.events
+        events.on(Events.INBOX_SPLICE, self._on_inbox_splice)
+        events.on(RUNTIME_EVENT, self._on_runtime_event)
+        events.on(HISTORY_CHANGED, self._on_history_changed)
+        events.on(AGENT_CONFIGURED, self._on_agent_configured)
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
         self.last_activity = time.monotonic()
 
-    async def send_input(self, content: str, **kwargs: Any) -> Any:
-        """Queue a plugin-command follow-up through the Agent's sole inbox."""
+    def resume_pending_inputs(self) -> bool:
+        """Resume durable inbox work after the runtime is fully registered."""
+        pending = self.engine.pending_input_count
+        if not pending:
+            return False
+        self._log.info("session.inbox.resuming", pending_inputs=pending)
+        self._request_wakeup()
+        return True
+
+    async def _on_history_changed(self, event: HistoryChanged) -> None:
+        """Project history replacement (``/clear``, ``/undo``) as an event."""
+        page = self.application.history_pages.page(limit=160)
+        self._publish_runtime_event(session_event(
+            "history_updated",
+            {
+                "history": conversation_replay(page.messages),
+                "history_cursor": page.next_cursor,
+                "operation": event.operation,
+                "turns": event.turns,
+                "session_stats": conversation_stats(event.messages),
+            },
+        ))
+
+    async def _on_agent_configured(self, event: AgentConfigured) -> None:
+        """Project provider/model selection changes for status displays."""
+        self.provider_name = event.provider
+        data = {
+            "agent_name": event.agent_name,
+            "provider": event.provider,
+            "model": event.model,
+            "model_mode": event.model_mode,
+            "context_window": event.context_window,
+        }
+        if data:
+            self._publish_runtime_event(session_event("agent_configured", data))
+
+    def _publish_runtime_event(self, event: ClientEvent) -> None:
+        request_id = str(event.data.get("request_id") or "")
+        self.event_stream.publish(event, request_id=request_id)
+
+    def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
-        return await self.engine.followup(content, **kwargs)
+        payload = event.inbox_splice
+        if payload is None:
+            return
+        splice_event = ClientEvent(
+            type="agent/inbox/spliced",
+            data=payload.model_dump(mode="json"),
+        )
+        # Preserve the canonical Agent event for protocol consumers while the
+        # queue projection gives UI clients the current editable snapshot.
+        self._publish_runtime_event(splice_event)
+        if payload.operation == "insert" and payload.message_ids:
+            self._publish_runtime_event(session_event(
+                "input_accepted",
+                {
+                    "message_ids": payload.message_ids,
+                    "target": payload.target.value if payload.target else None,
+                },
+            ))
+        self._publish_runtime_event(session_event(
+            "queue_updated",
+            {
+                "items": [
+                    item.model_dump(mode="json") for item in self.pending_inputs()
+                ]
+            },
+        ))
+        if payload.operation == "claim":
+            claimed = session_event(
+                "input_claimed",
+                {"message_ids": payload.message_ids},
+            )
+            if self._active_router is not None:
+                self._active_router.claim(payload.message_ids)
+                self._active_router.emit(claimed)
+            self._publish_runtime_event(claimed)
+        if payload.operation == "consume":
+            consumed = session_event(
+                "input_consumed",
+                {"message_ids": payload.message_ids},
+            )
+            if self._active_router is not None:
+                self._active_router.emit(consumed)
+            self._publish_runtime_event(consumed)
+        if payload.operation != "claim":
+            return
+        for item in payload.items:
+            if not item.metadata.get("defer_message_event"):
+                continue
+            source = item.source
+            runtime = _runtime_message_data(source, item.metadata)
+            images = list(item.images)
+            artifacts = list(item.artifacts)
+            self._publish_runtime_event(self._message_event(
+                item.message_id,
+                item.content,
+                images,
+                artifacts,
+                runtime=runtime,
+            ))
 
-    async def _publish_task_update(self, task: dict[str, Any]) -> None:
-        if self.session_events is not None:
-            await self.session_events.put({"type": "task_updated", "data": task})
+    def _on_runtime_event(self, event: RuntimeEvent) -> None:
+        self.touch()
+        self._publish_runtime_event(event.client_event)
 
-    async def _on_job_updated(self, event: EventContext) -> None:
-        await self._publish_task_update(dict(event.event or {}))
+    def _message_event(
+        self,
+        message_id: str,
+        content: str,
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        *,
+        runtime: dict[str, str] | None = None,
+    ) -> ClientEvent:
+        data: dict[str, JsonValue] = {
+            "id": message_id,
+            "role": "user",
+            "content": content,
+            "images": [image.model_dump(mode="json") for image in images or []],
+            "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts or []],
+        }
+        if runtime is not None:
+            data["runtime"] = runtime
+        return session_event("message", data)
 
-    async def _on_job_completed(self, event: EventContext) -> None:
-        await self._enqueue_job_completion(dict(event.event or {}))
-
-    def _publish_runtime_event(self, event: dict[str, Any]) -> None:
-        if self.session_events is not None:
-            self.session_events.put_nowait(event)
-
-    def _on_runtime_event(self, event: EventContext) -> None:
-        payload = event.client_event
-        if isinstance(payload, dict):
-            self._publish_runtime_event(payload)
-
-    def _publish_message_event(self, message_id: str, content: str) -> None:
+    def _publish_message_event(
+        self,
+        message_id: str,
+        content: str,
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> None:
         """Broadcast one accepted user message on the shared event stream.
 
         Input ordering is owned by the agent inbox. This event is only the
         protocol projection used by clients to render accepted input.
         """
-        event = {
-            "type": "message",
-            "data": {"id": message_id, "role": "user", "content": content},
-        }
-        if self.session_events is not None:
-            self.session_events.put_nowait(event)
-        else:
-            self._pending_message_events.append(event)
-
-    async def _enqueue_job_completion(self, task: dict[str, Any]) -> None:
-        if str(task.get("kind") or "") == "shell":
-            await self._collect_completion({
-                "type": "background_task",
-                "kind": "background_task",
-                "task_id": str(task.get("task_id") or ""),
-                "status": str(task.get("status") or "finished"),
-                "command": str(task.get("command") or ""),
-                "data": task,
-            })
-        else:
-            await self._collect_completion({
-                "type": "subagent",
-                "kind": "subagent",
-                "task_id": str(task.get("task_id") or ""),
-                "status": str(task.get("status") or "finished"),
-                "agent": str(task.get("agent") or ""),
-                "data": task,
-            })
-
-    async def _collect_completion(self, notice: dict[str, Any]) -> None:
-        """Stage one completion into the agent inbox and broadcast a notice.
-
-        The completion is model-visible via ``inbox`` (drained into the next
-        turn's context) but never starts a turn by itself: the TUI task panel
-        already tracks status through ``task_updated``.
-        """
-        payload = {
-                "kind": str(notice.get("kind") or ""),
-                "status": str(notice.get("status") or ""),
-                "task_id": str(notice.get("task_id") or ""),
-                "command": str(notice.get("command") or ""),
-                "agent": str(notice.get("agent") or ""),
-        }
-        fused = prompt_container(
-            "runtime_event",
-            [prompt_element(
-                "payload",
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                attributes={"encoding": "json"},
-            )],
-            attributes={"source": "tasks", "event": "completed"},
+        event = self._message_event(
+            message_id, content, images, artifacts
         )
-        await self.engine.inject(
-            fused,
-            source=str(notice.get("task_id") or "tasks"),
-            metadata={"kind": "notification", "payload": payload},
-        )
-        self.touch()
-        if self.session_events is not None:
-            await self.session_events.put({
-                "type": "completion_notice",
-                "data": notice,
-            })
+        self.event_stream.publish(event, request_id=message_id)
+
+    def pending_inputs(self) -> tuple[PendingInputData, ...]:
+        return tuple(_pending_input_snapshot(item) for item in self.engine.pending_inputs)
+
+    async def update_pending_input(
+        self,
+        message_id: str,
+        action: str,
+        content: str = "",
+    ) -> tuple[PendingInputData, ...]:
+        try:
+            if action == "edit":
+                await self.engine.edit_input(message_id, content)
+            elif action == "remove":
+                await self.engine.remove_input(message_id)
+                response = self.pending_responses.pop(message_id, None)
+                if response is not None:
+                    response.finish()
+            elif action == "steer":
+                await self.engine.retarget_input(message_id, InboxTarget.NEXT_STEP)
+                self._request_wakeup()
+            else:
+                raise ValueError(f"Unsupported pending input action: {action}")
+        except KeyError as exc:
+            raise OperationError(
+                "queue_item_not_found",
+                f"Pending input {message_id!r} is no longer available.",
+            ) from exc
+        return self.pending_inputs()
 
     async def stream_message(
         self,
         content: str,
         request_id: str,
         *,
+        delivery: str = "steer",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> AsyncIterator[ClientEvent]:
         """Deliver one user input.
 
-        Idle input enters ``next-turn``. Busy input enters ``next-step`` and is
-        claimed by the same loop inbox between model/tool steps.
+        Idle input starts directly. Busy ``queue`` input enters ``next-turn``;
+        busy ``steer`` input enters ``next-step``. Both remain owned by the
+        same loop inbox until claimed at their respective boundary.
         """
+        if delivery not in {"queue", "steer"}:
+            raise ValueError(f"Unsupported input delivery mode: {delivery}")
         if not self.turn_lock.locked():
-            self._publish_message_event(request_id, content)
             try:
                 async for event in run_turn_stream(
                     self,
@@ -196,6 +363,12 @@ class SessionRuntime:
                     request_id=request_id,
                     images=images,
                     artifacts=artifacts,
+                    accepted_event=self._message_event(
+                        request_id,
+                        content,
+                        images,
+                        artifacts,
+                    ),
                 ):
                     yield event
                 return
@@ -204,25 +377,29 @@ class SessionRuntime:
                 # next-step through the same inbox.
                 pass
 
-        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        item = await self.engine.steer(
+        queued = delivery == "queue"
+        enqueue = self.engine.followup if queued else self.engine.steer
+        item = await enqueue(
             content,
             source="user",
             message_id=request_id,
             images=images,
             artifacts=artifacts,
+            metadata={"defer_message_event": True} if queued else None,
         )
-        pending = PendingResponse(
+        pending = TurnResponse(
             message_id=item.message_id,
             request_id=request_id,
-            events=events,
         )
         self.pending_responses[item.message_id] = pending
-        self._publish_message_event(item.message_id, content)
+        if not queued:
+            self._publish_message_event(
+                item.message_id, content, images, artifacts
+            )
         completed = False
         try:
             while True:
-                event = await events.get()
+                event = await pending.events.get()
                 if event is None:
                     completed = True
                     return
@@ -232,7 +409,10 @@ class SessionRuntime:
                 self.pending_responses.pop(item.message_id, None)
             self.touch()
 
-    def claim_response_output(self, message_ids: list[str]) -> bool:
+    def claim_response(
+        self,
+        message_ids: list[str],
+    ) -> TurnResponse | None:
         """Hand the reply to the final claimed input without storing content."""
         claimed = [
             self.pending_responses.pop(message_id)
@@ -240,27 +420,33 @@ class SessionRuntime:
             if message_id in self.pending_responses
         ]
         if not claimed:
-            return False
+            return None
         for pending in claimed[:-1]:
-            pending.events.put_nowait(None)
-        self.response_output = claimed[-1].events
-        return True
+            pending.finish()
+        return claimed[-1]
 
-    def attach_event_stream(self) -> asyncio.Queue[dict[str, Any] | None]:
-        if self.session_events is not None:
-            raise SessionBusy("session event stream is already connected")
-        self.session_events = asyncio.Queue()
-        for event in self._pending_message_events:
-            self.session_events.put_nowait(event)
-        self._pending_message_events.clear()
-        return self.session_events
+    def attach_event_stream(
+        self,
+        after: int | None = None,
+    ) -> SessionEventSubscription:
+        cursor = 0 if after is None else after
+        events = self.event_stream.subscribe(cursor)
+        self._log.debug(
+            "session.events.attached",
+            streams=self.event_stream.subscriber_count,
+            after=cursor,
+        )
+        return events
 
     def detach_event_stream(
         self,
-        events: asyncio.Queue[dict[str, Any] | None],
+        events: SessionEventSubscription,
     ) -> None:
-        if self.session_events is events:
-            self.session_events = None
+        events.close()
+        self._log.debug(
+            "session.events.detached",
+            streams=self.event_stream.subscriber_count,
+        )
 
     def request_interrupt(self) -> bool:
         task = self.turn_task
@@ -281,12 +467,11 @@ class SessionRuntime:
             if self.turn_lock.locked():
                 return
             self._wakeup_requested = False
-            async for event in run_turn_stream(
+            async for _event in run_turn_stream(
                 self,
                 content=None,
             ):
-                if self.session_events is not None:
-                    await self.session_events.put(event)
+                pass
         except SessionBusy:
             pass
         finally:
@@ -311,187 +496,190 @@ class SessionRuntime:
             await asyncio.gather(continuation, return_exceptions=True)
         self.wakeup_task = None
         for item in self.pending_responses.values():
-            item.events.put_nowait(None)
+            item.finish()
         self.pending_responses.clear()
-        if self.response_output is not None:
-            await self.response_output.put(None)
-            self.response_output = None
         await self.engine.discard_inputs()
-        if self.session_events is not None:
-            await self.session_events.put(None)
-            self.session_events = None
         try:
             await self.engine.close_session()
-        except Exception:
-            logger.exception("Engine close_session failed for %s", self.session_id)
+        except Exception as exc:
+            self._log.exception(
+                "session.engine.close.failed",
+                error_type=type(exc).__name__,
+            )
         finally:
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
             # the surrounding application context.
-            await self.services.stop()
+            try:
+                await self.application.close()
+            finally:
+                self.event_stream.close()
 
 
-def _event_payload(event: dict[str, Any]) -> dict[str, Any]:
-    return {"type": event.get("type", ""), "data": event.get("data", {})}
+def _event_payload(event: dict[str, JsonValue]) -> ClientEvent:
+    """Validate a loop event before projecting it onto the session stream."""
+    return ClientEvent.model_validate(event)
 
 
-async def _live_sink(
-    client_event: dict[str, Any],
-    *,
-    services: Any,
-    events: asyncio.Queue[dict[str, Any] | None],
-    disconnect_task: asyncio.Task[Any],
-    timeout_seconds: float | None = None,
-) -> dict[str, Any]:
-    event_type = str(client_event.get("type") or "")
-    event_data = client_event.get("data") or {}
-    request_id = str(event_data.get("request_id") or "")
-    router = services.get("client_events")
-    waiter = router.waiter(event_type) if router is not None else None
-    if waiter is None:
-        raise RuntimeError(f"No waiter registered for client event {event_type!r}")
-    pending = waiter.register(request_id)
-    wait_task = asyncio.create_task(
-        waiter.wait_registered(request_id, pending, timeout_seconds)
-    )
-    try:
-        await events.put(_event_payload(client_event))
-        done, _ = await asyncio.wait(
-            {wait_task, disconnect_task},
-            return_when=asyncio.FIRST_COMPLETED,
+class TurnEventRouter:
+    """Publish a turn once, with detachable transport response views."""
+
+    def __init__(self, runtime: SessionRuntime, response: TurnResponse) -> None:
+        self._runtime = runtime
+        self._response = response
+        self._responses = [response]
+
+    def emit(self, event: ClientEvent) -> None:
+        self._runtime.event_stream.publish(
+            event,
+            request_id=self._response.request_id,
         )
-    except BaseException:
-        wait_task.cancel()
-        await asyncio.gather(wait_task, return_exceptions=True)
-        raise
-    if wait_task not in done:
-        wait_task.cancel()
-        await asyncio.gather(wait_task, return_exceptions=True)
+        self._response.emit(event)
+
+    def claim(self, message_ids: list[str]) -> None:
+        response = self._runtime.claim_response(message_ids)
+        if response is None:
+            return
+        self._response = response
+        self._responses.append(response)
+
+    def finish(self) -> None:
+        for response in self._responses:
+            response.finish()
+
+    async def live_sink(
+        self,
+        client_event: ClientEvent,
+        *,
+        timeout_seconds: float | None = None,
+        tool_call_id: str = "",
+    ) -> dict[str, JsonValue]:
+        del tool_call_id
+        event_type = client_event.type
+        request_id = str(client_event.data.get("request_id") or "")
+        waiter = self._runtime.application.client_events.waiter(event_type)
+        if waiter is None:
+            raise RuntimeError(
+                f"No waiter registered for client event {event_type!r}"
+            )
+        pending = waiter.register(request_id)
+        self.emit(client_event)
+        try:
+            result = await waiter.wait_registered(
+                request_id,
+                pending,
+                timeout_seconds,
+            )
+        except Exception as exc:
+            return {
+                "request_id": request_id,
+                "status": "error",
+                "reason": str(exc),
+            }
+        self.emit(interaction_recorded_event(
+            (
+                "permission_response_recorded"
+                if event_type == "permission_request"
+                else "user_input_recorded"
+            ),
+            {
+                "request_id": request_id,
+                "status": result.status,
+                "decision": result.decision,
+                "scope": result.scope,
+                "answer": result.answer,
+                "pending_interactions": [],
+            },
+        ))
         return {
-            "request_id": request_id,
-            "status": "disconnected",
-            "reason": "client_disconnected",
-        }
-    try:
-        result = wait_task.result()
-    except Exception as exc:
-        return {"request_id": request_id, "status": "error", "reason": str(exc)}
-    await events.put({
-        "type": (
-            "permission_response_recorded"
-            if event_type == "permission_request"
-            else "user_input_recorded"
-        ),
-        "data": {
-            "request_id": request_id,
+            "request_id": result.request_id,
             "status": result.status,
+            "answer": result.answer,
             "decision": result.decision,
             "scope": result.scope,
-            "answer": result.answer,
-            "pending_interactions": [],
-        },
-    })
-    return result.__dict__
+            "reason": result.reason,
+        }
 
 
 @asynccontextmanager
 async def _live_interaction_sink(
     runtime: SessionRuntime,
-    events: asyncio.Queue[dict[str, Any] | None],
-    disconnected: asyncio.Event,
+    router: TurnEventRouter,
 ) -> AsyncIterator[None]:
-    disconnect_task = asyncio.create_task(disconnected.wait())
-
-    async def sink(client_event, *, timeout_seconds=None, tool_call_id=""):
-        del tool_call_id
-        return await _live_sink(
-            client_event,
-            services=runtime.services,
-            events=events,
-            disconnect_task=disconnect_task,
-            timeout_seconds=timeout_seconds,
-        )
-
-    previous = install_client_event_sink(runtime.services, sink)
+    client_events = runtime.application.client_events
+    previous = client_events.set_sink(router.live_sink)
     try:
         yield
     finally:
-        restore_client_event_sinks(runtime.services, previous)
-        if not disconnect_task.done():
-            disconnect_task.cancel()
-            await asyncio.gather(disconnect_task, return_exceptions=True)
+        client_events.set_sink(previous)
 
 
-def install_client_event_sink(services: Any, sink: Any | None) -> Any | None:
-    """Install one live protocol sink on the application event router.
-
-    Feature services publish through the shared router, so the transport does
-    not discover or modify individual plugins. Returns the previous sink.
-    """
-    if not hasattr(services, "get"):
-        return None
-    router = services.get("client_events")
-    return router.set_sink(sink) if router is not None else None
-
-
-def restore_client_event_sinks(
-    services: Any,
-    previous: Any | None,
-) -> None:
-    if not hasattr(services, "get"):
-        return
-    router = services.get("client_events")
-    if router is not None:
-        router.set_sink(previous)
-
-
-async def _pump_turn(
+async def _execute_turn(
     runtime: SessionRuntime,
-    events: asyncio.Queue[dict[str, Any] | None],
+    router: TurnEventRouter,
+    *,
     content: str | None,
     request_id: str,
-    images: list[ImageContent] | None = None,
-    artifacts: list[dict[str, Any]] | None = None,
+    images: list[ImageContent] | None,
+    artifacts: list[ArtifactRef] | None,
+    interactive: bool | None,
 ) -> None:
-    turn_stream = None
+    """Run one turn independently of any transport response consumer."""
     try:
-        turn_stream = (
-            runtime.engine.run_turn(
-                content,
-                request_id=request_id,
-                images=images,
-                artifacts=artifacts,
-            )
-            if content is not None
-            else runtime.engine.run_pending(request_id=request_id)
+        live_interactive = (
+            runtime.interactive if interactive is None else interactive
         )
-        async for event in turn_stream:
-            payload = _event_payload(event)
-            if payload["type"] in {"turn_finished", "turn_cancelled"}:
-                loader = runtime.services.get("loader")
-                if loader is not None:
-                    slots = await loader.status_slots()
-                    if slots:
-                        payload["data"]["status_slots"] = slots
-            await events.put(payload)
+        interaction_sink = (
+            _live_interaction_sink(runtime, router)
+            if live_interactive
+            else nullcontext()
+        )
+        async with interaction_sink:
+            turn_stream = (
+                runtime.engine.run_turn(
+                    content,
+                    request_id=request_id,
+                    images=images,
+                    artifacts=artifacts,
+                )
+                if content is not None
+                else runtime.engine.run_pending(request_id=request_id)
+            )
+            async with aclosing(turn_stream):
+                async for event in turn_stream:
+                    payload = _event_payload(event)
+                    if payload.type in {"turn_finished", "turn_cancelled"}:
+                        slots = await runtime.application.status_slots()
+                        if slots:
+                            payload.data["status_slots"] = slots
+                        snapshot = await runtime.application.snapshot()
+                        payload.data["session_stats"] = conversation_stats(
+                            snapshot.messages
+                        ).model_dump(mode="json")
+                    router.emit(payload)
     except asyncio.CancelledError:
-        logger.info("Turn cancelled for session %s", runtime.session_id)
+        runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Engine run_turn failed")
-        await events.put({
-            "type": "error",
-            "data": {
-                "code": "turn_failed",
-                "message": str(exc),
-                "details": {"exception_type": type(exc).__name__},
-            },
-        })
+        runtime._log.exception(
+            "session.turn.failed",
+            request_id=request_id,
+            error_type=type(exc).__name__,
+        )
+        router.emit(session_error_event(
+            "turn_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+        ))
     finally:
-        close = getattr(turn_stream, "aclose", None)
-        if close is not None:
-            await close()
-        await events.put(None)
+        router.finish()
+        if runtime._active_router is router:
+            runtime._active_router = None
+        runtime.turn_task = None
+        runtime.turn_lock.release()
+        runtime.touch()
+        if runtime._wakeup_requested and runtime.wakeup_task is None:
+            runtime._request_wakeup()
 
 
 async def run_turn_stream(
@@ -500,70 +688,109 @@ async def run_turn_stream(
     content: str | None,
     request_id: str = "",
     images: list[ImageContent] | None = None,
-    artifacts: list[dict[str, Any]] | None = None,
+    artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
-) -> AsyncIterator[dict[str, Any]]:
+    accepted_event: ClientEvent | None = None,
+) -> AsyncIterator[ClientEvent]:
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
+    await runtime.turn_lock.acquire()
+    try:
+        response = TurnResponse(request_id, request_id)
+        router = TurnEventRouter(runtime, response)
+        runtime._active_router = router
+        if accepted_event is not None:
+            runtime.event_stream.publish(accepted_event, request_id=request_id)
+        task = asyncio.create_task(_execute_turn(
+            runtime,
+            router,
+            content=content,
+            request_id=request_id,
+            images=images,
+            artifacts=artifacts,
+            interactive=interactive,
+        ))
+    except BaseException:
+        runtime.turn_lock.release()
+        raise
+    runtime.turn_task = task
+    async for event in _response_events(response):
+        yield event
 
-    async with runtime.turn_lock:
-        events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        disconnected = asyncio.Event()
-        stream_completed = False
-        handed_off = False
-        pump_task = asyncio.create_task(
-            _pump_turn(
-                runtime,
-                events,
-                content,
-                request_id,
-                images,
-                artifacts,
-            )
+
+async def regenerate_turn_stream(
+    runtime: SessionRuntime,
+    *,
+    request_id: str,
+    interactive: bool | None = None,
+) -> AsyncIterator[ClientEvent]:
+    """Atomically replace the latest human turn and run it again."""
+    if runtime.turn_lock.locked():
+        raise SessionBusy(runtime.session_id)
+    await runtime.turn_lock.acquire()
+    try:
+        message = await runtime.application.history.regenerate_history()
+        artifacts = [
+            value
+            for value in message.artifact or []
+            if isinstance(value, ArtifactRef)
+        ]
+        page = runtime.application.history_pages.page(limit=160)
+        snapshot = await runtime.application.snapshot()
+        response = TurnResponse(request_id, request_id)
+        router = TurnEventRouter(runtime, response)
+        runtime._active_router = router
+        router.emit(session_event(
+            "history_updated",
+            {
+                "history": conversation_replay(page.messages),
+                "history_cursor": page.next_cursor,
+                "operation": "regenerate",
+                "turns": 1,
+                "session_stats": conversation_stats(snapshot.messages),
+            },
+        ))
+        accepted = runtime._message_event(
+            message.input_id or request_id,
+            message.content,
+            list(message.images),
+            artifacts,
         )
-        runtime.turn_task = pump_task
-        try:
-            interaction_sink = (
-                _live_interaction_sink(runtime, events, disconnected)
-                if (
-                    runtime.interactive
-                    if interactive is None
-                    else interactive
-                )
-                else nullcontext()
-            )
-            async with interaction_sink:
-                while True:
-                    event = await events.get()
-                    if event is None:
-                        stream_completed = True
-                        break
-                    if runtime.response_output is not None and handed_off:
-                        await runtime.response_output.put(event)
-                        continue
-                    if (
-                        event.get("type") == "_inbox_claimed"
-                        and runtime.claim_response_output(
-                            list(event.get("data", {}).get("message_ids") or [])
-                        )
-                    ):
-                        handed_off = True
-                        continue
-                    if event.get("type") == "_inbox_claimed":
-                        continue
-                    yield event
-        finally:
-            disconnected.set()
-            if not stream_completed and not pump_task.done():
-                pump_task.cancel()
-            await asyncio.gather(pump_task, return_exceptions=True)
-            runtime.turn_task = None
-            runtime.touch()
-            if runtime.response_output is not None:
-                await runtime.response_output.put(None)
-                runtime.response_output = None
-    if runtime._wakeup_requested and runtime.wakeup_task is None:
-        runtime._request_wakeup()
+        router.emit(accepted)
+    except BaseException:
+        runtime.turn_lock.release()
+        raise
+    task = asyncio.create_task(_execute_turn(
+        runtime,
+        router,
+        content=message.content,
+        request_id=request_id,
+        images=list(message.images),
+        artifacts=artifacts,
+        interactive=interactive,
+    ))
+    runtime.turn_task = task
+    async for event in _response_events(response):
+        yield event
 
 
-__all__ = ["SessionBusy", "SessionRuntime", "run_turn_stream"]
+async def _response_events(
+    response: TurnResponse,
+) -> AsyncIterator[ClientEvent]:
+    """Expose a turn response while detaching the transport view reliably."""
+    try:
+        while True:
+            event = await response.events.get()
+            if event is None:
+                return
+            yield event
+    finally:
+        response.detach()
+
+
+__all__ = [
+    "SessionBusy",
+    "SessionRuntime",
+    "regenerate_turn_stream",
+    "run_turn_stream",
+]

@@ -14,6 +14,19 @@ import xcore
 
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_service import ToolsService
+from XBotv2.core.tools import ClientEvent
+from XBotv2.permissions import ApprovalDecision
+
+
+class _UnavailableApproval:
+    async def request(self, _event: ClientEvent) -> ApprovalDecision:
+        return ApprovalDecision(decision="deny")
+
+
+async def _ignore_permission_decision(
+    _event: ClientEvent, decision: ApprovalDecision
+) -> ApprovalDecision:
+    return decision
 
 
 def make_tool_ctx(
@@ -40,15 +53,17 @@ def make_tool_ctx(
         tools_service = ToolsService(registry, events=ctx)
         ctx.set("tools", tools_service)
     if permissions is not None:
-        from XBotv2.permissions.guard import make_permission_guard
+        from XBotv2.permissions.guard import PermissionGuard
 
         if ctx.get("permissions", strict=False) is None:
             ctx.set("permissions", permissions)
-        tools_service.guard(make_permission_guard(
+        guard = PermissionGuard(
             permissions,
-            approval,
+            approval or _UnavailableApproval(),
             ctx.emit,
-        ))
+            _ignore_permission_decision,
+        )
+        tools_service.guard(guard.check)
     if sandbox is not None:
         if ctx.get("sandbox", strict=False) is None:
             ctx.set("sandbox", sandbox)
@@ -82,9 +97,10 @@ def make_engine(
     composition does.
     """
     from XBotv2.agentloop.engine import Engine
-    from XBotv2.config.models import RuntimeConfig
-    from XBotv2.core.loop import LoopSettings, LoopState
-    from XBotv2.core.runtime import SessionInfo
+    from XBotv2.config.contracts import RuntimeConfig
+    from XBotv2.agentloop import LoopSettings, LoopState
+    from XBotv2.core.history import ConversationHistory
+    from XBotv2.session import SessionInfo
     from XBotv2.permissions.system import PermissionSystem
     from XBotv2.sandbox.policy import SandboxPolicy
 
@@ -109,8 +125,11 @@ def make_engine(
             workspace_root=str(state_store.workspace_root),
             provider="default",
         ),
-        media_root=str(state_store.root),
     )
+    state.set_history(ConversationHistory(
+        sink=state_store.history,
+        nodes=state_store.history.load_surface(),
+    ))
     settings = LoopSettings(
         provider="default",
         model="mock",
@@ -123,27 +142,45 @@ def make_engine(
         memory=runtime_config.memory,
         workspace=str(state_store.workspace_root),
     )
+    from XBotv2.context_builder import (
+        BUILD_CONTEXT,
+        CONTEXT_COMPONENTS_BUILT,
+        ContextBuildRequest,
+        ContextComponentsBuilt,
+    )
     from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.core.events import EventContext, Events
 
     builder = ContextBuilder()
 
-    async def _build_context(event: Any) -> None:
-        components = builder.build_components(**dict(event.context_kwargs or {}))
-        component_event = EventContext(
+    async def _build_context(event: ContextBuildRequest) -> None:
+        components = builder.build_components(
             messages=event.messages,
+            agent_name=event.agent_name,
+            agent_role=event.agent_role,
+            user_name=event.user_name,
+            user_id=event.user_id,
+            developer_instructions=event.developer_instructions,
+            instructions=event.instructions,
+            memory=event.memory,
+            sandbox_summary=event.sandbox_summary,
+            runtime_paths=event.runtime_paths,
+            system_notice=event.system_notice,
+            turn_count=event.turn_count,
+            active_subagents=event.active_subagents,
+        )
+        component_event = ContextComponentsBuilt(
+            components=components,
             session=event.session,
-            context_components=components,
         )
         await events.emit(
-            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
+            CONTEXT_COMPONENTS_BUILT,
             component_event,
         )
-        components = component_event.context_components or components
-        event.context_components = components
-        event.context_messages = builder.messages_from_components(components)
+        event.context_messages = builder.messages_from_components(
+            component_event.components
+        )
 
-    events.on(Events.CONTEXT_BUILD, _build_context)
+    events.on(BUILD_CONTEXT, _build_context)
     return Engine(
         model_client=llm,
         tools=events.tools,

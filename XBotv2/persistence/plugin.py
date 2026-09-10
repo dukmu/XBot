@@ -1,115 +1,85 @@
-"""Persistence component: the session state store as an XCore service.
-
-This plugin owns ``ctx.state_store`` and projects the session-owned
-``ctx.loop_state`` to storage. It hydrates that state during activation rather
-than constructing the state consumed by the loop.
-"""
+"""Hydrate the thread persistence domains before Agent construction."""
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import JsonValue
+from xcore import Context
 
-from XBotv2.core.events import Events
-from XBotv2.core.loop import LoopState
+from XBotv2.core.history import ConversationHistory
+from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.paths import SessionPaths
+from XBotv2.persistence.store import ThreadPersistence
 
 
-class PersistenceService:
-    """Synchronize one core loop-state projection to its storage backend."""
+def thread_persistence_factory(
+    session_paths: SessionPaths,
+    *,
+    thread_id: str = "",
+    workspace_root: str = "",
+    provider: str = "",
+) -> ThreadPersistence:
+    return ThreadPersistence.open(
+        session_paths,
+        thread_id=thread_id,
+        workspace_root=workspace_root,
+        provider=provider,
+    )
 
-    def __init__(self, store: Any, state: LoopState) -> None:
-        self.store = store
-        self.state = state
-        self._refs = list(state.messages)
-        self._fingerprints = [message.fingerprint() for message in state.messages]
 
-    async def state_changed(self, event: Any) -> bool:
-        details = event.event if isinstance(event.event, dict) else {}
-        operation = details.get("history_operation")
-        return self._sync(operation)
+class ThreadPersistenceComponent:
+    inject = ["loop_state", "thread_persistence", "runtime_log"]
+    name = "xbot.persistence"
 
-    async def flush(self) -> bool:
-        """Explicit application-level durability barrier."""
-        return self._sync(None)
-
-    def _sync(self, operation: tuple[str, int] | None) -> bool:
-        current = self.state.messages
-        unchanged = (
-            operation is None
-            and len(current) == len(self._refs)
-            and len(self._fingerprints) == len(self._refs)
-            and all(a is b for a, b in zip(current, self._refs))
-            and all(
-                fingerprint == message.fingerprint()
-                for fingerprint, message in zip(self._fingerprints, current)
-            )
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
+        state = ctx.loop_state
+        persistence = ctx.thread_persistence
+        nodes = persistence.history.load_surface()
+        messages = [node.message for node in nodes]
+        committed_input_ids = {
+            message.input_id for message in messages if message.input_id
+        }
+        pending_inputs = persistence.inbox.reconcile(committed_input_ids)
+        state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
+        state.resumed = persistence.has_persisted_state()
+        state.metadata = ThreadMetadataState(
+            persistence.metadata.load(),
+            sink=persistence.metadata,
         )
-        if unchanged:
-            return False
-        if operation is None:
-            self.store.sync_messages(current)
-        else:
-            name, turns = operation
-            if name == "clear":
-                self.store.append_clear()
-            elif name == "undo":
-                self.store.append_undo(turns)
-            else:
-                self.store.append_checkpoint(current, reason=name)
-        self._refs = list(current)
-        self._fingerprints = [message.fingerprint() for message in current]
-        return True
+        state.inbox_items = pending_inputs
+        state.inbox_sink = persistence.inbox
+        state.session.provider = persistence.provider
+
+        ctx.runtime_log.bind("persistence").info(
+            "persistence.hydrated",
+            session_id=persistence.session_id,
+            thread_id=persistence.thread_id,
+            history_messages=len(messages),
+            pending_inputs=len(pending_inputs),
+            resumed=state.resumed,
+            provider=persistence.provider,
+        )
+
+        ctx.set("thread_metadata", state.metadata)
 
 
-class PersistenceComponent:
-    """Hydrate and persist the session-owned core loop state."""
+def mount_thread_persistence(ctx: Context) -> None:
+    ThreadPersistenceComponent().apply(ctx)
 
-    inject = ["loop_state", "thread_paths"]
+
+class PersistencePlugin:
+    """Expose process readers and hydrate thread-local persistent state."""
 
     name = "xbot.persistence"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        from XBotv2.persistence.store import CoreStateStore
-
-        config = config or {}
-        state = ctx.loop_state
-        store = CoreStateStore.create(
-            ctx.thread_paths,
-            thread_id=state.session.thread_id,
-            workspace_root=state.session.workspace_root,
-            provider=str(config.get("provider") or state.session.provider),
-        )
-        ctx.set("state_store", store)
-        resumed = store.has_existing_session()
-        messages = store.read_messages() if resumed else []
-        state.messages = messages
-        state.turn_count = sum(1 for message in messages if message.role == "user")
-        state.resumed = resumed
-        state.metadata = store.read_thread_metadata()
-        state.inbox_events = store.read_events(Events.INBOX_SPLICE)
-        state.media_root = str(store.root)
-        state.session.provider = store.provider
-        state.session.turn_count = state.turn_count
-        service = PersistenceService(store, state)
-        ctx.set("persistence", service)
-        ctx.on(Events.STATE_CHANGED, service.state_changed)
-
-        async def persist_session_metadata(event: Any) -> None:
-            store.provider = state.session.provider
-            store.write_thread_metadata(state.metadata)
-
-        ctx.on(Events.SESSION_INIT, persist_session_metadata)
-        ctx.on(Events.AGENT_CONFIGURED, persist_session_metadata)
-
-        async def persist_runtime_event(event: Any) -> None:
-            record = event.client_event or {}
-            store.append_event(
-                str(record.get("type") or ""),
-                dict(record.get("data") or {}),
-            )
-
-        ctx.on(Events.INBOX_SPLICE, persist_runtime_event)
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
+        ctx.set("thread_persistence_factory", thread_persistence_factory)
+        ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
 
 
-plugin = PersistenceComponent()
+plugin = PersistencePlugin()
 
-__all__ = ["PersistenceComponent", "PersistenceService"]
+__all__ = ["PersistencePlugin"]

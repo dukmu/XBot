@@ -14,17 +14,19 @@ no knowledge of individual plugins.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from functools import partial
+from typing import Callable
 
-from XBotv2.core.events import EventPort
-from XBotv2.core.tools import GuardDecision, Tool
+from XBotv2.agentloop.events import EventContext, EventPort
+from XBotv2.agentloop.contracts import ToolGuard, ToolsPort
+from XBotv2.core.messages import Message
+from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from xcore import bound_effect
+from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from xcore import bound_effect, current_plugin_name
 
-Guard = Callable[[Any, Any], GuardDecision | None | Awaitable[GuardDecision | None]]
-
-
-class ToolsService:
+class ToolsService(ToolsPort):
     """Plugin-facing tool registry with fiber-scoped auto-unregister.
 
     Holds the tool registry plus the execution-pipeline guards.  A guard
@@ -35,24 +37,31 @@ class ToolsService:
 
     def __init__(
         self,
-        registry: Any,
+        registry: ToolRegistry,
         *,
         events: EventPort | None = None,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
-        self.registry = registry
+        self._registry = registry
         self.events = events
-        self._guards: list[Guard] = []
+        self._log = runtime_log.bind("tools")
+        self._guards: list[ToolGuard] = []
 
-    def guard(self, guard: Guard) -> Any:
+    def guard(self, guard: ToolGuard) -> bool:
         """Register one monotonic execution guard.
 
         The returned disposer (and the registering fiber's unload) removes
         the guard.
         """
         self._guards.append(guard)
-        return bound_effect(lambda: self._guards.remove(guard))
+        self._log.debug(
+            "tool.guard.registered",
+            owner=current_plugin_name(),
+            guard=getattr(guard, "__qualname__", type(guard).__qualname__),
+        )
+        return bound_effect(partial(self._guards.remove, guard))
 
-    def guards(self) -> tuple[Guard, ...]:
+    def guards(self) -> tuple[ToolGuard, ...]:
         return tuple(self._guards)
 
     def register(
@@ -62,7 +71,6 @@ class ToolsService:
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
-        injected: dict[str, Any] | None = None,
     ) -> str:
         """Register one tool; undone automatically when the plugin unloads.
 
@@ -70,57 +78,86 @@ class ToolsService:
         ``skills:scope``); plugin ownership and cleanup are handled by the
         XCore fiber.
         """
-        name = self.registry.register(
+        name = self._registry.register(
             tool,
             model_visible=model_visible,
             timeout_seconds=timeout_seconds,
             namespace=namespace,
-            injected=injected,
         )
-        bound_effect(lambda: self.registry.unregister(name))
+        self._log.info(
+            "tool.registered",
+            name=name,
+            owner=current_plugin_name(),
+            model_visible=model_visible,
+            timeout_seconds=timeout_seconds,
+        )
+        bound_effect(partial(self.unregister, name))
         return name
 
     def unregister(self, name: str) -> bool:
-        return self.registry.unregister(name)
+        removed = self._registry.unregister(name)
+        if removed:
+            self._log.info("tool.unregistered", name=name)
+        return removed
+
+    def enabled(self) -> tuple[Tool, ...]:
+        return tuple(self._registry.get_all())
+
+    def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None:
+        entry = (
+            self._registry.get_registered(name)
+            if include_disabled
+            else self._registry.get(name)
+        )
+        return entry.tool if entry is not None else None
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._registry.names())
+
+    def registered_names(self) -> tuple[str, ...]:
+        return tuple(self._registry.registered_names())
+
+    def registrations(self) -> tuple[ToolRegistration, ...]:
+        return self._registry.registered_entries()
+
+    def restrict(self, selectors: list[str] | None) -> tuple[str, ...]:
+        enabled = tuple(self._registry.restrict(selectors))
+        self._log.debug(
+            "tool.selection.restricted",
+            selectors=selectors or ["*"],
+            enabled_count=len(enabled),
+        )
+        return enabled
+
+    def exclude(self, selectors: list[str]) -> tuple[str, ...]:
+        enabled = tuple(self._registry.exclude(selectors))
+        self._log.debug(
+            "tool.selection.excluded",
+            selectors=selectors,
+            enabled_count=len(enabled),
+        )
+        return enabled
 
     async def execute_all(
         self,
-        tool_calls: list[Any],
+        tool_calls: list[ToolCall],
         *,
-        context_factory: Any = None,
-    ) -> list[Any]:
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> list[Message]:
         """Run the full tool-execution guard pipeline.
 
-        Pipeline per call: ``BEFORE_TOOL_CALL`` event waterfall, schema
+        Pipeline per call: rewrite-only ``BEFORE_TOOL_CALL`` event, schema
         validation, monotonic guards, dispatch, and ``AFTER_TOOL_CALL``.
-        Runtime dependencies belong to this service; the agent loop only
-        submits calls and receives their ordered results.
+        Tool owners bind their runtime dependencies before registration; the
+        agent loop only submits calls and receives their ordered results.
         """
         from XBotv2.agentloop.tool_runtime import execute_tools
 
         return await execute_tools(
             tool_calls,
-            self.registry,
+            self._registry,
             events=self.events,
             guards=self.guards(),
             context_factory=context_factory,
+            runtime_log=self._log,
         )
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.registry, name)
-
-
-class ToolsComponent:
-    """Register the loop-owned tool service."""
-
-    name = "xbot.agentloop.tools"
-
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        tool_registry = ToolRegistry()
-        ctx.set(
-            "tools",
-            ToolsService(tool_registry, events=ctx),
-        )
-
-
-plugin = ToolsComponent()

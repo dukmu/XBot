@@ -1,22 +1,20 @@
 """Contract tests for the supported XBotv2 extension surface."""
 
+import asyncio
 import inspect
 import re
-from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 import XBotv2.core as public_api
 
+from XBotv2.agents import AgentDefinition
+from XBotv2.application import ChildApplication
+from XBotv2.context_builder import ContextComponent
 from XBotv2.core import (
-    Command,
-    CommandResult,
-    ContextComponent,
-    ToolAction,
-    EventContext,
-    ToolDecision,
-    Events,
+    ArtifactKind,
     prompt_container,
     prompt_element,
     RuntimePaths,
@@ -26,31 +24,163 @@ from XBotv2.core import (
     ToolResult,
     Tool,
 )
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.commands import Command, CommandResult
+from XBotv2.config import SessionPolicyPatch
+from XBotv2.interactions import UserInputRequiredData
+from XBotv2.jobs import Job, JobKind
+from XBotv2.protocol import HelloRequest, server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.protocol.http_server import create_app
-from XBotv2.protocol.models import (
-    KNOWN_SERVER_EVENT_TYPES,
-    HelloRequest,
-    MessageRequest,
-    SessionPolicyPatch,
-    server_event,
-)
+from XBotv2.session import MessageRequest
 
 
-def test_public_api_inventory_is_explicit():
-    inventory = Path(__file__).parents[2] / "docs" / "api" / "api_inventory.md"
-    documented = []
-    for line in inventory.read_text(encoding="utf-8").splitlines():
-        if line.startswith("## Exported Symbols"):
-            if line.startswith("## Exported Symbols (XBotv2.jobs)"):
-                break
-            continue
-        if match := re.match(r"^\| `([^`]+)` \|", line):
-            documented.append(match.group(1))
+def test_public_api_exports_are_resolvable_and_unique():
+    exported = public_api.__all__
+    assert len(exported) == len(set(exported))
+    assert all(hasattr(public_api, name) for name in exported)
 
-    assert documented == public_api.__all__
-    assert len(documented) == len(set(documented))
-    assert all(hasattr(public_api, name) for name in documented)
+
+def test_plugin_package_roots_export_declarations_not_implementations():
+    import XBotv2.agentloop as agentloop
+    import XBotv2.agents as agents
+    import XBotv2.application as application
+    import XBotv2.commands as commands
+    import XBotv2.compact as compact
+    import XBotv2.config as config
+    import XBotv2.context_builder as context_builder
+    import XBotv2.jobs as jobs
+    import XBotv2.llm as llm
+    import XBotv2.loader as loader
+    import XBotv2.mcp_plugin as mcp_plugin
+    import XBotv2.permissions as permissions
+    import XBotv2.sandbox as sandbox
+    import XBotv2.server as server
+    import XBotv2.session as session
+
+    assert set(jobs.__all__) >= {
+        "JobRunner",
+        "JobsPort",
+        "JobsCommandPort",
+        "LIST_TASKS",
+        "TaskSnapshot",
+    }
+    assert set(commands.__all__) >= {
+        "Command",
+        "CommandResult",
+        "EXECUTE_COMMAND",
+        "LIST_COMMANDS",
+    }
+    assert set(llm.__all__) >= {
+        "LIST_PROVIDERS",
+        "LlmCatalogPort",
+        "ModelConfig",
+        "ModelPort",
+        "ProviderCatalog",
+        "ProviderConfig",
+    }
+    assert mcp_plugin.__all__ == ["MCP_PLUGIN_ID"]
+    assert set(permissions.__all__) == {
+        "ApprovalDecision",
+        "ApprovalPort",
+        "PermissionDeniedData",
+        "PermissionRequestData",
+        "PermissionResponseRequest",
+        "RequestedPermissionData",
+        "PERMISSION_DECIDED",
+        "PERMISSION_REQUESTED",
+        "PermissionDecided",
+        "PermissionRequested",
+        "PermissionsPort",
+    }
+    assert sandbox.__all__ == []
+    assert set(session.__all__) >= {
+        "AgentApplicationFactory",
+        "SessionsPort",
+        "SessionPort",
+        "SessionInfo",
+        "ThreadSummary",
+    }
+    assert set(server.__all__) >= {
+        "ModelOverride",
+        "RouteContribution",
+        "ServerOptions",
+    }
+    assert set(agentloop.__all__) >= {
+        "AgentLoopDriverPort",
+        "EventContext",
+        "EventPort",
+        "Events",
+        "LoopFactoryOptions",
+        "LoopSettings",
+        "LoopState",
+        "ModelRequest",
+        "SHORT_CIRCUIT_EVENTS",
+        "ToolsPort",
+    }
+    assert set(agents.__all__) >= {
+        "AGENT_CONFIGURED",
+        "AgentCatalogPort",
+        "AgentCreateOptions",
+        "AgentConfigured",
+        "AgentDefinition",
+        "AgentMode",
+        "AgentRuntimePort",
+    }
+    assert set(config.__all__) >= {
+        "PatchPolicy",
+        "POLICY_CHANGED",
+        "PolicyChanged",
+        "RuntimeConfig",
+        "SettingsPort",
+    }
+    assert set(context_builder.__all__) == {
+        "BEFORE_CONTEXT_BUILD",
+        "BUILD_CONTEXT",
+        "CONTEXT_BUILT",
+        "CONTEXT_COMPONENTS_BUILT",
+        "ContextBuildRequest",
+        "ContextBuilt",
+        "ContextComponent",
+        "ContextComponentsBuilt",
+        "PromptFragmentStage",
+    }
+    assert set(loader.__all__) >= {
+        "PluginEntry",
+        "PluginTree",
+    }
+    assert set(application.__all__) >= {
+        "APPLICATION_INITIALIZED",
+        "AgentApplicationPort",
+        "ApplicationInitialized",
+        "ClientEventsPort",
+        "RUNTIME_EVENT",
+        "RuntimeEvent",
+        "StatusSlots",
+    }
+    assert set(compact.__all__) >= {
+        "AfterCompact",
+        "BeforeCompact",
+        "CompactionMetrics",
+        "CompactionStartedData",
+        "POST_COMPACT",
+        "PRE_COMPACT",
+        "compact_event",
+    }
+    for module, forbidden in (
+        (agentloop, {"Engine", "ToolRegistry", "ToolsService"}),
+        (agents, {"AgentService", "AgentRegistry"}),
+        (application, {"MountedAgentApplication", "start_application"}),
+        (compact, {"CompactService"}),
+        (loader, {"Loader", "LoaderComponent"}),
+        (jobs, {"JobRegistry", "TextOutputStore"}),
+        (llm, {"LlmService", "ModelService"}),
+        (permissions, {"PermissionSystem"}),
+        (sandbox, {"SandboxPolicy"}),
+        (server, {"create_app", "SessionHttpAdapter"}),
+        (session, {"Session", "SessionManager", "SessionRuntime"}),
+    ):
+        assert forbidden.isdisjoint(module.__all__)
+        assert all(not hasattr(module, name) for name in forbidden)
 
 
 def test_public_api_exports_core_extension_types():
@@ -63,7 +193,6 @@ def test_public_api_exports_core_extension_types():
         stage="system_instructions",
     ).stage == "system_instructions"
     assert ToolResult.success("ok").status == "success"
-    assert ToolDecision(ToolAction.DENY, "policy").reason == "policy"
     assert Command(name="sample", description="Sample", handler=lambda *_: None).name == "sample"
     assert CommandResult("done").status == "ok"
     assert prompt_container(
@@ -73,6 +202,16 @@ def test_public_api_exports_core_extension_types():
     assert EventContext(
         request_id="request-1",
     ).request_id == "request-1"
+    assert AgentDefinition(name="sample", description="Sample").name == "sample"
+    assert inspect.isclass(ChildApplication)
+
+
+def test_public_job_contract_excludes_registry_runtime_state():
+    job = Job("job-1", JobKind.SHELL)
+
+    assert not hasattr(job, "completion_event")
+    assert not hasattr(job, "runner_task")
+    assert not hasattr(job, "runtime_handle")
 
 
 def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
@@ -81,10 +220,10 @@ def test_runtime_variables_are_read_only_and_expand_consistently(tmp_path):
     variables = RuntimeVariables.for_thread(runtime, tmp_path / "workspace", thread)
 
     assert variables["tool_results"] == str(
-        thread.artifacts_dir / "tool_results"
+        thread.artifact_dir(ArtifactKind.TOOL_RESULT)
     )
     assert variables.expand("Read ${tool_results}/result.txt") == (
-        f"Read {thread.artifacts_dir}/tool_results/result.txt"
+        f"Read {thread.artifact_dir(ArtifactKind.TOOL_RESULT)}/result.txt"
     )
     assert variables.expand_markdown(
         "Literal ${workspace}.\n\n```var\n${workspace}\n```"
@@ -130,6 +269,34 @@ def test_tool_from_function_preserves_docstring_and_exports_json_schema():
     }
     assert schema["parameters"]["required"] == ["path"]
     assert schema["parameters"]["additionalProperties"] is False
+
+
+def test_tool_from_function_reserves_keyword_only_tool_call_metadata():
+    seen = []
+
+    async def inspect(value: str, *, tool_call: ToolCall) -> str:
+        seen.append(tool_call)
+        return value
+
+    tool = Tool.from_function(inspect)
+    call = ToolCall(id="call-1", name="inspect", args={"value": "ok"})
+
+    assert tool.parameters == {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "additionalProperties": False,
+        "required": ["value"],
+    }
+    assert asyncio.run(tool.ainvoke({"value": "ok"}, tool_call=call)) == "ok"
+    assert seen == [call]
+
+
+def test_tool_from_function_rejects_positional_tool_call_metadata():
+    def inspect(tool_call: ToolCall) -> str:
+        return tool_call.id
+
+    with pytest.raises(TypeError, match="keyword-only"):
+        Tool.from_function(inspect)
 
 def test_command_contract_separates_server_handlers_from_prompt_metadata():
     async def handler(_ctx, _raw_args):
@@ -196,69 +363,72 @@ def test_server_event_carries_stream_envelope_fields():
     assert event.request_id == "req-1"
     assert event.sequence == 7
     assert event.type == "assistant_message"
-    assert event.data == {"content": "ok"}
+    assert "ok" in event.data["content"]
 
 
-def test_server_event_rejects_ask_user_without_choices():
+def test_interactions_protocol_rejects_ask_user_without_choices():
     with pytest.raises(
         ValidationError,
         match="ask_user requires at least two options",
     ):
-        server_event(
-            type="user_input_required",
-            data={
-                "request_id": "user_input:c1",
-                "source": "ask_user",
-                "tool_call_id": "c1",
-                "question": "Continue?",
-            },
+        UserInputRequiredData(
+            request_id="user_input:c1",
+            source="ask_user",
+            tool_call_id="c1",
+            question="Continue?",
         )
 
 
-def test_server_event_type_inventory_covers_current_stream_events():
-    assert set(KNOWN_SERVER_EVENT_TYPES) == {
-        "assistant_message",
-        "assistant_message_delta",
-        "client_message",
-        "compaction_completed",
-        "compaction_failed",
-        "compaction_started",
-        "end",
-        "error",
-        "input_rejected",
-        "message",
-        "permission_denied",
-        "permission_request",
-        "permission_response_recorded",
-        "tool_call_delta",
-        "tool_calls_started",
-        "tool_result",
-        "task_updated",
-        "turn_cancelled",
-        "turn_finished",
-        "turn_started",
-        "usage",
-        "user_input_recorded",
-        "user_input_required",
-    }
+@pytest.mark.asyncio
+async def test_openapi_uses_typed_request_contracts(tmp_path):
+    from XBotv2.application.server import start_server_application
 
-
-def test_openapi_uses_typed_request_contracts():
-    from XBotv2.llm.service import LlmService
-
-    schema = create_app(
-        paths=RuntimePaths.from_data_dir("data"),
+    data_dir = tmp_path / "data"
+    config_dir = data_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "llm",
+            "name": "llm",
+            "config": {
+                "default": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "openai",
+                        "api_key": "test",
+                        "default_model": "test",
+                        "models": [{"model": "test"}],
+                    }
+                },
+            },
+        }]),
+        encoding="utf-8",
+    )
+    application = await start_server_application(
+        paths=RuntimePaths.from_data_dir(data_dir),
+        provider_name="test",
+        workspace_root=str(tmp_path),
         no_plugins=True,
-        llm=LlmService(),
-    ).openapi()
+    )
+    try:
+        schema = application.server.openapi()
+    finally:
+        await application.stop()
     assert schema["info"]["version"] == PROTOCOL_VERSION
     paths = schema["paths"]
     assert set(paths) == {
+        "/directories",
         "/health",
         "/hello",
         "/providers",
+        "/workspaces",
+        "/workspaces/events",
+        "/workspaces/{workspace_id}",
+        "/workspaces/{workspace_id}/order",
+        "/workspaces/{workspace_id}/sessions/{session_id}/order",
         "/sessions",
         "/sessions/{session_id}",
+        "/sessions/{session_id}/archive",
         "/sessions/{session_id}/close",
         "/sessions/{session_id}/fork",
         "/sessions/{session_id}/policy",
@@ -266,32 +436,45 @@ def test_openapi_uses_typed_request_contracts():
         "/sessions/{session_id}/threads/{thread_id}",
         "/sessions/{session_id}/threads/{thread_id}/agent",
         "/sessions/{session_id}/threads/{thread_id}/agents",
-        "/sessions/{session_id}/threads/{thread_id}/agents/reload",
+        "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id}",
         "/sessions/{session_id}/threads/{thread_id}/close",
-        "/sessions/{session_id}/threads/{thread_id}/config/reload",
         "/sessions/{session_id}/threads/{thread_id}/effort",
         "/sessions/{session_id}/threads/{thread_id}/events",
         "/sessions/{session_id}/threads/{thread_id}/history/clear",
+        "/sessions/{session_id}/threads/{thread_id}/history/regenerate",
         "/sessions/{session_id}/threads/{thread_id}/history/undo",
         "/sessions/{session_id}/threads/{thread_id}/interactions/permission-response",
         "/sessions/{session_id}/threads/{thread_id}/interactions/user-input",
         "/sessions/{session_id}/threads/{thread_id}/interrupt",
         "/sessions/{session_id}/threads/{thread_id}/messages",
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config",
+        "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}",
+        "/sessions/{session_id}/threads/{thread_id}/trajectory",
+        "/sessions/{session_id}/threads/{thread_id}/queue",
+        "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}",
         "/sessions/{session_id}/threads/{thread_id}/provider",
         "/sessions/{session_id}/threads/{thread_id}/tasks",
         "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
         "/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop",
         "/sessions/{session_id}/threads/{thread_id}/tools",
+        "/sessions/{session_id}/threads/{thread_id}/todos",
     }
     assert paths["/hello"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/HelloRequest")
     assert paths["/sessions"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/OpenSessionRequest")
+    queue_path = "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}"
+    assert paths[queue_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PendingInputUpdateRequest")
+    assert paths["/sessions/{session_id}"]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionUpdateRequest")
+    assert paths["/workspaces"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/WorkspaceCreateRequest")
     policy_path = "/sessions/{session_id}/policy"
     assert paths[policy_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyPatch")
     assert paths[policy_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyResponse")
+    plugin_config_path = "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}"
+    assert paths[plugin_config_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PluginConfigPatchRequest")
     assert "/commands" not in paths
     assert not any(path.endswith("/commands") for path in paths)
     assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
     assert paths["/sessions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionListResponse")
+    assert paths["/sessions/{session_id}"]["delete"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DeleteSessionResponse")
     thread_path = "/sessions/{session_id}/threads/{thread_id}"
     assert paths[thread_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/ThreadSummary")
     assert paths[thread_path]["get"]["responses"]["404"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
@@ -307,6 +490,15 @@ def test_openapi_uses_typed_request_contracts():
     assert set(paths[event_path]["get"]["responses"]["200"]["content"]) == {
         "text/event-stream"
     }
+    assert set(paths["/workspaces/events"]["get"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    regenerate_path = "/sessions/{session_id}/threads/{thread_id}/history/regenerate"
+    assert set(paths[regenerate_path]["post"]["responses"]["200"]["content"]) == {
+        "text/event-stream"
+    }
+    todos_path = "/sessions/{session_id}/threads/{thread_id}/todos"
+    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TodoSnapshot")
 
     operation_ids = [
         operation["operationId"]

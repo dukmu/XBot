@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.application import start_application
+from XBotv2.application.app import start_application
 from XBotv2.coretools.filesystem import read
-from XBotv2.coretools.filesystem import read_file
+from XBotv2.coretools.filesystem import read
 from XBotv2.llm.anthropic import anthropic_request_messages
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import openai_messages
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.artifacts import ArtifactKind
 
 
 PNG_BASE64 = (
@@ -34,37 +35,43 @@ class MediaSandbox:
 
 
 @pytest.mark.asyncio
-async def test_read_image_path_produces_image_tool_result(tmp_path):
+async def test_read_image_path_produces_image_tool_result(tmp_path, artifact_store):
     payload = base64.b64decode(PNG_BASE64)
     path = tmp_path / "pixel.png"
     path.write_bytes(payload)
     sandbox = MediaSandbox(tmp_path / "session")
 
-    result = await read(path=str(path), mode="media", sandbox=sandbox)
+    result = await read(
+        path=str(path), mode="media", sandbox=sandbox, artifacts=artifact_store
+    )
 
     assert result.status == "success"
     assert len(result.images) == 1
     image = result.images[0]
     assert image.media_type == "image/png"
-    assert (tmp_path / "session" / image.path).read_bytes() == payload
+    assert artifact_store.read(image.path) == payload
 
-    text_result = await read_file(str(path), sandbox=sandbox)
+    text_result = await read(str(path), sandbox=sandbox)
     assert text_result.status == "success"
     assert text_result.images == ()
     assert "Non-text file" in text_result.content
 
 
 @pytest.mark.asyncio
-async def test_read_image_accepts_base64_and_data_url(tmp_path):
+async def test_read_image_accepts_base64_and_data_url(tmp_path, artifact_store):
     encoded = PNG_BASE64
     sandbox = MediaSandbox(tmp_path / "session")
 
-    raw = await read(path="", mode="media", data=encoded, sandbox=sandbox)
+    raw = await read(
+        path="", mode="media", data=encoded,
+        sandbox=sandbox, artifacts=artifact_store,
+    )
     data_url = await read(
         path="",
         mode="media",
         data=f"data:image/png;base64,{encoded}",
         sandbox=sandbox,
+        artifacts=artifact_store,
     )
 
     assert raw.status == "success"
@@ -93,7 +100,7 @@ async def test_read_image_url_requires_network(tmp_path):
 
 
 def test_provider_encoding_preserves_image_content():
-    image = ImageContent("artifacts/media/pixel.png", "image/png", 3)
+    image = ImageContent(path="artifacts/media/pixel.png", media_type="image/png", size=3)
 
     tool_message = Message(
         role="tool",
@@ -122,8 +129,8 @@ def test_provider_encoding_preserves_image_content():
 
 @pytest.mark.asyncio
 async def test_provider_rejects_image_without_image_modality(tmp_path):
-    llm = MockLLM(input_modalities=["text"], media_root=tmp_path)
-    image = ImageContent("artifacts/media/pixel.png", "image/png", 3)
+    llm = MockLLM(input_modalities=["text"])
+    image = ImageContent(path="artifacts/media/pixel.png", media_type="image/png", size=3)
     message = Message(role="user", content="describe", images=[image])
 
     with pytest.raises(ValueError, match="does not support image"):
@@ -140,7 +147,6 @@ async def test_engine_smoke_persists_user_image_attachment(
     llm = MockLLM(
         responses=[{"content": "red square"}],
         input_modalities=["text", "image"],
-        media_root=temp_data_dir,
     )
     application = await start_application(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -151,7 +157,12 @@ async def test_engine_smoke_persists_user_image_attachment(
     )
     engine = application.engine
     application.sandbox.workspace_root = temp_workspace
-    image = application.state_store.store_image(PNG_BASE64, "image/png")
+    ref = application.artifacts.put(
+        ArtifactKind.MEDIA,
+        payload,
+        media_type="image/png",
+    )
+    image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
 
     events = [
         event
@@ -168,7 +179,7 @@ async def test_engine_smoke_persists_user_image_attachment(
         if message.role == "user"
     )
     assert provider_user.images == [image]
-    assert (application.state_store.root / image.path).is_file()
+    assert application.artifacts.exists(image.path)
 
-    persisted = application.state_store.messages_path.read_text(encoding="utf-8")
+    persisted = application.thread_persistence.history.path.read_text(encoding="utf-8")
     assert '"type": "image"' in persisted

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from pydantic import JsonValue
 
 from .permission_scope import validate_tool_patterns
 
@@ -20,20 +21,13 @@ _DISCOVERY_PATHS = [
     ".agents/skills",
     ".opencode/skills",
 ]
-_GLOBAL_PATHS = [
-    Path.home() / ".claude/skills",
-    Path.home() / ".agents/skills",
-    Path.home() / ".config/opencode/skills",
-]
-
-
 @dataclass
 class Skill:
     name: str
     description: str
     path: Path
     content: str
-    frontmatter: dict[str, object] = field(default_factory=dict)
+    frontmatter: dict[str, JsonValue] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
     disable_model_invocation: bool = False
@@ -45,10 +39,15 @@ class SkillRegistry:
     def __init__(self) -> None:
         self._skills: dict[str, Skill] = {}
 
-    def discover(self, workspace: Path) -> None:
+    def discover(
+        self,
+        workspace: Path,
+        *,
+        global_dirs: list[Path] | tuple[Path, ...] = (),
+    ) -> None:
         self._skills.clear()
         self._scan_project(workspace)
-        self._scan_global()
+        self._scan_global(global_dirs)
 
     def list_skills(self) -> list[Skill]:
         return sorted(self._skills.values(), key=lambda s: s.name)
@@ -67,8 +66,13 @@ class SkillRegistry:
                 break
             current = current.parent
 
-    def _scan_global(self) -> None:
-        for skills_dir in _GLOBAL_PATHS:
+    def _scan_global(self, directories: list[Path] | tuple[Path, ...]) -> None:
+        seen: set[Path] = set()
+        for skills_dir in directories:
+            skills_dir = Path(skills_dir)
+            if skills_dir in seen:
+                continue
+            seen.add(skills_dir)
             self._scan_dir(skills_dir, "global")
 
     def _scan_dir(self, skills_dir: Path, scope: str) -> None:

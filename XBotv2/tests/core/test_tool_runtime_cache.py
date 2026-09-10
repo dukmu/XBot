@@ -7,35 +7,40 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS as FILESYSTEM_TOOLS
+from XBotv2.coretools.filesystem import filesystem_tools
 from XBotv2.coretools.filesystem import (
     edit,
     path,
     read,
     search,
 )
+from XBotv2.sandbox.contracts import SandboxConfig, SandboxResourceConfig
 
-filesystem_edit = next(t for t in FILESYSTEM_TOOLS if t.name == "edit")
-filesystem_path = next(t for t in FILESYSTEM_TOOLS if t.name == "path")
-filesystem_read = next(t for t in FILESYSTEM_TOOLS if t.name == "read")
-filesystem_search = next(t for t in FILESYSTEM_TOOLS if t.name == "search")
-from XBotv2.interactions.tools import ask_user
+filesystem_edit = next(t for t in filesystem_tools(None) if t.name == "edit")
+filesystem_path = next(t for t in filesystem_tools(None) if t.name == "path")
+filesystem_read = next(t for t in filesystem_tools(None) if t.name == "read")
+filesystem_search = next(t for t in filesystem_tools(None) if t.name == "search")
+from XBotv2.interactions.tools import build_ask_user_tool
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.plugin import ContextBuilderComponent
 import xcore
-from XBotv2.core.events import EventContext, Events
-from XBotv2.core.runtime import SessionInfo
-from XBotv2.core.loop import LoopSettings, LoopState
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.session import SessionInfo
+from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
-from XBotv2.protocol.models import PermissionRequestData
+from XBotv2.core.history import ConversationHistory
+from XBotv2.core.runtime_logging import RuntimeLog
+from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.permissions import PermissionRequestData
 from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions import PERMISSION_REQUESTED
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.tools import ArtifactRef, Tool, ToolCall, ToolError, ToolResult
-from XBotv2.permission_request.service import ApprovalService
-from XBotv2.persistence.plugin import PersistenceService
+from XBotv2.permissions.approval import ApprovalService
+from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.interactions.plugin import InteractionsService
 from XBotv2.tests.helpers import make_tool_ctx
@@ -43,14 +48,13 @@ from XBotv2.tests.helpers import make_tool_ctx
 
 async def execute_tools(
     tool_calls,
-    registry,
+    _registry,
     *,
     ctx,
     context_factory=None,
     **_obsolete,
 ):
-    """Exercise the agent-loop service, not its private execution node."""
-    assert ctx.tools.registry is registry
+    """Exercise the public agent-loop Tools service."""
     return await ctx.tools.execute_all(
         tool_calls,
         context_factory=context_factory,
@@ -87,9 +91,9 @@ async def test_sandboxed_tool_paths_resolve_to_workspace(temp_workspace):
     results = await execute_tools(
         [
             ToolCall(
-                "c1",
-                "edit",
-                {"path": str(temp_workspace / "out.txt"), "mode": "write", "content": "ok"},
+                id="c1",
+                name="edit",
+                args={"path": str(temp_workspace / "out.txt"), "mode": "write", "content": "ok"},
             )
         ],
         registry,
@@ -117,7 +121,7 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
         session_root=session_root,
     )
     registry = ToolRegistry()
-    registry.register(filesystem_read, injected={"sandbox": sandbox})
+    registry.register(next(t for t in filesystem_tools(sandbox) if t.name == "read"))
 
     ctx = make_tool_ctx(
         registry,
@@ -125,8 +129,8 @@ async def test_cached_result_path_resolves_from_session_state_when_sandbox_disab
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "read", {
-            "path": "session/artifacts/tool_results/cached.txt",
+        [ToolCall(id="c1", name="read", args={
+            "path": str(cached),
         })],
         registry,
         ctx=ctx,
@@ -150,8 +154,9 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
         session_root=session_root,
     )
     registry = ToolRegistry()
-    for tool in (filesystem_read, filesystem_search):
-        registry.register(tool, injected={"sandbox": sandbox})
+    for tool in filesystem_tools(sandbox):
+        if tool.name in {"read", "search"}:
+            registry.register(tool)
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -160,12 +165,12 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     results = await execute_tools(
         [
-            ToolCall("list", "read", {"path": "session/artifacts", "mode": "list"}),
-            ToolCall("search", "search", {
-                "path": "session/artifacts", "pattern": "cached",
+            ToolCall(id="list", name="read", args={"path": str(session_root / "artifacts"), "mode": "list"}),
+            ToolCall(id="search", name="search", args={
+                "path": str(session_root / "artifacts"), "pattern": "cached",
             }),
-            ToolCall("find", "search", {
-                "path": "session/artifacts", "pattern": "*.txt", "mode": "name",
+            ToolCall(id="find", name="search", args={
+                "path": str(session_root / "artifacts"), "pattern": "*.txt", "mode": "name",
             }),
         ],
         registry,
@@ -174,7 +179,8 @@ async def test_session_namespace_supports_read_only_discovery_when_sandbox_disab
 
     assert all(result.status == "success" for result in results)
     assert "tool_results" in results[0].content
-    assert "tool_results/cached.txt:1:1:cached content" in results[1].content
+    assert "tool_results/cached.txt" in results[1].content
+    assert "cached content" in results[1].content
     assert "tool_results/cached.txt" in results[2].content
 
 
@@ -196,7 +202,7 @@ async def test_tool_without_sandbox_dependency_receives_none(temp_workspace):
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "inspect_backend", {})],
+        [ToolCall(id="c1", name="inspect_backend", args={})],
         registry,
         ctx=ctx,
     )
@@ -215,10 +221,10 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
 
     registry = ToolRegistry()
     sandbox = SandboxPolicy(enabled=True, workspace_root=temp_workspace)
-    registry.register(
-        Tool.from_function(inspect_backend),
-        injected={"sandbox": sandbox},
-    )
+    async def bound_inspect_backend():
+        return await inspect_backend(sandbox=sandbox)
+
+    registry.register(Tool.from_function(bound_inspect_backend, name="inspect_backend"))
 
     ctx = make_tool_ctx(
         registry,
@@ -226,7 +232,7 @@ async def test_sandboxed_tool_receives_enabled_sandbox(temp_workspace):
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "inspect_backend", {})],
+        [ToolCall(id="c1", name="inspect_backend", args={})],
         registry,
         ctx=ctx,
     )
@@ -247,7 +253,7 @@ async def test_permission_ask_without_approval_fails_closed(temp_workspace):
         permissions=PermissionSystem(default_decision="ask"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        [ToolCall(id="c1", name="edit", args={"path": "blocked.txt", "mode": "write", "content": "no"})],
         registry,
         ctx=ctx,
     )
@@ -264,13 +270,14 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     sandbox = SandboxPolicy(enabled=False, workspace_root=temp_workspace)
     seen = []
 
-    async def approve(event):
-        seen.append((event["type"], event["data"]["request_id"]))
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        seen.append((event.type, event.data["request_id"]))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -281,9 +288,9 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
     results = await execute_tools(
         [
             ToolCall(
-                "c1",
-                "edit",
-                {"path": str(temp_workspace / "allowed.txt"), "mode": "write", "content": "ok"},
+                id="c1",
+                name="edit",
+                args={"path": str(temp_workspace / "allowed.txt"), "mode": "write", "content": "ok"},
             )
         ],
         registry,
@@ -297,8 +304,6 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
 
 @pytest.mark.asyncio
 async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
-    registry = ToolRegistry()
-    registry.register(ask_user)
     called = False
 
     async def answer(*_args, **_kwargs):
@@ -310,6 +315,8 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
     client_events = ClientEventRouter()
     client_events.set_sink(answer)
     interactions = InteractionsService(service_ctx, client_events)
+    registry = ToolRegistry()
+    registry.register(build_ask_user_tool(interactions))
     ctx = make_tool_ctx(
         registry,
         permissions=PermissionSystem(default_decision="allow"),
@@ -318,14 +325,14 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
     )
     results = await execute_tools(
         [
-            ToolCall("c1", "ask_user", {
+            ToolCall(id="c1", name="ask_user", args={
                 "question": "Continue?",
                 "options": [
                     {"label": "", "description": "Continue."},
                     {"label": "stop", "description": "Stop."},
                 ],
             }),
-            ToolCall("c2", "ask_user", {
+            ToolCall(id="c2", name="ask_user", args={
                 "question": "Continue?",
                 "options": [
                     {"content": "continue"},
@@ -349,9 +356,12 @@ async def test_tool_result_preserves_structured_fields() -> None:
         return ToolResult(
             status="error",
             content="failed",
-            data={"attempt": 1},
-            error=ToolError("dict_error", "failed"),
-            artifacts=(ArtifactRef("artifact-1", "text/plain", "result.txt"),),
+            error=ToolError(code="dict_error", message="failed"),
+            artifacts=(ArtifactRef(
+                id="artifact-1",
+                media_type="text/plain",
+                name="result.txt",
+            ),),
         )
 
     registry = ToolRegistry()
@@ -364,13 +374,12 @@ async def test_tool_result_preserves_structured_fields() -> None:
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "structured_result", {})],
+        [ToolCall(id="c1", name="structured_result", args={})],
         registry,
         ctx=ctx,
     )
 
     assert results[0].status == "error"
-    assert results[0].data == {"attempt": 1}
     assert results[0].error["code"] == "dict_error"
     assert results[0].artifact[0].name == "result.txt"
 
@@ -388,14 +397,13 @@ async def test_plain_dictionary_result_is_model_content() -> None:
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "plain_result", {})],
+        [ToolCall(id="c1", name="plain_result", args={})],
         registry,
         ctx=ctx,
     )
 
     assert results[0].status == "success"
     assert json.loads(results[0].content) == {"data": {"value": 1}}
-    assert results[0].data is None
 
 
 @pytest.mark.asyncio
@@ -410,7 +418,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
         calls.append((
             "permission_request",
             ctx.tool_call.name,
-            ctx.client_event["data"]["decision"],
+            ctx.client_event.data["decision"],
         ))
 
     async def tool_denied(ctx):
@@ -419,7 +427,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
     async def post_batch(ctx):
         calls.append(("batch", len(ctx.tool_calls), len(ctx.tool_results)))
 
-    plugin_ctx.on(Events.PERMISSION_REQUEST, permission_request)
+    plugin_ctx.on(PERMISSION_REQUESTED, permission_request)
     plugin_ctx.on(Events.TOOL_DENIED, tool_denied)
     plugin_ctx.on(Events.POST_TOOL_BATCH, post_batch)
 
@@ -430,7 +438,7 @@ async def test_permission_and_batch_hooks_fire(temp_workspace):
         base=plugin_ctx,
     )
     results = await execute_tools(
-        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        [ToolCall(id="c1", name="edit", args={"path": "blocked.txt", "mode": "write", "content": "no"})],
         registry,
         ctx=ctx,
         context_factory=_event_context,
@@ -452,7 +460,10 @@ async def test_sandbox_external_read_readonly_allows_without_approval(tmp_path):
     external = tmp_path / "external.txt"
     external.write_text("approved\n", encoding="utf-8")
     sandbox = SandboxPolicy(
-        config={"external_read": "readonly", "external_write": "deny"},
+        config=SandboxConfig(
+            external_read="readonly",
+            external_write="deny"
+        ),
         workspace_root=workspace,
     )
     if not sandbox.backend_available:
@@ -465,7 +476,7 @@ async def test_sandbox_external_read_readonly_allows_without_approval(tmp_path):
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "read", {"path": str(external)})],
+        [ToolCall(id="c1", name="read", args={"path": str(external)})],
         registry,
         ctx=ctx,
     )
@@ -482,7 +493,10 @@ async def test_sandbox_external_read_deny_fails_closed(tmp_path):
     external = tmp_path / "external.txt"
     external.write_text("blocked\n", encoding="utf-8")
     sandbox = SandboxPolicy(
-        config={"external_read": "deny", "external_write": "deny"},
+        config=SandboxConfig(
+            external_read="deny",
+            external_write="deny"
+        ),
         workspace_root=workspace,
     )
     if not sandbox.backend_available:
@@ -495,7 +509,7 @@ async def test_sandbox_external_read_deny_fails_closed(tmp_path):
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "read", {"path": str(external)})],
+        [ToolCall(id="c1", name="read", args={"path": str(external)})],
         registry,
         ctx=ctx,
     )
@@ -510,7 +524,7 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     sandbox = SandboxPolicy(
-        config={"external_write": "deny"},
+        config=SandboxConfig(external_write="deny"),
         workspace_root=workspace,
     )
     calls = []
@@ -530,13 +544,14 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
     )
     events = []
 
-    async def approve(event):
-        events.append(event)
-        return "allowed-once"
+    async def approve(event, **_kwargs):
+        events.append(event.model_dump(mode="json"))
+        return {"status": "answered", "decision": "allow", "scope": "once"}
 
     service_ctx = xcore.Context()
-    approval = ApprovalService(service_ctx, ClientEventRouter())
-    approval.register_answerer(approve)
+    client_events = ClientEventRouter()
+    client_events.set_sink(approve)
+    approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
         sandbox=sandbox,
@@ -545,7 +560,7 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
         base=service_ctx,
     )
     results = await execute_tools(
-        [ToolCall("c1", "shell", {
+        [ToolCall(id="c1", name="shell", args={
             "sandbox_permissions": "require_escalated",
             "justification": "Install a required dependency.",
         })],
@@ -572,7 +587,10 @@ async def test_sandbox_copy_denied_when_external_destination_forbidden(tmp_path)
     destination = tmp_path / "destination.txt"
     source.write_text("copy me\n", encoding="utf-8")
     sandbox = SandboxPolicy(
-        config={"external_read": "readonly", "external_write": "deny"},
+        config=SandboxConfig(
+            external_read="readonly",
+            external_write="deny"
+        ),
         workspace_root=workspace,
     )
     if not sandbox.backend_available:
@@ -592,9 +610,9 @@ async def test_sandbox_copy_denied_when_external_destination_forbidden(tmp_path)
     )
     results = await execute_tools(
         [ToolCall(
-            "c1",
-            "path",
-            {
+            id="c1",
+            name="path",
+            args={
                 "operation": "copy",
                 "source": str(source),
                 "destination": str(destination),
@@ -616,7 +634,10 @@ async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     sandbox = SandboxPolicy(
-        config={"workspace_read": "allow", "workspace_write": "deny"},
+        config=SandboxConfig(
+            workspace_read="allow",
+            workspace_write="deny"
+        ),
         workspace_root=workspace,
     )
     registry = ToolRegistry()
@@ -628,7 +649,7 @@ async def test_sandbox_workspace_write_deny_fails_before_mutation(tmp_path):
         permissions=PermissionSystem(default_decision="allow"),
     )
     results = await execute_tools(
-        [ToolCall("c1", "edit", {"path": "blocked.txt", "mode": "write", "content": "no"})],
+        [ToolCall(id="c1", name="edit", args={"path": "blocked.txt", "mode": "write", "content": "no"})],
         registry,
         ctx=ctx,
     )
@@ -656,7 +677,7 @@ async def test_tool_failure_hook_fires(temp_workspace):
         base=plugin_ctx,
     )
     results = await execute_tools(
-        [ToolCall("c1", "failing_tool", {})],
+        [ToolCall(id="c1", name="failing_tool", args={})],
         registry,
         ctx=ctx,
         context_factory=_event_context,
@@ -678,9 +699,9 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         calls.append(("before", ctx.tool_call.id, ctx.tool_call.args["path"]))
         return {
             "tool_call": ToolCall(
-                "rewritten_id",
-                ctx.tool_call.name,
-                {
+                id="rewritten_id",
+                name=ctx.tool_call.name,
+                args={
                     "path": str(temp_workspace / "rewritten.txt"),
                     "mode": "write",
                     "content": "ok",
@@ -714,12 +735,19 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
         permissions=PermissionSystem(default_decision="allow"),
         base=plugin_ctx,
     )
+    guard_calls = []
+
+    def observe_guard(tool_call, _entry):
+        guard_calls.append((tool_call.id, tool_call.name, dict(tool_call.args)))
+        return None
+
+    ctx.tools.guard(observe_guard)
     results = await execute_tools(
         [
             ToolCall(
-                "old_id",
-                "edit",
-                {"path": "old.txt", "mode": "write", "content": "no"},
+                id="old_id",
+                name="edit",
+                args={"path": "old.txt", "mode": "write", "content": "no"},
             )
         ],
         registry,
@@ -731,6 +759,15 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
     assert results[0].tool_call_id == "rewritten_id"
     assert not (temp_workspace / "old.txt").exists()
     assert (temp_workspace / "rewritten.txt").read_text(encoding="utf-8") == "ok"
+    assert guard_calls == [(
+        "rewritten_id",
+        "edit",
+        {
+            "path": str(temp_workspace / "rewritten.txt"),
+            "mode": "write",
+            "content": "ok",
+        },
+    )]
     assert calls[0] == ("before", "old_id", "old.txt")
     assert calls[1] == (
         "after",
@@ -747,16 +784,99 @@ async def test_before_tool_call_rewrite_updates_tool_id_and_resolves_paths(temp_
 
 
 @pytest.mark.asyncio
-async def test_after_tools_cache_hook_truncates_before_history_and_events(state_store, temp_workspace):
+async def test_tool_receives_final_rewritten_tool_call() -> None:
+    seen = []
+
+    async def inspect(value: str, *, tool_call: ToolCall) -> str:
+        seen.append(tool_call)
+        return value
+
+    plugin_ctx = xcore.Context()
+
+    async def rewrite(ctx):
+        return {
+            "tool_call": ToolCall(
+                id="rewritten",
+                name=ctx.tool_call.name,
+                args={"value": "updated"},
+            )
+        }
+
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, rewrite)
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(inspect))
+    ctx = make_tool_ctx(
+        registry,
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+
+    results = await execute_tools(
+        [ToolCall(id="original", name="inspect", args={"value": "initial"})],
+        registry,
+        ctx=ctx,
+        context_factory=_event_context,
+    )
+
+    assert results[0].content == "updated"
+    assert seen == [ToolCall(id="rewritten", name="inspect", args={"value": "updated"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shortcut",
+    [
+        {"deny_reason": "blocked"},
+        {"tool_result": "cached"},
+        "blocked",
+    ],
+)
+async def test_before_tool_call_rejects_policy_shortcuts(
+    shortcut,
+    temp_workspace,
+):
     registry = ToolRegistry()
     registry.register(large_output_tool)
     plugin_ctx = xcore.Context()
+
+    async def short_circuit(_ctx):
+        return shortcut
+
+    plugin_ctx.on(Events.BEFORE_TOOL_CALL, short_circuit)
+    ctx = make_tool_ctx(
+        registry,
+        sandbox=SandboxPolicy(
+            enabled=False,
+            workspace_root=temp_workspace,
+        ),
+        permissions=PermissionSystem(default_decision="allow"),
+        base=plugin_ctx,
+    )
+
+    with pytest.raises(TypeError, match="BEFORE_TOOL_CALL"):
+        await execute_tools(
+            [ToolCall(id="c1", name="large_output", args={})],
+            registry,
+            ctx=ctx,
+            context_factory=_event_context,
+        )
+
+
+@pytest.mark.asyncio
+async def test_after_tools_cache_hook_truncates_before_history_and_events(
+    state_store, artifact_store, temp_workspace
+):
+    registry = ToolRegistry()
+    registry.register(large_output_tool)
+    plugin_ctx = xcore.Context()
+    plugin_ctx.set("runtime_log", RuntimeLog())
     plugin_ctx.on(
         Events.AFTER_TOOLS,
         make_tool_result_cache_hook(
-            state_store,
-            max_inline_chars=100,
+            artifact_store,
+            cache_threshold_chars=100,
             preview_chars=20,
+            tail_chars=5,
         ),
     )
     llm = MockLLM(responses=[
@@ -783,11 +903,11 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
             workspace_root=str(temp_workspace),
             provider="default",
         ),
-        messages=state_store.read_messages(),
-        media_root=str(state_store.root),
+        messages=ConversationHistory(
+            state_store.history.load(),
+            sink=state_store.history,
+        ),
     )
-    persistence = PersistenceService(state_store, state)
-    plugin_ctx.on(Events.STATE_CHANGED, persistence.state_changed)
     engine = Engine(
         model_client=llm,
         tools=plugin_ctx.tools,
@@ -800,52 +920,49 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(state_
     tool_event = next(e for e in events if e["type"] == "tool_result")
     tool_message = next(m for m in engine.messages if m.role == "tool")
 
-    assert tool_event["data"]["content"].startswith("Tool result cached at session/")
+    assert tool_message.artifact[0].id in tool_event["data"]["content"]
     cached = ET.fromstring(tool_message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["kind"] == "tool_result"
     assert "x" * 100 not in tool_message.content
     assert cached.find("preview/ending") is not None
     assert cached.find("read_instruction") is not None
-    assert tool_message.artifact["kind"] == "cached_tool_result"
-    assert tool_message.artifact["tool_call_id"] == "call_large"
-    assert tool_message.artifact["cache_path"].startswith("session/artifacts/tool_results/")
-    assert not Path(tool_message.artifact["cache_path"]).is_absolute()
-    assert str(state_store.root) not in tool_message.content
+    assert len(tool_message.artifact) == 1
+    assert tool_message.artifact[0].kind is ArtifactKind.TOOL_RESULT
+    assert Path(artifact_store.model_path(tool_message.artifact[0])).is_absolute()
 
-    cache_files = list((Path(state_store.artifacts_dir) / "tool_results").glob("*.txt"))
+    cache_files = list(
+        state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).glob("*.txt")
+    )
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == "x" * 200
 
     restored_tool_message = next(
-        m for m in state_store.read_messages() if m.role == "tool"
+        m for m in state_store.history.load() if m.role == "tool"
     )
     assert restored_tool_message.artifact == tool_message.artifact
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_store):
+async def test_cache_hook_stores_original_text_instead_of_json_wrapper(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
-        max_inline_chars=100,
+        artifact_store,
+        cache_threshold_chars=100,
         preview_chars=20,
+        tail_chars=5,
     )
     original = "line 1\n" + "source text\n" * 20
-    data = {
-        "ok": True,
-        "path": "/workspace/source.py",
-        "content": original,
-    }
     message = Message(
         role="tool",
         content=original,
         tool_call_id="filesystem-read",
-        data=data,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
-    cache_dir = Path(state_store.artifacts_dir) / "tool_results"
+    cache_dir = state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT)
     cache_files = list(cache_dir.glob("*.txt"))
     assert len(cache_files) == 1
     assert cache_files[0].read_text(encoding="utf-8") == original
@@ -853,53 +970,69 @@ async def test_cache_hook_stores_original_text_instead_of_json_wrapper(state_sto
     cached = ET.fromstring(message.content)
     assert cached.tag == "cached_content"
     assert cached.attrib["original_chars"] == str(len(original))
-    assert message.data == data
-    assert message.artifact["kind"] == "cached_tool_result"
-    assert message.artifact["cache_path"].endswith(cache_files[0].name)
+    assert len(message.artifact) == 1
+    assert message.artifact[0].kind is ArtifactKind.TOOL_RESULT
+    assert message.artifact[0].id.endswith(cache_files[0].name)
+
+    from XBotv2.core.filesystem.artifacts import ArtifactStore
+    from XBotv2.llm.openai import openai_messages
+    from XBotv2.llm.anthropic import anthropic_messages
+    from dataclasses import replace
+
+    persisted = message.content
+    assert cached.findtext("cache_path").strip() == message.artifact[0].id
+    moved = ArtifactStore(replace(state_store.paths, thread_id="forked"))
+    for store in (artifact_store, moved):
+        expected = store.model_path(message.artifact[0])
+        openai = openai_messages([message], artifacts=store)[0]["content"]
+        anthropic = anthropic_messages([message], artifacts=store)[0]["content"][0]["content"]
+        assert ET.fromstring(openai).findtext("cache_path") == expected
+        assert ET.fromstring(anthropic).findtext("cache_path") == expected
+    assert message.content == persisted
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_ignores_large_sidecar_data(state_store):
+async def test_cache_hook_ignores_large_sidecar_data(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
-        max_inline_chars=100,
+        artifact_store,
+        cache_threshold_chars=100,
         preview_chars=20,
+        tail_chars=5,
     )
-    structured = {"items": [{"path": f"file-{index}.txt"} for index in range(30)]}
     message = Message(
         role="tool",
         content="30 files found.",
         tool_call_id="filesystem-list",
-        data=structured,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "30 files found."
-    assert message.data == structured
-    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).exists()
 
 
 @pytest.mark.asyncio
-async def test_cache_hook_ignores_string_sidecar_data(state_store):
+async def test_cache_hook_ignores_string_sidecar_data(
+    state_store, artifact_store
+):
     hook = make_tool_result_cache_hook(
-        state_store,
-        max_inline_chars=20,
+        artifact_store,
+        cache_threshold_chars=20,
         preview_chars=10,
+        tail_chars=2,
     )
-    original = '{"already":"json text","lines":"a\\nb"}'
     message = Message(
         role="tool",
         content="Structured result.",
         tool_call_id="string-data",
-        data=original,
     )
 
     await hook(SimpleNamespace(tool_results=[message]))
 
     assert message.content == "Structured result."
-    assert message.data == original
-    assert not (Path(state_store.artifacts_dir) / "tool_results").exists()
+    assert not state_store.paths.artifact_dir(ArtifactKind.TOOL_RESULT).exists()
 
 
 def _event_context(**kwargs):

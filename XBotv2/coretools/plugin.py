@@ -9,65 +9,66 @@ services, so even "core" setup is a plugin in the tree.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from xcore import Context
 
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.core.tools import Tool
+from XBotv2.coretools.contracts import (
+    CoreToolsConfig,
+    HookConfig,
+    WorkspaceToolConfig,
+)
 
 class CoreToolsComponent:
     inject = [
-        "tools", "session", "storage", "sandbox", "jobs", "workspace_root",
+        "tools", "session", "artifacts", "sandbox", "jobs", "workspace_root",
     ]
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        config = config or {}
-        storage = ctx.storage
-        result_config = dict(config.get("tool_results") or {})
-        max_inline_chars = int(result_config.get("max_inline_chars", 12_000))
-        preview_chars = int(result_config.get("preview_chars", 4_000))
-        if max_inline_chars < 1 or preview_chars < 0:
-            raise ValueError("Invalid tool result size limits")
-        if preview_chars > max_inline_chars:
-            raise ValueError("preview_chars cannot exceed max_inline_chars")
+    Config = CoreToolsConfig
+
+    def apply(self, ctx: Context, config: CoreToolsConfig) -> None:
+        artifacts = ctx.artifacts
         workspace_xbot = Path(ctx.workspace_root) / ".xbot"
         hooks = [
-            _declaration(item, workspace_xbot, hook=True)
-            for item in config.get("hooks") or []
+            _declaration(
+                item,
+                base_dir=workspace_xbot,
+                hook=True,
+            )
+            for item in config.hooks
         ]
         workspace_tools = [
-            _declaration(item, workspace_xbot)
-            for item in config.get("workspace_tools") or []
+            _declaration(
+                item,
+                base_dir=workspace_xbot,
+            )
+            for item in config.workspace_tools
         ]
-        from XBotv2.coretools.filesystem import FILESYSTEM_TOOLS
-        from XBotv2.coretools.shell import SHELL_TOOLS
+        from XBotv2.coretools.filesystem import filesystem_tools
+        from XBotv2.coretools.shell import shell_tools
         from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
         # ``read(mode=media)`` is the single model-facing content tool; it
         # covers path, URL, and base64 media input (images today).
-        sandboxed_tools = [*FILESYSTEM_TOOLS, *SHELL_TOOLS]
-        for tool in sandboxed_tools:
-            if tool.name == "shell":
-                injected = {
-                    "sandbox": ctx.sandbox,
-                    "job_registry": ctx.jobs,
-                    "default_cwd": str(ctx.workspace_root),
-                }
-            elif tool in sandboxed_tools:
-                injected = {"sandbox": ctx.sandbox, "job_registry": ctx.jobs}
-            else:
-                injected = None
-            ctx.tools.register(tool, injected=injected)
+        tools = (
+            *filesystem_tools(ctx.sandbox, artifacts),
+            *shell_tools(ctx.sandbox, ctx.jobs, str(ctx.workspace_root)),
+        )
+        for tool in tools:
+            ctx.tools.register(tool)
 
         ctx.on(
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
-                storage,
-                max_inline_chars=max_inline_chars,
-                preview_chars=preview_chars,
+                artifacts,
+                cache_threshold_chars=config.tool_results.cache_threshold_chars,
+                preview_chars=config.tool_results.preview_chars,
+                tail_chars=config.tool_results.tail_chars,
             ),
         )
         for declaration in hooks:
@@ -99,26 +100,23 @@ class _Declaration:
 
 
 def _declaration(
-    raw: dict[str, Any],
-    workspace_xbot: Path,
+    raw: HookConfig | WorkspaceToolConfig,
     *,
+    base_dir: Path,
     hook: bool = False,
 ) -> _Declaration:
-    target = str(raw.get("target") or "")
-    source, separator, export = target.partition(":")
-    if not separator or not source or not export:
-        raise ValueError("target must use source:export syntax")
-    stage = str(raw.get("stage") or "")
+    target = raw.target
+    stage = raw.stage if isinstance(raw, HookConfig) else ""
     if hook and not stage:
         raise ValueError("hook stage must not be empty")
     return _Declaration(
         target=target,
-        base_dir=Path(raw.get("base_dir") or workspace_xbot),
+        base_dir=base_dir,
         stage=stage,
     )
 
 
-def _resolve_hook_target(declaration: Any) -> Any:
+def _resolve_hook_target(declaration: _Declaration) -> Callable[..., object]:
     """Resolve a module or workspace script target without changing sys.path."""
     import importlib
 
@@ -138,17 +136,17 @@ def _resolve_hook_target(declaration: Any) -> Any:
     return callback
 
 
-def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
+def _resolve_workspace_target(
+    declaration: _Declaration,
+    *,
+    directory: str,
+) -> Callable[..., object]:
     """Load one declared export from a standard workspace extension directory."""
     import importlib.util
     from pathlib import Path
 
     source, attr_name = declaration.target.split(":", 1)
     base_dir = declaration.base_dir
-    if base_dir is None:
-        raise ValueError(
-            f"Workspace {directory} target {source!r} must be declared in the workspace overlay"
-        )
     extension_dir = (Path(base_dir) / directory).resolve()
     path = (Path(base_dir) / source).resolve()
     try:

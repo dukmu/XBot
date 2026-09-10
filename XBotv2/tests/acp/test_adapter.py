@@ -18,12 +18,17 @@ from acp.schema import (
     RequestPermissionResponse,
 )
 
-from XBotv2.acp.xbot_agent import XBotACPAgent
-from XBotv2.acp.events import ACPEventMapper, replay_history
+from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
+from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
+from XBotv2.session.contracts import SessionEventFrame, conversation_replay
+from XBotv2.application.acp import start_acp_application
+from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import ToolCall
 from XBotv2.llm.mock import MockLLM
+from XBotv2.core import ClientEvent
+from XBotv2.session import OpenedSession, SessionSummary, ThreadSummary
 
 
 class FakeConnection:
@@ -48,85 +53,135 @@ class FakeConnection:
         )
 
 
-class FakeRuntime:
-    session_id = "session-1"
-    thread_id = "agent"
-    provider_name = "default"
-
+class FakeSessions:
     def __init__(self, events: list[dict[str, Any]]) -> None:
-        from types import SimpleNamespace
-
         self.events = events
-        self.engine = FakeEngine()
-        self.interrupted = False
-        self.session_events: asyncio.Queue | None = None
-        self.services = SimpleNamespace(
-            get=lambda _name: None,
-            storage=None,
-            agents=SimpleNamespace(definitions=lambda: ()),
-            loop_state=SimpleNamespace(metadata={}),
+        self.last_open = None
+        self.messages: list[Message] = []
+        self.interaction_responses: list[tuple[str, tuple[Any, ...]]] = []
+        self.event_queue: asyncio.Queue[SessionEventFrame | None] = asyncio.Queue()
+        self.event_sequence = 0
+
+    async def open(self, request):
+        self.last_open = request
+        return OpenedSession(
+            session_id=request.session_id or "session-1",
+            thread_id="agent",
+            agent_name="",
+            workspace_root=request.workspace_root,
+            provider="default",
+            model="test",
+            model_mode="",
+            context_window=200_000,
+            usage={},
+            history=tuple(self.messages),
+            status_slots={},
+            event_cursor=0,
         )
 
-    async def stream_message(self, content: str, request_id: str, *, images=None):
-        assert content == "hello"
-        assert request_id == "acp:session-1"
-        assert not images
-        for event in self.events:
-            yield event
+    async def list_sessions(self):
+        return (SessionSummary(
+            "session-1",
+            "active",
+            workspace_root="/workspace",
+            title="session-1",
+        ),)
 
-    def request_interrupt(self) -> bool:
-        self.interrupted = True
-        return True
+    async def session_summary(self, session_id: str):
+        return (await self.list_sessions())[0]
 
-    def attach_event_stream(self) -> asyncio.Queue:
-        self.session_events = asyncio.Queue()
-        return self.session_events
+    async def thread_summary(self, session_id: str, thread_id: str):
+        return ThreadSummary(
+            session_id = session_id,
+            thread_id = thread_id,
+            status = "active",
+            provider="default",
+            context_window=200_000,
+        )
 
-    def detach_event_stream(self, events: asyncio.Queue) -> None:
-        if self.session_events is events:
-            self.session_events = None
+    async def stream_message(self, request):
+        assert request.content == "hello"
+        assert request.request_id == "acp:session-1"
+        assert not request.images
 
+        async def stream():
+            for event in self.events:
+                value = ClientEvent.model_validate(event)
+                self.event_sequence += 1
+                await self.event_queue.put(SessionEventFrame(
+                    self.event_sequence,
+                    request.request_id,
+                    value,
+                ))
+                yield value
 
-class FakeManager:
-    def __init__(self, runtime: FakeRuntime) -> None:
-        self.runtime = runtime
-        self.last_open: dict[str, Any] = {}
+        return stream()
 
-    async def get(self, session_id: str, thread_id: str) -> FakeRuntime:
-        assert (session_id, thread_id) == ("session-1", "agent")
-        return self.runtime
+    async def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        after: int | None = None,
+    ):
+        del after
+        async def stream():
+            while True:
+                event = await self.event_queue.get()
+                if event is None:
+                    return
+                yield event
 
-    async def open_session(self, **kwargs: Any) -> FakeRuntime:
-        self.last_open = kwargs
-        return self.runtime
+        return stream()
 
-    async def close_all(self) -> None:
-        if self.runtime.session_events is not None:
-            await self.runtime.session_events.put(None)
+    async def dispatch(self, session_id, thread_id, operation, request):
+        del session_id, thread_id, request
+        if operation.name == "commands/list":
+            return SimpleNamespace(commands=())
+        if operation.name == "agents/list":
+            return SimpleNamespace(active="", agents=())
+        if operation.name == "llm/providers/list":
+            return SimpleNamespace(
+                default="default",
+                providers=(SimpleNamespace(name="default"),),
+            )
+        if operation.name == "commands/execute":
+            return SimpleNamespace(message="done")
+        return SimpleNamespace()
+
+    async def messages(self, session_id: str, thread_id: str):
+        return tuple(self.messages)
+
+    async def fork_session(self, session_id: str) -> str:
+        return "forked"
+
+    async def interrupt(self, session_id: str, thread_id: str):
+        return SimpleNamespace(cancelled=True)
+
+    async def respond_permission(self, *args, **kwargs):
+        self.interaction_responses.append(("permission", args))
+        return SimpleNamespace()
+
+    async def respond_user_input(self, *args, **kwargs):
+        self.interaction_responses.append(("user_input", args))
+        return SimpleNamespace()
+
+    async def cancel_interaction(self, *args, **kwargs):
+        self.interaction_responses.append(("cancel", args))
+        return SimpleNamespace()
 
     async def close_session(self, session_id: str) -> None:
         assert session_id == "session-1"
-        await self.close_all()
-
-
-class FakeEngine(SimpleNamespace):
-    def __init__(self) -> None:
-        super().__init__(context_window=200_000, plugin_loader=None)
-        self.client_event_sink = None
-
-    def set_client_event_sink(self, sink: Any) -> Any:
-        previous = self.client_event_sink
-        self.client_event_sink = sink
-        return previous
+        await self.event_queue.put(None)
 
 
 def _agent(tmp_path, events: list[dict[str, Any]]) -> tuple[XBotACPAgent, FakeConnection]:
+    sessions = FakeSessions(events)
     agent = XBotACPAgent(
-        paths=RuntimePaths.from_data_dir(tmp_path),
+        sessions=sessions,
         provider_name="default",
         no_plugins=True,
     )
-    agent.manager = FakeManager(FakeRuntime(events))  # type: ignore[assignment]
     connection = FakeConnection()
     agent.on_connect(connection)
     agent.client_capabilities = ClientCapabilities(
@@ -193,33 +248,54 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     assert updates[-2].size == 200_000
     assert updates[-1].status == "completed"
 
-    replayed = replay_history([
+    replayed = replay_history(conversation_replay([
         Message(role="user", content="inspect"),
+        Message(
+            role="user",
+            content="background task completed",
+            input_id="runtime-1",
+            additional_kwargs={
+                "runtime_input": {"source": "task-1", "event": "notification"}
+            },
+        ),
         Message(
             role="assistant",
             reasoning="checking",
-            tool_calls=[ToolCall("call-1", "shell", {"command": "pwd"})],
+            tool_calls=[
+                ToolCall(id="call-1", name="shell", args={"command": "pwd"})
+            ],
         ),
         Message(
             role="tool",
             content="/workspace",
             tool_call_id="call-1",
             status="success",
+            data={"exit_code": 0},
+            artifact=[ArtifactRef(id="tool_results/out.txt")],
         ),
-    ])
+    ]))
     assert [update.session_update for update in replayed] == [
         "user_message_chunk",
+        "tool_call",
         "agent_thought_chunk",
         "tool_call",
         "tool_call_update",
     ]
+    assert replayed[1].title == "Injected context · task-1 / notification"
+    assert replayed[-1].raw_output == {
+        "content": "/workspace",
+        "data": {"exit_code": 0},
+        "error": None,
+        "artifacts": [
+            ArtifactRef(id="tool_results/out.txt").model_dump(mode="json")
+        ],
+        "images": [],
+    }
 
 
 async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None:
     agent, _ = _agent(tmp_path, [])
-    permission = await agent._handle_interaction(
-        "session-1",
-        {
+    permission_event = ClientEvent.model_validate({
             "type": "permission_request",
             "data": {
                 "request_id": "permission-1",
@@ -229,11 +305,8 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
                     "args": {"command": "pwd"},
                 },
             },
-        },
-    )
-    answer = await agent._handle_interaction(
-        "session-1",
-        {
+        })
+    user_input_event = ClientEvent.model_validate({
             "type": "user_input_required",
             "data": {
                 "request_id": "question-1",
@@ -243,8 +316,11 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
                     {"label": "second"},
                 ],
             },
-        },
-    )
+        })
+    permission = await agent._handle_interaction("session-1", permission_event)
+    answer = await agent._handle_interaction("session-1", user_input_event)
+    await agent._resolve_interaction("session-1", permission_event)
+    await agent._resolve_interaction("session-1", user_input_event)
 
     assert permission == {
         "request_id": "permission-1",
@@ -253,6 +329,12 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
         "scope": "session",
     }
     assert answer["answer"] == "second"
+    host = agent.sessions
+    assert isinstance(host, FakeSessions)
+    assert [kind for kind, _ in host.interaction_responses] == [
+        "permission",
+        "user_input",
+    ]
 
 
 class ProtocolClient:
@@ -264,12 +346,7 @@ class ProtocolClient:
 
 
 async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
-    agent = XBotACPAgent(
-        paths=RuntimePaths.from_data_dir(tmp_path),
-        provider_name="default",
-        no_plugins=False,
-    )
-    manager = FakeManager(FakeRuntime([
+    host = FakeSessions([
         {"type": "assistant_message_delta", "data": {"content": "done"}},
         {
             "type": "usage",
@@ -281,8 +358,12 @@ async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
             },
         },
         {"type": "turn_finished", "data": {"turn": 1}},
-    ]))
-    agent.manager = manager  # type: ignore[assignment]
+    ])
+    agent = XBotACPAgent(
+        sessions=host,
+        provider_name="default",
+        no_plugins=False,
+    )
     left, right = socket.socketpair()
     agent_reader, agent_writer = await asyncio.open_connection(sock=left)
     client_reader, client_writer = await asyncio.open_connection(sock=right)
@@ -319,8 +400,8 @@ async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
             ],
         )
         assert session.session_id == "session-1"
-        assert manager.last_open["plugin_configs"] == {
-            "mcp": {
+        assert host.last_open.plugin_configs == {
+            "mcp_plugin": {
                 "servers": {
                     "example": {
                         "type": "local",
@@ -378,10 +459,11 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         }]),
         encoding="utf-8",
     )
-    agent = XBotACPAgent(
+    context = await start_acp_application(
         paths=RuntimePaths.from_data_dir(data_dir),
         provider_name="default",
         no_plugins=True,
+        selected_agent=None,
         llm_override=MockLLM([{
             "content": "real runtime",
             "usage_metadata": {
@@ -391,13 +473,17 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             },
         }]),
     )
+    agent = context.acp_agent
     connection = FakeConnection()
     agent.on_connect(connection)
     await agent.initialize(PROTOCOL_VERSION, ClientCapabilities())
     try:
         session = await agent.new_session(str(workspace))
         assert session.config_options is not None
-        assert [option.id for option in session.config_options] == ["provider"]
+        assert [option.id for option in session.config_options] == [
+            "agent",
+            "provider",
+        ]
         response = await agent.prompt(
             session.session_id,
             [text_block("hello")],
@@ -406,9 +492,12 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             session.session_id,
             str(workspace),
         )
-        forked_runtime = await agent.manager.get(forked.session_id, "agent")
+        forked_messages = await agent.sessions.messages(
+            forked.session_id,
+            "agent",
+        )
     finally:
-        await agent.close()
+        await context.destroy()
 
     assert response.stop_reason == "end_turn"
     assert response.usage is not None
@@ -419,7 +508,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         if getattr(update, "content", None) is not None
     ]
     assert content_updates[0].content.text == "real runtime"
-    assert [message.content for message in forked_runtime.engine.messages] == [
+    assert [message.content for message in forked_messages] == [
         "hello",
         "real runtime",
     ]

@@ -1,56 +1,19 @@
-# XBotv2 Documentation
+# XBotv2 documentation
 
-This directory describes the current XBotv2 implementation, organized by
-design boundary (core, api, protocol, tools, hooks, plugins, clients) plus
-project discipline and verification.
+XBotv2 is a plugin-composed client/server Agent runtime. This directory keeps
+only the short project entry points. The detailed, versioned extension manual
+is the bundled [xbot-plugin-development skill](../.agents/skills/xbot-plugin-development/SKILL.md),
+including XCore APIs, every built-in plugin, service/event contracts, router
+details, testing patterns, and installed-package workflows.
 
-## Overview
+- [Getting started](getting-start.md) — install and run a minimal plugin.
+- [Plugins](plugins.md) — tree and ownership map; details live in the skill.
+- [Security](security.md) — sandbox and permission boundaries.
+- [Persistence](persistence.md) — history, state, and artifacts.
+- [HTTP API](http-api.md) — transport index; schemas and route details live in the skill.
+- [Development](development.md) — repository workflow and verification.
+- [`project/`](project/) — engineering behavior, backlog, and recorded findings.
 
-- [Architecture](architecture.md) — system overview, component graph, and data flow
-
-## Core Runtime
-
-- [Core](core/core.md) — core models and the agent loop's streaming/input contract
-- [Prompt assembly](core/prompts.md) — context builder contract
-- [Agents](core/agents.md) — Agent and subagent definitions
-- [Configuration](core/workspace_config.md) — global / session / workspace YAML layers
-
-## API and Protocol
-
-- [Python public API](api/public_api.md) — stable extension surface for plugins
-- [API inventory](api/api_inventory.md) — maintained `api` symbol list
-- [Wire protocol](protocol/protocol.md) — HTTP/SSE session and stream contract
-- [SDK contract](protocol/sdk.md) — OpenAPI-described HTTP contract for clients
-- [ACP compatibility](protocol/acp_compatibility.md)
-- [TUI / opencode requirements](protocol/tui_opencode_requirements.md)
-
-## Tools and Hooks
-
-- [Built-in tools](tools/tools.md)
-- [Hooks](hooks/hooks.md)
-- [Hook stage matrix](hooks/hook_stage_matrix.md)
-
-## Plugins
-
-- [Plugin system](plugins/plugins.md)
-- [Compact plugin](plugins/compact.md)
-- [TodoList plugin](plugins/todolist.md)
-- [Goal plugin](plugins/goal.md)
-- [Token manager plugin](plugins/token_manager.md)
-- [Browser plugin](plugins/browser.md)
-
-## Clients
-
-- [Web client](clients/web.md)
-
-## Project and Verification
-
-- [Engineering behavior](project/behavior.md) — change discipline and non-negotiables
-- [Architecture iteration backlog](project/iteration_backlog.md)
-- [Testing](verification/testing.md)
-- [Transport benchmark](verification/transport-bench-v20260605.md)
-
-Files named `plan_stage*.md` at the XBotv2 root are historical implementation
-plans. They are not specifications. When a plan conflicts with these documents,
-the API inventory, or the typed contracts under `api`, the current
-contracts are authoritative.
+The source checkout and the installed package are authoritative. Keep this
+directory concise; add detailed API material to the skill rather than creating
+a second documentation system.

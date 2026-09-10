@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape, quoteattr
+from pydantic import JsonValue
 
 _TAG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 CACHED_CONTENT_KEY = "xbotv2_cached_content"
@@ -17,7 +18,7 @@ def prompt_element(
     name: str,
     content: str,
     *,
-    attributes: Mapping[str, object] | None = None,
+    attributes: Mapping[str, JsonValue] | None = None,
 ) -> str:
     """Render one XML prompt element, escaping all untrusted values."""
     opening = _opening_tag(name, attributes)
@@ -28,7 +29,7 @@ def prompt_container(
     name: str,
     children: Iterable[str],
     *,
-    attributes: Mapping[str, object] | None = None,
+    attributes: Mapping[str, JsonValue] | None = None,
 ) -> str:
     """Wrap already-rendered prompt elements in a validated container."""
     opening = _opening_tag(name, attributes)
@@ -46,6 +47,7 @@ def cached_content_prompt(
     ending: str,
     sha256: str | None = None,
     inline_limit_chars: int | None = None,
+    cache_threshold_chars: int | None = None,
 ) -> str:
     """Render one cache reference without exposing raw text as markup."""
     metadata = {
@@ -53,6 +55,7 @@ def cached_content_prompt(
         "original_chars": original_chars,
         "omitted_chars": omitted_chars,
         "inline_limit_chars": inline_limit_chars,
+        "cache_threshold_chars": cache_threshold_chars,
     }
     children = [prompt_element("cache_path", cache_path)]
     if sha256:
@@ -67,12 +70,31 @@ def cached_content_prompt(
         ),
         prompt_element(
             "read_instruction",
-            "Read the cached file with filesystem_read using offset and limit "
-            "before acting when omitted content may matter. For a long single "
-            "line, continue with next_offset and next_char_offset.",
+            "The cache_path is an absolute filesystem path in this runtime. Pass it "
+            "unchanged to the read tool. It is read-only. "
+            "Use offset and limit before acting when "
+            "omitted content may matter. For a long single line, continue with "
+            "next_offset and next_char_offset.",
         ),
     ])
     return prompt_container("cached_content", children, attributes=metadata)
+
+
+def content_preview(
+    content: str,
+    *,
+    preview_chars: int,
+    tail_chars: int,
+) -> tuple[str, str]:
+    """Split a bounded preview into leading and trailing text."""
+    if preview_chars < 0:
+        raise ValueError("preview_chars must be non-negative")
+    if tail_chars < 0 or tail_chars > preview_chars:
+        raise ValueError("tail_chars must be between zero and preview_chars")
+    size = min(preview_chars, len(content))
+    tail_size = min(tail_chars, size)
+    head_size = size - tail_size
+    return content[:head_size], content[-tail_size:] if tail_size else ""
 
 
 def tool_result_display_content(content: str) -> str:
@@ -108,7 +130,7 @@ def _cached_content_display(element: ElementTree.Element) -> str:
 
 def _opening_tag(
     name: str,
-    attributes: Mapping[str, object] | None,
+    attributes: Mapping[str, JsonValue] | None,
 ) -> str:
     if not _TAG_NAME.fullmatch(name):
         raise ValueError(f"Invalid prompt element name: {name!r}")
@@ -143,6 +165,7 @@ __all__ = [
     "DISPLAY_CONTENT_KEY",
     "MESSAGE_FORMAT_KEY",
     "cached_content_prompt",
+    "content_preview",
     "prompt_container",
     "prompt_element",
     "tool_result_display_content",

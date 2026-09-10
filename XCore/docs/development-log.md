@@ -69,8 +69,8 @@
   状态 + 重启恢复），驱动出三处实现修正：
   1. `ctx.config` 在插件 fiber Context 上应返回**插件已验证配置**（Cordis 语义），
      而非父 Context 的 config —— `Context.config` 属性按 fiber 归属分派；
-  2. `S.object` 在整体配置为 None（插件未传配置）时应按 `{}` 校验（koishi 约定，
-     属性级默认值生效）；
+  2. （历史记录）旧版 `S.object` 在整体配置为 None 时按 `{}` 校验；该 schema DSL
+     已移除，插件配置现在由各自的 Pydantic `Config` 模型负责；
   3. 明确 ready 监听器在 active 期间是「调度为任务、下一个事件循环轮次执行」——
      asyncio 语义与 Cordis 一致，观测前需 `await asyncio.sleep(0)`（已写入文档）。
 - **文档**：`features/` 补齐事件/服务/插件/生命周期/状态/Schema/中间件/API 清单
@@ -374,3 +374,492 @@
     创建 inbox。
 - **验证**：XBotv2 **736 passed**（含 MINIMAX）；XCore **105 passed**；
   `uv run xbot tui` pty 实测 Ready 无错误。
+
+## 2026-08（Round 2：应用层插件化 Phase 1）
+
+### 2026-08-20 · protocol 纯线协议化 + 服务端哑加载（app 层插件化 Phase 1）
+
+- **用户指示**：① protocol 不应导入 persistence 等具体插件逻辑，protocol
+  应收缩为纯线协议（wire contract）；② 参考 DSH 的哑加载（dumb loading），
+  服务端作为哑载体（carrier）插件暴露路由注册；③ 计划写入 `plan.md`
+  （`/home/shefrin/repo/XBot/plan.md`），按计划实施并同步开发日志。
+- **实施**：
+  - **protocol 收缩为纯线协议**：`protocol/` 现在只含 `models.py`（全部 wire
+    DTO / ServerEvent 信封）、`sse.py`（编解码）、`commands.py`（命令平面）、
+    `version.py`、`http_util.py`（仅 `HttpServerError`、`_SSE_RESPONSE`、
+    `_error_payload`、`_format_sse`，仅导入 protocol 自身）。
+  - **应用服务端层移入 `XBotv2/server/`**：`session_manager.py`（SessionManager、
+    SessionExists/NotFound/ThreadNotActive、pending_interactions、
+    persisted_thread_ids、session_summary/thread_summary）、`http.py`
+    （`create_app`/`set_llm_override`/异常处理器，保持公开签名）、
+    `http_util.py`（`_open_session_response`/`_session_policy_response`/
+    `_effective_runtime_policy`/`_resolve_interaction`/`_plugin_service`）、
+    `routes/`（34 个内联路由按能力拆成 7 个 `build_*_router(*, manager, state)`
+    工厂：core/llm/session/agents/tasks/tools/commands，`feature_routers`/
+    `default_routers` 组装）。protocol 不再导入 application/业务插件。
+  - **哑载体插件**：`server/plugin.py` 的 `ServerComponent` 现在既是
+    `ctx.server`（兼容 main.py 与既有测试），又提供 `ctx.web_server`
+    （`WebServer.register(router) -> disposer`，注册即 effect；重复
+    path+method 视为组合期错误并抛错；disposer 精确移除本 router 新增路由）。
+    `config["routes"]` 可限定挂载的能力子集（默认全量）。
+  - **测试面同步**：test_http_transport.py / test_public_api.py /
+    test_http_latency.py / test_cli.py 的 import 更新为 `XBotv2.server.*`；
+    新增 `test_server_plugin.py` 两条 HMR 安全测试（register/dispose 后路由
+    消失；重复路径注册必须抛错）。
+  - **文档**：`plan.md` 记录完整方案与阶段；`architecture.md` 的
+    HTTP/SSE 与 SessionManager 归属更新为 `server/`。
+- **验证**：XBotv2 **755 passed**（Phase 1 全绿，含新增 2 条 WebServer
+  契约测试）；`protocol/` 内不再出现对 persistence/config/session 等业务包
+  的导入（纯线协议）；`test_server_plugin.py` 证明 register/dispose 即 effect。
+  Phase 2+（session host 化 `ctx.session_host`、事件注册表 `ctx.server_events`、
+  TUI/ACP 组合根）留待后续轮次。
+
+### 2026-08-20 · 能力路由器归属各自插件（app 层插件化 Phase 2）
+
+- **用户指示**（评审）："routes 依然在耦合，建议每个插件自己负责，在自己的
+  router.py 中往 ctx.web_server 中注册。而不是你现在的表面重构" —— 删除集中式
+  `server/routes/`，每个能力插件拥有自己的 `router.py` 并自行注册。
+- **实施**：
+  - **删除 `server/routes/`**，路由器移入所属包：`session/router.py`、
+    `jobs/router.py`（tasks）、`agents/router.py`（agents/provider/effort/
+    config-reload）、`llm/router.py`（/providers）、`agentloop/router.py`
+    （/tools）、`commands/router.py`（command plane）、`permissions/router.py`
+    （会话策略，从 session 路由拆出）。
+  - **宿主插件 `server/hosts/`**：7 个 `XxxHost`（inject `['web_server',
+    'session_host']`），apply 中用 `ctx.effect(lambda:
+    ctx.web_server.register(build_*_router(manager=ctx.session_host,
+    state=ctx.web_server.app.state)))` —— 注册即 effect，卸载时 disposer
+    移除路由。
+  - **`load_server_tree` 展开**：`[llm, server, host.session, host.policy,
+    host.jobs, host.agents, host.llm, host.tools, host.commands]`；宿主条目
+    `name="server.hosts.<cap>"` 由 loader 的 `XBotv2.{name}` 回退导入。
+  - **载体收敛**：`server/http.py` 的 `create_app(features=[])` 只挂载核心
+    health/hello 路由（`build_core_router` 内联在 http.py）；`_default_routers`
+    惰性导入各能力路由器，`create_app` 独立使用（测试/ACP）时挂载全量表面，
+    `features` 为 None/空/子集 三种语义保留。
+  - **边界门更新**：`test_architecture_boundaries.py` 允许能力包内
+    `router.py`（HTTP 适配器）额外导入 `XBotv2.server.*`、
+    `XBotv2.protocol.*` 与服务插件，仍禁止跨能力插件引用。
+  - **文档**：`plan.md`、`architecture.md`（Transport 节）同步。
+- **验证**：XBotv2 **756 passed**（全绿）。每能力路由注册进 `ctx.web_server`
+  而非集中在协议层；新增能力只需 `router.py` + `server/hosts/` 条目。
+  Phase 3（`ctx.server_events` 事件注册表）、Phase 4（TUI 组合根）、Phase 5
+  （ACP/web 组合根）待续。
+
+### 2026-08-20 · 事件库存解耦：ctx.server_events 注册表（app 层插件化 Phase 3）
+
+- **用户指示**（延续 Phase 2 方向）：能力事件不应由中央 `protocol/models.py`
+  常量统一拥有，由能力插件自行声明。
+- **实施**：
+  - **protocol 核心事件收缩**：`protocol/models.py` 的 `ServerEventType` /
+    `_SERVER_EVENT_DATA_MODELS` 收敛为协议核心 18 类（turn/assistant/tool/
+    interaction/usage/error/end）；`ServerEvent` 仍校验核心事件。
+  - **能力事件 DTO 移入所属包**：`session/events.py`（ClientMessageData、
+    HistoryUpdatedData、AgentConfiguredData）、`compact/events.py`
+    （CompactionStartedData/CompletedData/FailedData）。`TaskUpdatedData` 留
+    在 protocol（与 `TaskListResponse` HTTP 响应共享）。
+  - **`XBotv2/server/events.py` `ServerEvents` 注册表**：`register(type,dto)
+    -> disposer`（重复注册或抢占核心类型即 RuntimeError，注册即 effect）、
+    `validate(type,data)`（应用注册 DTO，未注册透传）、`types()`。server 插件
+    `ctx.set("server_events", ...)` 并把同一实例注入 `SessionManager`。
+  - **宿主插件声明事件**：`host.session` 注册 client_message/history_updated/
+    agent_configured，`host.jobs` 注册 task_updated。
+  - **会话 SSE 路由**：`session/router.py` 的 session_events 流在编码前按
+    `manager.server_events.validate` 归一化能力事件载荷。
+  - **测试**：`tests/fixtures/sse/server_event_contracts.jsonl` 收为 18 类核心
+    事件；新增 `server_registered_event_contracts.jsonl` +
+    `tests/core/test_server_events.py`（注册/disposer/冲突/核心抢占/校验/编码
+    契约 6 项）；`test_sse.py` 中 task_updated、client_message 的非法载荷校验
+    改经注册表验证；`test_architecture_boundaries.py` 允许能力包 `events.py`
+    导入 `XBotv2.protocol.*`（线契约，与 router.py 同规则）。
+  - **文档**：`plan.md`、`docs/protocol/protocol.md`（事件表拆核心/注册两组）
+    同步。
+- **验证**：XBotv2 **762 passed**（全绿）。wire 输出与重构前逐字节一致（能力
+  事件生产者 dict 本已符合 DTO 形状，`validate` 的 `exclude_unset=True` 与
+  `ServerEvent` 旧行为相同）。Phase 4（TUI 组合根）、Phase 5（ACP/web）待续。
+
+### 2026-08-20 · 重定计划：配置真源、XCore 路由事件与哑 Server Carrier
+
+- **用户指示**：以最新要求重新分析并替换 `plan.md`；server、router 和能力调用
+  必须统一利用 XCore 事件路由，清除 config/硬编码、跨插件实现导入以及用 `Any`
+  绕过边界的做法；原 DeepSeek 计划仅供参考。
+- **计划纠偏**：`plan.md` 已完整替换。此前 Phase 1–3 的文件移动保留为迁移起点，
+  但 `_DEFAULT_ROUTERS`、`app.state` 业务容器、`ServerEvents` 平行注册表和
+  `SessionManager -> application` 反向导入明确列为待删除的过渡结构。
+- **声明式 profile**：`PluginEntry` 新增 `profiles`，`xcore.yaml` 直接声明 server
+  composition（persistence/session/server/core route/各能力 route）；
+  `load_server_tree()` 只解析、合并并选择 `server` profile，不再在 Python 构造
+  `PluginEntry` 能力清单。无效的 `PluginEntry.inject` 配置字段删除，依赖只由插件
+  静态 `inject` 声明。
+- **XCore route event**：新增 typed `RouteContribution` 和 `server/route` event。
+  Server carrier 是唯一 listener；router plugin 用 `ctx.bail()` 注册，并把返回的
+  disposer 绑定自身 fiber。route 与 exception handler 作为同一 contribution 原子
+  装卸，重复 path/method 或 exception handler 在加载期报错。
+- **哑 carrier**：`create_app()` 只创建 FastAPI 与协议通用错误信封；删除默认 router
+  动态 import、`features`、SessionManager fallback、lifespan reaper/close 和全部业务
+  `app.state` 字段。health/hello 移入普通 `server.router` 插件；health 数据由
+  SessionHost 响应 typed `server/status` event。
+- **生命周期与反向依赖**：server composition root 提供 `runtime_paths`、typed
+  `ServerOptions` 和 `AgentApplicationFactory` services。SessionManager 消费 factory，
+  不再导入 `application.start_application`；SessionHost fiber 启停 reaper 并在卸载时
+  `close_all()`。路径和 server launch facts 不再通过 plugin YAML config 传 Python
+  对象。
+- **测试接缝**：Mock provider 改走 FastAPI `dependency_overrides`，生产 app 不保存
+  mutable override。OpenAPI 测试从真实 server plugin tree 获取 schema；server 测试
+  明确验证不存在 `app.state.manager`，并验证 XCore event 注册/卸载 route。
+- **当前验证**：plugin loader + protocol 30 passed；server/public API/protocol +
+  health/hello/SDK HTTP focused 37 passed。尚未运行全量；能力 operation event、typed
+  SessionHost public API、outbound event 和客户端组合根继续实施中。
+### 2026-08-20 · 边界校正：Agents 不是组合根
+
+- 进一步审计发现 `agents/router.py` 直接导入 SessionManager、LLM service、
+  session reload 和 server route contract，`AgentsService` 也直接操作 LLM、loader、
+  engine、tools 和 session state。这些是现有迁移中仍未消除的隐藏组合根，
+  不是目标架构。
+- 计划已收紧：`agents/` 只拥有 Agent catalog/profile 与自身 typed event；
+  HTTP 适配器与能力实现分离；provider/effort 归 LLM，config reload 归
+  config/session owner；llm/tools/permissions 通过 XCore 订阅 Agent lifecycle event。
+- 依赖规则明确为：跨插件只可使用 public typed contract，不导入 service、
+  manager、router 或 plugin implementation，不通过动态上下文属性找邻居。
+- 本次仅校正分析与实施计划，未声称该边界已在代码中完成，也未运行
+  新的验证。
+
+### 2026-08-20 · 边界再校正：允许 DSH 式公开导出
+
+- 用户校正了“不允许任何跨插件 import”的过度限制。目标改为 DSH 式
+  边界：插件显式导出 types、invariants、commands、event payload 和 service
+  Protocol，其他插件可导入这些声明以完成静态 typing。
+- 跨插件运行时逻辑仍必须走 XCore event 或已声明 `inject` 的 public
+  service Protocol。禁止的是 service/manager/plugin/router 实现导入、未声明
+  `services.get()`、私有字段和整个 runtime/context 逃逸。
+- 因此 `ctx.llm` 不再被一概判定为旁路；当消费插件声明 `inject =
+  ['llm']` 并按公开 Protocol 使用时，它是标准 XCore service 交互。
+
+### 2026-08-20 · 插件职责与公开导出目录审计
+
+- 暂停继续扩大迁移，先在 `plan.md` 建立了完整插件边界目录。目录按
+  会话内基础插件、可选能力插件、server host/HTTP adapter 分组，对每项记录
+  职责、目标 `inject`、public types/invariants/commands/service Protocol、运行时
+  service/event/route 和当前违规。
+- 确定 Python 下的 DSH 式 public export 规则：`types.py`、`invariants.py`、
+  `commands.py`、`events.py`、`services.py` 可作为明确声明面；过渡期
+  `contracts.py` 可保留但不混入实现。package `__init__.py` 只 re-export 声明，
+  不 re-export concrete provider/service/registry/manager。
+- 审计发现的高优先级问题包括：`mcp`/`mcp_plugin` 完整重复；
+  `agents.service_component` 实际消费 settings/llm/model/tools/loop_state/loader 等但
+  未声明 inject；skills/MCP 实际读 session 但未 inject；permissions/sandbox commands
+  使用未声明相邻服务；ToolsService 和 AgentsService 的 `__getattr__` 泄漏了
+  具体 registry/runtime surface。
+- 新规则下，当前 `scripts/check_architecture.py` 的“任意跨插件 import 均违规”
+  检查已过时。后续将改为只允许目标 package 明确 public export 的 allowlist，
+  并增加 service attribute 与 plugin `inject` 的一致性检查。
+- 本轮审计前的聚焦验证实际结果为 20 passed / 1 failed。失败用例仍发送
+  旧 `server/route` 事件，而 carrier 已改监听 `http/route`；尚未根据最终插件
+  导出规则修正测试，不记录为通过。
+- 按新规则回看后，删除了为回避合法 Agent→LLM public service 依赖而临时新增的
+  `runtime_binding` 插件。provider/effort typed operation handler 回到 Agent runtime
+  composition，`agents.service_component` 显式声明当前消费的 settings/llm/model/
+  tools/loop_state/loader services。后续再用窄 public Protocol 取代无类型 ctx。
+
+### 2026-08-20 · 完整重置插件边界实施计划
+
+- 按用户要求删除 `plan.md` 原内容，以最新 DSH 式公开导出规则重新编写完整计划。
+  新计划明确区分 public declaration import、required/optional service inject 和
+  typed XCore event/operation，且不把 `TYPE_CHECKING` 当作架构要求。
+- 修正此前职责表的四个关键错误：`/reload` 归 Loader 而非 Session/Config；
+  Agent 拆为 catalog、runtime/controller、subagent integration；agentloop factory
+  提供 service 而非反向注入 Agents；route contribution contract 归 server carrier
+  所有而非 HTTP adapter 所有。
+- 记录当前首要实现阻塞：`agents.service_component -> loop_state` 与
+  `session -> agents` 已形成 required-service 环；当前代码不能因为 YAML 顺序而被
+  视为可激活。该问题列为 Phase 1 第一验收项。
+- 配置规则进一步收紧：plugin config 只能来自 XCore `apply(ctx, config)`；LLM
+  反向扫描 `DEFAULT_TREE`/硬编码 `llm` entry、Session reload 重建整个 service bag、
+  parent service 写入 YAML config 均列为必须删除的旁路。
+- 本条只记录计划与当前证据，不声称 Phase 0 或后续实现已经完成；尚未运行新的
+  测试。工作树中已有暂存和未暂存更改继续保留，未执行 commit。
+
+### 2026-08-20 · Typed plugin boundary migration checkpoint
+
+- Agent ownership is split into catalog, runtime/controller, loop factory, and
+  subagent integration services. Session no longer owns Agent construction or
+  catalog state, and startup uses the typed `INITIALIZE_AGENT` operation.
+- Tool consumers now use the declared `ToolsPort` surface. The public service
+  exposes resolution, inventory, restriction, and execution methods without a
+  `.registry` escape hatch or `__getattr__` implementation proxy.
+- Capability HTTP adapters for tools, jobs, commands, agents, LLM, config, and
+  policy live under `http_transport` and dispatch typed XCore operations.
+  Route contribution declarations are owned by the dumb server carrier.
+- Config owns session policy persistence through `GET_POLICY` and
+  `UPDATE_POLICY`. Permissions and Sandbox subscribe to `POLICY_CHANGED` and
+  update only their own runtime policy. Their commands capture the declared
+  `SettingsPort`; the old `CommandContext` and cross-policy service bag were
+  removed.
+- Loader owns reload configuration and `/reload`; application composition now
+  supplies runtime launch facts as typed services instead of serializing
+  Python objects through plugin YAML.
+- Verification for this checkpoint: 76 focused application/loader/public API/
+  server/architecture/operation tests passed; 67 Agent/subagent/command/
+  permission tests passed; `git diff --check` passed; standalone server and
+  Agent compositions both started and stopped successfully.
+- The committed checkpoint architecture scanner reports 40 remaining
+  violations, principally
+  Session HTTP ownership/runtime service lookup, outbound wire event DTOs,
+  package-root concrete re-exports, LLM config tree scanning, and one legacy
+  tool policy hook. This is an intermediate migration checkpoint, not final
+  architectural completion. MCP callback injection changes remain uncommitted
+  until their focused failures and connection cleanup are resolved.
+
+### 2026-08-20 · Remove composition and event-registry bypasses
+
+- MCP callbacks now receive the declared model, interactions, and session
+  services explicitly; MCP tool registration uses the public Tools service
+  instead of its concrete registry. `ModelService` exposes only its declared
+  model operations and no longer proxies arbitrary provider attributes through
+  `__getattr__`.
+- Application composition owns plugin-tree loading. The LLM plugin no longer
+  scans the bundled tree or overlay files, hard-codes its entry id, or performs
+  a second configuration merge behind Loader.
+- Plugin package roots no longer re-export concrete registries, services, or
+  implementations. Roots with owned declarations now re-export their explicit
+  typed contracts, service Protocols, and command declarations; packages with
+  implementation-only modules expose no root API.
+- The parallel `ServerEvents` registry and capability DTO registration path
+  were removed. The SSE carrier validates protocol-core events and currently
+  passes capability payloads through until typed producer-owned outbound
+  events replace the remaining SessionRuntime projections.
+- This remains an intermediate checkpoint. Session HTTP ownership and runtime
+  service-bag removal, typed outbound events, and the tool policy pipeline are
+  still pending and are intentionally not represented as complete here.
+- Verification: 140 focused application/loader/protocol/server/SSE/public API/
+  jobs/subagent/architecture tests passed; 7 directly affected MCP callback
+  and plugin tests passed; `git diff --check` passed. The architecture scanner
+  reproducibly reports 17 remaining migration violations. The broader MCP
+  selection was interrupted after 9 passes because an unchanged Tool wrapper
+  error-result test did not terminate; it is not recorded as passing.
+
+### 2026-08-20 · One monotonic Tool policy pipeline
+
+- `BEFORE_TOOL_CALL` is now a rewrite-only extension point. A listener may
+  return a replacement `ToolCall` and/or argument dict; any policy decision,
+  synthetic result, unknown key, or arbitrary non-dict return is a contract
+  error.
+- Rewritten calls are resolved again, validated against the final Tool schema,
+  and passed through every registered sandbox/skill/permission guard before
+  invocation. Event listeners can no longer allow, deny, stop, or return a
+  cached result ahead of those guards.
+- Removed `ToolAction`, `ToolDecision`, and `EventContext.deny_reason` from the
+  core API. Goal and Compact documentation now states that their Agent Tools
+  use the same guard pipeline as every other Tool.
+- Migrated Tool, Goal, Compact, and Skills test harnesses away from the removed
+  `ctx.tools.registry` and legacy command-context signatures. The tests consume
+  public registration/resolve/execute methods; the obsolete Compact command
+  turn-lock test was removed because command handlers no longer receive an
+  Engine/lock container.
+- Verification: 102 Tool/Goal/Compact/public API/architecture/permission/
+  sandbox tests passed; the dedicated rewrite and policy-shortcut tests are
+  included. Python compilation and `git diff --check` passed. The architecture
+  scanner decreased from 17 to 16 violations, all in session HTTP/runtime
+  ownership. Broader Engine and Skills selections each reached the affected
+  test successfully but did not terminate during later async teardown, so they
+  are not recorded as passing.
+
+### 2026-08-20 · Typed mounted Agent application handle
+
+- SessionRuntime now owns a narrow `AgentApplicationPort` instead of the XCore
+  Context/service bag. The handle exposes the loop driver, event dispatcher,
+  media/history/client-event ports, parent permissions, persistence presence,
+  snapshots, status contribution, and lifecycle close only.
+- Loader's reflective `status_slots()` hook was removed. Application emits the
+  typed `application/status-slots/collect` event and Goal contributes its state
+  through that event.
+- Plugin package roots now act as the cross-plugin declaration surface.
+  `application`, `agentloop`, and `permissions` re-export explicit public
+  Protocols/types/commands only; Application startup implementations are no
+  longer re-exported, which also removes the Session/Application import cycle.
+- CLI once mode and affected Session/subagent/interaction tests now construct
+  or fake the typed mounted handle. Production Session code no longer contains
+  `ctx.services`, `services.get()`, or a SessionRuntime `services` field.
+- Verification: 84 focused Session/Goal/Application/public API/subagent tests
+  passed, plus 8 focused HTTP lifecycle/interaction and subagent tests. Python
+  compilation and `git diff --check` passed. The architecture scanner now
+  reports 7 remaining violations, all in Session HTTP/wire ownership. The full
+  HTTP integration file was interrupted after making only one test's progress
+  in roughly one minute and is not recorded as passing.
+
+### 2026-08-20 · Typed Session host and HTTP ownership
+
+- Added public Session host domain dataclasses and `SessionHostPort`, exported
+  through `XBotv2.session`. The API covers session/thread open and query,
+  history mutation, messages, fork, interaction responses, interrupts, and
+  typed stream envelopes without exposing SessionRuntime, paths, stores, or
+  the mounted child application.
+- SessionManager now owns parent-thread resolution, persistence reads, history
+  locking, media preparation, interaction waiters, fork preparation, and event
+  stream attach/detach behind that port. Session summaries no longer construct
+  protocol Pydantic models.
+- Moved all Session HTTP/SSE mapping to `http_transport.session`; deleted
+  `session.router` and `session.http_util`. The default tree now activates
+  `http_transport.session`. The adapter imports only protocol wire models,
+  public Session declarations, public server declarations, and shared core.
+- Model override dependency declarations moved to the server public contract,
+  while the FastAPI implementation retains only carrier construction and test
+  override installation.
+- Verification: architecture checker reports zero violations; 110 focused
+  core/Application/Session/subagent/loader/server tests and 4 focused adapter
+  lifecycle/interaction tests passed. Real HTTP open-session passed in 61s;
+  real undo/fork/resume/clear history flow passed in 122s. Python compilation
+  and `git diff --check` passed. The complete HTTP integration suite was not
+  run because its shared fixture currently adds roughly 60s teardown per
+  session-bearing test.
+
+### 2026-08-20 · Plugin-owned C/S protocol and routes
+
+- Merged every centralized `http_transport` route contribution into its owning
+  plugin `protocol.py`. Agents, Agent loop, Commands, Config, Jobs, LLM, Session,
+  and Server now own their request/response models and FastAPI mapping; Usage,
+  Permission Request, and Interactions own their event and interaction wire
+  models.
+- `xcore.yaml` now mounts `<plugin>.protocol` entries directly. Config owns both
+  reload and policy routes, and the centralized `http_transport` package was
+  removed.
+- Reduced central `XBotv2.protocol` to version, hello/health/error models, and
+  generic SSE envelopes/framing. It no longer contains business requests,
+  responses, payload models, or a global server-event type registry.
+- Plugin roots explicitly export public protocol declarations while keeping
+  concrete protocol plugins private. Runtime route registration continues
+  through the typed XCore `http/route` event. The unused `web_server`
+  compatibility service was removed; no manager, paths, or service bag was
+  restored in FastAPI state.
+- Verification: architecture checker reports zero violations; 41 focused
+  SSE/public API/server tests passed after removing the final compatibility
+  service; 8 real ASGI integration tests passed for hello/health, provider,
+  permission, Session validation, and error routes. A full HTTP integration
+  run was stopped after its third test because old tests still inspect removed
+  `app.state.paths` and `app.state.manager`; this is a test migration gap, not
+  a reason to restore those runtime bypasses.
+
+### 2026-08-20 · Producer-validated outbound events
+
+- Agent loop now validates assistant, Tool, turn, usage, and error payloads
+  through its owner-local protocol event mapping before yielding them. Route
+  dependencies in `agentloop.protocol` are resolved only while building or
+  mounting the route, so Engine can use its own protocol declarations without
+  a Session/server import cycle.
+- Permission Request, Interactions, and Jobs now construct their public wire
+  models before publishing permission prompts, user-input requests, client
+  notices, and task updates. Session forwards those validated envelopes rather
+  than reconstructing Jobs fields.
+- Session validates its own message, history, Agent-configuration, completion,
+  interaction-recorded, and error projections. Completion notices no longer
+  duplicate the full Job snapshot. The public `SessionStreamEvent` rejects
+  non-JSON payload values at the host boundary.
+- Verification: architecture checker reports zero violations; 43 focused
+  protocol/public API/Session/interaction tests passed; a real typed SDK + SSE
+  message/history/undo round trip passed in 60.77s. Selected Engine event tests
+  completed their assertions, but the existing Engine suite teardown remained
+  intermittently non-terminating and is not recorded as a passing selection.
+
+### 2026-08-20 · Typed client-event routing
+
+- Promoted the existing capability-neutral `ClientEvent` envelope to the XCore
+  event boundary. `EventContext.client_event`, the application router, its sink,
+  and waiter ports are now typed; plugins still own and validate every concrete
+  payload schema.
+- Session converts envelopes to dictionaries only at its stream boundary, and
+  Persistence reads the generic envelope directly. The router no longer passes
+  feature events through untyped callable arguments, and non-JSON payloads are
+  rejected before routing.
+- Removed Session's duplicate JSON-value walker in favor of the shared core
+  contract. No event-name inventory or business response model was added to
+  core, application, server, or Session.
+- Verification: architecture checker reports zero violations; 80 focused
+  protocol/public API/Session/Tool/Compact tests passed, and the real typed SDK
+  plus SSE integration passed in 60.74s. Python compilation and
+  `git diff --check` passed.
+
+### 2026-08-20 · Compact-owned outbound protocol
+
+- Added Compact-owned models for started, completed, and failed events,
+  including the stable compaction metrics contract. The plugin root exports
+  these declarations and its event builder, but not the concrete service.
+- Compactor and service now publish validated `ClientEvent` values directly;
+  the generic XCore route and Session projection contain no Compact event-name
+  or payload knowledge.
+- Corrected protocol documentation that still described a separate completion
+  `usage` field even though usage is part of metrics.
+- Verification: architecture checker reports zero violations; 52 focused
+  Compact/protocol/public API tests passed. Python compilation and
+  `git diff --check` passed.
+
+### 2026-08-20 · ACP on the typed Session host
+
+- Added a transport-neutral `session-host` XCore profile containing only the
+  persistence reader and Session host. The mounted application handle exposes
+  `SessionHostPort` and lifecycle close without exposing the root Context.
+- ACP now uses Session host resources and typed Agents/LLM/Commands operations
+  for open, list, fork, prompt, history replay, configuration, and commands. It
+  no longer imports SessionManager/SessionRuntime, Persistence stores, Config
+  loaders, or accesses Engine and service bags.
+- ACP interactions now follow the normal client protocol: consume the
+  permission/user-input event from the Session stream, ask the ACP client, and
+  answer or cancel through SessionHostPort. MCP's plugin id is exported by its
+  package root instead of being duplicated in ACP, and per-session plugin
+  config is restricted to JSON values.
+- Session summaries now carry workspace/title for non-HTTP clients, and active
+  provider changes update the Session projection. Architecture checks enforce
+  the ACP boundary and include the new profile's required-service graph.
+- Verification: architecture checker reports zero violations; 48 focused
+  Session/server/protocol tests passed; all 4 ACP tests passed outside the
+  socket-restricted sandbox; and the real HTTP typed SDK plus SSE integration
+  passed in 61.06s. Python compilation and `git diff --check` passed.
+
+### 2026-08-20 · ACP as an XCore carrier
+
+- Removed the ACP-only `session-host` profile, `MountedSessionHost`,
+  `SessionHostOptions`, and `application/session_host.py`. ACP no longer boots
+  an application from inside its SDK adapter.
+- The process Session manager now provides the shared `sessions` service and
+  public `SessionsPort` to both the HTTP and ACP profiles. ACP is mounted as a
+  normal carrier plugin with its own typed `ACPLaunch` declaration.
+- ACP owns cancellation of its event-forwarding tasks. Shutdown no longer
+  depends on the Session manager closing streams in a particular order.
+- Verification: architecture checker reports zero violations; 22 focused
+  Session/server/public API tests and all 4 ACP tests passed. Python
+  compilation and `git diff --check` passed.
+
+### 2026-08-20 · Commands-owned declarations
+
+- Moved `Command`, `CommandResult`, handler typing, parsing, guards, and typed
+  operation rendering from `core.commands` into the Commands plugin contracts
+  and package-root export surface. Core no longer owns command capability
+  declarations.
+- Removed the unused central `protocol.commands` executor, which still used a
+  service bag and an obsolete handler signature. Commands wire models remain
+  in `commands.protocol`; its result payload is named separately from the
+  domain handler result.
+- Architecture checks now validate symbol imports from the shared core root,
+  so removing a core export cannot leave a latent plugin import failure.
+- Verification: architecture checker reports zero violations; 102 command,
+  application startup, public API, Compact, and Goal tests passed. Python
+  compilation and `git diff --check` passed.
+
+### 2026-08-20 · Jobs-owned runtime contracts
+
+- Moved Job domain types and service/runner/output Protocols from `core.jobs`
+  into the Jobs plugin contracts and package-root exports. Shell and Subagents
+  now consume the typed `JobsPort`; injected `job_registry: Any` and runner
+  `ctx: Any` parameters were removed.
+- Removed completion events, runner tasks, runner instances, and runtime
+  handles from the public `Job` record. `JobRegistry` owns those private
+  lifecycle objects in side tables, while SubagentRunner owns its cancellable
+  child-session handle.
+- Tests now observe completion through `JobsPort.wait()` rather than reading
+  registry task fields. The public API contract explicitly rejects those
+  private fields.
+- Verification: architecture checker reports zero violations; 78 Jobs,
+  Subagents, public API, and application startup tests passed. Four selected
+  older HTTP integration tests still fail before exercising Jobs because they
+  access the intentionally removed `app.state.manager` compatibility path;
+  that bypass was not restored. Python compilation and `git diff --check`
+  passed.

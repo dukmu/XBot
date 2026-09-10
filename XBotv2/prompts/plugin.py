@@ -6,31 +6,32 @@ auto-cleanup; capability plugins add prompt fragments through ``ctx.prompts``.
 
 from __future__ import annotations
 
-from typing import Any
+from functools import partial
+from pydantic import JsonValue
+from xcore import Context, bound_effect, current_plugin_name
 
-from xcore import bound_effect, current_plugin_name
+from XBotv2.context_builder.contracts import PromptFragmentRegistry, PromptFragmentStage
+from XBotv2.prompts.contracts import PromptsPort
 
 
-class PromptsService:
+class PromptsService(PromptsPort):
     """Plugin-facing prompt-fragment registry (per-plugin namespace)."""
 
-    def __init__(self, context_builder: Any) -> None:
+    def __init__(self, context_builder: PromptFragmentRegistry) -> None:
         self._builder = context_builder
 
     def add(
         self,
-        stage: Any,
+        stage: PromptFragmentStage,
         text: str,
         *,
         source: str | None = None,
     ) -> None:
         plugin_name = current_plugin_name()
         self._builder.register_fragment(stage, plugin_name, text, source=source)
-        bound_effect(
-            lambda: self._builder.unregister_fragment(stage, plugin_name),
-        )
+        bound_effect(partial(self.remove, stage, plugin_name))
 
-    def remove(self, stage: Any, plugin_name: str) -> None:
+    def remove(self, stage: PromptFragmentStage, plugin_name: str) -> None:
         self._builder.unregister_fragment(stage, plugin_name)
 
 
@@ -40,7 +41,9 @@ class PromptsComponent:
 
     name = "xbot.prompts"
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         ctx.set("prompts", PromptsService(ctx.context_builder))
 
 

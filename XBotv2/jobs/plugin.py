@@ -1,46 +1,148 @@
 """Jobs component: the background job registry as an XCore service.
 
-The registry is created by this plugin (mounted after the session component,
-whose ``ctx.runtime`` supplies the concurrency limits) and provided as
-``ctx.jobs``.  Job lifecycle — waiting, cancellation, output storage — lives
-in the registry; domain adapters (subagents, shell) implement ``JobRunner``.
+The plugin owns registry limits, lifecycle notifications, cancellation, and
+output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from xcore import Context
 
-from XBotv2.core.jobs import JobKind
+from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+from XBotv2.core.errors import OperationError
+from XBotv2.agentloop import AgentLoopDriverPort, EventContext, EventPort, Events
+from XBotv2.core.prompts import prompt_container, prompt_element
+from XBotv2.jobs import JobKind
+from XBotv2.jobs.commands import build_jobs_commands
+from XBotv2.jobs.protocol import (
+    build_tasks_router,
+    task_completion_event,
+    task_updated_event,
+)
 from XBotv2.jobs.registry import JobRegistry
-from XBotv2.jobs.commands import JOBS_COMMANDS
-from XBotv2.core.events import EventContext, Events
+from XBotv2.core.operations import EmptyRequest
+from XBotv2.jobs.contracts import (
+    JobsConfig,
+    LIST_TASKS,
+    STOP_ALL_TASKS,
+    STOP_TASK,
+    StopTask,
+    StoppedTasks,
+    TaskCatalog,
+    TaskSnapshot,
+)
+from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
+from XBotv2.server import contribute_router
 
 
-class JobsComponent:
-    inject = ['session', 'commands']
+async def mount_http(ctx: Context) -> None:
+    await contribute_router(
+        ctx,
+        owner="xbot.jobs.http",
+        router=build_tasks_router(sessions=ctx.sessions),
+    )
+
+
+class JobsRuntimeComponent:
+    inject = {
+        "required": ["commands", "engine"],
+    }
     """Register the job registry as ``ctx.jobs``."""
 
     name = "xbot.jobs"
+    Config = JobsConfig
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
+    def apply(self, ctx: Context, config: JobsConfig) -> None:
+        max_concurrent = config.max_concurrent_subagents
         registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
         ctx.set("jobs", registry)
-        for command in JOBS_COMMANDS:
+        for command in build_jobs_commands(registry):
             ctx.commands.register(command)
+        handlers = JobHandlers(registry, ctx.engine, ctx)
+        registry.on_update = handlers.publish_update
+        registry.on_complete = handlers.publish_completion
+        ctx.on(LIST_TASKS.name, handlers.list_tasks)
+        ctx.on(STOP_TASK.name, handlers.stop_task)
+        ctx.on(STOP_ALL_TASKS.name, handlers.stop_all)
+        ctx.on(PREPARE_FORK, handlers.prepare_fork)
+        ctx.on(Events.SESSION_CLOSE, handlers.close)
 
-        async def publish(event_name: str, snapshot: dict[str, Any]) -> None:
-            await ctx.emit(event_name, EventContext(event=snapshot))
 
-        registry.on_update = lambda snapshot: publish(Events.JOB_UPDATED, snapshot)
-        registry.on_complete = lambda snapshot: publish(
-            Events.JOB_COMPLETED, snapshot
+class JobHandlers:
+    def __init__(
+        self,
+        registry: JobRegistry,
+        engine: AgentLoopDriverPort,
+        events: EventPort,
+    ) -> None:
+        self._registry = registry
+        self._engine = engine
+        self._events = events
+
+    async def publish_update(self, snapshot: TaskSnapshot) -> None:
+        await self._events.emit(
+            RUNTIME_EVENT,
+            RuntimeEvent(client_event=task_updated_event(snapshot)),
         )
 
-        async def close(_event: Any) -> None:
-            await registry.shutdown()
+    async def publish_completion(self, snapshot: TaskSnapshot) -> None:
+        event = task_completion_event(snapshot)
+        payload = event.data
+        await self._engine.inject(
+            prompt_container(
+                "runtime_event",
+                [prompt_element(
+                    "payload",
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    attributes={"encoding": "json"},
+                )],
+                attributes={"source": "tasks", "event": "completed"},
+            ),
+            source=snapshot.task_id,
+            metadata={"kind": "notification", "payload": payload},
+        )
+        await self._events.emit(
+            RUNTIME_EVENT,
+            RuntimeEvent(client_event=event),
+        )
 
-        ctx.on(Events.SESSION_CLOSE, close)
+    def list_tasks(self, _request: EmptyRequest) -> TaskCatalog:
+        return TaskCatalog(tuple(self._registry.snapshots()))
+
+    async def stop_task(self, request: StopTask) -> StoppedTasks:
+        job = self._registry.get_or_none(request.task_id)
+        if job is None:
+            raise OperationError("task_not_found", f"Unknown task: {request.task_id}")
+        await self._registry.cancel(request.task_id)
+        return StoppedTasks((self._registry.snapshot(job),))
+
+    async def stop_all(self, _request: EmptyRequest) -> StoppedTasks:
+        return StoppedTasks(tuple(await self._registry.stop_all()))
+
+    def prepare_fork(self, _request: PrepareFork) -> None:
+        if self._registry.is_busy():
+            raise OperationError(
+                "thread_busy",
+                "Cannot fork while a background task is active.",
+                retryable=True,
+            )
+
+    async def close(self, _event: EventContext) -> None:
+        await self._registry.shutdown()
 
 
-plugin = JobsComponent()
+class JobsPlugin:
+    """Compose Agent job execution and its process HTTP projection."""
+
+    name = "xbot.jobs"
+    Config = JobsConfig
+
+    async def apply(self, ctx: Context, config: JobsConfig) -> None:
+        await ctx.plugin(JobsRuntimeComponent(), config)
+        await ctx.inject(["server", "sessions"], mount_http)
+
+
+plugin = JobsPlugin()
+
+__all__ = ["JobsPlugin"]

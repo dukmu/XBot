@@ -1,21 +1,21 @@
 """Behavior tests for shared context accounting and TokenManager diagnostics."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from XBotv2.token_manager.plugin import TokenManagerPlugin
 
 from XBotv2.core import (
-    EventContext,
-    Events,
     Message,
     Tool,
     calibrated_context_tokens,
     context_token_limit,
     estimate_request_tokens,
 )
+from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
+from XBotv2.llm.mock import MockLLM
+from XBotv2.session import SessionInfo
+from XBotv2.core import ModelResponse
 
 
 def make_plugin() -> TokenManagerPlugin:
@@ -84,13 +84,13 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     messages = [Message(role="user", content="hello")]
     ctx = EventContext(
         messages=messages,
-        config=SimpleNamespace(max_context_tokens=204_800),
-        session=SimpleNamespace(turn_count=3),
-        model_request={"messages": messages, "tools": []},
+        settings=LoopSettings(provider="test", context_window=204_800),
+        session=SessionInfo("s", "t", provider="test", turn_count=3),
+        model_request=ModelRequest(messages, [], MockLLM(responses=[])),
     )
 
-    await plugin._on_before_model_request(ctx)
-    ctx.model_response = SimpleNamespace(usage_metadata={
+    await plugin._on_model_request_ready(ctx)
+    ctx.model_response = ModelResponse(usage_metadata={
         "input_tokens": 100,
         "output_tokens": 20,
         "context_tokens": 180,
@@ -104,17 +104,3 @@ async def test_plugin_observes_runtime_window_and_provider_usage():
     assert latest["estimate_source"] == "estimated"
     assert latest["provider_usage"]["context_tokens"] == 180
     assert latest["provider_usage"]["cache_read_input_tokens"] == 80
-
-
-@pytest.mark.asyncio
-async def test_plugin_unload_clears_only_ephemeral_observation():
-    plugin = make_plugin()
-    plugin._latest = {"context_tokens_estimate": 10}
-
-    await plugin.on_unload()
-
-    assert plugin.diagnostics() == {
-        "status": "ready",
-        "mode": "observe_only",
-        "latest_request": {},
-    }

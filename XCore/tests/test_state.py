@@ -40,6 +40,23 @@ async def test_atomic_write_leaves_no_temp_file(tmp_path):
     assert files == ["state.json"]
 
 
+async def test_state_operations_emit_content_safe_metadata_logs(tmp_path, caplog):
+    caplog.set_level("DEBUG", logger="xcore.state")
+    state = StateService(path=_path(tmp_path)).namespace("todo")
+
+    await state.set("snapshot", {"secret": "must-not-be-logged"})
+    await state.delete("snapshot")
+    await state.clear()
+
+    text = caplog.text
+    assert "state.loaded" in text
+    assert "state.persisted operation=set" in text
+    assert "state.persisted operation=delete" in text
+    assert "state.persisted operation=clear" in text
+    assert "namespace=todo." in text
+    assert "must-not-be-logged" not in text
+
+
 async def test_rejects_non_json_values(tmp_path):
     state = StateService(path=_path(tmp_path))
     with pytest.raises(TypeError):
@@ -96,6 +113,31 @@ async def test_crash_residue_does_not_corrupt_state(tmp_path):
     assert await recovered.get("k") == "v"
 
 
+async def test_failed_write_does_not_change_cached_state(tmp_path, monkeypatch):
+    state = StateService(path=_path(tmp_path))
+    await state.set("stable", {"value": 1})
+
+    async def fail(_data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(state, "_persist", fail)
+
+    with pytest.raises(OSError, match="disk full"):
+        await state.set("stable", {"value": 2})
+    assert await state.get("stable") == {"value": 1}
+
+    with pytest.raises(OSError, match="disk full"):
+        await state.delete("stable")
+    assert await state.get("stable") == {"value": 1}
+
+    with pytest.raises(OSError, match="disk full"):
+        await state.clear()
+    assert await state.get("stable") == {"value": 1}
+
+    recovered = StateService(path=_path(tmp_path))
+    assert await recovered.get("stable") == {"value": 1}
+
+
 async def test_state_service_via_context(tmp_path):
     ctx = Context(data_dir=tmp_path)
     await ctx.start()
@@ -108,6 +150,18 @@ async def test_state_service_via_context(tmp_path):
     await ctx.stop()
     await ctx.start()
     assert await ctx.state.get("session") == {"turns": 3}
+
+
+async def test_context_uses_explicit_state_service(tmp_path):
+    state = StateService(path=tmp_path / "thread" / "state.json")
+    ctx = Context(data_dir=tmp_path / "unrelated", state_service=state)
+
+    assert ctx.state is state
+    assert ctx.get("state") is state
+    await ctx.state.namespace("todo").set("items", ["one"])
+
+    assert await state.namespace("todo").get("items") == ["one"]
+    assert not (tmp_path / "unrelated" / "state.json").exists()
 
 
 async def test_json_file_is_valid_utf8(tmp_path):

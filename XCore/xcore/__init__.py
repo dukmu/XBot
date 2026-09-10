@@ -11,7 +11,6 @@ Zero third-party dependencies (stdlib only), Python 3.11+.
 from xcore.context import Context
 from xcore.errors import (
     InactiveEffectError,
-    SchemaValidationError,
     ServiceConflictError,
     ServiceNotFoundError,
     XCoreError,
@@ -26,7 +25,6 @@ from xcore.plugin import (
     current_fiber,
     current_plugin_name,
 )
-from xcore.schema import S
 from xcore.service import Service
 from xcore.state import StateService
 
@@ -41,8 +39,6 @@ __all__ = [
     "PluginDef",
     "PluginHandle",
     "Registry",
-    "S",
-    "SchemaValidationError",
     "Service",
     "ServiceConflictError",
     "ServiceNotFoundError",

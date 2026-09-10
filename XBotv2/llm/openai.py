@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, AsyncIterator, Callable
+from pydantic import JsonValue
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import (
     ContentPart,
     ImagePart,
@@ -14,13 +16,14 @@ from XBotv2.core.messages import (
     ModelResponse,
     ReasoningPart,
     TextPart,
-    ToolCallPart,
 )
 from XBotv2.core.tools import ToolCall, ToolCallDelta
 from XBotv2.core.providers import BaseProvider
 from XBotv2.llm.config import merge_request_extras
+from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 from XBotv2.llm.base import (
     attachment_prompt,
+    tool_content,
     usage_metadata,
 )
 
@@ -37,11 +40,11 @@ class OpenAICompatibleProvider(BaseProvider):
         max_output_tokens: int | None,
         reasoning_effort: str | None = None,
         thinking: str | None = None,
-        extra_body: dict[str, Any] | None = None,
+        extra_body: dict[str, JsonValue] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
-        media_root: str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -54,9 +57,9 @@ class OpenAICompatibleProvider(BaseProvider):
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
             input_modalities=input_modalities,
-            media_root=media_root,
+            artifacts=artifacts,
         )
-        kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
@@ -67,11 +70,12 @@ class OpenAICompatibleProvider(BaseProvider):
         messages: list[Message],
         **_kwargs: Any,
     ) -> AsyncIterator[ModelChunk]:
-        api_kwargs: dict[str, Any] = {
+        api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
             "messages": openai_messages(
                 messages,
                 image_loader=self.read_image,
+                artifacts=self.artifacts,
             ),
             "tools": self.bound_tools or None,
             "stream": True,
@@ -83,7 +87,7 @@ class OpenAICompatibleProvider(BaseProvider):
             api_kwargs["max_tokens"] = self.max_output_tokens
         if self.reasoning_effort:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
-        derived_extra_body: dict[str, Any] = {}
+        derived_extra_body: dict[str, JsonValue] = {}
         if self.thinking:
             derived_extra_body["thinking"] = {"type": self.thinking}
         extra_body = merge_request_extras(
@@ -96,7 +100,7 @@ class OpenAICompatibleProvider(BaseProvider):
 
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
-        tool_call_buffers: dict[int, dict[str, Any]] = {}
+        tool_call_buffers: dict[int, dict[str, JsonValue]] = {}
         final_usage: dict[str, int] = {}
         stop_reason = ""
 
@@ -171,10 +175,13 @@ class OpenAICompatibleProvider(BaseProvider):
         ]
         parts = []
         if reasoning:
-            parts.append(ReasoningPart(reasoning))
+            parts.append(ReasoningPart(text=reasoning))
         if content:
-            parts.append(TextPart(content))
-        parts.extend(ToolCallPart(call) for call in tool_calls)
+            parts.append(TextPart(text=content))
+        parts.extend(
+            ToolCall.model_validate(call, from_attributes=True)
+            for call in tool_calls
+        )
         yield ModelResponse(
             parts=parts,
             response_metadata={
@@ -189,8 +196,9 @@ def openai_messages(
     messages: list[Message],
     *,
     image_loader: Callable[[str], str] | None = None,
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+    artifacts: ArtifactStorePort | None = None,
+) -> list[dict[str, JsonValue]]:
+    result: list[dict[str, JsonValue]] = []
     system_parts = [
         message.content
         for message in messages
@@ -211,7 +219,7 @@ def openai_messages(
             result.append(
                 {
                     "role": "tool",
-                    "content": str(content),
+                    "content": tool_content(message, artifacts),
                     "tool_call_id": message.tool_call_id,
                 }
             )
@@ -220,16 +228,16 @@ def openai_messages(
         images = [part for part in parts if isinstance(part, ImagePart)]
         if images and role != "user":
             raise ValueError("Image content is supported only in user messages")
-        item: dict[str, Any] = {
+        item: dict[str, JsonValue] = {
             "role": role,
             "content": _openai_content(
                 parts,
                 image_loader,
-                attachment_prompt(message),
+                attachment_prompt(message, artifacts),
             ),
         }
         tool_calls = [
-            part.call for part in parts if isinstance(part, ToolCallPart)
+            part for part in parts if isinstance(part, ToolCall)
         ]
         if tool_calls:
             item["tool_calls"] = [
@@ -243,18 +251,18 @@ def _openai_content(
     parts: list[ContentPart],
     image_loader: Callable[[str], str] | None,
     attachment_text: str = "",
-) -> str | list[dict[str, Any]]:
+) -> str | list[dict[str, JsonValue]]:
     text = "".join(
         part.text for part in parts if isinstance(part, TextPart)
     )
     if attachment_text:
         text = f"{text}\n\n{attachment_text}".strip()
-    images = [part.image for part in parts if isinstance(part, ImagePart)]
+    images = [part for part in parts if isinstance(part, ImagePart)]
     if not images:
         return text
     if image_loader is None:
         raise ValueError("Image loader is required for image content")
-    content_parts: list[dict[str, Any]] = []
+    content_parts: list[dict[str, JsonValue]] = []
     if text:
         content_parts.append({"type": "text", "text": text})
     content_parts.extend({
@@ -269,7 +277,7 @@ def _openai_content(
     return content_parts
 
 
-def openai_tool_call(tool_call: ToolCall) -> dict[str, Any]:
+def openai_tool_call(tool_call: ToolCall) -> dict[str, JsonValue]:
     return {
         "id": tool_call.id,
         "type": "function",
@@ -285,12 +293,13 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
         return {}
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     reported_total = getattr(usage, "total_tokens", None)
-    cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read = getattr(details, "cached_tokens", None)
+    if cache_read is None:
+        cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
     if cache_read is None:
         cache_read = getattr(usage, "cache_read_input_tokens", 0)
-    cache_creation = getattr(usage, "prompt_cache_miss_tokens", None)
-    if cache_creation is None:
-        cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
     cache_read = int(cache_read or 0)
     cache_creation = int(cache_creation or 0)
     return usage_metadata(
@@ -308,55 +317,24 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
     )
 
 
-def _parse_tool_args(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 __all__ = ["OpenAICompatibleProvider"]
 
 
-def create_openai_provider(provider_config, model_config, *, media_root=None):
+def create_openai_provider(provider_config, model_config, *, artifacts=None):
     """Factory for the openai-compatible protocol route.
 
     ``provider_config`` is the adapter instance (endpoint + credentials);
     ``model_config`` is the selected specific model from its catalog.
     """
-    from XBotv2.llm.config import expand_env
-    from XBotv2.llm.client import _require_api_key, _retry_settings
-
     protocol = provider_config.protocol
-    api_key = expand_env(provider_config.api_key or "")
-    base_url = (
-        expand_env(provider_config.base_url)
-        if provider_config.base_url
-        else None
-    )
-    _require_api_key(protocol, model_config.model, api_key)
-    max_retries, retry_backoff_factor = _retry_settings()
-    logging.getLogger("llm").info(
+    logging.getLogger("xbotv2.llm").info(
         "creating openai-compatible provider=%s model=%s",
         protocol, model_config.model,
     )
     return OpenAICompatibleProvider(
-        model=model_config.model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=model_config.temperature,
-        max_output_tokens=model_config.max_output_tokens,
-        reasoning_effort=model_config.reasoning_effort,
-        thinking=model_config.thinking,
-        extra_body=model_config.extra_body,
-        max_retries=max_retries,
-        retry_backoff_factor=retry_backoff_factor,
-        input_modalities=model_config.input_modalities,
-        media_root=media_root,
+        **_provider_arguments(provider_config, model_config),
+        artifacts=artifacts,
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_openai_provider"]
+__all__ = ["OpenAICompatibleProvider", "create_openai_provider"]

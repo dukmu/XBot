@@ -1,6 +1,6 @@
 """Merged filesystem tools: ``read``, ``edit``, ``path``, ``search``.
 
-The four model-facing tools replace the previous twelve granular tools:
+The four model-facing tools replace the previous granular wrappers:
 
 - ``read``: UTF-8 text, binary bytes, stat metadata, image open, or directory
   listing (``mode``).
@@ -11,8 +11,7 @@ The four model-facing tools replace the previous twelve granular tools:
 
 The sandbox backend keeps its canonical per-operation dispatch; each merged
 tool selects the operation from its ``mode`` / ``operation`` argument, so
-permissions resolve per call.  Module-level helper functions remain for tests
-and backend reuse.
+permissions resolve per call.
 """
 
 from __future__ import annotations
@@ -20,18 +19,23 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
 import httpx
+from pydantic import JsonValue
 
+from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
 from XBotv2.core.messages import ImageContent
 from XBotv2.core.tools import Tool, ToolResult
-from XBotv2.filesystem.operations import PATH_ACCESS, execute
+from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
+from XBotv2.sandbox.contracts import SandboxPort
 
-_FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
+_FILE_VERSIONS: WeakKeyDictionary[SandboxPort, dict[str, str]] = WeakKeyDictionary()
 
 
 # ----------------------------------------------------------------------
@@ -54,7 +58,8 @@ async def read(
     max_entries: int = 500,
     include_hidden: bool = True,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> ToolResult:
     """Read file content, bytes, metadata, an image, or a directory listing.
 
@@ -63,7 +68,7 @@ async def read(
     - ``utf8`` (default): bounded UTF-8 text read with line/character limits.
       Non-UTF-8 files return metadata (MIME, size, SHA-256, image dimensions)
       instead of binary content. Continue truncated reads from the returned
-      next offsets. The ``session/`` virtual path is read-only.
+      next offsets. Runtime artifact paths are absolute and read-only.
     - ``binary``: return raw bytes as base64 with metadata; the model sees the
       encoding sidecar, not the payload.
     - ``stat``: return metadata for a file, directory, or symlink without
@@ -75,7 +80,7 @@ async def read(
       traversal stops at ``max_entries`` and never follows symlinks.
 
     Args:
-        path: Workspace-relative, absolute approved, or ``session/`` path.
+        path: Workspace-relative or absolute path allowed by sandbox policy.
         mode: Operation to perform.
         offset: Zero-based first line (utf8).
         limit: Maximum lines (utf8).
@@ -90,19 +95,49 @@ async def read(
         include_hidden: Include names beginning with a dot (list).
     """
     if mode == "utf8":
-        return await read_file(
-            path,
-            offset=offset,
-            limit=limit,
-            char_offset=char_offset,
-            max_chars=max_chars,
-            line_numbers=line_numbers,
-            sandbox=sandbox,
+        result = await _operation(
+            "read",
+            {
+                "path": path,
+                "offset": offset,
+                "limit": limit,
+                "char_offset": char_offset,
+                "max_chars": max_chars,
+            },
+            sandbox,
+        )
+        if not result.get("ok"):
+            return _failure(result)
+        content = str(result.pop("content", ""))
+        if result.get("changed_since_last_observation"):
+            content = (
+                "File changed since the previous read. The content and metadata "
+                f"below are current.\n{content}"
+            )
+        if not result.get("is_text", True):
+            image = result.get("image") or {}
+            dimensions = (
+                f", {image.get('width')}x{image.get('height')} {image.get('format')}"
+                if image else ""
+            )
+            return ToolResult.success(
+                f"Non-text file: {path} ({result.get('media_type')}, "
+                f"{result.get('size_bytes')} bytes{dimensions}, "
+                f"sha256={result.get('sha256')})"
+            )
+        return ToolResult.success(
+            _with_line_numbers(content, offset + 1) if line_numbers else content
         )
     if mode == "binary":
-        return await read_bytes_file(path, sandbox=sandbox)
+        result = await _operation("read_bytes", {"path": path}, sandbox)
+        if not result.get("ok"):
+            return _failure(result)
+        return ToolResult.success(
+            f"Binary file: {path} ({result.get('size_bytes')} bytes, "
+            f"sha256={result.get('sha256')}, base64 in data)"
+        )
     if mode == "stat":
-        return await stat_path(path, sandbox=sandbox)
+        return await _structured_operation("stat", {"path": path}, sandbox)
     if mode == "media":
         return await _read_media(
             path=path,
@@ -110,14 +145,18 @@ async def read(
             data=data,
             media_type=media_type,
             sandbox=sandbox,
+            artifacts=artifacts,
         )
     if mode == "list":
-        return await list_files(
-            path=path,
-            recursive=recursive,
-            max_entries=max_entries,
-            include_hidden=include_hidden,
-            sandbox=sandbox,
+        return await _structured_operation(
+            "list",
+            {
+                "path": path,
+                "recursive": recursive,
+                "max_entries": max_entries,
+                "include_hidden": include_hidden,
+            },
+            sandbox,
         )
     return ToolResult.failure("invalid_mode", f"Unknown read mode: {mode}")
 
@@ -143,14 +182,15 @@ async def _read_media(
     url: str | None,
     data: str | None,
     media_type: str | None,
-    sandbox: Any,
+    sandbox: SandboxPort | None,
+    artifacts: ArtifactStorePort | None,
 ) -> ToolResult:
     """Open one media item by type and make it visible to the model.
 
     ``read(mode=media)`` is the single model-facing content tool. Exactly one
     of ``path``, ``url``, or ``data`` is required; images (GIF, JPEG, PNG,
     WebP) are supported today. Bytes are stored under
-    ``session/artifacts/media/`` and returned as a model-visible part.
+    the thread media ArtifactStore and returned as a model-visible part.
     """
     sources = [value for value in (path, url, data) if value]
     if len(sources) != 1:
@@ -177,11 +217,21 @@ async def _read_media(
                 f"Content exceeds {MAX_CONTENT_BYTES} bytes",
             )
         selected = _image_type(payload, media_type)
-        image = _store_image(payload, selected, sandbox)
+        if artifacts is None:
+            raise _ImageError(
+                "content_storage_unavailable",
+                "Session artifact storage is not available",
+            )
+        ref = artifacts.put(
+            ArtifactKind.MEDIA,
+            payload,
+            media_type=selected,
+        )
+        image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
     except _ImageError as exc:
         return ToolResult.failure(exc.code, exc.message)
 
-    result_data: dict[str, Any] = {
+    result_data: dict[str, JsonValue] = {
         "media_type": selected,
         "size_bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -189,7 +239,6 @@ async def _read_media(
     result_data.update(metadata)
     return ToolResult.success(
         f"Image content loaded: {selected} ({len(payload)} bytes)",
-        data=result_data,
         images=(image,),
     )
 
@@ -197,8 +246,8 @@ async def _read_media(
 async def _read_image_path(
     path: str,
     media_type: str | None,
-    sandbox: Any,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+    sandbox: SandboxPort | None,
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     data = await _operation("read_bytes", {"path": path}, sandbox)
     if not data.get("ok"):
         error = data.get("error") or {}
@@ -228,8 +277,8 @@ async def _read_image_path(
 async def _read_image_url(
     url: str,
     media_type: str | None,
-    sandbox: Any,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+    sandbox: SandboxPort | None,
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     if sandbox is not None and not sandbox.network:
         raise _ImageError(
             "network_disabled",
@@ -285,7 +334,7 @@ async def _read_image_url(
 def _decode_image_data(
     value: str,
     media_type: str | None,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     raw = value.strip()
     if raw.startswith("data:"):
         header, separator, encoded = raw.partition(",")
@@ -348,159 +397,6 @@ def _infer_image_type(payload: bytes) -> str | None:
     return None
 
 
-def _store_image(
-    payload: bytes,
-    media_type: str,
-    sandbox: Any,
-) -> ImageContent:
-    session_root = (
-        getattr(sandbox, "session_root", None) if sandbox is not None else None
-    )
-    if session_root is None:
-        raise _ImageError(
-            "content_storage_unavailable",
-            "Session media storage is not available",
-        )
-    root = Path(session_root)
-    digest = hashlib.sha256(payload).hexdigest()
-    target = root / "artifacts" / "media" / digest
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        target.write_bytes(payload)
-    return ImageContent(
-        path=target.relative_to(root).as_posix(),
-        media_type=media_type,
-        size=len(payload),
-    )
-
-
-async def read_file(
-    path: str,
-    offset: int = 0,
-    limit: int = 2000,
-    char_offset: int = 0,
-    max_chars: int = 12000,
-    line_numbers: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Read a bounded UTF-8 text range or return non-text metadata.
-
-    Text reads are limited by both line count and character count. If the
-    result is truncated, continue from the returned next offsets before
-    relying on omitted content. Non-UTF-8 files return metadata instead of
-    binary content, including MIME type, size, SHA-256, and recognized image
-    dimensions. Use ``read`` with ``mode="media"`` to send recognized image
-    files to the model. The ``session/`` virtual path is read-only.
-
-    Args:
-        path: Workspace-relative, absolute approved, or ``session/`` file path.
-        offset: Zero-based first line.
-        limit: Maximum lines; must be at least one.
-        char_offset: Character offset within the first selected line.
-        max_chars: Maximum raw characters returned; must be at least one.
-        line_numbers: Prefix displayed text with one-based line numbers.
-    """
-    data = await _operation(
-        "read",
-        {
-            "path": path,
-            "offset": offset,
-            "limit": limit,
-            "char_offset": char_offset,
-            "max_chars": max_chars,
-        },
-        sandbox,
-    )
-    if not data.get("ok"):
-        return _failure(data)
-    content = str(data.pop("content", ""))
-    if data.get("changed_since_last_observation"):
-        content = (
-            "File changed since the previous read. The content and metadata "
-            f"below are current.\n{content}"
-        )
-    data["requested_path"] = path
-    if not data.get("is_text", True):
-        image = data.get("image") or {}
-        dimensions = (
-            f", {image.get('width')}x{image.get('height')} {image.get('format')}"
-            if image else ""
-        )
-        return ToolResult.success(
-            f"Non-text file: {path} ({data.get('media_type')}, "
-            f"{data.get('size_bytes')} bytes{dimensions}, sha256={data.get('sha256')})",
-            data=data,
-        )
-    elif line_numbers:
-        content = _with_line_numbers(content, offset + 1)
-    return ToolResult.success(content, data=data)
-
-
-async def read_bytes_file(path: str, *, sandbox=None) -> ToolResult:
-    """Read raw file bytes as base64 with metadata (no model-visible payload).
-
-    Args:
-        path: Workspace-relative, absolute approved, or ``session/`` file path.
-    """
-    data = await _operation("read_bytes", {"path": path}, sandbox)
-    if not data.get("ok"):
-        return _failure(data)
-    payload = str(data.pop("base64", ""))
-    data["requested_path"] = path
-    return ToolResult.success(
-        f"Binary file: {path} ({data.get('size_bytes')} bytes, "
-        f"sha256={data.get('sha256')}, base64 in data)",
-        data={**data, "base64": payload},
-    )
-
-
-async def stat_path(path: str, *, sandbox=None) -> ToolResult:
-    """Return metadata for a file, directory, or symbolic link.
-
-    Regular files include size, mtime, SHA-256, UTF-8 status, inferred MIME
-    type, extension, and recognized image dimensions. No file content is
-    returned.
-
-    Args:
-        path: Workspace-relative, absolute approved, or ``session/`` path.
-    """
-    return await _structured_operation("stat", {"path": path}, sandbox)
-
-
-async def list_files(
-    path: str = ".",
-    recursive: bool = False,
-    max_entries: int = 500,
-    include_hidden: bool = True,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """List directory entries with bounded metadata.
-
-    Results distinguish files, directories, and symbolic links. Recursive
-    traversal does not follow symlinks and stops once ``max_entries`` is
-    reached instead of scanning the complete tree.
-
-    Args:
-        path: Workspace-relative, absolute approved, or ``session/`` directory.
-        recursive: Include descendants when true.
-        max_entries: Maximum returned entries; must be at least one.
-        include_hidden: Include names beginning with a dot.
-    """
-    data = await _operation(
-        "list",
-        {
-            "path": path,
-            "recursive": recursive,
-            "max_entries": max_entries,
-            "include_hidden": include_hidden,
-        },
-        sandbox,
-    )
-    return _data_result(data, _entry_lines(data, "entries"))
-
-
 # ----------------------------------------------------------------------
 # edit: write / replace / patch
 # ----------------------------------------------------------------------
@@ -515,7 +411,7 @@ async def edit(
     replace_all: bool = False,
     patch: str | None = None,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Edit one UTF-8 file: write whole content, replace text, or apply a diff.
 
@@ -550,110 +446,33 @@ async def edit(
             return ToolResult.failure(
                 "invalid_arguments", "write mode requires content"
             )
-        return await write_file(path, content, sandbox=sandbox)
+        return await _structured_operation(
+            "write", {"path": path, "content": content}, sandbox
+        )
     if mode == "replace":
         if old_text is None or new_text is None:
             return ToolResult.failure(
                 "invalid_arguments", "replace mode requires old_text and new_text"
             )
-        return await edit_file(
-            path,
-            old_text,
-            new_text,
-            replace_all=replace_all,
-            sandbox=sandbox,
+        return await _structured_operation(
+            "edit",
+            {
+                "path": path,
+                "old_text": old_text,
+                "new_text": new_text,
+                "replace_all": replace_all,
+            },
+            sandbox,
         )
     if mode == "patch":
         if patch is None:
             return ToolResult.failure(
                 "invalid_arguments", "patch mode requires a patch"
             )
-        return await patch_file(path, patch, sandbox=sandbox)
+        return await _structured_operation(
+            "patch", {"path": path, "patch": patch}, sandbox
+        )
     return ToolResult.failure("invalid_mode", f"Unknown edit mode: {mode}")
-
-
-async def write_file(
-    path: str,
-    content: str,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Atomically create or completely replace one UTF-8 text file.
-
-    ``content`` is the entire final file, not a fragment or patch. Parent
-    directories are created. Existing non-UTF-8 files are rejected, and a file
-    observed earlier in this runtime is protected against external changes.
-    Use ``edit`` with ``mode="replace"`` for an exact replacement or
-    ``mode="patch"`` for a unified diff.
-
-    Args:
-        path: Destination path relative to the workspace unless explicitly approved.
-        content: Complete UTF-8 file content.
-    """
-    return await _structured_operation(
-        "write",
-        {"path": path, "content": content},
-        sandbox,
-    )
-
-
-async def edit_file(
-    path: str,
-    old_text: str,
-    new_text: str,
-    replace_all: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Atomically replace exact text in an existing UTF-8 file.
-
-    Read the relevant range first and provide enough surrounding text to select
-    one occurrence. The edit fails when ``old_text`` is absent or ambiguous;
-    set ``replace_all`` only when every occurrence should change. A file
-    observed earlier is protected by its last runtime snapshot. External
-    modification invalidates that snapshot and returns ``content_changed``;
-    reading the file again refreshes it.
-
-    Args:
-        path: Existing text file.
-        old_text: Exact non-empty text expected in the file.
-        new_text: Replacement text.
-        replace_all: Replace every occurrence instead of requiring one match.
-    """
-    return await _structured_operation(
-        "edit",
-        {
-            "path": path,
-            "old_text": old_text,
-            "new_text": new_text,
-            "replace_all": replace_all,
-        },
-        sandbox,
-    )
-
-
-async def patch_file(
-    path: str,
-    patch: str,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Apply a validated unified diff to one UTF-8 file.
-
-    The diff must match current content and target only ``path``. The system
-    ``patch`` implementation performs a dry run before applying any hunk. A
-    file observed earlier is protected against external changes by its last
-    runtime snapshot.
-
-    Args:
-        path: File created, updated, or deleted by the patch.
-        patch: Complete unified diff with file headers and at least one hunk.
-    """
-    return await _structured_operation(
-        "patch",
-        {"path": path, "patch": patch},
-        sandbox,
-    )
 
 
 # ----------------------------------------------------------------------
@@ -670,7 +489,7 @@ async def path(
     recursive: bool = False,
     parents: bool = True,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Manage filesystem paths: move, copy, delete, or create a directory.
 
@@ -696,101 +515,34 @@ async def path(
             return ToolResult.failure(
                 "invalid_arguments", "move requires source and destination"
             )
-        return await move_path(source, destination, overwrite=overwrite, sandbox=sandbox)
+        return await _structured_operation(
+            "move",
+            {"source": source, "destination": destination, "overwrite": overwrite},
+            sandbox,
+        )
     if operation == "copy":
         if source is None or destination is None:
             return ToolResult.failure(
                 "invalid_arguments", "copy requires source and destination"
             )
-        return await copy_path(source, destination, overwrite=overwrite, sandbox=sandbox)
+        return await _structured_operation(
+            "copy",
+            {"source": source, "destination": destination, "overwrite": overwrite},
+            sandbox,
+        )
     if operation == "delete":
         if not path:
             return ToolResult.failure("invalid_arguments", "delete requires path")
-        return await delete_path(path, recursive=recursive, sandbox=sandbox)
+        return await _structured_operation(
+            "delete", {"path": path, "recursive": recursive}, sandbox
+        )
     if operation == "mkdir":
         if not path:
             return ToolResult.failure("invalid_arguments", "mkdir requires path")
-        return await make_directory(path, parents=parents, sandbox=sandbox)
+        return await _structured_operation(
+            "mkdir", {"path": path, "parents": parents}, sandbox
+        )
     return ToolResult.failure("invalid_operation", f"Unknown path operation: {operation}")
-
-
-async def move_path(
-    source: str,
-    destination: str,
-    overwrite: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Move or rename one file, directory, or symbolic link.
-
-    Args:
-        source: Existing source path.
-        destination: New path; its parent is created automatically.
-        overwrite: Remove an existing destination before moving.
-    """
-    return await _structured_operation(
-        "move",
-        {"source": source, "destination": destination, "overwrite": overwrite},
-        sandbox,
-    )
-
-
-async def copy_path(
-    source: str,
-    destination: str,
-    overwrite: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Copy one file, directory, or symbolic link without decoding content.
-
-    Args:
-        source: Existing source path.
-        destination: New path; its parent is created automatically.
-        overwrite: Remove an existing destination before copying.
-    """
-    return await _structured_operation(
-        "copy",
-        {"source": source, "destination": destination, "overwrite": overwrite},
-        sandbox,
-    )
-
-
-async def delete_path(
-    path: str,
-    recursive: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Delete one file, symbolic link, or directory.
-
-    Non-empty directories require ``recursive=true``. This operation is
-    destructive and remains subject to explicit tool and sandbox permission.
-
-    Args:
-        path: Existing path to delete.
-        recursive: Recursively delete a non-empty directory.
-    """
-    return await _structured_operation(
-        "delete", {"path": path, "recursive": recursive}, sandbox
-    )
-
-
-async def make_directory(
-    path: str,
-    parents: bool = True,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Create an empty directory.
-
-    Args:
-        path: Directory path.
-        parents: Create missing parent directories.
-    """
-    return await _structured_operation(
-        "mkdir", {"path": path, "parents": parents}, sandbox
-    )
 
 
 # ----------------------------------------------------------------------
@@ -811,7 +563,7 @@ async def search(
     max_line_chars: int = 1000,
     kind: Literal["file", "directory", "any"] = "file",
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Search UTF-8 content or find paths by glob.
 
@@ -838,119 +590,35 @@ async def search(
         kind: Return files, directories, or both (name).
     """
     if mode == "content":
-        return await search_text(
-            pattern,
-            path=path,
-            glob=glob,
-            max_results=max_results,
-            case_sensitive=case_sensitive,
-            literal=literal,
-            include_hidden=include_hidden,
-            exclude=exclude,
-            max_line_chars=max_line_chars,
-            sandbox=sandbox,
+        return await _structured_operation(
+            "search",
+            {
+                "pattern": pattern,
+                "path": path,
+                "glob": glob,
+                "max_results": max_results,
+                "case_sensitive": case_sensitive,
+                "literal": literal,
+                "include_hidden": include_hidden,
+                "exclude": exclude,
+                "max_line_chars": max_line_chars,
+            },
+            sandbox,
         )
     if mode == "name":
-        return await find_files(
-            pattern,
-            path=path,
-            max_results=max_results,
-            kind=kind,
-            include_hidden=include_hidden,
-            exclude=exclude,
-            sandbox=sandbox,
+        return await _structured_operation(
+            "find",
+            {
+                "pattern": pattern,
+                "path": path,
+                "max_results": max_results,
+                "kind": kind,
+                "include_hidden": include_hidden,
+                "exclude": exclude,
+            },
+            sandbox,
         )
     return ToolResult.failure("invalid_mode", f"Unknown search mode: {mode}")
-
-
-async def search_text(
-    pattern: str,
-    path: str = ".",
-    glob: str | None = None,
-    max_results: int = 200,
-    case_sensitive: bool = True,
-    literal: bool = False,
-    include_hidden: bool = False,
-    exclude: list[str] | None = None,
-    max_line_chars: int = 1000,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Search UTF-8 files with bounded structured matches.
-
-    Traversal stops at ``max_results``, skips symlinks and common dependency
-    directories by default, and ignores non-UTF-8 files. Matches contain path,
-    one-based line and column, clipped text, and a clipping flag.
-
-    Args:
-        pattern: Regular expression, or literal text when ``literal`` is true.
-        path: UTF-8 file to search, or root directory to search recursively.
-        glob: Optional glob matched against relative paths or basenames.
-        max_results: Maximum matches; must be at least one.
-        case_sensitive: Use case-sensitive matching.
-        literal: Escape ``pattern`` instead of interpreting it as regex.
-        include_hidden: Search dotfiles and dot-directories.
-        exclude: Directory or file names to skip during directory traversal.
-        max_line_chars: Maximum text retained for each match.
-    """
-    data = await _operation(
-        "search",
-        {
-            "pattern": pattern,
-            "path": path,
-            "glob": glob,
-            "max_results": max_results,
-            "case_sensitive": case_sensitive,
-            "literal": literal,
-            "include_hidden": include_hidden,
-            "exclude": exclude,
-            "max_line_chars": max_line_chars,
-        },
-        sandbox,
-    )
-    lines = [
-        f"{item['path']}:{item['line']}:{item['column']}:{item['text']}"
-        for item in data.get("matches", [])
-    ]
-    return _data_result(data, "\n".join(lines))
-
-
-async def find_files(
-    pattern: str = "*",
-    path: str = ".",
-    max_results: int = 500,
-    kind: Literal["file", "directory", "any"] = "file",
-    include_hidden: bool = False,
-    exclude: list[str] | None = None,
-    *,
-    sandbox=None,
-) -> ToolResult:
-    """Find paths recursively with bounded glob matching.
-
-    Matching is consistent in host and sandbox modes, symlinks are not
-    followed, and traversal stops at ``max_results``.
-
-    Args:
-        pattern: Glob matched against relative paths and, without a slash, basenames.
-        path: Root directory.
-        max_results: Maximum paths; must be at least one.
-        kind: Return files, directories, or both.
-        include_hidden: Include dotfiles and dot-directories.
-        exclude: Names to skip; defaults to common generated directories.
-    """
-    data = await _operation(
-        "find",
-        {
-            "pattern": pattern,
-            "path": path,
-            "max_results": max_results,
-            "kind": kind,
-            "include_hidden": include_hidden,
-            "exclude": exclude,
-        },
-        sandbox,
-    )
-    return _data_result(data, "\n".join(data.get("files", [])))
 
 
 # ----------------------------------------------------------------------
@@ -958,32 +626,45 @@ async def find_files(
 # ----------------------------------------------------------------------
 
 
-def filesystem_tools() -> tuple[Tool, ...]:
-    """The four merged model-facing filesystem tools."""
-    return (
-        Tool.from_function(read, name="read"),
-        Tool.from_function(edit, name="edit"),
-        Tool.from_function(path, name="path"),
-        Tool.from_function(search, name="search"),
+def filesystem_tools(
+    sandbox: SandboxPort | None,
+    artifacts: ArtifactStorePort | None = None,
+) -> tuple[Tool, ...]:
+    """Build the merged filesystem Tools for one session sandbox."""
+    return tuple(
+        replace(
+            Tool.from_function(function, name=name),
+            function=partial(function, sandbox=sandbox, artifacts=artifacts)
+            if function is read
+            else partial(function, sandbox=sandbox),
+        )
+        for name, function in (
+            ("read", read),
+            ("edit", edit),
+            ("path", path),
+            ("search", search),
+        )
     )
-
-
-FILESYSTEM_TOOLS = filesystem_tools()
 
 
 async def _structured_operation(
     operation: str,
-    args: dict[str, Any],
-    sandbox: Any,
+    args: dict[str, JsonValue],
+    sandbox: SandboxPort | None,
 ) -> ToolResult:
-    return _data_result(await _operation(operation, args, sandbox))
+    data = await _operation(operation, args, sandbox)
+    if not data.get("ok"):
+        return _failure(data)
+    return ToolResult.success(
+        json.dumps(data, ensure_ascii=False, sort_keys=True), data=data
+    )
 
 
 async def _operation(
     operation: str,
-    args: dict[str, Any],
-    sandbox: Any,
-) -> dict[str, Any]:
+    args: dict[str, JsonValue],
+    sandbox: SandboxPort | None,
+) -> dict[str, JsonValue]:
     resolved = _resolved_args(operation, args, sandbox)
     path = resolved.get("path")
     versions = (
@@ -1035,9 +716,9 @@ async def _operation(
 
 def _resolved_args(
     operation: str,
-    args: dict[str, Any],
-    sandbox: Any,
-) -> dict[str, Any]:
+    args: dict[str, JsonValue],
+    sandbox: SandboxPort | None,
+) -> dict[str, JsonValue]:
     if sandbox is not None:
         return sandbox.resolve_filesystem_args(operation, args)
     resolved = dict(args)
@@ -1048,7 +729,7 @@ def _resolved_args(
     return resolved
 
 
-def _parse_result(value: str) -> dict[str, Any]:
+def _parse_result(value: str) -> dict[str, JsonValue]:
     try:
         result = json.loads(value)
     except (json.JSONDecodeError, TypeError):
@@ -1065,41 +746,12 @@ def _parse_result(value: str) -> dict[str, Any]:
     }
 
 
-def _data_result(data: dict[str, Any], content: str | None = None) -> ToolResult:
-    if not data.get("ok"):
-        return _failure(data)
-    visible = content if content is not None else _summary(data)
-    return ToolResult.success(visible, data=data)
-
-
-def _failure(data: dict[str, Any]) -> ToolResult:
+def _failure(data: dict[str, JsonValue]) -> ToolResult:
     error = data.get("error") or {}
-    failed = ToolResult.failure(
+    return ToolResult.failure(
         str(error.get("code") or "filesystem_error"),
         str(error.get("message") or "Filesystem operation failed"),
     )
-    return ToolResult(
-        status=failed.status,
-        content=failed.content,
-        data=data,
-        error=failed.error,
-    )
-
-
-def _summary(data: dict[str, Any]) -> str:
-    for action in ("deleted", "moved", "copied", "created", "changed"):
-        if data.get(action):
-            path = data.get("path") or data.get("destination") or ""
-            return f"{action.capitalize()}: {path}"
-    return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-
-def _entry_lines(data: dict[str, Any], key: str) -> str:
-    return "\n".join(
-        f"{entry.get('kind', 'file')}\t{entry.get('relative_path', entry.get('path', ''))}"
-        for entry in data.get(key, [])
-    )
-
 
 def _with_line_numbers(content: str, first_line: int) -> str:
     lines = content.splitlines(keepends=True)
@@ -1113,23 +765,9 @@ def _with_line_numbers(content: str, first_line: int) -> str:
 
 
 __all__ = [
-    "FILESYSTEM_TOOLS",
-    "copy_path",
-    "delete_path",
     "edit",
-    "edit_file",
     "filesystem_tools",
-    "find_files",
-    "list_files",
-    "make_directory",
-    "move_path",
     "path",
-    "patch_file",
     "read",
-    "read_bytes_file",
-    "read_file",
     "search",
-    "search_text",
-    "stat_path",
-    "write_file",
 ]

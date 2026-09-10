@@ -3,6 +3,7 @@
 from XBotv2.tests.helpers import make_engine
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -10,32 +11,46 @@ import xml.etree.ElementTree as ET
 import pytest
 import yaml
 
-from XBotv2.goal.plugin import GoalPlugin
-from XBotv2.core import ContextComponent, EventContext, Events
+from XBotv2.goal.plugin import GoalPlugin, GoalService
+from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
+from XBotv2.agentloop import EventContext, Events
+from XBotv2.context_builder import ContextComponent
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.agentloop.engine import Engine
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 from XBotv2.llm.mock import MockLLM
-from XBotv2.persistence.store import CoreStateStore
+from XBotv2.persistence.store import ThreadPersistence
 from plugin_harness import mount_ctx, mount_plugin
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
-def _mount(plugin, state_store):
-    return mount_plugin(plugin, state_store)
+class RecordingDriver:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, object]]] = []
+
+    async def followup(self, content: str, **kwargs: object) -> None:
+        self.requests.append((content, kwargs))
+
+
+@dataclass
+class GoalHarness:
+    service: GoalService
+    ctx: object
+    driver: RecordingDriver
+    store: object
 
 
 class SetupContext:
     """Post-apply view of a plugin's registrations on a real XCore context."""
 
-    def __init__(self, plugin) -> None:
-        self.ctx = plugin.ctx
+    def __init__(self, ctx) -> None:
+        self.ctx = ctx
         self.tools: dict = {}
         self.options: dict = {}
         self.commands: dict = {}
-        for entry in self.ctx.tools.registry.registered_entries():
+        for entry in self.ctx.tools.registrations():
             self.tools[entry.tool.name] = entry.tool
             self.options[entry.tool.name] = _EntryOptions(
                 namespace=entry.namespace,
@@ -49,15 +64,22 @@ class _EntryOptions:
         self.namespace = namespace
 
 
-def make_plugin(state_store) -> GoalPlugin:
-    from XBotv2.goal.plugin import GoalPlugin
-
-    return _mount(GoalPlugin(), state_store)
+def make_plugin(state_store) -> GoalHarness:
+    ctx = mount_ctx(state_store)
+    driver = RecordingDriver()
+    ctx.set("engine", driver)
+    GoalPlugin().apply(ctx)
+    return GoalHarness(
+        service=ctx.goal,
+        ctx=ctx,
+        driver=driver,
+        store=ctx.state.namespace("goal"),
+    )
 
 
 def setup_plugin(state_store):
     plugin = make_plugin(state_store)
-    return plugin, SetupContext(plugin)
+    return plugin, SetupContext(plugin.ctx)
 
 
 def test_goal_registers_human_command_and_agent_tools(state_store):
@@ -76,59 +98,48 @@ def test_goal_registers_human_command_and_agent_tools(state_store):
 @pytest.mark.asyncio
 async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
     plugin = make_plugin(state_store)
-    queued = []
 
-    async def enqueue(*_args, **_kwargs):
-        queued.append(True)
+    empty = await plugin.service.get_goal()
+    created = await plugin.service.create_goal("stabilize the API", token_budget=8000)
+    duplicate = await plugin.service.create_goal("replace implicitly")
+    updated = await plugin.service.command("document the API")
+    missing_summary = await plugin.service.update_goal("complete", "")
+    completed = await plugin.service.update_goal("complete", "Documented and tested the API.")
+    inspected = await plugin.service.get_goal()
+    resumed = await plugin.service.command("resume")
+    blocked = await plugin.service.update_goal("blocked", "Waiting for human review.")
+    viewed_blocked = await plugin.service.get_goal()
+    cleared = await plugin.service.command("clear")
 
-    ctx = SimpleNamespace(send_input=enqueue)
-
-    empty = await plugin.get_goal()
-    created = await plugin.create_goal("stabilize the API", token_budget=8000)
-    duplicate = await plugin.create_goal("replace implicitly")
-    updated = await plugin._goal_command(ctx, "document the API")
-    missing_summary = await plugin.update_goal("complete", "")
-    completed = await plugin.update_goal("complete", "Documented and tested the API.")
-    inspected = await plugin.get_goal()
-    resumed = await plugin._goal_command(ctx, "resume")
-    blocked = await plugin.update_goal("blocked", "Waiting for human review.")
-    viewed_blocked = await plugin.get_goal()
-    cleared = await plugin._goal_command(ctx, "clear")
-
-    assert empty.data == {"goal": None}
-    assert created.data["goal"]["token_budget"] == 8000
+    assert empty.status == "success"
+    assert created.status == "success"
     assert duplicate.error.code == "goal_exists"
-    assert updated.data["goal"]["objective"] == "document the API"
-    assert updated.data["goal"]["summary"] == ""
+    assert updated.status == "ok"
+    assert updated.message
+    assert "document the API" in updated.message
     assert missing_summary.error.code == "invalid_summary"
-    assert completed.data["goal"] == {
-        "objective": "document the API",
-        "status": "complete",
-        "summary": "Documented and tested the API.",
-        "token_budget": None,
-    }
-    assert inspected.data == completed.data
-    assert resumed.data["goal"]["status"] == "active"
-    assert blocked.data["goal"]["status"] == "blocked"
-    assert viewed_blocked.data == blocked.data
-    assert cleared.data == {"goal": None}
-    assert (await plugin.get_goal()).data == {"goal": None}
+    assert completed.status == "success"
+    assert inspected.status == "success"
+    assert resumed.status == "ok"
+    assert blocked.status == "success"
+    assert viewed_blocked.status == "success"
+    assert cleared.status == "ok"
+    assert (await plugin.service.get_goal()).status == "success"
 
 
 @pytest.mark.asyncio
 async def test_goal_rejects_invalid_transitions_without_mutating_state(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("keep this objective")
+    await plugin.service.create_goal("keep this objective")
     before = await plugin.store.all()
 
-    invalid_status = await plugin.update_goal("paused", "not allowed")
-    blank_create = await plugin.create_goal(" ")
-    missing_summary = await plugin.update_goal("complete", "")
-    long_summary = await plugin.update_goal("complete", "x" * 2_001)
-    bad_budget = await plugin.create_goal("another", token_budget=0)
-    bad_command_budget = await plugin._goal_command(
-        SimpleNamespace(send_input=None),
-        "--token-budget nope another objective",
+    invalid_status = await plugin.service.update_goal("paused", "not allowed")
+    blank_create = await plugin.service.create_goal(" ")
+    missing_summary = await plugin.service.update_goal("complete", "")
+    long_summary = await plugin.service.update_goal("complete", "x" * 2_001)
+    bad_budget = await plugin.service.create_goal("another", token_budget=0)
+    bad_command_budget = await plugin.service.command(
+        "--token-budget nope another objective"
     )
 
     assert invalid_status.error.code == "invalid_status"
@@ -144,103 +155,92 @@ async def test_goal_rejects_invalid_transitions_without_mutating_state(state_sto
 @pytest.mark.asyncio
 async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("iterate until complete")
-    requests = []
-
-    async def send_input(*_args, **_kwargs):
-        requests.append(True)
-
+    await plugin.service.create_goal("iterate until complete")
     turn_end = EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        send_input=send_input,
     )
-    await plugin._on_turn_end(turn_end)
-    await plugin._on_turn_end(turn_end)
+    await plugin.service.on_turn_end(turn_end)
+    await plugin.service.on_turn_end(turn_end)
 
-    assert len(requests) == 1
+    assert len(plugin.driver.requests) == 1
 
     # The continuation turn starting resets the pending flag; the next
     # completed turn schedules another continuation.
-    await plugin._start_goal_turn(EventContext(
+    await plugin.service.start_goal_turn(EventContext(
         session=SimpleNamespace(),
         user_input="[goal continuation]",
         continuation=True,
     ))
-    await plugin._on_turn_end(turn_end)
-    assert len(requests) == 2
+    await plugin.service.on_turn_end(turn_end)
+    assert len(plugin.driver.requests) == 2
 
 
 @pytest.mark.asyncio
 async def test_runtime_notification_does_not_drive_active_goal(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("iterate until complete")
-    requests = []
-
-    async def send_input(*_args, **_kwargs):
-        requests.append(True)
-
-    await plugin._on_turn_end(EventContext(
+    await plugin.service.create_goal("iterate until complete")
+    await plugin.service.on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="completed",
-        send_input=send_input,
     ))
 
-    assert len(requests) == 1
+    assert len(plugin.driver.requests) == 1
 
 
 @pytest.mark.asyncio
 async def test_goal_exposes_compact_status_slot(state_store):
     plugin = make_plugin(state_store)
 
-    assert await plugin.status_slots() == {}
-    await plugin.create_goal("show status")
-    assert await plugin.status_slots() == {"goal": "active"}
-    await plugin.update_goal("complete", "done")
-    assert await plugin.status_slots() == {"goal": "complete"}
+    async def status_slots() -> dict[str, str]:
+        slots = StatusSlots()
+        await plugin.ctx.emit(COLLECT_STATUS_SLOTS, slots)
+        return slots.values
+
+    assert await status_slots() == {}
+    await plugin.service.create_goal("show status")
+    assert await status_slots() == {"goal": "active"}
+    await plugin.service.update_goal("complete", "done")
+    assert await status_slots() == {"goal": "complete"}
 
 
 @pytest.mark.asyncio
 async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("pause on escape")
-    requests = []
-
-    async def send_input(*_args, **_kwargs):
-        requests.append(True)
-
-    await plugin._on_turn_end(EventContext(
+    await plugin.service.create_goal("pause on escape")
+    await plugin.service.on_turn_end(EventContext(
         session=SimpleNamespace(),
         stop_reason="client_interrupt",
-        send_input=send_input,
     ))
 
-    assert requests == []
-    assert (await plugin.get_goal()).data["goal"]["status"] == "paused"
+    assert plugin.driver.requests == []
+    goal = await plugin.service.snapshot()
+    assert goal is not None
+    assert goal.status == "paused"
 
 
 @pytest.mark.asyncio
 async def test_goal_snapshot_is_added_only_to_continuation_turn(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("output two greetings")
+    await plugin.service.create_goal("output two greetings")
     active_ctx = EventContext(
         session=SimpleNamespace(),
         user_input="wake",
         continuation=True,
     )
 
-    await plugin._start_goal_turn(active_ctx)
+    await plugin.service.start_goal_turn(active_ctx)
 
     assert "output two greetings" in active_ctx.user_input
 
-    await plugin.update_goal("complete", "Output both requested greetings.")
+    await plugin.service.update_goal("complete", "Output both requested greetings.")
     ctx = EventContext(
         session=SimpleNamespace(),
         user_input="wake",
         continuation=False,
     )
 
-    await plugin._start_goal_turn(ctx)
+    await plugin.service.start_goal_turn(ctx)
 
     assert ctx.user_input == "wake"
 
@@ -251,7 +251,7 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
     temp_workspace,
 ):
     plugin, setup = setup_plugin(state_store)
-    await plugin.create_goal("finish the audit")
+    await plugin.service.create_goal("finish the audit")
     llm = MockLLM(responses=[
         {"content": "Working on the audit."},
         {"content": "Plain reply."},
@@ -301,18 +301,21 @@ async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
 @pytest.mark.asyncio
 async def test_goal_survives_state_store_recreation(state_store):
     plugin = make_plugin(state_store)
-    await plugin.create_goal("survive restart")
-    await plugin.update_goal("complete", "Restart behavior verified.")
+    await plugin.service.create_goal("survive restart")
+    await plugin.service.update_goal("complete", "Restart behavior verified.")
 
-    restored_store = CoreStateStore(
-        paths=state_store.paths,
+    restored_store = ThreadPersistence.open(
+        state_store.paths,
         thread_id=state_store.thread_id,
         workspace_root=state_store.workspace_root,
         provider=state_store.provider,
     )
     restored = make_plugin(restored_store)
 
-    assert (await restored.get_goal()).data["goal"] == {
+    goal = await restored.service.snapshot()
+    assert goal is not None
+    assert goal.model_dump(mode="json") == {
+        "schema_version": 1,
         "objective": "survive restart",
         "status": "complete",
         "summary": "Restart behavior verified.",
@@ -323,17 +326,23 @@ async def test_goal_survives_state_store_recreation(state_store):
 @pytest.mark.asyncio
 async def test_goal_rejects_invalid_persisted_state(state_store):
     plugin = make_plugin(state_store)
-    invalid = {"objective": "broken", "status": "unknown"}
-    await plugin.store.set("goal", invalid)
+    invalid = {
+        "schema_version": 1,
+        "objective": "broken",
+        "status": "unknown",
+        "summary": "",
+        "token_budget": None,
+    }
+    await plugin.store.set("snapshot", invalid)
 
-    with pytest.raises(ValueError, match="Goal state is invalid"):
-        await plugin.get_goal()
+    with pytest.raises(ValueError, match="Input should be"):
+        await plugin.service.get_goal()
 
-    assert await plugin.store.get("goal") == invalid
+    assert await plugin.store.get("snapshot") == invalid
 
 
 @pytest.mark.asyncio
-async def test_loader_unload_removes_goal_resources_but_retains_state(
+async def test_plugin_dispose_removes_goal_resources_but_retains_state(
     tmp_path,
     state_store,
 ):
@@ -343,24 +352,28 @@ async def test_loader_unload_removes_goal_resources_but_retains_state(
         Path(__file__).parents[2] / "goal",
         target_is_directory=True,
     )
-    from XBotv2.loader import Loader, PluginTree
+    from XBotv2.loader import PluginTree
+    from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
 
     ctx = mount_ctx(state_store)
-    registry = ctx.tools.registry
-    loader = Loader(ctx, tree=PluginTree.from_dict([
+    ctx.set("engine", object())
+    tools = ctx.tools
+    handles = mount_plugin_tree(ctx, PluginTree.parse([
         {"id": "goal", "name": "goal"},
     ]))
 
-    await loader.load()
-    assert isinstance(loader.get("goal"), GoalPlugin)
-    await registry.get("create_goal").tool.ainvoke({"objective": "retain me"})
+    await ctx.start()
+    validate_mounted_tree(handles)
+    tool = tools.resolve("create_goal")
+    assert tool is not None
+    await tool.ainvoke({"objective": "retain me"})
 
-    assert await loader.unload("goal") is True
-    assert registry.registered_names() == []
+    await handles["goal"].dispose()
+    assert tools.registered_names() == ()
     import json as _json
-    state_path = state_store.paths.state_dir / "state.json"
+    state_path = state_store.paths.plugin_state_dir / "state.json"
     data = _json.loads(state_path.read_text(encoding="utf-8"))
-    assert data["goal.goal"]["objective"] == "retain me"
+    assert data["goal.snapshot"]["objective"] == "retain me"
 
 
 @pytest.mark.asyncio
@@ -369,7 +382,7 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
     temp_workspace,
 ):
     plugin, setup = setup_plugin(state_store)
-    await plugin.create_goal("finish this turn")
+    await plugin.service.create_goal("finish this turn")
     registry = ToolRegistry()
     registry.register(
         setup.tools["update_goal"],
@@ -404,7 +417,8 @@ async def test_engine_summarizes_completed_goal_without_persistent_context(
     tool_event = next(event for event in events if event["type"] == "tool_result")
 
     assert not any(_is_goal_runtime_event(message) for message in second_context)
-    assert tool_event["data"]["data"]["goal"]["summary"] == "All work passed."
+    # The tool result no longer carries a ``data`` field; the summary is in content.
+    assert "All work passed." in tool_event["data"]["content"]
     assert llm.call_count == 2
 
     _ = [event async for event in engine.run_turn("start an unrelated request")]

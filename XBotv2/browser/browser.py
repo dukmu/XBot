@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from XBotv2.core import ArtifactRef, ToolResult
+from XBotv2.core import ArtifactKind, ArtifactStorePort, ToolResult
+from XBotv2.sandbox.contracts import SandboxPort
 
 from .network import UrlPolicy, network_available
 
@@ -49,12 +50,12 @@ class BrowserSession:
         self,
         *,
         policy: UrlPolicy,
-        artifacts_dir: Path,
+        artifacts: ArtifactStorePort,
         headless: bool,
         timeout_seconds: float,
     ) -> None:
         self.policy = policy
-        self.artifacts_dir = artifacts_dir
+        self.artifacts = artifacts
         self.headless = headless
         self.timeout_ms = int(timeout_seconds * 1000)
         self._playwright: Any = None
@@ -67,7 +68,12 @@ class BrowserSession:
     def active(self) -> bool:
         return self._page is not None and not self._page.is_closed()
 
-    async def open(self, url: str, *, sandbox: Any = None) -> ToolResult:
+    async def open(
+        self,
+        url: str,
+        *,
+        sandbox: SandboxPort | None = None,
+    ) -> ToolResult:
         try:
             if urlsplit(url.strip()).scheme.lower() != "file":
                 unavailable = network_available(sandbox)
@@ -81,13 +87,13 @@ class BrowserSession:
         except Exception as exc:
             return ToolResult.failure("browser_open_failed", f"Browser open failed: {exc}")
 
-    async def _target_url(self, url: str, sandbox: Any) -> str:
+    async def _target_url(self, url: str, sandbox: SandboxPort | None) -> str:
         stripped = url.strip()
         if urlsplit(stripped).scheme.lower() == "file":
             return self._file_url(stripped, sandbox)
         return await self.policy.check(stripped)
 
-    def _file_url(self, url: str, sandbox: Any) -> str:
+    def _file_url(self, url: str, sandbox: SandboxPort | None) -> str:
         parsed = urlsplit(url)
         if parsed.scheme.lower() != "file":
             raise ValueError("URL scheme must be file")
@@ -157,19 +163,22 @@ class BrowserSession:
     async def screenshot(self) -> ToolResult:
         if not self.active:
             return ToolResult.failure("browser_not_open", "Open a page first")
-        directory = self.artifacts_dir / "browser"
-        directory.mkdir(parents=True, exist_ok=True)
         name = f"screenshot-{time.time_ns()}.png"
-        path = directory / name
         try:
-            await self._page.screenshot(path=str(path), full_page=True)
+            payload = await self._page.screenshot(full_page=True)
         except Exception as exc:
             return ToolResult.failure("browser_screenshot_failed", f"Screenshot failed: {exc}")
-        relative = f"browser/{name}"
+        artifact = self.artifacts.put(
+            ArtifactKind.BROWSER,
+            payload,
+            media_type="image/png",
+            name=name,
+            suffix=".png",
+        )
+        model_path = self.artifacts.model_path(artifact)
         return ToolResult(
-            content=f"Screenshot saved to session/artifacts/{relative}",
-            data={"path": f"session/artifacts/{relative}", "url": self._page.url},
-            artifacts=(ArtifactRef(id=relative, media_type="image/png", name=name),),
+            content=f"Screenshot saved to {model_path}",
+            artifacts=(artifact,),
         )
 
     async def close(self) -> ToolResult:
@@ -194,7 +203,7 @@ class BrowserSession:
                 pass
         self._page = self._context = self._browser = self._playwright = None
 
-    async def _ensure_page(self, sandbox: Any = None) -> Any:
+    async def _ensure_page(self, sandbox: SandboxPort | None = None) -> Any:
         if self.active:
             return self._page
         self._sandbox = sandbox
@@ -216,7 +225,7 @@ class BrowserSession:
         scheme = urlsplit(request.url).scheme
         if scheme == "file":
             try:
-                self._file_url(request.url, getattr(self, "_sandbox", None))
+                self._file_url(request.url, self._sandbox)
             except Exception:
                 await route.abort("blockedbyclient")
                 return

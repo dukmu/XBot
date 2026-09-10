@@ -3,26 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from typing import Any
 
+from pydantic import JsonValue
 
-class InteractionDisconnected(RuntimeError):
-    """Raised when the live client disconnects during an interaction."""
-
-
-class InteractionNotPending(RuntimeError):
-    """Raised when a response targets no live interaction request."""
-
-
-@dataclass
-class InteractionResult:
-    request_id: str
-    status: str
-    answer: Any = None
-    decision: str = ""
-    scope: str = "once"
-    reason: str = ""
+from XBotv2.interactions.contracts import (
+    InteractionNotPending,
+    InteractionResult,
+)
 
 
 class InteractionWaiter:
@@ -80,7 +67,7 @@ class InteractionWaiter:
             future.set_result(result)
         return result
 
-    def answer(self, request_id: str, *, answer: Any = None, decision: str = "", scope: str = "once") -> InteractionResult:
+    def answer(self, request_id: str, *, answer: JsonValue = None, decision: str = "", scope: str = "once") -> InteractionResult:
         return self._resolve(request_id, InteractionResult(
             request_id=request_id, status="answered", answer=answer, decision=decision, scope=scope,
         ))
@@ -99,11 +86,5 @@ class InteractionWaiter:
                 continue
         return results
 
-    def is_pending(self, request_id: str) -> bool:
-        return request_id in self._pending
-
     def pending_request_ids(self) -> list[str]:
         return list(self._pending)
-
-
-UserInputDisconnected = InteractionDisconnected

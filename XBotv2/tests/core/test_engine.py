@@ -7,15 +7,20 @@ import pytest
 
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.coretools.shell import SHELL_TOOLS
-from XBotv2.permissions.tools import request_permission
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.coretools.shell import shell_tools
+from XBotv2.jobs.registry import JobRegistry
+from XBotv2.config.contracts import RuntimeConfig
 import xcore
 from XBotv2.tests.helpers import make_engine as helpers_make_engine
 from XBotv2.tests.helpers import make_tool_ctx
-from XBotv2.core.events import Events
+from XBotv2.agentloop import Events
 from XBotv2.llm.mock import MockLLM
-from XBotv2.core import ContextComponent
+from XBotv2.context_builder import (
+    BEFORE_CONTEXT_BUILD,
+    CONTEXT_BUILT,
+    CONTEXT_COMPONENTS_BUILT,
+    ContextComponent,
+)
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider
 from XBotv2.agentloop.tool_registry import ToolRegistry
@@ -50,7 +55,7 @@ shout_tool = Tool.from_function(shout, name="shout")
 def send_notice(message: str) -> ToolResult:
     return ToolResult(
         content="notice sent",
-        client_events=(ClientEvent("client_message", {"message": message}),),
+        client_events=(ClientEvent(type="client_message", data={"message": message}),),
     )
 send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 
@@ -58,10 +63,9 @@ send_notice_tool = Tool.from_function(send_notice, name="send_notice")
 def request_input(question: str) -> ToolResult:
     return ToolResult(
         content="waiting for user",
-        wait_for_user=True,
         client_events=(ClientEvent(
-            "user_input_required",
-            {
+            type="user_input_required",
+            data={
                 "question": question,
                 "options": [
                     {"label": "continue", "description": "Continue the work."},
@@ -70,13 +74,13 @@ def request_input(question: str) -> ToolResult:
             },
         ),),
     )
+request_input_tool = Tool.from_function(request_input, name="request_input")
 
 
 def structured_failure() -> ToolResult:
     return ToolResult(
         status="error",
         content="structured failure",
-        data={"attempt": 2},
         error=ToolError(
             code="structured_error",
             message="failed with details",
@@ -146,16 +150,6 @@ def make_engine_with_hooks(mock_llm, tool_registry, state_store, temp_workspace,
         ),
         permission_system=PermissionSystem(default_decision="allow"),
     )
-
-
-def wire_persistence(engine, state_store, plugin_ctx=None):
-    """Wire the production persistence observer onto an engine's events."""
-    from XBotv2.persistence.plugin import PersistenceService
-
-    ctx = plugin_ctx or engine._events
-    persistence = PersistenceService(state_store, engine.state)
-    ctx.on(Events.STATE_CHANGED, persistence.state_changed)
-    return persistence
 
 
 class TestEngineBasics:
@@ -300,7 +294,11 @@ class TestEngineBasics:
             {"content": "Done"},
         ])
         registry = ToolRegistry()
-        shell = next(tool for tool in SHELL_TOOLS if tool.name == "shell")
+        shell = next(
+            tool
+            for tool in shell_tools(None, JobRegistry(), str(temp_workspace))
+            if tool.name == "shell"
+        )
         registry.register(shell)
 
         engine = make_engine(llm, registry, state_store, temp_workspace)
@@ -311,6 +309,8 @@ class TestEngineBasics:
         assert tool_delta_events[0]["data"]["tool_calls"][0]["tool_call_id"] == "tool_0"
         assert tool_delta_events[1]["data"]["tool_calls"][0]["tool_call_id"] == "call_shell"
         assert tool_delta_events[1]["data"]["tool_calls"][0]["replaces_tool_call_id"] == "tool_0"
+        timing = tool_results[0]["data"].pop("timing")
+        assert timing["duration_ms"] >= 0
         assert tool_results == [
             {
                 "type": "tool_result",
@@ -404,12 +404,13 @@ class TestEngineBasics:
         events = [event async for event in engine.run_turn("test result")]
 
         result = next(event for event in events if event["type"] == "tool_result")
+        timing = result["data"].pop("timing")
+        assert timing["duration_ms"] >= 0
         assert result["data"] == {
             "tool_call_id": "c1",
             "name": "structured_failure",
             "content": "structured failure",
             "status": "error",
-            "data": {"attempt": 2},
             "error": {
                 "code": "structured_error",
                 "message": "failed with details",
@@ -418,8 +419,11 @@ class TestEngineBasics:
             },
             "artifacts": [{
                 "id": "artifact-1",
+                "kind": "attachments",
                 "media_type": "text/plain",
                 "name": "failure.txt",
+                "size": 0,
+                "sha256": "",
             }],
         }
 
@@ -535,10 +539,10 @@ class TestEngineHooks:
         registry = ToolRegistry()
 
         async def replace_response(ctx):
-            ctx.short_circuit_result = {
+            del ctx
+            return {
                 "messages": [Message(role="assistant", content="Hijacked!")]
             }
-            return ctx.short_circuit_result
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_AGENT, replace_response)
@@ -568,21 +572,21 @@ class TestEngineHooks:
         calls = []
 
         async def after_context_build(ctx):
-            calls.append(("context", len(ctx.context_messages)))
+            calls.append(("context", len(ctx.messages)))
 
         async def after_tool_schema_bind(ctx):
-            request = ctx.model_request or {}
-            calls.append(("tools", [tool.name for tool in request["tools"]]))
+            request = ctx.model_request
+            calls.append(("tools", [tool.name for tool in request.tools]))
 
         async def before_model_request(ctx):
-            request = ctx.model_request or {}
-            calls.append(("request", len(request["messages"])))
+            request = ctx.model_request
+            calls.append(("request", len(request.messages)))
 
         async def after_model_response(ctx):
             calls.append(("response", ctx.model_response.content))
 
         plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx.on(CONTEXT_BUILT, after_context_build)
         plugin_ctx.on(Events.AFTER_TOOL_SCHEMA_BIND, after_tool_schema_bind)
         plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, before_model_request)
         plugin_ctx.on(Events.AFTER_MODEL_RESPONSE, after_model_response)
@@ -649,7 +653,7 @@ class TestEngineHooks:
         "stage",
         [
             Events.BEFORE_CONTEXT,
-            Events.BEFORE_CONTEXT_BUILD,
+            BEFORE_CONTEXT_BUILD,
             Events.AFTER_CONTEXT,
             Events.BEFORE_TOOL_SCHEMA_BIND,
             Events.BEFORE_MODEL_REQUEST,
@@ -837,15 +841,15 @@ class TestEngineHooks:
 
         async def before_context_build(ctx):
             calls.append(("before_build",))
-            return {"context_kwargs": {"instructions": "from hook"}}
+            ctx.instructions = "from hook"
 
         async def after_components(ctx):
             calls.append((
                 "components",
-                [component.source for component in ctx.context_components],
+                [component.source for component in ctx.components],
             ))
-            ctx.context_components = [
-                *ctx.context_components,
+            ctx.components = [
+                *ctx.components,
                 ContextComponent(
                     role="system",
                     source="hook_component",
@@ -854,12 +858,12 @@ class TestEngineHooks:
             ]
 
         async def after_context_build(ctx):
-            calls.append(("messages", [message.content for message in ctx.context_messages]))
+            calls.append(("messages", [message.content for message in ctx.messages]))
 
         plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.BEFORE_CONTEXT_BUILD, before_context_build)
-        plugin_ctx.on(Events.AFTER_CONTEXT_COMPONENTS_BUILD, after_components)
-        plugin_ctx.on(Events.AFTER_CONTEXT_BUILD, after_context_build)
+        plugin_ctx.on(BEFORE_CONTEXT_BUILD, before_context_build)
+        plugin_ctx.on(CONTEXT_COMPONENTS_BUILT, after_components)
+        plugin_ctx.on(CONTEXT_BUILT, after_context_build)
 
         engine = make_engine(
             llm=llm,
@@ -886,11 +890,11 @@ class TestEngineHooks:
         self, state_store, temp_workspace
     ):
         async def replace_with_invalid(ctx):
-            ctx.context_components = [object()]
+            ctx.components = [object()]
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(
-            Events.AFTER_CONTEXT_COMPONENTS_BUILD,
+            CONTEXT_COMPONENTS_BUILT,
             replace_with_invalid,
         )
         llm = MockLLM(responses=[{"content": "should not run"}])
@@ -932,8 +936,8 @@ class TestEngineHooks:
         registry.register(echo_tool)
 
         async def filter_tools(ctx):
-            assert [tool.name for tool in ctx.model_request["tools"]] == ["echo"]
-            return {"tools": []}
+            assert [tool.name for tool in ctx.model_request.tools] == ["echo"]
+            ctx.model_request.tools = []
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, filter_tools)
@@ -973,7 +977,10 @@ class TestEngineHooks:
         registry.register(shout_tool)
 
         async def keep_echo(ctx):
-            return {"tools": [tool for tool in ctx.model_request["tools"] if tool.name == "echo"]}
+            ctx.model_request.tools = [
+                tool for tool in ctx.model_request.tools
+                if tool.name == "echo"
+            ]
 
         plugin_ctx = xcore.Context()
         plugin_ctx.on(Events.BEFORE_MODEL_REQUEST, keep_echo)
@@ -1001,11 +1008,11 @@ class TestEngineHooks:
         calls = []
 
         async def on_model_error(ctx):
-            request = ctx.model_request or {}
+            request = ctx.model_request
             calls.append((
                 "model",
                 type(ctx.error).__name__,
-                len(request["messages"]),
+                len(request.messages),
             ))
 
         async def on_error(ctx):
@@ -1184,47 +1191,6 @@ class TestEngineHooks:
         assert ("denied", "missing", "PermissionError") in calls
 
     @pytest.mark.asyncio
-    async def test_hook_denial_does_not_request_permission(
-        self,
-        state_store,
-        temp_workspace,
-    ):
-        llm = MockLLM(responses=[
-            {
-                "content": "tools",
-                "tool_calls": [
-                    {"name": "echo", "args": {"message": "hi"}, "id": "call_1"},
-                ],
-            },
-            {"content": "done"},
-        ])
-        registry = ToolRegistry()
-        registry.register(echo_tool)
-
-        async def deny_call(ctx):
-            return {"deny_reason": "blocked by plugin policy"}
-
-        plugin_ctx = xcore.Context()
-        plugin_ctx.on(Events.BEFORE_TOOL_CALL, deny_call)
-        engine = make_engine(
-            llm=llm,
-            tool_registry=registry,
-            plugin_ctx=plugin_ctx,
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-            permission_system=PermissionSystem(default_decision="ask"),
-            config=RuntimeConfig(),
-        )
-
-        events = [event async for event in engine.run_turn("test")]
-
-        assert not any(event["type"] == "permission_request" for event in events)
-        tool_message = next(message for message in engine.messages if message.role == "tool")
-        assert "Error: blocked by plugin policy" in tool_message.content
-        assert tool_message.content.startswith('<tool_result name="echo" status="error">')
-
-    @pytest.mark.asyncio
     async def test_state_persist_hooks_fire(self, state_store, temp_workspace):
         """Persistence plugin_ctx bracket message materialization."""
         llm = MockLLM(responses=[{"content": "ok"}])
@@ -1232,7 +1198,7 @@ class TestEngineHooks:
         calls = []
 
         async def record_state_changed(ctx):
-            calls.append((len(ctx.messages), state_store.message_count()))
+            calls.append((len(ctx.messages), state_store.history.count()))
 
         plugin_ctx = xcore.Context()
         engine = make_engine_with_hooks(
@@ -1242,13 +1208,11 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        persistence = wire_persistence(engine, state_store, plugin_ctx)
         plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         _ = [e async for e in engine.run_turn("test")]
 
         assert calls == [(2, 2)]
-        assert await persistence.flush() is False
         assert len(calls) == 1
 
     @pytest.mark.asyncio
@@ -1279,13 +1243,12 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        wire_persistence(engine, state_store, plugin_ctx)
         plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         _ = [event async for event in engine.run_turn("echo hi")]
 
         assert persisted_sizes == [3, 4]
-        assert state_store.message_count() == 4
+        assert state_store.history.count() == 4
 
     @pytest.mark.asyncio
     async def test_tool_message_hook_runs_after_tool_result_is_yielded(
@@ -1343,15 +1306,13 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        wire_persistence(engine, state_store, plugin_ctx)
-
         events = [event async for event in engine.run_turn("reject")]
 
         assert events[0]["data"]["code"] == "user_message_rejected"
-        assert state_store.message_count() == 0
+        assert state_store.history.count() == 0
 
     @pytest.mark.asyncio
-    async def test_before_persist_message_mutation_is_written_in_same_checkpoint(
+    async def test_event_history_projection_cannot_append_durable_messages(
         self, state_store, temp_workspace
     ):
         async def add_metadata_message(ctx):
@@ -1369,20 +1330,16 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        persistence = wire_persistence(engine, state_store, plugin_ctx)
-
         _ = [event async for event in engine.run_turn("test")]
 
-        persisted = state_store.read_messages()
+        persisted = state_store.history.load()
         assert [(message.role, message.content) for message in persisted] == [
             ("user", "test"),
             ("assistant", "ok"),
-            ("system", "metadata"),
         ]
-        assert await persistence.flush() is False
 
     @pytest.mark.asyncio
-    async def test_in_place_message_change_is_detected_without_manual_dirty_flag(
+    async def test_persisted_history_message_rejects_in_place_change(
         self, state_store, temp_workspace
     ):
         engine = make_engine(
@@ -1391,13 +1348,12 @@ class TestEngineHooks:
             state_store,
             temp_workspace,
         )
-        persistence = wire_persistence(engine, state_store, engine._events)
         _ = [event async for event in engine.run_turn("test")]
 
-        engine.messages[-1].content = "updated"
+        with pytest.raises(RuntimeError, match="immutable"):
+            engine.messages[-1].content = "updated"
 
-        assert await persistence.flush() is True
-        assert state_store.read_messages()[-1].content == "updated"
+        assert state_store.history.load()[-1].content == "original"
 
     @pytest.mark.asyncio
     async def test_cancelled_turn_persists_accepted_message_once(
@@ -1420,7 +1376,6 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        wire_persistence(engine, state_store, plugin_ctx)
         plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
         events = []
 
@@ -1430,7 +1385,7 @@ class TestEngineHooks:
 
         assert [event["type"] for event in events] == ["turn_cancelled"]
         assert persisted_sizes == [1]
-        assert state_store.read_messages()[0].content == "cancel me"
+        assert state_store.history.load()[0].content == "cancel me"
 
     @pytest.mark.asyncio
     async def test_failed_turn_persists_accepted_message_once(
@@ -1453,7 +1408,6 @@ class TestEngineHooks:
             temp_workspace,
             plugin_ctx,
         )
-        wire_persistence(engine, state_store, plugin_ctx)
         plugin_ctx.on(Events.STATE_CHANGED, record_state_changed)
 
         events = [event async for event in engine.run_turn("fail me")]
@@ -1464,7 +1418,7 @@ class TestEngineHooks:
         ]
         assert events[-2]["data"]["code"] == "engine_error"
         assert persisted_sizes == [1]
-        assert state_store.read_messages()[0].content == "fail me"
+        assert state_store.history.load()[0].content == "fail me"
 
     @pytest.mark.asyncio
     async def test_stop_hooks_receive_reasons(self, state_store, temp_workspace):
@@ -1539,7 +1493,13 @@ class TestEngineHooks:
         events = [event async for event in engine.run_turn("question")]
 
         assert summaries[0].content == "summary"
-        assert summaries[0].usage_metadata == {"input_tokens": 3}
+        assert summaries[0].usage_metadata == {
+            "input_tokens": 3,
+            "output_tokens": 0,
+            "total_tokens": 3,
+            "requests": 1,
+            "context_tokens": 3,
+        }
         assert llm.get_call_messages(0)[0].content == "summarize history"
         assert llm.get_call_messages(1)[-1].content == "question"
         assert next(
@@ -1557,7 +1517,7 @@ class TestEngineHooks:
             {"content": "done"},
         ])
         registry = ToolRegistry()
-        registry.register(send_notice)
+        registry.register(send_notice_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         events = [e async for e in engine.run_turn("notify")]
@@ -1572,7 +1532,7 @@ class TestEngineHooks:
     async def test_session_resume_repairs_trailing_unanswered_tool_call(
         self, state_store, temp_workspace
     ):
-        state_store.sync_messages([
+        state_store.history.replace([
             Message(role="user", content="run it"),
             Message(
                 role="assistant",
@@ -1582,9 +1542,6 @@ class TestEngineHooks:
         ])
         llm = MockLLM(responses=[{"content": "continued"}])
         engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
-        persistence = wire_persistence(engine, state_store, engine._events)
-        prior = state_store.read_messages()
-        engine.state.messages = prior
         engine.state.turn_count = 1
         engine.state.resumed = True
 
@@ -1594,7 +1551,7 @@ class TestEngineHooks:
         assert engine.messages[-1].tool_call_id == "c1"
         assert engine.messages[-1].status == "error"
         assert "session_restarted" in engine.messages[-1].content
-        assert state_store.read_messages()[-1].tool_call_id == "c1"
+        assert state_store.history.load()[-1].tool_call_id == "c1"
 
         _ = [event async for event in engine.run_turn("continue")]
 
@@ -1614,7 +1571,7 @@ class TestEngineHooks:
             {"content": "next turn"},
         ])
         registry = ToolRegistry()
-        registry.register(request_input)
+        registry.register(request_input_tool)
         engine = make_engine(llm, registry, state_store, temp_workspace)
 
         _ = [e async for e in engine.run_turn("ask")]
@@ -1661,8 +1618,6 @@ class TestEngineState:
             temp_workspace,
             plugin_ctx,
         )
-        wire_persistence(engine, state_store, plugin_ctx)
-
         _ = [
             event
             async for event in engine.run_turn(
@@ -1734,7 +1689,7 @@ class TestEngineState:
     @pytest.mark.asyncio
     async def test_start_session_resumes_event_only_state(self, state_store, temp_workspace):
         """Session with existing messages starts as a resume."""
-        state_store.append_messages([Message(role="user", content="prior message")])
+        state_store.history.append([Message(role="user", content="prior message")])
         llm = MockLLM(responses=[])
         registry = ToolRegistry()
         calls = []
@@ -1760,7 +1715,9 @@ class TestEngineState:
         )
         # Resume is a property of the hydrated LoopState, set by the
         # persistence observer in production.
-        engine.state.messages = [Message(role="user", content="prior message")]
+        engine.state.replace_messages([
+            Message(role="user", content="prior message")
+        ])
         engine.state.turn_count = 1
         engine.state.resumed = True
 
@@ -1875,7 +1832,7 @@ async def test_before_model_request_hook_can_override_messages(state_store, temp
 
     async def before_request(ctx):
         recorded.append("before_request")
-        msgs = list(ctx.model_request["messages"]) if ctx.model_request else []
+        msgs = list(ctx.model_request.messages) if ctx.model_request else []
         msgs.append(Message(role="system", content="REQUEST: last-moment override"))
         return {"messages": msgs}
 

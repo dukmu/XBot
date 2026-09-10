@@ -31,9 +31,8 @@
 5. **可恢复状态**：`StateService`（`ctx.state`，JSON 原子写、共享缓存 + 锁、
    命名空间，崩溃/重启/stop→start 恢复）—— 注意：这是 **XCore 相对 Cordis 的一等
    公民扩展**（Cordis/Koishi 无持久 KV 状态服务，见 §14.7）。
-6. **Schema 配置**：`S` DSL（any/string/number/boolean/array/object/union/enum/
-   const + default/optional/strict/description），校验 + 默认值合并，
-   `SchemaValidationError` 带路径。
+6. **插件配置**：配置模型由插件拥有（Pydantic `BaseModel`）；Fiber 只调用标准
+   `Config.model_validate`，XCore 不拥有第二套 schema DSL。
 7. **中间件**：`ctx.middleware(session, next)` 拦截链（基于 waterfall 语义）。
 
 **非目标**：Minato 数据库、loader/配置树、HMR、tracing（`ctx.caller`）、accessor/
@@ -53,7 +52,6 @@ XCore/
     service.py      # Service 基类 + ServiceStore（(label, name) 键控、通知）
     plugin.py       # 插件归一化、Registry、Fiber 状态机、effect、PluginHandle
     state.py        # StateService：JSON 原子写持久 KV + 命名空间
-    schema.py       # S DSL
     context.py      # Context：组合上述一切 + 生命周期 + 中间件
   tests/            # test_events/services/plugins/lifecycle/state/schema/middleware/public_api
   docs/             # 本文档体系
@@ -61,7 +59,7 @@ XCore/
 
 **依赖方向（无环）**：`context.py → events/service/plugin/state/schema`；
 `plugin.py → service/schema/errors`；`service.py → errors`；`events.py → errors`；
-`state.py`、`schema.py` 独立。任何模块不得 import `context.py`（类型标注用
+`state.py` 独立。任何模块不得 import `context.py`（类型标注用
 `TYPE_CHECKING`）。`Fiber` 通过 duck-typing 访问 `ctx._services`（ServiceStore）与
 `ctx.fiber`，不 import Context。
 
@@ -299,7 +297,8 @@ class Service:
 - `key` = Registry 身份：函数→函数对象；类→类；对象→对象实例（**不是**绑定方法，
   绑定方法每次访问新建对象，不可作键）。
 - `callback`：函数本身 / 类 / 绑定的 `apply`。
-- `config_schema`：S schema 或 dict（宽松：浅合并默认值）或 None。
+- `config_schema`：插件声明的 Pydantic 配置模型或 None。Fiber 调用模型的
+  `model_validate`；模型不存在时不校验。
 - `inject`：拷贝后的依赖表。`provide`：预留（本版仅记录）。
 
 ### 6.2 Registry 与 Fiber 状态机
@@ -379,23 +378,23 @@ class StateService:
 - 命名空间：`namespace("goal")` → 键 `"goal.<key>"`，per-plugin 隔离（对应 XBotv2
   `PluginStore` 迁移映射）。
 
-## 9. Schema（schema.py）
+## 9. 插件配置
+
+XCore 不再提供 `schema.py`、`S` DSL 或配置异常。插件在自己的 `contracts.py`
+中声明 Pydantic `Config` 模型：
 
 ```python
-S.any() | S.string() | S.number() | S.boolean() | S.array(item)
-S.object({...}) | S.union([...]) | S.enum([...]) | S.const(v)
-# 修饰：.default(v)  .optional()  .strict()  .description(text)
-schema.validate(config) -> validated（带默认值副本）
+from pydantic import BaseModel
+
+class Config(BaseModel):
+    enabled: bool = True
+
+plugin.Config = Config
 ```
 
-- 语义（对齐 schemastery 核心）：`object` **默认保留未知键**；`.strict()` 丢弃未知
-  键；缺键：有 `.default` → 深拷贝默认值；`.optional()` → 省略；否则抛
-  `SchemaValidationError(path, message)`。`array/object/union` 递归，错误带
-  `$.a.b[0]` 路径。`union` 按序尝试。`number` 拒绝 bool。
-- 插件 `Config`：S schema → 自动校验+默认值；普通 dict → 浅合并默认值（宽松）；
-  None → 不校验。
-- 与 pydantic 的关系：不用 pydantic（stdlib-only）；S DSL 是 schemastery 风格的自
-  定义实现。
+Fiber 在加载前调用 `Config.model_validate(raw_config or {})`。字段类型、默认值、
+未知字段策略和错误路径全部由该模型定义；没有 `Config` 时原值直接传递。XCore
+本身仍保持无第三方运行时依赖。
 
 ## 10. 中间件（context.py）
 
@@ -413,17 +412,15 @@ XCoreError(Exception)                      # 基类
 InactiveEffectError(XCoreError)            # 已销毁 fiber 上创建效果
 ServiceNotFoundError(XCoreError)           # require 未找到
 ServiceConflictError(XCoreError)           # 重复提供
-SchemaValidationError(XCoreError)          # 唯一校验错误类型（schema.py 定义，errors 导出）
 
 # xcore/__init__.py
 from xcore.context import Context
 from xcore.service import Service
 from xcore.plugin import Registry, PluginHandle, PluginDef, FiberState
 from xcore.state import StateService
-from xcore.schema import S
 from xcore.events import EventBus, Disposer
 from xcore.errors import (XCoreError, InactiveEffectError, ServiceNotFoundError,
-                          ServiceConflictError, SchemaValidationError)
+                          ServiceConflictError)
 __version__ = "0.1.0"
 ```
 
@@ -474,4 +471,3 @@ __version__ = "0.1.0"
 12. `ctx.off`、`ctx.before`、`ctx.chain` 为补充便捷 API（v3 core 部分未实现）。
 13. `ctx.set` 重复提供抛错（v3 语义）；释放用 `set(name, None)` 或 `unset`。
 14. `ctx.foo` 缺失抛 AttributeError（v4 语义；v3 警告返回 undefined）——fail loud。
-15. `S.object` 默认保留未知键、`.strict()` 丢弃（schemastery 语义）。

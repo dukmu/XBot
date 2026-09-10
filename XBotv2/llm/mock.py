@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk, ModelResponse
 from XBotv2.core.providers import BaseProvider, InputModality
 from XBotv2.core.tools import ToolCall, ToolCallDelta
+from XBotv2.core.usage import normalize_usage
+from pydantic import JsonValue
+
+
+@dataclass
+class _MockState:
+    call_count: int = 0
+    call_history: list[list[Message]] = field(default_factory=list)
 
 
 class MockLLM(BaseProvider):
@@ -17,26 +27,33 @@ class MockLLM(BaseProvider):
 
     def __init__(
         self,
-        responses: list[dict[str, Any]] | None = None,
+        responses: list[dict[str, JsonValue]] | None = None,
         *,
         input_modalities: list[InputModality] | None = None,
-        media_root: Path | str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         super().__init__(
             model="mock",
             temperature=0,
             max_output_tokens=None,
             input_modalities=input_modalities,
-            media_root=media_root,
+            artifacts=artifacts,
         )
         self.responses = responses or []
-        self.call_count = 0
-        self.call_history: list[list[Message]] = []
+        self._state = _MockState()
+
+    @property
+    def call_count(self) -> int:
+        return self._state.call_count
+
+    @property
+    def call_history(self) -> list[list[Message]]:
+        return self._state.call_history
 
     def bind_tools(
         self,
-        tools: list[dict[str, Any]],
-        **_kwargs: Any,
+        tools: list[dict[str, JsonValue]],
+        **_kwargs: object,
     ) -> MockLLM:
         self.bound_tools = list(tools)
         return self
@@ -44,14 +61,18 @@ class MockLLM(BaseProvider):
     async def _astream_once(
         self,
         messages: list[Message],
-        **_kwargs: Any,
+        **_kwargs: object,
     ) -> AsyncIterator[ModelChunk]:
         response = self.next_response()
         result = self.to_response(response)
         self.call_history.append(list(messages))
         chunks = response.get("chunks")
         if isinstance(chunks, list) and chunks:
+            delay_ms = response.get("chunk_delay_ms", 0)
+            delay = float(delay_ms) / 1000 if isinstance(delay_ms, (int, float)) and delay_ms > 0 else 0
             for chunk in chunks:
+                if delay:
+                    await asyncio.sleep(delay)
                 yield self.to_chunk(chunk)
             yield result
             return
@@ -67,23 +88,23 @@ class MockLLM(BaseProvider):
     def get_call_messages(self, index: int) -> list[Message]:
         return self.call_history[index]
 
-    def next_response(self) -> dict[str, Any]:
-        if self.call_count >= len(self.responses):
+    def next_response(self) -> dict[str, JsonValue]:
+        if self._state.call_count >= len(self.responses):
             raise RuntimeError(
                 f"MockLLM exhausted after {len(self.responses)} responses "
-                f"(requested response #{self.call_count + 1})"
+                f"(requested response #{self._state.call_count + 1})"
             )
-        response = self.responses[self.call_count]
-        self.call_count += 1
+        response = self.responses[self._state.call_count]
+        self._state.call_count += 1
         return response
 
-    def to_response(self, response: dict[str, Any]) -> ModelResponse:
+    def to_response(self, response: dict[str, JsonValue]) -> ModelResponse:
         return ModelResponse(
             content=str(response.get("content", "")),
             reasoning=str(response.get("reasoning") or ""),
             tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
             response_metadata=dict(response.get("response_metadata") or {}),
-            usage_metadata=dict(response.get("usage_metadata") or {}),
+            usage_metadata=normalize_usage(response.get("usage_metadata") or {}),
             additional_kwargs=dict(response.get("additional_kwargs") or {}),
         )
 
@@ -106,28 +127,30 @@ class MockLLM(BaseProvider):
                 for chunk in raw.get("tool_call_chunks") or []
             ],
             response_metadata=dict(raw.get("response_metadata") or {}),
-            usage_metadata=dict(raw.get("usage_metadata") or {}),
+            usage_metadata=normalize_usage(raw.get("usage_metadata") or {}),
             additional_kwargs=dict(raw.get("additional_kwargs") or {}),
         )
 
 
-def normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
+def normalize_tool_calls(tool_calls: list[dict[str, JsonValue]]) -> list[ToolCall]:
     normalized: list[ToolCall] = []
     for tool_call in tool_calls:
-        normalized.append(ToolCall.from_dict(
-            tool_call,
-            default_id=f"call_{len(normalized)}",
-        ))
+        normalized.append(ToolCall.model_validate({
+            "id": tool_call.get("id") or f"call_{len(normalized)}",
+            "name": tool_call.get("name") or "",
+            "args": tool_call.get("args") or {},
+            "type": tool_call.get("type") or "tool_call",
+        }))
     return normalized
 
 
-def create_mock_provider(provider_config, model_config, *, media_root=None):
+def create_mock_provider(provider_config, model_config, *, artifacts=None):
     """Factory for the deterministic mock route."""
     return MockLLM(
         responses=model_config.mock_responses,
         input_modalities=model_config.input_modalities,
-        media_root=media_root,
+        artifacts=artifacts,
     )
 
 
-__all__ = [*globals().get("__all__", []), "create_mock_provider"]
+__all__ = ["MockLLM", "create_mock_provider"]

@@ -10,8 +10,11 @@ import pytest
 
 from XBotv2.coretools.shell import run_shell_command
 from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.sandbox.contracts import SandboxConfig, SandboxResourceConfig
 from XBotv2.sandbox.bwrap import _build_args
 from XBotv2.core.variables import RuntimeVariables
+
+from dataclasses import asdict
 
 class TestSandboxPolicyBasics:
     def test_default_enabled(self, temp_workspace):
@@ -40,21 +43,23 @@ class TestResourcePathResolution:
             "data_dir": tmp_path / "data",
             "plugin_states": plugin_states,
         })
+        config = SandboxConfig(
+            resources=[
+                SandboxResourceConfig(path="${plugin_states}", access="readonly"),
+            ],
+        )
         policy = SandboxPolicy(
-            config={
-                "resources": [
-                    {"path": "${plugin_states}", "access": "readonly"},
-                ],
-            },
+            config=config,
             workspace_root=tmp_path / "workspace",
             data_root=tmp_path / "data",
             variables=variables,
         )
 
-        assert policy.to_dict()["resources"] == [{
+        assert len(policy._rules) == 1
+        assert asdict(policy._rules[0]) == {
             "path": str(plugin_states.resolve()),
             "access": "readonly",
-        }]
+        }
 
     def test_session_read_path_is_limited_to_current_session(self, tmp_path):
         workspace = tmp_path / "workspace"
@@ -67,7 +72,7 @@ class TestResourcePathResolution:
         )
 
         assert policy.resolve_read_path("session/artifacts/tool_results/cached.txt") == (
-            session_root / "artifacts" / "tool_results" / "cached.txt"
+            workspace / "session" / "artifacts" / "tool_results" / "cached.txt"
         ).resolve()
         assert policy.resolve_read_path("session/../outside.txt") == (
             workspace / "session" / "../outside.txt"
@@ -79,17 +84,17 @@ class TestResourcePathResolution:
         workspace.mkdir()
         session_root.mkdir(parents=True)
         policy = SandboxPolicy(
-            config={
-                "resources": [
-                    {"path": str(session_root), "access": "readwrite"},
+            config=SandboxConfig(
+                resources=[
+                    SandboxResourceConfig(path=str(session_root), access="readwrite"),
                 ],
-            },
+            ),
             workspace_root=workspace,
             session_root=session_root,
         )
 
         assert policy.check_filesystem_access(
-            "write", {"path": "session/state.txt"}
+            "write", {"path": str(session_root / "state.txt")}
         )[0]["decision"] == "deny"
 
     def test_session_symlink_cannot_redirect_a_write(self, tmp_path):
@@ -101,13 +106,17 @@ class TestResourcePathResolution:
         external.write_text("external", encoding="utf-8")
         (session_root / "link.txt").symlink_to(external)
         policy = SandboxPolicy(
-            config={"external_write": "allow"},
+            config=SandboxConfig(
+                resources=[
+                    SandboxResourceConfig(path="session", access="readwrite"),
+                ]
+            ),
             workspace_root=workspace,
             session_root=session_root,
         )
 
         assert policy.check_filesystem_access(
-            "write", {"path": "session/link.txt"}
+            "write", {"path": str(session_root / "link.txt")}
         )[0]["decision"] == "deny"
 
 
@@ -126,8 +135,8 @@ class TestBubblewrapBuildArgs:
         args = _build_args([], network=True, cwd=str(temp_workspace))
         root_bind = args.index("--ro-bind")
         assert args[root_bind : root_bind + 3] == ["--ro-bind", "/", "/"]
-        tmp_bind = args.index("--bind")
-        assert args[tmp_bind : tmp_bind + 3] == ["--bind", "/tmp", "/tmp"]
+        tmp_bind = args.index("--tmpfs")
+        assert args[tmp_bind : tmp_bind + 2] == ["--tmpfs", "/tmp"]
 
 
 class TestBubblewrapCapabilities:
@@ -153,7 +162,7 @@ class TestBubblewrapCapabilities:
 
         cached = json.loads(await policy.filesystem(
             "read",
-            {"path": "session/artifacts/tool_results/cached.txt"},
+            {"path": str(cached_path)},
         ))
         searched = json.loads(await policy.filesystem(
             "search",
@@ -191,36 +200,6 @@ class TestBubblewrapCapabilities:
 
 
 class TestSandboxPolicySerialisation:
-    def test_to_dict_round_trip(self, temp_workspace):
-        """Serialized policy reconstructs the same live configuration."""
-        policy = SandboxPolicy(
-            config={
-                "enabled": True,
-                "network": False,
-                "external_read": "ask",
-                "external_write": "deny",
-                "workspace_read": "allow",
-                "workspace_write": "allow",
-                "resources": [
-                    {"path": "/dev/null", "access": "readonly"},
-                ],
-            },
-            workspace_root=str(temp_workspace),
-        )
-        d = policy.to_dict()
-        assert SandboxPolicy(
-            config=d, workspace_root=str(temp_workspace)
-        ).to_dict() == d
-
-    def test_update_from_config_preserves_untouched_keys(self, temp_workspace):
-        policy = SandboxPolicy(
-            config={"enabled": True, "network": True},
-            workspace_root=str(temp_workspace),
-        )
-        policy.update_from_config({"network": False})
-        assert policy.enabled is True
-        assert policy.network is False
-
     def test_external_read_default_values(self, temp_workspace):
         policy = SandboxPolicy(workspace_root=str(temp_workspace))
         assert policy.external_read == "readonly"

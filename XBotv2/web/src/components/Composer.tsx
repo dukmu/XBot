@@ -1,6 +1,11 @@
 import { FileText, Paperclip, Square, Send, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { ImageInput } from "../api/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CommandInfo, ImageInput, UsageData } from "../api/types";
+import { ContextMeter } from "./ContextMeter";
+import { CommandTriggerMenu } from "./CommandTriggerMenu";
+import { DropOverlay } from "./DropOverlay";
+import { ImageLightbox } from "./ImageLightbox";
+import { commandSuggestions } from "../commands";
 
 export interface PendingAttachment extends ImageInput {
   name: string;
@@ -9,43 +14,103 @@ export interface PendingAttachment extends ImageInput {
 
 interface ComposerProps {
   running: boolean;
-  queued: number;
-  onSend: (content: string, attachments: PendingAttachment[]) => Promise<void>;
+  disabled: boolean;
+  commands: CommandInfo[];
+  draft: { id: number; value: string } | null;
+  allowImages: boolean;
+  usage: UsageData;
+  contextWindow: number;
+  onSend: (content: string, attachments: PendingAttachment[]) => Promise<boolean>;
+  inputHistory: string[];
+  onSubmitted: (content: string) => void;
   onInterrupt: () => Promise<void>;
 }
 
-export function Composer({ running, queued, onSend, onInterrupt }: ComposerProps) {
+export function Composer({ running, disabled, commands, draft, allowImages, usage, contextWindow, onSend, inputHistory, onSubmitted, onInterrupt }: ComposerProps) {
   const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [commandMenuOpen, setCommandMenuOpen] = useState(true);
+  const [caret, setCaret] = useState(0);
+  const [dragActive, setDragActive] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<PendingAttachment | null>(null);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const historyDraft = useRef("");
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const closeAttachmentPreview = useCallback(() => setAttachmentPreview(null), []);
+  const commandState = commandMenuOpen ? commandSuggestions(commands, content, caret) : null;
+  const suggestions = commandState?.commands.slice(0, 9) ?? [];
 
   useEffect(() => {
     const element = textarea.current;
     if (!element) return;
+    const styles = window.getComputedStyle(element);
+    const minHeight = Number.parseFloat(styles.minHeight) || 46;
+    const maxHeight = Number.parseFloat(styles.maxHeight) || 336;
     element.style.height = "0px";
-    element.style.height = `${Math.min(180, Math.max(46, element.scrollHeight))}px`;
+    element.style.height = `${Math.min(maxHeight, Math.max(minHeight, element.scrollHeight))}px`;
   }, [content]);
 
-  const submit = () => {
+  useEffect(() => setCommandIndex(0), [content]);
+
+  useEffect(() => {
+    if (!draft) return;
+    setContent(draft.value);
+    setHistoryIndex(null);
+    setCaret(draft.value.length);
+    setCommandMenuOpen(false);
+    requestAnimationFrame(() => textarea.current?.focus());
+  }, [draft]);
+
+  const submit = async () => {
     const value = content.trim();
     if (!value && attachments.length === 0) return;
     setContent("");
+    setCommandMenuOpen(false);
     const submitted = attachments;
     setAttachments([]);
     setAttachmentError("");
-    void onSend(value, submitted);
+    if (!await onSend(value, submitted)) {
+      setContent((current) => current || value);
+      setAttachments((current) => [...submitted, ...current]);
+    } else if (value) {
+      onSubmitted(value);
+    }
   };
 
-  const addFiles = async (files: FileList | File[]) => {
+  const completeCommand = (command: CommandInfo) => {
+    if (!commandState) return;
+    const insert = `${command.slash}${command.usage === command.slash ? "" : " "}`;
+    const next = content.slice(0, commandState.trigger.start)
+      + insert
+      + content.slice(commandState.trigger.end);
+    setContent(next);
+    setCaret(commandState.trigger.start + insert.length);
+    setCommandMenuOpen(false);
+    requestAnimationFrame(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(
+        commandState.trigger.start + insert.length,
+        commandState.trigger.start + insert.length,
+      );
+    });
+  };
+
+  const addFiles = useCallback(async (files: FileList | File[]) => {
     setAttachmentError("");
     const accepted: PendingAttachment[] = [];
     for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/") && !allowImages) {
+        setAttachmentError("The selected model does not accept image input.");
+        continue;
+      }
       try {
         const encoded = await readDataUrl(file);
         accepted.push({
-          name: file.name,
+          name: file.name || pastedFileName(file.type, accepted.length),
           media_type: file.type || "application/octet-stream",
           data: encoded.slice(encoded.indexOf(",") + 1),
           preview: file.type.startsWith("image/") ? encoded : undefined,
@@ -57,17 +122,75 @@ export function Composer({ running, queued, onSend, onInterrupt }: ComposerProps
     if (accepted.length) {
       setAttachments((current) => [...current, ...accepted]);
     }
-  };
+  }, [allowImages]);
+
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) => event.dataTransfer?.types.includes("Files") ?? false;
+    const reset = () => {
+      dragDepth.current = 0;
+      setDragActive(false);
+    };
+    const onDragEnter = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragActive(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!hasFiles(event) || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = disabled ? "none" : "copy";
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      reset();
+      if (!disabled && event.dataTransfer) void addFiles(event.dataTransfer.files);
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", reset);
+    return () => {
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", reset);
+    };
+  }, [addFiles, disabled]);
 
   return (
     <div className="composer-wrap">
-      {queued > 0 && <div className="queue-indicator">{queued} queued</div>}
+      {dragActive && <DropOverlay disabled={disabled} />}
+      {attachmentPreview?.preview && (
+        <ImageLightbox
+          src={attachmentPreview.preview}
+          alt={attachmentPreview.name}
+          onClose={closeAttachmentPreview}
+        />
+      )}
       <div className="composer">
+        <CommandTriggerMenu
+          commands={suggestions}
+          selectedIndex={commandIndex}
+          onPick={completeCommand}
+        />
         {attachments.length > 0 && (
           <div className="composer-images">
             {attachments.map((attachment, index) => (
               <div className="composer-image" key={`${attachment.name}-${index}`} title={attachment.name}>
-                {attachment.preview ? <img src={attachment.preview} alt={attachment.name} /> : <FileText size={24} />}
+                {attachment.preview ? (
+                  <button type="button" className="composer-image-preview" aria-label={`Preview ${attachment.name}`} onClick={() => setAttachmentPreview(attachment)}>
+                    <img src={attachment.preview} alt={attachment.name} />
+                  </button>
+                ) : <FileText size={24} />}
                 <button title={`Remove ${attachment.name}`} aria-label={`Remove ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((_, item) => item !== index))}>
                   <X size={12} />
                 </button>
@@ -79,21 +202,81 @@ export function Composer({ running, queued, onSend, onInterrupt }: ComposerProps
         <textarea
           ref={textarea}
           value={content}
+          disabled={disabled}
           rows={1}
-          placeholder="Message XBot"
+          placeholder="Message XBot · paste images"
           aria-label="Message XBot"
-          onChange={(event) => setContent(event.target.value)}
+          onChange={(event) => {
+            setContent(event.target.value);
+            setHistoryIndex(null);
+            setCaret(event.target.selectionStart);
+            setCommandMenuOpen(true);
+          }}
+          onSelect={(event) => {
+            setCaret(event.currentTarget.selectionStart);
+            setCommandMenuOpen(true);
+          }}
           onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files);
+            const files = clipboardFiles(event.clipboardData);
             if (files.length) {
               event.preventDefault();
               void addFiles(files);
             }
           }}
           onKeyDown={(event) => {
+            if (suggestions.length && event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setCommandMenuOpen(false);
+              return;
+            }
+            if (suggestions.length && event.key === "ArrowDown") {
+              event.preventDefault();
+              setCommandIndex((current) => (current + 1) % suggestions.length);
+              return;
+            }
+            if (suggestions.length && event.key === "ArrowUp") {
+              event.preventDefault();
+              setCommandIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
+              return;
+            }
+            if (!suggestions.length && event.key === "ArrowUp" && inputHistory.length) {
+              const atStart = event.currentTarget.selectionStart === 0;
+              if (atStart || !content) {
+                event.preventDefault();
+                const next = historyIndex === null
+                  ? inputHistory.length - 1
+                  : Math.max(0, historyIndex - 1);
+                if (historyIndex === null) historyDraft.current = content;
+                setHistoryIndex(next);
+                setContent(inputHistory[next]);
+                requestAnimationFrame(() => {
+                  const element = textarea.current;
+                  element?.setSelectionRange(element.value.length, element.value.length);
+                });
+                return;
+              }
+            }
+            if (!suggestions.length && event.key === "ArrowDown" && historyIndex !== null) {
+              event.preventDefault();
+              if (historyIndex >= inputHistory.length - 1) {
+                setHistoryIndex(null);
+                setContent(historyDraft.current);
+              } else {
+                const next = historyIndex + 1;
+                setHistoryIndex(next);
+                setContent(inputHistory[next]);
+              }
+              return;
+            }
+            if (suggestions.length && event.key === "Tab") {
+              event.preventDefault();
+              completeCommand(suggestions[commandIndex]);
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
@@ -108,16 +291,17 @@ export function Composer({ running, queued, onSend, onInterrupt }: ComposerProps
               event.target.value = "";
             }}
           />
-          <button className="composer-tool" title="Attach images" aria-label="Attach images" onClick={() => fileInput.current?.click()}>
+          <button className="composer-tool" title="Attach files" aria-label="Attach files" disabled={disabled} onClick={() => fileInput.current?.click()}>
             <Paperclip size={15} />
           </button>
           <span className="composer-spacer" />
+          <ContextMeter usage={usage} contextWindow={contextWindow} />
           {running ? (
             <button className="composer-action stop" title="Interrupt" aria-label="Interrupt" onClick={() => void onInterrupt()}>
               <Square size={14} fill="currentColor" />
             </button>
           ) : (
-            <button className="composer-action" title="Send" aria-label="Send" disabled={!content.trim() && attachments.length === 0} onClick={submit}>
+            <button className="composer-action" title="Send" aria-label="Send" disabled={disabled || (!content.trim() && attachments.length === 0)} onClick={() => void submit()}>
               <Send size={15} />
             </button>
           )}
@@ -125,6 +309,19 @@ export function Composer({ running, queued, onSend, onInterrupt }: ComposerProps
       </div>
     </div>
   );
+}
+
+function clipboardFiles(clipboard: DataTransfer): File[] {
+  const itemFiles = Array.from(clipboard.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+  return itemFiles.length ? itemFiles : Array.from(clipboard.files);
+}
+
+function pastedFileName(mediaType: string, index: number): string {
+  const subtype = mediaType.split("/", 2)[1]?.replace(/[^A-Za-z0-9.+-]/g, "") || "bin";
+  return `pasted-${Date.now()}-${index + 1}.${subtype}`;
 }
 
 function readDataUrl(file: File): Promise<string> {

@@ -1,46 +1,35 @@
-"""Session facade for the TUI over a ``Transport``.
-
-The TUI calls ``TerminalSession`` for all server interaction. v1 ships
-only ``HttpTransport``; the transport can be injected for testing.
-
-This module replaces the historical stdio ``ProtocolClient`` with a
-``Transport``-based implementation. The stdio path is removed in v1
-per the design document §10.5.2.
-"""
+"""Session facade for the TUI over the public HTTP client."""
 
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
-from XBotv2.tui.transport import Transport
-from XBotv2.tui.transport_http import HttpTransport
+from pydantic import JsonValue, TypeAdapter
 
-
-@dataclass(frozen=True)
-class CommandOutcome:
-    message: str
-    data: dict[str, Any] = field(default_factory=dict)
-    history: list[dict[str, Any]] | None = None
-
-
-def _new_session_id() -> str:
-    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+from XBotv2.client import XBotClient, _thread_path
+from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
+from XBotv2.protocol import ServerEvent, WireModel
+from XBotv2.session.protocol import SessionMode
+from XBotv2.session.contracts import new_session_id
+from XBotv2.tui.trace import trace_event
 
 
 class TerminalSession:
-    """High-level session over a ``Transport``.
+    """High-level session over :class:`XBotClient`.
 
     Lifecycle::
 
         session = TerminalSession(base_url="http://127.0.0.1:4096")
         await session.connect()
-        async for event in session.send_message("hi"):
-            ...
+        events = asyncio.create_task(consume(session.session_events()))
+        await drain(session.send_message("hi"))
         await session.disconnect()
+
+    ``session_events`` is the authoritative resumable event channel.
+    ``send_message`` drains the compatibility POST stream and only exposes an
+    immediate ``input_rejected`` control result to the TUI submitter.
     """
 
     def __init__(
@@ -52,19 +41,25 @@ class TerminalSession:
         workspace_root: Path | str | None = None,
         session_mode: str | None = None,
         base_url: str = "http://127.0.0.1:4096",
-        transport: Transport | None = None,
+        client: XBotClient | None = None,
         token: str | None = None,
         uds_path: str | None = None,
     ) -> None:
-        self._session_id = session_id or _new_session_id()
+        self._session_id = session_id or new_session_id()
         self._session_mode = session_mode or "new"
         self._thread_id = thread_id
         self._agent = agent
-        self._workspace_root = str(Path(workspace_root or Path.cwd()).resolve())
-        self._transport: Transport = transport or HttpTransport(
-            base_url, token=token, uds_path=uds_path
+        self._workspace_root = (
+            None
+            if self._session_mode == "resume" and workspace_root is None
+            else str(Path(workspace_root or Path.cwd()).resolve())
         )
-        self._connected = False
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        self._client = client or XBotClient(
+            base_url, uds_path=uds_path, headers=headers
+        )
+        self._session_attached = False
+        self._event_cursor = 0
 
     @property
     def session_id(self) -> str:
@@ -75,39 +70,82 @@ class TerminalSession:
         return self._thread_id
 
     @property
-    def transport(self) -> Transport:
-        return self._transport
+    def client(self) -> XBotClient:
+        return self._client
 
-    async def connect(self) -> dict[str, Any] | None:
+    async def connect(self) -> dict[str, JsonValue] | None:
         """Perform hello + open_session."""
 
-        if self._connected:
+        if self._session_attached:
             return None
-        hello = await self._transport.hello(
+        hello = await self._client.hello(
+            client_name="xbotv2-tui",
             session_id=self._session_id,
             thread_id=self._thread_id,
         )
-        server_session = str(hello.get("session_id") or self._session_id)
-        server_thread = str(hello.get("thread_id") or self._thread_id)
-        self._session_id = server_session
-        self._thread_id = server_thread
+        server_session = hello.session_id or self._session_id
+        server_thread = hello.thread_id or self._thread_id
         open_kwargs = dict(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
+            session_id=server_session,
+            thread_id=server_thread,
             workspace_root=self._workspace_root,
             mode=self._session_mode,
         )
         if self._agent:
             open_kwargs["agent"] = self._agent
-        session = await self._transport.open_session(**open_kwargs)
-        self._connected = True
-        return session
+        session = await self._client.open_session(**open_kwargs)
+        self._session_id = server_session
+        self._thread_id = server_thread
+        self._session_attached = True
+        self._event_cursor = session.event_cursor
+        return _dump(session)
 
-    async def list_commands(self) -> dict[str, Any]:
-        return await self._transport.list_commands(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
+    async def list_commands(self) -> dict[str, JsonValue]:
+        return _dump(await self._client._request(
+            "GET", f"{self._thread_path}/commands", CommandListResponse
+        ))
+
+    async def list_sessions(self) -> dict[str, JsonValue]:
+        return _dump(await self._client.list_sessions())
+
+    async def list_threads(self, session_id: str | None = None) -> dict[str, JsonValue]:
+        return _dump(await self._client.list_threads(session_id or self._session_id))
+
+    async def switch(
+        self,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        workspace_root: str | None = None,
+        mode: SessionMode = "resume",
+    ) -> dict[str, JsonValue] | None:
+        """Attach to another session/thread without destroying the current runtime.
+
+        The HTTP transport remains open so switching does not invalidate the
+        client connection. Persisted sessions retain their recorded workspace
+        when ``workspace_root`` is omitted; ``new`` sessions use the supplied
+        workspace or the current working directory.
+        """
+        target_session = session_id or new_session_id()
+        target_workspace = (
+            None
+            if mode == "resume" and workspace_root is None
+            else str(Path(workspace_root or Path.cwd()).resolve())
         )
+        opened = await self._client.open_session(
+            session_id=target_session,
+            thread_id=thread_id,
+            workspace_root=target_workspace,
+            mode=mode,
+            **({"agent": self._agent} if self._agent else {}),
+        )
+        self._session_id = target_session
+        self._thread_id = thread_id
+        self._workspace_root = target_workspace
+        self._session_mode = mode
+        self._session_attached = True
+        self._event_cursor = opened.event_cursor
+        return _dump(opened)
 
     async def run_command(
         self,
@@ -115,29 +153,20 @@ class TerminalSession:
         args: list[str],
         raw: str,
         *,
-        kind: str = "server",
-    ) -> dict[str, Any]:
-        return await self._transport.run_command(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
-            command=command,
-            args=args,
-            raw=raw,
-            kind=kind,
-        )
+        kind: Literal["server", "prompt"] = "server",
+    ) -> dict[str, JsonValue]:
+        return _dump(await self._client._request(
+            "POST",
+            f"{self._thread_path}/commands",
+            CommandResponse,
+            CommandRequest(command=command, args=args, raw=raw, kind=kind),
+        ))
 
     async def disconnect(self) -> None:
-        """Best-effort session shutdown + transport close."""
+        """Detach this client and close its transport without destroying a session."""
 
-        if not self._connected:
-            await self._transport.close()
-            return
-        try:
-            await self._transport.shutdown(session_id=self._session_id)
-        except Exception:
-            pass
-        self._connected = False
-        await self._transport.close()
+        self._session_attached = False
+        await self._client.close()
 
     async def __aenter__(self) -> "TerminalSession":
         await self.connect()
@@ -151,8 +180,8 @@ class TerminalSession:
         content: str,
         *,
         images: list[dict[str, str]] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Send one user message and yield every non-transport SSE event."""
+    ) -> AsyncIterator[dict[str, JsonValue]]:
+        """Submit input while runtime events arrive through ``session_events``."""
 
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
         request = {
@@ -163,46 +192,93 @@ class TerminalSession:
         }
         if images:
             request["images"] = images
-        stream = self._transport.send_message(
-            **request,
+        stream = self._client.send_message(
+            self._session_id,
+            self._thread_id,
+            content,
+            request_id=request_id,
+            images=images,
         )
-        async for event in stream:
-            event_type = str(event.get("type") or "")
-            if event_type == "end":
-                return
-            yield event
-
-    async def session_events(self) -> AsyncIterator[dict[str, Any]]:
-        """Yield turns initiated by runtime general messages."""
-
-        async for event in self._transport.session_events(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
-        ):
-            if str(event.get("type") or "") != "end":
+        async for event in self._events(stream, "messages", request):
+            if event.get("type") == "input_rejected":
                 yield event
 
-    async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
-        return await self._transport.send_user_input(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
-            request_id=request_id,
-            answer=answer,
+    async def session_events(self) -> AsyncIterator[dict[str, JsonValue]]:
+        """Yield turns initiated by runtime general messages."""
+
+        stream = self._client.stream_events(
+            self._session_id,
+            self._thread_id,
+            after=self._event_cursor,
+        )
+        async for event in self._events(stream, "session_events"):
+            self._event_cursor = max(
+                self._event_cursor,
+                int(event.get("sequence") or 0),
+            )
+            yield event
+
+    async def submit_user_input(self, request_id: str, answer: JsonValue) -> dict[str, JsonValue]:
+        return _dump(
+            await self._client.respond_user_input(
+                self._session_id,
+                self._thread_id,
+                request_id=request_id,
+                answer=answer,
+            )
         )
 
     async def respond_permission(
         self,
         request_id: str,
-        decision: str,
+        decision: Literal["allow", "deny"],
         *,
-        scope: str = "once",
-    ) -> dict[str, Any]:
-        return await self._transport.send_permission_response(
-            session_id=self._session_id,
-            thread_id=self._thread_id,
-            request_id=request_id,
-            decision=decision,
-            scope=scope,
+        scope: Literal["once", "session"] = "once",
+    ) -> dict[str, JsonValue]:
+        return _dump(
+            await self._client.respond_permission(
+                self._session_id,
+                self._thread_id,
+                request_id=request_id,
+                decision=decision,
+                scope=scope,
+            )
         )
 
+    async def interrupt(self) -> dict[str, JsonValue]:
+        return _dump(await self._client.interrupt(self._session_id, self._thread_id))
 
+    @property
+    def _thread_path(self) -> str:
+        return _thread_path(self._session_id, self._thread_id)
+
+    async def _events(
+        self,
+        stream: AsyncIterator[ServerEvent],
+        label: str,
+        body: dict[str, JsonValue] | None = None,
+    ) -> AsyncIterator[dict[str, JsonValue]]:
+        trace_event("tui.http", {"stage": f"{label}.request", "body": body})
+        async for event in stream:
+            trace_event(
+                "tui.http",
+                {
+                    "stage": f"{label}.event",
+                    "event": event.type,
+                    "id": event.sequence,
+                },
+            )
+            if event.type == "end":
+                return
+            yield _json_payload(event)
+
+
+def _dump(model: WireModel) -> dict[str, JsonValue]:
+    payload = _json_payload(model)
+    trace_event("tui.http", {"status": 200, "payload": payload})
+    return payload
+
+
+def _json_payload(model: WireModel) -> dict[str, JsonValue]:
+    """Normalize a wire model through the JSON contract at the client edge."""
+    return TypeAdapter(dict[str, JsonValue]).validate_python(model.model_dump())

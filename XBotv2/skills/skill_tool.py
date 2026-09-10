@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from XBotv2.skills.registry import SkillRegistry
+
+
+class SandboxRunner(Protocol):
+    enabled: bool
+
+    async def run_shell(self, command: str) -> str: ...
 
 _SHELL_INJECT_RE = re.compile(r"!`([^`]+)`")
 
@@ -12,8 +21,8 @@ async def load_skill(
     name: str,
     *,
     arguments: str = "",
-    skill_registry: Any = None,
-    sandbox: Any = None,
+    skill_registry: "SkillRegistry | None" = None,
+    sandbox: "SandboxRunner | None" = None,
 ) -> str:
     if skill_registry is None:
         return "Error: skills plugin not loaded"
@@ -32,7 +41,7 @@ def _substitute_arguments(content: str, arguments: str) -> str:
     return content
 
 
-async def _preprocess(content: str, *, sandbox: Any = None) -> str:
+async def _preprocess(content: str, *, sandbox: "SandboxRunner | None" = None) -> str:
     commands = [(m.group(0), m.group(1).strip()) for m in _SHELL_INJECT_RE.finditer(content)]
     if not commands:
         return content
@@ -45,7 +54,7 @@ async def _preprocess(content: str, *, sandbox: Any = None) -> str:
     return content
 
 
-async def _run_command(cmd: str, *, sandbox: Any = None) -> str:
+async def _run_command(cmd: str, *, sandbox: "SandboxRunner | None" = None) -> str:
     if sandbox is None or not sandbox.enabled:
         return "[shell injection unavailable: enabled sandbox required]"
     return await sandbox.run_shell(cmd)

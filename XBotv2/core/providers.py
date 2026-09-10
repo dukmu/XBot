@@ -13,14 +13,15 @@ import logging
 from abc import ABC, abstractmethod
 from copy import copy
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 import httpx
+from pydantic import JsonValue
 
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 
-logger = logging.getLogger("llm")
+logger = logging.getLogger("xbotv2.llm")
 
 InputModality = Literal["text", "image"]
 
@@ -70,7 +71,7 @@ class BaseProvider(ABC):
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[InputModality] | None = None,
-        media_root: Path | str | None = None,
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         if max_retries is not None and max_retries < 0:
             raise ValueError("max_retries must be non-negative or None")
@@ -92,22 +93,27 @@ class BaseProvider(ABC):
                 + ", ".join(sorted(unsupported))
             )
         self.capabilities = ProviderCapabilities(requested)
-        self.media_root = Path(media_root).resolve() if media_root else None
-        self.bound_tools: list[dict[str, Any]] = []
+        self.artifacts = artifacts
+        self.bound_tools: list[dict[str, JsonValue]] = []
 
     def bind_tools(
         self,
-        tools: list[dict[str, Any]],
+        tools: list[dict[str, JsonValue]],
         **_kwargs: Any,
     ) -> BaseProvider:
         clone = copy(self)
         clone.bound_tools = self._provider_tools(tools)
         return clone
 
+    def bind_artifacts(self, artifacts: ArtifactStorePort) -> BaseProvider:
+        clone = copy(self)
+        clone.artifacts = artifacts
+        return clone
+
     def _provider_tools(
         self,
-        tools: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        tools: list[dict[str, JsonValue]],
+    ) -> list[dict[str, JsonValue]]:
         return list(tools)
 
     async def astream(
@@ -126,9 +132,29 @@ class BaseProvider(ABC):
                     yield chunk
                 return
             except Exception as exc:
-                if emitted or not retryable_provider_error(exc):
+                retryable = retryable_provider_error(exc)
+                status_code = getattr(exc, "status_code", None)
+                if emitted or not retryable:
+                    logger.error(
+                        "provider.request.failed model=%s error_type=%s "
+                        "status_code=%s emitted=%s retryable=%s retries=%d",
+                        self.model,
+                        type(exc).__name__,
+                        status_code,
+                        emitted,
+                        retryable,
+                        retries,
+                    )
                     raise
                 if self.max_retries is not None and retries >= self.max_retries:
+                    logger.error(
+                        "provider.retry.exhausted model=%s error_type=%s "
+                        "status_code=%s retries=%d",
+                        self.model,
+                        type(exc).__name__,
+                        status_code,
+                        retries,
+                    )
                     raise ProviderRetryExhaustedError(
                         model=self.model,
                         retries=retries,
@@ -138,24 +164,21 @@ class BaseProvider(ABC):
                 retries += 1
                 logger.warning(
                     "provider request failed; retrying model=%s retry=%d "
-                    "delay=%.1fs error=%s",
+                    "delay=%.1fs error_type=%s status_code=%s",
                     self.model,
                     retries,
                     delay,
-                    exc,
+                    type(exc).__name__,
+                    status_code,
                 )
                 if delay:
                     await asyncio.sleep(delay)
 
-    def read_image(self, path: str) -> str:
-        """Read a session-relative media artifact as base64."""
-        if self.media_root is None:
-            raise ValueError("Provider media root is not configured")
-        target = (self.media_root / path).resolve()
-        media_dir = (self.media_root / "artifacts" / "media").resolve()
-        if not target.is_relative_to(media_dir):
-            raise ValueError("Image path is outside the session media store")
-        return base64.b64encode(target.read_bytes()).decode("ascii")
+    def read_image(self, artifact_id: str) -> str:
+        """Read a media artifact through the configured artifact service."""
+        if self.artifacts is None:
+            raise ValueError("Provider artifact storage is not configured")
+        return base64.b64encode(self.artifacts.read(artifact_id)).decode("ascii")
 
     def _validate_message_capabilities(self, messages: list[Message]) -> None:
         image_messages = [

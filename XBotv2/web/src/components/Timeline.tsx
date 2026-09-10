@@ -1,126 +1,200 @@
-import { useEffect, useRef } from "react";
-import { Brain, Check, ChevronRight, CircleAlert, LoaderCircle, Terminal, UserRound, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { TimelineEntry, ToolEntry } from "../state/runtime";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChevronRight, ChevronUp, LoaderCircle } from "lucide-react";
+import type { TimelineEntry } from "../state/runtime";
+import { ConversationNode } from "./ConversationNode";
+import { MessageItem } from "./MessageItem";
 
-export function Timeline({ entries, turnRunning }: { entries: TimelineEntry[]; turnRunning: boolean }) {
-  const viewport = useRef<HTMLDivElement>(null);
+const TIMELINE_WINDOW = 160;
+const TIMELINE_BATCH = 80;
+const FOLLOW_THRESHOLD = 32;
+
+interface TimelineProps {
+  entries: TimelineEntry[];
+  assistantDraft: Extract<TimelineEntry, { kind: "message" }> | null;
+  turnRunning: boolean;
+  onRetry: () => Promise<void>;
+  onBranch: () => Promise<void>;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => Promise<void>;
+}
+
+export const Timeline = memo(function Timeline({
+  entries,
+  assistantDraft,
+  turnRunning,
+  onRetry,
+  onBranch,
+  hasOlder,
+  loadingOlder,
+  onLoadOlder,
+}: TimelineProps) {
+  const list = useRef<HTMLDivElement>(null);
   const shouldFollow = useRef(true);
+  const previousLength = useRef(0);
+  const pendingPrependHeight = useRef<number | null>(null);
+  const [windowRange, setWindowRange] = useState({ start: -1, end: -1 });
+  const [showLatest, setShowLatest] = useState(false);
+  const latestAssistant = latestAssistantId(entries);
+  const range = windowRange.start < 0
+    ? { start: Math.max(0, entries.length - TIMELINE_WINDOW), end: entries.length }
+    : {
+      start: Math.min(windowRange.start, entries.length),
+      end: Math.min(windowRange.end, entries.length),
+    };
+  const visibleEntries = useMemo(
+    () => entries.slice(range.start, range.end),
+    [entries, range.start, range.end],
+  );
+
+  useLayoutEffect(() => {
+    const previous = previousLength.current;
+    previousLength.current = entries.length;
+    setWindowRange((current) => {
+      if (current.start < 0) {
+        return range;
+      }
+      if (entries.length > previous && shouldFollow.current) {
+        return {
+          start: Math.max(0, entries.length - TIMELINE_WINDOW),
+          end: entries.length,
+        };
+      }
+      if (entries.length < current.end) {
+        return {
+          start: Math.min(current.start, entries.length),
+          end: entries.length,
+        };
+      }
+      return current;
+    });
+  }, [entries.length, range.start, range.end]);
+
+  useLayoutEffect(() => {
+    const previousHeight = pendingPrependHeight.current;
+    const element = scrollerOf(list.current);
+    if (previousHeight === null || !element) return;
+    pendingPrependHeight.current = null;
+    element.scrollTop += element.scrollHeight - previousHeight;
+  }, [entries.length, range.start, range.end]);
+
+  const loadEarlier = () => {
+    const element = scrollerOf(list.current);
+    if (!element || (range.start <= 0 && !hasOlder)) return;
+    shouldFollow.current = false;
+    setShowLatest(true);
+    pendingPrependHeight.current = element.scrollHeight;
+    if (range.start <= 0) {
+      void onLoadOlder();
+      return;
+    }
+    setWindowRange((current) => {
+      const start = Math.max(0, current.start - TIMELINE_BATCH);
+      return { start, end: Math.min(entries.length, start + TIMELINE_WINDOW) };
+    });
+  };
+
+  const scrollToLatest = () => {
+    shouldFollow.current = true;
+    setShowLatest(false);
+    setWindowRange({
+      start: Math.max(0, entries.length - TIMELINE_WINDOW),
+      end: entries.length,
+    });
+    const element = scrollerOf(list.current);
+    element?.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  };
 
   useEffect(() => {
-    if (shouldFollow.current) viewport.current?.scrollTo({ top: viewport.current.scrollHeight });
-  }, [entries]);
+    const element = scrollerOf(list.current);
+    if (!element || !shouldFollow.current) return;
+    // Re-check the distance at the point of the update.  A scroll event can
+    // be queued behind a streamed delta; never pull the user back down after
+    // they have already moved away from the end.
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distance <= FOLLOW_THRESHOLD) element.scrollTo({ top: element.scrollHeight });
+  }, [entries, assistantDraft?.content, assistantDraft?.reasoning]);
+
+  useEffect(() => {
+    const element = scrollerOf(list.current);
+    if (!element) return;
+    const onScroll = () => {
+      const following = element.scrollHeight - element.scrollTop - element.clientHeight <= FOLLOW_THRESHOLD;
+      shouldFollow.current = following;
+      setShowLatest(!following || range.end < entries.length);
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!(event.target instanceof Node) || !list.current?.contains(event.target)) return;
+      if (event.deltaY < 0) {
+        // Record the user's intent before the browser dispatches the paired
+        // scroll event, so a streamed render in between cannot steal focus.
+        shouldFollow.current = false;
+        setShowLatest(true);
+      }
+    };
+    element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", onWheel);
+    };
+  }, [entries.length, range.end]);
 
   return (
     <div
       className="timeline"
-      ref={viewport}
-      onScroll={(event) => {
-        const element = event.currentTarget;
-        shouldFollow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-      }}
+      ref={list}
     >
       <div className="timeline-inner">
-        {entries.map((entry) => {
-          if (entry.kind === "message") {
-            return (
-              <article key={entry.id} className={`message-block ${entry.role}`}>
-                <div className="message-author">
-                  {entry.role === "user" ? <UserRound size={14} /> : <span className="xbot-glyph">X</span>}
-                  <span>{entry.role === "user" ? "You" : "XBot"}</span>
-                </div>
-                {entry.reasoning && (
-                  <details className="reasoning-block" open={entry.streaming}>
-                    <summary>
-                      {entry.streaming ? <LoaderCircle size={14} className="spin" /> : <Brain size={14} />}
-                      Thinking
-                      <ChevronRight size={13} className="summary-chevron" />
-                    </summary>
-                    <div className="reasoning-content">{entry.reasoning}</div>
-                  </details>
-                )}
-                {entry.content && (
-                  <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
-                  </div>
-                )}
-                {entry.images.length > 0 && (
-                  <div className="message-images">
-                    {entry.images.map((image, index) => image.src ? (
-                      <img key={`${image.label}-${index}`} src={image.src} alt={image.label} />
-                    ) : (
-                      <div className="message-image-reference" key={`${image.label}-${index}`}>{image.label}</div>
-                    ))}
-                  </div>
-                )}
-                {entry.streaming && !entry.content && !entry.reasoning && (
-                  <div className="assistant-pending"><i /><i /><i /></div>
-                )}
-              </article>
-            );
-          }
-          if (entry.kind === "tool") return <ToolBlock key={entry.id} tool={entry} />;
-          return (
-            <div key={entry.id} className={`notice-row ${entry.level}`}>
-              {entry.level === "error" ? <CircleAlert size={14} /> : <Terminal size={14} />}
-              <span>{entry.content}</span>
-            </div>
-          );
-        })}
-        {turnRunning && !entries.some((entry) => entry.kind === "message" && entry.streaming) && (
+        {(range.start > 0 || hasOlder) && (
+          <button className="timeline-older" type="button" disabled={loadingOlder} onClick={loadEarlier}>
+            {loadingOlder ? <LoaderCircle size={14} className="spin" /> : <ChevronUp size={14} />} Older messages
+          </button>
+        )}
+        {visibleEntries.map((entry) => (
+          <div className={`timeline-node timeline-node-${entry.kind}`} key={entry.id}>
+            <ConversationNode
+              entry={entry}
+              latestAssistantId={latestAssistant}
+              turnRunning={turnRunning}
+              onRegenerate={onRetry}
+              onBranch={onBranch}
+            />
+          </div>
+        ))}
+        {assistantDraft && (
+          <div className="timeline-node timeline-node-message"><MessageItem entry={assistantDraft} /></div>
+        )}
+        {turnRunning && !assistantDraft && (
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
         )}
       </div>
+      {showLatest && (
+        <button className="timeline-latest" type="button" aria-label="Jump to latest activity" onClick={scrollToLatest}>
+          <ChevronRight size={14} className="timeline-latest-icon" /> Latest activity
+        </button>
+      )}
     </div>
   );
+}, (previous, next) => (
+  previous.entries === next.entries
+  && previous.assistantDraft === next.assistantDraft
+  && previous.turnRunning === next.turnRunning
+  && previous.hasOlder === next.hasOlder
+  && previous.loadingOlder === next.loadingOlder
+  && previous.onRetry === next.onRetry
+  && previous.onBranch === next.onBranch
+  && previous.onLoadOlder === next.onLoadOlder
+));
+
+function scrollerOf(list: HTMLDivElement | null): HTMLElement | null {
+  return list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list;
 }
 
-function ToolBlock({ tool }: { tool: ToolEntry }) {
-  const running = tool.status === "running" || tool.status === "pending";
-  return (
-    <details className={`tool-block status-${tool.status}`}>
-      <summary>
-        <span className="tool-status-icon">
-          {running ? <LoaderCircle size={14} className="spin" /> : tool.status === "success" ? <Check size={14} /> : <X size={14} />}
-        </span>
-        <span className="tool-name">{tool.name}</span>
-        <span className="tool-summary">{toolSummary(tool)}</span>
-        <ChevronRight size={13} className="summary-chevron" />
-      </summary>
-      <div className="tool-details">
-        <Detail label="Arguments" value={tool.args} />
-        {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
-        {tool.data !== null && <Detail label="Data" value={tool.data} />}
-        {tool.error && <Detail label="Error" value={tool.error} />}
-        {tool.images.length > 0 && <Detail label="Images" value={tool.images} />}
-      </div>
-    </details>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div className="tool-detail-section">
-      <span>{label}</span>
-      <pre>{formatValue(value)}</pre>
-    </div>
-  );
-}
-
-function toolSummary(tool: ToolEntry): string {
-  if (tool.status === "denied") return "denied";
-  if (tool.status === "error") return "failed";
-  const args = tool.args && typeof tool.args === "object" ? tool.args as Record<string, unknown> : {};
-  const candidate = args.path || args.command || args.query || args.objective;
-  return typeof candidate === "string" ? candidate : tool.status;
-}
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
+function latestAssistantId(entries: TimelineEntry[]): string {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" && entry.role === "assistant" && !entry.streaming) return entry.id;
   }
+  return "";
 }

@@ -5,9 +5,8 @@ shells run as SHELL jobs in the shared JobRegistry through ``ShellRunner``;
 ``start_shell`` / ``list_shells`` / ``wait_shell`` / ``read_shell`` /
 ``cancel_shell`` never return bulk output — reading is explicit and bounded.
 
-Like the filesystem tools, all shell tools are stateless module-level values;
-per-session state (the JobRegistry and the sandbox policy) arrives through
-keyword-only injected parameters at invocation time.
+The plugin builds one Tool set per session. The Tool functions close over the
+session's JobRegistry, sandbox policy, and workspace root.
 """
 
 from __future__ import annotations
@@ -18,18 +17,25 @@ import os
 import signal
 import subprocess
 import tempfile
-from typing import Any, Literal
+from dataclasses import replace
+from functools import partial
+from typing import Literal
 
-from XBotv2.core.jobs import (
+from pydantic import JsonValue
+
+from XBotv2.jobs import (
     Job,
     JobKind,
     JobNotFound,
     JobRegistryClosed,
     JobResult,
-    JobStatus,
+    JobRunnerContext,
+    JobsPort,
     WaitResult,
+    parse_job_status,
 )
 from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.sandbox.contracts import SandboxPort
 
 
 class ShellCommandError(RuntimeError):
@@ -50,12 +56,13 @@ _ESCALATION_JUSTIFICATION_REQUIRED = (
 class ShellRunner:
     """Runs one background SHELL job through the shared shell executor."""
 
-    def __init__(self, *, sandbox: Any = None) -> None:
+    def __init__(self, *, sandbox: SandboxPort | None = None) -> None:
         self.sandbox = sandbox
 
-    async def run(self, job: Job, ctx: Any) -> JobResult:
+    async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
         command = str(job.metadata.get("command") or "")
-        cwd = job.metadata.get("cwd") or None
+        cwd_value = job.metadata.get("cwd")
+        cwd = str(cwd_value) if cwd_value else None
         escalated = bool(job.metadata.get("escalated"))
         output = ctx.outputs.create_text()
         ctx.primary_output = output
@@ -96,8 +103,8 @@ async def shell(
     ] = "use_default",
     justification: str | None = None,
     *,
-    sandbox: Any = None,
-    job_registry: Any = None,
+    sandbox: SandboxPort | None = None,
+    job_registry: JobsPort | None = None,
     default_cwd: str | None = None,
 ) -> ToolResult:
     """Run a shell command in the foreground, or start one in the background.
@@ -168,8 +175,8 @@ async def start_shell(
     ] = "use_default",
     justification: str | None = None,
     *,
-    sandbox: Any = None,
-    job_registry: Any = None,
+    sandbox: SandboxPort | None = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Start a shell command in the background and return its job ID.
 
@@ -222,12 +229,15 @@ async def start_shell(
     )
     job_registry.start(job.id, ShellRunner(sandbox=runner_sandbox))
     return ToolResult.success(
-        f"Started {job.id}",
-        data={"id": job.id, "status": job.status.value},
+        f"Started {job.id}"
     )
 
 
-async def list_shells(status: str | None = None, *, job_registry: Any = None) -> ToolResult:
+async def list_shells(
+    status: str | None = None,
+    *,
+    job_registry: JobsPort | None = None,
+) -> ToolResult:
     """List session-owned background shells with lightweight metadata.
 
     Never includes command output; use ``read_shell`` for text. Jobs are
@@ -240,12 +250,16 @@ async def list_shells(status: str | None = None, *, job_registry: Any = None) ->
         return ToolResult.failure(
             "job_registry_unavailable", "Background shells require a live session"
         )
-    status_filter = _parse_status(status)
+    status_filter = parse_job_status(status)
     summaries = job_registry.list(kind=JobKind.SHELL, status=status_filter)
-    payload = {"shells": [summary.to_dict() for summary in summaries]}
+    payload = {
+        "shells": [
+            summary.model_dump(mode="json", exclude_none=True)
+            for summary in summaries
+        ]
+    }
     return ToolResult.success(
-        json.dumps(payload, ensure_ascii=False),
-        data=payload,
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -254,7 +268,7 @@ async def wait_shell(
     mode: Literal["all", "any"] = "all",
     timeout_ms: int | None = None,
     *,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Wait for background shells to reach a terminal state.
 
@@ -286,8 +300,7 @@ async def wait_shell(
         return ToolResult.failure("shell_not_found", "Unknown shell job id")
     payload = _wait_payload(result, job_registry)
     return ToolResult.success(
-        json.dumps(payload, ensure_ascii=False),
-        data=payload,
+        json.dumps(payload, ensure_ascii=False)
     )
 
 
@@ -297,7 +310,7 @@ async def read_shell(
     cursor: int | None = None,
     max_bytes: int = 8000,
     *,
-    job_registry: Any = None,
+    job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Read captured output from one background shell job.
 
@@ -322,22 +335,19 @@ async def read_shell(
     store = job.result.output_store if job.result is not None else None
     if store is None:
         return ToolResult.success(
-            "No output captured yet",
-            data={"content": "", "next_cursor": None, "eof": False},
+            "No output captured yet"
         )
     chunk = await store.read(cursor=cursor, max_bytes=max_bytes)
     return ToolResult.success(
-        chunk.data,
-        data={
-            "content": chunk.data,
-            "next_cursor": chunk.next_cursor,
-            "eof": chunk.eof,
-            "truncated": chunk.truncated,
-        },
+        chunk.data # TODO: more detailed output structure with next_cursor, etc.
     )
 
 
-async def cancel_shell(id: str, *, job_registry: Any = None) -> ToolResult:
+async def cancel_shell(
+    id: str,
+    *,
+    job_registry: JobsPort | None = None,
+) -> ToolResult:
     """Cancel one background shell job (idempotent).
 
     Args:
@@ -352,24 +362,40 @@ async def cancel_shell(id: str, *, job_registry: Any = None) -> ToolResult:
         return ToolResult.failure("shell_not_found", f"Unknown shell job: {id}")
     result = await job_registry.cancel(id)
     return ToolResult.success(
-        f"Shell {id} {result.status}",
-        data=result.to_dict(),
+        f"Shell {id} {result.status}"
     )
 
 
-SHELL_TOOLS: tuple[Tool, ...] = (
-    Tool.from_function(shell, name="shell"),
-    Tool.from_function(list_shells, name="list_shells"),
-    Tool.from_function(wait_shell, name="wait_shell"),
-    Tool.from_function(read_shell, name="read_shell"),
-    Tool.from_function(cancel_shell, name="cancel_shell"),
-)
+def shell_tools(
+    sandbox: SandboxPort | None,
+    job_registry: JobsPort,
+    default_cwd: str,
+) -> tuple[Tool, ...]:
+    """Build the shell Tools for one session's runtime services."""
+    bindings = (
+        (shell, {
+            "sandbox": sandbox,
+            "job_registry": job_registry,
+            "default_cwd": default_cwd,
+        }),
+        (list_shells, {"job_registry": job_registry}),
+        (wait_shell, {"job_registry": job_registry}),
+        (read_shell, {"job_registry": job_registry}),
+        (cancel_shell, {"job_registry": job_registry}),
+    )
+    return tuple(
+        replace(
+            Tool.from_function(function),
+            function=partial(function, **dependencies),
+        )
+        for function, dependencies in bindings
+    )
 
 
-def _wait_payload(result: WaitResult, registry: Any) -> dict[str, Any]:
-    ready: list[dict[str, Any]] = []
+def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, JsonValue]:
+    ready: list[dict[str, JsonValue]] = []
     for summary in result.ready:
-        item = summary.to_dict()
+        item = summary.model_dump(mode="json", exclude_none=True)
         if summary.kind == JobKind.SHELL.value:
             job = registry.get_or_none(summary.id)
             if job is not None and job.result is not None and "exit_code" in job.result.data:
@@ -382,20 +408,11 @@ def _wait_payload(result: WaitResult, registry: Any) -> dict[str, Any]:
     }
 
 
-def _parse_status(value: str | None) -> JobStatus | None:
-    if value is None:
-        return None
-    try:
-        return JobStatus(value)
-    except ValueError:
-        return None
-
-
 async def run_shell_command(
     command: str,
     *,
     cwd: str | None = None,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
     timeout_seconds: float | None = 0,
 ) -> str:
     """Run a shell command with cancellation-safe process cleanup."""
@@ -468,7 +485,7 @@ async def _wait_process(
 
 
 __all__ = [
-    "SHELL_TOOLS",
+    "shell_tools",
     "ShellCommandError",
     "ShellRunner",
     "run_shell_command",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from xml.etree import ElementTree
 
-from XBotv2.core.context import ContextComponent, PromptFragmentStage
+from XBotv2.context_builder.contracts import ContextComponent, PromptFragmentStage
 from XBotv2.core.messages import Message
 from XBotv2.core.prompts import (
     MESSAGE_FORMAT_KEY,
@@ -98,14 +98,6 @@ class ContextBuilder:
     ) -> None:
         """Remove a plugin's fragment."""
         self._fragments.get(stage, {}).pop(plugin_name, None)
-
-    def get_fragment(
-        self,
-        stage: PromptFragmentStage,
-        plugin_name: str,
-    ) -> str | None:
-        fragment = self._fragments.get(stage, {}).get(plugin_name)
-        return fragment.text if fragment is not None else None
 
     def build(
         self,

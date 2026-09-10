@@ -31,7 +31,7 @@ and injected services, never by reaching into the loop.
   path per concrete operation.
 - **One job lifecycle for background work.** Background shell commands and
   subagents share a single `JobRegistry` with `wait` / `read` / `cancel`.
-- **Workspace-native.** `AGENTS.md` is reloaded for every model request,
+- **Workspace-native.** `AGENTS.md` is read for every model request,
   `<workspace>/.agents/*.md` define workspace Agents, and
   `<workspace>/.xbot/plugins.yaml` overlays the plugin tree — all owned by
   the `workspace_instructions` plugin.
@@ -83,7 +83,7 @@ tree into `<data-dir>/config/plugins.yaml`, which overlays the bundled
 └── sessions/<session-id>/threads/<thread>/...
 
 <workspace>/
-├── AGENTS.md                    # workspace instructions, reloaded per request
+├── AGENTS.md                    # workspace instructions, read per request
 ├── .agents/*.md                 # workspace Agent definitions
 └── .xbot/plugins.yaml           # workspace plugin overlay
 ```
@@ -167,10 +167,10 @@ PYTHONPATH=.:XCore uv run python scripts/check_architecture.py
 The architecture check fails when loop/tool code crosses plugin ownership
 boundaries — run it before committing refactors. Documentation starts at
 [`XBotv2/docs/README.md`](XBotv2/docs/README.md), with the
-[architecture](XBotv2/docs/architecture.md), [plugin
-system](XBotv2/docs/plugins/plugins.md), [tools](XBotv2/docs/tools/tools.md),
-and [wire protocol](XBotv2/docs/protocol/protocol.md) as the main entry
-points.
+[plugin system](XBotv2/docs/plugins.md), [security](XBotv2/docs/security.md),
+[persistence](XBotv2/docs/persistence.md), and [HTTP API](XBotv2/docs/http-api.md)
+as the short entry points. Detailed contracts and router references live in
+the bundled `xbot-plugin-development` skill.
 
 ## License
 

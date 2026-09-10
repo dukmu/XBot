@@ -1,39 +1,186 @@
-import { useEffect, useState } from "react";
-import { AlertCircle, Menu, Plus, RefreshCw, TerminalSquare, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, FolderSearch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
-import { Composer } from "../components/Composer";
+import { Composer, type PendingAttachment } from "../components/Composer";
+import { CommandHelpDialog } from "../components/CommandHelpDialog";
+import { CommandOutput } from "../components/CommandOutput";
+import { DshAppFrame } from "../components/DshAppFrame";
 import { InteractionDialog } from "../components/InteractionDialog";
 import { RuntimeHeader } from "../components/RuntimeHeader";
+import { QueueDock } from "../components/QueueDock";
 import { SessionSidebar } from "../components/SessionSidebar";
 import { StatusBar } from "../components/StatusBar";
+import { UsageStatsLine } from "../components/UsageStatsLine";
+import { DirectoryBrowser } from "../components/DirectoryBrowser";
 import { TaskDock } from "../components/TaskDock";
+import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
+import { ThreadActivityPanel } from "../components/ThreadActivityPanel";
+import { SettingsDialog, type ThemePreference } from "../components/SettingsDialog";
+import { commandCatalog, parseCommand } from "../commands";
+import type { CommandInfo, CommandResultData, DirectoryListingData, SessionSummary } from "../api/types";
 
 export function App() {
   const runtime = useXBot();
   const { state } = runtime;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [commandOutput, setCommandOutput] = useState<CommandResultData | null>(null);
+  const [helpQuery, setHelpQuery] = useState<string | null>(null);
+  const [pendingCommand, setPendingCommand] = useState("");
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [deleteCandidate, setDeleteCandidate] = useState<SessionSummary | null>(null);
+  const [composerDraft, setComposerDraft] = useState<{ id: number; value: string } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const recordSubmittedInput = useCallback((content: string) => {
+    setInputHistory((current) => current[current.length - 1] === content
+      ? current
+      : [...current, content].slice(-100));
+  }, []);
+  const commands = useMemo(() => commandCatalog(runtime.commands), [runtime.commands]);
+
+  useEffect(() => {
+    const media = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : null;
+    const applyTheme = () => {
+      const effective = themePreference === "system"
+        ? (media?.matches ? "dark" : "light")
+        : themePreference;
+      document.documentElement.dataset.theme = effective;
+      document.documentElement.style.colorScheme = effective;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", effective === "dark" ? "#0f1115" : "#ffffff");
+    };
+    applyTheme();
+    if (themePreference !== "system" || !media) return;
+    media.addEventListener?.("change", applyTheme);
+    return () => media.removeEventListener?.("change", applyTheme);
+  }, [themePreference]);
+
+  useEffect(() => {
+    setCommandOutput(null);
+    setHelpQuery(null);
+  }, [state.current?.session_id, state.current?.thread_id]);
+
+  const sendComposerInput = async (
+    content: string,
+    attachments: PendingAttachment[],
+  ): Promise<boolean> => {
+    const parsed = parseCommand(content);
+    if (!parsed) {
+      setCommandOutput(null);
+      return runtime.sendMessage(content, attachments);
+    }
+    const command = commands.find((item) => item.name === parsed.name);
+    setCommandOutput(null);
+    if (!command) {
+      setCommandOutput(localCommandResult(parsed.name, `Unknown command: /${parsed.name}`));
+      return true;
+    }
+    if (command.kind === "prompt") {
+      return runtime.sendMessage(content, attachments);
+    }
+    if (attachments.length) {
+      setCommandOutput(localCommandResult(parsed.name, "Client and server commands do not accept attachments."));
+      return true;
+    }
+    if (command.kind === "server") {
+      setPendingCommand(command.name);
+      try {
+        const result = await runtime.runServerCommand(command, content);
+        if (result) setCommandOutput(result);
+      } finally {
+        setPendingCommand("");
+      }
+      return true;
+    }
+    await runClientCommand(parsed.name, parsed.args);
+    return true;
+  };
+
+  const runClientCommand = async (name: string, args: string) => {
+    if (name === "help") {
+      setHelpQuery(args);
+      return;
+    }
+    if (state.turnRunning && ["fork", "undo", "clear"].includes(name)) {
+      setCommandOutput(localCommandResult(name, "Finish or interrupt the active turn before changing the session."));
+      return;
+    }
+    if (name === "session") {
+      const [action, remainder] = splitHead(args);
+      if (!action || action === "list" || action === "ls") {
+        await runtime.refreshSessions();
+        setSidebarOpen(true);
+      } else if (action === "new") {
+        await runtime.createSession(unquote(remainder));
+      } else {
+        await runtime.resumeSession(action, unquote(remainder));
+      }
+      return;
+    }
+    if (name === "resume") {
+      const [sessionId, workspace] = splitHead(args);
+      await runtime.resumeSession(sessionId || undefined, unquote(workspace));
+      return;
+    }
+    if (name === "new") {
+      await runtime.createSession(unquote(args));
+      return;
+    }
+    if (args && name !== "undo") {
+      setCommandOutput(localCommandResult(name, `Usage: ${commands.find((item) => item.name === name)?.usage}`));
+      return;
+    }
+    if (name === "fork") await runtime.fork();
+    if (name === "clear") setClearConfirmOpen(true);
+    if (name === "undo") {
+      const count = args ? Number(args) : 1;
+      if (!Number.isInteger(count) || count < 1) setCommandOutput(localCommandResult(name, "Undo count must be a positive integer."));
+      else await runtime.undo(count);
+    }
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && state.turnRunning && !state.interactions.length) {
+      if (event.key !== "Escape") return;
+      if (deleteCandidate) {
+        setDeleteCandidate(null);
+        return;
+      }
+      if (clearConfirmOpen) {
+        setClearConfirmOpen(false);
+        return;
+      }
+      if (helpQuery === null && state.turnRunning && !state.interactions.length) {
         void runtime.interrupt();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [runtime, state.interactions.length, state.turnRunning]);
+  }, [clearConfirmOpen, deleteCandidate, helpQuery, runtime, state.interactions.length, state.turnRunning]);
 
   return (
-    <div className="app-shell">
-      <SessionSidebar
+    <DshAppFrame
+      mobileSidebarOpen={sidebarOpen}
+      sidebar={({ collapsed, width, toggle }) => <SessionSidebar
         open={sidebarOpen}
-        sessions={state.sessions}
+        collapsed={collapsed}
+        width={width}
+        sessions={runtime.sessions}
+        workspaces={runtime.workspaces}
+        archivedSessionIds={runtime.archivedSessionIds}
         threads={state.threads}
         current={state.current}
         onClose={() => setSidebarOpen(false)}
+        onToggle={toggle}
+        onSettings={() => setSettingsOpen(true)}
         onNew={() => setNewSessionOpen(true)}
+        onRefresh={runtime.refreshSessions}
+        refreshing={state.loading}
         onSession={(id) => {
           setSidebarOpen(false);
           void runtime.resumeSession(id);
@@ -42,25 +189,49 @@ export function App() {
           setSidebarOpen(false);
           void runtime.selectThread(thread);
         }}
-      />
+        onFork={(id) => {
+          setSidebarOpen(false);
+          void runtime.forkSession(id);
+        }}
+        onDelete={(session) => {
+          setSidebarOpen(false);
+          setDeleteCandidate(session);
+        }}
+        onRenameSession={(sessionId, title) => void runtime.renameSession(sessionId, title)}
+        onArchiveSession={(sessionId, archived) => void runtime.setSessionArchived(sessionId, archived)}
+        onRenameWorkspace={(workspaceId, title) => void runtime.renameWorkspace(workspaceId, title)}
+        onDeleteWorkspace={(workspaceId) => void runtime.deleteWorkspace(workspaceId)}
+        onMoveWorkspace={(workspaceId, direction) => void runtime.moveWorkspace(workspaceId, direction)}
+        onMoveSession={(workspaceId, sessionId, direction) => void runtime.moveSession(workspaceId, sessionId, direction)}
+      />}
+    >
       {sidebarOpen && <button className="sidebar-scrim" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />}
 
       <main className="workbench">
         <RuntimeHeader
           state={state}
+          busy={runtime.commandRunning}
           onMenu={() => setSidebarOpen(true)}
           onAgent={runtime.selectAgent}
           onProvider={runtime.selectProvider}
+          onEffort={runtime.selectEffort}
           onUndo={runtime.undo}
           onFork={runtime.fork}
-          onClear={runtime.clear}
+          onClear={async () => setClearConfirmOpen(true)}
+          utilities={(
+            <TaskDock
+              tasks={Object.values(state.tasks)}
+              onStop={runtime.stopTask}
+              onStopAll={runtime.stopAllTasks}
+            />
+          )}
         />
 
         {state.error && (
           <div className="error-banner" role="alert">
             <AlertCircle size={16} />
             <span>{state.error}</span>
-            {!state.connected && state.current && (
+            {!state.eventStreamConnected && state.current && (
               <button className="text-button" onClick={() => void runtime.resumeSession()}>
                 <RefreshCw size={14} /> Reconnect
               </button>
@@ -71,23 +242,73 @@ export function App() {
           </div>
         )}
 
+        {runtime.notification && (
+          <div className="ui-notification" role="status">
+            <AlertCircle size={15} />
+            <span>{runtime.notification}</span>
+            <button className="icon-button small" title="Dismiss" aria-label="Dismiss notification" onClick={runtime.clearNotification}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {state.current ? (
-          <>
-            <Timeline entries={state.entries} turnRunning={state.turnRunning} />
+          <div className="conversation-scroll" data-conversation-scroll>
+            <ThreadActivityPanel
+              threads={state.threads}
+              currentThreadId={state.current.thread_id}
+              onSelect={(thread) => void runtime.selectThread(thread)}
+            />
+            <Timeline
+              key={`${state.current.session_id}/${state.current.thread_id}`}
+              entries={state.entries}
+              assistantDraft={state.assistantDraft}
+              turnRunning={state.turnRunning}
+              onRetry={runtime.retryLast}
+              onBranch={runtime.fork}
+              hasOlder={Boolean(state.historyCursor)}
+              loadingOlder={state.historyLoading}
+              onLoadOlder={runtime.loadEarlier}
+            />
             <div className="runtime-controls">
-              <TaskDock
-                tasks={Object.values(state.tasks)}
-                onStop={runtime.stopTask}
-                onStopAll={runtime.stopAllTasks}
+              {pendingCommand && (
+                <div className="command-progress" role="status">
+                  <LoaderCircle size={13} className="spin" /> Running /{pendingCommand}
+                </div>
+              )}
+              {commandOutput && (
+                <CommandOutput
+                  key={`${commandOutput.command}:${commandOutput.message.length}`}
+                  result={commandOutput}
+                  onClose={() => setCommandOutput(null)}
+                />
+              )}
+              <TodoDock items={state.todos} />
+              <QueueDock
+                items={state.pendingInputs}
+                running={state.turnRunning}
+                deliveryStates={state.deliveryStates}
+                onUpdate={runtime.updatePendingInput}
               />
+              <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
               <Composer
                 running={state.turnRunning}
-                queued={state.queuedMessages}
-                onSend={runtime.sendMessage}
+                disabled={state.loading || runtime.commandRunning}
+                commands={commands}
+                draft={composerDraft}
+                allowImages={Boolean(state.providers
+                  .find((provider) => provider.name === state.current?.provider)
+                  ?.models.find((model) => model.model === state.current?.model)
+                  ?.input_modalities.includes("image"))}
+                usage={state.usage}
+                contextWindow={state.current.context_window}
+                onSend={sendComposerInput}
+                inputHistory={inputHistory}
+                onSubmitted={recordSubmittedInput}
                 onInterrupt={runtime.interrupt}
               />
             </div>
-          </>
+          </div>
         ) : (
           <section className="empty-workbench">
             <TerminalSquare size={42} strokeWidth={1.5} />
@@ -115,6 +336,9 @@ export function App() {
 
       {newSessionOpen && (
         <NewSessionDialog
+          defaultWorkspace={state.current?.workspace_root || runtime.workspaces[0]?.path || ""}
+          workspaces={runtime.workspaces}
+          listDirectory={runtime.listDirectories}
           onClose={() => setNewSessionOpen(false)}
           onCreate={(workspace) => {
             setNewSessionOpen(false);
@@ -123,44 +347,180 @@ export function App() {
         />
       )}
 
+      {settingsOpen && (
+        <SettingsDialog
+          themePreference={themePreference}
+          onThemeChange={(preference) => {
+            setThemePreference(preference);
+            window.localStorage.setItem("xbot.theme", preference);
+          }}
+          sessionId={state.current?.session_id}
+          threadId={state.current?.thread_id}
+          loadSessionPolicy={runtime.loadSessionPolicy}
+          updateSessionPolicy={runtime.updateSessionPolicy}
+          loadPluginConfig={runtime.loadPluginConfig}
+          updatePluginConfig={runtime.updatePluginConfig}
+          onClose={closeSettings}
+        />
+      )}
+
+      {helpQuery !== null && (
+        <CommandHelpDialog
+          commands={commands}
+          initialQuery={helpQuery}
+          onClose={() => setHelpQuery(null)}
+          onSelect={(command) => {
+            setHelpQuery(null);
+            setComposerDraft((current) => ({
+              id: (current?.id || 0) + 1,
+              value: commandDraftValue(command),
+            }));
+          }}
+        />
+      )}
+
+      {clearConfirmOpen && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setClearConfirmOpen(false);
+        }}>
+          <section className="dialog clear-history-dialog" role="dialog" aria-modal="true" aria-labelledby="clear-history-title">
+            <div className="dialog-heading">
+              <div>
+                <span className="eyebrow">Conversation history</span>
+                <h2 id="clear-history-title">Clear this thread?</h2>
+              </div>
+              <button type="button" className="icon-button" title="Close" aria-label="Close clear confirmation" onClick={() => setClearConfirmOpen(false)}>
+                <X size={17} />
+              </button>
+            </div>
+            <p>This removes persisted messages from the current thread. Session settings, artifacts, and plugin state are preserved.</p>
+            <div className="dialog-actions">
+              <button type="button" className="secondary-button" autoFocus onClick={() => setClearConfirmOpen(false)}>Cancel</button>
+              <button type="button" className="secondary-button danger" onClick={() => {
+                setClearConfirmOpen(false);
+                void runtime.clear();
+              }}><Trash2 size={15} /> Clear history</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {deleteCandidate && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setDeleteCandidate(null);
+        }}>
+          <section className="dialog delete-session-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-session-title">
+            <div className="dialog-heading">
+              <div>
+                <span className="eyebrow">Persisted session</span>
+                <h2 id="delete-session-title">Delete this session?</h2>
+              </div>
+              <button type="button" className="icon-button" title="Close" aria-label="Close delete confirmation" onClick={() => setDeleteCandidate(null)}>
+                <X size={17} />
+              </button>
+            </div>
+            <p><strong>{deleteCandidate.title || deleteCandidate.session_id}</strong> and its persisted history, artifacts, and plugin state will be permanently deleted.</p>
+            <code>{deleteCandidate.session_id}</code>
+            <div className="dialog-actions">
+              <button type="button" className="secondary-button" autoFocus onClick={() => setDeleteCandidate(null)}>Cancel</button>
+              <button type="button" className="secondary-button danger" onClick={() => {
+                const sessionId = deleteCandidate.session_id;
+                setDeleteCandidate(null);
+                void runtime.deleteSession(sessionId);
+              }}><Trash2 size={15} /> Delete session</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {state.loading && <div className="loading-line" aria-label="Loading" />}
-    </div>
+    </DshAppFrame>
   );
 }
 
+function localCommandResult(command: string, message: string): CommandResultData {
+  return { command, status: "error", message, effects: [] };
+}
+
+function commandDraftValue(command: CommandInfo): string {
+  return command.usage === command.slash ? command.slash : `${command.slash} `;
+}
+
+function splitHead(value: string): [string, string] {
+  const input = value.trim();
+  const separator = input.search(/\s/);
+  if (separator < 0) return [input, ""];
+  return [input.slice(0, separator), input.slice(separator).trim()];
+}
+
+function unquote(value: string): string {
+  const input = value.trim();
+  if (input.length > 1 && ((input.startsWith('"') && input.endsWith('"')) || (input.startsWith("'") && input.endsWith("'")))) {
+    return input.slice(1, -1);
+  }
+  return input;
+}
+
+function readThemePreference(): ThemePreference {
+  const value = window.localStorage.getItem("xbot.theme");
+  return value === "light" || value === "dark" || value === "system" ? value : "system";
+}
+
 function NewSessionDialog({
+  defaultWorkspace,
+  workspaces,
+  listDirectory,
   onClose,
   onCreate,
 }: {
+  defaultWorkspace: string;
+  workspaces: readonly { workspace_id: string; path: string; title: string }[];
+  listDirectory: (path?: string, signal?: AbortSignal) => Promise<DirectoryListingData>;
   onClose: () => void;
   onCreate: (workspace: string) => void;
 }) {
-  const [workspace, setWorkspace] = useState("");
+  const [workspace, setWorkspace] = useState(defaultWorkspace);
+  const [browsing, setBrowsing] = useState(false);
+  if (browsing) return <DirectoryBrowser
+    initialPath={workspace || undefined}
+    listDirectory={listDirectory}
+    onClose={() => setBrowsing(false)}
+    onOpen={(path) => { setWorkspace(path); setBrowsing(false); }}
+  />;
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.currentTarget === event.target) onClose();
     }}>
-      <form className="dialog new-session-dialog" onSubmit={(event) => {
-        event.preventDefault();
-        onCreate(workspace);
-      }}>
+      <form
+        className="dialog new-session-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-session-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onCreate(workspace);
+        }}
+      >
         <div className="dialog-heading">
           <div>
             <span className="eyebrow">Session</span>
-            <h2>New workspace</h2>
+            <h2 id="new-session-title">New workspace</h2>
           </div>
           <button type="button" className="icon-button" title="Close" aria-label="Close" onClick={onClose}>
             <X size={17} />
           </button>
         </div>
         <label className="field-label" htmlFor="workspace-root">Workspace path</label>
-        <input
-          id="workspace-root"
-          autoFocus
-          value={workspace}
-          onChange={(event) => setWorkspace(event.target.value)}
-          placeholder="Server default"
-        />
+        <div className="workspace-path-control">
+          <input id="workspace-root" autoFocus value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Server default" />
+          <button type="button" className="icon-button" aria-label="Browse folders" title="Browse folders" onClick={() => setBrowsing(true)}><FolderSearch size={17} /></button>
+        </div>
+        {workspaces.length > 0 && <div className="workspace-quick-list" aria-label="Recent workspaces">
+          {workspaces.slice(0, 5).map((item) => <button type="button" key={item.workspace_id} className={item.path === workspace ? "selected" : ""} onClick={() => setWorkspace(item.path)}><span>{item.title}</span><small>{item.path}</small></button>)}
+        </div>}
         <div className="dialog-actions">
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
           <button type="submit" className="primary-button"><Plus size={16} /> Create</button>

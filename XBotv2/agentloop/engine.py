@@ -18,30 +18,53 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Unpack
+from pydantic import JsonValue
 
 from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from XBotv2.agentloop.inbox import AgentInbox, InboxInput, InboxTarget
-from XBotv2.core.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
-from XBotv2.core.loop import DEFAULT_MAX_ITERATIONS, LoopSettings, LoopState
-from XBotv2.core.providers import BaseProvider
-from XBotv2.core.runtime import SessionInfo
+from XBotv2.agentloop.contracts import InboxInput, InboxSplice, InboxTarget
+from XBotv2.agentloop.inbox import AgentInbox
+from XBotv2.agentloop.protocol import agentloop_event
+from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
+from XBotv2.agentloop.contracts import (
+    DEFAULT_MAX_ITERATIONS,
+    LoopSettings,
+    LoopSettingsUpdate,
+    LoopState,
+    ModelRequest,
+)
+from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
+    ArtifactValue,
     ImageContent,
     Message,
     ModelChunk,
     ModelResponse,
     merge_model_chunk,
 )
-from XBotv2.core.context import ContextComponent
+from XBotv2.core.runtime_logging import (
+    DEFAULT_RUNTIME_LOG,
+    RuntimeLog,
+    push_log_context,
+    reset_log_context,
+)
+from XBotv2.context_builder import (
+    BEFORE_CONTEXT_BUILD,
+    BUILD_CONTEXT,
+    CONTEXT_BUILT,
+    ContextBuildRequest,
+    ContextBuilt,
+)
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.tokens import (
     REQUEST_CONTEXT_WINDOW_KEY,
@@ -49,29 +72,56 @@ from XBotv2.core.tokens import (
     REQUEST_PROVIDER_KEY,
     estimate_request_tokens,
 )
-from XBotv2.core.tools import ToolCall, ToolCallDelta, provider_tool_schema
+from XBotv2.core.timing import TIMING_METADATA_KEY
+from XBotv2.llm import ModelPort
+from XBotv2.session.contracts import SessionInfo
+from XBotv2.core.tools import (
+    ClientEvent,
+    Tool,
+    ToolCall,
+    ToolCallDelta,
+    provider_tool_schema,
+)
 
-_UNCHANGED = object()
+class _Unchanged:
+    """Sentinel distinguishing an omitted model replacement from ``None``."""
+
+
+_UNCHANGED = _Unchanged()
+
+
+def _runtime_input(
+    source: str,
+    metadata: dict[str, JsonValue] | None,
+) -> dict[str, JsonValue]:
+    """Retain display provenance without copying private inbox payloads."""
+    if source == "user":
+        return {}
+    values = metadata or {}
+    event = values.get("kind")
+    if not isinstance(event, str) or not event:
+        event = "continuation" if values.get("continuation") else "injected"
+    return {"runtime_input": {"source": source, "event": event}}
 
 
 @dataclass(slots=True)
 class _TurnStartResult:
     user_input: str
-    events: list[dict[str, Any]]
+    events: list[dict[str, JsonValue]]
     proceed: bool
 
 
 @dataclass(slots=True)
 class _ContextBuildResult:
-    messages: list[Any] | None = None
-    event: dict[str, Any] | None = None
+    messages: list[Message] | None = None
+    event: dict[str, JsonValue] | None = None
     turn_complete: bool | None = None
 
 
 @dataclass(slots=True)
 class _ModelRequestResult:
-    request: dict[str, Any] | None = None
-    event: dict[str, Any] | None = None
+    request: ModelRequest | None = None
+    event: dict[str, JsonValue] | None = None
     turn_complete: bool | None = None
     rebuild: bool = False
 
@@ -81,15 +131,17 @@ class _ToolBatchResult:
     stop_loop: bool = False
     turn_complete: bool = False
 
-logger = logging.getLogger("xbotv2.engine")
 
+@dataclass(slots=True)
+class _ModelResponseEvent:
+    response: ModelResponse
 
 def xbot_tool_call_deltas(
     chunk: ModelChunk,
     tool_stream_ids: dict[int, str],
-) -> list[dict[str, Any]]:
+) -> list[dict[str, JsonValue]]:
     raw_chunks = chunk.tool_call_chunks or chunk.tool_calls
-    deltas: list[dict[str, Any]] = []
+    deltas: list[dict[str, JsonValue]] = []
     for index, tool_call in enumerate(raw_chunks):
         chunk_index = tool_call.index if isinstance(tool_call, ToolCallDelta) else index
         prior_id = tool_stream_ids.get(chunk_index)
@@ -110,9 +162,9 @@ def xbot_tool_call_deltas(
     return deltas
 
 
-def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
+def tool_result_event_data(message: Message, name: str) -> dict[str, JsonValue]:
     """Build the client-visible result without dropping structured metadata."""
-    data: dict[str, Any] = {
+    data: dict[str, JsonValue] = {
         "tool_call_id": message.tool_call_id,
         "name": name,
         "content": message.additional_kwargs.get(
@@ -131,20 +183,26 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
             if isinstance(message.artifact, (list, tuple))
             else [message.artifact]
         )
-        data["artifacts"] = [
-            artifact.to_dict()
-            if hasattr(artifact, "to_dict")
-            else dict(artifact)
-            if isinstance(artifact, dict)
-            else {"id": str(artifact)}
-            for artifact in artifacts
-        ]
+        data["artifacts"] = [_artifact_event_data(artifact) for artifact in artifacts]
     if message.images:
-        data["images"] = [image.to_dict() for image in message.images]
+        data["images"] = [image.model_dump(mode="json") for image in message.images]
+    timing = message.response_metadata.get(TIMING_METADATA_KEY)
+    if isinstance(timing, dict):
+        data["timing"] = timing
     return data
 
 
-class Engine:
+def _artifact_event_data(
+    artifact: ArtifactValue,
+) -> dict[str, JsonValue]:
+    if isinstance(artifact, ArtifactRef):
+        return artifact.model_dump(mode="json")
+    if isinstance(artifact, Mapping):
+        return dict(artifact)
+    raise TypeError(f"Unsupported artifact reference: {type(artifact).__name__}")
+
+
+class Engine(AgentLoopDriverPort):
     """Core ReAct loop engine.
 
     No plugin imports. No DAG, skills, or compaction logic.
@@ -161,12 +219,13 @@ class Engine:
     def __init__(
         self,
         *,
-        model_client: BaseProvider,
-        tools: Any,
+        model_client: ModelPort,
+        tools: ToolsPort,
         events: EventPort,
         state: LoopState,
         settings: LoopSettings,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.model_client = model_client
         self.tools = tools
@@ -174,7 +233,12 @@ class Engine:
         self.state = state
         self.settings = settings
         self.max_iterations = max_iterations
-        self.inbox = AgentInbox(record_splice=self._record_inbox_splice)
+        self._log = runtime_log.bind("engine")
+        self.inbox = AgentInbox(
+            items=state.inbox_items,
+            sink=state.inbox_sink,
+            record_splice=self._record_inbox_splice,
+        )
         self.continuation: bool = False
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -182,12 +246,8 @@ class Engine:
         )
 
     @property
-    def messages(self) -> list[Message]:
+    def messages(self) -> ConversationHistory:
         return self.state.messages
-
-    @messages.setter
-    def messages(self, value: list[Message]) -> None:
-        self.state.messages = value
 
     @property
     def turn_count(self) -> int:
@@ -223,8 +283,8 @@ class Engine:
             result = await self._events.serial(event, payload)
             if result is not None and not isinstance(result, dict):
                 raise TypeError(
-                    f"Short-circuit hook {event} must return a dict or "
-                    f"ToolDecision, got {type(result).__name__}"
+                    f"Short-circuit hook {event} must return a dict, "
+                    f"got {type(result).__name__}"
                 )
             return result
         await self._events.emit(event, payload)
@@ -241,10 +301,6 @@ class Engine:
             return
         ctx = self._make_event_context()
         await self._dispatch(Events.SESSION_START, ctx, short_circuit=False)
-
-    async def resume_session(self) -> None:
-        """Dispatch resume for state loaded by its owning plugin."""
-        await self._resume_loaded_state()
 
     async def _resume_loaded_state(self) -> None:
         self._close_interrupted_tool_calls("session_restarted")
@@ -300,29 +356,94 @@ class Engine:
             results = list(after_result["tool_results"])
         return results
 
-    async def _record_inbox_splice(self, event: dict[str, Any]) -> None:
+    async def _record_inbox_splice(self, event: InboxSplice) -> None:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
             Events.INBOX_SPLICE,
-            self._make_event_context(client_event=event),
+            self._make_event_context(inbox_splice=event),
             short_circuit=False,
         )
 
     def set_wake_driver(self, wake_driver: Callable[[], None] | None) -> None:
         self.inbox.set_wake_driver(wake_driver)
 
-    async def followup(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.followup(content, **kwargs)
+    async def followup(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.followup(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
-    async def steer(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.steer(content, **kwargs)
+    async def steer(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.steer(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
-    async def inject(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.inject(content, **kwargs)
+    async def inject(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.inject(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
     @property
     def pending_input_count(self) -> int:
         return len(self.inbox)
+
+    @property
+    def pending_inputs(self) -> tuple[InboxInput, ...]:
+        return tuple(self.inbox.pending)
+
+    async def edit_input(self, message_id: str, content: str) -> InboxInput:
+        return await self.inbox.edit(message_id, content)
+
+    async def remove_input(self, message_id: str) -> InboxInput:
+        return await self.inbox.remove(message_id)
+
+    async def retarget_input(
+        self,
+        message_id: str,
+        target: InboxTarget,
+    ) -> InboxInput:
+        return await self.inbox.retarget(message_id, target)
 
     async def discard_inputs(self) -> None:
         await self.inbox.discard()
@@ -330,9 +451,9 @@ class Engine:
     def configure(
         self,
         *,
-        model_client: Any = _UNCHANGED,
+        model_client: ModelPort | _Unchanged = _UNCHANGED,
         max_iterations: int | None = None,
-        **settings: Any,
+        **settings: Unpack[LoopSettingsUpdate],
     ) -> None:
         """Replace loop-owned model/settings without acquiring plugin state."""
         if model_client is not _UNCHANGED:
@@ -352,8 +473,8 @@ class Engine:
         *,
         request_id: str = "",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         await self.inbox.send(
             user_input,
             target=InboxTarget.NEXT_TURN,
@@ -363,28 +484,36 @@ class Engine:
             images=images,
             artifacts=artifacts,
         )
-        initial_claim = True
         async for event in self.run_pending(request_id=request_id):
-            if initial_claim and event.get("type") == "_inbox_claimed":
-                initial_claim = False
-                continue
-            initial_claim = False
             yield event
 
     async def run_pending(
         self,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         """Run one turn claimed from the agent-owned inbox."""
         claimed = await self.inbox.claim_turn()
         if not claimed:
             return
         request_token = self._request_id.set(request_id)
+        log_token = push_log_context(
+            session_id=self.session.session_id,
+            thread_id=self.session.thread_id,
+            request_id=request_id,
+        )
         turn_started = False
         turn_ended = False
         self.continuation = any(
             bool(item.metadata.get("continuation")) for item in claimed
+        )
+        turn_started_at = time.perf_counter()
+        outcome = "completed"
+        self._log.info(
+            "turn.start",
+            inputs=len(claimed),
+            input_chars=sum(len(item.content) for item in claimed),
+            continuation=self.continuation,
         )
         try:
             async for event in self._run_turn_impl(
@@ -396,7 +525,8 @@ class Engine:
                     turn_ended = True
                 yield event
         except asyncio.CancelledError:
-            logger.info("Turn %s interrupted by client", self.turn_count)
+            outcome = "cancelled"
+            self._log.info("turn.interrupted", turn=self.turn_count)
             self._close_interrupted_tool_calls("client_interrupt")
             if not turn_ended:
                 turn_ctx = self._make_event_context(stop_reason="client_interrupt",
@@ -404,16 +534,21 @@ class Engine:
                 await self._dispatch(Events.TURN_END, turn_ctx,
                     short_circuit=False,
                 )
-            yield {
-                "type": "turn_cancelled",
-                "data": {
+            yield agentloop_event(
+                "turn_cancelled",
+                {
                     "turn": self.turn_count,
                     "reason": "client_interrupt",
                 },
-            }
+            )
             raise
         except BaseException as exc:
-            logger.exception("Turn failed")
+            outcome = "error"
+            self._log.exception(
+                "turn.failed",
+                turn=self.turn_count,
+                error_type=type(exc).__name__,
+            )
             current_input = next(
                 (
                     item.content
@@ -433,30 +568,51 @@ class Engine:
                 user_input=current_input,
             )
             await self._dispatch(Events.ON_ERROR, ctx, short_circuit=False)
-            yield {
-                "type": "error",
-                "data": {
+            yield agentloop_event(
+                "error",
+                {
                     "code": "engine_error",
                     "message": str(exc),
                     "details": {"exception_type": type(exc).__name__},
                 },
-            }
+            )
             if turn_started:
-                yield {
-                    "type": "turn_finished",
-                    "data": {"turn": self.turn_count},
-                }
+                yield agentloop_event(
+                    "turn_finished",
+                    {"turn": self.turn_count},
+                )
         finally:
             try:
+                await self.inbox.reconcile(
+                    [item.message_id for item in claimed],
+                    {
+                        message.input_id
+                        for message in self.messages
+                        if message.input_id
+                    },
+                )
                 await self._publish_state_change()
+            except Exception:
+                outcome = "state_error"
+                raise
             finally:
                 self.continuation = False
                 self._request_id.reset(request_token)
+                self._log.info(
+                    "turn.finish",
+                    turn=self.turn_count,
+                    outcome=outcome,
+                    duration_ms=round(
+                        (time.perf_counter() - turn_started_at) * 1000,
+                        3,
+                    ),
+                )
+                reset_log_context(log_token)
 
     async def _run_turn_impl(
         self,
         claimed: list[InboxInput],
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
@@ -516,10 +672,10 @@ class Engine:
                 assert model_preparation.request is not None
                 model_request = model_preparation.request
                 if finalizing:
-                    model_request["tools"] = []
-                    model_request["llm"] = self._llm_without_tools()
-                context_messages = model_request["messages"]
-                llm_with_tools = model_request["llm"]
+                    model_request.tools = []
+                    model_request.llm = self._llm_without_tools()
+                context_messages = model_request.messages
+                llm_with_tools = model_request.llm
                 break
             if turn_complete:
                 break
@@ -529,17 +685,14 @@ class Engine:
                     llm_with_tools,
                     context_messages,
                 ):
-                    if model_event.get("type") == "_model_response":
-                        response = model_event["data"]["response"]
+                    if isinstance(model_event, _ModelResponseEvent):
+                        response = model_event.response
                     else:
                         yield model_event
                 if response is None:
                     raise RuntimeError("LLM stream completed without a response")
             except asyncio.TimeoutError as exc:
-                logger.error(
-                    "engine.turn LLM timed out (turn=%d)",
-                    self.turn_count,
-                )
+                self._log.error("llm.request.timeout", turn=self.turn_count)
                 err_ctx = self._make_event_context(
                     context_messages=context_messages,
                     model_request=model_request,
@@ -551,7 +704,13 @@ class Engine:
                     short_circuit=False,
                 )
                 raise asyncio.TimeoutError("LLM call timed out") from None
-            except BaseException as exc:
+            except Exception as exc:
+                self._log.exception(
+                    "llm.request.error",
+                    provider=self.settings.provider,
+                    model=self.settings.model,
+                    error_type=type(exc).__name__,
+                )
                 err_ctx = self._make_event_context(context_messages=context_messages,
                     model_request=model_request,
                     error=exc,
@@ -576,11 +735,11 @@ class Engine:
                     "stop_reason", "unknown"
                 )
                 context = " after ToolResult" if after_tool else ""
-                logger.debug(
-                    "invalid model response%s stop_reason=%s reasoning=%r",
-                    context,
-                    stop_reason,
-                    reasoning[:1000],
+                self._log.debug(
+                    "llm.response.invalid",
+                    after_tool=after_tool,
+                    stop_reason=stop_reason,
+                    reasoning_chars=len(reasoning),
                 )
                 raise RuntimeError(
                     f"LLM returned no assistant content or ToolUse{context} "
@@ -588,40 +747,48 @@ class Engine:
                 )
             response_metadata = dict(response.response_metadata)
             response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
-                context_messages,
-                list(model_request.get("tools") or []),
+                model_request.messages,
+                model_request.tools,
             )
             response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.settings.context_window
             response_metadata[REQUEST_PROVIDER_KEY] = (
                 self.session.provider
             )
+            response_id = f"assistant-{self.turn_count}-{iteration}"
+            response_additional = dict(response.additional_kwargs)
+            response_additional["xbot_message_id"] = response_id
             response_msg = Message(
                 role="assistant",
                 parts=response.parts,
                 usage_metadata=response.usage_metadata,
                 response_metadata=response_metadata,
-                additional_kwargs=response.additional_kwargs,
+                additional_kwargs=response_additional,
             )
-            self.messages.append(response_msg)
-            yield {
-                "type": "assistant_message",
-                "data": {
+            response_history = [*self.messages, response_msg]
+            yield agentloop_event(
+                "assistant_message",
+                {
+                    "id": response_id,
                     "content": content,
-                    "tool_calls": [call.to_dict() for call in response.tool_calls],
+                    "tool_calls": [
+                        call.model_dump(mode="json") for call in response.tool_calls
+                    ],
+                    "timing": response_metadata.get(TIMING_METADATA_KEY),
                 },
-            }
+            )
             if response_msg.usage_metadata:
-                yield {
-                    "type": "usage",
-                    "data": response_msg.usage_metadata,
-                }
+                yield agentloop_event("usage", response_msg.usage_metadata)
 
             # ON_ASSISTANT_MESSAGE hook
-            am_ctx = self._make_event_context(agent_response=response
+            am_ctx = self._make_event_context(
+                history_messages=response_history,
+                agent_response=response,
             )
             await self._dispatch(Events.ASSISTANT_MESSAGE, am_ctx, short_circuit=False)
 
-            response_ctx = self._make_event_context(context_messages=context_messages,
+            response_ctx = self._make_event_context(
+                history_messages=response_history,
+                context_messages=context_messages,
                 agent_response=response,
                 model_request=model_request,
                 model_response=response,
@@ -631,9 +798,13 @@ class Engine:
             )
 
             # AFTER_AGENT hook
-            aa_ctx = self._make_event_context(agent_response=response)
+            aa_ctx = self._make_event_context(
+                history_messages=response_history,
+                agent_response=response,
+            )
             agent_result = await self._dispatch(Events.AFTER_AGENT, aa_ctx, short_circuit=True
             )
+            self.messages.append(response_msg)
             if agent_result is not None:
                 if isinstance(agent_result, dict):
                     if "messages" in agent_result:
@@ -644,9 +815,7 @@ class Engine:
                 else:
                     turn_complete = True
                 if turn_complete:
-                    claimed_event = await self._claim_step_inputs()
-                    if claimed_event is not None:
-                        yield claimed_event
+                    if await self._claim_step_inputs():
                         continue
                     break
 
@@ -656,17 +825,15 @@ class Engine:
                 # A complete response: fold any pending input so it is
                 # answered in this same turn instead of waiting for a later
                 # one. This is the no-tool-boundary path.
-                claimed_event = await self._claim_step_inputs()
-                if claimed_event is not None:
-                    yield claimed_event
+                if await self._claim_step_inputs():
                     continue
                 turn_complete = True
                 break
 
             batch_result = None
             async for tool_event in self._run_tool_batch(response):
-                if tool_event.get("type") == "_tool_batch_result":
-                    batch_result = tool_event["data"]["result"]
+                if isinstance(tool_event, _ToolBatchResult):
+                    batch_result = tool_event
                 else:
                     yield tool_event
             if batch_result is None:
@@ -674,9 +841,7 @@ class Engine:
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
-            claimed_event = await self._claim_step_inputs()
-            if claimed_event is not None:
-                yield claimed_event
+            await self._claim_step_inputs()
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -686,27 +851,29 @@ class Engine:
     async def _run_tool_batch(
         self,
         response: ModelResponse,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue] | _ToolBatchResult]:
         tool_calls = list(response.tool_calls)
         if not await self._prepare_tool_calls(
             tool_calls,
             agent_response=response,
         ):
-            yield self._tool_batch_result_event(
-                _ToolBatchResult(stop_loop=True)
-            )
+            yield _ToolBatchResult(stop_loop=True)
             return
 
-        logger.info(
-            "engine.turn tool_calls_parsed turn=%d n=%d names=%s",
-            self.turn_count,
-            len(tool_calls),
-            [call.name for call in tool_calls],
+        self._log.info(
+            "tool.batch.started",
+            turn=self.turn_count,
+            count=len(tool_calls),
+            names=[call.name for call in tool_calls],
         )
-        yield {
-            "type": "tool_calls_started",
-            "data": {"tool_calls": [call.to_dict() for call in tool_calls]},
-        }
+        yield agentloop_event(
+            "tool_calls_started",
+            {
+                "tool_calls": [
+                    call.model_dump(mode="json") for call in tool_calls
+                ]
+            },
+        )
         tool_names_by_id = {
             call.id: call.name or "tool" for call in tool_calls
         }
@@ -725,12 +892,16 @@ class Engine:
                 tool_names_by_id.get(str(message.tool_call_id), "tool"),
             )
 
-        logger.info(
-            "engine.turn tool_messages_built turn=%d n=%d ids=%s statuses=%s",
-            self.turn_count,
-            len(tool_messages),
-            [message.tool_call_id for message in tool_messages],
-            [message.status for message in tool_messages],
+        self._log.info(
+            "tool.batch.finished",
+            turn=self.turn_count,
+            count=len(tool_messages),
+            names=[
+                tool_names_by_id.get(str(message.tool_call_id), "tool")
+                for message in tool_messages
+            ],
+            statuses=[message.status for message in tool_messages],
+            result_chars=sum(len(str(message.content)) for message in tool_messages),
         )
         self.messages.extend(tool_messages)
         # Announce committed state before exposing results or requesting the
@@ -751,11 +922,8 @@ class Engine:
                 await self._dispatch(Events.CLIENT_EVENT, event_ctx,
                     short_circuit=False,
                 )
-                yield client_event
-            yield {
-                "type": "tool_result",
-                "data": event_payload,
-            }
+                yield client_event.model_dump(mode="json")
+            yield agentloop_event("tool_result", event_payload)
 
         for message in tool_messages:
             message_ctx = self._make_event_context(tool_results=[message],
@@ -765,16 +933,10 @@ class Engine:
             )
 
         if any(message.turn_complete for message in tool_messages):
-            yield self._tool_batch_result_event(
-                _ToolBatchResult(stop_loop=True, turn_complete=True)
-            )
+            yield _ToolBatchResult(stop_loop=True, turn_complete=True)
             return
 
-        yield self._tool_batch_result_event(_ToolBatchResult())
-
-    @staticmethod
-    def _tool_batch_result_event(result: _ToolBatchResult) -> dict[str, Any]:
-        return {"type": "_tool_batch_result", "data": {"result": result}}
+        yield _ToolBatchResult()
 
     async def _start_turn(
         self,
@@ -782,12 +944,18 @@ class Engine:
         *,
         input_kind: str = "user_message",
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        input_id: str = "",
+        source: str = "user",
+        metadata: dict[str, JsonValue] | None = None,
     ) -> _TurnStartResult:
         accepted = await self._accept_user_message(
             user_input,
             images=images,
             artifacts=artifacts,
+            input_id=input_id,
+            source=source,
+            metadata=metadata,
             new_turn=True,
         )
         if not accepted.proceed:
@@ -807,11 +975,19 @@ class Engine:
             # A hook replaced the user input (e.g. the goal plugin injects the
             # active goal context on a continuation turn); reflect it in the
             # retained message so the model sees it on the next step.
-            self.messages[-1] = Message(role="user", content=str(turn_ctx.user_input))
-        accepted.events.append({
-            "type": "turn_started",
-            "data": {"turn": self.turn_count},
-        })
+            previous = self.messages[-1]
+            self.state.history.replace_last(Message(
+                role="user",
+                content=str(turn_ctx.user_input),
+                input_id=previous.input_id,
+                images=previous.images,
+                artifact=previous.artifact,
+                additional_kwargs=previous.additional_kwargs,
+            ))
+        accepted.events.append(agentloop_event(
+            "turn_started",
+            {"turn": self.turn_count},
+        ))
         return accepted
 
     async def _start_claimed_turn(
@@ -827,41 +1003,44 @@ class Engine:
             ),
             len(claimed) - 1,
         )
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, JsonValue]] = []
         for item in claimed[:primary_index]:
             accepted = await self._accept_user_message(
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
+                input_id=item.message_id,
+                source=item.source,
+                metadata=item.metadata,
             )
             events.extend(accepted.events)
             if not accepted.proceed:
+                await self.inbox.commit([
+                    claimed_item.message_id for claimed_item in claimed
+                ])
                 return _TurnStartResult(item.content, events, False)
         primary = claimed[primary_index]
         started = await self._start_turn(
             primary.content,
             images=primary.images,
             artifacts=primary.artifacts,
+            input_id=primary.message_id,
+            source=primary.source,
+            metadata=primary.metadata,
         )
-        started.events = [
-            {
-                "type": "_inbox_claimed",
-                "data": {"message_ids": [item.message_id for item in claimed]},
-            },
-            *events,
-            *started.events,
-        ]
+        await self.inbox.commit([item.message_id for item in claimed])
+        started.events = [*events, *started.events]
         return started
 
     @staticmethod
-    def _user_message_rejected_event() -> dict[str, Any]:
-        return {
-            "type": "error",
-            "data": {
+    def _user_message_rejected_event() -> dict[str, JsonValue]:
+        return agentloop_event(
+            "error",
+            {
                 "code": "user_message_rejected",
                 "message": "User message was rejected before entering history.",
             },
-        }
+        )
 
     async def _build_turn_context(self) -> _ContextBuildResult:
         before_ctx = self._make_event_context()
@@ -869,8 +1048,6 @@ class Engine:
             short_circuit=True,
         )
         if isinstance(before_context_result, dict):
-            if "messages" in before_context_result:
-                self.messages = list(before_context_result["messages"])
             if "event" in before_context_result:
                 return _ContextBuildResult(
                     event=before_context_result["event"],
@@ -882,57 +1059,34 @@ class Engine:
                 turn_complete=True,
             )
 
-        context_kwargs = {
-            "messages": list(self.messages),
-            "agent_name": self.settings.agent_name,
-            "agent_role": self.settings.agent_role,
-            "user_name": self.settings.user_name,
-            "user_id": self.settings.user_id,
-            "developer_instructions": self.settings.developer_instructions,
-            "instructions": self.settings.agent_instructions,
-            "memory": self.settings.memory,
-            "runtime_paths": {
-                "workspace": self.settings.workspace,
-                "session": "session/ (read-only)",
-                "artifacts": "session/artifacts/ (read-only)",
-                "tool_results": "session/artifacts/tool_results/ (read-only)",
-            },
-            "system_notice": "",
-            "turn_count": self.turn_count,
-        }
-        build_ctx = self._make_event_context(context_kwargs=context_kwargs)
-        build_result = await self._dispatch(Events.BEFORE_CONTEXT_BUILD, build_ctx,
-            short_circuit=True,
+        build_request = ContextBuildRequest(
+            messages=list(self.messages),
+            session=self.session,
+            agent_name=self.settings.agent_name,
+            agent_role=self.settings.agent_role,
+            user_name=self.settings.user_name,
+            user_id=self.settings.user_id,
+            developer_instructions=self.settings.developer_instructions,
+            instructions=self.settings.agent_instructions,
+            memory=self.settings.memory,
+            runtime_paths=dict(self.state.variables),
+            turn_count=self.turn_count,
         )
-        if isinstance(build_result, dict):
-            if "messages" in build_result:
-                self.messages = build_result["messages"]
-                context_kwargs["messages"] = self.messages
-            if "context_kwargs" in build_result:
-                context_kwargs.update(build_result["context_kwargs"])
-            if "event" in build_result:
-                return _ContextBuildResult(
-                    event=build_result["event"],
-                    turn_complete=bool(build_result.get("turn_complete", True)),
-                )
-        elif build_result is not None:
-            return _ContextBuildResult(
-                event=self._default_hook_rejection_event(Events.BEFORE_CONTEXT_BUILD),
-                turn_complete=True,
+        build_result = await self._events.serial(
+            BEFORE_CONTEXT_BUILD,
+            build_request,
+        )
+        if build_result is not None:
+            raise TypeError(
+                f"{BEFORE_CONTEXT_BUILD} listeners must mutate "
+                "ContextBuildRequest and return None"
             )
 
-        build_request_ctx = self._make_event_context(
-            context_kwargs=context_kwargs,
-        )
-        await self._dispatch(
-            Events.CONTEXT_BUILD,
-            build_request_ctx,
-            short_circuit=False,
-        )
-        context_messages = build_request_ctx.context_messages
+        await self._events.emit(BUILD_CONTEXT, build_request)
+        context_messages = build_request.context_messages
         if context_messages is None:
             raise RuntimeError(
-                "No context builder handled before/context-build"
+                f"No context builder handled {BUILD_CONTEXT}"
             )
 
         after_ctx = self._make_event_context(context_messages=context_messages,
@@ -956,16 +1110,15 @@ class Engine:
                 turn_complete=True,
             )
 
-        complete_ctx = self._make_event_context(context_messages=context_messages,
-        )
-        await self._dispatch(Events.AFTER_CONTEXT_BUILD, complete_ctx,
-            short_circuit=False,
+        await self._events.emit(
+            CONTEXT_BUILT,
+            ContextBuilt(tuple(context_messages), self.session),
         )
         return _ContextBuildResult(messages=context_messages)
 
     async def _prepare_model_request(
         self,
-        context_messages: list[Any],
+        context_messages: list[Message],
     ) -> _ModelRequestResult:
         before_agent_ctx = self._make_event_context()
         before_agent = await self._dispatch(Events.BEFORE_AGENT, before_agent_ctx,
@@ -976,12 +1129,12 @@ class Engine:
                 self.messages.extend(before_agent["messages"])
             return _ModelRequestResult(turn_complete=True)
 
-        tools = self.tools.get_all()
-        pre_schema_request = {
-            "messages": context_messages,
-            "tools": tools,
-            "llm": self.model_client,
-        }
+        tools = self.tools.enabled()
+        pre_schema_request = ModelRequest(
+            messages=context_messages,
+            tools=list(tools),
+            llm=self.model_client,
+        )
         pre_schema_ctx = self._make_event_context(context_messages=context_messages,
             model_request=pre_schema_request,
         )
@@ -990,11 +1143,11 @@ class Engine:
         )
         if isinstance(pre_schema_result, dict):
             if "tools" in pre_schema_result:
-                tools = pre_schema_result["tools"]
-                pre_schema_request["tools"] = tools
+                tools = list(pre_schema_result["tools"])
+                pre_schema_request.tools = tools
             if "messages" in pre_schema_result:
-                context_messages = pre_schema_result["messages"]
-                pre_schema_request["messages"] = context_messages
+                context_messages = list(pre_schema_result["messages"])
+                pre_schema_request.messages = context_messages
             if "event" in pre_schema_result:
                 return _ModelRequestResult(
                     event=pre_schema_result["event"],
@@ -1007,12 +1160,15 @@ class Engine:
                 event=self._default_hook_rejection_event(Events.BEFORE_TOOL_SCHEMA_BIND),
                 turn_complete=True,
             )
+        pre_schema_request = pre_schema_ctx.model_request or pre_schema_request
+        tools = list(pre_schema_request.tools)
+        context_messages = list(pre_schema_request.messages)
 
-        model_request = {
-            "messages": context_messages,
-            "tools": tools,
-            "llm": self._bind_tools_for_provider(tools),
-        }
+        model_request = ModelRequest(
+            messages=context_messages,
+            tools=list(tools),
+            llm=self._bind_tools_for_provider(list(tools)),
+        )
         schema_ctx = self._make_event_context(context_messages=context_messages,
             model_request=model_request,
         )
@@ -1022,10 +1178,16 @@ class Engine:
 
         request_ctx = self._make_event_context(
             context_messages=context_messages,
-            model_request=dict(model_request),
+            model_request=ModelRequest(
+                messages=list(model_request.messages),
+                tools=list(model_request.tools),
+                llm=model_request.llm,
+            ),
         )
         model_request = request_ctx.model_request
         assert model_request is not None
+        tools_before_hook = tuple(model_request.tools)
+        llm_before_hook = model_request.llm
         request_result = await self._dispatch(Events.BEFORE_MODEL_REQUEST, request_ctx,
             short_circuit=True,
         )
@@ -1033,14 +1195,14 @@ class Engine:
             if request_result.get("rebuild"):
                 return _ModelRequestResult(rebuild=True)
             if "messages" in request_result:
-                model_request["messages"] = request_result["messages"]
+                model_request.messages = list(request_result["messages"])
             if "tools" in request_result:
-                model_request["tools"] = request_result["tools"]
-                model_request["llm"] = self._bind_tools_for_provider(
-                    model_request["tools"]
+                model_request.tools = list(request_result["tools"])
+                model_request.llm = self._bind_tools_for_provider(
+                    model_request.tools
                 )
             if "llm" in request_result:
-                model_request["llm"] = request_result["llm"]
+                model_request.llm = request_result["llm"]
             if "event" in request_result:
                 return _ModelRequestResult(
                     event=request_result["event"],
@@ -1050,6 +1212,13 @@ class Engine:
             return _ModelRequestResult(
                 event=self._default_hook_rejection_event(Events.BEFORE_MODEL_REQUEST),
                 turn_complete=True,
+            )
+        if (
+            tuple(model_request.tools) != tools_before_hook
+            and model_request.llm is llm_before_hook
+        ):
+            model_request.llm = self._bind_tools_for_provider(
+                model_request.tools
             )
         ready_ctx = self._make_event_context(
             context_messages=context_messages,
@@ -1061,9 +1230,31 @@ class Engine:
             short_circuit=False,
         )
         model_request = ready_ctx.model_request or model_request
+        self._log.debug(
+            "llm.tools.bound",
+            names=[tool.name for tool in model_request.tools],
+        )
+        self._log.info(
+            "llm.request.ready",
+            provider=self.settings.provider,
+            model=self.settings.model,
+            messages=len(model_request.messages),
+            tools=len(model_request.tools),
+            estimated_input_tokens=estimate_request_tokens(
+                model_request.messages,
+                model_request.tools,
+            ),
+            context_window=self.settings.context_window,
+            max_output_tokens=self.settings.max_output_tokens,
+        )
         return _ModelRequestResult(request=model_request)
 
-    async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
+    async def _finish_turn(self, stop_reason: str) -> dict[str, JsonValue]:
+        self._log.info(
+            "turn.stop",
+            turn=self.turn_count,
+            reason=stop_reason,
+        )
         turn_ctx = self._make_event_context(stop_reason=stop_reason,
         )
         await self._dispatch(Events.TURN_END, turn_ctx,
@@ -1083,22 +1274,20 @@ class Engine:
                 short_circuit=False,
             )
             raise
-        return {"type": "turn_finished", "data": {"turn": self.turn_count}}
+        return agentloop_event(
+            "turn_finished",
+            {"turn": self.turn_count},
+        )
 
-    def _bind_tools_for_provider(self, tools: list[Any]) -> Any:
+    def _bind_tools_for_provider(self, tools: list[Tool]) -> ModelPort:
         if not tools:
             return self.model_client
-        schemas = [provider_tool_schema(tool) for tool in tools]
-        try:
-            return self.model_client.bind_tools(schemas)
-        except NotImplementedError:
-            return self.model_client
+        return self.model_client.bind_tools([
+            provider_tool_schema(tool) for tool in tools
+        ])
 
-    def _llm_without_tools(self) -> BaseProvider:
-        try:
-            return self.model_client.bind_tools([])
-        except NotImplementedError:
-            return self.model_client
+    def _llm_without_tools(self) -> ModelPort:
+        return self.model_client.bind_tools([])
 
     def _iteration_limit_notice(self) -> str:
         return (
@@ -1110,43 +1299,77 @@ class Engine:
 
     async def _stream_model_response(
         self,
-        llm: BaseProvider,
+        llm: ModelPort,
         context_messages: list[Message],
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue] | _ModelResponseEvent]:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
+        started = time.perf_counter()
+        first_delta_at: float | None = None
+        chunk_count = 0
         async for chunk in llm.astream(context_messages):
+            chunk_count += 1
             if isinstance(chunk, ModelChunk):
+                if first_delta_at is None and (
+                    chunk.content or chunk.reasoning or chunk.tool_calls
+                ):
+                    first_delta_at = time.perf_counter()
                 aggregate = merge_model_chunk(aggregate, chunk)
                 if chunk.content:
-                    yield {
-                        "type": "assistant_message_delta",
-                        "data": {"content": chunk.content},
-                    }
+                    yield agentloop_event(
+                        "assistant_message_delta",
+                        {"content": chunk.content},
+                    )
                 if chunk.reasoning:
-                    yield {
-                        "type": "assistant_message_delta",
-                        "data": {"reasoning": chunk.reasoning},
-                    }
+                    yield agentloop_event(
+                        "assistant_message_delta",
+                        {"reasoning": chunk.reasoning},
+                    )
                 for tool_delta in xbot_tool_call_deltas(
                     chunk, tool_stream_ids
                 ):
-                    yield {
-                        "type": "tool_call_delta",
-                        "data": tool_delta,
-                    }
+                    yield agentloop_event("tool_call_delta", tool_delta)
                 continue
             if isinstance(chunk, ModelResponse):
                 aggregate = chunk
                 continue
-            logger.warning(
-                "_stream_model_response: unexpected chunk type %s",
-                type(chunk).__name__,
+            self._log.warning(
+                "llm.response.unexpected_chunk",
+                chunk_type=type(chunk).__name__,
             )
         if aggregate is None:
             raise RuntimeError("LLM stream produced no chunks")
-        yield {"type": "_model_response", "data": {"response": aggregate}}
+        finished = time.perf_counter()
+        llm_ms = (finished - started) * 1000
+        ttft_ms = (
+            (first_delta_at - started) * 1000
+            if first_delta_at is not None
+            else None
+        )
+        timing: dict[str, float] = {"llm_ms": round(llm_ms, 3)}
+        if ttft_ms is not None:
+            timing["ttft_ms"] = round(ttft_ms, 3)
+            timing["decode_ms"] = round(max(0.0, llm_ms - ttft_ms), 3)
+        aggregate.response_metadata[TIMING_METADATA_KEY] = timing
+        usage = aggregate.usage_metadata
+        self._log.info(
+            "llm.response",
+            provider=self.settings.provider,
+            model=self.settings.model,
+            chunks=chunk_count,
+            content_chars=len(aggregate.content),
+            reasoning_chars=len(aggregate.reasoning),
+            tool_calls=len(aggregate.tool_calls),
+            input_tokens=usage.get("input_tokens", "unknown"),
+            output_tokens=usage.get("output_tokens", "unknown"),
+            total_tokens=usage.get("total_tokens", "unknown"),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+            stop_reason=aggregate.response_metadata.get("stop_reason", "unknown"),
+            duration_ms=round(llm_ms, 3),
+        )
+        yield _ModelResponseEvent(aggregate)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1193,46 +1416,46 @@ class Engine:
             structure_tool_message(message, call.name)
             self.messages.append(message)
 
-    def _default_hook_rejection_event(event: str) -> dict[str, Any]:
-        return {
-            "type": "error",
-            "data": {
+    def _default_hook_rejection_event(event: str) -> dict[str, JsonValue]:
+        return agentloop_event(
+            "error",
+            {
                 "code": "hook_short_circuit_rejected",
                 "message": f"Hook {event} short-circuited without a structured result.",
                 "stage": event,
             },
-        }
+        )
 
     def _make_event_context(
         self,
         *,
+        history_messages: list[Message] | None = None,
         user_input: str | None = None,
-        context_components: list[ContextComponent] | None = None,
-        context_messages: list[Any] | None = None,
-        context_kwargs: dict[str, Any] | None = None,
-        agent_response: Any = None,
-        model_request: dict[str, Any] | None = None,
-        model_response: Any = None,
+        context_messages: list[Message] | None = None,
+        agent_response: ModelResponse | None = None,
+        model_request: ModelRequest | None = None,
+        model_response: ModelResponse | None = None,
         tool_calls: list[ToolCall] | None = None,
         tool_call: ToolCall | None = None,
-        tool_results: list[Any] | None = None,
-        tool_result: Any = None,
+        tool_results: list[Message] | None = None,
+        tool_result: Message | None = None,
         stop_reason: str | None = None,
-        client_event: dict[str, Any] | None = None,
-        error: Exception | None = None,
+        client_event: ClientEvent | None = None,
+        inbox_splice: InboxSplice | None = None,
+        error: BaseException | None = None,
     ) -> EventContext:
         return EventContext(
             request_id=self._request_id.get(),
-            messages=self.messages,
-            config=self.settings,
-            tools=self.tools.registry,
-            send_input=self.followup,
+            messages=(
+                history_messages
+                if history_messages is not None
+                else self.messages
+            ),
+            settings=self.settings,
             continuation=self.continuation,
             session=self.session,
             user_input=user_input,
-            context_components=context_components,
             context_messages=context_messages,
-            context_kwargs=context_kwargs,
             agent_response=agent_response,
             model_request=model_request,
             model_response=model_response,
@@ -1242,34 +1465,36 @@ class Engine:
             tool_result=tool_result,
             stop_reason=stop_reason,
             client_event=client_event,
+            inbox_splice=inbox_splice,
             error=error,
         )
 
-    async def _claim_step_inputs(self) -> dict[str, Any] | None:
+    async def _claim_step_inputs(self) -> bool:
         """Claim and accept every input addressed to the next loop step."""
         items = await self.inbox.claim_step()
         if not items:
-            return None
-        accepted_ids: list[str] = []
+            return False
         for item in items:
-            accepted = await self._accept_user_message(
+            await self._accept_user_message(
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
+                input_id=item.message_id,
+                source=item.source,
+                metadata=item.metadata,
             )
-            if accepted.proceed:
-                accepted_ids.append(item.message_id)
-        return {
-            "type": "_inbox_claimed",
-            "data": {"message_ids": accepted_ids},
-        }
+        await self.inbox.commit([item.message_id for item in items])
+        return True
 
     async def _accept_user_message(
         self,
         user_input: str,
         *,
         images: list[ImageContent] | None = None,
-        artifacts: list[dict[str, Any]] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        input_id: str = "",
+        source: str = "user",
+        metadata: dict[str, JsonValue] | None = None,
         new_turn: bool = False,
     ) -> _TurnStartResult:
         accept_ctx = self._make_event_context(user_input=user_input,
@@ -1277,7 +1502,7 @@ class Engine:
         accept_result = await self._dispatch(Events.BEFORE_USER_MESSAGE_ACCEPT, accept_ctx,
             short_circuit=True,
         )
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, JsonValue]] = []
         if isinstance(accept_result, dict):
             if "user_input" in accept_result:
                 user_input = str(accept_result["user_input"])
@@ -1294,13 +1519,14 @@ class Engine:
 
         if new_turn:
             self.turn_count += 1
-            if self.session is not None:
-                self.session.turn_count = self.turn_count
+            self.session.turn_count = self.turn_count
         self.messages.append(Message(
             role="user",
             content=user_input,
+            input_id=input_id,
             images=list(images or []),
             artifact=list(artifacts or []),
+            additional_kwargs=_runtime_input(source, metadata),
         ))
         for event in (
             Events.AFTER_USER_MESSAGE_ACCEPT,

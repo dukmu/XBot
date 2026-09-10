@@ -1,9 +1,53 @@
-"""Application-level runtime composition.
+"""Public declarations for Agent application composition."""
 
-Feature plugins remain independent; this package is the explicit boundary
-that resolves their services into the core agent-loop driver.
-"""
+from XBotv2.application.events import (
+    APPLICATION_INITIALIZED,
+    RUNTIME_EVENT,
+    ApplicationInitialized,
+    RuntimeEvent,
+)
+from XBotv2.application.contracts import (
+    AgentApplicationPort,
+    AgentApplicationSnapshot,
+    ApplicationEventsPort,
+    ChildApplicationRequest,
+    ChildApplication,
+    ChildApplicationError,
+    ChildApplicationResult,
+    ChildApplicationsPort,
+    ClientEventSink,
+    ClientEventsPort,
+    COLLECT_STATUS_SLOTS,
+    InteractionWaiterPort,
+    LoopStateView,
+    ParentPermissions,
+    SessionHistoryPort,
+    SessionLaunch,
+    StatusSlots,
+    UsageSnapshotPort,
+)
 
-from .app import start_application
-
-__all__ = ["start_application"]
+__all__ = [
+    "AgentApplicationPort",
+    "AgentApplicationSnapshot",
+    "APPLICATION_INITIALIZED",
+    "ApplicationInitialized",
+    "ApplicationEventsPort",
+    "ChildApplicationRequest",
+    "ChildApplication",
+    "ChildApplicationError",
+    "ChildApplicationResult",
+    "ChildApplicationsPort",
+    "ClientEventSink",
+    "ClientEventsPort",
+    "COLLECT_STATUS_SLOTS",
+    "InteractionWaiterPort",
+    "LoopStateView",
+    "ParentPermissions",
+    "RUNTIME_EVENT",
+    "RuntimeEvent",
+    "SessionHistoryPort",
+    "SessionLaunch",
+    "StatusSlots",
+    "UsageSnapshotPort",
+]

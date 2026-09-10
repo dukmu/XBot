@@ -39,16 +39,3 @@ class ServiceConflictError(XCoreError):
     def __init__(self, name: str) -> None:
         self.name = name
         super().__init__(f"service {name!r} has already been registered in this scope")
-
-
-class SchemaValidationError(XCoreError):
-    """Raised when a config value does not match its declared ``S`` schema.
-
-    ``path`` is a dotted ``$.a.b[0]`` location pointing at the offending
-    field.
-    """
-
-    def __init__(self, path: str, message: str) -> None:
-        self.path = path
-        self.message = message
-        super().__init__(f"config validation failed at {path}: {message}")

@@ -6,11 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from XBotv2.loader import (
-    Loader,
-    PluginEntry,
-    PluginTree,
+from XBotv2.loader import PluginEntry, PluginTree
+from XBotv2.loader.contracts import PluginOverlay
+from XBotv2.loader.runtime import (
+    mount_plugin_tree,
     resolve_plugin_from_module,
+    validate_mounted_tree,
 )
 
 
@@ -29,9 +30,9 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
     from xcore import Context
-    from XBotv2.jobs import JobRegistry
+    from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.agents.service import AgentRegistry, AgentsService
+    from XBotv2.agents.catalog import AgentCatalog
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.agentloop.tool_service import ToolsService
     from XBotv2.commands.plugin import CommandsService
@@ -42,7 +43,7 @@ def make_plugin_ctx(tmp_path):
     ctx.set("tools", ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService())
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agents", AgentsService(ctx, AgentRegistry()))
+    ctx.set("agent_catalog", AgentCatalog())
     ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", tmp_path)
@@ -53,6 +54,13 @@ def make_plugin_ctx(tmp_path):
     return ctx
 
 
+async def start_plugin_tree(ctx, tree: PluginTree):
+    handles = mount_plugin_tree(ctx, tree)
+    await ctx.start()
+    validate_mounted_tree(handles)
+    return handles
+
+
 # ------------------------------------------------------------------
 # PluginTree parsing
 # ------------------------------------------------------------------
@@ -60,7 +68,7 @@ def make_plugin_ctx(tmp_path):
 
 class TestPluginTree:
     def test_from_dict_list_and_nested(self):
-        tree = PluginTree.from_dict([
+        tree = PluginTree.parse([
             {"id": "a", "name": "mod.a"},
             {"id": "b", "name": "mod.b", "config": {"x": 1}, "disabled": True},
         ])
@@ -69,7 +77,7 @@ class TestPluginTree:
         assert tree.entries[1].disabled is True
 
     def test_from_dict_plugins_key(self):
-        tree = PluginTree.from_dict({"plugins": [{"id": "a", "name": "m"}]})
+        tree = PluginTree.parse({"plugins": [{"id": "a", "name": "m"}]})
         assert tree.entries[0].id == "a"
 
     def test_from_yaml(self, tmp_path):
@@ -85,31 +93,93 @@ class TestPluginTree:
 
     def test_duplicate_ids_rejected(self):
         with pytest.raises(ValueError, match="duplicate"):
-            PluginTree.from_dict([
+            PluginTree.parse([
                 {"id": "a", "name": "m1"},
                 {"id": "a", "name": "m2"},
             ])
 
-    def test_merged_with_overrides_by_id(self):
-        base = PluginTree.from_dict([{
+    def test_overlay_preserves_omitted_fields_and_merges_config(self):
+        base = PluginTree.parse([{
             "id": "a",
             "name": "m1",
             "config": {"policy": {"allow": ["base"], "ask": []}},
+            "disabled": True,
+            "isolate": {"tools": "private"},
+            "profiles": ["agent"],
         }])
-        override = PluginTree.from_dict([
+        overlay = PluginOverlay.parse([
             {
                 "id": "a",
-                "name": "m2",
                 "config": {"policy": {"ask": ["overlay"]}},
             },
             {"id": "b", "name": "m3"},
         ])
-        merged = base.merged_with(override)
+        merged = base.patched_with(overlay)
         ids = {e.id: e.name for e in merged.entries}
-        assert ids == {"a": "m2", "b": "m3"}
+        assert ids == {"a": "m1", "b": "m3"}
         assert merged.entries[0].config == {
             "policy": {"allow": ["base"], "ask": ["overlay"]},
         }
+        assert merged.entries[0].disabled is True
+        assert merged.entries[0].isolate == {"tools": "private"}
+        assert merged.entries[0].profiles == frozenset({"agent"})
+
+    def test_overlay_new_entry_requires_name(self):
+        with pytest.raises(ValueError, match="requires a name"):
+            PluginTree([]).patched_with(PluginOverlay.parse([{"id": "new"}]))
+
+    def test_session_style_overlay_rejects_unknown_id(self):
+        with pytest.raises(ValueError, match="unknown plugin patch id"):
+            PluginTree([]).patched_with(
+                PluginOverlay.parse([{"id": "typo", "config": {}}]),
+                allow_new=False,
+            )
+
+    @pytest.mark.parametrize(
+        ("document", "error"),
+        [
+            ("not-a-tree", TypeError),
+            ({"unknown": []}, ValueError),
+            ({"plugins": [], "entries": []}, ValueError),
+            ([{"id": "a", "name": "m", "unknown": True}], ValueError),
+            ([{"id": "a", "name": "m", "disabled": "false"}], TypeError),
+            ([{"id": "a", "name": "m", "config": []}], TypeError),
+            ([{"id": "a", "name": "m", "isolate": []}], TypeError),
+            ([{"id": "a", "name": "m", "profiles": []}], TypeError),
+            ([{"id": "a"}], ValueError),
+        ],
+    )
+    def test_complete_tree_rejects_malformed_documents(self, document, error):
+        with pytest.raises(error):
+            PluginTree.parse(document)
+
+    def test_overlay_rejects_unresolved_non_boolean_disabled(self):
+        overlay = [{"id": "a", "disabled": "${flag}"}]
+        with pytest.raises(TypeError, match="boolean"):
+            PluginOverlay.parse(overlay)
+
+    def test_environment_references_resolve_without_runtime_values(self, monkeypatch):
+        monkeypatch.setenv("XBOT_TEST_PLUGIN_DISABLED", "false")
+        with pytest.raises(TypeError, match="boolean"):
+            PluginOverlay.parse([{
+                "id": "a",
+                "disabled": "${env:XBOT_TEST_PLUGIN_DISABLED}",
+            }])
+
+    def test_overlay_can_explicitly_clear_isolate_and_profiles(self):
+        base = PluginTree.parse([{
+            "id": "a",
+            "name": "m",
+            "isolate": {"tools": True},
+            "profiles": ["agent"],
+        }])
+        patched = base.patched_with(PluginOverlay.parse([{
+            "id": "a",
+            "isolate": None,
+            "profiles": None,
+        }]))
+        assert patched.entries[0].isolate is None
+        assert patched.entries[0].profiles is None
 
 
 # ------------------------------------------------------------------
@@ -128,7 +198,6 @@ class DemoPlugin:
 
 plugin = DemoPlugin()
 """)
-        from XBotv2.loader import Loader as _  # noqa
         import importlib
 
         module = importlib.import_module("demo")
@@ -161,12 +230,12 @@ plugin = DemoPlugin()
 
 
 # ------------------------------------------------------------------
-# Loader behavior
+# Startup tree mounting
 # ------------------------------------------------------------------
 
 
-class TestLoader:
-    async def test_load_mounts_entries_and_skips_disabled(self, tmp_path):
+class TestPluginTreeMounting:
+    async def test_mounts_entries_and_skips_disabled(self, tmp_path):
         _write_plugin(tmp_path, "alpha", """
 from XBotv2.core import Tool
 
@@ -185,19 +254,17 @@ class BetaPlugin:
     def apply(self, ctx, config=None):
         pass
 
-plugin = BetaPlugin()
+        plugin = BetaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        handles = await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "alpha", "name": "alpha"},
             {"id": "beta", "name": "beta", "disabled": True},
         ]))
-        await loader.load()
-        assert loader.loaded_ids == ("alpha",)
-        assert ctx.tools.registry.registered("alpha_tool")
-        assert loader.get("alpha").name == "alpha"
+        assert tuple(handles) == ("alpha",)
+        assert "alpha_tool" in ctx.tools.registered_names()
 
-    async def test_unload_cleans_registrations(self, tmp_path):
+    async def test_context_destroy_cleans_registrations(self, tmp_path):
         _write_plugin(tmp_path, "gamma", """
 from XBotv2.core import Tool
 
@@ -210,14 +277,13 @@ class GammaPlugin:
 plugin = GammaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "gamma", "name": "gamma"},
         ]))
-        await loader.load()
-        assert ctx.tools.registry.registered("gamma_tool")
-        await loader.unload("gamma")
-        assert loader.loaded_ids == ()
-        assert not ctx.tools.registry.registered("gamma_tool")
+        tools = ctx.tools
+        assert "gamma_tool" in tools.registered_names()
+        await ctx.destroy()
+        assert "gamma_tool" not in tools.registered_names()
 
     async def test_config_reaches_apply(self, tmp_path):
         _write_plugin(tmp_path, "delta", """
@@ -225,31 +291,17 @@ class DeltaPlugin:
     name = "delta"
 
     def apply(self, ctx, config=None):
-        self.received = (config or {}).get("value")
+        ctx.set("delta_value", (config or {}).get("value"))
 
 plugin = DeltaPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "delta", "name": "delta", "config": {"value": 42}},
         ]))
-        await loader.load()
-        assert loader.get("delta").received == 42
+        assert ctx.delta_value == 42
 
-    async def test_unload_all_reverse_order(self, tmp_path):
-        order = []
-
-        def make(name):
-            return f"""
-class {name.title()}Plugin:
-    name = "{name}"
-
-    def apply(self, ctx, config=None):
-        {name}_plugin = self
-        ctx.dispose(lambda: order.append("{name}"))
-
-plugin = {make("one").strip().splitlines()[0] if False else ""}{""}
-"""
+    async def test_context_destroy_cleans_all_plugins(self, tmp_path):
         marker_one = tmp_path / "one.txt"
         marker_two = tmp_path / "two.txt"
         _write_plugin(tmp_path, "one", f"""
@@ -273,13 +325,12 @@ class TwoPlugin:
 plugin = TwoPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "one", "name": "one"},
             {"id": "two", "name": "two"},
         ]))
-        await loader.load()
-        await loader.unload_all()
-        assert marker_two.exists()  # reverse load order: two unloads first
+        await ctx.destroy()
+        assert marker_two.exists()
         assert marker_one.exists()
 
     async def test_isolate_entry_scopes_services(self, tmp_path):
@@ -302,14 +353,16 @@ class ScopedProviderPlugin:
 plugin = ScopedProviderPlugin()
 """)
         ctx = make_plugin_ctx(tmp_path)
-        loader = Loader(ctx, tree=PluginTree.from_dict([
+        await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "provider", "name": "provider"},
-            {"id": "scoped", "name": "scoped_provider", "isolate": {"thing": True}},
+            {
+                "id": "scoped",
+                "name": "scoped_provider",
+                "isolate": {"thing": "scoped"},
+            },
         ]))
-        await loader.load()
         assert ctx.get("thing") == "root-thing"
-        scoped_ctx = loader.handle("scoped")._fiber.ctx
-        assert scoped_ctx.get("thing") == "scoped-thing"
+        assert ctx.isolate("thing", "scoped").get("thing") == "scoped-thing"
 
 
 class TestOrderIndependence:
@@ -320,14 +373,14 @@ class TestOrderIndependence:
         """A shuffled xcore.yaml still activates every plugin (inject-driven)."""
         import random
 
-        from XBotv2.config import tree as config_tree
-        from XBotv2.application import start_application
+        from XBotv2.application import tree as application_tree
+        from XBotv2.application.app import start_application
         from XBotv2.core.paths import RuntimePaths
         from XBotv2.llm.mock import MockLLM
         from XBotv2.loader import PluginTree
 
         # Shuffle the bundled tree (config preserved) into a temp yaml.
-        tree = PluginTree.from_yaml(config_tree.DEFAULT_TREE)
+        tree = PluginTree.from_yaml(application_tree.DEFAULT_TREE).for_profile("agent")
         entries = list(tree.entries)
         random.Random(7).shuffle(entries)
         lines = []
@@ -342,7 +395,7 @@ class TestOrderIndependence:
                 lines.append("  disabled: true")
         shuffled = tmp_path / "shuffled.yaml"
         shuffled.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setattr(config_tree, "DEFAULT_TREE", shuffled)
+        monkeypatch.setattr(application_tree, "DEFAULT_TREE", shuffled)
 
         paths = RuntimePaths.from_data_dir(tmp_path / "data")
         paths.config_dir.mkdir(parents=True, exist_ok=True)
@@ -370,6 +423,7 @@ class TestOrderIndependence:
             llm_override=MockLLM(responses=[{"content": "ok"}]),
         )
         assert application.engine is not None
-        assert "tools" in application.loader.loaded_ids
-        assert "agents-service" in application.loader.loaded_ids
-        assert "agentloop" in application.loader.loaded_ids
+        assert application.tools is not None
+        assert application.agent_runtime is not None
+        assert application.agent_loop_factory is not None
+        assert application.get("loader", strict=False) is None

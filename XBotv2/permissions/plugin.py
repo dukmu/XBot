@@ -1,7 +1,7 @@
 """Permissions component: the permission system as an XCore service.
 
-Decides tool-call allow/ask/deny against the runtime permission rules and
-(optionally) a parent session's permission system (subagent intersection).
+Decides tool-call allow/ask/deny against runtime permission rules and, for a
+child Agent, an optional parent session permission system (intersection).
 The system registers itself as a monotonic execution guard on ``ctx.tools``
 (see :meth:`ToolsService.guard`), so the tool pipeline gates calls through
 it without importing or depending on this plugin.
@@ -9,220 +9,285 @@ it without importing or depending on this plugin.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Awaitable, Callable
+import asyncio
+from pydantic import JsonValue, TypeAdapter
+from xcore import Context
+from xcore.state import StateService
 
-from XBotv2.core.events import EventContext, Events
-from XBotv2.core.errors import OperationError
-from XBotv2.core.tools import ToolCall
-from XBotv2.permissions.guard import make_permission_guard
-from XBotv2.permissions.commands import PERMISSIONS_COMMANDS
+from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured, AgentDefinition
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.config import POLICY_CHANGED, PolicyChanged
+from XBotv2.core.tools import ClientEvent, ToolCall
+from XBotv2.core.variables import RuntimeVariables
+from XBotv2.permissions.contracts import (
+    PermissionConfig,
+    PermissionDecision,
+    PermissionRuleConfig,
+    PermissionsPort,
+)
+from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
+from XBotv2.permissions.guard import PermissionGuard
+from XBotv2.permissions.commands import build_permissions_commands
 from XBotv2.permissions.rules import (
     permission_rule_for_tool_call,
     requested_permission_rule,
 )
 from XBotv2.permissions.system import (
-    PermissionIntersection,
     PermissionSystem,
     normalize_agent_permissions,
 )
+from XBotv2.permissions.protocol import ApprovalDecision, PermissionRequestData
+from XBotv2.permissions.approval import ApprovalService
+from XBotv2.agentloop import Events
 
-_KEEP_PARENT = object()
-
-
-def reload_live_policies(ctx: Any) -> None:
-    """Rebuild active permission and sandbox objects after config changes."""
-    services = ctx.services
-    definition = services.agents.active_definition()
-    base_config = services.agents.runtime_config(definition)
-    _apply_live_policies(ctx, base_config)
-    if definition is not None:
-        ctx.services.permissions.configure_agent(definition.permissions)
-
-
-def _apply_live_policies(ctx: Any, config: Any) -> None:
-    """Apply one already-resolved policy to live runtime objects."""
-    ctx.services.permissions.replace_rules(config.permissions)
-    ctx.services.sandbox.replace_config(config.sandbox)
-
-
-class PermissionsService:
+class PermissionsService(PermissionsPort):
     """Stable plugin capability whose concrete policy remains plugin-owned."""
 
-    def __init__(self, config: Any, variables: Any, parent: Any = None) -> None:
-        self._variables = variables
-        self._base_config = self._as_dict(config)
-        self._system: Any = None
-        self.configure(config, parent=parent)
+    def __init__(
+        self,
+        config: PermissionConfig | dict[str, JsonValue],
+        variables: RuntimeVariables,
+        store: StateService,
+        parent: PermissionsPort | None = None,
+    ) -> None:
+        self._base_config = PermissionConfig.model_validate(config)
+        self._agent_overlay: dict[str, JsonValue] | None = None
+        self._grants: list[PermissionRuleConfig] = []
+        self._store = store
+        self._lock = asyncio.Lock()
+        self._system = PermissionSystem(variables=variables, parent=parent)
+        self._rebuild()
 
-    @property
-    def config(self) -> Any:
-        target = getattr(self._system, "child", self._system)
-        return getattr(target, "config", None)
-
-    def configure(self, config: Any, *, parent: Any = None) -> None:
-        self._parent = parent
-        child = PermissionSystem(config, variables=self._variables)
-        parent_system = getattr(parent, "_system", parent)
-        self._system = (
-            PermissionIntersection(parent_system, child)
-            if parent_system is not None
-            else child
-        )
+    def _rebuild(self) -> None:
+        overlay = normalize_agent_permissions(self._agent_overlay)
+        merged = {
+            "deny": [
+                *list(overlay.get("deny") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.deny],
+            ],
+            "allow": [
+                *list(overlay.get("allow") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.allow],
+            ],
+            "ask": [
+                *list(overlay.get("ask") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.ask],
+            ],
+        }
+        merged["allow"] = [
+            *[grant.model_dump(exclude_none=True) for grant in self._grants],
+            *merged["allow"],
+        ]
+        self._system.replace_rules(merged)
 
     def configure_agent(
         self,
-        overlay: Any,
-        *,
-        parent: Any = _KEEP_PARENT,
+        overlay: dict[str, JsonValue],
     ) -> None:
-        overlay = normalize_agent_permissions(overlay)
-        merged = {
-            decision: [
-                *list(overlay.get(decision) or []),
-                *list(self._base_config.get(decision) or []),
-            ]
-            for decision in ("deny", "allow", "ask")
-        }
-        self.configure(
-            {key: value for key, value in merged.items() if value},
-            parent=self._parent if parent is _KEEP_PARENT else parent,
+        self._agent_overlay = overlay
+        self._rebuild()
+
+    def replace_rules(self, config: PermissionConfig) -> None:
+        self._base_config = PermissionConfig.model_validate(config)
+        self._rebuild()
+
+    def check(
+        self,
+        tool_name: str,
+        args: dict[str, JsonValue] | None = None,
+    ) -> PermissionDecision:
+        return self._system.check(tool_name, args)
+
+    def explicit_allow(
+        self,
+        tool_name: str,
+        args: dict[str, JsonValue] | None = None,
+        *,
+        constrain_param: str | None = None,
+    ) -> bool:
+        return self._system.explicit_allow(
+            tool_name,
+            args,
+            constrain_param=constrain_param,
         )
 
-    def replace_rules(self, config: Any) -> None:
-        self._base_config = self._as_dict(config)
-        self.configure(self._base_config, parent=self._parent)
+    def check_tool_call(self, tool_call: ToolCall) -> tuple[str, str]:
+        return self._system.check_tool_call(tool_call)
 
-    async def update_session_policy(
+    def grant_once(self, tool_name: str, param_patterns: dict[str, str]) -> None:
+        self._system.grant_once(tool_name, param_patterns)
+
+    def consume_once(self, tool_name: str, args: dict[str, JsonValue]) -> None:
+        self._system.consume_once(tool_name, args)
+
+    def rule_for_call(self, call: ToolCall) -> dict[str, JsonValue]:
+        return permission_rule_for_tool_call(
+            call, workspace=self._system.variables.get("workspace"),
+        )
+
+    def _replace_grants(self, rules: list[PermissionRuleConfig]) -> None:
+        self._grants = rules
+        self._rebuild()
+
+    def session_grants(self) -> tuple[PermissionRuleConfig, ...]:
+        return tuple(self._grants)
+
+    async def restore(self) -> None:
+        if set(await self._store.keys()) - {"grants"}:
+            raise ValueError("Unsupported permission state layout; expected grants snapshot")
+        rules = TypeAdapter(list[PermissionRuleConfig]).validate_python(
+            await self._store.get("grants", []),
+        )
+        self._replace_grants(rules)
+
+    async def grant_session(
         self,
-        *,
-        paths: Any,
-        session_id: str,
-        contexts: list[Any],
-        permissions: dict[str, str] | None = None,
-        remove_permissions: list[str] | None = None,
-        sandbox: dict[str, Any] | None = None,
-        remove_sandbox: list[str] | None = None,
-    ) -> dict[str, Any]:
-        """Persist a session policy patch and apply it to every live thread."""
-        from contextlib import AsyncExitStack
-
-        for ctx in contexts:
-            if ctx.turn_lock.locked():
-                raise OperationError(
-                    "thread_busy",
-                    "Cannot update session policy while a turn is active.",
-                    retryable=True,
-                )
-            registry = ctx.services.get("jobs")
-            if registry is not None and registry.is_busy():
-                raise OperationError(
-                    "thread_busy",
-                    "Cannot update session policy while a background task "
-                    "is active.",
-                    retryable=True,
-                )
-        async with AsyncExitStack() as stack:
-            for ctx in sorted(contexts, key=lambda item: item.thread_id):
-                await stack.enter_async_context(ctx.turn_lock)
-            if not contexts:
-                raise OperationError(
-                    "thread_not_active",
-                    "Session policy updates require one active thread.",
-                )
-            policy = contexts[0].services.settings.patch_session_policy(
-                session_id=session_id,
-                permissions=permissions,
-                remove_permissions=remove_permissions or (),
-                sandbox=sandbox,
-                remove_sandbox=remove_sandbox or (),
+        rule: PermissionRuleConfig | dict[str, JsonValue],
+    ) -> None:
+        rule = PermissionRuleConfig.model_validate(rule)
+        async with self._lock:
+            if rule in self._grants:
+                return
+            updated = [*self._grants, rule]
+            await self._store.set(
+                "grants",
+                [item.model_dump(exclude_none=True) for item in updated],
             )
-            for ctx in contexts:
-                reload_live_policies(ctx)
-        return policy
+            self._replace_grants(updated)
 
-    @staticmethod
-    def _as_dict(value: Any) -> dict[str, Any]:
-        if value is None:
-            return {}
-        if hasattr(value, "model_dump"):
-            return dict(value.model_dump(exclude_none=True))
-        return dict(value)
+    async def revoke_session(self, index: int) -> None:
+        async with self._lock:
+            if index < 1 or index > len(self._grants):
+                raise ValueError(f"Grant index must be between 1 and {len(self._grants)}")
+            updated = [*self._grants]
+            updated.pop(index - 1)
+            await self._store.set(
+                "grants",
+                [item.model_dump(exclude_none=True) for item in updated],
+            )
+            self._replace_grants(updated)
 
-    def add_rule(self, decision: str, rule: dict[str, Any]) -> None:
-        target = getattr(self._system, "child", self._system)
-        target.add_rule(decision, rule)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._system, name)
+    async def clear_session_grants(self) -> int:
+        async with self._lock:
+            count = len(self._grants)
+            if count:
+                await self._store.set("grants", [])
+                self._replace_grants([])
+            return count
 
 
 class PermissionsComponent:
-    inject = ["session", "tools", "approval", "variables", "commands"]
+    inject = [
+        "session",
+        "session_launch",
+        "parent_permissions",
+        "tools",
+        "client_events",
+        "interactions",
+        "variables",
+        "commands",
+        "settings",
+        "state",
+    ]
     """Register the permission system as ``ctx.permissions`` and its guard."""
 
     name = "xbot.permissions"
+    Config = PermissionConfig
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
-        config = config or {}
+    def apply(self, ctx: Context, config: PermissionConfig) -> None:
+        approval = ApprovalService(
+            ctx,
+            ctx.client_events,
+            ctx.interactions.create_waiter(),
+        )
+        ctx.set("approval", approval)
+        ctx.dispose(ctx.client_events.register_waiter("permission_request", approval.waiter))
+        ctx.on(Events.SESSION_CLOSE, approval.session_closed)
         permissions = PermissionsService(
-            config.get("permissions"),
+            config,
             ctx.variables,
-            parent=config.get("parent_permission_system"),
+            ctx.state.namespace("permissions"),
+            parent=ctx.parent_permissions.value,
         )
         ctx.set("permissions", permissions)
-        for command in PERMISSIONS_COMMANDS:
+        for command in build_permissions_commands(ctx.settings, permissions):
             ctx.commands.register(command)
+        handlers = PermissionHandlers(permissions, ctx.emit)
 
-        async def record_permission_decision(
-            event: dict[str, Any],
-            decision: str,
-            scope: str,
-        ) -> None:
-            data = event.get("data") or {}
-            if data.get("source") == "request_permission":
-                rule = requested_permission_rule(data.get("permission"))
-            else:
-                rule = permission_rule_for_tool_call(
-                    ToolCall.from_dict(dict(data.get("tool_call") or {}))
-                )
-            if not rule:
-                return
-            if scope == "session":
-                permissions.add_rule(decision, rule)
-            await ctx.emit(
-                Events.PERMISSION_DECIDED,
-                EventContext(
-                    client_event=event,
-                    event={
-                        "decision": decision,
-                        "scope": scope,
-                        "rule": rule,
-                    },
-                ),
-            )
-
-        ctx.tools.guard(make_permission_guard(
+        guard = PermissionGuard(
             permissions,
-            ctx.approval,
+            approval,
             ctx.emit,
-            record_decision=record_permission_decision,
-        ))
+            handlers.apply_decision,
+        )
+        ctx.tools.guard(guard.check)
+        ctx.on(APPLICATION_INITIALIZED, handlers.configure_initial, prepend=True)
+        ctx.on(AGENT_CONFIGURED, handlers.configure_agent, prepend=True)
+        ctx.on(POLICY_CHANGED, handlers.update_policy)
 
-        async def configure_agent(event: EventContext) -> None:
-            if event.agent is not None:
-                permissions.configure_agent(event.agent.permissions)
+        if ctx.session_launch.interactive:
+            from XBotv2.permissions.tools import RequestPermissionTool
 
-        ctx.on(Events.SESSION_INIT, configure_agent, prepend=True)
-        ctx.on(Events.AGENT_CONFIGURED, configure_agent, prepend=True)
+            tool = RequestPermissionTool(
+                approval,
+                handlers.apply_decision,
+            )
+            ctx.tools.register(tool.as_tool())
 
-        if bool(config.get("interactive", True)):
-            from XBotv2.permissions.tools import request_permission
 
-            ctx.tools.register(request_permission, injected={
-                "permissions": permissions,
-                "approval": ctx.approval,
-                "record_permission_decision": record_permission_decision,
-            })
+class PermissionHandlers:
+    def __init__(
+        self,
+        permissions: PermissionsService,
+        emit: Callable[[str, object], Awaitable[object]],
+    ) -> None:
+        self._permissions = permissions
+        self._emit = emit
+
+    async def apply_decision(
+        self,
+        event: ClientEvent,
+        decision: ApprovalDecision,
+    ) -> ApprovalDecision:
+        data = PermissionRequestData.model_validate(event.data)
+        if data.permission is not None:
+            rule = requested_permission_rule(data.permission.model_dump())
+        else:
+            call = data.tool_call
+            rule = self._permissions.rule_for_call(call)
+            if decision.decision == "allow" and self._permissions.check(call.name, call.args) == "deny":
+                decision = ApprovalDecision(decision="deny", scope=decision.scope)
+        rule = PermissionRuleConfig.model_validate(rule)
+        if decision.decision == "allow":
+            if decision.scope == "session":
+                await self._permissions.grant_session(rule)
+            elif data.permission is not None:
+                self._permissions.grant_once(data.permission.tool, data.permission.params)
+        await self._emit(
+            PERMISSION_DECIDED,
+            PermissionDecided(
+                decision=decision.decision, scope=decision.scope, rule=rule,
+                request_id=data.request_id, source=data.source,
+            ),
+        )
+        return decision
+
+    async def configure_initial(self, event: ApplicationInitialized) -> None:
+        await self._permissions.restore()
+        self._configure_agent(event.agent)
+
+    async def configure_agent(self, event: AgentConfigured) -> None:
+        self._configure_agent(event.agent)
+
+    def _configure_agent(self, agent: AgentDefinition | None) -> None:
+        if agent is not None:
+            self._permissions.configure_agent(agent.permissions)
+
+    async def update_policy(self, event: PolicyChanged) -> None:
+        self._permissions.replace_rules(
+            PermissionConfig.model_validate(event.effective_permissions)
+        )
 
 
 plugin = PermissionsComponent()

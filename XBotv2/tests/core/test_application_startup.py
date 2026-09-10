@@ -16,7 +16,7 @@ def _write_plugins(data_dir, overlay):
     """
     entries = []
     for entry_id, patch in overlay.items():
-        item = {"id": entry_id, "name": entry_id}
+        item = {"id": entry_id}
         if "config" in patch:
             item["config"] = patch["config"]
         if patch.get("disabled"):
@@ -28,15 +28,38 @@ def _write_plugins(data_dir, overlay):
 
 
 def _write_runtime_config(data_dir, config):
-    path = Path(data_dir) / "config" / "config.yaml"
+    """Write the aggregate test fixture as a plugin-tree overlay."""
+    entries = []
+    core = {
+        key: config[key]
+        for key in ("tools", "tool_results", "hooks", "workspace_tools")
+        if key in config
+    }
+    if core:
+        entries.append({"id": "coretools", "config": core})
+    if "instructions" in config:
+        entries.append({"id": "config", "config": {"instructions": config["instructions"]}})
+    if "provider" in config:
+        entries.append({"id": "llm", "config": {"default": config["provider"]}})
+    for plugin_id in ("permissions", "sandbox"):
+        if plugin_id in config:
+            entries.append({"id": plugin_id, "config": {plugin_id: config[plugin_id]}})
+    for plugin_id, plugin in (config.get("plugins") or {}).items():
+        item = {"id": plugin_id}
+        if isinstance(plugin, dict) and "config" in plugin:
+            item["config"] = plugin["config"]
+        if isinstance(plugin, dict) and plugin.get("enabled") is False:
+            item["disabled"] = True
+        entries.append(item)
+    path = Path(data_dir) / "config" / "plugins.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    path.write_text(yaml.safe_dump(entries, sort_keys=False), encoding="utf-8")
 
 
 from XBotv2.core.paths import RuntimePaths
 import yaml
 
-from XBotv2.application import start_application
+from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
 
 
@@ -68,7 +91,7 @@ class TestApplicationStartupBasics:
             interactive=False,
         )
 
-        names = set(application.engine.tools.registry.names())
+        names = set(application.engine.tools.names())
         assert "send_message" in names
         assert "ask_user" not in names
         assert "request_permission" not in names
@@ -78,7 +101,11 @@ class TestApplicationStartupBasics:
         self, temp_data_dir, temp_workspace, monkeypatch
     ):
         _write_plugins(temp_data_dir, {"coretools": {"config": {
-            "tool_results": {"max_inline_chars": 2048, "preview_chars": 512},
+            "tool_results": {
+                "cache_threshold_chars": 2048,
+                "preview_chars": 512,
+                "tail_chars": 128,
+            },
         }}})
         captured = {}
 
@@ -100,7 +127,11 @@ class TestApplicationStartupBasics:
             llm_override=MockLLM(responses=[]),
         )
 
-        assert captured == {"max_inline_chars": 2048, "preview_chars": 512}
+        assert captured == {
+            "cache_threshold_chars": 2048,
+            "preview_chars": 512,
+            "tail_chars": 128,
+        }
 
     @pytest.mark.asyncio
     async def test_application_startup_rejects_unknown_provider(self, temp_data_dir):
@@ -213,7 +244,7 @@ class TestApplicationStartupBasics:
         assert "Traceback" not in captured.err
 
     @pytest.mark.asyncio
-    async def test_session_init_failure_unloads_runtime_plugin_resources(
+    async def test_session_init_failure_disposes_runtime_plugin_resources(
         self,
         temp_data_dir,
         tmp_path,
@@ -223,11 +254,12 @@ class TestApplicationStartupBasics:
         plugins_root = tmp_path / "plugins"
         plugin_dir = plugins_root / "init_fail"
         plugin_dir.mkdir(parents=True)
-        unload_marker = tmp_path / "unloaded.txt"
+        dispose_marker = tmp_path / "disposed.txt"
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from XBotv2.core import Events, Tool
+from XBotv2.application import APPLICATION_INITIALIZED
+from XBotv2.core import Tool
 
 def runtime_tool() -> str:
     return "ok"
@@ -237,21 +269,22 @@ class InitFailPlugin:
     def apply(self, ctx, config=None):
         self.ctx = ctx
         self._tool_names = []
-        ctx.dispose(self.on_unload)
-        ctx.on(Events.SESSION_INIT, self.on_session_init)
+        ctx.dispose(self.dispose)
+        ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
 
-    async def on_session_init(self, ctx):
-        name = ctx.tools.register(
+    async def on_session_init(self, event):
+        del event
+        name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:init-fail",
         )
         self._tool_names.append(name)
         raise RuntimeError("session init failed")
 
-    async def on_unload(self):
+    async def dispose(self):
         for name in reversed(self._tool_names):
             self.ctx.tools.unregister(name)
-        Path({str(unload_marker)!r}).write_text("unloaded", encoding="utf-8")
+        Path({str(dispose_marker)!r}).write_text("disposed", encoding="utf-8")
 
 
 plugin = InitFailPlugin()""",
@@ -273,11 +306,11 @@ plugin = InitFailPlugin()""",
                 plugin_dirs=[plugins_root],
                 llm_override=MockLLM(responses=[]),
             )
-        assert unload_marker.read_text(encoding="utf-8") == "unloaded"
+        assert dispose_marker.read_text(encoding="utf-8") == "disposed"
         assert str(plugins_root) not in sys.path
 
     @pytest.mark.asyncio
-    async def test_normal_session_close_unloads_runtime_plugin_resources(
+    async def test_normal_session_close_disposes_runtime_plugin_resources(
         self,
         temp_data_dir,
         tmp_path,
@@ -289,7 +322,9 @@ plugin = InitFailPlugin()""",
         (plugin_dir / "__init__.py").write_text(
             f"""
 from pathlib import Path
-from XBotv2.core import Events, Tool
+from XBotv2.application import APPLICATION_INITIALIZED
+from XBotv2.agentloop import Events
+from XBotv2.core import Tool
 
 LOG = Path({str(lifecycle_log)!r})
 
@@ -301,12 +336,13 @@ class NormalClosePlugin:
     def apply(self, ctx, config=None):
         self.ctx = ctx
         self._tool_names = []
-        ctx.dispose(self.on_unload)
-        ctx.on(Events.SESSION_INIT, self.on_session_init)
+        ctx.dispose(self.dispose)
+        ctx.on(APPLICATION_INITIALIZED, self.on_session_init)
         ctx.on(Events.SESSION_CLOSE, self.on_session_close)
 
-    async def on_session_init(self, ctx):
-        name = ctx.tools.register(
+    async def on_session_init(self, event):
+        del event
+        name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:normal-close",
         )
@@ -316,11 +352,11 @@ class NormalClosePlugin:
         del ctx
         LOG.write_text("close\\n", encoding="utf-8")
 
-    async def on_unload(self):
+    async def dispose(self):
         for name in reversed(self._tool_names):
             self.ctx.tools.unregister(name)
         with LOG.open("a", encoding="utf-8") as stream:
-            stream.write("unload\\n")
+            stream.write("dispose\\n")
 
 
 plugin = NormalClosePlugin()""",
@@ -338,22 +374,20 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[plugins_root],
             llm_override=MockLLM(responses=[]),
         )
-        loader = application.loader
         engine = application.engine
         tool_name = "plugin:normal-close:runtime_tool"
-        assert loader is not None
-        assert engine.tools.registry.registered(tool_name)
+        assert application.get("loader", strict=False) is None
+        assert tool_name in engine.tools.registered_names()
 
         await engine.start_session()
         await engine.close_session()
-        await application.stop()
+        await application.destroy()
 
         assert lifecycle_log.read_text(encoding="utf-8").splitlines() == [
             "close",
-            "unload",
+            "dispose",
         ]
-        assert not engine.tools.registry.registered(tool_name)
-        assert loader.loaded_ids == ()
+        assert tool_name not in engine.tools.registered_names()
         assert application.get("loader", strict=False) is None
 
     @pytest.mark.asyncio
@@ -380,7 +414,7 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        tool_names = set(application.engine.tools.registry.names())
+        tool_names = set(application.engine.tools.names())
         assert {
             "shell",
             "read",
@@ -414,8 +448,11 @@ plugin = NormalClosePlugin()""",
             "list_shells",
             "request_permission",
             "wait_shell",
-        } <= set(application.engine.tools.registry.names())
-        assert application.engine.tools.registry.names() == application.engine.tools.registry.registered_names()
+        } <= set(application.engine.tools.names())
+        assert (
+            application.engine.tools.names()
+            == application.engine.tools.registered_names()
+        )
 
     @pytest.mark.asyncio
     async def test_application_startup_tool_filter_limits_visible_tools(self, temp_data_dir):
@@ -430,8 +467,8 @@ plugin = NormalClosePlugin()""",
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.engine.tools.registry.names() == ["read"]
-        assert [tool.name for tool in application.engine.tools.registry.get_all()] == ["read"]
+        assert application.engine.tools.names() == ("read",)
+        assert [tool.name for tool in application.engine.tools.enabled()] == ["read"]
 
     @pytest.mark.asyncio
     async def test_application_startup_unknown_tool_filter_silently_ignored(self, temp_data_dir):
@@ -445,7 +482,7 @@ plugin = NormalClosePlugin()""",
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        assert len(application.engine.tools.registry) == 0
+        assert application.engine.tools.names() == ()
 
     @pytest.mark.asyncio
     async def test_application_startup_tool_filter_can_select_plugin_tools(
@@ -484,9 +521,11 @@ plugin = SimplePlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.engine.tools.registry.names() == ["plugin_tool"]
-        assert [tool.name for tool in application.engine.tools.registry.get_all()] == ["plugin_tool"]
-        assert application.engine.tools.registry.get("read") is None
+        assert application.engine.tools.names() == ("plugin_tool",)
+        assert [tool.name for tool in application.engine.tools.enabled()] == [
+            "plugin_tool"
+        ]
+        assert application.engine.tools.resolve("read") is None
 
     @pytest.mark.asyncio
     async def test_application_startup_registers_system_hooks(
@@ -607,9 +646,7 @@ async def before_user_message(ctx):
                     "id": "permissions",
                     "name": "permissions",
                     "config": {
-                        "permissions": {
-                            "allow": [{"tool": "workspace_greeting"}],
-                        },
+                        "allow": [{"tool": "workspace_greeting"}],
                     },
                 },
             ], sort_keys=False),
@@ -635,13 +672,13 @@ async def before_user_message(ctx):
 
         result = next(event for event in events if event["type"] == "tool_result")
         assert result["data"]["content"] == "hello Ada"
-        assert "workspace:workspace_greeting" in application.engine.tools.registry.names()
+        assert "workspace:workspace_greeting" in application.engine.tools.names()
 
     @pytest.mark.asyncio
     async def test_application_startup_passes_external_plugin_configs(
         self, temp_data_dir, tmp_path, monkeypatch
     ):
-        """External application_startup plugin_configs reach plugin on_load."""
+        """External application startup configs reach plugin apply."""
         plugin_root = tmp_path / "plugins"
         plugin_dir = plugin_root / "configured"
         plugin_dir.mkdir(parents=True)
@@ -708,8 +745,8 @@ plugin = ConfiguredPlugin()
             plugin_dirs=[],
             llm_override=MockLLM(responses=[]),
         )
-        assert application.state_store.session_id == "test-session"
-        assert application.state_store.messages_path.exists()
+        assert application.thread_persistence.session_id == "test-session"
+        assert application.thread_persistence.paths.metadata_file.exists()
 
     @pytest.mark.asyncio
     async def test_application_startup_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
@@ -744,7 +781,7 @@ plugin = ConfiguredPlugin()
         )
 
     @pytest.mark.asyncio
-    async def test_workspace_agents_md_reloads_between_model_requests(
+    async def test_workspace_agents_md_is_read_between_model_requests(
         self, temp_data_dir, temp_workspace
     ):
         instructions = temp_workspace / "AGENTS.md"
@@ -812,7 +849,7 @@ plugin = ConfiguredPlugin()
         runtime = root.findtext("runtime_environment") or ""
         assert "Human: Ada (human-7)" in runtime
         assert f"- workspace: {temp_workspace}" in runtime
-        assert "- tool_results: session/artifacts/tool_results/ (read-only)" in runtime
+        assert f"- tool_results: {application.variables['tool_results']}" in runtime
 
     @pytest.mark.asyncio
     async def test_application_startup_separates_configured_and_agent_instructions(
@@ -870,10 +907,10 @@ plugin = ConfiguredPlugin()
         assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
-    async def test_workspace_agents_are_discovered_by_workspace_instructions(
+    async def test_workspace_agents_are_independent_of_workspace_instructions(
         self, temp_data_dir, temp_workspace
     ):
-        """Disabling workspace_instructions also disables workspace Agents."""
+        """Agent catalog ownership is independent from AGENTS.md injection."""
         (temp_workspace / ".agents").mkdir()
         (temp_workspace / ".agents" / "reviewer.md").write_text(
             "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
@@ -896,10 +933,11 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        assert application.agents.definition("reviewer") is None
-        assert {item.name for item in application.agents.definitions()} == {
+        assert application.agent_catalog.get("reviewer") is not None
+        assert {item.name for item in application.agent_catalog.definitions()} == {
             "default",
             "Explorer",
+            "reviewer",
         }
         await application.stop()
 
@@ -930,7 +968,7 @@ plugin = ConfiguredPlugin()
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
         _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "permissions": {"allow": [{"tool": "shell"}]},
+            "allow": [{"tool": "shell"}],
         }}})
         llm = MockLLM(responses=[
             {
@@ -965,7 +1003,7 @@ plugin = ConfiguredPlugin()
             llm_override=MockLLM(responses=[]),
         )
 
-        session_id = application.state_store.session_id
+        session_id = application.thread_persistence.session_id
         assert session_id != "default"
         assert "-" in session_id
         assert (
@@ -1010,10 +1048,8 @@ plugin = ConfiguredPlugin()
         temp_workspace,
     ):
         _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "permissions": {
-                "allow": [{"tool": "edit", "paths": "${workspace}"}],
-                "ask": [{"tool": "edit"}],
-            },
+            "allow": [{"tool": "edit", "paths": "${workspace}"}],
+            "ask": [{"tool": "edit"}],
         }}})
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -1024,13 +1060,6 @@ plugin = ConfiguredPlugin()
         )
 
         ps = application.permissions
-        perms_entry = next(e for e in application.loader.tree.entries if e.id == "permissions")
-        print("DIAG tree permissions config keys:", list(perms_entry.config.keys()))
-        print("DIAG svc config:", str(application.permissions.config)[:120])
-        print("DIAG overlay:", (Path(temp_data_dir) / "config" / "plugins.yaml").read_text(encoding="utf-8")[:100])
-        print("DIAG allow paths:", [getattr(r, "paths", None) for r in ps._allow_rules][:3])
-        print("DIAG check notes:", ps.check("edit", {"path": "notes.md", "mode": "write"}))
-        print("DIAG check outside:", ps.check("edit", {"path": str(temp_data_dir / "outside.md"), "mode": "write"}))
         assert ps.check(
             "edit", {"path": "notes.md", "mode": "write"}
         ) == "allow"
@@ -1042,41 +1071,136 @@ plugin = ConfiguredPlugin()
 class TestApplicationStartupNoPlugins:
     """Engine works correctly in explicit no-plugin mode."""
 
-    def _make_tree(self, plugin_dirs, include_builtins):
+    def _make_tree(self, *, no_plugins=False, plugin_dirs=None):
         import tempfile
-        from XBotv2.config.tree import load_agent_tree
+        from XBotv2.application.tree import load_agent_tree
 
         tmp = Path(tempfile.mkdtemp())
         paths = RuntimePaths.from_data_dir(tmp)
         return load_agent_tree(
             paths=paths,
-            session_paths=paths.session("s"),
-            session_id="s", thread_id="t",
-            workspace_root=Path("."), provider_name="default",
-            parent_permission_system=None, interactive=True,
+            workspace_root=tmp,
             is_subagent=False,
-            plugin_dirs=plugin_dirs if not include_builtins else None,
+            no_plugins=no_plugins,
+            plugin_dirs=plugin_dirs,
             extra_plugins=None,
         )
 
-    def test_explicit_empty_plugin_dirs_disables_builtin_scan(self):
-        """Explicit no-plugin mode stays pure even when built-ins exist."""
-        tree = self._make_tree(plugin_dirs=[], include_builtins=False)
+    def test_explicit_no_plugins_excludes_optional_capabilities(self):
+        """No-plugin mode selects the core application profile."""
+        tree = self._make_tree(no_plugins=True)
         ids = {entry.id for entry in tree.entries}
         assert "goal" not in ids
-        assert "tools" in ids
-        assert "agents-service" in ids
+        assert "agents" in ids
         assert "agentloop" in ids
 
-    def test_default_plugin_dirs_scan_builtins(self):
-        """Default runtime mode includes the built-in plugins in the tree."""
-        tree = self._make_tree(plugin_dirs=None, include_builtins=True)
+    def test_default_mode_includes_optional_capabilities(self):
+        """Default runtime mode includes optional built-in capabilities."""
+        tree = self._make_tree()
         ids = {entry.id for entry in tree.entries}
         assert "goal" in ids
         assert "todolist" in ids
-        assert "tools" in ids
-        assert "agents-service" in ids
+        assert "agents" in ids
         assert "agentloop" in ids
+
+    def test_empty_plugin_dirs_only_disables_external_discovery(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        tree = load_agent_tree(
+            paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+            workspace_root=tmp_path / "workspace",
+            is_subagent=False,
+            no_plugins=False,
+            plugin_dirs=[],
+            extra_plugins=None,
+        )
+        assert "goal" in {entry.id for entry in tree.entries}
+
+    def test_config_layers_apply_global_workspace_then_session(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        paths.config_dir.mkdir(parents=True)
+        paths.config_dir.joinpath("plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "goal",
+                "config": {"layer": {"global": 1, "value": "global"}},
+                "disabled": True,
+            }]),
+            encoding="utf-8",
+        )
+        workspace = tmp_path / "workspace"
+        workspace.joinpath(".xbot").mkdir(parents=True)
+        workspace.joinpath(".xbot", "plugins.yaml").write_text(
+            yaml.safe_dump([{
+                "id": "goal",
+                "config": {"layer": {"workspace": 2, "value": "workspace"}},
+                "disabled": False,
+            }]),
+            encoding="utf-8",
+        )
+
+        tree = load_agent_tree(
+            paths=paths,
+            workspace_root=workspace,
+            is_subagent=False,
+            no_plugins=False,
+            plugin_dirs=None,
+            extra_plugins=[{
+                "id": "goal",
+                "config": {"layer": {"session": 3, "value": "session"}},
+                "disabled": True,
+            }],
+        )
+        goal = next(entry for entry in tree.entries if entry.id == "goal")
+        assert goal.name == "goal"
+        assert goal.disabled is True
+        assert goal.config["layer"] == {
+            "global": 1,
+            "workspace": 2,
+            "session": 3,
+            "value": "session",
+        }
+
+    def test_restricted_profiles_cannot_be_reintroduced_by_overlays(self, tmp_path):
+        from XBotv2.application.tree import load_agent_tree
+
+        paths = RuntimePaths.from_data_dir(tmp_path / "data")
+        plugin_root = tmp_path / "plugins"
+        plugin_root.joinpath("external").mkdir(parents=True)
+        plugin_root.joinpath("external", "__init__.py").touch()
+        paths.config_dir.mkdir(parents=True)
+        paths.config_dir.joinpath("plugins.yaml").write_text(
+            yaml.safe_dump([
+                {"id": "goal", "disabled": False},
+                {"id": "workspace_instructions", "disabled": False},
+                {"id": "external", "config": {"enabled": True}},
+            ]),
+            encoding="utf-8",
+        )
+
+        no_plugins_tree = load_agent_tree(
+            paths=paths,
+            workspace_root=tmp_path / "workspace",
+            is_subagent=False,
+            no_plugins=True,
+            plugin_dirs=[plugin_root],
+            extra_plugins=[{"id": "goal", "disabled": False}],
+        )
+        no_plugins_ids = {entry.id for entry in no_plugins_tree.entries}
+        assert "goal" not in no_plugins_ids
+        assert "workspace_instructions" not in no_plugins_ids
+        assert "external" not in no_plugins_ids
+
+        subagent_tree = load_agent_tree(
+            paths=paths,
+            workspace_root=tmp_path / "workspace",
+            is_subagent=True,
+            no_plugins=False,
+            plugin_dirs=[plugin_root],
+            extra_plugins=[{"id": "subagents", "disabled": False}],
+        )
+        assert "subagents" not in {entry.id for entry in subagent_tree.entries}
 
     @pytest.mark.asyncio
     async def test_engine_without_plugins_works(self, temp_data_dir, temp_workspace):
@@ -1085,7 +1209,7 @@ class TestApplicationStartupNoPlugins:
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
             thread_id="test-thread",
-            plugin_dirs=[],  # Explicitly no plugin dirs
+            no_plugins=True,
             llm_override=MockLLM(responses=[{"content": "I work without plugins!"}]),
         )
         application.sandbox.workspace_root = temp_workspace
@@ -1118,8 +1242,8 @@ class TestApplicationStartupNoPlugins:
             workspace_root=temp_workspace,
             llm_override=MockLLM(responses=[{"content": "in memory"}]),
         )
-        assert application.get("state_store", strict=False) is None
-        assert application.storage.root.is_dir()
+        assert application.get("thread_persistence", strict=False) is None
+        assert application.artifacts is not None
         events = [
             event async for event in application.engine.run_turn("hello")
         ]

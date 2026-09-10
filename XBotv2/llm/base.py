@@ -3,20 +3,48 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from collections.abc import Mapping
+from xml.etree import ElementTree
 
+from XBotv2.core.artifacts import ArtifactRef, ArtifactStorePort
 from XBotv2.core.messages import Message
-from XBotv2.core.prompts import prompt_container, prompt_element
-def attachment_prompt(message: Message) -> str:
+from XBotv2.core.prompts import CACHED_CONTENT_KEY, prompt_container, prompt_element
+from XBotv2.core.usage import UsageData
+
+
+def tool_content(message: Message, artifacts: ArtifactStorePort | None) -> str:
+    """Resolve an externalized result against this request's artifact store.
+
+    Only the engine-marked cache envelope is projected; neither history nor
+    arbitrary tool output is rewritten.
+    """
+    if not message.additional_kwargs.get(CACHED_CONTENT_KEY):
+        return message.content
+    if artifacts is None or not message.artifact or len(message.artifact) != 1:
+        raise ValueError("Cached tool result requires its artifact and storage")
+    root = ElementTree.fromstring(message.content)
+    path = root.find("cache_path")
+    if root.tag != "cached_content" or path is None:
+        raise ValueError("Cached tool result requires a cache envelope")
+    path.text = artifacts.model_path(message.artifact[0])
+    return ElementTree.tostring(root, encoding="unicode")
+
+
+def attachment_prompt(message: Message, artifacts: ArtifactStorePort | None) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
     for value in message.artifact or []:
-        item = value.to_dict() if hasattr(value, "to_dict") else value
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        path = str(item["id"])
-        if not path.startswith("session/"):
-            path = f"session/{path}"
+        if isinstance(value, ArtifactRef):
+            item = value.model_dump(mode="json")
+        elif isinstance(value, Mapping):
+            item = dict(value)
+        else:
+            raise TypeError(f"Unsupported attachment reference: {type(value).__name__}")
+        if not item.get("id"):
+            raise ValueError("Attachment reference requires an id")
+        if artifacts is None:
+            raise ValueError("Provider artifact storage is not configured")
+        path = artifacts.model_path(str(item["id"]))
         children.append(prompt_element(
             "attachment",
             "Use filesystem or shell tools to inspect this file when needed.",
@@ -41,28 +69,16 @@ def usage_metadata(
     prompt_cache_write_tokens: int = 0,
 ) -> dict[str, int]:
     """Build the normalized per-request usage contract consumed by Core."""
-
-    result = {
+    values: dict[str, int] = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": (
-            input_tokens
-            + cache_read_input_tokens
-            + cache_creation_input_tokens
-            + output_tokens
-            if total_tokens is None
-            else total_tokens
-        ),
         "requests": 1,
-        "context_tokens": (
-            input_tokens if context_tokens is None else context_tokens
-        ),
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "prompt_cache_write_tokens": prompt_cache_write_tokens,
     }
-    for key, value in (
-        ("cache_read_input_tokens", cache_read_input_tokens),
-        ("cache_creation_input_tokens", cache_creation_input_tokens),
-        ("prompt_cache_write_tokens", prompt_cache_write_tokens),
-    ):
-        if value:
-            result[key] = value
-    return result
+    if total_tokens is not None:
+        values["total_tokens"] = total_tokens
+    if context_tokens is not None:
+        values["context_tokens"] = context_tokens
+    return UsageData.from_provider(values).to_event_dict()

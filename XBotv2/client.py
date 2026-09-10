@@ -7,51 +7,68 @@ from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 
 import httpx
+from pydantic import JsonValue
 
-from XBotv2.protocol.models import (
+from XBotv2.agents import (
     AgentListResponse,
     AgentSelectionRequest,
     AgentSelectionResponse,
-    AttachmentInput,
-    CloseResponse,
+)
+from XBotv2.agentloop import ToolListResponse
+from XBotv2.config import (
+    PermissionDecision,
+    PatchPluginConfig,
+    PluginConfigCatalog,
+    PluginConfigScope,
+    SandboxKey,
+    SandboxValue,
+    SessionPolicyPatch,
+    SessionPolicyResponse,
+)
+from XBotv2.interactions import (
+    InteractionResponse,
+    UserInputResponseRequest,
+)
+from XBotv2.jobs import TaskListResponse, TaskStopResponse
+from XBotv2.llm import (
+    EffortSelectionRequest,
+    EffortSelectionResponse,
+    ProviderCatalog,
+    ProviderSelectionRequest,
+    ProviderSelectionResponse,
+)
+from XBotv2.permissions import PermissionResponseRequest
+from XBotv2.protocol import (
     ErrorResponse,
-    ForkResponse,
     HealthResponse,
     HelloRequest,
     HelloResponse,
+    ServerEvent,
+    WireModel,
+)
+from XBotv2.session import (
+    AttachmentInput,
+    CloseResponse,
+    DeleteSessionResponse,
+    ForkResponse,
     HistoryMutationResponse,
-    InteractionResponse,
     ImageInput,
     InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
     OpenSessionResponse,
     OpenThreadRequest,
-    PermissionResponseRequest,
-    PermissionDecision,
-    ProviderListResponse,
-    ProviderSelectionRequest,
-    ProviderSelectionResponse,
-    ConfigReloadResponse,
-    EffortSelectionRequest,
-    EffortSelectionResponse,
-    ServerEvent,
+    PendingInputListResponse,
+    PendingInputUpdateRequest,
+    RegenerateRequest,
     SessionListResponse,
     SessionMode,
-    SessionPolicyPatch,
-    SessionPolicyResponse,
     SessionSummary,
-    SandboxKey,
-    SandboxValue,
-    TaskListResponse,
-    TaskStopResponse,
     ThreadListResponse,
     ThreadMessagesResponse,
+    ThreadTrajectoryResponse,
     ThreadSummary,
-    ToolListResponse,
     UndoRequest,
-    UserInputResponseRequest,
-    WireModel,
 )
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
@@ -127,8 +144,8 @@ class XBotClient:
             ),
         )
 
-    async def list_providers(self) -> ProviderListResponse:
-        return await self._request("GET", "/providers", ProviderListResponse)
+    async def list_providers(self) -> ProviderCatalog:
+        return await self._request("GET", "/providers", ProviderCatalog)
 
     async def list_sessions(self) -> SessionListResponse:
         return await self._request("GET", "/sessions", SessionListResponse)
@@ -141,6 +158,7 @@ class XBotClient:
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
+        history_limit: int | None = None,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -152,6 +170,7 @@ class XBotClient:
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
+                history_limit=history_limit,
             ),
         )
 
@@ -188,9 +207,43 @@ class XBotClient:
             ),
         )
 
+    async def list_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        scope: PluginConfigScope = "workspace",
+    ) -> PluginConfigCatalog:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/plugin-config",
+            PluginConfigCatalog,
+            params={"scope": scope},
+        )
+
+    async def update_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        patch: PatchPluginConfig,
+    ) -> PluginConfigCatalog:
+        return await self._request(
+            "PATCH",
+            f"{_thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
+            PluginConfigCatalog,
+            patch,
+            params={"scope": patch.scope},
+        )
+
     async def fork_session(self, session_id: str) -> ForkResponse:
         return await self._request(
             "POST", f"/sessions/{_segment(session_id)}/fork", ForkResponse
+        )
+
+    async def delete_session(self, session_id: str) -> DeleteSessionResponse:
+        return await self._request(
+            "DELETE", f"/sessions/{_segment(session_id)}", DeleteSessionResponse
         )
 
     async def close_session(self, session_id: str) -> CloseResponse:
@@ -212,6 +265,7 @@ class XBotClient:
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
+        history_limit: int | None = None,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -223,6 +277,7 @@ class XBotClient:
                 workspace_root=workspace_root,
                 mode=mode,
                 agent=agent,
+                history_limit=history_limit,
             ),
         )
 
@@ -257,15 +312,6 @@ class XBotClient:
             AgentSelectionRequest(name=name),
         )
 
-    async def reload_agents(
-        self, session_id: str, thread_id: str
-    ) -> AgentListResponse:
-        return await self._request(
-            "POST",
-            f"{_thread_path(session_id, thread_id)}/agents/reload",
-            AgentListResponse,
-        )
-
     async def select_effort(
         self, session_id: str, thread_id: str, effort: str
     ) -> EffortSelectionResponse:
@@ -274,15 +320,6 @@ class XBotClient:
             f"{_thread_path(session_id, thread_id)}/effort",
             EffortSelectionResponse,
             EffortSelectionRequest(effort=effort),
-        )
-
-    async def reload_config(
-        self, session_id: str, thread_id: str
-    ) -> ConfigReloadResponse:
-        return await self._request(
-            "POST",
-            f"{_thread_path(session_id, thread_id)}/config/reload",
-            ConfigReloadResponse,
         )
 
     async def select_provider(
@@ -307,13 +344,55 @@ class XBotClient:
         )
 
     async def list_messages(
-        self, session_id: str, thread_id: str
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
     ) -> ThreadMessagesResponse:
         return await self._request(
             "GET",
             f"{_thread_path(session_id, thread_id)}/messages",
             ThreadMessagesResponse,
+            params={
+                key: value
+                for key, value in {"cursor": cursor, "limit": limit}.items()
+                if value is not None
+            },
         )
+
+    async def list_trajectory(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 160,
+    ) -> ThreadTrajectoryResponse:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/trajectory",
+            ThreadTrajectoryResponse,
+            params={
+                key: value
+                for key, value in {"cursor": cursor, "limit": limit}.items()
+                if value is not None
+            },
+        )
+
+    async def read_artifact(
+        self,
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> bytes:
+        response = await self._http.get(
+            f"{_thread_path(session_id, thread_id)}/artifacts/"
+            f"{quote(artifact_id, safe='/')}"
+        )
+        _raise_for_status(response)
+        return response.content
 
     async def clear_history(
         self, session_id: str, thread_id: str
@@ -392,13 +471,40 @@ class XBotClient:
         thread_id: str,
         *,
         request_id: str,
-        answer: Any,
+        answer: JsonValue,
     ) -> InteractionResponse:
         return await self._request(
             "POST",
             f"{_thread_path(session_id, thread_id)}/interactions/user-input",
             InteractionResponse,
             UserInputResponseRequest(request_id=request_id, answer=answer),
+        )
+
+    async def list_pending_inputs(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> PendingInputListResponse:
+        return await self._request(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/queue",
+            PendingInputListResponse,
+        )
+
+    async def update_pending_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        message_id: str,
+        *,
+        action: Literal["edit", "remove", "steer"],
+        content: str = "",
+    ) -> PendingInputListResponse:
+        return await self._request(
+            "PATCH",
+            f"{_thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
+            PendingInputListResponse,
+            PendingInputUpdateRequest(action=action, content=content),
         )
 
     def send_message(
@@ -408,8 +514,9 @@ class XBotClient:
         content: str,
         *,
         request_id: str = "",
-        images: list[ImageInput | dict[str, Any]] | None = None,
-        attachments: list[AttachmentInput | dict[str, Any]] | None = None,
+        delivery: Literal["queue", "steer"] = "steer",
+        images: list[ImageInput | dict[str, JsonValue]] | None = None,
+        attachments: list[AttachmentInput | dict[str, JsonValue]] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "POST",
@@ -417,26 +524,36 @@ class XBotClient:
             MessageRequest(
                 content=content,
                 request_id=request_id,
-                images=[
-                    image
-                    if isinstance(image, ImageInput)
-                    else ImageInput.model_validate(image)
-                    for image in images or []
-                ],
-                attachments=[
-                    attachment
-                    if isinstance(attachment, AttachmentInput)
-                    else AttachmentInput.model_validate(attachment)
-                    for attachment in attachments or []
-                ],
+                delivery=delivery,
+                images=images or [],
+                attachments=attachments or [],
             ),
         )
 
-    def stream_events(
-        self, session_id: str, thread_id: str
+    def regenerate_message(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str = "",
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
-            "GET", f"{_thread_path(session_id, thread_id)}/events"
+            "POST",
+            f"{_thread_path(session_id, thread_id)}/history/regenerate",
+            RegenerateRequest(request_id=request_id),
+        )
+
+    def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[ServerEvent]:
+        return self._stream(
+            "GET",
+            f"{_thread_path(session_id, thread_id)}/events",
+            params={"after": after} if after is not None else None,
         )
 
     async def _request(
@@ -445,11 +562,14 @@ class XBotClient:
         path: str,
         response_model: type[ResponseModel],
         payload: WireModel | None = None,
+        *,
+        params: Mapping[str, JsonValue] | None = None,
     ) -> ResponseModel:
         response = await self._http.request(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
+            params=params,
         )
         _raise_for_status(response)
         return response_model.model_validate(response.json())
@@ -459,11 +579,14 @@ class XBotClient:
         method: str,
         path: str,
         payload: WireModel | None = None,
+        *,
+        params: Mapping[str, JsonValue] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         async with self._http.stream(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
+            params=params,
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
             _raise_for_status(response)

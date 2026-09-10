@@ -1,77 +1,135 @@
-"""Human commands owned by the permissions component (``/permission``).
-
-The handler owns its grammar and validation and uses the session policy
-use case for persistence; nothing about permissions lives in the
-application layer.
-"""
+"""Human commands owned by the permissions component (``/permission``)."""
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import TYPE_CHECKING
 
-from XBotv2.config.loader import load_runtime_config
-from XBotv2.config.policy import load_session_policy
-from XBotv2.core.commands import (
+from XBotv2.config import PatchPolicy, SettingsPort
+from XBotv2.permissions.contracts import PermissionRuleConfig
+from XBotv2.commands import (
     Command,
     CommandResult,
     command_usage,
     guard_command,
-    run_command_operation,
     split_command_args,
 )
 
+if TYPE_CHECKING:
+    from XBotv2.permissions.plugin import PermissionsService
 
-async def permission_command(ctx: Any, raw_args: str) -> CommandResult:
-    parts = split_command_args(raw_args)
-    action = parts[0].lower() if parts else "status"
-    if action in {"status", "list"} and len(parts) <= 1:
-        config = load_runtime_config(ctx.paths, ctx.workspace_root, ctx.session_id)
-        persisted = load_session_policy(ctx.paths, ctx.session_id)
-        data = {
-            "session_id": ctx.session_id,
-            "permissions": persisted.get("permissions") or {},
-            "effective_permissions": config.permissions.model_dump(),
-        }
-        value = data["effective_permissions"]
-        return CommandResult(f"Session permission policy: {value}", data=data)
-    if action == "set" and len(parts) == 3:
-        tool, decision = parts[1], parts[2].lower()
-        if decision not in {"allow", "deny", "ask"}:
-            return CommandResult(
-                "Permission value must be allow, deny, or ask.",
-                status="error",
-                data={"code": "invalid_value"},
+
+def build_permissions_commands(
+    settings: SettingsPort,
+    permissions: "PermissionsService",
+) -> tuple[Command, ...]:
+    async def permission_command(raw_args: str) -> CommandResult:
+        parts = split_command_args(raw_args)
+        action = parts[0].lower() if parts else "status"
+        if action == "status" and len(parts) <= 1:
+            snapshot = settings.policy()
+            effective = snapshot.effective_permissions
+            session = snapshot.policy.get("permissions", {})
+            grants = permissions.session_grants()
+            lines = [
+                "Permission policy",
+                f"  Effective: deny={len(effective.get('deny', []))} allow={len(effective.get('allow', []))} ask={len(effective.get('ask', []))}",
+                f"  Session overrides: deny={len(session.get('deny', []))} allow={len(session.get('allow', []))} ask={len(session.get('ask', []))}",
+                f"  Approved grants: {len(grants)} (persisted for this Agent thread)",
+                "  Precedence: deny > grant > allow > ask > default ask",
+                "Use /permission list, rules, grants, set, reset, revoke, or clear-grants.",
+            ]
+            return CommandResult("\n".join(lines))
+        if action in {"list", "rules"} and len(parts) == 1:
+            snapshot = settings.policy()
+            effective = snapshot.effective_permissions
+            session = snapshot.policy.get("permissions", {})
+            lines = ["Effective permission rules:"]
+            for decision in ("deny", "allow", "ask"):
+                rules = effective.get(decision, [])
+                lines.append(f"  {decision} ({len(rules)}):")
+                lines.extend(
+                    f"    - {json.dumps(rule, ensure_ascii=False, sort_keys=True)}"
+                    for rule in rules
+                )
+            lines.append("Session policy overrides:")
+            if session:
+                for decision in ("deny", "allow", "ask"):
+                    for rule in session.get(decision, []):
+                        lines.append(
+                            f"  {decision}: "
+                            f"{json.dumps(rule, ensure_ascii=False, sort_keys=True)}"
+                        )
+            else:
+                lines.append("  none")
+            if action == "rules":
+                return CommandResult("\n".join(lines))
+            lines.append("")
+            lines.extend(_grant_lines(permissions.session_grants()))
+            return CommandResult("\n".join(lines))
+        if action == "grants" and len(parts) == 1:
+            grants = permissions.session_grants()
+            return CommandResult("\n".join(_grant_lines(grants)))
+        if action == "set" and len(parts) == 3:
+            tool, decision = parts[1], parts[2].lower()
+            if decision not in {"allow", "deny", "ask"}:
+                return CommandResult(
+                    "Permission value must be allow, deny, or ask.",
+                    status="error",
+                )
+            await settings.update_policy(PatchPolicy(permissions={tool: decision}))
+            return CommandResult(f"permission policy set: {tool}={decision}")
+        if action == "reset" and len(parts) == 2:
+            await settings.update_policy(
+                PatchPolicy(remove_permissions=(parts[1],))
             )
-        return await run_command_operation(
-            ctx.services.permissions.update_session_policy(
-                paths=ctx.paths,
-                session_id=ctx.session_id,
-                contexts=[ctx],
-                permissions={tool: decision},
-            ),
-            lambda data: f"permission policy set: {tool}={decision}",
+            return CommandResult("permission session policy reset.")
+        if action == "revoke" and len(parts) == 2:
+            try:
+                index = int(parts[1])
+                await permissions.revoke_session(index)
+            except ValueError as error:
+                if str(error).startswith("Grant index must be between"):
+                    return CommandResult(str(error), status="error")
+                return CommandResult("Grant index must be a positive integer.", status="error")
+            return CommandResult(f"Revoked approved grant {index}.")
+        if action == "clear-grants" and len(parts) == 1:
+            count = await permissions.clear_session_grants()
+            return CommandResult(f"Cleared {count} approved session grant(s).")
+        return command_usage(
+            "/permission [status|list|rules|grants|set <tool> <decision>|"
+            "reset <tool>|revoke <index>|clear-grants]"
         )
-    if action == "reset" and len(parts) == 2:
-        return await run_command_operation(
-            ctx.services.permissions.update_session_policy(
-                paths=ctx.paths,
-                session_id=ctx.session_id,
-                contexts=[ctx],
-                remove_permissions=[parts[1]],
+
+    return (
+        Command(
+            name="permission",
+            description="Inspect or update session tool permissions",
+            handler=guard_command(permission_command),
+            usage=(
+                "/permission [status|list|rules|grants|set <tool> <decision>|"
+                "reset <tool>|revoke <index>|clear-grants]"
             ),
-            lambda data: "permission session policy reset.",
-        )
-    return command_usage("/permission [status|set <tool> <decision>|reset [tool]]")
+            examples=(
+                "/permission status",
+                "/permission rules",
+                "/permission grants",
+                "/permission revoke 1",
+            ),
+        ),
+    )
 
 
-PERMISSIONS_COMMANDS: tuple[Command, ...] = (
-    Command(
-        name="permission",
-        description="Inspect or update session tool permissions",
-        handler=guard_command(permission_command),
-        usage="/permission [status|set <tool> <decision>|reset [tool]]",
-    ),
-)
+def _grant_lines(grants: tuple[PermissionRuleConfig, ...]) -> list[str]:
+    lines = ["Approved session grants (removable by index):"]
+    lines.extend(
+        f"  {index}. "
+        f"{json.dumps(rule.model_dump(mode='json', exclude_none=True), ensure_ascii=False, sort_keys=True)}"
+        for index, rule in enumerate(grants, 1)
+    )
+    if not grants:
+        lines.append("  none")
+    return lines
 
 
-__all__ = ["PERMISSIONS_COMMANDS", "permission_command"]
+__all__ = ["build_permissions_commands"]

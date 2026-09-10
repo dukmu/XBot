@@ -6,12 +6,12 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 TRACE_ENV = "XBOT_TUI_TRACE"
 
 
-def trace_event(stage: str, payload: dict[str, Any]) -> None:
+def trace_event(stage: str, payload: dict[str, JsonValue]) -> None:
     """Append a diagnostic event when XBOT_TUI_TRACE is set."""
     target = os.environ.get(TRACE_ENV)
     if not target:

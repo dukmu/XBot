@@ -5,20 +5,25 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from pydantic import JsonValue
 
 import yaml
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.config.models import config_dict
+from XBotv2.loader.contracts import PluginOverlay
 
 
-PermissionScope = str
 _PERMISSION_DECISIONS = ("deny", "allow", "ask")
 
 
-def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, Any]:
-    """Load optional session-local policy overlay."""
-    return _read_yaml(paths.session(session_id).config_file)
+def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, JsonValue]:
+    """Read policy fields from the canonical session plugin overlay."""
+    rows = _read_rows(paths.session(session_id).config_file)
+    result: dict[str, JsonValue] = {}
+    for plugin_id, key in (("permissions", "permissions"), ("sandbox", "sandbox")):
+        config = _plugin_config(rows, plugin_id)
+        if config:
+            result[key] = config
+    return result
 
 
 def patch_session_policy(
@@ -27,128 +32,97 @@ def patch_session_policy(
     session_id: str,
     permissions: dict[str, str] | None = None,
     remove_permissions: Iterable[str] = (),
-    sandbox: dict[str, Any] | None = None,
+    sandbox: dict[str, JsonValue] | None = None,
     remove_sandbox: Iterable[str] = (),
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     """Apply one session policy patch while preserving unrelated rules."""
     path = paths.session(session_id).config_file
-    doc = _read_yaml(path)
-    permission_config = doc.setdefault("permissions", {})
+    rows = _read_rows(path)
+    permission_config = dict(_plugin_config(rows, "permissions"))
     for tool in (*remove_permissions, *(permissions or {})):
         _remove_rule(permission_config, {"tool": re.escape(tool)})
     for tool, decision in (permissions or {}).items():
         permission_config.setdefault(decision, []).insert(
             0, {"tool": re.escape(tool)}
         )
-    if not permission_config:
-        doc.pop("permissions", None)
-
-    sandbox_config = doc.setdefault("sandbox", {})
+    sandbox_config = dict(_plugin_config(rows, "sandbox"))
     for key in remove_sandbox:
         sandbox_config.pop(key, None)
     sandbox_config.update(sandbox or {})
-    if not sandbox_config:
-        doc.pop("sandbox", None)
+    if permission_config:
+        _replace_plugin(rows, "permissions", permission_config)
+    else:
+        _remove_plugin(rows, "permissions")
+    if sandbox_config:
+        _replace_plugin(rows, "sandbox", sandbox_config)
+    else:
+        _remove_plugin(rows, "sandbox")
 
-    if doc:
-        _write_yaml(path, doc)
+    document: dict[str, JsonValue] = {"plugins": rows} if rows else {}
+    if document:
+        _write_yaml(path, document)
     elif path.exists():
         path.unlink()
-    return doc
+    return load_session_policy(paths, session_id)
 
 
-def merge_permission_config(
-    base: dict[str, Any] | None,
-    overlay: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Merge permission rules, preserving deny/allow/ask precedence in PermissionSystem."""
-    merged: dict[str, Any] = {
-        key: list(config_dict(base).get(key, []))
-        for key in _PERMISSION_DECISIONS
-    }
-    if overlay:
-        overlay = config_dict(overlay)
-        for key in _PERMISSION_DECISIONS:
-            merged[key] = list(overlay.get(key, [])) + merged[key]
-    return {key: value for key, value in merged.items() if value}
-
-
-def merge_sandbox_config(
-    base: dict[str, Any] | None,
-    overlay: dict[str, Any] | None,
-    overrides: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Merge sandbox config: base → session overlay → live overrides.
-
-    Session resources are prepended before global resources so
-    per-session approvals take priority over the baseline config.
-    """
-
-    base = config_dict(base)
-    overlay = config_dict(overlay)
-    overrides = dict(overrides or {})
-    resources = list(overlay.get("resources", [])) + list(base.get("resources", []))
-    merged = {**base, **overlay, **overrides}
-    if resources:
-        merged["resources"] = resources
-    return merged
-
-
-def persist_permission_rule(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    rule: dict[str, Any],
-    decision: str,
-    scope: PermissionScope,
-) -> None:
-    """Persist one already-resolved permission rule for this session."""
-    decision = decision.lower().strip()
-    scope = (scope or "once").lower().strip()
-    if decision not in {"allow", "deny"} or scope != "session" or not rule:
-        return
-    _persist_permission_rule(
-        paths=paths,
-        session_id=session_id,
-        rule=rule,
-        decision=decision,
-    )
-
-
-def _persist_permission_rule(
-    *,
-    paths: RuntimePaths,
-    session_id: str,
-    rule: dict[str, Any],
-    decision: str,
-) -> None:
-    path = paths.session(session_id).config_file
-    doc = _read_yaml(path)
-    permissions = doc.setdefault("permissions", {})
-    _remove_rule(permissions, rule)
-    permissions.setdefault(decision, [])
-    if rule not in permissions[decision]:
-        permissions[decision].insert(0, rule)
-    _write_yaml(path, doc)
-def _remove_rule(permissions: dict[str, Any], rule: dict[str, Any]) -> None:
+def _remove_rule(permissions: dict[str, JsonValue], rule: dict[str, JsonValue]) -> None:
     for key in _PERMISSION_DECISIONS:
         permissions[key] = [item for item in permissions.get(key, []) if item != rule]
         if not permissions[key]:
             permissions.pop(key, None)
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
+def _read_rows(path: Path) -> list[dict[str, JsonValue]]:
     if not path.exists():
-        return {}
+        return []
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a mapping")
-    return data
+        return []
+    if isinstance(data, list):
+        document: JsonValue = data
+    elif isinstance(data, dict) and ("plugins" in data or "entries" in data):
+        document = data
+    else:
+        raise ValueError(f"{path} must contain a plugin overlay")
+    try:
+        PluginOverlay.parse(document)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid session plugin overlay: {path}: {exc}") from exc
+    values = document if isinstance(document, list) else document.get("plugins", document.get("entries"))
+    if not isinstance(values, list) or not all(isinstance(item, dict) for item in values):
+        raise ValueError(f"{path} must contain plugin entries")
+    return [dict(item) for item in values]
 
 
-def _write_yaml(path: Path, data: dict[str, Any]) -> None:
+def _plugin_config(
+    rows: list[dict[str, JsonValue]],
+    plugin_id: str,
+) -> dict[str, JsonValue]:
+    for row in rows:
+        if row.get("id", row.get("name")) == plugin_id:
+            config = row.get("config", {})
+            return dict(config) if isinstance(config, dict) else {}
+    return {}
+
+
+def _replace_plugin(
+    rows: list[dict[str, JsonValue]],
+    plugin_id: str,
+    config: dict[str, JsonValue],
+) -> None:
+    for row in rows:
+        if row.get("id", row.get("name")) == plugin_id:
+            row["config"] = config
+            return
+    rows.append({"id": plugin_id, "config": config})
+
+
+def _remove_plugin(rows: list[dict[str, JsonValue]], plugin_id: str) -> None:
+    rows[:] = [row for row in rows if row.get("id", row.get("name")) != plugin_id]
+
+
+def _write_yaml(path: Path, data: dict[str, JsonValue]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),

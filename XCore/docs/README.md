@@ -30,7 +30,8 @@ XCore 是一个 Python 的、类似 Cordis 的、以插件为核心的运行时�
   可恢复性保证。
 - [状态服务](features/state.md) — `ctx.state` 可恢复 KV、原子持久化、命名空间、
   崩溃恢复。
-- [Schema 配置](features/schema.md) — `S` DSL：声明、校验、默认值合并。
+- 插件配置 — 使用插件自有的 Pydantic `Config` 模型；Fiber 只调用标准
+  `model_validate` 契约。
 - [中间件](features/middleware.md) — `ctx.middleware` / `ctx.filter` 拦截链。
 
 ## 开发日志

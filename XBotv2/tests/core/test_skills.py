@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from XBotv2.config.models import RuntimeConfig
+from XBotv2.config.contracts import RuntimeConfig
 
 
 @pytest.fixture
@@ -95,6 +95,49 @@ Invalid permission content.
 
 
 class TestSkillRegistry:
+    def test_discover_scans_runtime_global_skill_directory(self, tmp_path):
+        from XBotv2.skills.registry import SkillRegistry
+
+        global_dir = tmp_path / "data" / ".agents" / "skills" / "runtime-skill"
+        global_dir.mkdir(parents=True)
+        (global_dir / "SKILL.md").write_text("""---
+name: runtime-skill
+description: A skill copied into the XBot data root
+---
+Runtime skill.
+""", encoding="utf-8")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        reg = SkillRegistry()
+        reg.discover(workspace, global_dirs=[global_dir.parent])
+
+        skill = reg.load_skill("runtime-skill")
+        assert skill is not None
+        assert skill.scope == "global"
+
+    def test_discover_does_not_scan_process_home(self, tmp_path, monkeypatch):
+        from XBotv2.skills.registry import SkillRegistry
+
+        home = tmp_path / "home"
+        skill_dir = home / ".agents" / "skills" / "home-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("""---
+name: home-skill
+description: Must not leak into a configured XBot data directory
+---
+Home skill.
+""", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        registry = SkillRegistry()
+        registry.discover(workspace)
+
+        assert registry.load_skill("home-skill") is None
+
     def test_discover_finds_skills_in_claude_path(self, skill_workspace):
         from XBotv2.skills.registry import SkillRegistry
 
@@ -184,42 +227,54 @@ Body
 
     @pytest.mark.asyncio
     async def test_plugin_session_init_is_idempotent(self, skill_workspace, state_store):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext
+        from XBotv2.agentloop import LoopSettings
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
-        registry = plugin.ctx.tools.registry
-        ctx = EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
-            config=SimpleNamespace(max_context_tokens=1_000),
+        tools = plugin.ctx.tools
+        ctx = ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
+            ),
+            settings=LoopSettings(provider="test", context_window=1_000),
         )
 
         await plugin._on_session_init(ctx)
-        first_names = registry.registered_names()
+        first_names = tools.registered_names()
         await plugin._on_session_init(ctx)
 
-        assert registry.registered_names() == first_names
-        assert plugin._skill_tools == first_names
+        assert tools.registered_names() == first_names
+        assert tuple(plugin._skill_tools) == first_names
         assert "skills:project:manual-only" not in first_names
         assert plugin.ctx.commands.get("manual-only").kind == "prompt"
-        model_only = registry.get_registered("skills:project:model-only")
+        model_only = next(
+            entry
+            for entry in tools.registrations()
+            if entry.registered_name == "skills:project:model-only"
+        )
         assert model_only is not None
         assert model_only.model_visible is True
         assert plugin.ctx.commands.get("model-only") is None
         assert plugin.ctx.commands.get("test-skill").kind == "prompt"
-        entry = registry.get("skills:project:test-skill")
-        assert entry is not None
+        tool = tools.resolve("skills:project:test-skill")
+        assert tool is not None
         assert plugin._initialized is True
         assert plugin._metadata_budget_chars == 80
 
-        result = await entry.tool.ainvoke({})
+        result = await tool.ainvoke({})
 
         assert result.status == "success"
         assert "test skill body" in result.content.lower()
-        assert result.data == {"name": "test-skill", "scope": "project"}
+        assert "test-skill" in result.content
         assert plugin.diagnostics()["active_skills"] == 1
         assert plugin._permission_scope.check("ask_user") == "deny"
 
@@ -233,7 +288,7 @@ Body
         from plugin_harness import mount_plugin
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         plugin._registry.discover(skill_workspace)
         mount_plugin(plugin, state_store)
         manual_result = await plugin._on_before_user_message(
@@ -259,60 +314,40 @@ Body
         self,
         skill_workspace,
         state_store,
-        temp_workspace,
     ):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext
-        from XBotv2.context_builder.builder import ContextBuilder
-        from XBotv2.agentloop.engine import Engine
-        from XBotv2.llm.mock import MockLLM
-        from XBotv2.permissions.system import PermissionSystem
-        from XBotv2.agentloop.tool_registry import ToolRegistry
-        from XBotv2.sandbox.policy import SandboxPolicy
+        from XBotv2.agentloop import LoopSettings
+        from XBotv2.core import ToolCall
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
-        from xcore import Context
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
-        await plugin._on_session_init(EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
-            config=None,
-        ))
-        engine = make_engine(
-            llm=MockLLM(responses=[
-                {
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "manual",
-                        "name": "manual-only",
-                        "args": {},
-                    }],
-                },
-                {"content": "done"},
-            ]),
-            tool_registry=plugin.ctx.tools.registry,
-            plugin_ctx=Context(),
-            state_store=state_store,
-            context_builder=ContextBuilder(),
-            sandbox_policy=SandboxPolicy(
-                enabled=False,
-                workspace_root=str(temp_workspace),
+        await plugin._on_session_init(ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
             ),
-            permission_system=PermissionSystem(default_decision="allow"),
-            config=RuntimeConfig(),
+            settings=LoopSettings(provider="test"),
+        ))
+        results = await plugin.ctx.tools.execute_all(
+            [ToolCall(id="manual", name="manual-only", args={})],
         )
 
-        events = [event async for event in engine.run_turn("load manual skill")]
-        tool_event = next(event for event in events if event["type"] == "tool_result")
-
-        assert tool_event["data"]["status"] == "error"
-        assert "not registered" in tool_event["data"]["content"].lower()
+        assert results[0].status == "error"
+        assert "not registered" in results[0].content.lower()
 
     @pytest.mark.asyncio
     async def test_skill_schema_budget_preserves_non_skill_tools(self):
+        from XBotv2.agentloop import ModelRequest
         from XBotv2.skills.plugin import SkillsPlugin
         from XBotv2.core import Tool
+        from XBotv2.llm.mock import MockLLM
 
         plugin = SkillsPlugin()
         plugin._model_skill_names = {"long-skill"}
@@ -328,13 +363,18 @@ Body
             function=invoke,
             parameters={"type": "object", "properties": {}},
         )
-        result = await plugin._on_before_tool_schema(SimpleNamespace(
-            model_request={"tools": [ordinary, skill]},
+        request = ModelRequest(
+            messages=[],
+            tools=[ordinary, skill],
+            llm=MockLLM(responses=[]),
+        )
+        await plugin._on_before_tool_schema(SimpleNamespace(
+            model_request=request,
         ))
 
-        assert result["tools"][0] is ordinary
-        assert result["tools"][1].name == "long-skill"
-        assert result["tools"][1].description == "a ve"
+        assert request.tools[0] is ordinary
+        assert request.tools[1].name == "long-skill"
+        assert request.tools[1].description == "a ve"
 
     @pytest.mark.asyncio
     async def test_active_skill_checks_tool_call_arguments(self):
@@ -346,11 +386,11 @@ Body
         plugin._permission_scope.add(disallowed=["shell(rm *)"])
 
         allowed = await plugin._guard_tool_scope(
-            ToolCall("call_1", "shell", {"command": "git status"}),
+            ToolCall(id="call_1", name="shell", args={"command": "git status"}),
             None,
         )
         denied = await plugin._guard_tool_scope(
-            ToolCall("call_2", "shell", {"command": "rm -rf build"}),
+            ToolCall(id="call_2", name="shell", args={"command": "rm -rf build"}),
             None,
         )
 
@@ -365,7 +405,8 @@ Body
         temp_workspace,
     ):
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import Events, Tool
+        from XBotv2.agentloop import Events
+        from XBotv2.core import Tool
         from XBotv2.context_builder.builder import ContextBuilder
         from XBotv2.agentloop.engine import Engine
         from XBotv2.llm.mock import MockLLM
@@ -447,29 +488,39 @@ Body
     async def test_plugin_session_init_rolls_back_partial_registration(
         self, skill_workspace, state_store
     ):
+        from XBotv2.application import ApplicationInitialized
         from XBotv2.skills.plugin import SkillsPlugin
-        from XBotv2.core import EventContext, Tool
+        from XBotv2.agentloop import LoopSettings
+        from XBotv2.core import Tool
+        from XBotv2.session import SessionInfo
         from plugin_harness import mount_plugin
 
         def existing_tool() -> str:
             return "existing"
 
         plugin = SkillsPlugin()
-        plugin._registry._scan_global = lambda: None
+        plugin._registry._scan_global = lambda *_dirs: None
         mount_plugin(plugin, state_store)
-        registry = plugin.ctx.tools.registry
-        collision_name = registry.register(
+        tools = plugin.ctx.tools
+        collision_name = tools.register(
             Tool.from_function(existing_tool, name="test-skill"),
             namespace="skills:project",
         )
-        ctx = EventContext(
-            session=SimpleNamespace(workspace_root=str(skill_workspace)),
+        ctx = ApplicationInitialized(
+            agent=None,
+            session=SessionInfo(
+                session_id="skills",
+                thread_id="skills",
+                workspace_root=str(skill_workspace),
+                provider="test",
+            ),
+            settings=LoopSettings(provider="test"),
         )
 
         with pytest.raises(ValueError, match="already registered"):
             await plugin._on_session_init(ctx)
 
-        assert registry.registered_names() == [collision_name]
+        assert tools.registered_names() == (collision_name,)
         assert plugin._skill_tools == []
         assert plugin._initialized is False
         assert plugin.diagnostics()["skills"] == 0
@@ -548,7 +599,7 @@ class TestSkillPermissionScope:
         scope.add(allowed=["shell(git *)"])
         assert scope.check("shell", {"command": "git status"}) == "allow"
         assert scope.check("shell", {"command": "rm -rf build"}) is None
-        assert scope.check("read_file", {"path": "README.md"}) is None
+        assert scope.check("read", {"path": "README.md"}) is None
 
     def test_disallowed_overrides_allowed(self):
         from XBotv2.skills.permission_scope import SkillPermissionScope
