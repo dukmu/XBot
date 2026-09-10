@@ -83,13 +83,38 @@ async def main() -> None:
                 responses=[
                     {
                         "content": "A real MockLLM response through the XBot HTTP stream.",
+                        "reasoning": "I am checking the real transport before replying.",
+                        "chunks": [
+                            {"reasoning": "I am checking the real "},
+                            {"reasoning": "transport before replying. "},
+                            {"content": "A real MockLLM response "},
+                            {"content": "through the XBot HTTP stream."},
+                        ],
+                        "chunk_delay_ms": 90,
                         "usage_metadata": {
                             "input_tokens": 12,
                             "output_tokens": 10,
                             "total_tokens": 22,
                         },
                     },
-                    {"content": "The clipboard image reached the real MockLLM."},
+                    {
+                        "content": "The clipboard image reached the real MockLLM.",
+                        "chunks": [
+                            {"content": "The clipboard image reached "},
+                            {"content": "the real MockLLM."},
+                        ],
+                        "chunk_delay_ms": 90,
+                    },
+                    {
+                        "content": "The second real turn stayed aligned with the first.",
+                        "reasoning": "I am comparing both persisted turns.",
+                        "chunks": [
+                            {"reasoning": "I am comparing both persisted turns. "},
+                            {"content": "The second real turn stayed "},
+                            {"content": "aligned with the first."},
+                        ],
+                        "chunk_delay_ms": 90,
+                    },
                 ],
                 input_modalities=["text", "image"],
             ),

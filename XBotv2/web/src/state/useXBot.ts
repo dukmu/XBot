@@ -365,6 +365,12 @@ export function useXBot() {
     api.listPluginConfig(sessionId, threadId, scope)
   ), [api]);
 
+  const loadSessionPolicy = useCallback((sessionId: string) => api.getSessionPolicy(sessionId), [api]);
+
+  const updateSessionPolicy = useCallback((sessionId: string, patch: Parameters<XBotApi["updateSessionPolicy"]>[1]) => (
+    api.updateSessionPolicy(sessionId, patch)
+  ), [api]);
+
   const updatePluginConfig = useCallback((
     sessionId: string,
     threadId: string,
@@ -914,6 +920,8 @@ export function useXBot() {
     stopAllTasks,
     refreshSessions,
     listDirectories,
+    loadSessionPolicy,
+    updateSessionPolicy,
     loadPluginConfig,
     updatePluginConfig,
     clearNotification: () => setNotification(""),

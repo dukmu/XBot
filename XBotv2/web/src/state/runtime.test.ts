@@ -711,6 +711,31 @@ describe("runtimeReducer", () => {
     )).toBe(true);
   });
 
+  it("does not duplicate an accepted user message when trajectory catches up", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "same input",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("message", {
+        id: "user-1", role: "user", content: "same input", images: [], artifacts: [],
+      }),
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+  });
+
   it("folds raw events captured during the trajectory request after the baseline", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "trajectory",

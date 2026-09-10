@@ -32,7 +32,7 @@ test("loads and saves the active session security policy", async ({ page }) => {
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Session" }).click();
+  await page.getByRole("button", { name: "Session", exact: true }).click();
   await expect(page.getByText("Session security policy")).toBeVisible();
   const request = page.waitForRequest((candidate) => (
     candidate.method() === "PATCH"
@@ -401,9 +401,10 @@ test("regenerates the last turn through the authoritative history endpoint", asy
   ));
   await page.getByRole("button", { name: "Regenerate response" }).click();
   await regenerate;
-  await expect(page.getByText("Regenerated from the persisted input.", { exact: true })).toBeVisible();
-  await expect(page.getByText("I will inspect the public SDK surface.", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Inspect API boundaries", { exact: true })).toHaveCount(1);
+  const transcript = page.locator(".timeline .markdown-body");
+  await expect(transcript.filter({ hasText: "Regenerated from the persisted input." })).toHaveCount(1);
+  await expect(transcript.filter({ hasText: "I will inspect the public SDK surface." })).toHaveCount(0);
+  await expect(transcript.filter({ hasText: "Inspect API boundaries" })).toHaveCount(1);
 });
 
 test("branches from the finalized assistant action strip", async ({ page }) => {
@@ -1046,13 +1047,13 @@ async function mockProtocol(page: Page) {
       const threadId = path.split("/")[4];
       const opened = threadId === "subagent-research" ? openSubagentSession() : openSession(sessionId);
       const history = cleared && sessionId === "demo-session" ? [] : regenerated && sessionId === "demo-session" ? [
-        { role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
-        { role: "assistant", content: "Regenerated from the persisted input.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+        { id: "regen-user", role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
+        { id: "assistant-1-0", role: "assistant", content: "Regenerated from the persisted input.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
       ] : opened.history;
       const all = history.map((message, index) => ({
         position: index + 1,
         kind: "message",
-        message_id: `history-${index + 1}`,
+        message_id: String((message as { id?: string }).id || `history-${index + 1}`),
         message,
       }));
       const end = Number(url.searchParams.get("cursor") || all.length);
@@ -1085,7 +1086,7 @@ async function mockProtocol(page: Page) {
         { type: "history_updated", data: { operation: "regenerate", turns: 1, history: [] } },
         { type: "message", data: { id: "regen-user", role: "user", content: "Inspect API boundaries", images: [], artifacts: [] } },
         { type: "turn_started", data: { turn: 1 } },
-        { type: "assistant_message", data: { content: "Regenerated from the persisted input.", tool_calls: [] } },
+        { type: "assistant_message", data: { id: "assistant-1-0", content: "Regenerated from the persisted input.", tool_calls: [] } },
         { type: "turn_finished", data: { turn: 1 } },
       ];
       const requestId = String(request.postDataJSON().request_id || "request-1");

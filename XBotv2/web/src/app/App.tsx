@@ -356,6 +356,8 @@ export function App() {
           }}
           sessionId={state.current?.session_id}
           threadId={state.current?.thread_id}
+          loadSessionPolicy={runtime.loadSessionPolicy}
+          updateSessionPolicy={runtime.updateSessionPolicy}
           loadPluginConfig={runtime.loadPluginConfig}
           updatePluginConfig={runtime.updatePluginConfig}
           onClose={closeSettings}

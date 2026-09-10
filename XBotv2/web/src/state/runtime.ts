@@ -281,11 +281,12 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         const live = state.trajectoryLoaded
           ? state.entries.filter((entry) => entry.origin !== "trajectory")
           : [];
+      const baselineEntries = trajectoryEntries(action.items);
       const baseline = {
         ...state,
         trajectory: action.items,
         trajectoryLoaded: true,
-        entries: [...trajectoryEntries(action.items), ...live],
+        entries: mergeTrajectoryWithLive(baselineEntries, live),
         historyCursor: action.nextCursor,
       };
       return action.bufferedEvents?.length
@@ -301,7 +302,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return {
         ...state,
         trajectory,
-        entries: [...trajectoryEntries(trajectory), ...live],
+        entries: mergeTrajectoryWithLive(trajectoryEntries(trajectory), live),
         historyCursor: action.nextCursor,
         historyLoading: false,
       };
@@ -597,6 +598,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
             : {
               ...messageEntry("user", stringValue(data.content)),
               id,
+              messageId: id,
               images: historyAttachments(
                 arrayValue(data.images) as ImageReference[],
                 arrayValue(data.artifacts).map(objectValue),
@@ -795,6 +797,32 @@ function positionedEntries(position: number, history: HistoryItem[], suffix = "m
     ...entry,
     id: `trajectory:${position}:${suffix}:${index}`,
   }));
+}
+
+function mergeTrajectoryWithLive(
+  baseline: TimelineEntry[],
+  live: TimelineEntry[],
+): TimelineEntry[] {
+  const baselineKeys = new Set(baseline.flatMap(entryIdentityKeys));
+  return [
+    ...baseline,
+    ...live.filter((entry) => (
+      entryIdentityKeys(entry).every((key) => !baselineKeys.has(key))
+    )),
+  ];
+}
+
+function entryIdentityKeys(entry: TimelineEntry): string[] {
+  if (entry.kind === "message") {
+    return entry.messageId ? [`message:${entry.messageId}`] : [];
+  }
+  if (entry.kind === "tool") {
+    return entry.toolCallId ? [`tool:${entry.toolCallId}`] : [];
+  }
+  if (entry.kind === "runtime") {
+    return entry.messageId ? [`runtime:${entry.messageId}`] : [];
+  }
+  return [];
 }
 
 function trajectoryEventContent(event: string, data: JsonObject): string {
