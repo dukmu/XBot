@@ -345,7 +345,7 @@ function SessionPolicyPanel({
           </select>
         </label>)}
         {accessFields.map((field) => <label key={field}>
-          <span>{field.replaceAll("_", " ")}</span>
+          <span>{policyFieldLabel(field)}</span>
           <select value={String(sandbox[field] ?? "")} onChange={(event) => setSandbox({ ...sandbox, [field]: event.target.value as SandboxSetting })}>
             <option value="">inherit ({sandboxAccess(policy.effective_sandbox[field])})</option>
             {(["allow", "readonly", "readwrite", "deny"] as const).map((value) => <option key={value} value={value}>{value}</option>)}
@@ -377,4 +377,8 @@ function booleanSetting(value: string): "" | boolean {
 
 function sandboxAccess(value: unknown): SandboxAccess {
   return value === "allow" || value === "deny" || value === "readonly" || value === "readwrite" ? value : "deny";
+}
+
+function policyFieldLabel(field: string): string {
+  return field.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }

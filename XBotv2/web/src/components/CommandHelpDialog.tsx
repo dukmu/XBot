@@ -60,7 +60,7 @@ export function CommandHelpDialog({
                 {items.map((command) => (
                   <article key={`${command.kind}:${command.name}`}>
                     <button type="button" onClick={() => onSelect(command)}>
-                      <div><b>{command.slash}</b><span className="command-help-use">Use</span></div>
+                      <div><b>{command.slash}</b></div>
                       <p>{command.description}</p>
                       <code>{command.usage}</code>
                       {command.examples.length > 0 && <small>{command.examples.join(" · ")}</small>}
