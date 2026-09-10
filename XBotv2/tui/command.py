@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
+
+from pydantic import JsonValue
 
 CommandKind = Literal["client", "server", "prompt"]
 
@@ -18,7 +20,7 @@ class CommandSpec:
     raw: str = ""
     display_label: str = ""
     short_label: str = ""
-    parameters: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, JsonValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.short_label:

@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from XBotv2.core import ArtifactKind, ArtifactStorePort, ToolResult
+from XBotv2.sandbox.contracts import SandboxPort
 
 from .network import UrlPolicy, network_available
 
@@ -67,7 +68,12 @@ class BrowserSession:
     def active(self) -> bool:
         return self._page is not None and not self._page.is_closed()
 
-    async def open(self, url: str, *, sandbox: Any = None) -> ToolResult:
+    async def open(
+        self,
+        url: str,
+        *,
+        sandbox: SandboxPort | None = None,
+    ) -> ToolResult:
         try:
             if urlsplit(url.strip()).scheme.lower() != "file":
                 unavailable = network_available(sandbox)
@@ -81,13 +87,13 @@ class BrowserSession:
         except Exception as exc:
             return ToolResult.failure("browser_open_failed", f"Browser open failed: {exc}")
 
-    async def _target_url(self, url: str, sandbox: Any) -> str:
+    async def _target_url(self, url: str, sandbox: SandboxPort | None) -> str:
         stripped = url.strip()
         if urlsplit(stripped).scheme.lower() == "file":
             return self._file_url(stripped, sandbox)
         return await self.policy.check(stripped)
 
-    def _file_url(self, url: str, sandbox: Any) -> str:
+    def _file_url(self, url: str, sandbox: SandboxPort | None) -> str:
         parsed = urlsplit(url)
         if parsed.scheme.lower() != "file":
             raise ValueError("URL scheme must be file")
@@ -197,7 +203,7 @@ class BrowserSession:
                 pass
         self._page = self._context = self._browser = self._playwright = None
 
-    async def _ensure_page(self, sandbox: Any = None) -> Any:
+    async def _ensure_page(self, sandbox: SandboxPort | None = None) -> Any:
         if self.active:
             return self._page
         self._sandbox = sandbox

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import partial
 import time
+from pydantic import JsonValue
 
 from fastapi import APIRouter, FastAPI
 from starlette.routing import BaseRoute
@@ -122,7 +123,9 @@ class ServerComponent:
     name = "xbot.server"
     inject = ["runtime_log"]
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         from XBotv2.server.http import create_app
 
         info = ServerInfo(name="xbotv2", started_at=time.monotonic())

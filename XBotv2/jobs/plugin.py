@@ -11,7 +11,7 @@ from xcore import Context
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import AgentLoopDriverPort, EventPort, Events
+from XBotv2.agentloop import AgentLoopDriverPort, EventContext, EventPort, Events
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
@@ -128,7 +128,7 @@ class JobHandlers:
                 retryable=True,
             )
 
-    async def close(self, _event: object) -> None:
+    async def close(self, _event: EventContext) -> None:
         await self._registry.shutdown()
 
 

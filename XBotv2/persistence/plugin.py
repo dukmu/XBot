@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from xcore import Context
 
 from XBotv2.core.history import ConversationHistory
@@ -29,7 +30,9 @@ class ThreadPersistenceComponent:
     inject = ["loop_state", "thread_persistence", "runtime_log"]
     name = "xbot.persistence"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         state = ctx.loop_state
         persistence = ctx.thread_persistence
         nodes = persistence.history.load_surface()
@@ -70,7 +73,9 @@ class PersistencePlugin:
 
     name = "xbot.persistence"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         ctx.set("thread_persistence_factory", thread_persistence_factory)
         ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
 

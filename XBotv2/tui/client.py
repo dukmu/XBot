@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from textwrap import shorten
-from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.core.usage import INPUT_USAGE_FIELDS, USAGE_COUNTER_FIELDS
 
@@ -15,7 +15,7 @@ def _empty_usage_counters() -> dict[str, int]:
     return {key: 0 for key in USAGE_COUNTER_FIELDS}
 
 
-def _effective_context_tokens(usage: dict[str, Any], previous: int = 0) -> int:
+def _effective_context_tokens(usage: dict[str, JsonValue], previous: int = 0) -> int:
     if "context_tokens" in usage:
         return int(usage.get("context_tokens") or 0)
     if any(key in usage for key in INPUT_USAGE_FIELDS):
@@ -42,17 +42,17 @@ class TuiTranscriptEntry:
 class TuiTool:
     tool_call_id: str
     name: str
-    args: dict[str, Any] = field(default_factory=dict)
+    args: dict[str, JsonValue] = field(default_factory=dict)
     args_preview: str = ""
     args_streaming: str = ""
     args_finalized: bool = False
     status: str = "pending"
     summary: str = ""
     result: str = ""
-    data: Any = None
-    error: dict[str, Any] | None = None
-    artifacts: list[dict[str, Any]] = field(default_factory=list)
-    images: list[dict[str, Any]] = field(default_factory=list)
+    data: JsonValue = None
+    error: dict[str, JsonValue] | None = None
+    artifacts: list[dict[str, JsonValue]] = field(default_factory=list)
+    images: list[dict[str, JsonValue]] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
     permission_pending: bool = False
@@ -95,7 +95,7 @@ class TuiNotice:
     kind: str
     text: str
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass
@@ -122,15 +122,15 @@ class TuiState:
     turn: int = 0
     turn_active: bool = False
     compaction_active: bool = False
-    pending_user_input_payload: dict[str, Any] | None = None
-    pending_permission_payload: dict[str, Any] | None = None
+    pending_user_input_payload: dict[str, JsonValue] | None = None
+    pending_permission_payload: dict[str, JsonValue] | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
     _streaming_assistant_index: int | None = None
     _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
     _changed_tool_ids: set[str] = field(default_factory=set)
     _tool_id_renames: dict[str, str] = field(default_factory=dict)
 
-    def apply_event(self, event: dict[str, Any]) -> None:
+    def apply_event(self, event: dict[str, JsonValue]) -> None:
         self._changed_tool_ids.clear()
         self._tool_id_renames.clear()
         event_type = str(event.get("type") or "")
@@ -397,7 +397,7 @@ class TuiState:
         self.messages.append(TuiMessage(role=role, content=content))
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
-    def restore_history(self, history: list[dict[str, Any]]) -> None:
+    def restore_history(self, history: list[dict[str, JsonValue]]) -> None:
         """Rebuild the visible transcript from a resumed session."""
         self.reset_history()
         for item in history:
@@ -491,7 +491,7 @@ class TuiState:
         kind: str,
         text: str,
         *,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, JsonValue] | None = None,
     ) -> None:
         self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
@@ -543,7 +543,7 @@ class TuiState:
             self.tasks.pop(task_id, None)
         return bool(expired)
 
-    def _apply_tool_calls(self, tool_calls: Any) -> None:
+    def _apply_tool_calls(self, tool_calls: JsonValue) -> None:
         if not isinstance(tool_calls, list):
             return
         for index, raw_tool in enumerate(tool_calls):
@@ -558,7 +558,7 @@ class TuiState:
                 tool.args_finalized = True
             self._mark_tool_pending(tool)
 
-    def _apply_tool_call_delta(self, tool_calls: Any) -> None:
+    def _apply_tool_call_delta(self, tool_calls: JsonValue) -> None:
         if not isinstance(tool_calls, list):
             return
         for index, raw_tool in enumerate(tool_calls):
@@ -583,7 +583,7 @@ class TuiState:
 
     def _streaming_tool(
         self,
-        raw: dict[str, Any],
+        raw: dict[str, JsonValue],
         default_index: int,
     ) -> tuple[str, TuiTool]:
         index = int(raw.get("index") if raw.get("index") is not None else default_index)
@@ -612,7 +612,7 @@ class TuiState:
         self._ensure_tool_transcript(tool.tool_call_id)
         self._changed_tool_ids.add(tool.tool_call_id)
 
-    def _apply_usage(self, data: dict[str, Any]) -> None:
+    def _apply_usage(self, data: dict[str, JsonValue]) -> None:
         self.context_input_tokens = _effective_context_tokens(
             data, self.context_input_tokens
         )
@@ -677,7 +677,7 @@ def _is_provisional_tool_id(tool_call_id: str) -> bool:
     return tool_call_id.startswith("tool_")
 
 
-def _preview(value: Any, *, width: int = 120) -> str:
+def _preview(value: JsonValue, *, width: int = 120) -> str:
     """Render a short, single-line-friendly preview of ``value``.
 
     Newlines are preserved and each line is independently shortened. Tool
@@ -691,7 +691,7 @@ def _preview(value: Any, *, width: int = 120) -> str:
     )
 
 
-def format_value(value: Any, *, indent: int | None = None) -> str:
+def format_value(value: JsonValue, *, indent: int | None = None) -> str:
     if isinstance(value, str):
         return value
     try:

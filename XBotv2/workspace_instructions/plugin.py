@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pydantic import JsonValue
 
 from xcore import Context
 
@@ -20,7 +21,9 @@ class WorkspaceInstructionsPlugin:
     inject = ["variables", "workspace_root"]
     name = "workspace_instructions"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         self._instructions_path = Path(ctx.workspace_root) / "AGENTS.md"
         self._variables: RuntimeVariables = ctx.variables
         ctx.on(CONTEXT_COMPONENTS_BUILT, self._inject_workspace_instructions)

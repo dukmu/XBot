@@ -109,8 +109,9 @@ class InteractionsComponent:
     inject = ["tools", "client_events", "session_launch"]
     name = "xbot.interactions"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
-        config = config or {}
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = InteractionsService(ctx, ctx.client_events)
         ctx.set("interactions", service)
         ctx.dispose(ctx.client_events.register_waiter(

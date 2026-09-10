@@ -9,6 +9,7 @@ from pathlib import Path
 from textwrap import shorten
 from typing import Any
 
+from pydantic import JsonValue
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
@@ -626,7 +627,7 @@ def tool_detail(tool: TuiTool) -> str:
     return "\n".join(parts)
 
 
-def _todo_projection(tool: TuiTool) -> list[dict[str, object]] | None:
+def _todo_projection(tool: TuiTool) -> list[dict[str, JsonValue]] | None:
     data = tool.data
     if not isinstance(data, dict) or data.get("kind") != "todo_snapshot":
         return None

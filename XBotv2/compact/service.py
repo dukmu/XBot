@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol, Sequence
+from typing import Protocol, Sequence
+from pydantic import JsonValue
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core import (
@@ -22,6 +23,7 @@ from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionInf
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
 from XBotv2.compact.contracts import CompactConfig
+from XBotv2.compact.contracts import CompactionMetrics, CompactionProposal
 from XBotv2.compact.events import (
     POST_COMPACT,
     PRE_COMPACT,
@@ -43,7 +45,7 @@ class CompactEventsPort(Protocol):
 class UsagePort(Protocol):
     async def add(
         self,
-        usage: dict[str, object],
+        usage: dict[str, JsonValue],
         *,
         update_context: bool = True,
     ) -> dict[str, int] | None: ...
@@ -75,7 +77,7 @@ class CompactService:
         self._manual_requested = False
         self._compactions = 0
         self._last_reason = ""
-        self._last_compaction: dict[str, Any] = {}
+        self._last_compaction: CompactionMetrics = {}
 
     async def _dispose(self) -> None:
         self._manual_requested = False
@@ -100,7 +102,7 @@ class CompactService:
 
     async def _compact_current_history(
         self,
-    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    ) -> tuple[dict[str, JsonValue] | None, CompactionMetrics]:
         event_ctx = EventContext(
             messages=self.state.messages,
             session=self.state.session,
@@ -186,8 +188,8 @@ class CompactService:
     async def _commit(
         self,
         ctx: EventContext,
-        proposal: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
+        proposal: CompactionProposal | None,
+    ) -> dict[str, JsonValue] | None:
         """Commit one already-built proposal at the history ownership boundary."""
         if proposal is None:
             return None
@@ -318,7 +320,7 @@ class CompactService:
 
     def _record_end(
         self,
-        proposal: dict[str, Any],
+        proposal: CompactionProposal,
         *,
         error: str = "",
     ) -> None:
@@ -341,9 +343,9 @@ class CompactService:
         output_reservation: int | None = None,
         stable_prefix: Message | Sequence[Message] | None = None,
         removable_estimate: int | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> CompactionProposal | None:
         if stable_prefix is None:
-            stable: Sequence[Any] = ()
+            stable: Sequence[Message] = ()
         elif isinstance(stable_prefix, Message):
             stable = (stable_prefix,)
         else:
@@ -395,7 +397,7 @@ class CompactService:
     def _record_committed(
         self,
         reason: str,
-        metrics: dict[str, Any],
+        metrics: CompactionMetrics,
         session: SessionInfo,
     ) -> None:
         self._compactions += 1
@@ -421,7 +423,7 @@ class CompactService:
             usage.get("total_tokens", 0),
         )
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "automatic": self._automatic,
@@ -445,12 +447,12 @@ def _exception_text(exc: BaseException) -> str:
 
 
 def _finalize_metrics(
-    metrics: dict[str, Any],
+    metrics: CompactionMetrics,
     *,
     original_messages: list[Message],
     proposed_messages: list[Message],
     committed_messages: list[Message],
-) -> dict[str, Any]:
+) -> CompactionMetrics:
     finalized = dict(metrics)
     finalized["history_chars_before"] = history_chars(original_messages)
     finalized["history_chars_after"] = history_chars(committed_messages)

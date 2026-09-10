@@ -17,7 +17,11 @@ from pydantic import BaseModel, JsonValue
 
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.tools import ToolCall
-from XBotv2.permissions.contracts import PermissionDecision, PermissionsPort
+from XBotv2.permissions.contracts import (
+    PermissionConfig,
+    PermissionDecision,
+    PermissionsPort,
+)
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.permissions.patterns import compile_pattern, fullmatch, matching_budget
 from XBotv2.permissions.rules import effective_args
@@ -25,7 +29,9 @@ from XBotv2.permissions.rules import effective_args
 _DECISIONS = {"allow", "deny", "ask"}
 
 
-def normalize_agent_permissions(value: object) -> dict[str, list[dict[str, str]]]:
+def normalize_agent_permissions(
+    value: str | Mapping[str, JsonValue] | None,
+) -> dict[str, list[dict[str, str]]]:
     """Normalize an Agent definition's raw permission overlay.
 
     Accepts the ``permission`` / ``permissions`` frontmatter shapes: a whole
@@ -40,7 +46,7 @@ def normalize_agent_permissions(value: object) -> dict[str, list[dict[str, str]]
         if value not in _DECISIONS:
             raise ValueError(f"Invalid permission decision: {value!r}")
         return {value: [{"tool": ".*"}]}
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         raise ValueError(
             f"Agent permissions must be a mapping or decision: {value!r}"
         )
@@ -125,7 +131,7 @@ class PermissionSystem:
 
     def __init__(
         self,
-        config: object | None = None,
+        config: PermissionConfig | Mapping[str, JsonValue] | None = None,
         *,
         default_decision: PermissionDecision = "ask",
         variables: RuntimeVariables | None = None,
@@ -146,7 +152,10 @@ class PermissionSystem:
     # Config loading
     # ------------------------------------------------------------------
 
-    def _load_config(self, config: object) -> None:
+    def _load_config(
+        self,
+        config: PermissionConfig | Mapping[str, JsonValue],
+    ) -> None:
         if isinstance(config, BaseModel):
             data = config.model_dump()
         elif isinstance(config, Mapping):
@@ -165,7 +174,10 @@ class PermissionSystem:
         rule = self._parse_rule(rule_data, decision)
         self._rules[decision].insert(0, rule)
 
-    def replace_rules(self, config: object | None) -> None:
+    def replace_rules(
+        self,
+        config: PermissionConfig | Mapping[str, JsonValue] | None,
+    ) -> None:
         """Replace configured rules without invalidating shared references."""
         for rules in self._rules.values():
             rules.clear()

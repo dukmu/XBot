@@ -7,6 +7,7 @@ but it does not create the state consumed by the loop.
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from xcore import Context
 from XBotv2.agentloop import LoopState
 from XBotv2.core.variables import RuntimeVariables
@@ -39,7 +40,9 @@ class SessionRuntimeComponent:
 
     name = "xbot.session"
 
-    def apply(self, ctx: Context, config: object = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         launch = ctx.session_launch
         paths = ctx.runtime_paths
         session_id = launch.session_id
@@ -136,7 +139,9 @@ class SessionPlugin:
 
     name = "xbot.session"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         ctx.inject(SessionRuntimeComponent.inject, mount_runtime)
         ctx.inject(_MANAGER_DEPENDENCIES, mount_manager)
         ctx.inject(

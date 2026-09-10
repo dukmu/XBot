@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
@@ -40,7 +40,7 @@ class HealthResponse(WireModel):
 class ErrorResponse(WireModel):
     code: str
     message: str
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
     retryable: bool = False
 
 
@@ -59,13 +59,13 @@ class ServerEvent(WireModel):
     request_id: str = ""
     sequence: int = 0
     type: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def server_event(
     *,
     type: str,
-    data: dict[str, Any] | None = None,
+    data: dict[str, JsonValue] | None = None,
     sequence: int = 0,
     session_id: str = "",
     thread_id: str = "agent",

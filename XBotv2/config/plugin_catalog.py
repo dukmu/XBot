@@ -134,7 +134,7 @@ def _descriptor(
     )
 
 
-def _declared_schema(entry: PluginEntry) -> object:
+def _declared_schema(entry: PluginEntry) -> type[BaseModel]:
     schema = plugin_config_schema(entry)
     if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
         raise PluginConfigUnavailable(
@@ -181,7 +181,7 @@ def _overlay_configs(path: Path) -> dict[str, dict[str, JsonValue]]:
     return configs
 
 
-def _overlay_document(path: Path) -> list[object] | dict[str, object]:
+def _overlay_document(path: Path) -> list[JsonValue] | dict[str, JsonValue]:
     if not path.exists():
         return []
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -192,8 +192,10 @@ def _overlay_document(path: Path) -> list[object] | dict[str, object]:
     return value
 
 
-def _document_rows(document: list[object] | dict[str, object]) -> list[dict[str, object]]:
-    values: object
+def _document_rows(
+    document: list[JsonValue] | dict[str, JsonValue],
+) -> list[dict[str, JsonValue]]:
+    values: JsonValue
     if isinstance(document, list):
         values = document
     else:
@@ -207,7 +209,7 @@ def _document_rows(document: list[object] | dict[str, object]) -> list[dict[str,
 
 
 def _replace_config(
-    rows: list[dict[str, object]],
+    rows: list[dict[str, JsonValue]],
     plugin_id: str,
     config: dict[str, JsonValue],
 ) -> None:

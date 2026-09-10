@@ -7,6 +7,7 @@ prompt fragments; the engine and the prompts component consume it through
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from xcore import Context
 
 from XBotv2.agentloop import EventPort
@@ -26,7 +27,9 @@ class ContextBuilderComponent:
     name = "xbot.context_builder"
     inject = ["runtime_log"]
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         builder = ContextBuilder()
         ctx.set("context_builder", builder)
         ctx.on(

@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import (
@@ -274,7 +274,7 @@ async def _workspace_sse(
         await stream.aclose()
 
 
-def _workspace_event(frame: WorkspaceEventFrame) -> tuple[str, dict[str, object]]:
+def _workspace_event(frame: WorkspaceEventFrame) -> tuple[str, dict[str, JsonValue]]:
     change = frame.change
     if isinstance(change, SessionResourceChanged):
         return (

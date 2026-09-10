@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
-
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import ArtifactInput, ArtifactValue, Message
+from pydantic import JsonValue
 from XBotv2.core.prompts import (
     CACHED_CONTENT_KEY,
     DISPLAY_CONTENT_KEY,
@@ -62,7 +61,7 @@ def structure_tool_message(message: Message, tool_name: str) -> Message:
     return message
 
 
-def _json_element(name: str, value: Any) -> str:
+def _json_element(name: str, value: JsonValue) -> str:
     return prompt_element(
         name,
         json.dumps(value, ensure_ascii=False, sort_keys=True, default=str),
@@ -70,12 +69,14 @@ def _json_element(name: str, value: Any) -> str:
     )
 
 
-def _artifacts(value: Any) -> list[Any]:
+def _artifacts(value: ArtifactInput) -> list[dict[str, JsonValue]]:
     values = value if isinstance(value, (list, tuple)) else [value]
     return [_artifact_value(item) for item in values]
 
 
-def _artifact_value(value: Any) -> Any:
+def _artifact_value(
+    value: ArtifactValue,
+) -> dict[str, JsonValue]:
     if isinstance(value, ArtifactRef):
         return value.model_dump(mode="json")
     if isinstance(value, Mapping):

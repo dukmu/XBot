@@ -23,7 +23,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Unpack
 from pydantic import JsonValue
 
 from XBotv2.agentloop.internal_messages import (
@@ -37,6 +37,7 @@ from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCU
 from XBotv2.agentloop.contracts import (
     DEFAULT_MAX_ITERATIONS,
     LoopSettings,
+    LoopSettingsUpdate,
     LoopState,
     ModelRequest,
 )
@@ -44,6 +45,7 @@ from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
+    ArtifactValue,
     ImageContent,
     Message,
     ModelChunk,
@@ -81,13 +83,17 @@ from XBotv2.core.tools import (
     provider_tool_schema,
 )
 
-_UNCHANGED = object()
+class _Unchanged:
+    """Sentinel distinguishing an omitted model replacement from ``None``."""
+
+
+_UNCHANGED = _Unchanged()
 
 
 def _runtime_input(
     source: str,
-    metadata: dict[str, Any] | None,
-) -> dict[str, Any]:
+    metadata: dict[str, JsonValue] | None,
+) -> dict[str, JsonValue]:
     """Retain display provenance without copying private inbox payloads."""
     if source == "user":
         return {}
@@ -101,21 +107,21 @@ def _runtime_input(
 @dataclass(slots=True)
 class _TurnStartResult:
     user_input: str
-    events: list[dict[str, Any]]
+    events: list[dict[str, JsonValue]]
     proceed: bool
 
 
 @dataclass(slots=True)
 class _ContextBuildResult:
     messages: list[Message] | None = None
-    event: dict[str, Any] | None = None
+    event: dict[str, JsonValue] | None = None
     turn_complete: bool | None = None
 
 
 @dataclass(slots=True)
 class _ModelRequestResult:
     request: ModelRequest | None = None
-    event: dict[str, Any] | None = None
+    event: dict[str, JsonValue] | None = None
     turn_complete: bool | None = None
     rebuild: bool = False
 
@@ -133,9 +139,9 @@ class _ModelResponseEvent:
 def xbot_tool_call_deltas(
     chunk: ModelChunk,
     tool_stream_ids: dict[int, str],
-) -> list[dict[str, Any]]:
+) -> list[dict[str, JsonValue]]:
     raw_chunks = chunk.tool_call_chunks or chunk.tool_calls
-    deltas: list[dict[str, Any]] = []
+    deltas: list[dict[str, JsonValue]] = []
     for index, tool_call in enumerate(raw_chunks):
         chunk_index = tool_call.index if isinstance(tool_call, ToolCallDelta) else index
         prior_id = tool_stream_ids.get(chunk_index)
@@ -156,9 +162,9 @@ def xbot_tool_call_deltas(
     return deltas
 
 
-def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
+def tool_result_event_data(message: Message, name: str) -> dict[str, JsonValue]:
     """Build the client-visible result without dropping structured metadata."""
-    data: dict[str, Any] = {
+    data: dict[str, JsonValue] = {
         "tool_call_id": message.tool_call_id,
         "name": name,
         "content": message.additional_kwargs.get(
@@ -186,7 +192,9 @@ def tool_result_event_data(message: Message, name: str) -> dict[str, Any]:
     return data
 
 
-def _artifact_event_data(artifact: object) -> dict[str, Any]:
+def _artifact_event_data(
+    artifact: ArtifactValue,
+) -> dict[str, JsonValue]:
     if isinstance(artifact, ArtifactRef):
         return artifact.model_dump(mode="json")
     if isinstance(artifact, Mapping):
@@ -359,14 +367,62 @@ class Engine(AgentLoopDriverPort):
     def set_wake_driver(self, wake_driver: Callable[[], None] | None) -> None:
         self.inbox.set_wake_driver(wake_driver)
 
-    async def followup(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.followup(content, **kwargs)
+    async def followup(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.followup(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
-    async def steer(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.steer(content, **kwargs)
+    async def steer(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.steer(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
-    async def inject(self, content: str, **kwargs: Any) -> InboxInput:
-        return await self.inbox.inject(content, **kwargs)
+    async def inject(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
+        return await self.inbox.inject(
+            content,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
 
     @property
     def pending_input_count(self) -> int:
@@ -395,9 +451,9 @@ class Engine(AgentLoopDriverPort):
     def configure(
         self,
         *,
-        model_client: Any = _UNCHANGED,
+        model_client: ModelPort | _Unchanged = _UNCHANGED,
         max_iterations: int | None = None,
-        **settings: Any,
+        **settings: Unpack[LoopSettingsUpdate],
     ) -> None:
         """Replace loop-owned model/settings without acquiring plugin state."""
         if model_client is not _UNCHANGED:
@@ -418,7 +474,7 @@ class Engine(AgentLoopDriverPort):
         request_id: str = "",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         await self.inbox.send(
             user_input,
             target=InboxTarget.NEXT_TURN,
@@ -435,7 +491,7 @@ class Engine(AgentLoopDriverPort):
         self,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         """Run one turn claimed from the agent-owned inbox."""
         claimed = await self.inbox.claim_turn()
         if not claimed:
@@ -556,7 +612,7 @@ class Engine(AgentLoopDriverPort):
     async def _run_turn_impl(
         self,
         claimed: list[InboxInput],
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
@@ -795,7 +851,7 @@ class Engine(AgentLoopDriverPort):
     async def _run_tool_batch(
         self,
         response: ModelResponse,
-    ) -> AsyncIterator[dict[str, Any] | _ToolBatchResult]:
+    ) -> AsyncIterator[dict[str, JsonValue] | _ToolBatchResult]:
         tool_calls = list(response.tool_calls)
         if not await self._prepare_tool_calls(
             tool_calls,
@@ -891,7 +947,7 @@ class Engine(AgentLoopDriverPort):
         artifacts: list[ArtifactRef] | None = None,
         input_id: str = "",
         source: str = "user",
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> _TurnStartResult:
         accepted = await self._accept_user_message(
             user_input,
@@ -947,7 +1003,7 @@ class Engine(AgentLoopDriverPort):
             ),
             len(claimed) - 1,
         )
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, JsonValue]] = []
         for item in claimed[:primary_index]:
             accepted = await self._accept_user_message(
                 item.content,
@@ -977,7 +1033,7 @@ class Engine(AgentLoopDriverPort):
         return started
 
     @staticmethod
-    def _user_message_rejected_event() -> dict[str, Any]:
+    def _user_message_rejected_event() -> dict[str, JsonValue]:
         return agentloop_event(
             "error",
             {
@@ -1193,7 +1249,7 @@ class Engine(AgentLoopDriverPort):
         )
         return _ModelRequestResult(request=model_request)
 
-    async def _finish_turn(self, stop_reason: str) -> dict[str, Any]:
+    async def _finish_turn(self, stop_reason: str) -> dict[str, JsonValue]:
         self._log.info(
             "turn.stop",
             turn=self.turn_count,
@@ -1245,7 +1301,7 @@ class Engine(AgentLoopDriverPort):
         self,
         llm: ModelPort,
         context_messages: list[Message],
-    ) -> AsyncIterator[dict[str, Any] | _ModelResponseEvent]:
+    ) -> AsyncIterator[dict[str, JsonValue] | _ModelResponseEvent]:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
@@ -1360,7 +1416,7 @@ class Engine(AgentLoopDriverPort):
             structure_tool_message(message, call.name)
             self.messages.append(message)
 
-    def _default_hook_rejection_event(event: str) -> dict[str, Any]:
+    def _default_hook_rejection_event(event: str) -> dict[str, JsonValue]:
         return agentloop_event(
             "error",
             {
@@ -1438,7 +1494,7 @@ class Engine(AgentLoopDriverPort):
         artifacts: list[ArtifactRef] | None = None,
         input_id: str = "",
         source: str = "user",
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         new_turn: bool = False,
     ) -> _TurnStartResult:
         accept_ctx = self._make_event_context(user_input=user_input,
@@ -1446,7 +1502,7 @@ class Engine(AgentLoopDriverPort):
         accept_result = await self._dispatch(Events.BEFORE_USER_MESSAGE_ACCEPT, accept_ctx,
             short_circuit=True,
         )
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, JsonValue]] = []
         if isinstance(accept_result, dict):
             if "user_input" in accept_result:
                 user_input = str(accept_result["user_input"])

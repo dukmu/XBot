@@ -19,7 +19,9 @@ import subprocess
 import tempfile
 from dataclasses import replace
 from functools import partial
-from typing import Any, Literal
+from typing import Literal
+
+from pydantic import JsonValue
 
 from XBotv2.jobs import (
     Job,
@@ -33,6 +35,7 @@ from XBotv2.jobs import (
     parse_job_status,
 )
 from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.sandbox.contracts import SandboxPort
 
 
 class ShellCommandError(RuntimeError):
@@ -53,7 +56,7 @@ _ESCALATION_JUSTIFICATION_REQUIRED = (
 class ShellRunner:
     """Runs one background SHELL job through the shared shell executor."""
 
-    def __init__(self, *, sandbox: Any = None) -> None:
+    def __init__(self, *, sandbox: SandboxPort | None = None) -> None:
         self.sandbox = sandbox
 
     async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
@@ -100,7 +103,7 @@ async def shell(
     ] = "use_default",
     justification: str | None = None,
     *,
-    sandbox: Any = None,
+    sandbox: SandboxPort | None = None,
     job_registry: JobsPort | None = None,
     default_cwd: str | None = None,
 ) -> ToolResult:
@@ -172,7 +175,7 @@ async def start_shell(
     ] = "use_default",
     justification: str | None = None,
     *,
-    sandbox: Any = None,
+    sandbox: SandboxPort | None = None,
     job_registry: JobsPort | None = None,
 ) -> ToolResult:
     """Start a shell command in the background and return its job ID.
@@ -364,7 +367,7 @@ async def cancel_shell(
 
 
 def shell_tools(
-    sandbox: Any,
+    sandbox: SandboxPort | None,
     job_registry: JobsPort,
     default_cwd: str,
 ) -> tuple[Tool, ...]:
@@ -389,8 +392,8 @@ def shell_tools(
     )
 
 
-def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, Any]:
-    ready: list[dict[str, Any]] = []
+def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, JsonValue]:
+    ready: list[dict[str, JsonValue]] = []
     for summary in result.ready:
         item = summary.model_dump(mode="json", exclude_none=True)
         if summary.kind == JobKind.SHELL.value:
@@ -409,7 +412,7 @@ async def run_shell_command(
     command: str,
     *,
     cwd: str | None = None,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
     timeout_seconds: float | None = 0,
 ) -> str:
     """Run a shell command with cancellation-safe process cleanup."""

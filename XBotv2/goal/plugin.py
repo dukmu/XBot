@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from typing import Literal
+from pydantic import JsonValue
 
 from xcore import Context
 from xcore.state import StateService
@@ -245,7 +246,9 @@ class GoalPlugin:
     inject = ["tools", "commands", "engine", "state"]
     name = "goal"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = GoalService(ctx.state.namespace(self.name), ctx.engine)
         ctx.set("goal", service)
         ctx.on(Events.TURN_START, service.start_goal_turn)
@@ -270,7 +273,7 @@ class GoalPlugin:
             exclusive=False,
         ))
 
-    def diagnostics(self) -> dict[str, object]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "scope": "session",
@@ -313,7 +316,7 @@ def _format_goal(goal: GoalSnapshot) -> str:
 
 
 def _goal_context(goal: GoalSnapshot) -> str:
-    context: dict[str, object] = {
+    context: dict[str, JsonValue] = {
         "objective": goal.objective,
         "status": goal.status,
     }

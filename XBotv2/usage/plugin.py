@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pydantic import JsonValue
 
 from xcore import Context
 from xcore.state import StateService
@@ -61,7 +62,7 @@ class UsageService:
 
     async def add(
         self,
-        usage: Mapping[str, object],
+        usage: Mapping[str, JsonValue],
         *,
         update_context: bool = True,
     ) -> dict[str, int] | None:
@@ -132,7 +133,9 @@ class UsageComponent:
     inject = ["state", "loop_state", "runtime_log"]
     name = "xbot.usage"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = UsageService(ctx.state.namespace("usage"), ctx.runtime_log)
         handlers = UsageHandlers(service, ctx.loop_state)
         ctx.set("usage", service)

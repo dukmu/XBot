@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape, quoteattr
+from pydantic import JsonValue
 
 _TAG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 CACHED_CONTENT_KEY = "xbotv2_cached_content"
@@ -17,7 +18,7 @@ def prompt_element(
     name: str,
     content: str,
     *,
-    attributes: Mapping[str, object] | None = None,
+    attributes: Mapping[str, JsonValue] | None = None,
 ) -> str:
     """Render one XML prompt element, escaping all untrusted values."""
     opening = _opening_tag(name, attributes)
@@ -28,7 +29,7 @@ def prompt_container(
     name: str,
     children: Iterable[str],
     *,
-    attributes: Mapping[str, object] | None = None,
+    attributes: Mapping[str, JsonValue] | None = None,
 ) -> str:
     """Wrap already-rendered prompt elements in a validated container."""
     opening = _opening_tag(name, attributes)
@@ -129,7 +130,7 @@ def _cached_content_display(element: ElementTree.Element) -> str:
 
 def _opening_tag(
     name: str,
-    attributes: Mapping[str, object] | None,
+    attributes: Mapping[str, JsonValue] | None,
 ) -> str:
     if not _TAG_NAME.fullmatch(name):
         raise ValueError(f"Invalid prompt element name: {name!r}")

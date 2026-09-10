@@ -47,7 +47,7 @@ class ToolsService(ToolsPort):
         self._log = runtime_log.bind("tools")
         self._guards: list[ToolGuard] = []
 
-    def guard(self, guard: ToolGuard) -> object:
+    def guard(self, guard: ToolGuard) -> bool:
         """Register one monotonic execution guard.
 
         The returned disposer (and the registering fiber's unload) removes

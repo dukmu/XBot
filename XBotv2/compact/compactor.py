@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
 from uuid import uuid4
+from pydantic import JsonValue
 
 from XBotv2.core import (
     ClientEvent,
@@ -19,6 +19,7 @@ from XBotv2.llm.contracts import ModelPort
 from XBotv2.session.contracts import SessionInfo
 
 from XBotv2.compact.history import compact_prefix_end, history_chars
+from XBotv2.compact.contracts import CompactionMetrics, CompactionProposal
 from XBotv2.compact.protocol import compact_event
 from XBotv2.compact.summary import (
     compacted_message,
@@ -32,10 +33,10 @@ logger = logging.getLogger("xbotv2.compact")
 
 RuntimePublisher = Callable[[ClientEvent], Awaitable[None]]
 UsageRecorder = Callable[[dict[str, int]], Awaitable[None]]
-TrajectoryRecorder = Callable[[str, dict[str, Any]], None]
+TrajectoryRecorder = Callable[[str, dict[str, JsonValue]], None]
 
 
-def _response_trace(response: ModelResponse) -> dict[str, Any]:
+def _response_trace(response: ModelResponse) -> dict[str, JsonValue]:
     """Return the complete provider-neutral response fields as JSON."""
     return {
         "content": response.content,
@@ -64,7 +65,7 @@ async def build_compaction_proposal(
     stable_prefix: Sequence[Message] = (),
     removable_estimate: int | None = None,
     record_trajectory: TrajectoryRecorder | None = None,
-) -> dict[str, Any] | None:
+) -> CompactionProposal | None:
     split = compact_prefix_end(messages, keep_recent_turns)
     if split == 0:
         return None
@@ -201,7 +202,7 @@ async def build_compaction_proposal(
             })
         return None
 
-    metrics = {
+    metrics: CompactionMetrics = {
         "context_tokens_before": context_tokens_before,
         "context_tokens_after_estimate": context_tokens_after,
         "context_tokens_released_estimate": max(

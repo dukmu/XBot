@@ -6,6 +6,8 @@ import secrets
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
+from pydantic import JsonValue, TypeAdapter
+
 from XBotv2.client import XBotClient, _thread_path
 from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.protocol import ServerEvent, WireModel
@@ -71,7 +73,7 @@ class TerminalSession:
     def client(self) -> XBotClient:
         return self._client
 
-    async def connect(self) -> dict[str, Any] | None:
+    async def connect(self) -> dict[str, JsonValue] | None:
         """Perform hello + open_session."""
 
         if self._session_attached:
@@ -98,15 +100,15 @@ class TerminalSession:
         self._event_cursor = session.event_cursor
         return _dump(session)
 
-    async def list_commands(self) -> dict[str, Any]:
+    async def list_commands(self) -> dict[str, JsonValue]:
         return _dump(await self._client._request(
             "GET", f"{self._thread_path}/commands", CommandListResponse
         ))
 
-    async def list_sessions(self) -> dict[str, Any]:
+    async def list_sessions(self) -> dict[str, JsonValue]:
         return _dump(await self._client.list_sessions())
 
-    async def list_threads(self, session_id: str | None = None) -> dict[str, Any]:
+    async def list_threads(self, session_id: str | None = None) -> dict[str, JsonValue]:
         return _dump(await self._client.list_threads(session_id or self._session_id))
 
     async def switch(
@@ -116,7 +118,7 @@ class TerminalSession:
         thread_id: str,
         workspace_root: str | None = None,
         mode: SessionMode = "resume",
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         """Attach to another session/thread without destroying the current runtime.
 
         The HTTP transport remains open so switching does not invalidate the
@@ -152,7 +154,7 @@ class TerminalSession:
         raw: str,
         *,
         kind: Literal["server", "prompt"] = "server",
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return _dump(await self._client._request(
             "POST",
             f"{self._thread_path}/commands",
@@ -178,7 +180,7 @@ class TerminalSession:
         content: str,
         *,
         images: list[dict[str, str]] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         """Submit input while runtime events arrive through ``session_events``."""
 
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
@@ -201,7 +203,7 @@ class TerminalSession:
             if event.get("type") == "input_rejected":
                 yield event
 
-    async def session_events(self) -> AsyncIterator[dict[str, Any]]:
+    async def session_events(self) -> AsyncIterator[dict[str, JsonValue]]:
         """Yield turns initiated by runtime general messages."""
 
         stream = self._client.stream_events(
@@ -216,7 +218,7 @@ class TerminalSession:
             )
             yield event
 
-    async def submit_user_input(self, request_id: str, answer: Any) -> dict[str, Any]:
+    async def submit_user_input(self, request_id: str, answer: JsonValue) -> dict[str, JsonValue]:
         return _dump(
             await self._client.respond_user_input(
                 self._session_id,
@@ -232,7 +234,7 @@ class TerminalSession:
         decision: Literal["allow", "deny"],
         *,
         scope: Literal["once", "session"] = "once",
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return _dump(
             await self._client.respond_permission(
                 self._session_id,
@@ -243,7 +245,7 @@ class TerminalSession:
             )
         )
 
-    async def interrupt(self) -> dict[str, Any]:
+    async def interrupt(self) -> dict[str, JsonValue]:
         return _dump(await self._client.interrupt(self._session_id, self._thread_id))
 
     @property
@@ -254,8 +256,8 @@ class TerminalSession:
         self,
         stream: AsyncIterator[ServerEvent],
         label: str,
-        body: dict[str, Any] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+        body: dict[str, JsonValue] | None = None,
+    ) -> AsyncIterator[dict[str, JsonValue]]:
         trace_event("tui.http", {"stage": f"{label}.request", "body": body})
         async for event in stream:
             trace_event(
@@ -268,10 +270,15 @@ class TerminalSession:
             )
             if event.type == "end":
                 return
-            yield event.model_dump()
+            yield _json_payload(event)
 
 
-def _dump(model: WireModel) -> dict[str, Any]:
-    payload = model.model_dump()
+def _dump(model: WireModel) -> dict[str, JsonValue]:
+    payload = _json_payload(model)
     trace_event("tui.http", {"status": 200, "payload": payload})
     return payload
+
+
+def _json_payload(model: WireModel) -> dict[str, JsonValue]:
+    """Normalize a wire model through the JSON contract at the client edge."""
+    return TypeAdapter(dict[str, JsonValue]).validate_python(model.model_dump())

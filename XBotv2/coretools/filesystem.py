@@ -22,11 +22,12 @@ import json
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
 import httpx
+from pydantic import JsonValue
 
 from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
 from XBotv2.core.messages import ImageContent
@@ -34,7 +35,7 @@ from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
 from XBotv2.sandbox.contracts import SandboxPort
 
-_FILE_VERSIONS: WeakKeyDictionary[Any, dict[str, str]] = WeakKeyDictionary()
+_FILE_VERSIONS: WeakKeyDictionary[SandboxPort, dict[str, str]] = WeakKeyDictionary()
 
 
 # ----------------------------------------------------------------------
@@ -57,7 +58,7 @@ async def read(
     max_entries: int = 500,
     include_hidden: bool = True,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
     artifacts: ArtifactStorePort | None = None,
 ) -> ToolResult:
     """Read file content, bytes, metadata, an image, or a directory listing.
@@ -230,7 +231,7 @@ async def _read_media(
     except _ImageError as exc:
         return ToolResult.failure(exc.code, exc.message)
 
-    result_data: dict[str, Any] = {
+    result_data: dict[str, JsonValue] = {
         "media_type": selected,
         "size_bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -246,7 +247,7 @@ async def _read_image_path(
     path: str,
     media_type: str | None,
     sandbox: SandboxPort | None,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     data = await _operation("read_bytes", {"path": path}, sandbox)
     if not data.get("ok"):
         error = data.get("error") or {}
@@ -277,7 +278,7 @@ async def _read_image_url(
     url: str,
     media_type: str | None,
     sandbox: SandboxPort | None,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     if sandbox is not None and not sandbox.network:
         raise _ImageError(
             "network_disabled",
@@ -333,7 +334,7 @@ async def _read_image_url(
 def _decode_image_data(
     value: str,
     media_type: str | None,
-) -> tuple[bytes, str | None, dict[str, Any]]:
+) -> tuple[bytes, str | None, dict[str, JsonValue]]:
     raw = value.strip()
     if raw.startswith("data:"):
         header, separator, encoded = raw.partition(",")
@@ -410,7 +411,7 @@ async def edit(
     replace_all: bool = False,
     patch: str | None = None,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Edit one UTF-8 file: write whole content, replace text, or apply a diff.
 
@@ -488,7 +489,7 @@ async def path(
     recursive: bool = False,
     parents: bool = True,
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Manage filesystem paths: move, copy, delete, or create a directory.
 
@@ -562,7 +563,7 @@ async def search(
     max_line_chars: int = 1000,
     kind: Literal["file", "directory", "any"] = "file",
     *,
-    sandbox=None,
+    sandbox: SandboxPort | None = None,
 ) -> ToolResult:
     """Search UTF-8 content or find paths by glob.
 
@@ -648,7 +649,7 @@ def filesystem_tools(
 
 async def _structured_operation(
     operation: str,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
 ) -> ToolResult:
     data = await _operation(operation, args, sandbox)
@@ -661,9 +662,9 @@ async def _structured_operation(
 
 async def _operation(
     operation: str,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     resolved = _resolved_args(operation, args, sandbox)
     path = resolved.get("path")
     versions = (
@@ -715,9 +716,9 @@ async def _operation(
 
 def _resolved_args(
     operation: str,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     if sandbox is not None:
         return sandbox.resolve_filesystem_args(operation, args)
     resolved = dict(args)
@@ -728,7 +729,7 @@ def _resolved_args(
     return resolved
 
 
-def _parse_result(value: str) -> dict[str, Any]:
+def _parse_result(value: str) -> dict[str, JsonValue]:
     try:
         result = json.loads(value)
     except (json.JSONDecodeError, TypeError):
@@ -745,7 +746,7 @@ def _parse_result(value: str) -> dict[str, Any]:
     }
 
 
-def _failure(data: dict[str, Any]) -> ToolResult:
+def _failure(data: dict[str, JsonValue]) -> ToolResult:
     error = data.get("error") or {}
     return ToolResult.failure(
         str(error.get("code") or "filesystem_error"),

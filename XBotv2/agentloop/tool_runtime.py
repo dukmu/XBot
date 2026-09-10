@@ -12,6 +12,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from pydantic import JsonValue
 
 from XBotv2.agentloop.events import EventContext, EventPort, Events
 from XBotv2.agentloop.contracts import ToolGuard
@@ -499,7 +500,7 @@ def _coerce_tool_message(value: Any, tool_call_id: str) -> Message:
 
 async def _invoke_tool(
     tool: Tool,
-    args: dict[str, Any],
+    args: dict[str, JsonValue],
     *,
     tool_call: ToolCall,
     timeout_seconds: float | None = None,

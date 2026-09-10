@@ -298,7 +298,7 @@ def _trajectory_item(record: TrajectoryRecord) -> (
     )
 
 
-def _trajectory_record(value: Mapping[str, object]) -> TrajectoryRecord:
+def _trajectory_record(value: Mapping[str, JsonValue]) -> TrajectoryRecord:
     record_type = value.get("record_type")
     if record_type is None:
         return MessageRecord.model_validate(value)
@@ -502,7 +502,7 @@ class ThreadLifecycleStore:
         ]
 
 
-def _read_json(path: Path, name: str) -> Mapping[str, object] | None:
+def _read_json(path: Path, name: str) -> Mapping[str, JsonValue] | None:
     if not path.exists():
         return None
     try:
@@ -514,10 +514,10 @@ def _read_json(path: Path, name: str) -> Mapping[str, object] | None:
     return value
 
 
-def _read_jsonl(path: Path, name: str) -> list[Mapping[str, object]]:
+def _read_jsonl(path: Path, name: str) -> list[Mapping[str, JsonValue]]:
     if not path.exists():
         return []
-    records: list[Mapping[str, object]] = []
+    records: list[Mapping[str, JsonValue]] = []
     with path.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
             try:

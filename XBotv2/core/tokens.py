@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any
-
+from pydantic import JsonValue
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import Tool, provider_tool_schema
 
@@ -103,7 +102,7 @@ def context_token_limit(
     return max(1, min(ratio_limit, output_limit))
 
 
-def _stable_json(value: Any) -> str:
+def _stable_json(value: JsonValue) -> str:
     return json.dumps(
         value,
         ensure_ascii=False,

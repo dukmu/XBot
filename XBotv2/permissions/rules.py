@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pydantic import JsonValue
 
 from XBotv2.core.tools import ToolCall
@@ -20,9 +21,9 @@ def effective_args(
     return args
 
 
-def requested_permission_rule(value: object) -> dict[str, JsonValue]:
-    if not isinstance(value, dict):
-        return {}
+def requested_permission_rule(
+    value: Mapping[str, JsonValue],
+) -> dict[str, JsonValue]:
     tool = str(value.get("tool") or "").strip()
     params = value.get("params") or {}
     if not tool or not isinstance(params, dict):

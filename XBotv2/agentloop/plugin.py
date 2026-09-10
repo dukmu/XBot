@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from xcore import Context
 
 from XBotv2.agentloop.contracts import LIST_TOOLS, ToolCatalog, ToolDescription
@@ -56,7 +57,9 @@ class AgentLoopPlugin:
 
     name = "xbot.agentloop"
 
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         await ctx.inject(["runtime_log", "session_launch"], mount_tools)
         await ctx.inject(["runtime_log", "session_launch"], mount_loop_factory)
         await ctx.inject(["server", "sessions"], mount_http)

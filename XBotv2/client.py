@@ -515,8 +515,8 @@ class XBotClient:
         *,
         request_id: str = "",
         delivery: Literal["queue", "steer"] = "steer",
-        images: list[ImageInput | dict[str, Any]] | None = None,
-        attachments: list[AttachmentInput | dict[str, Any]] | None = None,
+        images: list[ImageInput | dict[str, JsonValue]] | None = None,
+        attachments: list[AttachmentInput | dict[str, JsonValue]] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "POST",
@@ -563,7 +563,7 @@ class XBotClient:
         response_model: type[ResponseModel],
         payload: WireModel | None = None,
         *,
-        params: Mapping[str, object] | None = None,
+        params: Mapping[str, JsonValue] | None = None,
     ) -> ResponseModel:
         response = await self._http.request(
             method,
@@ -580,7 +580,7 @@ class XBotClient:
         path: str,
         payload: WireModel | None = None,
         *,
-        params: Mapping[str, object] | None = None,
+        params: Mapping[str, JsonValue] | None = None,
     ) -> AsyncIterator[ServerEvent]:
         async with self._http.stream(
             method,

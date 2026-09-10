@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 import uuid
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Awaitable, Callable, Literal, Protocol, TypedDict
 
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.variables import RuntimeVariables
@@ -144,6 +144,25 @@ class LoopSettings:
     llm_is_override: bool = False
 
 
+class LoopSettingsUpdate(TypedDict, total=False):
+    """Keyword fields accepted when reconfiguring an active loop."""
+
+    provider: str
+    model: str
+    model_mode: str
+    context_window: int
+    max_output_tokens: int
+    agent_name: str
+    agent_role: str
+    user_name: str
+    user_id: str
+    developer_instructions: str
+    agent_instructions: str
+    memory: str
+    workspace: str
+    llm_is_override: bool
+
+
 @dataclass(slots=True)
 class ModelRequest:
     """Mutable provider request exposed to Agent-loop event listeners."""
@@ -202,9 +221,36 @@ class AgentLoopDriverPort(Protocol):
     async def start_session(self) -> None: ...
     async def close_session(self) -> None: ...
     async def discard_inputs(self) -> None: ...
-    async def followup(self, content: str, **kwargs: Any) -> object: ...
-    async def inject(self, content: str, **kwargs: Any) -> object: ...
-    async def steer(self, content: str, **kwargs: Any) -> object: ...
+    async def followup(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput: ...
+    async def inject(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput: ...
+    async def steer(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput: ...
     async def edit_input(self, message_id: str, content: str) -> InboxInput: ...
     async def remove_input(self, message_id: str) -> InboxInput: ...
     async def retarget_input(
@@ -243,7 +289,7 @@ class ToolsPort(Protocol):
         namespace: str | None = None,
     ) -> str: ...
     def unregister(self, name: str) -> bool: ...
-    def guard(self, guard: ToolGuard) -> object: ...
+    def guard(self, guard: ToolGuard) -> bool: ...
     def enabled(self) -> tuple[Tool, ...]: ...
     def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None: ...
     def names(self) -> tuple[str, ...]: ...

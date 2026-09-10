@@ -8,6 +8,7 @@ registering plugin unloads.
 from __future__ import annotations
 
 from functools import partial
+from pydantic import JsonValue
 
 from xcore import Context, bound_effect
 from XBotv2.commands.contracts import (
@@ -108,7 +109,9 @@ class CommandsComponent:
 
     name = "xbot.commands"
 
-    def apply(self, ctx: Context, config: object = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = CommandsService()
         ctx.set("commands", service)
         operations = CommandOperations(service)

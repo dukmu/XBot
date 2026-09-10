@@ -58,7 +58,7 @@ def patch_session_policy(
     else:
         _remove_plugin(rows, "sandbox")
 
-    document: dict[str, object] = {"plugins": rows} if rows else {}
+    document: dict[str, JsonValue] = {"plugins": rows} if rows else {}
     if document:
         _write_yaml(path, document)
     elif path.exists():
@@ -73,14 +73,14 @@ def _remove_rule(permissions: dict[str, JsonValue], rule: dict[str, JsonValue]) 
             permissions.pop(key, None)
 
 
-def _read_rows(path: Path) -> list[dict[str, object]]:
+def _read_rows(path: Path) -> list[dict[str, JsonValue]]:
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data is None:
         return []
     if isinstance(data, list):
-        document: object = data
+        document: JsonValue = data
     elif isinstance(data, dict) and ("plugins" in data or "entries" in data):
         document = data
     else:
@@ -95,7 +95,10 @@ def _read_rows(path: Path) -> list[dict[str, object]]:
     return [dict(item) for item in values]
 
 
-def _plugin_config(rows: list[dict[str, object]], plugin_id: str) -> dict[str, JsonValue]:
+def _plugin_config(
+    rows: list[dict[str, JsonValue]],
+    plugin_id: str,
+) -> dict[str, JsonValue]:
     for row in rows:
         if row.get("id", row.get("name")) == plugin_id:
             config = row.get("config", {})
@@ -104,7 +107,7 @@ def _plugin_config(rows: list[dict[str, object]], plugin_id: str) -> dict[str, J
 
 
 def _replace_plugin(
-    rows: list[dict[str, object]],
+    rows: list[dict[str, JsonValue]],
     plugin_id: str,
     config: dict[str, JsonValue],
 ) -> None:
@@ -115,11 +118,11 @@ def _replace_plugin(
     rows.append({"id": plugin_id, "config": config})
 
 
-def _remove_plugin(rows: list[dict[str, object]], plugin_id: str) -> None:
+def _remove_plugin(rows: list[dict[str, JsonValue]], plugin_id: str) -> None:
     rows[:] = [row for row in rows if row.get("id", row.get("name")) != plugin_id]
 
 
-def _write_yaml(path: Path, data: dict[str, object]) -> None:
+def _write_yaml(path: Path, data: dict[str, JsonValue]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False),

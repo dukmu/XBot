@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import JsonValue
+from xcore import Context
 
 from XBotv2.core import (
     calibrated_context_tokens,
@@ -15,9 +16,13 @@ class TokenManagerPlugin:
     name = "token_manager"
 
     def __init__(self) -> None:
-        self._latest: dict[str, Any] = {}
+        self._latest: dict[str, JsonValue] = {}
 
-    def apply(self, ctx, config=None) -> None:
+    def apply(
+        self,
+        ctx: Context,
+        config: dict[str, JsonValue] | None = None,
+    ) -> None:
         ctx.on(Events.MODEL_REQUEST_READY, self._on_model_request_ready)
         ctx.on(Events.AFTER_MODEL_RESPONSE, self._on_after_model_response)
 
@@ -66,7 +71,7 @@ class TokenManagerPlugin:
             if usage.get(key) is not None
         }
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "mode": "observe_only",

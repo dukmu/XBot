@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.core import (
@@ -12,6 +11,7 @@ from XBotv2.core import (
 )
 from XBotv2.agentloop import EventContext, Events
 from xcore import Context
+from pydantic import JsonValue
 
 from .mcp_client import MCPClient
 from .callbacks import client_callbacks
@@ -107,7 +107,7 @@ class MCPPlugin:
     def __init__(self) -> None:
         self._client = MCPClient()
         self._config = MCPConfig()
-        self._server_status: dict[str, dict[str, Any]] = {}
+        self._server_status: dict[str, dict[str, JsonValue]] = {}
         self._server_tools: dict[str, list[str]] = {}
         self._initialized = False
 
@@ -179,7 +179,7 @@ class MCPPlugin:
     def _register_server_tools(
         self,
         server_name: str,
-        tools: list[dict[str, Any]],
+        tools: list[dict[str, JsonValue]],
     ) -> list[str]:
         registered_names = self._server_tools.setdefault(server_name, [])
         for tool_def in tools:
@@ -212,7 +212,7 @@ class MCPPlugin:
     def _register_resource_bridge(
         self,
         server: str,
-        capability: dict[str, Any],
+        capability: dict[str, JsonValue],
     ) -> str:
         handler = MCPResourceHandler(
             self._client,
@@ -322,7 +322,7 @@ class MCPPlugin:
         await self._client.disconnect_all()
         self._initialized = False
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         statuses = list(self._server_status.values())
         return {
             "status": "degraded" if any(s.get("status") == "error" for s in statuses) else "ready",
@@ -336,7 +336,7 @@ class MCPPlugin:
         self._initialized = False
 
 
-def _protocol_result(data: dict[str, Any]) -> ToolResult:
+def _protocol_result(data: dict[str, JsonValue]) -> ToolResult:
     return ToolResult.success(json.dumps(data, ensure_ascii=False))
 
 

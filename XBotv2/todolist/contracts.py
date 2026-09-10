@@ -25,7 +25,7 @@ class TodoItem(BaseModel):
     status: TodoStatus
 
     @classmethod
-    def parse_input(cls, value: Mapping[str, object]) -> "TodoItem":
+    def parse_input(cls, value: Mapping[str, JsonValue]) -> "TodoItem":
         if set(value) != {"content", "status"}:
             raise TodoValidationError(
                 "invalid_todos", "Todo items must contain only content and status"
@@ -50,7 +50,7 @@ class TodoSnapshot(BaseModel):
     items: tuple[TodoItem, ...] = ()
 
     @classmethod
-    def from_items(cls, items: Sequence[Mapping[str, object]]) -> "TodoSnapshot":
+    def from_items(cls, items: Sequence[Mapping[str, JsonValue]]) -> "TodoSnapshot":
         return cls(items=tuple(TodoItem.parse_input(item) for item in items))
 
     @field_validator("items", mode="before")

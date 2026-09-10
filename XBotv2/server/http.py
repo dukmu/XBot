@@ -12,8 +12,6 @@ import logging
 import time
 import uuid
 from functools import partial
-from typing import Any
-
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from pydantic import JsonValue
 
 from XBotv2.core import (
     MESSAGE_FORMAT_KEY,
@@ -115,7 +115,7 @@ def compacted_message(summary: str, *, reason: str) -> Message:
     )
 
 
-def model_usage(usage: Mapping[str, Any] | None) -> dict[str, int]:
+def model_usage(usage: Mapping[str, JsonValue] | None) -> dict[str, int]:
     usage = usage or {}
     input_tokens = int(usage.get("input_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pydantic import JsonValue
 
 from xcore import Context
 
@@ -143,7 +144,9 @@ class AgentsPlugin:
 
     name = "xbot.agents"
 
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         await ctx.inject(_CATALOG_DEPENDENCIES, mount_catalog)
         await ctx.inject(_RUNTIME_DEPENDENCIES, mount_runtime)
         await ctx.inject(["server", "sessions"], mount_http)

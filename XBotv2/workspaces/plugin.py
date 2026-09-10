@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import JsonValue
 from xcore import Context
 
 from XBotv2.session.contracts import (
@@ -61,7 +62,9 @@ class WorkspacesPlugin:
     name = "xbot.workspaces"
     inject = ["runtime_log", "sessions", "state", "workspace_root"]
 
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         stream = WorkspaceEventStream()
         registry = WorkspaceRegistry(
             ctx.state.namespace("workspaces"),

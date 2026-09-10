@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import JsonValue
+
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -315,7 +317,7 @@ class XBotTextualApp(App[None]):
         except Exception as exc:
             self._record_error(exc)
 
-    async def _apply_open_session(self, session: dict[str, Any] | None) -> None:
+    async def _apply_open_session(self, session: dict[str, JsonValue] | None) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
             self.state.thread_id = str(session.get("thread_id") or self.state.thread_id)
@@ -892,7 +894,7 @@ class XBotTextualApp(App[None]):
 
     async def _consume_stream_event(
         self,
-        event: dict[str, Any],
+        event: dict[str, JsonValue],
         *,
         pop_pending: bool = False,
     ) -> bool:
@@ -919,7 +921,7 @@ class XBotTextualApp(App[None]):
         await self._start_interaction_response(event)
         return False
 
-    async def _submit_live_input(self, payload: dict[str, Any]) -> None:
+    async def _submit_live_input(self, payload: dict[str, JsonValue]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")
         answer = await self._answers.get()
         await self.session.submit_user_input(
@@ -927,7 +929,7 @@ class XBotTextualApp(App[None]):
             answer,
         )
 
-    async def _submit_live_permission(self, payload: dict[str, Any]) -> None:
+    async def _submit_live_permission(self, payload: dict[str, JsonValue]) -> None:
         self._set_input_placeholder("Choose an inline approval option, or type a decision")
         response = await self._permission_decisions.get()
         await self.session.respond_permission(
@@ -936,7 +938,7 @@ class XBotTextualApp(App[None]):
             scope=str(response.get("scope") or "once"),
         )
 
-    async def _start_interaction_response(self, event: dict[str, Any]) -> None:
+    async def _start_interaction_response(self, event: dict[str, JsonValue]) -> None:
         event_type = str(event.get("type") or "")
         payload = event.get("data") if isinstance(event.get("data"), dict) else {}
         if event_type not in {"permission_request", "user_input_required"}:
@@ -1147,7 +1149,7 @@ class XBotTextualApp(App[None]):
             container.display = task_panel.display or queue_panel.display
             container.set_class(self.size.height < 24, "compact")
 
-    async def _handle_stream_event(self, event: dict[str, Any]) -> None:
+    async def _handle_stream_event(self, event: dict[str, JsonValue]) -> None:
         event_type = str(event.get("type") or "")
         refresh_input = False
         if event_type == "turn_started":

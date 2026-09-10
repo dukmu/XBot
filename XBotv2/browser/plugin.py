@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
+from pydantic import JsonValue
 
 from XBotv2.core import (
+    ArtifactStorePort,
     Tool,
     ToolResult,
 )
+from XBotv2.sandbox.contracts import SandboxPort
 from xcore import Context
 
 from .browser import BrowserSession
@@ -27,8 +30,8 @@ class BrowserPlugin:
         self._browser_options = {"headless": True, "timeout_seconds": 30.0}
         self._web: WebAccess | None = None
         self._browser: BrowserSession | None = None
-        self._artifacts = None
-        self._sandbox = None
+        self._artifacts: ArtifactStorePort | None = None
+        self._sandbox: SandboxPort | None = None
 
     def apply(self, ctx: Context, config: BrowserConfig) -> None:
         self._search = config.search.model_dump()
@@ -190,7 +193,7 @@ class BrowserPlugin:
             self._web = WebAccess(self._network_options)
         return self._web
 
-    def diagnostics(self) -> dict[str, Any]:
+    def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
             "search_backend": self._search["backend"],

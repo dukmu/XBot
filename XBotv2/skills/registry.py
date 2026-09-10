@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from pydantic import JsonValue
 
 from .permission_scope import validate_tool_patterns
 
@@ -26,7 +27,7 @@ class Skill:
     description: str
     path: Path
     content: str
-    frontmatter: dict[str, object] = field(default_factory=dict)
+    frontmatter: dict[str, JsonValue] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
     disable_model_invocation: bool = False

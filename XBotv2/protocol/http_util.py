@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
-
+from pydantic import JsonValue
 from fastapi.responses import StreamingResponse
 
 from XBotv2.protocol.models import ErrorResponse, server_event
@@ -52,7 +51,7 @@ class HttpServerError(Exception):
         message: str,
         status: int = 400,
         *,
-        details: dict[str, Any] | None = None,
+        details: dict[str, JsonValue] | None = None,
         retryable: bool = False,
     ) -> None:
         super().__init__(message)
@@ -67,9 +66,9 @@ def _error_payload(
     code: str,
     message: str,
     *,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
     retryable: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, JsonValue]:
     return ErrorResponse(
         code=code,
         message=message,
@@ -80,7 +79,7 @@ def _error_payload(
 
 def _format_sse(
     *,
-    event: dict[str, Any],
+    event: dict[str, JsonValue],
     seq: int,
     session_id: str = "",
     thread_id: str = "agent",

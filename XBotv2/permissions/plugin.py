@@ -52,7 +52,7 @@ class PermissionsService(PermissionsPort):
         parent: PermissionsPort | None = None,
     ) -> None:
         self._base_config = PermissionConfig.model_validate(config)
-        self._agent_overlay: object | None = None
+        self._agent_overlay: dict[str, JsonValue] | None = None
         self._grants: list[PermissionRuleConfig] = []
         self._store = store
         self._lock = asyncio.Lock()
@@ -83,7 +83,7 @@ class PermissionsService(PermissionsPort):
 
     def configure_agent(
         self,
-        overlay: object,
+        overlay: dict[str, JsonValue],
     ) -> None:
         self._agent_overlay = overlay
         self._rebuild()

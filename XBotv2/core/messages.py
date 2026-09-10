@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -32,6 +32,13 @@ class ImagePart(ImageContent):
 
 
 ContentPart = TextPart | ReasoningPart | ImagePart | ToolCall
+ArtifactValue = ArtifactRef | Mapping[str, JsonValue]
+ArtifactInput = (
+    ArtifactValue
+    | list[ArtifactValue]
+    | tuple[ArtifactValue, ...]
+    | None
+)
 
 
 def merge_model_chunk(
@@ -147,7 +154,7 @@ class Message(_PartBacked):
     additional_kwargs: dict[str, JsonValue]
     response_metadata: dict[str, JsonValue]
     usage_metadata: dict[str, JsonValue]
-    artifact: Any
+    artifact: ArtifactInput
     error: dict[str, JsonValue] | None
     client_events: list[ClientEvent]
     turn_complete: bool
@@ -166,7 +173,7 @@ class Message(_PartBacked):
         additional_kwargs: dict[str, JsonValue] | None = None,
         response_metadata: dict[str, JsonValue] | None = None,
         usage_metadata: dict[str, JsonValue] | None = None,
-        artifact: Any = None,
+        artifact: ArtifactInput = None,
         images: list[ImageContent] | None = None,
         reasoning: str = "",
         parts: list[ContentPart] | None = None,
@@ -301,7 +308,7 @@ def _freeze_json(value: object) -> object:
     )
 
 
-def _freeze_artifact(value: object) -> object:
+def _freeze_artifact(value: ArtifactInput) -> ArtifactInput:
     if isinstance(value, ArtifactRef):
         return value
     if isinstance(value, (list, tuple)):

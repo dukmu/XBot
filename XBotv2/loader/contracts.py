@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import JsonValue, TypeAdapter
 
 
 class LoadError(RuntimeError):
@@ -21,7 +22,7 @@ class PluginEntry:
 
     id: str
     name: str
-    config: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, JsonValue] = field(default_factory=dict)
     disabled: bool = False
     isolate: dict[str, str | bool] | None = None
     profiles: frozenset[str] | None = None
@@ -40,7 +41,7 @@ class PluginPatch:
 
     id: str
     name: str | _Unset = UNSET
-    config: dict[str, Any] | _Unset = UNSET
+    config: dict[str, JsonValue] | _Unset = UNSET
     disabled: bool | _Unset = UNSET
     isolate: dict[str, str | bool] | None | _Unset = UNSET
     profiles: frozenset[str] | None | _Unset = UNSET
@@ -108,11 +109,14 @@ def _entry_id(data: dict[str, Any]) -> str:
     return _identifier(value, field_name="id")
 
 
-def _config(value: Any) -> dict[str, Any]:
+def _config(value: Any) -> dict[str, JsonValue]:
     resolved = _resolve_ref(value)
     if not isinstance(resolved, dict):
         raise TypeError("plugin config must resolve to a mapping")
-    return dict(resolved)
+    try:
+        return TypeAdapter(dict[str, JsonValue]).validate_python(resolved)
+    except ValueError as exc:
+        raise TypeError("plugin config must contain JSON-compatible values") from exc
 
 
 def _disabled(value: Any) -> bool:
@@ -264,7 +268,10 @@ class PluginTree:
         ])
 
 
-def _merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+def _merge_config(
+    base: dict[str, JsonValue],
+    overlay: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
     merged = dict(base)
     for key, value in overlay.items():
         current = merged.get(key)

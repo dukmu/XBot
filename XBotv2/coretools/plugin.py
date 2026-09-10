@@ -9,6 +9,7 @@ services, so even "core" setup is a plugin in the tree.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from xcore import Context
 
@@ -115,7 +116,7 @@ def _declaration(
     )
 
 
-def _resolve_hook_target(declaration: Any) -> Any:
+def _resolve_hook_target(declaration: _Declaration) -> Callable[..., object]:
     """Resolve a module or workspace script target without changing sys.path."""
     import importlib
 
@@ -135,7 +136,11 @@ def _resolve_hook_target(declaration: Any) -> Any:
     return callback
 
 
-def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
+def _resolve_workspace_target(
+    declaration: _Declaration,
+    *,
+    directory: str,
+) -> Callable[..., object]:
     """Load one declared export from a standard workspace extension directory."""
     import importlib.util
     from pathlib import Path

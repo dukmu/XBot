@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 from pydantic import JsonValue
+from xcore import Context
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import ToolsPort
@@ -60,7 +60,12 @@ class SkillsPlugin:
         self._metadata_budget_chars = 8_000
         self._initialized = False
 
-    def apply(self, ctx, config=None) -> None:
+    def apply(
+        self,
+        ctx: Context,
+        config: dict[str, JsonValue] | None = None,
+    ) -> None:
+        del config
         self._tools: ToolsPort = ctx.tools
         self._commands = ctx.commands
         self._sandbox = ctx.sandbox

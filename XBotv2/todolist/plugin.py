@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import inspect
+from pydantic import JsonValue
 
 from xcore import Context
 from xcore.state import StateService
@@ -124,7 +125,9 @@ class TodolistRuntimeComponent:
     inject = ["tools", "state"]
     name = "todolist"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         service = TodolistService(ctx.state.namespace(self.name))
         ctx.set("todolist", service)
         ctx.on(GET_TODOS.name, service.get_snapshot)
@@ -143,7 +146,9 @@ class TodolistPlugin:
 
     name = "xbot.todolist"
 
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         await ctx.plugin(TodolistRuntimeComponent(), config)
         await ctx.inject(["server", "sessions"], mount_http)
 

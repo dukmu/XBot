@@ -7,6 +7,7 @@ auto-cleanup; capability plugins add prompt fragments through ``ctx.prompts``.
 from __future__ import annotations
 
 from functools import partial
+from pydantic import JsonValue
 from xcore import Context, bound_effect, current_plugin_name
 
 from XBotv2.context_builder.contracts import PromptFragmentRegistry, PromptFragmentStage
@@ -40,7 +41,9 @@ class PromptsComponent:
 
     name = "xbot.prompts"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         ctx.set("prompts", PromptsService(ctx.context_builder))
 
 

@@ -7,12 +7,13 @@ import ipaddress
 import json
 import socket
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from XBotv2.core import ToolResult
+from XBotv2.sandbox.contracts import SandboxPort
 
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
@@ -194,7 +195,7 @@ def _decode(content: bytes, encoding: str | None) -> str:
     return content.decode(encoding or "utf-8", errors="replace")
 
 
-def _extract_html(content: bytes, url: str) -> tuple[str, dict[str, Any]]:
+def _extract_html(content: bytes, url: str) -> tuple[str, dict[str, str]]:
     import trafilatura
 
     html = _decode(content, "utf-8")
@@ -215,7 +216,7 @@ def _extract_html(content: bytes, url: str) -> tuple[str, dict[str, Any]]:
     return extracted, {key: value for key, value in values.items() if value}
 
 
-def network_available(sandbox: Any) -> ToolResult | None:
+def network_available(sandbox: SandboxPort | None) -> ToolResult | None:
     if sandbox is not None and not sandbox.network:
         return ToolResult.failure(
             "network_disabled",

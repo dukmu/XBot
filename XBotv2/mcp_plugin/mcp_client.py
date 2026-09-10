@@ -18,7 +18,7 @@ from jsonschema.exceptions import SchemaError
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from pydantic import AnyUrl
+from pydantic import AnyUrl, JsonValue
 
 logger = logging.getLogger("xbotv2.mcp")
 
@@ -31,7 +31,7 @@ class MCPConnectionError(RuntimeError):
 class MCPCallResult:
     content: str
     is_error: bool
-    data: dict[str, Any]
+    data: dict[str, JsonValue]
 
 
 @dataclass(slots=True)
@@ -46,7 +46,7 @@ class MCPClient:
         self._transports: dict[str, _Connection] = {}
         self._stderr_handles: list[Any] = []
 
-    def _stderr_target(self, cfg: dict[str, Any]) -> Any:
+    def _stderr_target(self, cfg: dict[str, JsonValue]) -> Any:
         """Pick a stderr target that always works with ``Popen``.
 
         The MCP SDK forwards its ``errlog`` as the child process's stderr.
@@ -70,10 +70,10 @@ class MCPClient:
     async def connect_and_list(
         self,
         name: str,
-        cfg: dict[str, Any],
+        cfg: dict[str, JsonValue],
         *,
         callbacks: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         if name in self._transports:
             raise MCPConnectionError(f"MCP server '{name}' is already connected")
 
@@ -109,7 +109,7 @@ class MCPClient:
         self,
         server: str,
         tool: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, JsonValue],
     ) -> MCPCallResult:
         result = await self._connection(server).session.call_tool(tool, arguments)
         data = _dump(result)
@@ -119,10 +119,10 @@ class MCPClient:
             data=data,
         )
 
-    def server_capabilities(self, server: str) -> dict[str, Any]:
+    def server_capabilities(self, server: str) -> dict[str, JsonValue]:
         return _dump(self._connection(server).initialize_result.capabilities)
 
-    async def list_resources(self, server: str) -> dict[str, Any]:
+    async def list_resources(self, server: str) -> dict[str, JsonValue]:
         session = self._connection(server).session
         resources = await _collect_pages(session.list_resources, "resources")
         templates = await _collect_pages(
@@ -131,19 +131,19 @@ class MCPClient:
         )
         return {"resources": resources, "resourceTemplates": templates}
 
-    async def read_resource(self, server: str, uri: str) -> dict[str, Any]:
+    async def read_resource(self, server: str, uri: str) -> dict[str, JsonValue]:
         result = await self._connection(server).session.read_resource(AnyUrl(uri))
         return _dump(result)
 
-    async def subscribe_resource(self, server: str, uri: str) -> dict[str, Any]:
+    async def subscribe_resource(self, server: str, uri: str) -> dict[str, JsonValue]:
         result = await self._connection(server).session.subscribe_resource(AnyUrl(uri))
         return _dump(result)
 
-    async def unsubscribe_resource(self, server: str, uri: str) -> dict[str, Any]:
+    async def unsubscribe_resource(self, server: str, uri: str) -> dict[str, JsonValue]:
         result = await self._connection(server).session.unsubscribe_resource(AnyUrl(uri))
         return _dump(result)
 
-    async def list_prompts(self, server: str) -> list[dict[str, Any]]:
+    async def list_prompts(self, server: str) -> list[dict[str, JsonValue]]:
         return await _collect_pages(
             self._connection(server).session.list_prompts,
             "prompts",
@@ -154,17 +154,17 @@ class MCPClient:
         server: str,
         name: str,
         arguments: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         result = await self._connection(server).session.get_prompt(name, arguments)
         return _dump(result)
 
     async def complete(
         self,
         server: str,
-        reference: dict[str, Any],
+        reference: dict[str, JsonValue],
         argument: dict[str, str],
         context_arguments: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         if reference.get("type") == "ref/resource":
             ref = types.ResourceTemplateReference.model_validate(reference)
         else:
@@ -176,11 +176,11 @@ class MCPClient:
         )
         return _dump(result)
 
-    async def set_logging_level(self, server: str, level: str) -> dict[str, Any]:
+    async def set_logging_level(self, server: str, level: str) -> dict[str, JsonValue]:
         result = await self._connection(server).session.set_logging_level(level)  # type: ignore[arg-type]
         return _dump(result)
 
-    async def ping(self, server: str) -> dict[str, Any]:
+    async def ping(self, server: str) -> dict[str, JsonValue]:
         return _dump(await self._connection(server).session.send_ping())
 
     async def disconnect_all(self) -> None:
@@ -207,7 +207,7 @@ class MCPClient:
     async def _open_transport(
         self,
         stack: AsyncExitStack,
-        cfg: dict[str, Any],
+        cfg: dict[str, JsonValue],
     ) -> tuple[Any, Any]:
         if cfg.get("type", "local") == "remote":
             client = await stack.enter_async_context(httpx.AsyncClient(
@@ -236,7 +236,7 @@ class MCPClient:
             stdio_client(params, errlog=self._stderr_target(cfg))
         )
 
-    async def _list_tools(self, connection: _Connection) -> list[dict[str, Any]]:
+    async def _list_tools(self, connection: _Connection) -> list[dict[str, JsonValue]]:
         if connection.initialize_result.capabilities.tools is None:
             return []
         tools = await _collect_pages(connection.session.list_tools, "tools")
@@ -249,9 +249,9 @@ class MCPClient:
         return connection
 
 
-async def _collect_pages(method: Any, field: str) -> list[dict[str, Any]]:
+async def _collect_pages(method: Any, field: str) -> list[dict[str, JsonValue]]:
     cursor = None
-    values: list[dict[str, Any]] = []
+    values: list[dict[str, JsonValue]] = []
     while True:
         result = await method(cursor=cursor)
         values.extend(_dump(item) for item in getattr(result, field))
@@ -260,11 +260,11 @@ async def _collect_pages(method: Any, field: str) -> list[dict[str, Any]]:
             return values
 
 
-def _dump(value: Any) -> dict[str, Any]:
+def _dump(value: Any) -> dict[str, JsonValue]:
     return value.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
-def _normalize_mcp_result(result: dict[str, Any]) -> str:
+def _normalize_mcp_result(result: dict[str, JsonValue]) -> str:
     content = result.get("content", [])
     if not isinstance(content, list):
         return str(result)
@@ -285,7 +285,7 @@ def _normalize_mcp_result(result: dict[str, Any]) -> str:
     return "\n".join(texts) if texts else json.dumps(result, ensure_ascii=False)
 
 
-def _validate_tool_list(result: Any) -> list[dict[str, Any]]:
+def _validate_tool_list(result: JsonValue) -> list[dict[str, JsonValue]]:
     if not isinstance(result, dict):
         raise MCPConnectionError("MCP tools/list result must be an object")
     tools = result.get("tools", [])

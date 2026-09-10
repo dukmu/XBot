@@ -12,10 +12,12 @@ import asyncio
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
-from typing import Any, Protocol
+from typing import Protocol
 from pydantic import JsonValue
 
 from XBotv2.agentloop.contracts import InboxInput, InboxSink, InboxSplice, InboxTarget
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.messages import ImageContent
 
 
 SpliceRecorder = Callable[[InboxSplice], Awaitable[None]]
@@ -91,31 +93,70 @@ class AgentInbox:
             self._wake_driver()
         return item
 
-    async def followup(self, content: str, **kwargs: Any) -> InboxInput:
+    async def followup(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
         """Append to ``next-turn`` and wake the driver."""
         return await self.send(
             content,
             target=InboxTarget.NEXT_TURN,
             wakeup=True,
-            **kwargs,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
         )
 
-    async def steer(self, content: str, **kwargs: Any) -> InboxInput:
+    async def steer(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
         """Append to ``next-step`` and wake the driver."""
         return await self.send(
             content,
             target=InboxTarget.NEXT_STEP,
             wakeup=True,
-            **kwargs,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
         )
 
-    async def inject(self, content: str, **kwargs: Any) -> InboxInput:
+    async def inject(
+        self,
+        content: str,
+        *,
+        source: str = "user",
+        message_id: str = "",
+        images: list[ImageContent] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InboxInput:
         """Append to ``next-step`` without waking the driver."""
         return await self.send(
             content,
             target=InboxTarget.NEXT_STEP,
             wakeup=False,
-            **kwargs,
+            source=source,
+            message_id=message_id,
+            images=images,
+            artifacts=artifacts,
+            metadata=metadata,
         )
 
     async def claim_turn(self) -> list[InboxInput]:
