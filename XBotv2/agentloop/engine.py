@@ -30,7 +30,7 @@ from XBotv2.agentloop.internal_messages import (
     DISPLAY_CONTENT_KEY,
     structure_tool_message,
 )
-from XBotv2.agentloop.contracts import InboxInput, InboxTarget
+from XBotv2.agentloop.contracts import InboxInput, InboxSplice, InboxTarget
 from XBotv2.agentloop.inbox import AgentInbox
 from XBotv2.agentloop.protocol import agentloop_event
 from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
@@ -124,6 +124,11 @@ class _ModelRequestResult:
 class _ToolBatchResult:
     stop_loop: bool = False
     turn_complete: bool = False
+
+
+@dataclass(slots=True)
+class _ModelResponseEvent:
+    response: ModelResponse
 
 def xbot_tool_call_deltas(
     chunk: ModelChunk,
@@ -343,11 +348,11 @@ class Engine(AgentLoopDriverPort):
             results = list(after_result["tool_results"])
         return results
 
-    async def _record_inbox_splice(self, event: dict[str, JsonValue]) -> None:
+    async def _record_inbox_splice(self, event: InboxSplice) -> None:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
             Events.INBOX_SPLICE,
-            self._make_event_context(client_event=ClientEvent(**event)),
+            self._make_event_context(inbox_splice=event),
             short_circuit=False,
         )
 
@@ -423,12 +428,7 @@ class Engine(AgentLoopDriverPort):
             images=images,
             artifacts=artifacts,
         )
-        initial_claim = True
         async for event in self.run_pending(request_id=request_id):
-            if initial_claim and event.get("type") == "_inbox_claimed":
-                initial_claim = False
-                continue
-            initial_claim = False
             yield event
 
     async def run_pending(
@@ -629,8 +629,8 @@ class Engine(AgentLoopDriverPort):
                     llm_with_tools,
                     context_messages,
                 ):
-                    if model_event.get("type") == "_model_response":
-                        response = model_event["data"]["response"]
+                    if isinstance(model_event, _ModelResponseEvent):
+                        response = model_event.response
                     else:
                         yield model_event
                 if response is None:
@@ -759,9 +759,7 @@ class Engine(AgentLoopDriverPort):
                 else:
                     turn_complete = True
                 if turn_complete:
-                    claimed_event = await self._claim_step_inputs()
-                    if claimed_event is not None:
-                        yield claimed_event
+                    if await self._claim_step_inputs():
                         continue
                     break
 
@@ -771,17 +769,15 @@ class Engine(AgentLoopDriverPort):
                 # A complete response: fold any pending input so it is
                 # answered in this same turn instead of waiting for a later
                 # one. This is the no-tool-boundary path.
-                claimed_event = await self._claim_step_inputs()
-                if claimed_event is not None:
-                    yield claimed_event
+                if await self._claim_step_inputs():
                     continue
                 turn_complete = True
                 break
 
             batch_result = None
             async for tool_event in self._run_tool_batch(response):
-                if tool_event.get("type") == "_tool_batch_result":
-                    batch_result = tool_event["data"]["result"]
+                if isinstance(tool_event, _ToolBatchResult):
+                    batch_result = tool_event
                 else:
                     yield tool_event
             if batch_result is None:
@@ -789,9 +785,7 @@ class Engine(AgentLoopDriverPort):
             if batch_result.stop_loop:
                 turn_complete = batch_result.turn_complete
                 break
-            claimed_event = await self._claim_step_inputs()
-            if claimed_event is not None:
-                yield claimed_event
+            await self._claim_step_inputs()
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -801,15 +795,13 @@ class Engine(AgentLoopDriverPort):
     async def _run_tool_batch(
         self,
         response: ModelResponse,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any] | _ToolBatchResult]:
         tool_calls = list(response.tool_calls)
         if not await self._prepare_tool_calls(
             tool_calls,
             agent_response=response,
         ):
-            yield self._tool_batch_result_event(
-                _ToolBatchResult(stop_loop=True)
-            )
+            yield _ToolBatchResult(stop_loop=True)
             return
 
         self._log.info(
@@ -885,16 +877,10 @@ class Engine(AgentLoopDriverPort):
             )
 
         if any(message.turn_complete for message in tool_messages):
-            yield self._tool_batch_result_event(
-                _ToolBatchResult(stop_loop=True, turn_complete=True)
-            )
+            yield _ToolBatchResult(stop_loop=True, turn_complete=True)
             return
 
-        yield self._tool_batch_result_event(_ToolBatchResult())
-
-    @staticmethod
-    def _tool_batch_result_event(result: _ToolBatchResult) -> dict[str, Any]:
-        return {"type": "_tool_batch_result", "data": {"result": result}}
+        yield _ToolBatchResult()
 
     async def _start_turn(
         self,
@@ -987,14 +973,7 @@ class Engine(AgentLoopDriverPort):
             metadata=primary.metadata,
         )
         await self.inbox.commit([item.message_id for item in claimed])
-        started.events = [
-            {
-                "type": "_inbox_claimed",
-                "data": {"message_ids": [item.message_id for item in claimed]},
-            },
-            *events,
-            *started.events,
-        ]
+        started.events = [*events, *started.events]
         return started
 
     @staticmethod
@@ -1266,7 +1245,7 @@ class Engine(AgentLoopDriverPort):
         self,
         llm: ModelPort,
         context_messages: list[Message],
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[dict[str, Any] | _ModelResponseEvent]:
         """Stream provider chunks and reconstruct the final response."""
         aggregate: ModelResponse | None = None
         tool_stream_ids: dict[int, str] = {}
@@ -1334,7 +1313,7 @@ class Engine(AgentLoopDriverPort):
             stop_reason=aggregate.response_metadata.get("stop_reason", "unknown"),
             duration_ms=round(llm_ms, 3),
         )
-        yield {"type": "_model_response", "data": {"response": aggregate}}
+        yield _ModelResponseEvent(aggregate)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1406,6 +1385,7 @@ class Engine(AgentLoopDriverPort):
         tool_result: Message | None = None,
         stop_reason: str | None = None,
         client_event: ClientEvent | None = None,
+        inbox_splice: InboxSplice | None = None,
         error: BaseException | None = None,
     ) -> EventContext:
         return EventContext(
@@ -1429,17 +1409,17 @@ class Engine(AgentLoopDriverPort):
             tool_result=tool_result,
             stop_reason=stop_reason,
             client_event=client_event,
+            inbox_splice=inbox_splice,
             error=error,
         )
 
-    async def _claim_step_inputs(self) -> dict[str, Any] | None:
+    async def _claim_step_inputs(self) -> bool:
         """Claim and accept every input addressed to the next loop step."""
         items = await self.inbox.claim_step()
         if not items:
-            return None
-        accepted_ids: list[str] = []
+            return False
         for item in items:
-            accepted = await self._accept_user_message(
+            await self._accept_user_message(
                 item.content,
                 images=item.images,
                 artifacts=item.artifacts,
@@ -1447,13 +1427,8 @@ class Engine(AgentLoopDriverPort):
                 source=item.source,
                 metadata=item.metadata,
             )
-            if accepted.proceed:
-                accepted_ids.append(item.message_id)
         await self.inbox.commit([item.message_id for item in items])
-        return {
-            "type": "_inbox_claimed",
-            "data": {"message_ids": accepted_ids},
-        }
+        return True
 
     async def _accept_user_message(
         self,

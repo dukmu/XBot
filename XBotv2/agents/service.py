@@ -29,6 +29,9 @@ from XBotv2.agentloop import (
 )
 from XBotv2.config import RuntimeConfig
 from XBotv2.config import SettingsPort
+from XBotv2.config.contracts import ConfigPluginConfig
+from XBotv2.coretools.contracts import CoreToolsConfig
+from XBotv2.loader.contracts import PluginTree
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
@@ -79,9 +82,11 @@ class AgentsService(AgentRuntimePort):
         """Resolve one Agent and publish the driver returned by its factory."""
         state = self._state
         state.metadata = self._metadata
-        config = self._settings.load_runtime_config(
-            options.workspace_root,
-            options.session_id,
+        config = self._runtime_config(
+            self._settings.load_plugin_tree(
+                options.workspace_root,
+                options.session_id,
+            )
         )
         stored_metadata = state.metadata.value
         definition = self._resolve_definition(options, stored_metadata)
@@ -228,9 +233,11 @@ class AgentsService(AgentRuntimePort):
     ) -> RuntimeConfig:
         """Resolve current runtime config with the active Agent overlay."""
         state = self._state
-        config = self._settings.load_runtime_config(
-            state.session.workspace_root,
-            state.session.session_id,
+        config = self._runtime_config(
+            self._settings.load_plugin_tree(
+                state.session.workspace_root,
+                state.session.session_id,
+            )
         )
         definition = definition or self.active_definition()
         if definition is not None:
@@ -535,6 +542,36 @@ class AgentsService(AgentRuntimePort):
             config.tools = list(definition.tools)
         if definition.context_window is not None:
             config.max_context_tokens = definition.context_window
+
+    def _runtime_config(self, tree: PluginTree) -> RuntimeConfig:
+        """Build the Agent-owned runtime view from generic plugin entries.
+
+        Configuration loading only resolves the layered tree.  The Agent
+        composition boundary is the first place that needs developer
+        instructions and memory, so it validates the config plugin's own
+        declaration here and combines it with provider-neutral runtime facts.
+        """
+        config_entry = tree.entry("config")
+        settings = ConfigPluginConfig.model_validate(
+            config_entry.config if config_entry is not None else {}
+        )
+        coretools_entry = tree.entry("coretools")
+        coretools = CoreToolsConfig.model_validate(
+            coretools_entry.config if coretools_entry is not None else {}
+        )
+        return RuntimeConfig(
+            provider=self._providers.default_name(),
+            tools=coretools.tools,
+            instructions=settings.instructions,
+            memory=self._settings.memory(),
+            plugins={
+                entry.id: {
+                    "enabled": not entry.disabled,
+                    "config": entry.config,
+                }
+                for entry in tree.entries
+            },
+        )
 
     @staticmethod
     def _resolve_model_config(

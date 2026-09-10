@@ -9,19 +9,23 @@ it without importing or depending on this plugin.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 import asyncio
-from pydantic import BaseModel, JsonValue, TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 from xcore import Context
 from xcore.state import StateService
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured, AgentDefinition
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.config import PermissionRuleConfig
 from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.core.variables import RuntimeVariables
-from XBotv2.permissions.contracts import PermissionsPort
+from XBotv2.permissions.contracts import (
+    PermissionConfig,
+    PermissionDecision,
+    PermissionRuleConfig,
+    PermissionsPort,
+)
 from XBotv2.permissions import PERMISSION_DECIDED, PermissionDecided
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.commands import build_permissions_commands
@@ -30,7 +34,6 @@ from XBotv2.permissions.rules import (
     requested_permission_rule,
 )
 from XBotv2.permissions.system import (
-    PermissionDecision,
     PermissionSystem,
     normalize_agent_permissions,
 )
@@ -43,12 +46,12 @@ class PermissionsService(PermissionsPort):
 
     def __init__(
         self,
-        config: object,
+        config: PermissionConfig | dict[str, JsonValue],
         variables: RuntimeVariables,
         store: StateService,
         parent: PermissionsPort | None = None,
     ) -> None:
-        self._base_config = self._as_dict(config)
+        self._base_config = PermissionConfig.model_validate(config)
         self._agent_overlay: object | None = None
         self._grants: list[PermissionRuleConfig] = []
         self._store = store
@@ -59,11 +62,18 @@ class PermissionsService(PermissionsPort):
     def _rebuild(self) -> None:
         overlay = normalize_agent_permissions(self._agent_overlay)
         merged = {
-            decision: [
-                *list(overlay.get(decision) or []),
-                *list(self._base_config.get(decision) or []),
-            ]
-            for decision in ("deny", "allow", "ask")
+            "deny": [
+                *list(overlay.get("deny") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.deny],
+            ],
+            "allow": [
+                *list(overlay.get("allow") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.allow],
+            ],
+            "ask": [
+                *list(overlay.get("ask") or []),
+                *[rule.model_dump(exclude_none=True) for rule in self._base_config.ask],
+            ],
         }
         merged["allow"] = [
             *[grant.model_dump(exclude_none=True) for grant in self._grants],
@@ -78,19 +88,9 @@ class PermissionsService(PermissionsPort):
         self._agent_overlay = overlay
         self._rebuild()
 
-    def replace_rules(self, config: object) -> None:
-        self._base_config = self._as_dict(config)
+    def replace_rules(self, config: PermissionConfig) -> None:
+        self._base_config = PermissionConfig.model_validate(config)
         self._rebuild()
-
-    @staticmethod
-    def _as_dict(value: object) -> dict[str, object]:
-        if value is None:
-            return {}
-        if isinstance(value, BaseModel):
-            return dict(value.model_dump(exclude_none=True))
-        if isinstance(value, Mapping):
-            return dict(value)
-        raise TypeError("Permission configuration must be a mapping")
 
     def check(
         self,
@@ -193,9 +193,9 @@ class PermissionsComponent:
     """Register the permission system as ``ctx.permissions`` and its guard."""
 
     name = "xbot.permissions"
+    Config = PermissionConfig
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
-        config = config or {}
+    def apply(self, ctx: Context, config: PermissionConfig) -> None:
         approval = ApprovalService(
             ctx,
             ctx.client_events,
@@ -205,7 +205,7 @@ class PermissionsComponent:
         ctx.dispose(ctx.client_events.register_waiter("permission_request", approval.waiter))
         ctx.on(Events.SESSION_CLOSE, approval.session_closed)
         permissions = PermissionsService(
-            config.get("permissions"),
+            config,
             ctx.variables,
             ctx.state.namespace("permissions"),
             parent=ctx.parent_permissions.value,
@@ -285,7 +285,9 @@ class PermissionHandlers:
             self._permissions.configure_agent(agent.permissions)
 
     async def update_policy(self, event: PolicyChanged) -> None:
-        self._permissions.replace_rules(event.config.permissions)
+        self._permissions.replace_rules(
+            PermissionConfig.model_validate(event.effective_permissions)
+        )
 
 
 plugin = PermissionsComponent()

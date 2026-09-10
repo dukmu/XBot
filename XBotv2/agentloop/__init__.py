@@ -16,6 +16,7 @@ from XBotv2.agentloop.contracts import (
     ToolsPort,
     InboxInput,
     InboxSink,
+    InboxSplice,
     InboxTarget,
 )
 from XBotv2.agentloop.events import (
@@ -48,6 +49,7 @@ __all__ = [
     "EventPort",
     "InboxInput",
     "InboxSink",
+    "InboxSplice",
     "InboxTarget",
     "Events",
     "AssistantMessageData",

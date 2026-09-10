@@ -6,14 +6,14 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 import uuid
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol
 
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.tools import GuardDecision, Tool, ToolCall
@@ -24,24 +24,34 @@ if TYPE_CHECKING:
     from XBotv2.llm.contracts import ModelPort
 
 DEFAULT_MAX_ITERATIONS = 200
-
-
 class InboxTarget(str, Enum):
     NEXT_TURN = "next-turn"
     NEXT_STEP = "next-step"
 
 
-@dataclass(slots=True)
-class InboxInput:
+class InboxInput(BaseModel):
     """One uniquely identified model-visible input."""
 
     content: str
     target: InboxTarget
     source: str = "user"
-    message_id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
-    images: list[ImageContent] = field(default_factory=list)
-    artifacts: list[ArtifactRef] = field(default_factory=list)
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    message_id: str = Field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
+    images: list[ImageContent] = Field(default_factory=list)
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+
+class InboxSplice(BaseModel):
+    """Typed lifecycle record emitted by the agent inbox."""
+
+    operation: Literal[
+        "insert", "edit", "remove", "retarget", "claim", "consume", "discard"
+    ]
+    target: InboxTarget | None = None
+    message_ids: list[str] = Field(default_factory=list)
+    items: list[InboxInput] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class InboxSink(Protocol):
@@ -263,6 +273,7 @@ __all__ = [
     "InboxInput",
     "InboxSink",
     "InboxTarget",
+    "InboxSplice",
     "LIST_TOOLS",
     "LoopFactoryOptions",
     "LoopSettings",

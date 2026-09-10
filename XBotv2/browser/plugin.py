@@ -8,31 +8,17 @@ from XBotv2.core import (
     Tool,
     ToolResult,
 )
-from xcore import S
+from xcore import Context
 
 from .browser import BrowserSession
+from .contracts import BrowserConfig
 from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
 
 
 class BrowserPlugin:
     inject = ['tools', 'session', 'sandbox', 'artifacts']
     name = "browser"
-    Config = S.object({
-        "search": S.object({
-            "backend": S.string().optional(),
-            "region": S.string().optional(),
-            "safesearch": S.string().optional(),
-        }).optional(),
-        "network": S.object({
-            "timeout_seconds": S.number().optional(),
-            "max_response_bytes": S.number().optional(),
-            "allow_private": S.boolean().optional(),
-        }).optional(),
-        "browser": S.object({
-            "headless": S.boolean().optional(),
-            "timeout_seconds": S.number().optional(),
-        }).optional(),
-    })
+    Config = BrowserConfig
 
     def __init__(self) -> None:
         self._search = {"backend": "yandex", "region": "wt-wt", "safesearch": "moderate"}
@@ -44,17 +30,15 @@ class BrowserPlugin:
         self._artifacts = None
         self._sandbox = None
 
-    def apply(self, ctx, config=None) -> None:
-        config = config or {}
-        self._search.update(config.get("search") or {})
-        network = config.get("network") or {}
+    def apply(self, ctx: Context, config: BrowserConfig) -> None:
+        self._search = config.search.model_dump()
         self._network_options = NetworkOptions(
-            timeout_seconds=float(network.get("timeout_seconds", 20)),
-            max_response_bytes=int(network.get("max_response_bytes", 5_000_000)),
-            allow_private=bool(network.get("allow_private", False)),
+            timeout_seconds=config.network.timeout_seconds,
+            max_response_bytes=config.network.max_response_bytes,
+            allow_private=config.network.allow_private,
         )
         self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
-        self._browser_options.update(config.get("browser") or {})
+        self._browser_options = config.browser.model_dump()
         ctx.dispose(self._dispose)
         self._artifacts = ctx.artifacts
         self._sandbox = ctx.sandbox

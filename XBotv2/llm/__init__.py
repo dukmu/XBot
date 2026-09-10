@@ -2,6 +2,7 @@
 
 from XBotv2.llm.contracts import (
     EffortSelection,
+    LlmConfig,
     LIST_PROVIDERS,
     ModelDescription,
     ModelConfig,
@@ -26,6 +27,7 @@ from XBotv2.llm.protocol import (
 
 __all__ = [
     "EffortSelection",
+    "LlmConfig",
     "EffortSelectionRequest",
     "EffortSelectionResponse",
     "LIST_PROVIDERS",

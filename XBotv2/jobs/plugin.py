@@ -23,6 +23,7 @@ from XBotv2.jobs.protocol import (
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
+    JobsConfig,
     LIST_TASKS,
     STOP_ALL_TASKS,
     STOP_TASK,
@@ -50,9 +51,10 @@ class JobsRuntimeComponent:
     """Register the job registry as ``ctx.jobs``."""
 
     name = "xbot.jobs"
+    Config = JobsConfig
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
-        max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
+    def apply(self, ctx: Context, config: JobsConfig) -> None:
+        max_concurrent = config.max_concurrent_subagents
         registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
         ctx.set("jobs", registry)
         for command in build_jobs_commands(registry):
@@ -134,8 +136,9 @@ class JobsPlugin:
     """Compose Agent job execution and its process HTTP projection."""
 
     name = "xbot.jobs"
+    Config = JobsConfig
 
-    async def apply(self, ctx: Context, config: object | None = None) -> None:
+    async def apply(self, ctx: Context, config: JobsConfig) -> None:
         await ctx.plugin(JobsRuntimeComponent(), config)
         await ctx.inject(["server", "sessions"], mount_http)
 

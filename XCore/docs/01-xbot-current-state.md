@@ -75,7 +75,7 @@ Plugins ──只 import api──▶ Core
 | 事件 | `HookManager` + 41 个 `HookStage`（observer/transform/guard 三类契约） | 无任意事件名/通配符/`emit/parallel/bail/serial/chain` 语义；Hook 是阶段化的固定管线而非通用事件总线 |
 | 服务 | 无服务注册表；核心组件以构造器注入传给 `_PluginSetupContext` | 无 `ctx.set/get/unset`、无 Proxy 属性访问、无选择器隔离 |
 | 中间件 | 无 | 无 `ctx.middleware`/`ctx.filter` 链 |
-| 配置 schema | JSON Schema（jsonschema 校验，无默认值应用） | 无 schema DSL（S.object/S.string/…）、无默认值合并 |
+| 配置 schema | 插件自有 Pydantic 模型导出的 JSON Schema | XCore 不提供 schema DSL；Fiber 仅调用 `Config.model_validate` |
 | 清理 | 卸载时按注册逆序注销；异常聚合为 ExceptionGroup | 无 `ctx.dispose(cb)` 资源句柄模型 |
 
 ### 3.1 现状插件生命周期细节（loader.py）

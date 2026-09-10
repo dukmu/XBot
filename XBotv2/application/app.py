@@ -90,6 +90,7 @@ async def start_application(
         no_plugins=no_plugins,
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,
+        session_id=session_id,
     )
     persistence_enabled = any(
         entry.id == "persistence" and not entry.disabled for entry in tree.entries
@@ -154,6 +155,9 @@ async def start_application(
             is_subagent=is_subagent,
         ),
         "parent_permissions": ParentPermissions(parent_permission_system),
+        "plugin_overrides": extra_plugins or [],
+        "plugin_dirs": plugin_dirs or [],
+        "no_plugins": no_plugins,
         "client_events": ClientEventRouter(parent=client_events),
         "child_applications": children,
         "artifacts": artifacts,

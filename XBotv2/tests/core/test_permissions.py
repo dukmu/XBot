@@ -266,7 +266,7 @@ class TestConfigLoading:
             Path("XBotv2/xcore.yaml").read_text(encoding="utf-8")
         )
         entry = next(item for item in tree if item.get("id") == "permissions")
-        config = entry["config"]["permissions"]
+        config = entry["config"]
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         permissions = PermissionSystem(

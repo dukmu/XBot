@@ -63,7 +63,7 @@ async def main() -> None:
                     {
                         "id": "sandbox",
                         "name": "sandbox",
-                        "config": {"sandbox": {"enabled": False, "resources": []}},
+                        "config": {"enabled": False, "resources": []},
                     },
                 ],
                 sort_keys=False,

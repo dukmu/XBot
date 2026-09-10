@@ -7,46 +7,48 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
-from pydantic import JsonValue
-from xcore.schema import Schema, SchemaValidationError, schema_to_json_schema
+from pydantic import BaseModel, JsonValue
 
-from XBotv2.application.tree import load_agent_tree
+from XBotv2.loader import (
+    plugin_config_json_schema,
+    plugin_config_schema,
+    resolve_agent_tree,
+    validate_plugin_config,
+)
 from XBotv2.config.contracts import (
     PatchPluginConfig,
     PluginConfigCatalog,
+    PluginConfigConflict,
     PluginConfigDescriptor,
     PluginConfigScope,
+    PluginConfigUnavailable,
 )
 from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.loader.contracts import PluginEntry, PluginOverlay
-from XBotv2.loader.runtime import plugin_config_schema
-
-
-class PluginConfigConflict(RuntimeError):
-    """The caller attempted to write an obsolete overlay revision."""
-
-
-class PluginConfigUnavailable(ValueError):
-    """The selected plugin has no generic, producer-declared schema."""
 
 
 def plugin_config_catalog(
     paths: RuntimePaths,
     workspace_root: Path | str,
     scope: PluginConfigScope,
+    session_id: str | None = None,
 ) -> PluginConfigCatalog:
     """Describe resolved plugin declarations without mounting their lifecycles."""
     workspace = Path(workspace_root).resolve()
-    overlay_path = _overlay_path(paths, workspace, scope)
+    overlay_path = _overlay_path(paths, workspace, scope, session_id)
     scope_configs = _overlay_configs(overlay_path)
-    tree = load_agent_tree(
+    tree = resolve_agent_tree(
         paths=paths,
         workspace_root=workspace,
         is_subagent=False,
         no_plugins=False,
         plugin_dirs=None,
         extra_plugins=None,
+        session_id=session_id if scope == "session" else None,
+        include_global=True,
+        include_workspace=scope in {"workspace", "session"},
+        include_session=scope == "session",
     )
     plugins = [
         _descriptor(entry, scope_configs.get(entry.id, {}))
@@ -56,6 +58,7 @@ def plugin_config_catalog(
         scope=scope,
         workspace_root=str(workspace),
         revision=_revision(overlay_path),
+        applies_to="current_session" if scope == "session" else "new_sessions",
         plugins=plugins,
     )
 
@@ -65,17 +68,18 @@ def update_plugin_config(
     workspace_root: Path | str,
     plugin_id: str,
     patch: PatchPluginConfig,
+    session_id: str | None = None,
 ) -> PluginConfigCatalog:
     """Validate and replace one layer's config object for a declared plugin."""
     workspace = Path(workspace_root).resolve()
-    path = _overlay_path(paths, workspace, patch.scope)
+    path = _overlay_path(paths, workspace, patch.scope, session_id)
     actual_revision = _revision(path)
     if patch.revision != actual_revision:
         raise PluginConfigConflict(
             "Plugin configuration changed on disk; reload before saving."
         )
 
-    lower_tree = load_agent_tree(
+    lower_tree = resolve_agent_tree(
         paths=paths,
         workspace_root=workspace,
         is_subagent=False,
@@ -83,14 +87,15 @@ def update_plugin_config(
         plugin_dirs=None,
         extra_plugins=None,
         include_global=patch.scope != "global",
-        include_workspace=False,
+        include_workspace=patch.scope == "session",
+        include_session=False,
     )
     entry = _entry(lower_tree.entries, plugin_id)
     schema = _declared_schema(entry)
     effective = _merge_config(entry.config, patch.config)
     try:
-        schema.validate(effective)
-    except SchemaValidationError as exc:
+        validate_plugin_config(schema, effective)
+    except ValueError as exc:
         raise ValueError(str(exc)) from exc
 
     document = _overlay_document(path)
@@ -101,7 +106,7 @@ def update_plugin_config(
         path,
         yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
     )
-    return plugin_config_catalog(paths, workspace, patch.scope)
+    return plugin_config_catalog(paths, workspace, patch.scope, session_id)
 
 
 def _descriptor(
@@ -123,17 +128,17 @@ def _descriptor(
         plugin_id=entry.id,
         name=entry.name,
         editable=True,
-        config_schema=schema_to_json_schema(schema),
+        config_schema=plugin_config_json_schema(schema),
         scope_config=scope_config,
         effective_config=entry.config,
     )
 
 
-def _declared_schema(entry: PluginEntry) -> Schema:
+def _declared_schema(entry: PluginEntry) -> object:
     schema = plugin_config_schema(entry)
-    if not isinstance(schema, Schema):
+    if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
         raise PluginConfigUnavailable(
-            "This plugin does not declare an XCore Config schema."
+            "This plugin does not declare a Pydantic Config model."
         )
     return schema
 
@@ -149,12 +154,15 @@ def _overlay_path(
     paths: RuntimePaths,
     workspace: Path,
     scope: PluginConfigScope,
+    session_id: str | None,
 ) -> Path:
-    return (
-        paths.config_dir / "plugins.yaml"
-        if scope == "global"
-        else workspace / ".xbot" / "plugins.yaml"
-    )
+    if scope == "global":
+        return paths.config_dir / "plugins.yaml"
+    if scope == "workspace":
+        return workspace / ".xbot" / "plugins.yaml"
+    if not session_id:
+        raise ValueError("session scope requires a session id")
+    return paths.session(session_id).config_file
 
 
 def _revision(path: Path) -> str:

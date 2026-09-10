@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pydantic import JsonValue
 from xcore import Context
 
-from XBotv2.config.contracts import UserContext
+from XBotv2.config.contracts import ConfigPluginConfig
 from XBotv2.config.service import ConfigService
 from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
 from XBotv2.core.operations import EmptyRequest
@@ -18,40 +16,43 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.config.http",
-        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths),
+        router=build_router(sessions=ctx.sessions, settings=ctx.settings),
     )
 
 
-class ConfigRuntimeComponent:
-    """Register the path-bound config reader as ``ctx.settings``.
-
-    The user context comes from this plugin's tree config (``user`` block),
-    not a separate ``user.yaml`` document — consistent with the plugin-tree
-    configuration model (``xcore.yaml`` + overlays).
-    """
+class ConfigPlugin:
+    """Provide session-bound settings and the configuration HTTP routes."""
 
     name = "xbot.config"
-    inject = ["runtime_log", "runtime_paths", "session_launch"]
+    Config = ConfigPluginConfig
+    inject = [
+        "runtime_log", "runtime_paths", "session_launch",
+        "plugin_overrides", "plugin_dirs",
+        "no_plugins",
+    ]
 
     def apply(
         self,
         ctx: Context,
-        config: Mapping[str, JsonValue] | None = None,
+        config: ConfigPluginConfig,
     ) -> None:
-        config = config or {}
-        user = UserContext.model_validate(config.get("user") or {})
         settings = ConfigService(
             ctx.runtime_paths,
             session_id=ctx.session_launch.session_id,
             workspace_root=ctx.session_launch.workspace_root,
             events=ctx,
-            user_context=user,
+            user_context=config.user,
             runtime_log=ctx.runtime_log,
+            extra_plugins=ctx.plugin_overrides,
+            plugin_dirs=ctx.plugin_dirs,
+            is_subagent=ctx.session_launch.is_subagent,
+            no_plugins=ctx.no_plugins,
         )
         ctx.set("settings", settings)
         operations = ConfigOperations(settings)
         ctx.on(GET_POLICY.name, operations.get_policy)
         ctx.on(UPDATE_POLICY.name, settings.update_policy)
+        ctx.inject(["server", "sessions", "settings"], mount_http)
 
 
 class ConfigOperations:
@@ -60,20 +61,6 @@ class ConfigOperations:
 
     def get_policy(self, _request: EmptyRequest):
         return self._settings.policy()
-
-
-class ConfigPlugin:
-    """Compose session-local settings and their HTTP projection."""
-
-    name = "xbot.config"
-
-    async def apply(
-        self,
-        ctx: Context,
-        config: Mapping[str, JsonValue] | None = None,
-    ) -> None:
-        await ctx.plugin(ConfigRuntimeComponent(), config)
-        await ctx.inject(["server", "sessions", "runtime_paths"], mount_http)
 
 
 plugin = ConfigPlugin()

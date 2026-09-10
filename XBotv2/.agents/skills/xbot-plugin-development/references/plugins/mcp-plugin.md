@@ -8,6 +8,7 @@ to XBot runtime capabilities.
 - **Import/profile:** `mcp_plugin`, Agent profile.
 - **Source:** `XBotv2/mcp_plugin/plugin.py`,
   `XBotv2/mcp_plugin/mcp_client.py`,
+  `XBotv2/mcp_plugin/contracts.py`,
   `XBotv2/mcp_plugin/tool.py`,
   `XBotv2/mcp_plugin/callbacks.py`,
   `XBotv2/mcp_plugin/contracts.py`.
@@ -33,18 +34,16 @@ elicitation callback, which is distinct from permission approval.
 class MCPPlugin:
     inject = ["tools", "model", "interactions", "session"]
     name = "mcp_plugin"
-    Config = S.object({
-        "servers": S.any().optional(),
-    })
+    Config = MCPConfig
 
     def __init__(self) -> None:
         self._client = MCPClient()
-        self._config: dict[str, Any] = {}
+        self._config: MCPConfig = MCPConfig()
         self._server_status: dict[str, dict[str, Any]] = {}
         self._server_tools: dict[str, list[str]] = {}
         self._initialized = False
 
-    def apply(self, ctx, config=None) -> None: ...
+    def apply(self, ctx, config: MCPConfig) -> None: ...
 
     async def _on_session_init(self, _event: ApplicationInitialized) -> None:
         """Connect to each configured server, register tools."""

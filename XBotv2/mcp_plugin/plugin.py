@@ -11,10 +11,11 @@ from XBotv2.core import (
     ToolResult,
 )
 from XBotv2.agentloop import EventContext, Events
-from xcore import S
+from xcore import Context
 
 from .mcp_client import MCPClient
 from .callbacks import client_callbacks
+from .contracts import MCPConfig
 from .contracts import MCP_PLUGIN_ID
 from .tool import MCPTool
 
@@ -101,23 +102,21 @@ class MCPCompletionHandler:
 class MCPPlugin:
     inject = ["tools", "model", "interactions", "session"]
     name = MCP_PLUGIN_ID
-    Config = S.object({
-        "servers": S.any().optional(),
-    })
+    Config = MCPConfig
 
     def __init__(self) -> None:
         self._client = MCPClient()
-        self._config: dict[str, Any] = {}
+        self._config = MCPConfig()
         self._server_status: dict[str, dict[str, Any]] = {}
         self._server_tools: dict[str, list[str]] = {}
         self._initialized = False
 
-    def apply(self, ctx, config=None) -> None:
+    def apply(self, ctx: Context, config: MCPConfig) -> None:
         self._tools = ctx.tools
         self._model = ctx.model
         self._interactions = ctx.interactions
         self._session = ctx.session
-        self._config = dict(config or {})
+        self._config = config
         ctx.dispose(self._dispose)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
         ctx.on(Events.SESSION_CLOSE, self._on_session_close)
@@ -125,31 +124,21 @@ class MCPPlugin:
     async def _on_session_init(self, _event: ApplicationInitialized) -> None:
         if self._initialized:
             return
-        servers = self._config.get("servers", {})
+        servers = self._config.servers
         if not servers:
             self._initialized = True
             return
-        if not isinstance(servers, dict):
-            raise TypeError("MCP 'servers' configuration must be an object")
         for server_name, server_cfg in servers.items():
-            if not isinstance(server_name, str) or not server_name:
-                raise TypeError("MCP server names must be non-empty strings")
-            if not isinstance(server_cfg, dict):
-                raise TypeError(
-                    f"MCP server {server_name!r} configuration must be an object"
-                )
-            for option in ("enabled", "required"):
-                if option in server_cfg and not isinstance(server_cfg[option], bool):
-                    raise TypeError(
-                        f"MCP server {server_name!r} option {option!r} must be boolean"
-                    )
-            if not server_cfg.get("enabled", True):
+            if not server_name:
+                raise ValueError("MCP server names must be non-empty strings")
+            if not server_cfg.enabled:
                 self._server_status[server_name] = {"status": "disabled"}
                 continue
+            transport_config = server_cfg.model_dump(mode="python")
             try:
                 tools = await self._client.connect_and_list(
                     server_name,
-                    server_cfg,
+                    transport_config,
                     callbacks=client_callbacks(
                         self._model,
                         self._interactions,
@@ -172,7 +161,7 @@ class MCPPlugin:
                     type(exc).__name__,
                     exc_info=exc,
                 )
-                if server_cfg.get("required", False):
+                if server_cfg.required:
                     await self._rollback_all()
                     raise
                 continue

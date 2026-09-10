@@ -10,7 +10,8 @@ _INITIAL_PLUGINS_YAML = """\
 # The bundled XBotv2/xcore.yaml is the base tree; entries here are merged
 # over it (same-id entries retain omitted fields and deep-merge config; new
 # entries require name). Workspace overlays take precedence and live in
-# <workspace>/.xbot/plugins.yaml. Session overrides are applied last.
+# <workspace>/.xbot/plugins.yaml. The active session uses the same grammar in
+# sessions/<session_id>/config.yaml, followed by in-memory launch overrides.
 # Example:
 # - id: agents
 #   disabled: true

@@ -13,8 +13,8 @@ from __future__ import annotations
 from xcore import Context
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.config import SandboxConfig
 from XBotv2.context_builder import BEFORE_CONTEXT_BUILD, ContextBuildRequest
+from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.sandbox.commands import build_sandbox_commands
 
@@ -27,10 +27,11 @@ class SandboxComponent:
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
     name = "xbot.sandbox"
+    Config = SandboxConfig
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(self, ctx: Context, config: SandboxConfig) -> None:
         policy = SandboxPolicy(
-            SandboxConfig.model_validate((config or {}).get("sandbox") or {}),
+            config,
             data_root=ctx.data_root,
             workspace_root=ctx.workspace_root,
             session_root=ctx.thread_paths.state_dir,
@@ -50,7 +51,9 @@ class SandboxHandlers:
         self._policy = policy
 
     async def update_policy(self, event: PolicyChanged) -> None:
-        self._policy.replace_config(event.config.sandbox)
+        self._policy.replace_config(
+            SandboxConfig.model_validate(event.effective_sandbox)
+        )
 
     async def contribute_context(self, event: ContextBuildRequest) -> None:
         event.sandbox_summary = self._policy.describe()

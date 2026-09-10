@@ -10,10 +10,7 @@ import pytest
 
 from XBotv2.coretools.shell import run_shell_command
 from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.config.contracts import (
-    SandboxConfig,
-    SandboxResourceConfig,
-)
+from XBotv2.sandbox.contracts import SandboxConfig, SandboxResourceConfig
 from XBotv2.sandbox.bwrap import _build_args
 from XBotv2.core.variables import RuntimeVariables
 

@@ -17,8 +17,6 @@
 | `bound_effect` | `xcore.plugin` | 把 disposer 绑定到当前 apply fiber 的卸载（服务注册清理的一行封装；非 apply 期间 no-op） |
 | `current_plugin_name` | `xcore.plugin` | 当前正在 apply 的插件名（非 apply 期间为 `"unknown"`） |
 | `StateService` | `xcore.state` | 可恢复持久 KV（JSON 原子写 + 命名空间） |
-| `S` | `xcore.schema` | Schema DSL 命名空间 |
-| `SchemaValidationError` | `xcore.errors` | 配置校验失败（唯一校验错误类型，带 path） |
 | `EventBus` | `xcore.events` | 事件总线（六种派发 + 过滤） |
 | `Disposer` | `xcore.events` | `() -> bool` 类型别名（可逆注册的返回） |
 | `XCoreError` | `xcore.errors` | 所有 XCore 异常的基类 |
@@ -41,9 +39,9 @@
   `missing_dependencies: tuple[str, ...]`；`restart() -> Awaitable[None]`。
 - `StateService`：`get/set/delete/clear/keys/all` 全 async；`namespace(prefix) -> StateService`。
 - `Service`：子类定义 `name`；`__init__(ctx, *, name=None)`。
-- `S`：`S.any()/string()/number()/boolean()/array(item)/object({...})/union([...])/
-  enum([...])/const(v)`，修饰 `.default(v)/.optional()/.description(text)`；
-  `schema.validate(config) -> validated`。
+- 插件配置：插件的 `Config` 必须是提供 `model_validate` 和
+  `model_json_schema` 的 Pydantic 模型；XCore 只调用 `model_validate`，不拥有配置
+  DSL，也不依赖 Pydantic。
 
 ## 内部事件（`internal/` 前缀，框架扩展点）
 

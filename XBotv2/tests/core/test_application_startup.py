@@ -28,9 +28,32 @@ def _write_plugins(data_dir, overlay):
 
 
 def _write_runtime_config(data_dir, config):
-    path = Path(data_dir) / "config" / "config.yaml"
+    """Write the aggregate test fixture as a plugin-tree overlay."""
+    entries = []
+    core = {
+        key: config[key]
+        for key in ("tools", "tool_results", "hooks", "workspace_tools")
+        if key in config
+    }
+    if core:
+        entries.append({"id": "coretools", "config": core})
+    if "instructions" in config:
+        entries.append({"id": "config", "config": {"instructions": config["instructions"]}})
+    if "provider" in config:
+        entries.append({"id": "llm", "config": {"default": config["provider"]}})
+    for plugin_id in ("permissions", "sandbox"):
+        if plugin_id in config:
+            entries.append({"id": plugin_id, "config": {plugin_id: config[plugin_id]}})
+    for plugin_id, plugin in (config.get("plugins") or {}).items():
+        item = {"id": plugin_id}
+        if isinstance(plugin, dict) and "config" in plugin:
+            item["config"] = plugin["config"]
+        if isinstance(plugin, dict) and plugin.get("enabled") is False:
+            item["disabled"] = True
+        entries.append(item)
+    path = Path(data_dir) / "config" / "plugins.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    path.write_text(yaml.safe_dump(entries, sort_keys=False), encoding="utf-8")
 
 
 from XBotv2.core.paths import RuntimePaths
@@ -623,9 +646,7 @@ async def before_user_message(ctx):
                     "id": "permissions",
                     "name": "permissions",
                     "config": {
-                        "permissions": {
-                            "allow": [{"tool": "workspace_greeting"}],
-                        },
+                        "allow": [{"tool": "workspace_greeting"}],
                     },
                 },
             ], sort_keys=False),
@@ -947,7 +968,7 @@ plugin = ConfiguredPlugin()
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
         _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "permissions": {"allow": [{"tool": "shell"}]},
+            "allow": [{"tool": "shell"}],
         }}})
         llm = MockLLM(responses=[
             {
@@ -1027,10 +1048,8 @@ plugin = ConfiguredPlugin()
         temp_workspace,
     ):
         _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "permissions": {
-                "allow": [{"tool": "edit", "paths": "${workspace}"}],
-                "ask": [{"tool": "edit"}],
-            },
+            "allow": [{"tool": "edit", "paths": "${workspace}"}],
+            "ask": [{"tool": "edit"}],
         }}})
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),

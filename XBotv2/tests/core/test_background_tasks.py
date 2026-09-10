@@ -6,6 +6,7 @@ import pytest
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.jobs import JobKind, JobResult
 from XBotv2.jobs.plugin import JobsRuntimeComponent
+from XBotv2.jobs.contracts import JobsConfig
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.tools import ToolCall
 from XBotv2.coretools import shell as shell_module
@@ -18,7 +19,7 @@ from XBotv2.commands.plugin import CommandsService
 from XBotv2.permissions.approval import ApprovalService
 from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.application.client_events import ClientEventRouter
-from XBotv2.config.contracts import SandboxConfig
+from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.tests.helpers import make_tool_ctx
 import xcore
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -62,7 +63,7 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
         runtime_events.append(event.client_event)
 
     ctx.on(RUNTIME_EVENT, record)
-    JobsRuntimeComponent().apply(ctx, {})
+    JobsRuntimeComponent().apply(ctx, JobsConfig())
     from XBotv2.jobs import TaskSnapshot
 
     snapshot = TaskSnapshot(

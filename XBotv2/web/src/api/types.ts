@@ -168,7 +168,7 @@ export interface SessionPolicyPatch {
   remove_sandbox?: string[];
 }
 
-export type PluginConfigScope = "global" | "workspace";
+export type PluginConfigScope = "global" | "workspace" | "session";
 
 export interface PluginConfigDescriptor {
   plugin_id: string;
@@ -184,7 +184,7 @@ export interface PluginConfigCatalog {
   scope: PluginConfigScope;
   workspace_root: string;
   revision: string;
-  applies_to: "new_sessions";
+  applies_to: "new_sessions" | "current_session";
   plugins: PluginConfigDescriptor[];
 }
 

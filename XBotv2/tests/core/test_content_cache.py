@@ -15,9 +15,8 @@ from XBotv2.content_cache.plugin import (
     ContentCacheComponent,
     ContentCacheService,
 )
-from XBotv2.content_cache.config import (
+from XBotv2.content_cache.contracts import (
     ContentCacheConfig,
-    parse_content_cache_config,
 )
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.core.artifacts import ArtifactKind
@@ -50,7 +49,7 @@ class _CountingArtifacts:
 
 
 def test_content_cache_config_controls_threshold_and_preview(artifact_store):
-    config = parse_content_cache_config({
+    config = ContentCacheConfig.model_validate({
         "cache_threshold_chars": 20,
         "preview_chars": 12,
         "tail_chars": 4,
@@ -81,7 +80,7 @@ def test_content_cache_config_controls_threshold_and_preview(artifact_store):
 )
 def test_content_cache_config_rejects_invalid_sizes(config, message):
     with pytest.raises(ValueError, match=message):
-        parse_content_cache_config(config)
+        ContentCacheConfig.model_validate(config)
 
 
 def test_cache_user_message_keeps_original_and_explains_relative_path(
@@ -188,7 +187,7 @@ async def test_engine_caches_provider_copy_once_without_mutating_history(
         config=RuntimeConfig(),
     )
     engine._events.set("artifacts", artifact_store)
-    ContentCacheComponent().apply(engine._events, None)
+    ContentCacheComponent().apply(engine._events, ContentCacheConfig())
     token_manager = TokenManagerPlugin()
     token_manager.apply(engine._events)
 
@@ -231,7 +230,7 @@ async def test_engine_leaves_user_input_below_threshold_inline(
         config=RuntimeConfig(),
     )
     engine._events.set("artifacts", artifact_store)
-    ContentCacheComponent().apply(engine._events, None)
+    ContentCacheComponent().apply(engine._events, ContentCacheConfig())
 
     _ = [event async for event in engine.run_turn(user_input)]
 

@@ -7,9 +7,11 @@
 # `${env:VAR}` 由插件树解析器读取环境变量；`${workspace}` 等运行时变量
 # 保持字面量并由对应配置消费者展开。Agent 选择、model override、父子关系等
 # launch facts 由 application 直接持有，不进入插件配置。
-# 用户全局覆盖：<data-dir>/config/plugins.yaml；工作区覆盖：
-# .xbot/plugins.yaml；session/调用级覆盖最后应用。覆盖已有条目时仅需 id，
-# 省略字段保持原值；新增插件必须同时提供 id 和 name。
+# 配置层按固定顺序叠加：<data-dir>/config/plugins.yaml → 工作区
+# .xbot/plugins.yaml → session/<id>/config.yaml → 启动时内存覆盖。后三层
+# 都使用同一套插件声明语法；覆盖已有条目时仅需 id，省略字段保持原值，
+# 新增插件必须同时提供 id 和 name。沙箱、权限以及其它设置均是对应
+# 插件的 config，不是另一套策略文件。
 
 - id: config
   name: config
@@ -156,45 +158,43 @@
 - id: sandbox
   name: sandbox
   config:
-    sandbox:
-      enabled: true
-      network: true
-      external_read: readonly
-      external_write: deny
-      workspace_read: allow
-      workspace_write: allow
+    enabled: true
+    network: true
+    external_read: readonly
+    external_write: deny
+    workspace_read: allow
+    workspace_write: allow
     resources: []
 
 - id: permissions
   name: permissions
   config:
-    permissions:
-      allow:
-        - tool: (?:create_goal|get_goal|update_goal)
-        - tool: compact
-        - tool: (?:list_shells|wait_shell|read_shell|cancel_shell)
-        - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
-        - tool: (?:send_message|ask_user|request_permission)
-        - tool: search
-        - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
-        - tool: update_todos
-        - tool: read
-        - tool: edit
-          paths: ${workspace}
-        - tool: path
-          paths: ${workspace}
-        - tool: shell
-      ask:
-        - tool: (?:browser_click|browser_fill|browser_press|browser_select)
-        - tool: edit
-        - tool: path
-        - tool: shell
-          params:
-            sandbox_permissions: require_escalated
-      deny:
-        - tool: .*
-          params:
-            command: rm -rf /.*
+    allow:
+      - tool: (?:create_goal|get_goal|update_goal)
+      - tool: compact
+      - tool: (?:list_shells|wait_shell|read_shell|cancel_shell)
+      - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
+      - tool: (?:send_message|ask_user|request_permission)
+      - tool: search
+      - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
+      - tool: update_todos
+      - tool: read
+      - tool: edit
+        paths: ${workspace}
+      - tool: path
+        paths: ${workspace}
+      - tool: shell
+    ask:
+      - tool: (?:browser_click|browser_fill|browser_press|browser_select)
+      - tool: edit
+      - tool: path
+      - tool: shell
+        params:
+          sandbox_permissions: require_escalated
+    deny:
+      - tool: .*
+        params:
+          command: rm -rf /.*
 
 - id: coretools
   name: coretools

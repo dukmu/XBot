@@ -20,9 +20,12 @@ import {
 } from "../api/types";
 
 export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry | RuntimeEntry;
+type TimelineOrigin = "trajectory" | "live";
 
 export interface MessageEntry {
   id: string;
+  origin?: TimelineOrigin;
+  deliveryState?: "accepted" | "claimed" | "consumed";
   kind: "message";
   role: "user" | "assistant";
   content: string;
@@ -40,6 +43,7 @@ export interface MessageImage {
 
 export interface RuntimeEntry {
   id: string;
+  origin?: TimelineOrigin;
   kind: "runtime";
   source: string;
   event: string;
@@ -49,6 +53,7 @@ export interface RuntimeEntry {
 
 export interface ToolEntry {
   id: string;
+  origin?: TimelineOrigin;
   kind: "tool";
   toolCallId: string;
   name: string;
@@ -64,6 +69,7 @@ export interface ToolEntry {
 
 export interface NoticeEntry {
   id: string;
+  origin?: TimelineOrigin;
   kind: "notice";
   level: "info" | "error";
   content: string;
@@ -92,6 +98,7 @@ export interface RuntimeState {
   sessionStats: SessionStatsData;
   turnRunning: boolean;
   pendingInputs: PendingInput[];
+  deliveryStates: Record<string, MessageEntry["deliveryState"]>;
   error: string;
 }
 
@@ -115,7 +122,7 @@ export type RuntimeAction =
   | { type: "history"; history: HistoryItem[]; nextCursor?: string | null }
   | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
-  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null }
+  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ServerEvent[] }
   | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "tasks"; tasks: TaskData[] }
   | { type: "todos"; todos: TodoItemData[] }
@@ -157,6 +164,7 @@ export const initialRuntimeState: RuntimeState = {
   sessionStats: { ...EMPTY_SESSION_STATS },
   turnRunning: false,
   pendingInputs: [],
+  deliveryStates: {},
   error: "",
 };
 
@@ -197,6 +205,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         todos: [],
         turnRunning: false,
         pendingInputs: action.session.pending_inputs || [],
+        deliveryStates: Object.fromEntries((action.session.pending_inputs || []).map((item) => [item.message_id, "accepted"])),
         error: "",
       };
     case "session_deleted":
@@ -224,6 +233,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         sessionStats: { ...EMPTY_SESSION_STATS },
         turnRunning: false,
         pendingInputs: [],
+        deliveryStates: {},
         error: "",
       };
     case "thread_synced":
@@ -263,19 +273,31 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "history_loading":
       return { ...state, historyLoading: action.value };
     case "trajectory":
-      return {
+      {
+        // A trajectory refresh is authoritative for persisted records, but
+        // frames received while it was in flight are not part of that page.
+        // Keep those live entries until a later refresh folds them into the
+        // durable baseline instead of briefly erasing them from the view.
+        const live = state.trajectoryLoaded
+          ? state.entries.filter((entry) => entry.origin !== "trajectory")
+          : [];
+      const baseline = {
         ...state,
         trajectory: action.items,
         trajectoryLoaded: true,
-        entries: trajectoryEntries(action.items),
+        entries: [...trajectoryEntries(action.items), ...live],
         historyCursor: action.nextCursor,
       };
+      return action.bufferedEvents?.length
+        ? action.bufferedEvents.reduce(applyEvent, baseline)
+        : baseline;
+      }
     case "trajectory_prepend": {
       if (action.expectedCursor !== state.historyCursor) {
         return { ...state, historyLoading: false };
       }
       const trajectory = [...action.items, ...state.trajectory];
-      const live = state.entries.filter((entry) => !entry.id.startsWith("trajectory:"));
+      const live = state.entries.filter((entry) => entry.origin !== "trajectory");
       return {
         ...state,
         trajectory,
@@ -296,11 +318,19 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "todos":
       return { ...state, todos: action.todos };
     case "pending_inputs":
-      return { ...state, pendingInputs: action.items };
+      return {
+        ...state,
+        pendingInputs: action.items,
+        deliveryStates: {
+          ...state.deliveryStates,
+          ...Object.fromEntries(action.items.map((item) => [item.message_id, state.deliveryStates[item.message_id] || "accepted"])),
+        },
+      };
     case "pending_input_failed":
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== action.messageId),
+        deliveryStates: Object.fromEntries(Object.entries(state.deliveryStates).filter(([id]) => id !== action.messageId)),
       };
     case "user_message":
       return {
@@ -308,7 +338,13 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         turnRunning: true,
         entries: [
           ...state.entries,
-          { ...messageEntry("user", action.content), id: action.id, messageId: action.id, images: action.images },
+          {
+            ...messageEntry("user", action.content),
+            id: action.id,
+            messageId: action.id,
+            images: action.images,
+            deliveryState: "accepted",
+          },
         ],
       };
     case "user_message_failed":
@@ -482,6 +518,29 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       };
     case "queue_updated":
       return { ...state, pendingInputs: pendingInputs(data.items) };
+    case "input_accepted":
+    case "input_claimed":
+    case "input_consumed": {
+      const deliveryState = event.type === "input_accepted"
+        ? "accepted"
+        : event.type === "input_claimed" ? "claimed" : "consumed";
+      const ids = new Set(arrayValue(data.message_ids).map(stringValue));
+      return {
+        ...state,
+        deliveryStates: {
+          ...state.deliveryStates,
+          ...Object.fromEntries([...ids].map((id) => [id, deliveryState])),
+        },
+        pendingInputs: event.type === "input_consumed"
+          ? state.pendingInputs.filter((item) => !ids.has(item.message_id))
+          : state.pendingInputs,
+        entries: state.entries.map((entry) => (
+          entry.kind === "message" && ids.has(entry.messageId)
+            ? { ...entry, deliveryState }
+            : entry
+        )),
+      };
+    }
     case "task_updated": {
       const task = data as unknown as TaskData;
       return { ...state, tasks: { ...state.tasks, [task.task_id]: task } };
@@ -515,10 +574,22 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         || ((entry.kind === "message" || entry.kind === "runtime") && entry.messageId === id)
         || (runtimeId !== "" && entry.id === runtimeId)
       ));
-      if (index >= 0) return state;
+      if (index >= 0) {
+        return runtimeSource
+          ? state
+          : {
+            ...state,
+            entries: state.entries.map((entry, entryIndex) => (
+              entryIndex === index && entry.kind === "message"
+                ? { ...entry, deliveryState: "consumed" }
+                : entry
+            )),
+          };
+      }
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== id),
+        deliveryStates: { ...state.deliveryStates, ...(id ? { [id]: "consumed" } : {}) },
         entries: [
           ...state.entries,
           runtimeSource
@@ -694,7 +765,10 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
     groups.splice(insertAt, 0, ...replacements);
     for (const replacement of replacements) lineage.set(replacement.nodeId, [replacement.nodeId]);
   }
-  return groups.flatMap((group) => group.entries);
+  return groups.flatMap((group) => group.entries).map((entry) => ({
+    ...entry,
+    origin: "trajectory" as const,
+  }));
 }
 
 function upsertCompactionGroup(

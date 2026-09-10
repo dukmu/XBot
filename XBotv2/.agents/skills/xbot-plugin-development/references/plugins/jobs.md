@@ -25,6 +25,12 @@ The root export is `plugin = JobsPlugin()` in `XBotv2/jobs/plugin.py`.
 `JobsPlugin` composes `JobsRuntimeComponent` and its HTTP contribution; the
 runtime component is not a second tree entry.
 
+```python
+class JobsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_concurrent_subagents: int = Field(default=4, ge=1)
+```
+
 ## Public data models
 
 ### `JobRegistry` (`XBotv2/jobs/registry.py:59-340`)

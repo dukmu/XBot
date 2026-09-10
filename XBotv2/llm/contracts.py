@@ -65,6 +65,7 @@ class ProviderConfig(BaseModel):
     protocol: str = "openai"
     base_url: str | None = None
     api_key: str | None = None
+    api_key_env: str | None = None
     default_model: str
     models: list[ModelConfig] = Field(default_factory=list)
 
@@ -89,6 +90,15 @@ class ProviderConfig(BaseModel):
             f"Unknown model {name!r} for protocol {self.protocol!r}; "
             "configured models: " + ", ".join(m.model for m in self.models)
         )
+
+
+class LlmConfig(BaseModel):
+    """Tree configuration owned by the LLM plugin."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default: str = "default"
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
 class ModelDescription(BaseModel):
@@ -210,6 +220,7 @@ SELECT_EFFORT = Operation(
 
 
 __all__ = [
+    "LlmConfig",
     "EffortSelection",
     "LIST_PROVIDERS",
     "LlmCatalogPort",

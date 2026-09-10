@@ -7,6 +7,7 @@ import inspect
 import logging
 from typing import Any
 
+from pydantic import BaseModel
 from xcore import Context, FiberState, PluginHandle
 from xcore.plugin import resolve_plugin
 
@@ -54,7 +55,13 @@ def mount_plugin_tree(
                 name,
                 label if label is not True else None,
             )
-        handles[entry.id] = mount_ctx.plugin(plugin, entry.config)
+        definition = resolve_plugin(plugin)
+        if definition is None:
+            raise LoadError(f"plugin {entry.id!r} has no plugin definition")
+        handles[entry.id] = mount_ctx.plugin(
+            plugin,
+            validate_plugin_config(definition.config_schema, entry.config),
+        )
         logger.debug(
             "plugin.mounted entry=%s module=%s isolates=%s",
             entry.id,
@@ -119,6 +126,24 @@ def plugin_config_schema(entry: PluginEntry) -> Any:
     return definition.config_schema
 
 
+def validate_plugin_config(schema: Any, raw_config: Any) -> Any:
+    """Validate a plugin-owned Pydantic config before mounting it.
+
+    XCore remains dependency-free; XBot-owned plugins use Pydantic models and
+    are validated here before the plugin is mounted.
+    """
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        return schema.model_validate(raw_config or {})
+    return raw_config
+
+
+def plugin_config_json_schema(schema: Any) -> dict[str, Any]:
+    """Project a plugin-owned Pydantic model into standard JSON Schema."""
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        return schema.model_json_schema(mode="serialization")
+    raise TypeError("plugin does not declare a Pydantic config model")
+
+
 def _import_plugin(name: str) -> Any:
     candidates = (
         f"XBotv2.{name}.plugin",
@@ -162,7 +187,9 @@ def _is_module(value: Any) -> bool:
 
 __all__ = [
     "mount_plugin_tree",
+    "plugin_config_json_schema",
     "plugin_config_schema",
     "resolve_plugin_from_module",
+    "validate_plugin_config",
     "validate_mounted_tree",
 ]

@@ -12,7 +12,8 @@ from XBotv2.config.contracts import (
     SettingsPort,
 )
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.config.contracts import PermissionRuleConfig, RuntimeConfig, SandboxConfig
+from XBotv2.config.contracts import RuntimeConfig
+from XBotv2.config.contracts import ConfigPluginConfig
 from XBotv2.config.protocol import (
     PermissionDecision,
     SandboxKey,
@@ -23,6 +24,7 @@ from XBotv2.config.protocol import (
 
 __all__ = [
     "GET_POLICY",
+    "ConfigPluginConfig",
     "PatchPolicy",
     "PatchPluginConfig",
     "POLICY_CHANGED",
@@ -32,9 +34,7 @@ __all__ = [
     "PluginConfigCatalog",
     "PluginConfigDescriptor",
     "PluginConfigScope",
-    "PermissionRuleConfig",
     "RuntimeConfig",
-    "SandboxConfig",
     "SandboxKey",
     "SandboxValue",
     "SessionPolicyPatch",

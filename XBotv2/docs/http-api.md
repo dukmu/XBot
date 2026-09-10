@@ -55,6 +55,12 @@ thread, request, event type, and typed data. The event stream is replayable
 from an opaque `after` cursor; an expired cursor is an explicit conflict, not
 silent truncation.
 
+Queued and steering inputs use the same replayable stream as conversation
+output. `input_accepted`, `input_claimed`, and `input_consumed` carry
+`{"message_ids": [...]}` (and `target` for acceptance), allowing a client to
+show delivery progress after reconnect. `input_consumed` is emitted from the
+typed Inbox commit boundary; it is not an Engine-private marker.
+
 The trajectory endpoint is the cold-replay source for clients that present a
 unified activity stream. Its opaque cursor remains valid when new records are
 appended. Each item is a discriminated `message`, `surface_replace`, or `event`
@@ -124,8 +130,8 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/plugin-config?scope=workspace\|global` | `list_plugin_config` | `PluginConfigCatalog` |
-| PATCH | `/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}?scope=workspace\|global` | `update_plugin_config` | updated `PluginConfigCatalog` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/plugin-config?scope=global\|workspace\|session` | `list_plugin_config` | `PluginConfigCatalog` |
+| PATCH | `/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}?scope=global\|workspace\|session` | `update_plugin_config` | updated `PluginConfigCatalog` |
 
 The catalog is built from the loaded plugin tree. Each entry carries the
 plugin-declared JSON Schema, the raw configuration at the selected layer, the
@@ -134,13 +140,25 @@ the same generic editor for every plugin; it does not contain plugin-name
 specific controls. A PATCH must send the revision returned by GET, so a stale
 tab receives `plugin_config_conflict` rather than overwriting another edit.
 
-`global` writes the data-directory overlay and `workspace` writes the active
-workspace overlay. The update is validated against the declared XCore schema,
-written atomically, and applies to newly created or reopened sessions. It is
-not a live reload mechanism. Plugins without a producer `Config` schema are
-listed but explicitly read-only. Provider secrets, external plugin directories,
-and plugin-specific constraints not expressible by the declared schema remain
-server-owned limitations rather than being guessed by the client.
+`global` writes `<data-dir>/config/plugins.yaml`, `workspace` writes the
+active workspace `.xbot/plugins.yaml`, and `session` writes the active
+session `sessions/<session_id>/config.yaml`. These are overlays of the same
+plugin declaration grammar. Resolution is always:
+
+```text
+xcore.yaml → data/config/plugins.yaml → workspace/.xbot/plugins.yaml
+           → sessions/<session_id>/config.yaml → in-memory launch overrides
+```
+
+The update is validated against the declared XCore schema and written
+atomically. Global/workspace changes affect later application starts; session
+changes affect that session's next runtime. It is not a live reload mechanism.
+Plugins without a producer `Config` schema are listed but explicitly
+read-only. Provider secrets and plugin-specific constraints not expressible by
+the declared schema remain server-owned limitations rather than being guessed
+by the client. External plugins follow the normal workspace `plugins.yaml`
+tree and Python import environment; the catalog does not introduce a second
+plugin-directory discovery mechanism.
 
 ## Workspaces and directories
 

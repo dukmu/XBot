@@ -31,6 +31,13 @@
 
 .streaming { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.deliveryState {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  letter-spacing: .02em;
+  text-transform: capitalize;
+}
+
 .actionsStart { justify-content: flex-start; }
 .actionsEnd { justify-content: flex-end; }
 

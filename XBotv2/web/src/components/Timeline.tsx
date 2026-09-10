@@ -152,17 +152,18 @@ export const Timeline = memo(function Timeline({
           </button>
         )}
         {visibleEntries.map((entry) => (
-          <ConversationNode
-            key={entry.id}
-            entry={entry}
-            latestAssistantId={latestAssistant}
-            turnRunning={turnRunning}
-            onRegenerate={onRetry}
-            onBranch={onBranch}
-          />
+          <div className={`timeline-node timeline-node-${entry.kind}`} key={entry.id}>
+            <ConversationNode
+              entry={entry}
+              latestAssistantId={latestAssistant}
+              turnRunning={turnRunning}
+              onRegenerate={onRetry}
+              onBranch={onBranch}
+            />
+          </div>
         ))}
         {assistantDraft && (
-          <MessageItem entry={assistantDraft} />
+          <div className="timeline-node timeline-node-message"><MessageItem entry={assistantDraft} /></div>
         )}
         {turnRunning && !assistantDraft && (
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>

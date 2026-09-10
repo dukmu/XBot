@@ -327,6 +327,20 @@ describe("runtimeReducer", () => {
     expect(state.pendingInputs.map((item) => item.message_id)).toEqual(["queued-1"]);
   });
 
+  it("projects accepted, claimed, and consumed delivery phases", () => {
+    const item = {
+      message_id: "queued-1", content: "continue later", target: "next-turn" as const,
+      source: "user", image_count: 0, artifact_count: 0,
+    };
+    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [item] });
+    expect(state.deliveryStates["queued-1"]).toBe("accepted");
+    state = runtimeReducer(state, { type: "event", event: event("input_claimed", { message_ids: ["queued-1"] }) });
+    expect(state.deliveryStates["queued-1"]).toBe("claimed");
+    state = runtimeReducer(state, { type: "event", event: event("input_consumed", { message_ids: ["queued-1"] }) });
+    expect(state.deliveryStates["queued-1"]).toBe("consumed");
+    expect(state.pendingInputs).toEqual([]);
+  });
+
   it("removes only the optimistic queue item when its request fails", () => {
     const state = runtimeReducer(
       runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
@@ -649,6 +663,77 @@ describe("runtimeReducer", () => {
     });
 
     expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+  });
+
+  it("keeps live entries while a newer trajectory baseline is applied", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("assistant_message", {
+        id: "assistant-live", content: "arrived during refresh", tool_calls: [],
+      }),
+    });
+    state = runtimeReducer(state, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    const first = state.entries.find((entry) =>
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "first"
+    );
+    expect(first?.origin).toBe("trajectory");
+    expect(state.entries.some((entry) =>
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "arrived during refresh"
+    )).toBe(true);
+  });
+
+  it("folds raw events captured during the trajectory request after the baseline", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: "cursor-2",
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "first",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+      bufferedEvents: [event("assistant_message", {
+        id: "assistant-buffered", content: "arrived during baseline", tool_calls: [],
+      })],
+    });
+
+    expect(state.entries.some((entry) => (
+      (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
+      && entry.content === "arrived during baseline"
+    ))).toBe(true);
   });
 
   it("reprojects a compact marker when history is replaced", () => {

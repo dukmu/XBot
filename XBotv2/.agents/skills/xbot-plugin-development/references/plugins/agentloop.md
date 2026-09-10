@@ -179,12 +179,14 @@ typed event from your owning package.
 
 ```python
 from XBotv2.agentloop import Events, EventContext
-from xcore import S
+from pydantic import BaseModel, ConfigDict
 
 class MetricsPlugin:
     name = "metrics"
     inject = ["runtime_paths", "state"]
-    Config = S.object({"enabled": S.boolean().default(True)}).strict()
+    class Config(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        enabled: bool = True
 
     def apply(self, ctx, config):
         store = ctx.state.namespace("metrics")

@@ -14,15 +14,11 @@ from XBotv2.config.contracts import (
     PatchPluginConfig,
     PolicySnapshot,
     PluginConfigCatalog,
-    PluginConfigScope,
-)
-from XBotv2.config.plugin_catalog import (
     PluginConfigConflict,
+    PluginConfigScope,
     PluginConfigUnavailable,
-    plugin_config_catalog,
-    update_plugin_config,
+    SettingsPort,
 )
-from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import HttpServerError
@@ -108,7 +104,7 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
+def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -152,7 +148,9 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
     ) -> PluginConfigCatalog:
         thread = await sessions.thread_summary(session_id, thread_id)
         try:
-            return plugin_config_catalog(paths, thread.workspace_root, scope)
+            return settings.plugin_config_catalog(
+                thread.workspace_root, scope, session_id
+            )
         except ValueError as exc:
             raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
 
@@ -169,8 +167,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
     ) -> PluginConfigCatalog:
         thread = await sessions.thread_summary(session_id, thread_id)
         try:
-            return update_plugin_config(
-                paths,
+            return settings.update_plugin_config(
                 thread.workspace_root,
                 plugin_id,
                 PatchPluginConfig(
@@ -178,6 +175,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
                     revision=payload.revision,
                     config=payload.config,
                 ),
+                session_id,
             )
         except PluginConfigConflict as exc:
             raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc

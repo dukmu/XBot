@@ -12,14 +12,14 @@ def my_plugin(ctx, config):
         ...                    # 返回可调用即作为 disposer（async 也可）
     return cleanup
 my_plugin.inject = ["database"]          # 可选：服务依赖
-my_plugin.Config = S.object({...})       # 可选：配置 schema
+my_plugin.Config = MyConfig             # Pydantic BaseModel，可选
 my_plugin.name = "my_plugin"             # 可选：显示名（缺省函数名）
 
 # 对象插件
 class MyPlugin:
     name = "my_plugin"
     inject = ["database"]
-    Config = S.object({...})
+    Config = MyConfig
     def apply(self, ctx, config): ...
 
 # 类插件
@@ -83,10 +83,11 @@ ctx.dispose(cleanup_fn)                        # effect 简写；无参调用抛
 
 ## 配置校验
 
-- `Config` 为 `S` schema → 加载前校验 + 默认值合并；失败 → `failed` 态
-  （`SchemaValidationError` 带路径）。
-- `Config` 为普通 dict → 宽松模式（浅合并默认值）。
-- `Config` 为 None → 不校验。
+- `Config` 是一个 Pydantic 模型类时，Fiber 在执行插件前调用
+  `Config.model_validate(raw_config or {})`；默认值、字段约束和错误路径由模型负责。
+- `Config` 为 None 时不校验，原值直接传给插件。
+- 其他对象不是有效的插件配置契约，会在 Fiber 加载阶段以 `TypeError` 失败；XCore
+  不再维护第二套 schema DSL 或 dict 默认值合并规则。
 
 ## 框架内部事件
 

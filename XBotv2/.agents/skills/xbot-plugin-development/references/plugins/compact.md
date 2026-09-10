@@ -6,7 +6,7 @@ free context tokens while preserving recent conversation state.
 - **Import/profile:** `compact`, Agent profile.
 - **Source:** `XBotv2/compact/plugin.py`,
   `XBotv2/compact/service.py`,
-  `XBotv2/compact/config.py`,
+  `XBotv2/compact/contracts.py`,
   `XBotv2/compact/commands.py`,
   `XBotv2/compact/tools.py`,
   `XBotv2/compact/compactor.py`,
@@ -101,16 +101,16 @@ class CompactService:
         """Commit one proposal: emit PRE_COMPACT, verify, replace messages."""
 ```
 
-### `CompactConfig` (`XBotv2/compact/config.py`)
+### `CompactConfig` (`XBotv2/compact/contracts.py`)
 
 ```python
-@dataclass(frozen=True, slots=True)
-class CompactConfig:
+class CompactConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     automatic: bool = True
-    output_reservation: int | None = None
-    trigger_ratio: float = 0.8
-    keep_recent_turns: int = 4
-    summary_max_chars: int = 8_000
+    output_reservation: int | None = Field(default=None, ge=0)
+    trigger_ratio: float = Field(default=0.8, gt=0, le=1)
+    keep_recent_turns: int = Field(default=4, ge=1)
+    summary_max_chars: int = Field(default=8_000, ge=1)
 ```
 
 `trigger_ratio` is the fraction of context window that triggers
@@ -118,26 +118,8 @@ compaction (default 80%). `keep_recent_turns` is the number of
 recent turns always preserved. `summary_max_chars` caps the summary
 text size.
 
-### `parse_compact_config`
-
-```python
-def parse_compact_config(config: Any = None) -> CompactConfig:
-    raw = dict(config or {})
-    reservation = raw.get("output_reservation")
-    return CompactConfig(
-        automatic=bool(raw.get("automatic", True)),
-        output_reservation=_integer(reservation, "output_reservation", minimum=0)
-            if reservation is not None else None,
-        trigger_ratio=_ratio(raw.get("trigger_ratio", 0.8)),
-        keep_recent_turns=_integer(raw.get("keep_recent_turns", 4),
-                                   "keep_recent_turns", minimum=1),
-        summary_max_chars=_integer(raw.get("summary_max_chars", 8_000),
-                                   "summary_max_chars", minimum=1),
-    )
-```
-
-`_ratio` validates `0 < value <= 1.0`; `_integer` validates
-`value >= minimum` and rejects booleans.
+The plugin consumes this model directly. Its constraints and defaults are
+also the JSON Schema exposed by the generic configuration UI.
 
 ### `CompactEventsPort` / `UsagePort`
 
@@ -233,7 +215,7 @@ command handler). Does not require waiting for the next turn.
 def apply(self, ctx, config):
     service = CompactService(
         events=ctx, model=ctx.model, state=ctx.loop_state,
-        usage=ctx.usage, config=parse_compact_config(config),
+        usage=ctx.usage, config=config,
     )
     ctx.dispose(service._dispose)
     ctx.on(Events.BEFORE_CONTEXT, service._on_before_context)

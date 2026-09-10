@@ -344,12 +344,20 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         policy_path = http_app.state.paths.session("sdk-policy").config_file
         policy_path.write_text(
             yaml.safe_dump({
-                "permissions": {
-                    "allow": [{"tool": "edit", "params": {"path": "a\\.txt"}}],
-                },
-                "sandbox": {
-                    "resources": [{"path": "/tmp/approved", "access": "readwrite"}],
-                },
+                "plugins": [
+                    {
+                        "id": "permissions",
+                        "config": {
+                            "allow": [{"tool": "edit", "params": {"path": "a\\.txt"}}],
+                        },
+                    },
+                    {
+                        "id": "sandbox",
+                        "config": {
+                            "resources": [{"path": "/tmp/approved", "access": "readwrite"}],
+                        },
+                    },
+                ],
             }),
             encoding="utf-8",
         )
@@ -637,19 +645,17 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             {
                 "id": "sandbox",
                 "name": "sandbox",
-                "config": {"sandbox": {"enabled": False, "resources": []}},
+                "config": {"enabled": False, "resources": []},
             },
             {
                 "id": "permissions",
                 "name": "permissions",
                 "config": {
-                    "permissions": {
-                        "ask": [
-                            {"tool": "ask_user"},
-                            {"tool": "request_permission"},
-                            {"tool": "edit"},
-                        ],
-                    },
+                    "ask": [
+                        {"tool": "ask_user"},
+                        {"tool": "request_permission"},
+                        {"tool": "edit"},
+                    ],
                 },
             },
         ], sort_keys=False),
@@ -1864,7 +1870,10 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     )
     source.artifact_file("context/cached.txt").parent.mkdir(parents=True)
     source.artifact_file("context/cached.txt").write_text("cached")
-    source_session.config_file.write_text("permissions: {}\n")
+    source_session.config_file.write_text(
+        "plugins:\n- id: permissions\n  config: {}\n",
+        encoding="utf-8",
+    )
     forked = await client.post("/sessions/history/fork")
     fork_id = forked.json()["session_id"]
     fork_session = paths.session(fork_id)
@@ -1874,7 +1883,9 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
         '{"sample.value": "kept"}\n'
     )
     assert fork_paths.artifact_file("context/cached.txt").read_text() == "cached"
-    assert fork_session.config_file.read_text() == "permissions: {}\n"
+    assert fork_session.config_file.read_text() == (
+        "plugins:\n- id: permissions\n  config: {}\n"
+    )
     assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
     resumed = await client.post(
         "/sessions",
@@ -2121,7 +2132,7 @@ async def test_new_session_reads_updated_global_plugin_config(
     assert before.application._context.sandbox.enabled is False
 
     sandbox_entry = next(item for item in tree if item["id"] == "sandbox")
-    sandbox_entry["config"]["sandbox"]["enabled"] = True
+    sandbox_entry["config"]["enabled"] = True
     plugins_file.write_text(
         yaml.safe_dump(tree, sort_keys=False),
         encoding="utf-8",
@@ -2146,7 +2157,7 @@ async def test_workspace_overlay_applies_when_session_starts(
         yaml.safe_dump([{
             "id": "sandbox",
             "name": "sandbox",
-            "config": {"sandbox": {"enabled": True}},
+            "config": {"enabled": True},
         }], sort_keys=False),
         encoding="utf-8",
     )
@@ -2421,7 +2432,8 @@ async def test_http_policy_patch_reset_rebuilds_live_policy(
         json={"remove_permissions": ["shell"]},
     )
     assert permission_reset.status_code == 200
-    assert ctx.application._context.permissions.check("shell", {}) == "ask"
+    # Removing the session override reveals the bundled xcore.yaml rule.
+    assert ctx.application._context.permissions.check("shell", {}) == "allow"
 
     sandbox_status = await client.get("/sessions/policy-reset/policy")
     assert sandbox_status.status_code == 200
@@ -2503,19 +2515,17 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
             {
                 "id": "sandbox",
                 "name": "sandbox",
-                "config": {"sandbox": {"enabled": False, "resources": []}},
+                "config": {"enabled": False, "resources": []},
             },
             {
                 "id": "permissions",
                 "name": "permissions",
                 "config": {
-                    "permissions": {
-                        "ask": [
-                            {"tool": "ask_user"},
-                            {"tool": "request_permission"},
-                            {"tool": "edit"},
-                        ],
-                    },
+                    "ask": [
+                        {"tool": "ask_user"},
+                        {"tool": "request_permission"},
+                        {"tool": "edit"},
+                    ],
                 },
             },
         ], sort_keys=False),
@@ -2585,19 +2595,17 @@ async def test_active_attach_without_persistence_succeeds_but_rebuild_fails(
             {
                 "id": "sandbox",
                 "name": "sandbox",
-                "config": {"sandbox": {"enabled": False, "resources": []}},
+                "config": {"enabled": False, "resources": []},
             },
             {
                 "id": "permissions",
                 "name": "permissions",
                 "config": {
-                    "permissions": {
-                        "ask": [
-                            {"tool": "ask_user"},
-                            {"tool": "request_permission"},
-                            {"tool": "edit"},
-                        ],
-                    },
+                    "ask": [
+                        {"tool": "ask_user"},
+                        {"tool": "request_permission"},
+                        {"tool": "edit"},
+                    ],
                 },
             },
             {
@@ -3054,7 +3062,8 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
     observed = []
     async with asyncio.timeout(1):
         while not any(
-            event["type"] == "queue_updated" and event["data"]["items"]
+            event["type"] == "queue_updated"
+            and any(item["message_id"] == "req-second" for item in event["data"]["items"])
             for event in observed
         ):
             observed.append((await anext(shared)).event.model_dump(mode="json"))
@@ -3062,6 +3071,12 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         event["type"] == "message" and event["data"].get("content") == "second"
         for event in observed
     )
+    accepted = next(
+        event for event in observed
+        if event["type"] == "input_accepted"
+        and event["data"].get("message_ids") == ["req-second"]
+    )
+    assert accepted["data"] == {"message_ids": ["req-second"], "target": "next-turn"}
     assert ctx.pending_inputs()[0].target == "next-turn"
 
     release.set()
@@ -3795,23 +3810,21 @@ async def _real_terminal_session(
             {
                 "id": "sandbox",
                 "name": "sandbox",
-                "config": {"sandbox": {
+                "config": {
                     "enabled": sandbox_enabled, "resources": [],
-                }},
+                },
             },
             {
                 "id": "permissions",
                 "name": "permissions",
                 "config": {
-                    "permissions": {
-                        "allow": [],
-                        "ask": [
-                            {"tool": "read"},
-                            {"tool": "ask_user"},
-                            {"tool": "request_permission"},
-                            {"tool": "edit"},
-                        ],
-                    },
+                    "allow": [],
+                    "ask": [
+                        {"tool": "read"},
+                        {"tool": "ask_user"},
+                        {"tool": "request_permission"},
+                        {"tool": "edit"},
+                    ],
                 },
             },
         ], sort_keys=False),
@@ -4167,19 +4180,17 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             {
                 "id": "sandbox",
                 "name": "sandbox",
-                "config": {"sandbox": {"enabled": False, "resources": []}},
+                "config": {"enabled": False, "resources": []},
             },
             {
                 "id": "permissions",
                 "name": "permissions",
                 "config": {
-                    "permissions": {
-                        "ask": [
-                            {"tool": "ask_user"},
-                            {"tool": "request_permission"},
-                            {"tool": "edit"},
-                        ],
-                    },
+                    "ask": [
+                        {"tool": "ask_user"},
+                        {"tool": "request_permission"},
+                        {"tool": "edit"},
+                    ],
                 },
             },
         ], sort_keys=False),
@@ -4422,7 +4433,11 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     policy_path = http_app.state.paths.session("sandbox-persist").config_file
     kept_resources = [{"path": "/tmp/approved", "access": "readwrite"}]
     policy_path.write_text(
-        yaml.safe_dump({"sandbox": {"resources": kept_resources}}),
+        yaml.safe_dump({
+            "plugins": [
+                {"id": "sandbox", "config": {"resources": kept_resources}},
+            ],
+        }),
         encoding="utf-8",
     )
 
@@ -4447,18 +4462,20 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
     # The session configuration was updated.
     assert policy_path.exists()
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
-    assert doc["sandbox"]["network"] is False
-    assert doc["sandbox"]["external_read"] == "deny"
-    assert doc["sandbox"]["resources"] == kept_resources
+    sandbox_entry = next(row for row in doc["plugins"] if row["id"] == "sandbox")
+    assert sandbox_entry["config"]["network"] is False
+    assert sandbox_entry["config"]["external_read"] == "deny"
+    assert sandbox_entry["config"]["resources"] == kept_resources
 
     await client.patch(
         "/sessions/sandbox-persist/policy",
         json={"remove_sandbox": ["network"]},
     )
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
-    assert doc["sandbox"] == {
-        "resources": kept_resources,
+    sandbox_entry = next(row for row in doc["plugins"] if row["id"] == "sandbox")
+    assert sandbox_entry["config"] == {
         "external_read": "deny",
+        "resources": kept_resources,
     }
 
     await client.patch(
@@ -4466,7 +4483,8 @@ async def test_http_policy_patch_persists_sandbox_to_yaml(
         json={"remove_sandbox": ["external_read"]},
     )
     doc = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
-    assert doc["sandbox"] == {"resources": kept_resources}
+    sandbox_entry = next(row for row in doc["plugins"] if row["id"] == "sandbox")
+    assert sandbox_entry["config"] == {"resources": kept_resources}
 
     resumed = await client.post(
         "/sessions",
@@ -4501,7 +4519,8 @@ async def test_http_plugin_config_catalog_is_schema_driven_and_revisioned(
     assert compact["editable"] is True
     assert compact["config_schema"]["type"] == "object"
     llm = next(item for item in catalog["plugins"] if item["plugin_id"] == "llm")
-    assert llm["editable"] is False
+    assert llm["editable"] is True
+    assert llm["config_schema"]["type"] == "object"
 
     updated = await client.patch(
         "/sessions/plugin-config/threads/t/plugin-config/compact",

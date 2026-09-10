@@ -130,7 +130,7 @@ async def test_pending_input_mutations_replace_the_authoritative_snapshot():
     assert [(item.message_id, item.content, item.target) for item in sink.items] == [
         ("edit-me", "edited", InboxTarget.NEXT_STEP),
     ]
-    assert [event["data"]["operation"] for event in splices] == [
+    assert [event.operation for event in splices] == [
         "insert", "insert", "edit", "retarget", "remove",
     ]
 

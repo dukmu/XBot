@@ -7,7 +7,7 @@ from xcore import Context
 from XBotv2.commands import Command
 from XBotv2.agentloop import Events
 from XBotv2.compact.commands import compact_result_message as _compact_result_message
-from XBotv2.compact.config import CONFIG_SCHEMA, parse_compact_config
+from XBotv2.compact.contracts import CompactConfig
 from XBotv2.compact.history import (
     compact_prefix_end as _compact_prefix_end,
     history_chars as _history_chars,
@@ -26,15 +26,15 @@ from XBotv2.compact.tools import build_compact_tool
 class CompactPlugin:
     inject = ["tools", "commands", "model", "loop_state", "usage"]
     name = "compact"
-    Config = CONFIG_SCHEMA
+    Config = CompactConfig
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(self, ctx: Context, config: CompactConfig) -> None:
         service = CompactService(
             events=ctx,
             model=ctx.model,
             state=ctx.loop_state,
             usage=ctx.usage,
-            config=parse_compact_config(config),
+            config=config,
         )
 
         ctx.dispose(service._dispose)

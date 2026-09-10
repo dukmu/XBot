@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from XBotv2.agentloop.contracts import LoopSettings, ModelRequest
+from XBotv2.agentloop.contracts import InboxSplice, LoopSettings, ModelRequest
 from XBotv2.core.messages import Message, ModelResponse
 from XBotv2.core.tools import ClientEvent, ToolCall
 from XBotv2.session.contracts import SessionInfo
@@ -120,6 +120,7 @@ class EventContext:
     client_event: ClientEvent | None = None
     stop_reason: str | None = None
     request_id: str = ""
+    inbox_splice: InboxSplice | None = None
 
 
 __all__ = [

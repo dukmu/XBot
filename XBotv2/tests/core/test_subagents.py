@@ -18,6 +18,7 @@ from XBotv2.core import RuntimePaths
 from XBotv2.core.usage import UsageData
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.plugin import JobsRuntimeComponent
+from XBotv2.jobs.contracts import JobsConfig
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.core.messages import ModelChunk
@@ -302,10 +303,8 @@ async def test_subagent_can_request_permission_through_parent_session(
     from XBotv2.tests.core.test_application_startup import _write_plugins
 
     _write_plugins(temp_data_dir, {"permissions": {"config": {
-        "permissions": {
-            "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
-            "ask": [{"tool": "read"}],
-        },
+        "allow": [{"tool": "spawn_subagent"}, {"tool": "wait_subagent"}],
+        "ask": [{"tool": "read"}],
     }}})
     (temp_workspace / "target.txt").write_text("target content", encoding="utf-8")
     agents_dir = temp_workspace / ".agents"
@@ -767,7 +766,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
     )
     services.set("commands", CommandsService())
     services.set("engine", parent_engine)
-    JobsRuntimeComponent().apply(services, {})
+    JobsRuntimeComponent().apply(services, JobsConfig())
     job_registry = services.jobs
 
     job = await job_registry.create(

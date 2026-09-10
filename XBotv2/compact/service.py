@@ -21,7 +21,7 @@ from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionInf
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
-from XBotv2.compact.config import CompactConfig
+from XBotv2.compact.contracts import CompactConfig
 from XBotv2.compact.events import (
     POST_COMPACT,
     PRE_COMPACT,

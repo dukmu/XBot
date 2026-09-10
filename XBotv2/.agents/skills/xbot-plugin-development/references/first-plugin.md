@@ -106,11 +106,9 @@ in `plugin.py`.
 ## `plugin.py`
 
 ```python
-from collections.abc import Mapping
-
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict
 from XBotv2.core import Tool, ToolResult
-from xcore import Context, S
+from xcore import Context
 
 
 class HelloHandler:
@@ -125,23 +123,22 @@ class HelloHandler:
 class HelloPlugin:
     name = "hello"
     inject = ["tools"]
-    Config = S.object({
-        "greeting": S.string().default("Hello"),
-    }).strict()
+    class Config(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        greeting: str = "Hello"
 
-    def apply(self, ctx: Context, config: Mapping[str, JsonValue]) -> None:
-        handler = HelloHandler(str(config["greeting"]))
+    def apply(self, ctx: Context, config: Config) -> None:
+        handler = HelloHandler(config.greeting)
         ctx.tools.register(Tool.from_function(handler.hello, name="hello"))
 
 
 plugin = HelloPlugin()
 ```
 
-Here `.strict()` means unknown keys are removed; it does not make unknown keys
-an error. Required-key and type failures still raise `SchemaValidationError`
-with a path. If rejecting every unknown config key is a requirement, the
-current XCore schema contract does not provide that mode—document the limit
-instead of claiming strict rejection.
+Configuration is a Pydantic model owned by the plugin. `extra="forbid"`
+rejects undeclared keys; defaults, nested validation, and the JSON Schema shown
+to clients all come from the same model. Do not duplicate this model in a
+configuration service or hand-write a second schema.
 
 The component only composes declared dependencies. XCore validates `Config`
 before `apply`, waits for `tools`, and reruns composition if that required
@@ -264,8 +261,10 @@ not `my-xbot-plugin`). A new overlay entry needs both `id` and `name`. Use an
 profile merely because both processes can import it.
 
 XBot merges configuration in this order: bundled `xcore.yaml`, configured
-`<data-dir>/config/plugins.yaml`, workspace `.xbot/plugins.yaml`, then explicit
-session/direct-call overrides. Only `config` deep-merges; fields such as
+`<data-dir>/config/plugins.yaml`, workspace `.xbot/plugins.yaml`, session
+`sessions/<session_id>/config.yaml`, then explicit in-memory launch overrides.
+The session file uses the same plugin overlay grammar as the other files.
+Only `config` deep-merges; fields such as
 `profiles` replace the prior value.
 
 ## 6. Smoke Test Through XBot
@@ -291,9 +290,8 @@ workspace overlay. In a sandbox where installation or the global data root is
 read-only, expose the source package with `PYTHONPATH` and run a small Python
 harness that calls `start_application(..., plugin_dirs=[plugin_parent])` with
 a disposable `RuntimePaths`; this exercises the same loader without writing
-to the user's data directory. `plugin_paths` in runtime configuration is not
-an alternative loader entry unless the current application version explicitly
-wires it into `plugin_dirs`.
+to the user's data directory. The overlay selects the import name; it does
+not create a second plugin discovery mechanism.
 
 When no provider credentials or network are available, use the mounted XCore
 test plus a persistence-only trace test (see [session-trace.md](session-trace.md)).

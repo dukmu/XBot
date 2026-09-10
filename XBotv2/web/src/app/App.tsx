@@ -15,6 +15,7 @@ import { DirectoryBrowser } from "../components/DirectoryBrowser";
 import { TaskDock } from "../components/TaskDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
+import { ThreadActivityPanel } from "../components/ThreadActivityPanel";
 import { SettingsDialog, type ThemePreference } from "../components/SettingsDialog";
 import { commandCatalog, parseCommand } from "../commands";
 import type { CommandInfo, CommandResultData, DirectoryListingData, SessionSummary } from "../api/types";
@@ -253,6 +254,11 @@ export function App() {
 
         {state.current ? (
           <div className="conversation-scroll" data-conversation-scroll>
+            <ThreadActivityPanel
+              threads={state.threads}
+              currentThreadId={state.current.thread_id}
+              onSelect={(thread) => void runtime.selectThread(thread)}
+            />
             <Timeline
               key={`${state.current.session_id}/${state.current.thread_id}`}
               entries={state.entries}
@@ -281,6 +287,7 @@ export function App() {
               <QueueDock
                 items={state.pendingInputs}
                 running={state.turnRunning}
+                deliveryStates={state.deliveryStates}
                 onUpdate={runtime.updatePendingInput}
               />
               <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
@@ -349,8 +356,6 @@ export function App() {
           }}
           sessionId={state.current?.session_id}
           threadId={state.current?.thread_id}
-          loadSessionPolicy={runtime.loadSessionPolicy}
-          updateSessionPolicy={runtime.updateSessionPolicy}
           loadPluginConfig={runtime.loadPluginConfig}
           updatePluginConfig={runtime.updatePluginConfig}
           onClose={closeSettings}

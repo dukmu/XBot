@@ -69,8 +69,8 @@
   状态 + 重启恢复），驱动出三处实现修正：
   1. `ctx.config` 在插件 fiber Context 上应返回**插件已验证配置**（Cordis 语义），
      而非父 Context 的 config —— `Context.config` 属性按 fiber 归属分派；
-  2. `S.object` 在整体配置为 None（插件未传配置）时应按 `{}` 校验（koishi 约定，
-     属性级默认值生效）；
+  2. （历史记录）旧版 `S.object` 在整体配置为 None 时按 `{}` 校验；该 schema DSL
+     已移除，插件配置现在由各自的 Pydantic `Config` 模型负责；
   3. 明确 ready 监听器在 active 期间是「调度为任务、下一个事件循环轮次执行」——
      asyncio 语义与 Cordis 一致，观测前需 `await asyncio.sleep(0)`（已写入文档）。
 - **文档**：`features/` 补齐事件/服务/插件/生命周期/状态/Schema/中间件/API 清单

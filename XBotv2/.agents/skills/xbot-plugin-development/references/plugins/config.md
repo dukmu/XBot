@@ -1,8 +1,8 @@
 # `config`
 
-Path-bound configuration reading and runtime policy management. Loads
-`RuntimeConfig` from disk on startup, exposes the resolved user context,
-and handles session-level policy patches (permissions + sandbox).
+Path-bound configuration reading and runtime policy management. Resolves one
+generic `PluginTree` from the layered overlay documents, exposes the resolved
+user context, and handles session-level policy patches (permissions + sandbox).
 
 - **Import/profile:** `config`, Agent profile.
 - **Source:** `XBotv2/config/plugin.py`,
@@ -43,17 +43,20 @@ class ConfigService(SettingsPort):
 
     def user_context(self) -> UserContext: ...
 
-    def load_runtime_config(
+    def load_plugin_tree(
         self, workspace: Path, session_id: str
-    ) -> RuntimeConfig: ...
+    ) -> PluginTree: ...
+
+    def memory(self) -> str: ...
 
     def policy(self) -> PolicySnapshot: ...
 
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot: ...
 ```
 
-`policy()` calls `load_runtime_config` internally to resolve permissions
-and sandbox; `update_policy()` emits `POLICY_CHANGED` after persisting.
+`policy()` returns the effective JSON objects from the resolved permission and
+sandbox entries; `update_policy()` emits `POLICY_CHANGED` after persisting.
+The config plugin does not redeclare or validate those plugin models.
 
 ### `UserContext` (`XBotv2/config/contracts.py`)
 
@@ -67,38 +70,25 @@ class UserContext(StrictModel):
 
 Loaded from the plugin tree's `user` block, not a separate file.
 
-### `RuntimeConfig` (`XBotv2/config/contracts.py`)
+### Generic tree boundary
 
 ```python
-class RuntimeConfig(StrictModel):
-    provider: str = "default"
-    max_concurrent_subagents: int = Field(default=4, ge=1)
-    tool_results: ToolResultConfig = Field(default_factory=ToolResultConfig)
-    tools: list[str] | None = None
-    workspace_tools: list[WorkspaceToolConfig] = Field(default_factory=list)
-    hooks: list[HookConfig] = Field(default_factory=list)
-    plugins: dict[str, PluginConfig] = Field(default_factory=dict)
-    plugin_paths: list[str] = Field(default_factory=list)
-    permissions: PermissionConfig = Field(default_factory=lambda: PermissionConfig(
-        ask=[PermissionRuleConfig(tool=".*")]
-    ))
-    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
-    instructions: str = ""
-    memory: str = ""
-    agent_name: str = "XBotv2"
-    agent_role: str = ""
-    agent_instructions: str = ""
-    max_context_tokens: int = 32_000
-    max_output_tokens: int | None = None
-
-    @property
-    def plugin_configs(self) -> dict[str, dict[str, JsonValue]]:
-        return {
-            name: entry.config
-            for name, entry in self.plugins.items()
-            if entry.enabled
-        }
+tree = ctx.settings.load_plugin_tree(workspace, session_id)
+for entry in tree.entries:
+    # entry.id/name/disabled/config are the only generic fields here.
+    ...
 ```
+
+The consumer that owns a declaration validates it with that plugin's model:
+
+```python
+from XBotv2.llm import LlmConfig
+
+llm_entry = next(item for item in tree.entries if item.id == "llm")
+llm = LlmConfig.model_validate(llm_entry.config)
+```
+
+Do not add a second aggregate model to `config` when adding a plugin.
 
 ### `PolicySnapshot` / `PatchPolicy` (`XBotv2/config/contracts.py`)
 
@@ -128,52 +118,26 @@ UPDATE_POLICY = Operation(
 @dataclass(frozen=True, slots=True)
 class PolicyChanged:
     policy: dict[str, JsonValue]
-    config: RuntimeConfig
+    effective_permissions: dict[str, JsonValue]
+    effective_sandbox: dict[str, JsonValue]
 
 POLICY_CHANGED = "config/policy-changed"
 ```
 
-### `StrictModel`
-
-```python
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-```
-
-### `PermissionConfig` / `SandboxConfig` / `PluginConfig`
-
-```python
-class PermissionConfig(StrictModel):
-    deny: list[PermissionRuleConfig] = Field(default_factory=list)
-    allow: list[PermissionRuleConfig] = Field(default_factory=list)
-    ask: list[PermissionRuleConfig] = Field(default_factory=list)
-
-class SandboxConfig(StrictModel):
-    enabled: bool = True
-    network: bool = True
-    external_read: Literal["allow", "readwrite", "readonly", "deny"] = "readonly"
-    external_write: Literal["allow", "readwrite", "readonly", "deny"] = "deny"
-    workspace_read: Literal["allow", "readwrite", "readonly", "deny"] = "allow"
-    workspace_write: Literal["allow", "readwrite", "readonly", "deny"] = "allow"
-    resources: list[SandboxResourceConfig] = Field(default_factory=list)
-
-class PluginConfig(StrictModel):
-    enabled: bool = True
-    config: dict[str, JsonValue] = Field(default_factory=dict)
-```
+The permission and sandbox models are owned by their respective plugins. The
+config plugin only projects their resolved JSON values; it does not redeclare
+or validate those fields.
 
 ## How `apply()` works (`plugin.py:18-50`)
 
 ```python
-def apply(self, ctx: Context, config: object | None = None) -> None:
-    config = config or {}
-    user = UserContext.model_validate(config.get("user") or {})
+def apply(self, ctx: Context, config: ConfigPluginConfig) -> None:
     settings = ConfigService(
         ctx.runtime_paths,
         session_id=ctx.session_launch.session_id,
         workspace_root=ctx.session_launch.workspace_root,
         events=ctx,
-        user_context=user,
+        user_context=config.user,
         runtime_log=ctx.runtime_log,
     )
     ctx.set("settings", settings)
@@ -182,12 +146,23 @@ def apply(self, ctx: Context, config: object | None = None) -> None:
     ctx.on(UPDATE_POLICY.name, settings.update_policy)
 ```
 
-The plugin never exposes `RuntimeConfig` itself — only `policy()`
-(sandbox+permissions) and `update_policy()`.
+The plugin exposes the generic tree and policy operations; it does not expose
+an aggregate of other plugins' configuration.
 
-## On-disk artifacts
+## On-disk artifacts and layer order
 
-`config/policy.py` handles persistence at these paths:
+The plugin tree is resolved once at startup. All declarations use the same
+overlay grammar, including sandbox and permissions:
+
+```text
+XBotv2/xcore.yaml
+  → <data-dir>/config/plugins.yaml
+  → <workspace>/.xbot/plugins.yaml
+  → <data-dir>/sessions/<session_id>/config.yaml
+  → in-memory launch overrides
+```
+
+`config/policy.py` writes the session layer at:
 
 ```text
 <data_dir>/sessions/<session_id>/
@@ -195,9 +170,21 @@ The plugin never exposes `RuntimeConfig` itself — only `policy()`
 └── threads/<thread_id>/...
 ```
 
-`patch_session_policy()` writes to `config.yaml` (session-level overlay);
-`load_runtime_config()` reads the full resolution (global + session +
-workspace + agent-local overlays).
+`config.yaml` is a plugin overlay document, for example:
+
+```yaml
+plugins:
+  - id: permissions
+    config:
+      ask: [{tool: "shell"}]
+  - id: sandbox
+    config:
+      network: false
+```
+
+`load_plugin_tree()` returns that same resolved tree; it does not read a
+second aggregate `config.yaml` format. A launch override is an in-memory
+`PluginOverlay` patch and is never persisted automatically.
 
 ## Typical extension: read policy
 
@@ -225,10 +212,10 @@ class PolicyAwareTool:
 
 ## Common pitfalls
 
-- **Importing `RuntimeConfig` from an internal module and using it for runtime
-  checks**: `ConfigService.policy()` returns `PolicySnapshot` (only
-  sandbox + permissions). If you need the full `RuntimeConfig`, call
-  `load_runtime_config(workspace, session_id)` directly.
+- **Adding plugin fields to a runtime aggregate**: configuration consumers
+  should read their own tree entry and validate it with their declared
+  Pydantic model. `ConfigService` is not a plugin registry of duplicated
+  schemas.
 - **Persisting `PERMISSION_DECIDED` grants** changes a runtime approval into
   durable policy. Do not do this; persisted policy requires a human settings
   operation.

@@ -24,7 +24,8 @@ service or bypass its public API.
 
 ## Composition
 
-The plugin tree (`XBotv2/xcore.yaml`, global overlays, and workspace overlays)
+The plugin tree (`XBotv2/xcore.yaml`, data-directory `plugins.yaml`, workspace
+`.xbot/plugins.yaml`, session `config.yaml`, and in-memory launch overlays)
 selects plugin modules, profiles, and configuration. XCore resolves declared
 services and mounts the plugin. Application composition publishes the typed
 `APPLICATION_INITIALIZED` event after session/Agent facts exist; tool

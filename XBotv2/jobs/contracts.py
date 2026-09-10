@@ -10,6 +10,12 @@ from typing import Literal, Protocol
 from XBotv2.core.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+
+class JobsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_concurrent_subagents: int = Field(default=4, ge=1)
+
 JobId = str
 MAX_SUMMARY_CHARS = 256
 WaitMode = Literal["any", "all"]
@@ -246,6 +252,7 @@ STOP_ALL_TASKS = Operation("jobs/stop-all", EmptyRequest, StoppedTasks)
 __all__ = [
     "CancelResult",
     "Job",
+    "JobsConfig",
     "JobError",
     "JobId",
     "JobKind",

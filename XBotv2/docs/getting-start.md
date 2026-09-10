@@ -31,5 +31,19 @@ weather-plugin/
 ```
 
 Register it through a data/workspace `plugins.yaml` overlay. The complete
-XCore plugin lifecycle, schema DSL, test harness, package-data rules, and
+XCore plugin lifecycle, plugin-owned Pydantic config models, test harness, package-data rules, and
 overlay semantics are in the skill's [first-plugin guide](../.agents/skills/xbot-plugin-development/references/first-plugin.md).
+
+Configuration is one plugin tree, resolved before XCore starts:
+
+```text
+XBotv2/xcore.yaml
+  → <data-dir>/config/plugins.yaml
+  → <workspace>/.xbot/plugins.yaml
+  → <data-dir>/sessions/<session_id>/config.yaml
+  → in-memory launch overrides
+```
+
+The session document uses the same `plugins` overlay schema. Sandbox and
+permissions are the `sandbox` and `permissions` plugin declarations, not
+separate configuration files.

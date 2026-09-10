@@ -16,7 +16,7 @@ def mount_ctx(state_store):
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.variables import RuntimeVariables
-    from XBotv2.config.contracts import SandboxConfig
+    from XBotv2.sandbox.contracts import SandboxConfig
 
     class TestInteractions:
         async def request_user_input(self, *_args, **_kwargs):
@@ -105,6 +105,10 @@ def mount_plugin(plugin, state_store, config=None):
     """
     ctx = mount_ctx(state_store)
     plugin.ctx = ctx
+    schema = getattr(plugin, "Config", None)
+    validator = getattr(schema, "model_validate", None)
+    if callable(validator):
+        config = validator(config if config is not None else {})
     result = plugin.apply(ctx, config)
     if inspect.isawaitable(result):
         result.close()

@@ -9,7 +9,7 @@ access.
   `content-cache.md`); Agent profile.
 - **Source:** `XBotv2/content_cache/plugin.py`,
   `XBotv2/content_cache/content_cache.py`,
-  `XBotv2/content_cache/config.py`.
+  `XBotv2/content_cache/contracts.py`.
 - **Injects/provides:** `artifacts` → `content_cache`
   (`ContentCacheService`).
 - **Subscribes to events:** `before/model-request` (bind cached message).
@@ -50,20 +50,14 @@ class ContentCacheHandler:
             )
 ```
 
-### `ContentCacheConfig` / `CONFIG_SCHEMA`
+### `ContentCacheConfig`
 
 ```python
-CONFIG_SCHEMA = S.object({
-    "cache_threshold_chars": S.number().optional(),  # default 48000
-    "preview_chars": S.number().optional(),           # default 12000
-    "tail_chars": S.number().optional(),              # default 2000
-})
-
-@dataclass(frozen=True, slots=True)
-class ContentCacheConfig:
-    cache_threshold_chars: int = 48_000
-    preview_chars: int = 12_000
-    tail_chars: int = 2_000
+class ContentCacheConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cache_threshold_chars: int = Field(default=48_000, ge=1)
+    preview_chars: int = Field(default=12_000, ge=0)
+    tail_chars: int = Field(default=2_000, ge=0)
 ```
 
 ### `cache_user_message` (`XBotv2/content_cache/content_cache.py`)
@@ -95,11 +89,11 @@ The bounded message replaces the original text with a preview:
 class ContentCacheComponent:
     inject = ["artifacts"]
     name = "xbot.content_cache"
-    Config = CONFIG_SCHEMA
+    Config = ContentCacheConfig
 
-    def apply(self, ctx: Any, config: Any = None) -> None:
+    def apply(self, ctx: Context, config: ContentCacheConfig) -> None:
         service = ContentCacheService(
-            ctx.artifacts, parse_content_cache_config(config)
+            ctx.artifacts, config
         )
         ctx.set("content_cache", service)
         ctx.on(Events.BEFORE_MODEL_REQUEST, ContentCacheHandler(service).bind_model_request)

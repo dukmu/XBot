@@ -6,10 +6,8 @@ from xcore import Context
 
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.content_cache.content_cache import cache_user_message
-from XBotv2.content_cache.config import (
-    CONFIG_SCHEMA,
+from XBotv2.content_cache.contracts import (
     ContentCacheConfig,
-    parse_content_cache_config,
 )
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message
@@ -73,12 +71,12 @@ class ContentCacheHandler:
 class ContentCacheComponent:
     inject = ["artifacts"]
     name = "xbot.content_cache"
-    Config = CONFIG_SCHEMA
+    Config = ContentCacheConfig
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(self, ctx: Context, config: ContentCacheConfig) -> None:
         service = ContentCacheService(
             ctx.artifacts,
-            parse_content_cache_config(config),
+            config,
         )
         ctx.set("content_cache", service)
         ctx.on(

@@ -14,10 +14,7 @@ from XBotv2.coretools.filesystem import (
     read,
     search,
 )
-from XBotv2.config.contracts import (
-    SandboxConfig,
-    SandboxResourceConfig
-)
+from XBotv2.sandbox.contracts import SandboxConfig, SandboxResourceConfig
 
 filesystem_edit = next(t for t in filesystem_tools(None) if t.name == "edit")
 filesystem_path = next(t for t in filesystem_tools(None) if t.name == "path")

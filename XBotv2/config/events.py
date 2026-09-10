@@ -5,16 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pydantic import JsonValue
 
-from XBotv2.config.contracts import RuntimeConfig
-
-
 POLICY_CHANGED = "config/policy-changed"
 
 
 @dataclass(frozen=True, slots=True)
 class PolicyChanged:
     policy: dict[str, JsonValue]
-    config: RuntimeConfig
+    effective_permissions: dict[str, JsonValue]
+    effective_sandbox: dict[str, JsonValue]
 
 
 __all__ = ["POLICY_CHANGED", "PolicyChanged"]

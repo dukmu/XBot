@@ -76,6 +76,13 @@
   white-space: nowrap;
 }
 
+.state {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
 .editor {
   box-sizing: border-box;
   height: 28px;

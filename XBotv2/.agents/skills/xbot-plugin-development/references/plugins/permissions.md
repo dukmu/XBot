@@ -21,15 +21,14 @@ policy is independent and remains a hard execution ceiling.
 ```yaml
 - id: permissions
   config:
-    permissions:
-      deny:
-        - tool: shell
-          params:
-            command: "dangerous-command.*"
-      allow:
-        - tool: read
-      ask:
-        - tool: shell
+    deny:
+      - tool: shell
+        params:
+          command: "dangerous-command.*"
+    allow:
+      - tool: read
+    ask:
+      - tool: shell
 ```
 
 Configured `tool` and `params` values use bounded regex full matching. A missing

@@ -36,6 +36,11 @@ export const MessageItem = memo(function MessageItem({
           ? <div className={`${styles.content} ${styles.streaming}`}>{entry.content}</div>
           : <div className={`${styles.content} markdown-body`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
       )}
+      {user && entry.deliveryState && (
+        <small className={styles.deliveryState} aria-label={`Input ${entry.deliveryState}`}>
+          {entry.deliveryState}
+        </small>
+      )}
       {!entry.streaming && entry.content && (
         <MessageIconActions
           text={entry.content}

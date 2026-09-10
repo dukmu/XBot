@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from xcore import Context, FiberState, S, SchemaValidationError
+from xcore import Context, FiberState
 
 
 # ---------------------------------------------------------------------------
@@ -248,15 +248,21 @@ async def test_partial_effects_rolled_back_on_failure():
 
 async def test_config_validation_failure_is_isolated():
     ctx = Context()
-    schema = S.object({"name": S.string()})
+
+    class Config:
+        @classmethod
+        def model_validate(cls, value):
+            if not isinstance(value, dict) or not isinstance(value.get("name"), str):
+                raise ValueError("name must be a string")
+            return value
 
     def plugin(ctx_, config):
         pass
 
-    plugin.Config = schema
+    plugin.Config = Config
     await ctx.start()
     handle = ctx.plugin(plugin, {"name": 42})
-    with pytest.raises(SchemaValidationError):
+    with pytest.raises(ValueError, match="name must be a string"):
         await handle
     assert handle.state is FiberState.FAILED
 

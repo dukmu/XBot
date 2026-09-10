@@ -14,6 +14,18 @@ and exposes operations for switching at runtime.
 - **Subscribes to events:** none in `apply`; the Agent loop drives
   `model.astream(...)` via `ctx.model`.
 
+### `LlmConfig` (`XBotv2/llm/contracts.py`)
+
+```python
+class LlmConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    default: str = "default"
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+```
+
+`LlmPlugin.Config` is this model. Provider and model fields therefore produce
+the same validation and JSON Schema used by the generic configuration UI.
+
 ## Public data models
 
 ### `ProviderConfig` / `ModelConfig` (`XBotv2/llm/contracts.py`)
@@ -24,6 +36,7 @@ class ProviderConfig(BaseModel):
     protocol: str = "openai"               # "openai" | "anthropic" | "mock"
     base_url: str | None = None
     api_key: str | None = None             # may come from api_key_env
+    api_key_env: str | None = None
     default_model: str
     models: list[ModelConfig] = Field(default_factory=list)
 

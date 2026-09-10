@@ -23,7 +23,7 @@ pytest 配置（`XCore/pyproject.toml`）：`asyncio_mode = "auto"`、`pythonpat
 | `test_plugins.py` | 三形态归一化、Registry 去重与检查、Fiber 状态机、inject 等待/唤醒、required 拓扑、失败隔离、apply 返回 disposer、配置校验错误 |
 | `test_lifecycle.py` | start/stop/restart/dispose、ready/dispose 事件、逆序清理、卸载异常聚合、重复 start/stop、start 后运行期挂载 |
 | `test_state.py` | 持久化往返、原子写（模拟半写临时文件）、命名空间隔离、崩溃恢复 |
-| `test_schema.py` | 各类型校验、默认值合并（嵌套）、未知键拒绝、错误路径定位、optional/default |
+| `test_plugins.py` | Fiber 通过插件 `Config.model_validate` 校验配置，并隔离校验失败 |
 | `test_middleware.py` | 链顺序、短路、prepend、过滤快照、错误传播 |
 | `test_public_api.py` | `xcore.__all__` 与 `docs/features/api.md` 清单一致 |
 

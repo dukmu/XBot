@@ -145,6 +145,7 @@ class SessionRuntime(SessionPort):
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
     _wakeup_requested: bool = False
+    _active_router: "TurnEventRouter | None" = field(default=None, init=False)
     _log: RuntimeLog = field(init=False)
 
     def __post_init__(self) -> None:
@@ -207,13 +208,24 @@ class SessionRuntime(SessionPort):
 
     def _on_inbox_splice(self, event: EventContext) -> None:
         self.touch()
-        payload = event.client_event
+        payload = event.inbox_splice
         if payload is None:
             return
+        splice_event = ClientEvent(
+            type="agent/inbox/spliced",
+            data=payload.model_dump(mode="json"),
+        )
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
-        self._publish_runtime_event(payload)
-        data = payload.data
+        self._publish_runtime_event(splice_event)
+        if payload.operation == "insert" and payload.message_ids:
+            self._publish_runtime_event(session_event(
+                "input_accepted",
+                {
+                    "message_ids": payload.message_ids,
+                    "target": payload.target.value if payload.target else None,
+                },
+            ))
         self._publish_runtime_event(session_event(
             "queue_updated",
             {
@@ -222,27 +234,35 @@ class SessionRuntime(SessionPort):
                 ]
             },
         ))
-        if not isinstance(data, dict) or data.get("operation") != "claim":
+        if payload.operation == "claim":
+            claimed = session_event(
+                "input_claimed",
+                {"message_ids": payload.message_ids},
+            )
+            if self._active_router is not None:
+                self._active_router.claim(payload.message_ids)
+                self._active_router.emit(claimed)
+            self._publish_runtime_event(claimed)
+        if payload.operation == "consume":
+            consumed = session_event(
+                "input_consumed",
+                {"message_ids": payload.message_ids},
+            )
+            if self._active_router is not None:
+                self._active_router.emit(consumed)
+            self._publish_runtime_event(consumed)
+        if payload.operation != "claim":
             return
-        for item in data.get("items", []):
-            if not isinstance(item, dict):
+        for item in payload.items:
+            if not item.metadata.get("defer_message_event"):
                 continue
-            metadata = item.get("metadata")
-            if not isinstance(metadata, dict) or not metadata.get("defer_message_event"):
-                continue
-            source = str(item.get("source") or "user")
-            runtime = _runtime_message_data(source, metadata)
-            images = [
-                ImageContent.model_validate(value)
-                for value in item.get("images", [])
-            ]
-            artifacts = [
-                ArtifactRef.model_validate(value)
-                for value in item.get("artifacts", [])
-            ]
+            source = item.source
+            runtime = _runtime_message_data(source, item.metadata)
+            images = list(item.images)
+            artifacts = list(item.artifacts)
             self._publish_runtime_event(self._message_event(
-                str(item.get("message_id") or ""),
-                str(item.get("content") or ""),
+                item.message_id,
+                item.content,
                 images,
                 artifacts,
                 runtime=runtime,
@@ -628,11 +648,6 @@ async def _execute_turn(
             async with aclosing(turn_stream):
                 async for event in turn_stream:
                     payload = _event_payload(event)
-                    if payload.type == "_inbox_claimed":
-                        router.claim(list(
-                            payload.data.get("message_ids") or []
-                        ))
-                        continue
                     if payload.type in {"turn_finished", "turn_cancelled"}:
                         slots = await runtime.application.status_slots()
                         if slots:
@@ -658,6 +673,8 @@ async def _execute_turn(
         ))
     finally:
         router.finish()
+        if runtime._active_router is router:
+            runtime._active_router = None
         runtime.turn_task = None
         runtime.turn_lock.release()
         runtime.touch()
@@ -681,6 +698,7 @@ async def run_turn_stream(
     try:
         response = TurnResponse(request_id, request_id)
         router = TurnEventRouter(runtime, response)
+        runtime._active_router = router
         if accepted_event is not None:
             runtime.event_stream.publish(accepted_event, request_id=request_id)
         task = asyncio.create_task(_execute_turn(
@@ -721,6 +739,7 @@ async def regenerate_turn_stream(
         snapshot = await runtime.application.snapshot()
         response = TurnResponse(request_id, request_id)
         router = TurnEventRouter(runtime, response)
+        runtime._active_router = router
         router.emit(session_event(
             "history_updated",
             {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { XBotApi, XBotApiError } from "../api/client";
-import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, SessionPolicyPatch, TaskData, ThreadSummary } from "../api/types";
+import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, TaskData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { WorkspaceManager } from "../client/WorkspaceManager";
 import { SessionCatalog } from "../client/SessionCatalog";
@@ -29,6 +29,8 @@ export function useXBot() {
   const reconcileSessionRef = useRef<(() => void) | null>(null);
   const refreshTrajectoryRef = useRef<(() => void) | null>(null);
   const trajectoryRefreshPending = useRef(false);
+  const trajectoryEventsBuffer = useRef<ServerEvent[]>([]);
+  const trajectoryRefreshInFlight = useRef(false);
   const reconcileInFlight = useRef(false);
   const navigationBlocked = state.loading || commandRunning;
   const navigationBlockMessage = state.loading
@@ -50,6 +52,13 @@ export function useXBot() {
     onEvents: (events) => {
       for (const event of events) {
         latestEventSequenceRef.current = Math.max(latestEventSequenceRef.current, event.sequence);
+      }
+      if (trajectoryRefreshInFlight.current) {
+        trajectoryEventsBuffer.current.push(...events);
+        if (events.some((event) => event.type === "history_updated")) {
+          trajectoryRefreshPending.current = true;
+        }
+        return;
       }
       dispatch({ type: "events", events });
       if (events.some((event) => event.type === "history_updated")) {
@@ -94,6 +103,12 @@ export function useXBot() {
     if (generation !== navigationGeneration.current) return;
     currentSessionRef.current = session;
     latestEventSequenceRef.current = session.event_cursor;
+    // A trajectory request belongs to the previous thread.  Drop its raw
+    // window before attaching the new stream so delayed responses cannot
+    // leak events into the newly selected session.
+    trajectoryEventsBuffer.current = [];
+    trajectoryRefreshPending.current = false;
+    trajectoryRefreshInFlight.current = false;
     let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
     try {
       resources = await Promise.all([
@@ -127,7 +142,6 @@ export function useXBot() {
   }, [api, resetStreamingState, startEventStream]);
   const activateSessionRef = useRef(activate);
   activateSessionRef.current = activate;
-  const trajectoryRefreshInFlight = useRef(false);
   const refreshTrajectory = useCallback(() => {
     const current = currentSessionRef.current;
     if (!current) return;
@@ -139,19 +153,30 @@ export function useXBot() {
     const generation = navigationGeneration.current;
     const eventSequence = latestEventSequenceRef.current;
     trajectoryRefreshInFlight.current = true;
+    trajectoryEventsBuffer.current = [];
     void api.listTrajectory(current.session_id, current.thread_id, { limit: 160 })
       .then((page) => {
         if (generation !== navigationGeneration.current) return;
+        const bufferedEvents = trajectoryEventsBuffer.current.splice(0);
         if (eventSequence !== latestEventSequenceRef.current) {
           trajectoryRefreshPending.current = true;
-          return;
         }
-        dispatch({ type: "trajectory", items: page.items, nextCursor: page.next_cursor });
+        dispatch({
+          type: "trajectory",
+          items: page.items,
+          nextCursor: page.next_cursor,
+          bufferedEvents,
+        });
       })
       .catch((error) => {
-        if (generation === navigationGeneration.current) reportError(error);
+        if (generation === navigationGeneration.current) {
+          const bufferedEvents = trajectoryEventsBuffer.current.splice(0);
+          if (bufferedEvents.length) dispatch({ type: "events", events: bufferedEvents });
+          reportError(error);
+        }
       })
       .finally(() => {
+        if (generation !== navigationGeneration.current) return;
         trajectoryRefreshInFlight.current = false;
         if (trajectoryRefreshPending.current) refreshTrajectoryRef.current?.();
       });
@@ -334,14 +359,6 @@ export function useXBot() {
 
   const listDirectories = useCallback((path?: string, signal?: AbortSignal) => (
     api.listDirectories(path, signal)
-  ), [api]);
-
-  const loadSessionPolicy = useCallback((sessionId: string) => (
-    api.getSessionPolicy(sessionId)
-  ), [api]);
-
-  const updateSessionPolicy = useCallback((sessionId: string, patch: SessionPolicyPatch) => (
-    api.updateSessionPolicy(sessionId, patch)
   ), [api]);
 
   const loadPluginConfig = useCallback((sessionId: string, threadId: string, scope: PluginConfigScope) => (
@@ -897,8 +914,6 @@ export function useXBot() {
     stopAllTasks,
     refreshSessions,
     listDirectories,
-    loadSessionPolicy,
-    updateSessionPolicy,
     loadPluginConfig,
     updatePluginConfig,
     clearNotification: () => setNotification(""),

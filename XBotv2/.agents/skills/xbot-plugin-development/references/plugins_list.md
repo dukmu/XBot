@@ -10,9 +10,10 @@ entries.
 
 The Agent profile starts with the bundled entries, adds external entries from
 the Python `plugin_dirs` argument, then applies (in order) the configured data
-directory overlay, the workspace `.xbot/plugins.yaml` overlay, and session
-overrides. The server and ACP carrier profiles apply the bundled tree and the
-data-directory overlay; they do not read the Agent workspace overlay. Later
+directory `plugins.yaml` overlay, the workspace `.xbot/plugins.yaml` overlay,
+the session `config.yaml` overlay, and in-memory launch overrides. The server
+and ACP carrier profiles apply the bundled tree and the data-directory
+overlay; they do not read the Agent workspace/session overlays. Later
 overlays preserve omitted fields. `config` is recursively merged; `name`,
 `profiles`, `disabled`, and `isolate` replace the previous value.
 
@@ -74,6 +75,8 @@ minimal integration test reports `FiberState.PENDING`:
 | `client_events` | `ClientEventRouter` | not provided | not provided |
 | `child_applications` | child Agent application owner | not provided | not provided |
 | `parent_permissions` | parent permission intersection | not provided | not provided |
+| `plugin_overrides` | in-memory launch overlay list | not provided | not provided |
+| `plugin_dirs` | external plugin import roots | not provided | not provided |
 | `server_options` | not provided | `ServerOptions` | not provided |
 | `agent_application_factory` | not provided | `create_agent_application` | `create_agent_application` |
 | `acp_launch` | not provided | not provided | `ACPLaunch` |

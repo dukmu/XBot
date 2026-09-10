@@ -8,10 +8,12 @@ type QueueAction = { action: "edit"; content: string } | { action: "remove" | "s
 export function QueueDock({
   items,
   running,
+  deliveryStates = {},
   onUpdate,
 }: {
   items: PendingInput[];
   running: boolean;
+  deliveryStates?: Record<string, "accepted" | "claimed" | "consumed" | undefined>;
   onUpdate: (messageId: string, action: QueueAction) => Promise<boolean>;
 }) {
   const queued = useMemo(() => items.filter((item) => item.target === "next-turn"), [items]);
@@ -84,7 +86,10 @@ export function QueueDock({
                   }}
                 />
               ) : (
-                <span className={styles.preview}>{preview(item)}</span>
+                <>
+                  <span className={styles.preview}>{preview(item)}</span>
+                  <small className={styles.state}>{deliveryStates[item.message_id] || "accepted"}</small>
+                </>
               )}
               <div className={styles.actions}>
                 {editing?.id === item.message_id ? (
@@ -105,7 +110,7 @@ export function QueueDock({
         </ul>
         {steering.map((item) => (
           <div className={styles.steering} key={item.message_id}>
-            <Send size={13} /><span>{preview(item)}</span><small>Steering</small>
+            <Send size={13} /><span>{preview(item)}</span><small className={styles.state}>{deliveryStates[item.message_id] || "accepted"}</small>
           </div>
         ))}
       </div>

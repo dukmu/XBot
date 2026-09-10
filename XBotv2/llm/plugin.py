@@ -11,14 +11,13 @@ provider-neutral port to the loop.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pydantic import JsonValue
 from xcore import Context
 
 from XBotv2.llm.service import LlmService, ModelService
 from XBotv2.llm.commands import build_llm_commands
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.llm.contracts import (
+    LlmConfig,
     LIST_PROVIDERS,
     ProviderCatalog,
 )
@@ -39,7 +38,7 @@ def mount_commands(ctx: Context) -> None:
         ctx.commands.register(command)
 
 
-def build_llm_service(config: dict[str, JsonValue] | None = None) -> LlmService:
+def build_llm_service(config: LlmConfig | None = None) -> LlmService:
     """Create an ``LlmService`` with the built-in adapters and tree config.
 
     Used by the llm plugin's ``apply`` and by server-root / CLI code that
@@ -49,15 +48,12 @@ def build_llm_service(config: dict[str, JsonValue] | None = None) -> LlmService:
     from XBotv2.llm.mock import create_mock_provider
     from XBotv2.llm.openai import create_openai_provider
 
-    config = config or {}
+    config = config or LlmConfig()
     service = LlmService()
     service.register("mock", create_mock_provider)
     service.register("openai", create_openai_provider)
     service.register("anthropic", create_anthropic_provider)
-    service.configure(
-        config.get("default"),
-        config.get("providers"),
-    )
+    service.configure(config.default, config.model_dump(mode="json")["providers"])
     for name in service.names():
         service.provider_config(name, require_key=False)
     return service
@@ -68,17 +64,18 @@ class LlmComponent:
 
     name = "xbot.llm"
     inject = ["runtime_log"]
+    Config = LlmConfig
 
     def apply(
         self,
         ctx: Context,
-        config: Mapping[str, JsonValue] | None = None,
+        config: LlmConfig,
     ) -> None:
-        service = build_llm_service(dict(config or {}))
+        service = build_llm_service(config)
         ctx.runtime_log.bind("llm").info(
             "provider.catalog.loaded",
             providers=list(service.names()),
-            configured_default=(config or {}).get("default", ""),
+            configured_default=config.default,
         )
         ctx.set("llm", service)
         ctx.set("model", ModelService())

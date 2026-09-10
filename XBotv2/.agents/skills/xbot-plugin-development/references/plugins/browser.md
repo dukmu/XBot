@@ -6,6 +6,7 @@ session's sandbox policy.
 
 - **Import/profile:** `browser`, Agent profile.
 - **Source:** `XBotv2/browser/plugin.py`,
+  `XBotv2/browser/contracts.py`,
   `XBotv2/browser/browser.py`,
   `XBotv2/browser/network.py`.
 - **Injects/provides:** `tools`, `session`, `sandbox`, `artifacts` →
@@ -13,25 +14,14 @@ session's sandbox policy.
 - **Subscribes to events:** none.
 - **Config:** `search`, `network`, `browser` sub-configs.
 
-## Config schema (`Config = S.object(...)`)
+## Config schema (`Config = BrowserConfig`)
 
 ```python
-Config = S.object({
-    "search": S.object({
-        "backend": S.string().optional(),      # "yandex" (default)
-        "region": S.string().optional(),       # "wt-wt" (default)
-        "safesearch": S.string().optional(),   # "moderate" (default)
-    }).optional(),
-    "network": S.object({
-        "timeout_seconds": S.number().optional(),       # 20.0 (default)
-        "max_response_bytes": S.number().optional(),    # 5_000_000 (default)
-        "allow_private": S.boolean().optional(),        # False (default)
-    }).optional(),
-    "browser": S.object({
-        "headless": S.boolean().optional(),        # True (default)
-        "timeout_seconds": S.number().optional(),   # 30.0 (default)
-    }).optional(),
-})
+class BrowserConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    search: BrowserSearchConfig = Field(default_factory=BrowserSearchConfig)
+    network: BrowserNetworkConfig = Field(default_factory=BrowserNetworkConfig)
+    browser: BrowserSessionConfig = Field(default_factory=BrowserSessionConfig)
 ```
 
 ## Public data models

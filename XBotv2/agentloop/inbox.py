@@ -12,14 +12,13 @@ import asyncio
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
-from dataclasses import replace
 from typing import Any, Protocol
 from pydantic import JsonValue
 
-from XBotv2.agentloop.contracts import InboxInput, InboxSink, InboxTarget
+from XBotv2.agentloop.contracts import InboxInput, InboxSink, InboxSplice, InboxTarget
 
 
-SpliceRecorder = Callable[[dict[str, JsonValue]], Awaitable[None]]
+SpliceRecorder = Callable[[InboxSplice], Awaitable[None]]
 WakeDriver = Callable[[], None]
 
 
@@ -153,6 +152,8 @@ class AgentInbox:
                     "Cannot commit unclaimed inbox ids: "
                     + ", ".join(sorted(unknown))
                 )
+            items = [item for item in self._items() if item.message_id in committed]
+            await self._record("consume", None, items)
             self._remove_ids(committed)
             self._claimed_ids.difference_update(committed)
 
@@ -176,7 +177,7 @@ class AgentInbox:
             raise ValueError("Inbox input content cannot be empty")
         async with self._lock:
             current = self._pending_item(message_id)
-            updated = replace(current, content=content)
+            updated = current.model_copy(update={"content": content})
             items = [
                 updated if item.message_id == message_id else item
                 for item in self._items()
@@ -209,7 +210,7 @@ class AgentInbox:
             current = self._pending_item(message_id)
             if current.target is target:
                 return current
-            updated = replace(current, target=target)
+            updated = current.model_copy(update={"target": target})
             remaining = [item for item in self._items() if item.message_id != message_id]
             next_step = [item for item in remaining if item.target is InboxTarget.NEXT_STEP]
             next_turn = [item for item in remaining if item.target is InboxTarget.NEXT_TURN]
@@ -284,30 +285,12 @@ class AgentInbox:
     ) -> None:
         if self._record_splice is None:
             return
-        await self._record_splice({
-            "type": "agent/inbox/spliced",
-            "data": {
-                "operation": operation,
-                "target": target.value if target is not None else None,
-                "message_ids": [item.message_id for item in items],
-                "items": [
-                    {
-                        "message_id": item.message_id,
-                        "content": item.content,
-                        "target": item.target.value,
-                        "source": item.source,
-                        "images": [
-                            image.model_dump(mode="json") for image in item.images
-                        ],
-                        "artifacts": [
-                            artifact.model_dump(mode="json") for artifact in item.artifacts
-                        ],
-                        "metadata": item.metadata,
-                    }
-                    for item in items
-                ],
-            },
-        })
+        await self._record_splice(InboxSplice(
+            operation=operation,
+            target=target,
+            message_ids=[item.message_id for item in items],
+            items=list(items),
+        ))
 
     def __len__(self) -> int:
         return sum(1 for _ in self._unclaimed(self._items()))

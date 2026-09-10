@@ -1,6 +1,7 @@
 """Public declarations for the background-jobs plugin."""
 
 from XBotv2.jobs.contracts import (
+    JobsConfig,
     TERMINAL_STATES,
     CancelResult,
     Job,
@@ -43,6 +44,7 @@ from XBotv2.jobs.protocol import (
 __all__ = [
     "CancelResult",
     "Job",
+    "JobsConfig",
     "JobError",
     "JobId",
     "JobKind",

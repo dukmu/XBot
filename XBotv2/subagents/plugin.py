@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
-from pydantic import JsonValue
-from xcore import Context, S
+from xcore import Context
 
 from XBotv2.subagents.service import (
     SubagentCatalogPrompt,
@@ -14,6 +11,7 @@ from XBotv2.subagents.service import (
 )
 from XBotv2.application import APPLICATION_INITIALIZED
 from XBotv2.core import Tool
+from XBotv2.subagents.contracts import SubagentsConfig
 
 
 class SubagentsRuntimeComponent:
@@ -33,9 +31,9 @@ class SubagentsRuntimeComponent:
     def apply(
         self,
         ctx: Context,
-        config: Mapping[str, JsonValue] | None = None,
+        config: SubagentsConfig,
     ) -> None:
-        timeout_seconds = float((config or {}).get("timeout_seconds", 600.0))
+        timeout_seconds = config.timeout_seconds
         ctx.on(
             APPLICATION_INITIALIZED,
             SubagentCatalogPrompt(ctx.agent_catalog, ctx.prompts).publish,
@@ -69,16 +67,16 @@ class SubagentsPlugin:
     """Mount subagent support only when thread persistence is available."""
 
     name = "xbot.subagents"
-    Config = S.object({"timeout_seconds": S.number().optional()})
+    Config = SubagentsConfig
 
     async def apply(
         self,
         ctx: Context,
-        config: Mapping[str, JsonValue] | None = None,
+        config: SubagentsConfig,
     ) -> None:
         await ctx.plugin(SubagentsRuntimeComponent(), config)
 
 
 plugin = SubagentsPlugin()
 
-__all__ = ["SubagentsPlugin"]
+__all__ = ["SubagentsPlugin", "SubagentsConfig"]

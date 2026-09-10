@@ -13,17 +13,15 @@ import fnmatch
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 from pydantic import BaseModel, JsonValue
 
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.tools import ToolCall
-from XBotv2.permissions.contracts import PermissionsPort
+from XBotv2.permissions.contracts import PermissionDecision, PermissionsPort
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
 from XBotv2.permissions.patterns import compile_pattern, fullmatch, matching_budget
 from XBotv2.permissions.rules import effective_args
 
-PermissionDecision = Literal["allow", "deny", "ask"]
 _DECISIONS = {"allow", "deny", "ask"}
 
 

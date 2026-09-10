@@ -118,27 +118,31 @@ application event namespace.
 
 ## Schemas and State
 
-Use `from xcore import S` for `Config` schemas (`S.object`, `S.string`,
-`S.number`, `S.boolean`, `S.array`, `S.enum`, `optional`, `default`). Use
-`ctx.state.namespace("plugin-name")` for recoverable key/value state; keep
-runtime resources outside it. Read the XCore schema/state references when
-validation or persistence is part of the plugin.
+Declare plugin configuration as a Pydantic `BaseModel` owned by the plugin.
+XBot validates it before `apply` and exposes `model_json_schema()` to generic
+clients. Use `ConfigDict(extra="forbid")` when unknown keys must fail. The
+configuration service only merges/persists raw layer mappings; it must not
+redeclare plugin fields. Use `ctx.state.namespace("plugin-name")` for
+recoverable key/value state; keep runtime resources outside it.
+
+`SchemaValidationError` and the historical XCore `S` DSL remain framework
+compatibility symbols for older dependency-free plugins; do not use them for a
+new XBot plugin or expose a second schema alongside a Pydantic model.
 
 Prefer a strict schema for external configuration:
 
 ```python
-Config = S.object({
-    "endpoint": S.string(),
-    "timeout": S.number().default(10),
-    "enabled": S.boolean().default(True),
-    "tags": S.array(S.string()).default([]),
-}).strict()
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint: str
+    timeout: float = 10
+    enabled: bool = True
+    tags: list[str] = []
 ```
 
-Builders are immutable and defaults are deep-copied. Missing required keys and
-invalid nested values fail before `apply`, with a path in
-`SchemaValidationError`. XCore's object `.strict()` discards unknown keys; it
-does not reject them. Keep configuration immutable after startup.
+Pydantic models validate before `apply`; invalid nested values include a field
+path in `ValidationError`. Prefer `Field` constraints and model validators for
+cross-field rules. Keep configuration immutable after startup.
 
 StateService data operations (`get`, `set`, `delete`, `clear`, `keys`, and
 `all`) are async and writes are atomic. `namespace(prefix)` is synchronous and
@@ -184,7 +188,7 @@ import these symbols from `xcore`, not private modules:
 | `FiberState` | `pending`, `loading`, `running`, `failed`, `unloading`, `disposed` |
 | `StateService` | atomic JSON state and namespace views |
 | `EventBus` / `Disposer` | event engine and single-shot cleanup callable type |
-| `S` | immutable configuration schema DSL |
+| `BaseModel` | plugin-owned Pydantic configuration contract in XBot |
 | `XCoreError` | base XCore exception |
 | `InactiveEffectError` | effect registered on an inactive/disposed owner |
 | `ServiceNotFoundError` | `ctx.require` could not resolve a service |
@@ -210,7 +214,10 @@ def audit_plugin(ctx, config):
 
 audit_plugin.name = "audit"
 audit_plugin.inject = ["audit_sink"]
-audit_plugin.Config = S.object({"level": S.string().default("info")}).strict()
+class AuditConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: str = "info"
+audit_plugin.Config = AuditConfig
 ```
 
 Object plugin:
@@ -219,7 +226,7 @@ Object plugin:
 class AuditPlugin:
     name = "audit"
     inject = ["audit_sink"]
-    Config = S.object({"level": S.string().default("info")}).strict()
+    Config = AuditConfig
 
     def apply(self, ctx, config): ...
 
@@ -446,50 +453,13 @@ The `dispose` event is an escape hatch for a side effect XCore cannot otherwise
 track. Prefer an apply return disposer or `ctx.dispose` for resources with one
 clear owner.
 
-## Schema Rules and Errors
+## Configuration and errors
 
-Schema constructors are `S.any`, `string`, `number`, `boolean`, `array`,
-`object`, `union`, `enum`, and `const`. Modifiers are `default`, `optional`,
-`description`, and object-only `strict`. Important rules:
-
-- `number` rejects booleans;
-- object unknown keys are preserved unless `.strict()` discards them;
-- optional missing keys remain absent rather than being inserted as `None`;
-- defaults are deep-copied and never shared;
-- union branches are tried in order and errors are aggregated;
-- nested failures include a path such as `$.servers[0].url`.
-
-An `S` plugin `Config` is validated with defaults before apply. A plain dict
-Config only shallow-merges defaults and is intentionally loose; avoid it for a
-new external plugin. `Config = None` performs no validation.
-
-### Schema signatures worth memorising
-
-The DSL takes collections as one value. In particular, use
-`S.enum(["safe", "fast"])`, not positional arguments, and use
-`S.array(S.string())`, not a Python type:
-
-```python
-Config = S.object({
-    "mode": S.enum(["safe", "fast"]).default("safe"),
-    "paths": S.array(S.string()).default([]),
-    "endpoint": S.string().optional(),
-}).strict()
-```
-
-`S.object` validates a mapping, recursively validates known fields, preserves
-unknown fields by default, and drops them with `.strict()`. It never rejects
-unknown fields merely because `.strict()` was used. `.optional()` omits a
-missing object key; it is not a required-service fallback and should not be
-used to hide a broken composition. `.default(value)` deep-copies the value on
-each validation. `S.number()` rejects `bool`, even though Python considers
-`bool` an `int`. `S.union([...])` tries branches in declaration order and
-aggregates errors. `schema.validate(value)` returns a new value and leaves the
-input untouched.
-
-For an invalid config, inspect `SchemaValidationError.path` (for example
-`$.servers[0].url`) and the original exception stored on the `PluginHandle`;
-the loader does not replace it with a generic plugin error.
+Use `Field`, `Literal`, nested `BaseModel` classes, and `model_validator` for
+constraints. `Config.model_json_schema(mode="serialization")` is the sole
+client-facing schema. For an invalid config, inspect Pydantic's structured
+`ValidationError` and the original exception stored on the `PluginHandle`; the
+loader does not replace it with a generic plugin error.
 
 ## State Guarantees and Limits
 

@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from xcore.errors import InactiveEffectError
-from xcore.schema import validate_config
 
 logger = logging.getLogger("xcore.plugin")
 
@@ -341,6 +340,29 @@ class _Runtime:
     fibers: list["Fiber"] = field(default_factory=list)
 
 
+def _validate_plugin_config(config_model: Any, raw_config: Any) -> Any:
+    """Validate a plugin config through its Pydantic-style model contract.
+
+    XCore deliberately does not import Pydantic.  A plugin that declares
+    ``Config`` owns the model and exposes the standard ``model_validate``
+    classmethod; XCore only invokes that stable protocol.  Plugins without a
+    model receive their value unchanged.
+    """
+    if config_model is None:
+        return raw_config
+    try:
+        validator = config_model.model_validate
+    except AttributeError as exc:
+        raise TypeError(
+            "plugin Config must expose Pydantic's model_validate classmethod"
+        ) from exc
+    if not callable(validator):
+        raise TypeError(
+            "plugin Config must expose Pydantic's model_validate classmethod"
+        )
+    return validator(raw_config if raw_config is not None else {})
+
+
 class Registry:
     """Plugin registry (``ctx.registry``): map-like over plugin runtimes."""
 
@@ -653,7 +675,7 @@ class Fiber(EffectOwner):
     async def _load(self) -> None:
         self._set_state(FiberState.LOADING)
         try:
-            config = validate_config(
+            config = _validate_plugin_config(
                 self.runtime.definition.config_schema, self._raw_config
             )
             self.config = config

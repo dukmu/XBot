@@ -10,11 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from xcore import Context
 
 from XBotv2.agentloop import Events
 from XBotv2.core.tools import Tool
+from XBotv2.coretools.contracts import (
+    CoreToolsConfig,
+    HookConfig,
+    WorkspaceToolConfig,
+)
 
 class CoreToolsComponent:
     inject = [
@@ -24,29 +28,25 @@ class CoreToolsComponent:
 
     name = "xbot.coretools"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
-        config = config or {}
+    Config = CoreToolsConfig
+
+    def apply(self, ctx: Context, config: CoreToolsConfig) -> None:
         artifacts = ctx.artifacts
-        result_config = dict(config.get("tool_results") or {})
-        cache_threshold_chars = int(
-            result_config.get("cache_threshold_chars", 12_000)
-        )
-        preview_chars = int(result_config.get("preview_chars", 8_000))
-        tail_chars = int(result_config.get("tail_chars", 2_000))
-        if cache_threshold_chars < 1 or preview_chars < 0 or tail_chars < 0:
-            raise ValueError("Invalid tool result size limits")
-        if preview_chars > cache_threshold_chars:
-            raise ValueError("preview_chars cannot exceed cache_threshold_chars")
-        if tail_chars > preview_chars:
-            raise ValueError("tail_chars cannot exceed preview_chars")
         workspace_xbot = Path(ctx.workspace_root) / ".xbot"
         hooks = [
-            _declaration(item, workspace_xbot, hook=True)
-            for item in config.get("hooks") or []
+            _declaration(
+                item,
+                base_dir=workspace_xbot,
+                hook=True,
+            )
+            for item in config.hooks
         ]
         workspace_tools = [
-            _declaration(item, workspace_xbot)
-            for item in config.get("workspace_tools") or []
+            _declaration(
+                item,
+                base_dir=workspace_xbot,
+            )
+            for item in config.workspace_tools
         ]
         from XBotv2.coretools.filesystem import filesystem_tools
         from XBotv2.coretools.shell import shell_tools
@@ -65,9 +65,9 @@ class CoreToolsComponent:
             Events.AFTER_TOOLS,
             make_tool_result_cache_hook(
                 artifacts,
-                cache_threshold_chars=cache_threshold_chars,
-                preview_chars=preview_chars,
-                tail_chars=tail_chars,
+                cache_threshold_chars=config.tool_results.cache_threshold_chars,
+                preview_chars=config.tool_results.preview_chars,
+                tail_chars=config.tool_results.tail_chars,
             ),
         )
         for declaration in hooks:
@@ -99,21 +99,18 @@ class _Declaration:
 
 
 def _declaration(
-    raw: dict[str, Any],
-    workspace_xbot: Path,
+    raw: HookConfig | WorkspaceToolConfig,
     *,
+    base_dir: Path,
     hook: bool = False,
 ) -> _Declaration:
-    target = str(raw.get("target") or "")
-    source, separator, export = target.partition(":")
-    if not separator or not source or not export:
-        raise ValueError("target must use source:export syntax")
-    stage = str(raw.get("stage") or "")
+    target = raw.target
+    stage = raw.stage if isinstance(raw, HookConfig) else ""
     if hook and not stage:
         raise ValueError("hook stage must not be empty")
     return _Declaration(
         target=target,
-        base_dir=Path(raw.get("base_dir") or workspace_xbot),
+        base_dir=base_dir,
         stage=stage,
     )
 
@@ -145,10 +142,6 @@ def _resolve_workspace_target(declaration: Any, *, directory: str) -> Any:
 
     source, attr_name = declaration.target.split(":", 1)
     base_dir = declaration.base_dir
-    if base_dir is None:
-        raise ValueError(
-            f"Workspace {directory} target {source!r} must be declared in the workspace overlay"
-        )
     extension_dir = (Path(base_dir) / directory).resolve()
     path = (Path(base_dir) / source).resolve()
     try:

@@ -139,6 +139,9 @@ class SubagentCatalogPrompt:
 
 ## `SubagentsPlugin` (`XBotv2/subagents/plugin.py`)
 
+`SubagentsConfig` is declared in `XBotv2/subagents/contracts.py` and is the
+single source for its JSON Schema and runtime defaults.
+
 ```python
 class SubagentsRuntimeComponent:
     inject = [
@@ -149,9 +152,9 @@ class SubagentsRuntimeComponent:
 
 class SubagentsPlugin:
     name = "xbot.subagents"
-    Config = S.object({"timeout_seconds": S.number().optional()})
+    Config = SubagentsConfig
 
-    async def apply(self, ctx, config=None) -> None:
+    async def apply(self, ctx, config: SubagentsConfig) -> None:
         await ctx.plugin(SubagentsRuntimeComponent(), config)
 ```
 

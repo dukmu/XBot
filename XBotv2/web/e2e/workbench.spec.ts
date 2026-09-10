@@ -5,12 +5,12 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("opens DSh-style client and server settings and applies the theme locally", async ({ page }) => {
+test("opens VS Code-style settings scopes and applies the theme locally", async ({ page }) => {
   if ((page.viewportSize()?.width || 0) <= 820) {
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByRole("button", { name: "Open settings" }).click();
-  const settings = page.getByRole("dialog", { name: "Client settings" });
+  const settings = page.getByRole("dialog", { name: "Global settings" });
   await expect(settings).toBeVisible();
 
   await settings.getByRole("radio", { name: /Dark/ }).click();
@@ -20,10 +20,10 @@ test("opens DSh-style client and server settings and applies the theme locally",
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#ffffff");
 
-  await settings.getByRole("button", { name: "Server" }).click();
-  await expect(page.getByRole("dialog", { name: "Server settings" })).toContainText("Open a session");
+  await settings.getByRole("button", { name: "Session" }).click();
+  await expect(page.getByRole("dialog", { name: "Session settings" })).toContainText("Open a session");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "Server settings" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Session settings" })).toHaveCount(0);
 });
 
 test("loads and saves the active session security policy", async ({ page }) => {
@@ -32,7 +32,7 @@ test("loads and saves the active session security policy", async ({ page }) => {
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Server" }).click();
+  await page.getByRole("button", { name: "Session" }).click();
   await expect(page.getByText("Session security policy")).toBeVisible();
   const request = page.waitForRequest((candidate) => (
     candidate.method() === "PATCH"
@@ -46,7 +46,7 @@ test("loads and saves the active session security policy", async ({ page }) => {
     permissions: { shell: "allow" },
     sandbox: { network: false },
   });
-  await expect(page.getByRole("dialog", { name: "Server settings" }).getByRole("status")).toContainText("Saved");
+  await expect(page.getByRole("dialog", { name: "Session settings" }).getByRole("status")).toContainText("Saved");
 });
 
 test("edits plugin configuration through the declared schema catalog", async ({ page }) => {
@@ -55,8 +55,9 @@ test("edits plugin configuration through the declared schema catalog", async ({ 
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Server" }).click();
-  const dialog = page.getByRole("dialog", { name: "Server settings" });
+  const settingsDialog = page.getByRole("dialog");
+  await settingsDialog.getByRole("button", { name: "Workspace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Workspace settings" });
   await expect(dialog.getByRole("heading", { name: "Plugin configuration" })).toBeVisible();
   const compact = dialog.getByRole("button", { name: "compact Schema available" });
   await expect(compact).toBeVisible();
@@ -65,7 +66,7 @@ test("edits plugin configuration through the declared schema catalog", async ({ 
     candidate.method() === "PATCH"
     && candidate.url().endsWith("/plugin-config/compact?scope=workspace")
   ));
-  await dialog.getByLabel("Plugin configuration JSON").fill('{"automatic":false}');
+  await dialog.getByLabel("automatic").uncheck();
   await dialog.getByRole("button", { name: "Save plugin configuration" }).click();
   expect((await request).postDataJSON()).toMatchObject({ config: { automatic: false } });
   await expect(dialog.getByText("Saved")).toBeVisible();

@@ -5,25 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from pydantic import JsonValue
 
-from XBotv2.loader import PluginEntry, PluginTree
-from XBotv2.loader.contracts import PluginOverlay
+from XBotv2.loader import PluginOverlay, PluginTree
+from XBotv2.loader.resolve import DEFAULT_TREE, resolve_agent_tree
 from XBotv2.core.paths import RuntimePaths
-
-
-DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
-SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"subagents"})
-OPTIONAL_CAPABILITIES = frozenset({
-    "goal",
-    "todolist",
-    "skills",
-    "mcp_plugin",
-    "compact",
-    "subagents",
-    "browser",
-    "token_manager",
-    "workspace_instructions",
-})
-
 
 def load_agent_tree(
     *,
@@ -33,51 +17,29 @@ def load_agent_tree(
     no_plugins: bool,
     plugin_dirs: list[Path | str] | None,
     extra_plugins: list[dict[str, JsonValue]] | None,
+    session_id: str | None = None,
     include_global: bool = True,
     include_workspace: bool = True,
+    include_session: bool = True,
 ) -> PluginTree:
-    """Compose the Agent tree in global, workspace, then session order."""
-    excluded = frozenset(
-        (OPTIONAL_CAPABILITIES if no_plugins else frozenset())
-        | (SUBAGENT_FORBIDDEN_PLUGINS if is_subagent else frozenset())
+    """Resolve the Agent tree through the shared loader contract."""
+    return resolve_agent_tree(
+        paths=paths,
+        workspace_root=workspace_root,
+        is_subagent=is_subagent,
+        no_plugins=no_plugins,
+        plugin_dirs=plugin_dirs,
+        extra_plugins=extra_plugins,
+        session_id=session_id,
+        include_global=include_global,
+        include_workspace=include_workspace,
+        include_session=include_session,
     )
-    external_entries = _external_entries(plugin_dirs, excluded)
-    if no_plugins:
-        excluded |= frozenset(entry.id for entry in external_entries)
-    tree = PluginTree.from_yaml(DEFAULT_TREE).excluding(excluded)
-    if not no_plugins:
-        tree = PluginTree([*tree.entries, *external_entries])
-
-    plugins_file = paths.config_dir / "plugins.yaml"
-    if include_global and plugins_file.exists():
-        tree = tree.patched_with(
-            PluginOverlay.from_yaml(plugins_file),
-            excluded=excluded,
-            allow_new=not no_plugins,
-        )
-    workspace_plugins = Path(workspace_root) / ".xbot" / "plugins.yaml"
-    if include_workspace and workspace_plugins.exists():
-        tree = tree.patched_with(
-            PluginOverlay.from_yaml(workspace_plugins),
-            excluded=excluded,
-            allow_new=not no_plugins,
-        )
-    if extra_plugins:
-        tree = tree.patched_with(
-            PluginOverlay.parse(extra_plugins),
-            excluded=excluded,
-            allow_new=False,
-        )
-    return tree.for_profile("agent")
 
 
 def load_server_tree(*, paths: RuntimePaths) -> PluginTree:
     """Load the declarative server application profile."""
-    tree = PluginTree.from_yaml(DEFAULT_TREE)
-    plugins_file = paths.config_dir / "plugins.yaml"
-    if plugins_file.exists():
-        tree = tree.patched_with(PluginOverlay.from_yaml(plugins_file))
-    selected = tree.for_profile("server")
+    selected = _load_carrier_tree(paths, "server")
     if not any(entry.id == "llm" for entry in selected.entries):
         raise ValueError("server application requires the llm profile entry")
     return selected
@@ -85,31 +47,15 @@ def load_server_tree(*, paths: RuntimePaths) -> PluginTree:
 
 def load_acp_tree(*, paths: RuntimePaths) -> PluginTree:
     """Load the ACP carrier application profile."""
+    return _load_carrier_tree(paths, "acp")
+
+
+def _load_carrier_tree(paths: RuntimePaths, profile: str) -> PluginTree:
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
         tree = tree.patched_with(PluginOverlay.from_yaml(plugins_file))
-    return tree.for_profile("acp")
-
-
-def _external_entries(
-    plugin_dirs: list[Path | str] | None,
-    excluded: frozenset[str],
-) -> list[PluginEntry]:
-    entries: list[PluginEntry] = []
-    for plugin_dir in plugin_dirs or []:
-        root = Path(plugin_dir)
-        if not root.exists():
-            continue
-        for candidate in sorted(root.iterdir()):
-            if not candidate.is_dir() or not (
-                (candidate / "plugin.py").exists()
-                or (candidate / "__init__.py").exists()
-            ):
-                continue
-            if candidate.name not in excluded:
-                entries.append(PluginEntry(id=candidate.name, name=candidate.name))
-    return entries
+    return tree.for_profile(profile)
 
 
 __all__ = [

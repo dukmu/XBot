@@ -46,10 +46,6 @@ class RuntimePaths:
         return self.data_dir / "logs"
 
     @property
-    def config_file(self) -> Path:
-        return self.config_dir / "config.yaml"
-
-    @property
     def memory_file(self) -> Path:
         return self.memory_dir / "MEMORY.md"
 

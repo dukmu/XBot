@@ -3,6 +3,43 @@
 This backlog tracks the next architecture iterations. It is ordered to reduce
 ambiguity before large implementation changes.
 
+## 0.2 Plugin-owned configuration contracts (2026-09-10)
+
+- Built-in XBot plugins now declare configuration with Pydantic models in the
+  owning plugin (`sandbox`, `permissions`, `coretools`, `compact`,
+  `content_cache`, `browser`, `subagents`, and `mcp_plugin`). The configuration
+  plugin only resolves overlays, persists mappings, validates through the
+  declared model, and exposes its standard JSON Schema.
+- Permission and sandbox entries use their direct plugin config shape. The
+  configuration service now returns only the resolved generic `PluginTree`;
+  the Agent composition boundary builds its small runtime projection and no
+  longer defines any plugin model a second time.
+- XCore remains dependency-free: its lifecycle validator recognizes any
+  `model_validate` contract without importing Pydantic. The historical `S`
+  DSL is retained only for older external XCore plugins; new XBot plugins must
+  not declare it.
+- Core verification: focused configuration/policy/plugin tests passed; the
+  non-socket HTTP integration set passed. Socket-backed TUI cases remain
+  unavailable in the restricted test sandbox.
+
+## 0.1 Live activity continuation (2026-09-10)
+
+- The trajectory refresh path now holds raw `ServerEvent` objects while the
+  append-only baseline is fetched, folds them once after the baseline, and
+  discards the window on navigation. The reducer has a direct regression test
+  for this ordering rather than only testing the projected result.
+- Input delivery is a typed session event sequence: `input_accepted` and
+  `input_claimed`. Queue and transcript projections keep the phase by stable
+  message ID, including after reconnect; transcript `message` is the consumed
+  boundary rather than a second queue event.
+- The Web session page now keeps a DSH-style activity strip for every thread
+  returned by the existing thread catalog, with model, message count, token
+  usage, running state, and direct navigation. It is deliberately a summary
+  aggregation; it does not invent independent event loaders for child threads.
+- Verification for this continuation: 94 Web tests, production build, and
+  focused queued/SSE integration tests passed. Socket-backed TUI tests remain
+  dependent on host permission in the sandbox.
+
 ## 0. WebUI Stability Audit (2026-09-09, discovery and implementation status)
 
 This section records the WebUI investigation and the first implementation
@@ -38,24 +75,27 @@ tree:
 
 The following are explicitly **not** claimed as complete: a DSH-style
 definition registry and live buffer, full subagent session navigation, or a
-live-reload plugin settings system. A first server-backed plugin settings
-surface now exists below, but it is intentionally limited to declared XCore
-schemas and global/workspace overlays.
+live-reload plugin settings system. A server-backed plugin settings surface
+now exists below and covers declared XCore schemas at global, workspace, and
+session layers.
 
 ### Schema-driven plugin settings
 
 The server now exposes a revisioned `PluginConfigCatalog` and PATCH endpoint.
 It discovers entries from the actual loaded plugin tree, projects producer
 schemas to JSON Schema, and marks plugins without a declared `Config` as
-read-only. The WebUI uses one generic JSON editor and never branches on a
-plugin name. Writes are atomic, optimistic-concurrency checked, and explicitly
-apply to new sessions rather than pretending to hot-reload running plugins.
+read-only. The WebUI uses one schema-driven field editor with an advanced JSON
+fallback and never branches on a plugin name. Writes are atomic,
+optimistic-concurrency checked. Global/workspace writes affect later starts;
+session writes are persisted for the selected session and are applied on its
+next runtime creation rather than pretending to hot-reload a running plugin.
 
-Remaining work is deliberate: pass external plugin directories into the
-catalog, provide a separate secret/write-only contract, and surface provider
-configuration only when its producer exposes a validated schema. Plugin-local
-parser rules that are not represented by the XCore schema also need to be
-reported by the server instead of guessed in the client.
+Remaining work is deliberate: provide a separate secret/write-only contract
+and surface provider configuration only when its producer exposes a validated
+schema. External plugins use the existing workspace `plugins.yaml` plus the
+Python import environment; this catalog does not add another loader. Plugin-
+local parser rules that are not represented by the XCore schema also need to
+be reported by the server instead of guessed in the client.
 The implementation must not add an event for every context-builder execution.
 
 ### Unified activity projection, first step
@@ -104,13 +144,14 @@ Undo and clear replacements are folded as destructive transcript edits. Older
 pages are accepted only for the cursor that requested them and the combined
 window is reprojected, so delayed pages cannot overwrite a newer baseline.
 
-Remaining limitation: live SSE frames are still reduced after the durable
-baseline instead of first entering a shared raw-event window. Gap recovery
-reopens the authoritative baseline. A trajectory refresh now records the
-latest observed event sequence and discards/retries its response if a newer
-frame arrived while it was in flight, so it cannot overwrite that live frame.
-There is still no DSH-style raw buffer or pluggable event-definition registry;
-no per-context-build events were added.
+Live SSE frames now enter a raw event window while the durable trajectory
+baseline is being fetched. The baseline reducer folds that exact buffered
+window once, then retries when the observed sequence advances; navigation drops
+the old window before attaching a new thread. The reducer also keeps an
+explicit live/trajectory origin, so a baseline replacement cannot erase frames
+already rendered while the request was in flight. This is a transport
+reconciliation buffer, not a new persistence format or per-context-build event
+source; no per-context-build events were added.
 
 Final assistant messages now carry a deterministic thread-local message ID,
 which is persisted with the message and exposed by the trajectory record (not
@@ -123,9 +164,11 @@ the common reconnect duplication without comparing message text.
 
 Persisted child threads already share the session thread catalog. The sidebar
 now presents them as named subagent rows with their thread identity and running
-indicator, and selecting one opens that child through the normal thread API so
-it gets its own trajectory, event stream, usage, and header state. Desktop and
-mobile browser coverage exercises the actual navigation and child history.
+indicator. The session page also exposes a DSH-style resident activity strip
+for the complete thread summary, including running/idle state and model, and
+selecting one opens that child through the normal thread API so it gets its own
+trajectory, event stream, usage, and header state. Desktop and mobile browser
+coverage exercises the actual navigation and child history.
 
 This is not yet DSH's resident multi-session cluster: switching threads stops
 the previous Web stream, and the sidebar does not aggregate recursive child
@@ -135,20 +178,12 @@ remaining enhancements rather than hidden behavior.
 ### Server settings, first connected surface
 
 The Web settings dialog no longer presents a fake server preview. With an
-active session it reads the existing typed session-policy endpoint and can
-persist sandbox enablement, network/access modes, and an exact Tool permission
-decision. Only fields changed from the effective baseline are written into the
-session overlay. Every sandbox field has an explicit `inherit` choice, and an
-exact Tool permission can likewise be returned to `inherit`; those choices
-remove the session-local key instead of copying the current effective
-global/workspace value. The resulting policy is applied through the Config
-plugin and remains consistent after the session restarts.
-
-The policy editor remains session-scoped. Plugin configuration is now exposed
-through the separate schema-described, revision-checked catalog below; it is
-not mixed into the policy model. Provider secrets still require write-only
-slots before they can be safely exposed, and the catalog intentionally does
-not claim live reload for running sessions.
+active session it uses the same schema-described, revision-checked catalog for
+global, workspace, and session scopes. Sandbox and permissions are plugin
+declarations in that catalog; the typed `/policy` endpoint remains available
+as a command/API projection. Provider secrets still require write-only slots
+before they can be safely exposed, and writes do not pretend to hot-reload
+running plugins.
 
 History-changing server commands now refresh this trajectory projection rather
 than falling back to the older message page. Concurrent refresh requests are
@@ -295,9 +330,9 @@ limits are described in the sections above.
    trajectory loading are folded once without a transient reset.
 2. Evolve child-thread navigation into a resident session cluster with
    recursive subagent usage, elapsed time, diagnostics, and background updates.
-3. Extend the revisioned plugin-config catalog with external plugin
-   directories, a session-local layer where appropriate, and write-only secret
-   slots. Keep controls generated from producer-owned schemas.
+3. Extend the revisioned plugin-config catalog with a session-local layer
+   where appropriate and write-only secret slots. Keep controls generated from
+   producer-owned schemas.
 4. Make steering acceptance, claim, and consumption phases explicit in the UI
    without changing the Agent loop's step-boundary semantics.
 

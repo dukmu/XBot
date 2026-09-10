@@ -198,11 +198,19 @@ class QueueUpdatedData(WireModel):
     items: list[PendingInputData] = Field(default_factory=list)
 
 
+class InputDeliveryData(WireModel):
+    message_ids: list[str] = Field(default_factory=list)
+    target: Literal["next-turn", "next-step"] | None = None
+
+
 SessionEventType = Literal[
     "agent_configured",
     "history_updated",
     "message",
     "queue_updated",
+    "input_accepted",
+    "input_claimed",
+    "input_consumed",
 ]
 
 _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
@@ -210,6 +218,9 @@ _SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
     "history_updated": HistoryUpdatedData,
     "message": MessageData,
     "queue_updated": QueueUpdatedData,
+    "input_accepted": InputDeliveryData,
+    "input_claimed": InputDeliveryData,
+    "input_consumed": InputDeliveryData,
 }
 
 

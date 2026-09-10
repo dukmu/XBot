@@ -248,6 +248,10 @@ class PluginTree:
     def excluding(self, entry_ids: set[str] | frozenset[str]) -> "PluginTree":
         return PluginTree([entry for entry in self.entries if entry.id not in entry_ids])
 
+    def entry(self, plugin_id: str) -> PluginEntry | None:
+        """Return one resolved declaration by id without exposing a mapping."""
+        return next((item for item in self.entries if item.id == plugin_id), None)
+
     def for_profile(self, profile: str) -> "PluginTree":
         return PluginTree([
             entry

@@ -13,17 +13,15 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 from pydantic import JsonValue
-from XBotv2.config import SandboxConfig
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.tools import GuardDecision, ToolCall
 from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
-
-PathAccess = Literal["allow", "readwrite", "readonly", "deny"]
+from XBotv2.sandbox.contracts import PathAccess, SandboxConfig
 
 
 @dataclass
