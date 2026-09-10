@@ -751,7 +751,7 @@ async def regenerate_turn_stream(
             },
         ))
         accepted = runtime._message_event(
-            request_id,
+            message.input_id or request_id,
             message.content,
             list(message.images),
             artifacts,

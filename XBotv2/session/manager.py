@@ -43,13 +43,6 @@ from XBotv2.session.contracts import (
     SessionResourceChanged,
     SessionResourceRemoved,
     SessionsPort,
-)
-from XBotv2.session.event_stream import (
-    SessionEventSubscription,
-)
-from XBotv2.session.session import delete_persisted_session, fork_persisted_session
-from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
-from XBotv2.session.contracts import (
     ArtifactPayload,
     HistoryMutation,
     InteractionReceipt,
@@ -71,6 +64,9 @@ from XBotv2.session.contracts import (
     new_session_id,
     trajectory_replay,
 )
+from XBotv2.session.event_stream import SessionEventSubscription
+from XBotv2.session.session import delete_persisted_session, fork_persisted_session
+from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
 from XBotv2.core.operations import (
     Operation,
     RequestT,

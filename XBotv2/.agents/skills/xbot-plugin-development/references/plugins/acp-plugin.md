@@ -225,8 +225,9 @@ stdin/stdout JSON-RPC →
 - Depends on: `sessions` (`SessionsPort`), `acp_launch`, `runtime_log`,
   `agents` (`LIST_AGENTS`, `SELECT_AGENT`), `commands` (`LIST_COMMANDS`,
   `EXECUTE_COMMAND`), `llm` (`LIST_PROVIDERS`, `SELECT_PROVIDER`),
-  `session.types`, `session.services`, `session.history`,
-  `session.event_stream`.
+  `XBotv2.session.contracts` (public session DTOs and ports),
+  `XBotv2.session.manager` (the `SessionsPort` implementation), and
+  `XBotv2.session.event_stream` (cursor-aware event subscription).
 - Depended on by: ACP clients.
 - Pairs with: `process-sessions` (`SessionsPort` implementation),
   `mcp-plugin` (MCP server negotiation).

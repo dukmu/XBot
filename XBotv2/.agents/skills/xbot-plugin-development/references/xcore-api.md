@@ -125,9 +125,10 @@ configuration service only merges/persists raw layer mappings; it must not
 redeclare plugin fields. Use `ctx.state.namespace("plugin-name")` for
 recoverable key/value state; keep runtime resources outside it.
 
-`SchemaValidationError` and the historical XCore `S` DSL remain framework
-compatibility symbols for older dependency-free plugins; do not use them for a
-new XBot plugin or expose a second schema alongside a Pydantic model.
+XCore does not export a schema DSL or a schema-validation exception. A plugin
+configuration contract is a Pydantic `BaseModel` owned by that plugin. Do not
+import `S` or `SchemaValidationError`, and do not expose a second hand-written
+schema alongside the Pydantic model.
 
 Prefer a strict schema for external configuration:
 
@@ -193,7 +194,6 @@ import these symbols from `xcore`, not private modules:
 | `InactiveEffectError` | effect registered on an inactive/disposed owner |
 | `ServiceNotFoundError` | `ctx.require` could not resolve a service |
 | `ServiceConflictError` | duplicate service in one scope |
-| `SchemaValidationError` | invalid schema value with a path |
 | `current_fiber` | current applying fiber, otherwise `None` |
 | `current_plugin_name` | current applying plugin name, otherwise `"unknown"` |
 | `bound_effect` | capability-service helper binding cleanup during apply |

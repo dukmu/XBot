@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -67,7 +68,11 @@ class MockLLM(BaseProvider):
         self.call_history.append(list(messages))
         chunks = response.get("chunks")
         if isinstance(chunks, list) and chunks:
+            delay_ms = response.get("chunk_delay_ms", 0)
+            delay = float(delay_ms) / 1000 if isinstance(delay_ms, (int, float)) and delay_ms > 0 else 0
             for chunk in chunks:
+                if delay:
+                    await asyncio.sleep(delay)
                 yield self.to_chunk(chunk)
             yield result
             return

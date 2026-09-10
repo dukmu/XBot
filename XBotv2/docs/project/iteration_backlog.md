@@ -15,9 +15,8 @@ ambiguity before large implementation changes.
   the Agent composition boundary builds its small runtime projection and no
   longer defines any plugin model a second time.
 - XCore remains dependency-free: its lifecycle validator recognizes any
-  `model_validate` contract without importing Pydantic. The historical `S`
-  DSL is retained only for older external XCore plugins; new XBot plugins must
-  not declare it.
+  `model_validate` contract without importing Pydantic. XCore exports no
+  schema DSL; external plugins must declare a Pydantic `Config` model.
 - Core verification: focused configuration/policy/plugin tests passed; the
   non-socket HTTP integration set passed. Socket-backed TUI cases remain
   unavailable in the restricted test sandbox.

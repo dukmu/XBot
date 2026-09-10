@@ -18,11 +18,9 @@ from XBotv2.config.contracts import (
     PluginConfigScope,
     PolicySnapshot,
     SettingsPort,
-)
-from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.config.contracts import (
     UserContext,
 )
+from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.loader.contracts import PluginTree
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.paths import RuntimePaths

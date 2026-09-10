@@ -59,7 +59,6 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session import SessionEventFrame, conversation_replay
-from XBotv2.session import SessionEventFrame, conversation_replay
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
 from XBotv2.commands import (
     EXECUTE_COMMAND,

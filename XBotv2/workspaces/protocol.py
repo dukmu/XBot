@@ -33,8 +33,6 @@ from XBotv2.workspaces.contracts import (
     WorkspaceEventSubscription,
     WorkspaceEventsPort,
     WorkspacesPort,
-)
-from XBotv2.workspaces.contracts import (
     ArchivedSessionsChanged,
     WorkspaceOrderChanged,
     WorkspaceResourceChanged,
