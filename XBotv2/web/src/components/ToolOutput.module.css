@@ -30,24 +30,16 @@
 
 .output pre {
   max-width: 100%;
+  max-height: min(420px, 55vh);
   margin: 0;
   padding: 10px;
   overflow: auto;
   color: var(--dsw-alias-label-primary);
   font: var(--dsw-font-markdown-code-block);
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.expand {
-  width: 100%;
-  padding: 7px 10px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  color: var(--dsw-alias-label-tertiary);
-  text-align: left;
-}
+.header button:hover { color: var(--dsw-alias-label-primary); }
 
-.header button:hover,
-.expand:hover { color: var(--dsw-alias-label-primary); }
-
-.header button:focus-visible,
-.expand:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+.header button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }

@@ -462,6 +462,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           state.entries,
           state.assistantDraft,
           stringValue(data.content),
+          stringValue(data.reasoning),
           arrayValue(data.tool_calls),
           stringValue(data.id),
         ),
@@ -767,10 +768,73 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
     groups.splice(insertAt, 0, ...replacements);
     for (const replacement of replacements) lineage.set(replacement.nodeId, [replacement.nodeId]);
   }
-  return groups.flatMap((group) => group.entries).map((entry) => ({
+  return reconcileTrajectoryTools(groups).flatMap((group) => group.entries).map((entry) => ({
     ...entry,
     origin: "trajectory" as const,
   }));
+}
+
+/**
+ * A trajectory stores assistant tool calls and tool results as separate
+ * append-only records.  The visual transcript has one ToolEntry per call, so
+ * reconcile those records after applying compaction lineage.  Keeping this at
+ * the trajectory boundary means live event handling can remain incremental
+ * while resume uses the same terminal status and result projection.
+ */
+function reconcileTrajectoryTools(groups: TrajectoryGroup[]): TrajectoryGroup[] {
+  const canonical = new Map<string, { group: number; index: number; entry: ToolEntry }>();
+  const duplicates = new Set<string>();
+
+  groups.forEach((group, groupIndex) => {
+    group.entries.forEach((entry, entryIndex) => {
+      if (entry.kind !== "tool" || !entry.toolCallId) return;
+      const previous = canonical.get(entry.toolCallId);
+      if (!previous) {
+        canonical.set(entry.toolCallId, { group: groupIndex, index: entryIndex, entry });
+        return;
+      }
+      previous.entry = mergeRestoredTool(previous.entry, entry);
+      groups[previous.group].entries[previous.index] = previous.entry;
+      duplicates.add(`${groupIndex}:${entryIndex}`);
+    });
+  });
+
+  return groups.map((group, groupIndex) => ({
+    ...group,
+    entries: group.entries.filter((_, entryIndex) => !duplicates.has(`${groupIndex}:${entryIndex}`)),
+  }));
+}
+
+function mergeRestoredTool(current: ToolEntry, incoming: ToolEntry): ToolEntry {
+  const currentStatus = current.status;
+  const incomingStatus = incoming.status;
+  const status = terminalToolStatus(incomingStatus) ? incomingStatus : currentStatus;
+  return {
+    ...current,
+    name: current.name === "tool" ? incoming.name : current.name,
+    args: isEmptyObject(current.args) ? incoming.args : current.args,
+    status,
+    result: current.result === null || current.result === "" ? incoming.result : current.result,
+    data: current.data === null ? incoming.data : current.data,
+    error: current.error ?? incoming.error,
+    artifacts: current.artifacts.length ? current.artifacts : incoming.artifacts,
+    images: current.images.length ? current.images : incoming.images,
+    permissionRequestId: current.permissionRequestId ?? incoming.permissionRequestId,
+  };
+}
+
+function terminalToolStatus(status: string): boolean {
+  return [
+    "success", "approved", "completed", "ok", "error", "failed",
+    "denied", "cancelled", "stopped",
+  ].includes(status);
+}
+
+function isEmptyObject(value: unknown): boolean {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).length === 0;
 }
 
 function upsertCompactionGroup(
@@ -854,6 +918,7 @@ function applyAssistantMessage(
   entries: TimelineEntry[],
   draft: MessageEntry | null,
   content: string,
+  reasoning: string,
   calls: unknown[],
   messageId: string,
 ): TimelineEntry[] {
@@ -862,9 +927,19 @@ function applyAssistantMessage(
   }
   let copy = entries;
   if (draft) {
-    copy = [...copy, { ...draft, content: content || draft.content, streaming: false, messageId }];
-  } else if (content) {
-    copy = [...copy, { ...messageEntry("assistant", content), messageId }];
+    copy = [...copy, {
+      ...draft,
+      content: content || draft.content,
+      reasoning: reasoning || draft.reasoning,
+      streaming: false,
+      messageId,
+    }];
+  } else if (content || reasoning) {
+    copy = [...copy, {
+      ...messageEntry("assistant", content),
+      reasoning,
+      messageId,
+    }];
   }
   copy = upsertToolCalls(copy, calls);
   return copy;

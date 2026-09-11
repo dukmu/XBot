@@ -535,6 +535,13 @@ class XBotTextualApp(App[None]):
         if spec.name == "session":
             await self._cmd_session(spec.args)
             return
+        if spec.name == "resume":
+            await self._cmd_session(spec.args.strip() or self.state.session_id)
+            return
+        if spec.name == "new":
+            args = spec.args.strip()
+            await self._cmd_session(f"new {args}".strip())
+            return
         if spec.name == "unknown":
             await self._append_local_notice("Unknown command", spec.display_label)
             return
@@ -621,7 +628,6 @@ class XBotTextualApp(App[None]):
                 session_id=self.session.session_id,
                 thread_id=self.session.thread_id,
             )
-            self.commands.reset()
             await self._apply_open_session(opened)
             try:
                 payload = await self.session.list_commands()
