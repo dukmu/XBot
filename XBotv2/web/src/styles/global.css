@@ -209,10 +209,12 @@ summary:focus-visible {
 }
 
 .workspace-group {
+  position: relative;
   margin: 2px 0 7px;
 }
 
 .workspace-row {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -332,8 +334,12 @@ summary:focus-visible {
 .session-more[aria-expanded="true"] { opacity: 1; }
 
 .session-action-menu {
+  position: absolute;
+  top: 36px;
+  right: 3px;
+  z-index: 40;
   width: 120px;
-  margin: 2px 3px 5px auto;
+  margin: 0;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -361,7 +367,9 @@ summary:focus-visible {
 .session-action-menu button:disabled { color: var(--faint); cursor: default; opacity: .45; }
 .session-action-menu button.danger { color: #e5a09a; }
 
-.workspace-action-menu { width: 135px; margin-right: 3px; }
+.workspace-action-menu { top: 38px; width: 135px; }
+
+.session-group { position: relative; }
 
 .session-row {
   gap: 8px;

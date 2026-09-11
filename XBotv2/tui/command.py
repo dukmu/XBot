@@ -82,6 +82,12 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/attach <path> | /attach clear",
         raw="/attach",
     ),
+    "copy": CommandSpec(
+        name="copy", kind="client",
+        description="Copy the latest assistant response",
+        usage="/copy",
+        raw="/copy",
+    ),
     "session": CommandSpec(
         name="session",
         kind="client",
@@ -94,11 +100,23 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
             "new [workspace]": "Create a session in a workspace",
         },
     ),
+    "resume": CommandSpec(
+        name="resume", kind="client",
+        description="Resume a persisted session",
+        usage="/resume [session-id [workspace]]",
+        raw="/resume",
+    ),
+    "new": CommandSpec(
+        name="new", kind="client",
+        description="Create a new session in a workspace",
+        usage="/new [workspace]",
+        raw="/new",
+    ),
 }
 _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
 _CLIENT_SEARCH_ORDER = (
-    "help", "session", "clear-screen", "thinking", "details", "attach", "exit",
+    "help", "session", "resume", "new", "clear-screen", "thinking", "details", "attach", "copy", "exit",
 )
 
 

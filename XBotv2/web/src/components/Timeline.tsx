@@ -105,7 +105,7 @@ export const Timeline = memo(function Timeline({
     element?.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollerOf(list.current);
     if (!element || !shouldFollow.current) return;
     // Re-check the distance at the point of the update.  A scroll event can

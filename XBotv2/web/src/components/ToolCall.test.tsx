@@ -89,10 +89,56 @@ describe("ToolCall file mutation presentation", () => {
     const view = openTool(tool);
 
     expect(within(view.container).queryByText(/^└ \+/u)).toBeNull();
-    const header = view.container.querySelector<HTMLElement>(".tool-file-card header");
-    if (!header) throw new Error("Generic file-result card did not render");
-    expect(within(header).getByText("Path", { exact: true })).toBeInTheDocument();
-    const path = String((tool.args as Record<string, unknown>).path);
-    expect(within(header).getByText(path, { exact: true })).toBeInTheDocument();
+    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
+    expect(view.container.querySelector("details[aria-label='Arguments']")).not.toBeNull();
+  });
+});
+
+describe("ToolCall specialized argument presentation", () => {
+  it("keeps the command in a collapsed, structured arguments disclosure", () => {
+    const view = openTool(editTool({
+      name: "shell",
+      args: { command: "printf hello" },
+      result: "hello",
+    }));
+
+    const argumentsDetails = view.container.querySelector<HTMLDetailsElement>("details[aria-label='Arguments']");
+    expect(argumentsDetails).not.toBeNull();
+    expect(argumentsDetails?.open).toBe(false);
+    if (!argumentsDetails) throw new Error("Arguments disclosure did not render");
+    fireEvent.click(within(argumentsDetails).getByText("Arguments", { exact: true }));
+    expect(argumentsDetails.open).toBe(true);
+    expect(within(argumentsDetails).getByText("command", { exact: true })).toBeInTheDocument();
+    expect(within(argumentsDetails).getByText("printf hello", { exact: true })).toBeInTheDocument();
+    expect(argumentsDetails.querySelector(".tool-command-argument pre")).toHaveTextContent("$ printf hello");
+    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
+  });
+
+  it("renders each additional argument as its own value card", () => {
+    const view = openTool(editTool({
+      name: "shell",
+      args: { command: "printf hello", cwd: "/tmp" },
+    }));
+
+    const argumentsDetails = view.container.querySelector<HTMLDetailsElement>("details[aria-label='Arguments']");
+    expect(argumentsDetails).not.toBeNull();
+    expect(argumentsDetails?.open).toBe(false);
+    if (!argumentsDetails) throw new Error("Arguments disclosure did not render");
+    fireEvent.click(within(argumentsDetails).getByText("Arguments", { exact: true }));
+    expect(argumentsDetails.open).toBe(true);
+    expect(screen.getByText("command", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("cwd", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("/tmp", { exact: true })).toBeInTheDocument();
+  });
+
+  it("keeps a result card when a settled shell command has no output", () => {
+    const view = openTool(editTool({
+      name: "shell",
+      args: { command: "true" },
+      result: "",
+    }));
+
+    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
+    expect(within(view.container).getByText("No output", { exact: true })).toBeInTheDocument();
   });
 });

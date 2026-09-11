@@ -1,5 +1,5 @@
 /* Presentation adapted from DeepSeek Harness ui-tool (MIT). */
-import { Check, ChevronRight, Circle, CircleDot, FileText, LoaderCircle, Search, Terminal, X } from "lucide-react";
+import { Check, ChevronRight, Circle, CircleDot, LoaderCircle, X } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import type { ToolEntry } from "../state/runtime";
 import { DiffBlock, type DiffHunk } from "./DiffBlock";
@@ -32,43 +32,33 @@ export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
 });
 
 function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItem[] | null }) {
-  if (todos) return <ToolDetails tool={tool}><TodoChecklist items={todos} /></ToolDetails>;
-  const diff = appliedDiff(tool);
-  if (diff) return <ToolDetails tool={tool}><DiffBlock diffs={[diff]} maxLines={8} /></ToolDetails>;
   const args = recordOf(tool.args);
   const command = stringOf(args.command);
   const path = stringOf(args.path);
   const query = stringOf(args.query);
+  const terminalTool = Boolean(command && /(?:shell|bash|exec|terminal|command)/i.test(tool.name));
+  const argumentsBlock = <ToolArguments value={tool.args} terminal={terminalTool} />;
+  if (todos) return <ToolDetails tool={tool}>{argumentsBlock}<TodoChecklist items={todos} /></ToolDetails>;
+  const diff = appliedDiff(tool);
+  if (diff) return <ToolDetails tool={tool}>{argumentsBlock}<DiffBlock diffs={[diff]} maxLines={8} /></ToolDetails>;
   if (command && /(?:shell|bash|exec|terminal|command)/i.test(tool.name)) {
     return (
-      <ToolDetails tool={tool}><section className="tool-specialized-card tool-terminal-card">
-        <header><Terminal size={14} /><code>{command}</code></header>
-        {tool.result !== null && tool.result !== "" && <ToolOutput value={tool.result} />}
-        {tool.error && <ToolOutput value={tool.error} label="Error" />}
-      </section></ToolDetails>
+      <ToolDetails tool={tool}>{argumentsBlock}{resultBlock(tool, "tool-terminal-result")}</ToolDetails>
     );
   }
   if (path && /(?:file|read|write|edit|patch)/i.test(tool.name)) {
     return (
-      <ToolDetails tool={tool}><section className="tool-specialized-card tool-file-card">
-        <header><FileText size={14} /><span>Path</span><code>{path}</code></header>
-        {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
-        {tool.error && <Detail label="Error" value={tool.error} />}
-      </section></ToolDetails>
+      <ToolDetails tool={tool}>{argumentsBlock}{resultBlock(tool, "tool-file-result")}</ToolDetails>
     );
   }
   if (query && /search/i.test(tool.name)) {
     return (
-      <ToolDetails tool={tool}><section className="tool-specialized-card tool-search-card">
-        <header><Search size={14} /><span>Query</span><code>{query}</code></header>
-        {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
-        {tool.error && <Detail label="Error" value={tool.error} />}
-      </section></ToolDetails>
+      <ToolDetails tool={tool}>{argumentsBlock}{resultBlock(tool, "tool-search-result")}</ToolDetails>
     );
   }
   return (
     <ToolDetails tool={tool}>
-      <Detail label="Arguments" value={tool.args} />
+      {argumentsBlock}
       {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
       {tool.data !== null && <Detail label="Data" value={tool.data} />}
       {tool.error && <Detail label="Error" value={tool.error} />}
@@ -103,6 +93,53 @@ function appliedDiff(tool: ToolEntry): DiffHunk | null {
 
 function Detail({ label, value }: { label: string; value: unknown }) {
   return <div className="tool-detail-section"><ToolOutput label={label} value={value} /></div>;
+}
+
+function resultBlock(tool: ToolEntry, className: string) {
+  const hasResult = tool.result !== null && tool.result !== "";
+  const hasError = tool.error !== null;
+  const placeholder = tool.status === "running" || tool.status === "pending"
+    ? "Waiting for output…"
+    : "No output";
+  return (
+    <section className={`tool-specialized-card ${className}`}>
+      <Detail label="Result" value={hasResult ? tool.result : placeholder} />
+      {hasError && <Detail label="Error" value={tool.error} />}
+    </section>
+  );
+}
+
+function ToolArguments({ value, terminal }: { value: unknown; terminal: boolean }) {
+  const args = recordOf(value);
+  const entries = Object.entries(args);
+  return (
+    <details className="tool-arguments" aria-label="Arguments">
+      <summary>
+        <span>Arguments</span>
+        <span className="tool-arguments-count">{entries.length} {entries.length === 1 ? "parameter" : "parameters"}</span>
+      </summary>
+      <div className="tool-arguments-body">
+        {entries.length === 0
+          ? <span className="tool-arguments-empty">No arguments</span>
+          : entries.map(([name, argument]) => (
+            <div className="tool-argument-card" key={name}>
+              {terminal && name === "command" && typeof argument === "string"
+                ? <CommandArgument value={argument} />
+                : <ToolOutput label={name} value={argument} />}
+            </div>
+          ))}
+      </div>
+    </details>
+  );
+}
+
+function CommandArgument({ value }: { value: string }) {
+  return (
+    <div className="tool-command-argument">
+      <span className="tool-argument-label">command</span>
+      <pre><code><span className="tool-command-prompt">$ </span>{value}</code></pre>
+    </div>
+  );
 }
 
 function toolSummary(tool: ToolEntry, todos: TodoItem[] | null): string {

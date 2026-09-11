@@ -217,6 +217,26 @@ describe("runtimeReducer", () => {
     });
   });
 
+  it("keeps reasoning from a complete live assistant event when content is empty", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("assistant_message", {
+        id: "assistant-thinking-only",
+        content: "",
+        reasoning: "I am checking the tool result.",
+        tool_calls: [],
+      }),
+    });
+
+    expect(state.entries).toMatchObject([{
+      kind: "message",
+      role: "assistant",
+      content: "",
+      reasoning: "I am checking the tool result.",
+      streaming: false,
+    }]);
+  });
+
   it("uses authoritative history and message events without duplicating optimistic input", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, {
@@ -634,6 +654,41 @@ describe("runtimeReducer", () => {
     expect(state.entries).toHaveLength(2);
     expect(state.entries[0]).toMatchObject({ kind: "runtime", source: "skills", content: "Injected instructions" });
     expect(state.entries[1]).toMatchObject({ kind: "runtime", source: "compact", event: "compaction/end" });
+  });
+
+  it("reconciles assistant tool calls with results stored in later trajectory records", () => {
+    const assistant = {
+      id: "assistant-1",
+      role: "assistant" as const,
+      content: "",
+      reasoning: "",
+      tool_calls: [{ id: "call-1", name: "shell", args: { command: "printf hello" } }],
+      tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [],
+    };
+    const result = {
+      role: "tool" as const,
+      content: "hello",
+      tool_calls: [], tool_call_id: "call-1", status: "success", data: null,
+      error: null, artifacts: [], images: [],
+    };
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [
+        { position: 1, kind: "message", message_id: "assistant-1", message: assistant },
+        { position: 2, kind: "message", message_id: "tool-1", message: result },
+      ],
+    });
+
+    const tools = state.entries.filter((entry) => entry.kind === "tool");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      toolCallId: "call-1",
+      name: "shell",
+      args: { command: "printf hello" },
+      status: "success",
+      result: "hello",
+    });
   });
 
   it("does not duplicate a durable assistant message replayed by the live stream", () => {

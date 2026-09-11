@@ -281,4 +281,6 @@ def _dump(model: WireModel) -> dict[str, JsonValue]:
 
 def _json_payload(model: WireModel) -> dict[str, JsonValue]:
     """Normalize a wire model through the JSON contract at the client edge."""
-    return TypeAdapter(dict[str, JsonValue]).validate_python(model.model_dump())
+    return TypeAdapter(dict[str, JsonValue]).validate_python(
+        model.model_dump(mode="json")
+    )

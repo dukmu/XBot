@@ -83,6 +83,9 @@ test("collapses to the DSh rail and expands into focused session search", async 
 
 test("renders an active workbench without overflow", async ({ page }, testInfo) => {
   await openDemoSession(page);
+  const restoredTool = page.locator('details.tool-block[data-tool="filesystem_read"]');
+  await expect(restoredTool).toHaveCount(1);
+  await expect(restoredTool).toHaveAttribute("data-state", "success");
   if ((page.viewportSize()?.width || 0) <= 580) {
     await page.getByRole("button", { name: "Runtime settings" }).click();
     await expect(page.locator(".mobile-runtime-menu select")).toHaveCount(2);
@@ -102,7 +105,11 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await expect(page.getByText("filesystem_read", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-details")).toHaveCount(0);
   await page.getByText("filesystem_read", { exact: true }).click();
-  await expect(page.getByText("Path", { exact: true })).toBeVisible();
+  const argumentsDisclosure = page.locator("details[aria-label='Arguments']");
+  await expect(argumentsDisclosure).toBeVisible();
+  await argumentsDisclosure.getByText("Arguments", { exact: true }).click();
+  await expect(argumentsDisclosure.getByText("path", { exact: true })).toBeVisible();
+  await expect(argumentsDisclosure.getByText("docs/sdk.md", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Background tasks" }).click();
   await expect(page.getByText("Explorer", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Background tasks" }).click();
@@ -455,7 +462,7 @@ test("contains long command output in a collapsible result panel", async ({ page
   await expect(page.locator(".notice-row")).toHaveCount(0);
 });
 
-test("keeps long tool output head-tail bounded until explicitly expanded", async ({ page }) => {
+test("keeps the complete long tool output in a scrollable block", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
   await composer.fill("Long tool output");
@@ -463,9 +470,10 @@ test("keeps long tool output head-tail bounded until explicitly expanded", async
 
   await page.getByText("shell", { exact: true }).click();
   const details = page.locator(".tool-details");
-  await expect(details).not.toContainText("line-20");
-  await details.getByRole("button", { name: "Show 24 hidden lines" }).click();
   await expect(details).toContainText("line-20");
+  const output = details.locator("pre").last();
+  await expect(output).toBeVisible();
+  expect(await output.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
 });
 
 test("submits discovered prompt commands through the message stream", async ({ page }) => {

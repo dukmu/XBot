@@ -849,6 +849,7 @@ async def test_tool_widget_title_includes_elapsed_seconds(
 def test_search_commands_returns_help_first() -> None:
     results = CommandRegistry.default().search("")
     assert results[0].name == "help"
+    assert {item.name for item in results} >= {"copy", "new", "resume", "session"}
 
 
 def test_parse_slash_command_round_trip() -> None:

@@ -594,9 +594,70 @@ body {
 
 .tool-block > summary { position: relative; overflow: hidden; }
 .tool-specialized-card { margin: 4px 0; overflow: hidden; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-markdown-code-block); }
-.tool-specialized-card > header { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; color: var(--dsw-alias-label-secondary); }
-.tool-specialized-card > header code { min-width: 0; overflow: hidden; color: var(--dsw-alias-label-primary); text-overflow: ellipsis; white-space: nowrap; }
 .tool-specialized-card .tool-detail-section { margin: 0; padding: 10px 12px; border-top: 1px solid var(--dsw-alias-border-l1); }
+.tool-specialized-card .tool-detail-section:first-child { border-top: 0; }
+
+.tool-arguments {
+  margin: 0 0 6px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.tool-arguments > summary {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 2px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  list-style: none;
+}
+
+.tool-arguments > summary::-webkit-details-marker { display: none; }
+.tool-arguments > summary::before { content: "▸"; color: var(--dsw-alias-label-tertiary); }
+.tool-arguments[open] > summary::before { content: "▾"; }
+.tool-arguments-count { margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+
+.tool-arguments-body {
+  display: grid;
+  gap: 8px;
+  padding: 6px 0 8px;
+}
+
+.tool-argument-card { min-width: 0; }
+.tool-argument-card > div { margin: 0; }
+.tool-arguments-empty { color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+
+.tool-command-argument {
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+.tool-argument-label {
+  display: block;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tool-command-argument pre {
+  max-height: min(260px, 36vh);
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-markdown-code-block);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-command-prompt { color: var(--dsw-alias-state-business-primary); }
 
 .tool-details {
   margin-left: 22px;
