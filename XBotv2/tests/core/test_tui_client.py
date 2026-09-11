@@ -2225,7 +2225,7 @@ async def test_terminal_session_uses_shared_events_for_turn_delivery():
 
         async def open_session(self, *, session_id, thread_id, workspace_root=None, mode=None):
             del workspace_root, mode
-            return Mock(model_dump=lambda: {
+            return Mock(model_dump=lambda **_: {
                 "session_id": session_id, "thread_id": thread_id, "status": "ready"
             })
 
@@ -2279,7 +2279,7 @@ async def test_terminal_session_passes_explicit_resume_mode():
 
         async def open_session(self, **payload):
             opened.update(payload)
-            return Mock(model_dump=lambda: {
+            return Mock(model_dump=lambda **_: {
                 "session_id": payload["session_id"], "history": []
             })
 
@@ -2314,7 +2314,7 @@ async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
         async def open_session(self, **payload):
             if self.fail:
                 raise RuntimeError("open failed")
-            return Mock(model_dump=lambda: payload)
+            return Mock(model_dump=lambda **_: payload)
 
         async def shutdown(self, **_payload):
             self.shutdown_calls += 1

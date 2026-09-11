@@ -528,7 +528,13 @@ body {
 
 .timeline-node {
   position: relative;
+  margin-bottom: 8px;
 }
+
+/* Tool cards are timeline entries, not inline continuations of a message.
+   Reset the legacy negative margin from global.css so a tool event cannot
+   cover the preceding turn/runtime row. */
+.timeline-node .tool-block { margin: 0; }
 
 .timeline-node::before {
   position: absolute;
