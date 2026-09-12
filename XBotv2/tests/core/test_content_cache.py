@@ -21,7 +21,7 @@ from XBotv2.content_cache.contracts import (
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.messages import Message
-from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY, estimate_request_tokens
+from XBotv2.core.tokens import estimate_request_tokens, read_request_anchor
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -205,7 +205,9 @@ async def test_engine_caches_provider_copy_once_without_mutating_history(
         provider_estimate
     )
     assistant = next(message for message in engine.messages if message.role == "assistant")
-    assert assistant.response_metadata[REQUEST_ESTIMATE_KEY] == provider_estimate
+    anchor = read_request_anchor(assistant)
+    assert anchor is not None
+    assert anchor.request_estimate == provider_estimate
 
 
 @pytest.mark.asyncio

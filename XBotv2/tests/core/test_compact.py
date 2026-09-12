@@ -90,7 +90,7 @@ class FailingModel:
     def __init__(self, error: Exception) -> None:
         self._error = error
 
-    async def astream(self, _messages):
+    async def astream(self, _messages, **_options):
         if False:  # pragma: no cover - keeps this an async generator
             yield None
         raise self._error

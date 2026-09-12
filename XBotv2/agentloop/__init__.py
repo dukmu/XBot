@@ -9,6 +9,7 @@ from XBotv2.agentloop.contracts import (
     LoopState,
     LIST_TOOLS,
     ModelRequest,
+    ModelRequestErrorOutcome,
     ToolCatalog,
     ToolDescription,
     ToolRegistration,

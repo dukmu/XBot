@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any, AsyncIterator, Callable
 from pydantic import JsonValue
 
@@ -18,7 +19,11 @@ from XBotv2.core.messages import (
     TextPart,
 )
 from XBotv2.core.tools import ToolCall, ToolCallDelta
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.providers import (
+    BaseProvider,
+    ModelRequestOptions,
+    provider_context_overflow,
+)
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
 from XBotv2.llm.base import (
@@ -65,10 +70,23 @@ class OpenAICompatibleProvider(BaseProvider):
         self._extra_body = dict(extra_body or {})
         self.client = AsyncOpenAI(**kwargs)
 
+    # Documented OpenAI-compatible overflow discriminators.  llama.cpp reports
+    # the oversized-context case as a 400 with this type instead of a code.
+    _OVERFLOW_TYPES = frozenset({"exceed_context_size_error"})
+    _OVERFLOW_CODES = frozenset({"context_length_exceeded", "prompt_too_long"})
+
+    def normalize_provider_error(self, error: Exception) -> Exception:
+        return provider_context_overflow(
+            error,
+            types=self._OVERFLOW_TYPES,
+            codes=self._OVERFLOW_CODES,
+        ) or error
+
     async def _astream_once(
         self,
         messages: list[Message],
-        **_kwargs: Any,
+        *,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelChunk]:
         api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
@@ -83,8 +101,13 @@ class OpenAICompatibleProvider(BaseProvider):
         }
         if self.temperature is not None:
             api_kwargs["temperature"] = self.temperature
-        if self.max_output_tokens is not None:
-            api_kwargs["max_tokens"] = self.max_output_tokens
+        output_tokens = (
+            options.max_output_tokens
+            if options is not None and options.max_output_tokens is not None
+            else self.max_output_tokens
+        )
+        if output_tokens is not None:
+            api_kwargs["max_tokens"] = output_tokens
         if self.reasoning_effort:
             api_kwargs["reasoning_effort"] = self.reasoning_effort
         derived_extra_body: dict[str, JsonValue] = {}
@@ -291,20 +314,28 @@ def openai_tool_call(tool_call: ToolCall) -> dict[str, JsonValue]:
 def normalize_openai_usage(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
-    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-    reported_total = getattr(usage, "total_tokens", None)
-    details = getattr(usage, "prompt_tokens_details", None)
-    cache_read = getattr(details, "cached_tokens", None)
+    def value(name: str, default: Any = None) -> Any:
+        if isinstance(usage, Mapping):
+            return usage.get(name, default)
+        return getattr(usage, name, default)
+
+    prompt_tokens = int(value("prompt_tokens", 0) or 0)
+    reported_total = value("total_tokens")
+    details = value("prompt_tokens_details")
+    if isinstance(details, Mapping):
+        cache_read = details.get("cached_tokens")
+    else:
+        cache_read = getattr(details, "cached_tokens", None)
     if cache_read is None:
-        cache_read = getattr(usage, "prompt_cache_hit_tokens", None)
+        cache_read = value("prompt_cache_hit_tokens")
     if cache_read is None:
-        cache_read = getattr(usage, "cache_read_input_tokens", 0)
-    cache_creation = getattr(usage, "cache_creation_input_tokens", 0)
+        cache_read = value("cache_read_input_tokens", 0)
+    cache_creation = value("cache_creation_input_tokens", 0)
     cache_read = int(cache_read or 0)
     cache_creation = int(cache_creation or 0)
     return usage_metadata(
         input_tokens=max(0, prompt_tokens - cache_read - cache_creation),
-        output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+        output_tokens=int(value("completion_tokens", 0) or 0),
         total_tokens=(
             int(reported_total) if reported_total is not None else None
         ),
@@ -312,7 +343,7 @@ def normalize_openai_usage(usage: Any) -> dict[str, int]:
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
         prompt_cache_write_tokens=int(
-            getattr(usage, "prompt_cache_write_tokens", 0) or 0
+            value("prompt_cache_write_tokens", 0) or 0
         ),
     )
 

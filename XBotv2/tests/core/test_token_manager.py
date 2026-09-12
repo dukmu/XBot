@@ -12,7 +12,7 @@ from XBotv2.core import (
     estimate_request_tokens,
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
-from XBotv2.core.tokens import REQUEST_ESTIMATE_KEY
+from XBotv2.core.tokens import RequestAnchor, write_request_anchor
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session import SessionInfo
 from XBotv2.core import ModelResponse
@@ -62,8 +62,8 @@ def test_context_estimate_reuses_latest_provider_measurement():
         role="assistant",
         content="previous",
         usage_metadata={"context_tokens": 150_000},
-        response_metadata={REQUEST_ESTIMATE_KEY: 100_000},
     )
+    write_request_anchor(previous, RequestAnchor(request_estimate=100_000))
     current = [Message(role="system", content="x" * 300_000)]
     raw = estimate_request_tokens(current)
 
@@ -76,6 +76,27 @@ def test_context_estimate_reuses_latest_provider_measurement():
     assert estimate == raw
     assert context == 150_000 + raw - 100_000
     assert source == "provider_calibrated"
+
+
+def test_context_estimate_does_not_reuse_measurement_from_another_model():
+    previous = Message(
+        role="assistant",
+        content="previous",
+        usage_metadata={"context_tokens": 150_000},
+    )
+    write_request_anchor(previous, RequestAnchor(
+        model="short-context",
+        request_estimate=100_000,
+    ))
+    context, estimate, source = calibrated_context_tokens(
+        [Message(role="user", content="current")],
+        [],
+        [previous],
+        model="long-context",
+    )
+
+    assert context == estimate
+    assert source == "estimated"
 
 
 @pytest.mark.asyncio

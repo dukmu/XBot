@@ -17,7 +17,11 @@ from XBotv2.core.messages import (
     TextPart,
 )
 from XBotv2.core.tools import ToolCall
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.providers import (
+    BaseProvider,
+    ModelRequestOptions,
+    provider_context_overflow,
+)
 from XBotv2.llm.base import attachment_prompt, tool_content, usage_metadata
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
@@ -60,6 +64,23 @@ class AnthropicProvider(BaseProvider):
         self._extra_body = dict(extra_body or {})
         self.client = AsyncAnthropic(**kwargs)
 
+    # Anthropic reports an oversized prompt as a 400 invalid_request_error
+    # whose message names the limit, and as a 413 request_too_large body.
+    _OVERFLOW_TYPES = frozenset({"request_too_large"})
+    _OVERFLOW_STATUSES = frozenset({413})
+    _OVERFLOW_MESSAGE_PREFIXES = (
+        "prompt is too long",
+        "input tokens exceed",
+    )
+
+    def normalize_provider_error(self, error: Exception) -> Exception:
+        return provider_context_overflow(
+            error,
+            types=self._OVERFLOW_TYPES,
+            statuses=self._OVERFLOW_STATUSES,
+            message_prefixes=self._OVERFLOW_MESSAGE_PREFIXES,
+        ) or error
+
     def _provider_tools(
         self,
         tools: list[dict[str, JsonValue]],
@@ -69,7 +90,8 @@ class AnthropicProvider(BaseProvider):
     async def _astream_once(
         self,
         messages: list[Message],
-        **_kwargs: Any,
+        *,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelChunk]:
         system, request_messages = anthropic_request_messages(
             messages,
@@ -79,7 +101,11 @@ class AnthropicProvider(BaseProvider):
         api_kwargs: dict[str, JsonValue] = {
             "model": self.model,
             "messages": request_messages,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": (
+                options.max_output_tokens
+                if options is not None and options.max_output_tokens is not None
+                else self.max_output_tokens
+            ),
         }
         if self.temperature is not None:
             api_kwargs["temperature"] = self.temperature

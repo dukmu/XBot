@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.providers import BaseProvider, ModelRequestOptions
 
 
 class ModelConfig(BaseModel):
@@ -144,7 +144,8 @@ class ModelPort(Protocol):
     def astream(
         self,
         messages: list[Message],
-        **kwargs: object,
+        *,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelChunk]: ...
 
 

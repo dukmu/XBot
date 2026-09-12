@@ -9,6 +9,7 @@ from XBotv2.core import (
     MESSAGE_FORMAT_KEY,
     Message,
     ModelResponse,
+    ModelRequestOptions,
     prompt_container,
     prompt_element,
 )
@@ -133,12 +134,22 @@ def model_usage(usage: Mapping[str, JsonValue] | None) -> dict[str, int]:
     return result
 
 
-async def invoke_llm(llm: ModelPort, messages: list[Message]) -> ModelResponse:
+async def invoke_llm(
+    llm: ModelPort,
+    messages: list[Message],
+    *,
+    output_tokens: int | None = None,
+) -> ModelResponse:
     """Run one unbound auxiliary model call for compaction."""
     from XBotv2.core.messages import merge_model_chunk
 
     aggregate: ModelResponse | None = None
-    async for chunk in llm.astream(messages):
+    options = (
+        ModelRequestOptions(max_output_tokens=max(1, int(output_tokens)))
+        if output_tokens is not None
+        else None
+    )
+    async for chunk in llm.astream(messages, options=options):
         aggregate = merge_model_chunk(aggregate, chunk)
     if aggregate is None:
         raise RuntimeError("Compaction model produced no response")

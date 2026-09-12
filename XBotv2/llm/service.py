@@ -21,7 +21,7 @@ from typing import Callable
 from pydantic import JsonValue
 
 from XBotv2.llm.config import ModelConfig, ProviderConfig, parse_provider_config
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.providers import BaseProvider, ModelRequestOptions
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.llm.contracts import (
@@ -177,9 +177,10 @@ class ModelService(ModelPort):
     async def astream(
         self,
         messages: list[Message],
-        **kwargs: object,
+        *,
+        options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelChunk]:
-        async for chunk in self.provider.astream(messages, **kwargs):
+        async for chunk in self.provider.astream(messages, options=options):
             yield chunk
 
 

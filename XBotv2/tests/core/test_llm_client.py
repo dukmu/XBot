@@ -9,7 +9,11 @@ from XBotv2.llm.anthropic import (
     anthropic_request_messages,
     normalize_anthropic_usage,
 )
-from XBotv2.core.providers import BaseProvider, ProviderRetryExhaustedError
+from XBotv2.core.providers import (
+    BaseProvider,
+    ProviderContextOverflowError,
+    ProviderRetryExhaustedError,
+)
 from XBotv2.llm.openai import (
     OpenAICompatibleProvider,
     normalize_openai_usage,
@@ -66,6 +70,117 @@ async def test_provider_retry_exhaustion_reports_clear_error(monkeypatch):
     assert raised.value.model == "flaky"
     assert raised.value.retries == 2
     assert llm.calls == 3
+
+
+def test_openai_adapter_normalizes_llama_context_error_at_provider_boundary():
+    error = RuntimeError("bad request")
+    error.body = {
+        "error": {
+            "code": 400,
+            "type": "exceed_context_size_error",
+            "message": "request exceeds the available context size",
+            "n_prompt_tokens": 4010,
+            "n_ctx": 2048,
+        }
+    }
+
+    normalized = OpenAICompatibleProvider.normalize_provider_error(
+        OpenAICompatibleProvider.__new__(OpenAICompatibleProvider), error
+    )
+
+    assert isinstance(normalized, ProviderContextOverflowError)
+
+
+@pytest.mark.asyncio
+async def test_openai_context_error_is_rethrown_as_typed_overflow():
+    class _OpenAIRequestFailure(RuntimeError):
+        body = {
+            "error": {
+                "code": "context_length_exceeded",
+                "message": "prompt is too long for the model context",
+            }
+        }
+
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.model = "llama-test"
+    provider.max_retries = 0
+    provider.retry_backoff_factor = 0
+    provider._validate_message_capabilities = lambda _messages: None
+
+    async def fail_once(_messages, **_kwargs):
+        raise _OpenAIRequestFailure("bad request")
+        yield  # pragma: no cover
+
+    provider._astream_once = fail_once
+
+    with pytest.raises(ProviderContextOverflowError) as raised:
+        async for _ in provider.astream([]):
+            pass
+
+    assert raised.value.__cause__.__class__ is _OpenAIRequestFailure
+
+
+def test_openai_unknown_bad_request_is_not_classified_as_context_overflow():
+    error = RuntimeError("bad request")
+    error.body = {
+        "error": {
+            "code": "invalid_parameter",
+            "message": "temperature must be between 0 and 2",
+        }
+    }
+
+    normalized = OpenAICompatibleProvider.normalize_provider_error(
+        OpenAICompatibleProvider.__new__(OpenAICompatibleProvider), error
+    )
+
+    assert normalized is error
+
+
+def test_anthropic_documented_overflow_shapes_are_classified():
+    """Anthropic reports an oversized prompt as a 400 message or a 413 body."""
+
+    class _AnthropicBadRequest(RuntimeError):
+        status_code = 400
+        body = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "prompt is too long: 210000 tokens > 200000 maximum",
+            },
+        }
+
+    class _AnthropicTooLarge(RuntimeError):
+        status_code = 413
+        body = {
+            "type": "error",
+            "error": {
+                "type": "request_too_large",
+                "message": "Request exceeds the maximum size",
+            },
+        }
+
+    class _AnthropicUnrelated(RuntimeError):
+        status_code = 400
+        body = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "max_tokens: must be greater than 0",
+            },
+        }
+
+    provider = AnthropicProvider.__new__(AnthropicProvider)
+
+    assert isinstance(
+        provider.normalize_provider_error(_AnthropicBadRequest("bad request")),
+        ProviderContextOverflowError,
+    )
+    assert isinstance(
+        provider.normalize_provider_error(_AnthropicTooLarge("too large")),
+        ProviderContextOverflowError,
+    )
+    unrelated = _AnthropicUnrelated("bad request")
+    assert provider.normalize_provider_error(unrelated) is unrelated
 
 
 def test_generic_openai_messages_do_not_invent_reasoning_extensions():
@@ -287,6 +402,22 @@ def test_deepseek_cache_miss_remains_uncached_input():
         "requests": 1,
         "context_tokens": 283,
         "cache_read_input_tokens": 256,
+    }
+
+
+def test_openai_usage_accepts_llama_cpp_mapping_payload():
+    assert normalize_openai_usage({
+        "prompt_tokens": 1234,
+        "completion_tokens": 17,
+        "total_tokens": 1251,
+        "prompt_tokens_details": {"cached_tokens": 12},
+    }) == {
+        "input_tokens": 1222,
+        "output_tokens": 17,
+        "total_tokens": 1251,
+        "requests": 1,
+        "context_tokens": 1234,
+        "cache_read_input_tokens": 12,
     }
 
 

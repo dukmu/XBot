@@ -172,6 +172,14 @@ class ModelRequest:
     llm: ModelPort
 
 
+class ModelRequestErrorOutcome(BaseModel):
+    """What a ``model/request-error`` listener asks the loop to do next."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    retry: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDescription:
     name: str
@@ -325,6 +333,7 @@ __all__ = [
     "LoopSettings",
     "LoopState",
     "ModelRequest",
+    "ModelRequestErrorOutcome",
     "ToolCatalog",
     "ToolDescription",
     "ToolGuard",

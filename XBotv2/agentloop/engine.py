@@ -40,6 +40,7 @@ from XBotv2.agentloop.contracts import (
     LoopSettingsUpdate,
     LoopState,
     ModelRequest,
+    ModelRequestErrorOutcome,
 )
 from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
 from XBotv2.core.artifacts import ArtifactRef
@@ -67,10 +68,9 @@ from XBotv2.context_builder import (
 )
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.tokens import (
-    REQUEST_CONTEXT_WINDOW_KEY,
-    REQUEST_ESTIMATE_KEY,
-    REQUEST_PROVIDER_KEY,
+    RequestAnchor,
     estimate_request_tokens,
+    write_request_anchor,
 )
 from XBotv2.core.timing import TIMING_METADATA_KEY
 from XBotv2.llm import ModelPort
@@ -135,6 +135,7 @@ class _ToolBatchResult:
 @dataclass(slots=True)
 class _ModelResponseEvent:
     response: ModelResponse
+
 
 def xbot_tool_call_deltas(
     chunk: ModelChunk,
@@ -289,6 +290,13 @@ class Engine(AgentLoopDriverPort):
             return result
         await self._events.emit(event, payload)
         return None
+
+    @staticmethod
+    def _request_error_outcome(result: Any) -> ModelRequestErrorOutcome:
+        """Validate one ``model/request-error`` hook result at the boundary."""
+        if not result:
+            return ModelRequestErrorOutcome()
+        return ModelRequestErrorOutcome.model_validate(result)
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -626,15 +634,19 @@ class Engine(AgentLoopDriverPort):
         iteration = 0
         turn_complete = False
         iteration_limit_reached = False
+        retrying_iteration = False
 
         while not turn_complete:
-            finalizing = iteration >= self.max_iterations
-            if finalizing:
-                if iteration_limit_reached:
-                    break
-                iteration_limit_reached = True
+            if retrying_iteration:
+                retrying_iteration = False
             else:
-                iteration += 1
+                finalizing = iteration >= self.max_iterations
+                if finalizing:
+                    if iteration_limit_reached:
+                        break
+                    iteration_limit_reached = True
+                else:
+                    iteration += 1
 
             while True:
                 context_build = await self._build_turn_context()
@@ -698,11 +710,14 @@ class Engine(AgentLoopDriverPort):
                     model_request=model_request,
                     error=exc,
                 )
-                await self._dispatch(
+                recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
                     err_ctx,
-                    short_circuit=False,
+                    short_circuit=True,
                 )
+                if self._request_error_outcome(recovery).retry:
+                    retrying_iteration = True
+                    continue
                 raise asyncio.TimeoutError("LLM call timed out") from None
             except Exception as exc:
                 self._log.exception(
@@ -715,9 +730,14 @@ class Engine(AgentLoopDriverPort):
                     model_request=model_request,
                     error=exc,
                 )
-                await self._dispatch(Events.MODEL_REQUEST_ERROR, err_ctx,
-                    short_circuit=False,
+                recovery = await self._dispatch(
+                    Events.MODEL_REQUEST_ERROR,
+                    err_ctx,
+                    short_circuit=True,
                 )
+                if self._request_error_outcome(recovery).retry:
+                    retrying_iteration = True
+                    continue
                 raise
             content = response.content
             if finalizing and response.tool_calls:
@@ -746,14 +766,6 @@ class Engine(AgentLoopDriverPort):
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
             response_metadata = dict(response.response_metadata)
-            response_metadata[REQUEST_ESTIMATE_KEY] = estimate_request_tokens(
-                model_request.messages,
-                model_request.tools,
-            )
-            response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = self.settings.context_window
-            response_metadata[REQUEST_PROVIDER_KEY] = (
-                self.session.provider
-            )
             response_id = f"assistant-{self.turn_count}-{iteration}"
             response_additional = dict(response.additional_kwargs)
             response_additional["xbot_message_id"] = response_id
@@ -764,6 +776,15 @@ class Engine(AgentLoopDriverPort):
                 response_metadata=response_metadata,
                 additional_kwargs=response_additional,
             )
+            write_request_anchor(response_msg, RequestAnchor(
+                provider=self.session.provider,
+                model=self.settings.model,
+                context_window=self.settings.context_window,
+                request_estimate=estimate_request_tokens(
+                    model_request.messages,
+                    model_request.tools,
+                ),
+            ))
             response_history = [*self.messages, response_msg]
             yield agentloop_event(
                 "assistant_message",
