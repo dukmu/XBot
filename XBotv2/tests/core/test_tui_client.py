@@ -2553,6 +2553,58 @@ async def test_textual_session_events_reconnect_after_incomplete_stream():
 
 
 @pytest.mark.asyncio
+async def test_textual_session_events_recover_an_expired_cursor():
+    """An evicted cursor resumes from the oldest frame the server still holds."""
+
+    from XBotv2.client import XBotClientError
+    from XBotv2.protocol import ErrorResponse
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+            self.rewinds: list[int] = []
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        def rewind_event_cursor(self, sequence: int) -> None:
+            self.rewinds.append(sequence)
+
+        async def session_events(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise XBotClientError(409, ErrorResponse(
+                    code="session_event_cursor_expired",
+                    message="cursor expired",
+                    details={"oldest_sequence": 7},
+                    retryable=True,
+                ))
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    app._session_attached = True
+    app.state.apply_event(_frame("turn_started", {"turn": 1}))
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        for _ in range(20):
+            await pilot.pause()
+            if app.session.calls >= 2 and not app.state.turn_active:
+                break
+
+        assert app.session.calls == 2
+        assert app.session.rewinds == [6]
+        assert app.state.turn_active is False
+        assert app.state.errors == []
+
+
+@pytest.mark.asyncio
 async def test_textual_session_events_reconnect_after_unexpected_eof():
     """An SSE end before turn completion is treated as an incomplete stream."""
 

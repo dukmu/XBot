@@ -673,7 +673,7 @@ async def _execute_turn(
         )
         router.emit(session_error_event(
             "turn_failed",
-            str(exc),
+            str(exc) or type(exc).__name__,
             details={"exception_type": type(exc).__name__},
         ))
         if turn_open:

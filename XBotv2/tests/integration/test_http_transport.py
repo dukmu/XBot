@@ -919,6 +919,7 @@ async def test_http_session_exposes_independent_thread_resources(
         "workspace_root": str(http_app.state.workspace_root),
         "title": "thread-resources",
         "blank": True,
+        "unreadable": False,
     }
     threads = (
         await client.get("/sessions/thread-resources/threads")
@@ -1258,6 +1259,23 @@ async def test_session_event_endpoint_rejects_expired_and_future_cursors(
     assert expired.json()["retryable"] is True
     assert future.status_code == 400
     assert future.json()["code"] == "invalid_session_event_cursor"
+
+    # The SDK stream path must surface that 409 as a typed error instead of an
+    # httpx ResponseNotRead raised from the unread streaming body.
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        with pytest.raises(XBotClientError) as raised:
+            async for _event in sdk.stream_events(
+                "event-cursor-errors",
+                "agent",
+                after=opened.json()["event_cursor"],
+            ):
+                pass
+    assert raised.value.status_code == 409
+    assert raised.value.code == "session_event_cursor_expired"
+    assert int(raised.value.details["oldest_sequence"]) > 0
 
 
 @pytest.mark.asyncio

@@ -391,7 +391,7 @@ class XBotClient:
             f"{_thread_path(session_id, thread_id)}/artifacts/"
             f"{quote(artifact_id, safe='/')}"
         )
-        _raise_for_status(response)
+        await _raise_for_status(response)
         return response.content
 
     async def clear_history(
@@ -571,7 +571,7 @@ class XBotClient:
             json=payload.model_dump() if payload is not None else None,
             params=params,
         )
-        _raise_for_status(response)
+        await _raise_for_status(response)
         return response_model.model_validate(response.json())
 
     async def _stream(
@@ -589,7 +589,7 @@ class XBotClient:
             params=params,
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
-            _raise_for_status(response)
+            await _raise_for_status(response)
             decoder = SseDecoder()
             async for line in response.aiter_lines():
                 message = decoder.feed(line)
@@ -612,9 +612,17 @@ def _segment(value: str) -> str:
     return quote(value, safe="")
 
 
-def _raise_for_status(response: httpx.Response) -> None:
+async def _raise_for_status(response: httpx.Response) -> None:
+    """Raise the typed client error for one non-success response.
+
+    A streaming response has not read its body yet, so the error payload must
+    be read first; otherwise httpx raises ``ResponseNotRead`` and the real
+    status and error code are lost.
+    """
     if response.is_success:
         return
+    if not response.is_stream_consumed:
+        await response.aread()
     try:
         error = ErrorResponse.model_validate(response.json())
     except (ValueError, TypeError):

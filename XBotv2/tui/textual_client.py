@@ -33,6 +33,7 @@ from XBotv2.tui.command import (
 )
 from XBotv2.tui.command_palette import CommandPalette
 from XBotv2.tui.completion_popup import CompletionPopup
+from XBotv2.client import XBotClientError
 from XBotv2.tui.session_config import TuiSessionConfig
 from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from XBotv2.tui.trace import trace_event
@@ -74,6 +75,9 @@ _MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
 # Keep retries short and bounded so a dead server still eventually releases an
 # active turn instead of leaving the TUI waiting forever.
 _SESSION_EVENT_RECONNECT_DELAYS = (0.05, 0.1, 0.25)
+# A cursor the server has already evicted is recoverable: resubscribe from the
+# oldest frame it still holds instead of failing the turn.
+_SESSION_EVENT_CURSOR_RECOVERIES = 3
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -844,8 +848,21 @@ class XBotTextualApp(App[None]):
                 self._pending_messages.pop(sequence, None)
                 return
 
+    def _recover_expired_cursor(self, exc: BaseException) -> bool:
+        """Resubscribe from the oldest frame the server still retains."""
+        if not isinstance(exc, XBotClientError):
+            return False
+        if exc.code != "session_event_cursor_expired":
+            return False
+        oldest = int(exc.details.get("oldest_sequence") or 0)
+        rewind = max(0, oldest - 1)
+        self.session.rewind_event_cursor(rewind)
+        logger.warning("session event cursor expired; replaying from %s", rewind)
+        return True
+
     async def _collect_session_events(self) -> None:
         reconnect_attempt = 0
+        cursor_recoveries = 0
         try:
             while self._session_attached:
                 try:
@@ -872,6 +889,12 @@ class XBotTextualApp(App[None]):
                 except Exception as exc:  # noqa: BLE001
                     if not self._session_attached:
                         return
+                    if (
+                        cursor_recoveries < _SESSION_EVENT_CURSOR_RECOVERIES
+                        and self._recover_expired_cursor(exc)
+                    ):
+                        cursor_recoveries += 1
+                        continue
                     if reconnect_attempt >= len(_SESSION_EVENT_RECONNECT_DELAYS):
                         await self._handle_stream_failure(
                             exc, source="session event stream"

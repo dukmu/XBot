@@ -584,7 +584,7 @@ class Engine(AgentLoopDriverPort):
                 "error",
                 {
                     "code": "engine_error",
-                    "message": str(exc),
+                    "message": str(exc) or type(exc).__name__,
                     "details": {"exception_type": type(exc).__name__},
                 },
             )

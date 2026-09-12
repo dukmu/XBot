@@ -203,6 +203,10 @@ class TerminalSession:
             if event.get("type") == "input_rejected":
                 yield event
 
+    def rewind_event_cursor(self, sequence: int) -> None:
+        """Resume the shared event stream from a server-provided recovery point."""
+        self._event_cursor = max(0, sequence)
+
     async def session_events(self) -> AsyncIterator[dict[str, JsonValue]]:
         """Yield turns initiated by runtime general messages."""
 
