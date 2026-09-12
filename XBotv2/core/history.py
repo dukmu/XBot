@@ -25,6 +25,15 @@ class ConversationPage:
 
 
 @dataclass(frozen=True, slots=True)
+class TrajectoryTransaction:
+    """A correlated start/end pair inside the append-only trajectory."""
+
+    start_event: str
+    end_event: str
+    id_field: str
+
+
+@dataclass(frozen=True, slots=True)
 class HistoryNode:
     """One message-producing node on the derived conversation surface."""
 
@@ -91,6 +100,11 @@ class HistorySink(Protocol):
     ) -> tuple[HistoryNode, ...]: ...
 
     def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
+
+    def open_transactions(
+        self,
+        transaction: TrajectoryTransaction,
+    ) -> frozenset[str]: ...
 
 
 class ConversationHistory(Sequence[Message]):
@@ -237,6 +251,15 @@ class ConversationHistory(Sequence[Message]):
         """Append a log-only trajectory event without changing the surface."""
         if self._sink is not None:
             self._sink.record(event, data)
+
+    def open_transactions(
+        self,
+        transaction: TrajectoryTransaction,
+    ) -> frozenset[str]:
+        """Return durable starts that do not yet have a correlated end."""
+        if self._sink is None:
+            return frozenset()
+        return self._sink.open_transactions(transaction)
 
     @staticmethod
     def _admit(nodes: Sequence[HistoryNode]) -> None:
@@ -394,6 +417,7 @@ __all__ = [
     "TrajectoryMessage",
     "TrajectoryPage",
     "TrajectorySurfaceReplace",
+    "TrajectoryTransaction",
     "decode_history_cursor",
     "encode_history_cursor",
     "page_messages",

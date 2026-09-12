@@ -40,6 +40,9 @@ class CompactPlugin:
         ctx.dispose(service._dispose)
         ctx.on(Events.BEFORE_CONTEXT, service._on_before_context)
         ctx.on(Events.BEFORE_MODEL_REQUEST, service._on_before_model_request)
+        ctx.on(Events.MODEL_REQUEST_ERROR, service._on_model_request_error)
+        ctx.on(Events.AFTER_MODEL_RESPONSE, service._on_after_model_response)
+        ctx.on(Events.TURN_END, service._on_turn_end)
         ctx.tools.register(build_compact_tool(service))
         ctx.commands.register(Command(
             name="compact",

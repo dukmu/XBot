@@ -7,7 +7,7 @@ import pytest
 
 from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.history import ConversationHistory
+from XBotv2.core.history import ConversationHistory, TrajectoryTransaction
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import RuntimePaths
@@ -19,6 +19,12 @@ from XBotv2.persistence.models import (
 )
 from XBotv2.persistence import ThreadLifecycleRecord
 from XBotv2.persistence.store import ThreadPersistence
+
+TEST_TRANSACTION = TrajectoryTransaction(
+    start_event="compaction/start",
+    end_event="compaction/end",
+    id_field="compaction_id",
+)
 
 
 def thread_persistence(tmp_path, session_id="s1"):
@@ -126,6 +132,34 @@ class TestMessageHistoryStore:
         assert [message.content for message in persistence.history.load()] == [
             "one", "two",
         ]
+
+    def test_concurrent_store_instances_keep_trajectory_positions_unique(
+        self, tmp_path,
+    ):
+        paths = thread_persistence(tmp_path).paths
+
+        def append(index: int) -> None:
+            persistence = ThreadPersistence.open(paths, thread_id="t1")
+            persistence.history.append([Message(role="user", content=str(index))])
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(append, range(40)))
+
+        records = _raw_records(ThreadPersistence.open(paths, thread_id="t1"))
+        assert [record["position"] for record in records] == list(range(1, 41))
+
+    def test_stale_store_instance_resynchronizes_before_append(self, tmp_path):
+        paths = thread_persistence(tmp_path).paths
+        first = ThreadPersistence.open(paths, thread_id="t1")
+        stale = ThreadPersistence.open(paths, thread_id="t1")
+
+        first.history.append([Message(role="user", content="one")])
+        stale.history.record("test/middle", {})
+        first.history.append([Message(role="assistant", content="three")])
+
+        records = _raw_records(first)
+        assert [record["position"] for record in records] == [1, 2, 3]
+        assert records[1]["event"] == "test/middle"
 
     def test_replace_appends_surface_operation_without_destroying_trajectory(
         self,
@@ -286,6 +320,16 @@ class TestMessageHistoryStore:
         assert [(item.position, item.kind) for item in latest.items] == [(2, "event")]
         assert [(item.position, item.kind) for item in older.items] == [(1, "message")]
         assert older.next_cursor is None
+
+    def test_unmatched_compaction_start_is_detectable_after_restart(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.record("compaction/start", {"compaction_id": "c1"})
+
+        reopened = ThreadPersistence.open(persistence.paths, thread_id="t1")
+        assert reopened.history.open_transactions(TEST_TRANSACTION) == {"c1"}
+
+        reopened.history.record("compaction/end", {"compaction_id": "c1"})
+        assert reopened.history.open_transactions(TEST_TRANSACTION) == frozenset()
 
     def test_compact_preserves_transcript_cursor_but_invalidates_surface_cursor(
         self,
@@ -503,6 +547,9 @@ class TestConversationHistory:
 
             def record(self, _event, _data):
                 raise OSError("disk full")
+
+            def open_transactions(self, _transaction):
+                return frozenset()
 
         original = Message(role="user", content="stable")
         history = ConversationHistory([original], sink=FailingSink())

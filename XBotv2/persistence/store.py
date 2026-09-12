@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
@@ -37,8 +39,41 @@ from XBotv2.persistence.models import (
     TrajectoryEventRecord,
     utc_now,
 )
-from XBotv2.persistence.contracts import ThreadLifecycleRecord
+from XBotv2.persistence.contracts import (
+    ThreadLifecycleRecord,
+    TrajectoryTransaction,
+)
 from xcore.state import StateService
+
+# Ordinary telemetry is flushed with a bounded delay; transaction markers are
+# durability boundaries and are forced immediately.
+_SYNC_EVENT_PREFIXES: tuple[str, ...] = ("compaction/",)
+_SYNC_INTERVAL_SECONDS = 0.25
+
+
+class _TrajectoryWriter:
+    """Process-local position allocator shared by stores for one trajectory."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.next_position = 1
+        self.file_size = -1
+        self.last_sync = 0.0
+
+
+_trajectory_writers: WeakValueDictionary[Path, _TrajectoryWriter] = (
+    WeakValueDictionary()
+)
+_trajectory_writers_guard = threading.Lock()
+
+
+def _trajectory_writer(path: Path) -> _TrajectoryWriter:
+    with _trajectory_writers_guard:
+        writer = _trajectory_writers.get(path)
+        if writer is None:
+            writer = _TrajectoryWriter()
+            _trajectory_writers[path] = writer
+        return writer
 
 
 class MessageHistoryStore:
@@ -53,6 +88,7 @@ class MessageHistoryStore:
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
         self._next_position = 1
+        self._writer = _trajectory_writer(self._path)
 
     @property
     def path(self) -> Path:
@@ -81,13 +117,16 @@ class MessageHistoryStore:
     def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
         if not messages:
             return ()
-        self._ensure_loaded_id()
-        records = [
-            MessageRecord.from_message(message, self._next_position + index)
-            for index, message in enumerate(messages)
-        ]
-        self._append_records(records)
-        self._next_position += len(records)
+        with self._writer.lock:
+            self._sync_writer()
+            records = [
+                MessageRecord.from_message(
+                    message, self._writer.next_position + index
+                )
+                for index, message in enumerate(messages)
+            ]
+            self._append_records(records)
+            self._advance_writer(len(records))
         self._log.debug(
             "persistence.history.appended",
             messages=len(records),
@@ -118,23 +157,24 @@ class MessageHistoryStore:
         operation: str,
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]:
-        records = self._records()
-        self._next_position = len(records) + 1
-        record = SurfaceReplaceRecord(
-            position=self._next_position,
-            operation=operation,
-            transcript="preserve" if preserve_transcript else "replace",
-            source_node_ids=tuple(source_node_ids),
-            messages=tuple(
-                MessagePayloadRecord.from_message(message) for message in messages
-            ),
-        )
-        # Both projections must accept the transition before it becomes durable.
-        prospective = [*records, record]
-        _fold_surface(prospective)
-        _fold_transcript(prospective)
-        self._append_records((record,))
-        self._next_position = record.position + 1
+        with self._writer.lock:
+            records = self._records()
+            self._reset_writer(len(records) + 1)
+            record = SurfaceReplaceRecord(
+                position=self._writer.next_position,
+                operation=operation,
+                transcript="preserve" if preserve_transcript else "replace",
+                source_node_ids=tuple(source_node_ids),
+                messages=tuple(
+                    MessagePayloadRecord.from_message(message) for message in messages
+                ),
+            )
+            # Both projections must accept the transition before it becomes durable.
+            prospective = [*records, record]
+            _fold_surface(prospective)
+            _fold_transcript(prospective)
+            self._append_records((record,))
+            self._advance_writer(1)
         self._log.info(
             "persistence.surface.replaced",
             operation=operation,
@@ -147,16 +187,38 @@ class MessageHistoryStore:
         )
 
     def record(self, event: str, data: dict[str, JsonValue]) -> None:
-        self.load_surface()
-        record = TrajectoryEventRecord(
-            position=self._next_position,
-            event=event,
-            data=data,
-            timestamp=utc_now(),
-        )
-        self._append_records((record,))
-        self._next_position += 1
+        with self._writer.lock:
+            self._sync_writer()
+            record = TrajectoryEventRecord(
+                position=self._writer.next_position,
+                event=event,
+                data=data,
+                timestamp=utc_now(),
+            )
+            self._append_records(
+                (record,),
+                sync=event.startswith(_SYNC_EVENT_PREFIXES),
+            )
+            self._advance_writer(1)
         self._log.debug("persistence.trajectory.event", trajectory_event=event)
+
+    def open_transactions(
+        self,
+        transaction: TrajectoryTransaction,
+    ) -> frozenset[str]:
+        """Fold correlated start/end records without changing the surface."""
+        open_ids: set[str] = set()
+        for record in self._records():
+            if not isinstance(record, TrajectoryEventRecord):
+                continue
+            correlation_id = str(record.data.get(transaction.id_field) or "")
+            if not correlation_id:
+                continue
+            if record.event == transaction.start_event:
+                open_ids.add(correlation_id)
+            elif record.event == transaction.end_event:
+                open_ids.discard(correlation_id)
+        return frozenset(open_ids)
 
     def count(self) -> int:
         return len(self.load_surface())
@@ -224,13 +286,27 @@ class MessageHistoryStore:
     def has_history(self) -> bool:
         return self._path.exists() and self._path.stat().st_size > 0
 
-    def _ensure_loaded_id(self) -> None:
-        if (
-            self._next_position == 1
-            and self._path.exists()
-            and self._path.stat().st_size
-        ):
-            self.load_surface()
+    def _sync_writer(self) -> None:
+        size = self._path.stat().st_size if self._path.exists() else 0
+        if self._writer.file_size == size:
+            self._next_position = self._writer.next_position
+            return
+        records = self._records()
+        self._reset_writer(len(records) + 1, file_size=size)
+
+    def _reset_writer(
+        self, next_position: int, *, file_size: int | None = None
+    ) -> None:
+        self._writer.next_position = next_position
+        self._writer.file_size = (
+            self._path.stat().st_size if file_size is None else file_size
+        )
+        self._next_position = next_position
+
+    def _advance_writer(self, records: int) -> None:
+        self._writer.next_position += records
+        self._writer.file_size = self._path.stat().st_size
+        self._next_position = self._writer.next_position
 
     def _records(self) -> list[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord]:
         records = [
@@ -245,6 +321,8 @@ class MessageHistoryStore:
     def _append_records(
         self,
         records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
+        *,
+        sync: bool = True,
     ) -> None:
         payload = "".join(
             json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
@@ -265,7 +343,10 @@ class MessageHistoryStore:
                 if written == 0:
                     raise OSError("Trajectory append made no progress")
                 view = view[written:]
-            os.fsync(descriptor)
+            now = time.monotonic()
+            if sync or now - self._writer.last_sync >= _SYNC_INTERVAL_SECONDS:
+                os.fsync(descriptor)
+                self._writer.last_sync = now
         except BaseException:
             os.ftruncate(descriptor, original_size)
             os.fsync(descriptor)

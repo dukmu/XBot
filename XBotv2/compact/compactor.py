@@ -13,14 +13,25 @@ from XBotv2.core import (
     Message,
     ModelResponse,
     estimate_messages_tokens,
+    estimate_request_tokens,
 )
+from XBotv2.core.tools import Tool
 from XBotv2.core.timing import SESSION_STATS_METADATA_KEY, conversation_stats
 from XBotv2.llm.contracts import ModelPort
 from XBotv2.session.contracts import SessionInfo
 
-from XBotv2.compact.history import compact_prefix_end, history_chars
-from XBotv2.compact.contracts import CompactionMetrics, CompactionProposal
-from XBotv2.compact.protocol import compact_event
+from XBotv2.compact.history import (
+    compact_prefix_end,
+    history_chars,
+    tool_pairing_boundaries,
+)
+from XBotv2.compact.contracts import CompactionProposal
+from XBotv2.compact.protocol import (
+    CompactionMetrics,
+    CompactionReason,
+    compact_event,
+    is_automatic_compaction,
+)
 from XBotv2.compact.summary import (
     compacted_message,
     invoke_llm,
@@ -46,6 +57,68 @@ def _response_trace(response: ModelResponse) -> dict[str, JsonValue]:
     }
 
 
+def _summary_input(
+    messages: Sequence[Message],
+    split: int,
+    stable_prefix: Sequence[Message],
+    summary_max_chars: int,
+) -> list[Message]:
+    prefix = list(messages[:split])
+    if stable_prefix:
+        prefix = [message for message in prefix if message.role != "system"]
+    return summary_request(
+        prefix,
+        summary_max_chars,
+        stable_prefix=stable_prefix,
+    )
+
+
+def _fit_summary_prefix(
+    messages: list[Message],
+    split: int,
+    *,
+    stable_prefix: Sequence[Message],
+    tools: Sequence[Tool],
+    summary_max_chars: int,
+    max_context_tokens: int | None,
+    summary_output_tokens: int,
+) -> int:
+    """Fit the complete auxiliary request envelope at a safe surface cut."""
+    if max_context_tokens is None:
+        return split
+    reserve = max(1, int(summary_output_tokens))
+    available = max_context_tokens - reserve
+    if available < 1:
+        raise RuntimeError(
+            "Compaction auxiliary request has no context available after "
+            "the configured output reservation"
+        )
+    # The envelope is a fixed prefix plus a monotonic contribution from each
+    # selected message.  Fold it once and remember the largest safe cut that
+    # fits; repeatedly estimating every candidate made large histories O(n²).
+    tool_list = list(tools)
+    base = estimate_request_tokens(
+        _summary_input(messages, 0, stable_prefix, summary_max_chars),
+        tool_list,
+    )
+    boundaries = tool_pairing_boundaries(messages)
+    estimate = base
+    best = 0 if estimate <= available else None
+    for index, message in enumerate(messages[:split], start=1):
+        if not stable_prefix or message.role != "system":
+            estimate += estimate_messages_tokens([message])
+        if estimate > available:
+            break
+        if boundaries[index]:
+            best = index
+    if best is not None:
+        return best
+    raise RuntimeError(
+        "Compaction auxiliary request exceeds the model context window even "
+        "with an empty removable history prefix"
+    )
+
+
 async def build_compaction_proposal(
     *,
     model: ModelPort,
@@ -53,7 +126,7 @@ async def build_compaction_proposal(
     publish_runtime_event: RuntimePublisher,
     session: SessionInfo,
     messages: list[Message],
-    reason: str,
+    reason: CompactionReason,
     keep_recent_turns: int,
     summary_max_chars: int,
     context_tokens_before: int,
@@ -62,11 +135,33 @@ async def build_compaction_proposal(
     context_limit: int | None = None,
     max_context_tokens: int | None = None,
     output_reservation: int | None = None,
+    summary_output_tokens: int = 2_048,
     stable_prefix: Sequence[Message] = (),
+    tools: Sequence[Tool] = (),
     removable_estimate: int | None = None,
     record_trajectory: TrajectoryRecorder | None = None,
 ) -> CompactionProposal | None:
-    split = compact_prefix_end(messages, keep_recent_turns)
+    # An overflow recovery must keep only the newest turn; that also relaxes the
+    # "must shrink" guards below, so the reason alone drives both decisions.
+    split = compact_prefix_end(
+        messages,
+        1 if reason == "context-overflow" else keep_recent_turns,
+    )
+    try:
+        split = _fit_summary_prefix(
+            messages,
+            split,
+            stable_prefix=stable_prefix,
+            tools=tools,
+            summary_max_chars=summary_max_chars,
+            max_context_tokens=max_context_tokens,
+            summary_output_tokens=summary_output_tokens,
+        )
+    except RuntimeError:
+        if reason == "manual":
+            raise
+        logger.warning("automatic compaction auxiliary request cannot fit context")
+        return None
     if split == 0:
         return None
 
@@ -121,23 +216,10 @@ async def build_compaction_proposal(
         })
 
     try:
-        summary_messages = prefix_messages
-        if stable_prefix:
-            # ContextBuilder folds retained system-history messages into the
-            # stable provider system prefix. Avoid supplying those messages a
-            # second time while still letting the previous compaction summary
-            # participate through that stable prefix.
-            summary_messages = [
-                message for message in summary_messages
-                if message.role != "system"
-            ]
         response = await invoke_llm(
             model,
-            summary_request(
-                summary_messages,
-                summary_max_chars,
-                stable_prefix=stable_prefix,
-            ),
+            _summary_input(messages, split, stable_prefix, summary_max_chars),
+            output_tokens=summary_output_tokens,
         )
         await record_usage(model_usage(response.usage_metadata))
         if response.tool_calls:
@@ -154,7 +236,11 @@ async def build_compaction_proposal(
             })
         await publish_runtime_event(compact_event(
             "compaction_failed",
-            {"reason": reason, "message": "Compaction cancelled."},
+            {
+                "reason": reason,
+                "message": "Compaction cancelled.",
+                "automatic": is_automatic_compaction(reason),
+            },
         ))
         raise
     except Exception as exc:
@@ -165,7 +251,11 @@ async def build_compaction_proposal(
             })
         await publish_runtime_event(compact_event(
             "compaction_failed",
-            {"reason": reason, "message": str(exc)},
+            {
+                "reason": reason,
+                "message": str(exc),
+                "automatic": is_automatic_compaction(reason),
+            },
         ))
         if reason == "manual":
             raise
@@ -193,7 +283,11 @@ async def build_compaction_proposal(
         logger.warning(message)
         await publish_runtime_event(compact_event(
             "compaction_failed",
-            {"reason": reason, "message": message},
+            {
+                "reason": reason,
+                "message": message,
+                "automatic": is_automatic_compaction(reason),
+            },
         ))
         if record_trajectory is not None:
             record_trajectory("compaction/end", {
@@ -202,27 +296,28 @@ async def build_compaction_proposal(
             })
         return None
 
-    metrics: CompactionMetrics = {
-        "context_tokens_before": context_tokens_before,
-        "context_tokens_after_estimate": context_tokens_after,
-        "context_tokens_released_estimate": max(
+    metrics = CompactionMetrics(
+        context_tokens_before=context_tokens_before,
+        context_tokens_after_estimate=context_tokens_after,
+        context_tokens_released_estimate=max(
             0,
             context_tokens_before - context_tokens_after,
         ),
-        "context_limit": context_limit,
-        "max_context_tokens": max_context_tokens,
-        "output_reservation": output_reservation,
-        "request_estimate": request_estimate,
-        "estimate_source": estimate_source,
-        "history_chars_before": chars_before,
-        "history_chars_after": history_chars(compacted_messages),
-        "summary_chars": len(summary),
-        "summary_truncated": summary_truncated,
-        "messages_before": len(messages),
-        "messages_after": len(compacted_messages),
-        "messages_removed": len(messages) - len(compacted_messages),
-        "model_usage": usage,
-    }
+        context_limit=context_limit,
+        max_context_tokens=max_context_tokens,
+        output_reservation=output_reservation,
+        summary_output_tokens=summary_output_tokens,
+        request_estimate=request_estimate,
+        estimate_source=estimate_source,
+        history_chars_before=chars_before,
+        history_chars_after=history_chars(compacted_messages),
+        summary_chars=len(summary),
+        summary_truncated=summary_truncated,
+        messages_before=len(messages),
+        messages_after=len(compacted_messages),
+        messages_removed=len(messages) - len(compacted_messages),
+        model_usage=usage,
+    )
     return {
         "messages": compacted_messages,
         "prefix_end": split,

@@ -33,16 +33,26 @@ def compact_prefix_end(messages: Sequence[Message], keep_recent_turns: int) -> i
         if message.role == "user"
     ]
     if len(user_indexes) > keep_recent_turns:
-        return user_indexes[-keep_recent_turns]
+        candidate = user_indexes[-keep_recent_turns]
+    else:
+        assistant_indexes = [
+            index
+            for index, message in enumerate(messages)
+            if message.role == "assistant"
+        ]
+        if len(assistant_indexes) > keep_recent_turns:
+            candidate = assistant_indexes[-keep_recent_turns]
+        else:
+            return 0
 
-    assistant_indexes = [
-        index
-        for index, message in enumerate(messages)
-        if message.role == "assistant"
-    ]
-    if len(assistant_indexes) > keep_recent_turns:
-        return assistant_indexes[-keep_recent_turns]
-    return 0
+    # Never leave an assistant tool call on the opposite side of the cut.  A
+    # malformed result is rejected by the same fold instead of being hidden by
+    # compaction.  Build all cut states once, rather than rescanning history
+    # while backing up over a tool iteration.
+    boundaries = tool_pairing_boundaries(messages)
+    while candidate > 0 and not boundaries[candidate]:
+        candidate -= 1
+    return candidate
 
 
 def leading_system_messages(messages: Sequence[Message]) -> list[Message]:
@@ -55,8 +65,39 @@ def leading_system_messages(messages: Sequence[Message]) -> list[Message]:
     return prefix
 
 
+def _tool_call_ids(message: Message) -> set[str]:
+    return {call.id for call in message.tool_calls or () if call.id}
+
+
+def tool_pairing_boundaries(messages: Sequence[Message]) -> list[bool]:
+    """Return tool-pair balance for every cut of the message sequence.
+
+    ``boundaries[i]`` describes the cut before ``messages[i]``; the final entry
+    describes the cut after the last message.  A malformed surface raises here
+    rather than being silently accepted by a later reader.
+    """
+    pending: set[str] = set()
+    boundaries = [True]
+    for index, message in enumerate(messages):
+        if message.role == "assistant":
+            calls = _tool_call_ids(message)
+            if calls & pending:
+                raise ValueError("duplicate tool call id in conversation history")
+            pending.update(calls)
+        elif message.role == "tool":
+            call_id = message.tool_call_id
+            if not call_id or call_id not in pending:
+                raise ValueError(
+                    "tool result has no matching assistant tool call in history"
+                )
+            pending.remove(call_id)
+        boundaries.append(not pending)
+    return boundaries
+
+
 __all__ = [
     "compact_prefix_end",
     "history_chars",
     "leading_system_messages",
+    "tool_pairing_boundaries",
 ]

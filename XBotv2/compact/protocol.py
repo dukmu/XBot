@@ -7,12 +7,32 @@ from typing import Literal
 from pydantic import Field, JsonValue
 
 from XBotv2.core import ClientEvent
+from XBotv2.core.history import TrajectoryTransaction
 from XBotv2.core.tools import _validated_client_event
 from XBotv2.protocol import WireModel
 
+# Why a compaction ran; the only reason vocabulary shared with clients.
+CompactionReason = Literal["automatic", "manual", "context-overflow"]
+
+# The durable bracket one compaction commit must complete exactly once.
+COMPACTION_TRANSACTION = TrajectoryTransaction(
+    start_event="compaction/start",
+    end_event="compaction/end",
+    id_field="compaction_id",
+)
+
+# Reasons a user did not request explicitly.
+AUTOMATIC_COMPACTION_REASONS: frozenset[str] = frozenset(
+    {"automatic", "context-overflow"}
+)
+
+
+def is_automatic_compaction(reason: str) -> bool:
+    return reason in AUTOMATIC_COMPACTION_REASONS
+
 
 class CompactionStartedData(WireModel):
-    reason: str = Field(min_length=1)
+    reason: CompactionReason
     messages_before: int = Field(ge=0)
     history_chars_before: int = Field(ge=0)
     context_tokens_before: int = Field(ge=0)
@@ -36,16 +56,21 @@ class CompactionMetrics(WireModel):
     messages_after: int = Field(ge=0)
     messages_removed: int
     model_usage: dict[str, int] = Field(default_factory=dict)
+    summary_output_tokens: int = Field(default=1, ge=1)
 
 
 class CompactionCompletedData(WireModel):
-    reason: str = Field(min_length=1)
+    reason: CompactionReason
     metrics: CompactionMetrics
+    # Clients render a notice for unrequested compaction without re-deriving
+    # the reason vocabulary themselves.
+    automatic: bool = False
 
 
 class CompactionFailedData(WireModel):
-    reason: str = Field(min_length=1)
+    reason: CompactionReason
     message: str = Field(min_length=1)
+    automatic: bool = False
 
 
 CompactEventType = Literal[
@@ -67,10 +92,14 @@ def compact_event(type: CompactEventType, data: dict[str, JsonValue]) -> ClientE
 
 
 __all__ = [
+    "AUTOMATIC_COMPACTION_REASONS",
+    "COMPACTION_TRANSACTION",
     "CompactEventType",
     "CompactionCompletedData",
     "CompactionFailedData",
     "CompactionMetrics",
+    "CompactionReason",
     "CompactionStartedData",
     "compact_event",
+    "is_automatic_compaction",
 ]

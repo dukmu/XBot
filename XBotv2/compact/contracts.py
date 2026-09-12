@@ -7,6 +7,7 @@ from typing import NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import JsonValue
 
+from XBotv2.compact.protocol import CompactionMetrics, CompactionReason
 from XBotv2.core.messages import Message
 
 
@@ -20,25 +21,7 @@ class CompactConfig(BaseModel):
     trigger_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
     keep_recent_turns: int = Field(default=4, ge=1)
     summary_max_chars: int = Field(default=8_000, ge=1)
-
-
-class CompactionMetrics(TypedDict, total=False):
-    context_tokens_before: int
-    context_tokens_after_estimate: int
-    context_tokens_released_estimate: int
-    context_limit: int | None
-    max_context_tokens: int | None
-    output_reservation: int | None
-    request_estimate: int | None
-    estimate_source: str
-    history_chars_before: int
-    history_chars_after: int
-    summary_chars: int
-    summary_truncated: bool
-    messages_before: int
-    messages_after: int
-    messages_removed: int
-    model_usage: dict[str, int]
+    summary_output_tokens: int = Field(default=2_048, ge=1)
 
 
 class CompactionProposal(TypedDict):
@@ -47,9 +30,14 @@ class CompactionProposal(TypedDict):
     compaction_id: str
     summary: str
     raw_output: dict[str, JsonValue]
-    compact_reason: str
+    compact_reason: CompactionReason
     compact_metrics: CompactionMetrics
     source_node_ids: NotRequired[list[str]]
 
 
-__all__ = ["CompactConfig", "CompactionMetrics", "CompactionProposal"]
+__all__ = [
+    "CompactConfig",
+    "CompactionMetrics",
+    "CompactionProposal",
+    "CompactionReason",
+]

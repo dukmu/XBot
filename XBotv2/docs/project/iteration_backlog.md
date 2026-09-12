@@ -3,6 +3,89 @@
 This backlog tracks the next architecture iterations. It is ordered to reduce
 ambiguity before large implementation changes.
 
+## 0.3 Runtime resilience and compaction contract unification (2026-09-12, working branch)
+
+Confirmed defects and fixes in this working branch:
+
+- A provider stream exception after `turn_started` emitted an HTTP error but no
+  shared `turn_finished` boundary. The session runtime now closes that
+  lifecycle, and the TUI reconnects boundedly before reporting a terminal error.
+- Trajectory recording reparsed the complete `messages.jsonl` for every event,
+  making append latency quadratic. A process-local writer allocator now keeps
+  positions synchronized across live stores; ordinary telemetry uses bounded
+  delay flushing while message appends, surface replacements, and
+  `compaction/*` markers remain forced. Multi-process ownership is still not
+  claimed.
+- Provider-confirmed context overflow now has a typed adapter boundary and a
+  bounded compaction/rebuild/retry. Retry is allowed only after an append-only
+  surface replacement changes the current nodes.
+- Usage snapshot mutation is serialized inside `UsageService`: cumulative
+  counters and the latest effective context projection cannot overwrite one
+  another when a model-response usage update overlaps a compaction update.
+  This lock is process-local and does not claim cross-process session ownership.
+
+Contract unification in the same branch:
+
+- One request anchor. `core.tokens.RequestAnchor` with `read_request_anchor` /
+  `write_request_anchor` is the only reader or writer of the
+  `xbotv2_request_*` metadata keys. The engine records it for every assistant
+  message and compaction records the post-compaction projection through the
+  same API, so provider/model/window matching and the honest `context_tokens`
+  value are validated in one place instead of being re-derived per reader.
+- One compaction metrics schema. `compact.protocol.CompactionMetrics` is the
+  single definition; the parallel internal `TypedDict` is gone and the service
+  builds, finalizes, and publishes that model. `compact/contracts.py` re-exports
+  it for the proposal.
+- One compaction reason vocabulary. `CompactionReason` is
+  `automatic | manual | context-overflow`, and the `force_overflow` flag is gone
+  because the reason already carries that decision. Wire events additionally
+  carry `automatic`, so clients render the unrequested-compaction notice without
+  re-deriving the vocabulary. This fixes a real defect: the TUI still compared
+  `reason == "automatic"` while the service had renamed the threshold reason to
+  `"pressure"`, so automatic compaction notices never appeared.
+- One trajectory transaction query. `TrajectoryTransaction` lives in
+  `core.history`, the history port exposes `open_transactions(transaction)`
+  (replacing the three-argument `unmatched_event_ids`), and compaction declares
+  `COMPACTION_TRANSACTION` once.
+- Compaction recovery. An open transaction no longer disables compaction
+  forever: the next attempt closes the bracket with a `compaction/end` record
+  carrying an `aborted:` error, which is the only safe recovery because the
+  surface is a fold of the trajectory.
+- One tool-pairing implementation. `compact.history.tool_pairing_boundaries` is
+  the single fold; the redundant private import and the two `tool_pairing_*`
+  wrappers are gone.
+- Typed provider call options. `ModelRequestOptions(max_output_tokens=...)`
+  replaces the untyped `**kwargs` side channel through `BaseProvider.astream`,
+  `ModelPort.astream`, and `LlmService.astream`; adapters read a validated field
+  and Anthropic's required `max_tokens` stays a config-boundary error.
+- Declarative provider error vocabulary. `core.providers.provider_context_overflow`
+  classifies overflow from `types` / `codes` / `statuses` / `message_prefixes`
+  that each adapter declares as data, replacing per-adapter inline `body`
+  sniffing (including `startswith("prompt is too long")` inside the Anthropic
+  adapter, now a declared 400-status prefix).
+- Typed request-error outcome. `ModelRequestErrorOutcome` documents what a
+  `model/request-error` listener asks for; the engine validates the hook result
+  before acting on it.
+
+Removed in this branch: incremental stream timing and streamed usage deltas.
+The engine briefly published a pre-stream context estimate, per-delta TTFT and
+decode metrics, and delta-ified provider usage snapshots, with the web and TUI
+accumulating them client-side. That duplicated the terminal statistics channel
+(`assistant_message.timing`, `turn_finished.session_stats`, provider
+`usage_metadata`), broke the published turn event sequence, forced tests to
+strip a `timing` field before comparing fixtures, and re-estimated the whole
+accumulated text on every delta. Provider usage is once again reported only
+through the finished `ModelResponse`.
+
+Verification for this branch: `pytest XBotv2/tests/core XBotv2/tests/integration`
+passed 880 tests; `npx vitest run src/state/runtime.test.ts` passed 38 tests and
+`npx tsc --noEmit` is clean. These are the only claims made here. No real
+provider, browser, multi-process, or real-TCP result is claimed: the socket and
+browser smoke paths could not be exercised in this sandbox, and the retained
+stress runner output under `scripts/stress/reports/` is local, git-ignored
+evidence that predates the current source and therefore is not presented as
+this branch's result.
+
 ## 0.2 Plugin-owned configuration contracts (2026-09-10)
 
 - Built-in XBot plugins now declare configuration with Pydantic models in the

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import JsonValue
-
+from XBotv2.compact.protocol import CompactionMetrics, CompactionReason
 from XBotv2.core import Message
 from XBotv2.session.contracts import SessionInfo
 
@@ -19,7 +18,7 @@ class BeforeCompact:
     """Mutable proposal exposed before compacted history is committed."""
 
     messages: list[Message]
-    reason: str
+    reason: CompactionReason
     session: SessionInfo | None = None
 
 
@@ -28,8 +27,8 @@ class AfterCompact:
     """Notification emitted after compacted history has been committed."""
 
     messages: tuple[Message, ...]
-    reason: str
-    metrics: dict[str, JsonValue]
+    reason: CompactionReason
+    metrics: CompactionMetrics
     previous_message_count: int
     current_message_count: int
     session: SessionInfo | None = None

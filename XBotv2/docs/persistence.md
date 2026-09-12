@@ -34,6 +34,21 @@ The conversation surface and the human transcript are separate projections.
 HTTP history uses opaque cursors bound to the projection revision; clients must
 not manufacture or compare cursor internals.
 
+Durability boundaries differ by record kind. Message appends, surface
+replacements, and `compaction/*` transaction markers are fsynced before the
+call returns; ordinary telemetry events share a bounded-delay flush. A plugin
+that needs a stronger boundary must own an explicit event rather than rely on
+an adjacent telemetry write.
+
+A plugin may bracket a multi-record commit with a `TrajectoryTransaction`
+(start event, end event, correlation id field) and ask the history port for the
+ids still open with `open_transactions`. Callers resolve an open bracket
+explicitly; the store never rewrites or discards trajectory records.
+
+Trajectory positions are allocated by a process-local writer shared by the
+stores of one trajectory path. Concurrent appends from separate processes are
+not coordinated and are not a supported ownership model.
+
 ## Plugin state
 
 StateService namespaces are the only plugin state protocol. A plugin writes one

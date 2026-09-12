@@ -12,20 +12,25 @@ from XBotv2.compact.plugin import (
     _compact_prefix_end,
     _history_chars,
 )
+from XBotv2.compact.history import tool_pairing_boundaries
+from XBotv2.compact.protocol import COMPACTION_TRANSACTION
+from XBotv2.compact.summary import invoke_llm
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.compact import POST_COMPACT, PRE_COMPACT
 from XBotv2.core import (
     ConversationHistory,
     Message,
+    ModelChunk,
+    ModelRequestOptions,
     ModelResponse,
     ToolCall,
     estimate_request_tokens,
 )
 from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
 from XBotv2.core.tokens import (
-    REQUEST_CONTEXT_WINDOW_KEY,
-    REQUEST_ESTIMATE_KEY,
-    REQUEST_PROVIDER_KEY,
+    RequestAnchor,
+    read_request_anchor,
+    write_request_anchor,
 )
 from XBotv2.core.timing import TIMING_METADATA_KEY, conversation_stats
 from XBotv2.context_builder.builder import ContextBuilder
@@ -34,6 +39,7 @@ from XBotv2.agentloop.engine import Engine
 import xcore
 from plugin_harness import mount_plugin_standalone
 from XBotv2.llm.mock import MockLLM
+from XBotv2.core.providers import BaseProvider, ProviderContextOverflowError
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.sandbox.policy import SandboxPolicy
@@ -90,7 +96,7 @@ class FailingModel:
     def __init__(self, error: Exception) -> None:
         self._error = error
 
-    async def astream(self, _messages, **_options):
+    async def astream(self, _messages, **_kwargs):
         if False:  # pragma: no cover - keeps this an async generator
             yield None
         raise self._error
@@ -113,6 +119,47 @@ def test_compact_prefix_preserves_recent_complete_turns():
         "user",
         "assistant",
     ]
+
+
+def test_tool_pairing_boundaries_reject_a_cut_inside_an_active_call():
+    messages = [
+        Message(role="user", content="run it"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="call-1", name="shell", args={})],
+        ),
+        Message(role="tool", content="done", tool_call_id="call-1"),
+    ]
+
+    boundaries = tool_pairing_boundaries(messages)
+
+    assert boundaries[1]
+    assert not boundaries[2]
+    assert boundaries[3]
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_summary_call_receives_an_explicit_output_cap():
+    class CapturingModel:
+        max_output_tokens = None
+
+        def __init__(self):
+            self.options = None
+
+        async def astream(self, _messages, *, options=None):
+            self.options = options
+            yield ModelResponse(content="summary")
+
+    model = CapturingModel()
+    response = await invoke_llm(
+        model,
+        [Message(role="user", content="history")],
+        output_tokens=37,
+    )
+
+    assert response.content == "summary"
+    assert model.options == ModelRequestOptions(max_output_tokens=37)
 
 
 @pytest.mark.asyncio
@@ -280,7 +327,7 @@ async def test_human_command_compacts_and_persists_immediately(
         "context_tokens": 30,
     }, False)]
     assert setup.ctx.usage.context_updates == [
-        plugin._last_compaction["context_tokens_after_estimate"]
+        plugin.diagnostics()["last_compaction"]["context_tokens_after_estimate"]
     ]
     assert llm.call_count == 1
     assert engine.messages[0].role == "system"
@@ -290,6 +337,53 @@ async def test_human_command_compacts_and_persists_immediately(
     assert [message.content for message in state_store.history.load_transcript()] == [
         message.content for message in original
     ]
+
+
+@pytest.mark.asyncio
+async def test_stale_compaction_transaction_is_closed_before_the_next_commit(
+    state_store,
+    temp_workspace,
+):
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
+    setup = SetupContext(plugin)
+    original = history(3)
+    state_store.history.replace(original)
+    # A crash between the start and end markers leaves the bracket open.
+    state_store.history.record("compaction/start", {"compaction_id": "crash-1"})
+    llm = MockLLM(responses=[{"content": "Earlier context."}])
+    engine = make_engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        plugin_ctx=setup.ctx,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=RuntimeConfig(),
+    )
+    setup.ctx.model.replace(llm)
+    plugin.state = engine.state
+    await engine.start_session()
+
+    result = await setup.commands["compact"].handler("")
+
+    assert result.status == "ok"
+    records = [
+        json.loads(line)
+        for line in state_store.history.path.read_text(encoding="utf-8").splitlines()
+    ]
+    ends = [
+        record["data"]
+        for record in records
+        if record.get("event") == "compaction/end"
+    ]
+    assert [data["compaction_id"] for data in ends] == ["crash-1", ends[1]["compaction_id"]]
+    assert "aborted" in ends[0]["error"]
+    assert "error" not in ends[1]
+    assert state_store.history.open_transactions(COMPACTION_TRANSACTION) == frozenset()
 
 
 @pytest.mark.asyncio
@@ -326,7 +420,7 @@ async def test_large_context_does_not_use_fixed_character_threshold():
     set_history(plugin, original)
     context = [Message(role="system", content="x" * 80_000), *original]
 
-    result = await plugin._on_before_model_request(EventContext(
+    ctx = EventContext(
         messages=original,
         model_request=ModelRequest(context, [], plugin.model),
         settings=LoopSettings(
@@ -334,7 +428,8 @@ async def test_large_context_does_not_use_fixed_character_threshold():
             context_window=1_048_576,
         ),
         session=make_session(3),
-    ))
+    )
+    result = await plugin._on_before_model_request(ctx)
 
     assert result is None
 
@@ -345,9 +440,11 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
     original = history(3, content="x" * 5_000)
     context = [Message(role="system", content="stable"), *original]
     request_estimate = estimate_request_tokens(context)
-    original[-1].response_metadata[REQUEST_ESTIMATE_KEY] = request_estimate
-    original[-1].response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = 200_000
-    original[-1].response_metadata[REQUEST_PROVIDER_KEY] = "test"
+    write_request_anchor(original[-1], RequestAnchor(
+        provider="test",
+        context_window=200_000,
+        request_estimate=request_estimate,
+    ))
     original[-1].usage_metadata["context_tokens"] = 136_000
     set_history(plugin, original)
 
@@ -358,7 +455,7 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
         "## Remaining Work\nContinue."
     )}])
 
-    result = await plugin._on_before_model_request(EventContext(
+    ctx = EventContext(
         messages=original,
         model_request=ModelRequest(context, [], plugin.model),
         settings=LoopSettings(
@@ -367,20 +464,31 @@ async def test_automatic_threshold_uses_provider_window_and_output_limit():
             max_output_tokens=64_000,
         ),
         session=make_session(3),
-    ))
+    )
+    result = await plugin._on_before_model_request(ctx)
 
     sent = plugin.model.get_call_messages(0)
     assert sent[0].content == "stable"
     assert ET.fromstring(sent[1].content).tag == "summary_instructions"
     assert result == {"rebuild": True}
-    assert plugin._last_compaction["context_limit"] == 136_000
-    assert plugin._last_compaction["estimate_source"] == "provider_calibrated"
-    assert plugin._last_compaction["context_tokens_after_estimate"] < 136_000
+    metrics = plugin.diagnostics()["last_compaction"]
+    assert metrics["context_limit"] == 136_000
+    assert metrics["estimate_source"] == "provider_calibrated"
+    assert metrics["context_tokens_after_estimate"] < 136_000
+    anchor = read_request_anchor(ctx.messages[0])
+    assert anchor is not None
+    assert anchor.context_tokens == (
+        plugin.diagnostics()["last_compaction"]["context_tokens_after_estimate"]
+    )
 
 
 @pytest.mark.asyncio
 async def test_automatic_compaction_preserves_recent_tool_iterations():
-    plugin = make_plugin({"keep_recent_turns": 2, "trigger_ratio": 0.01})
+    plugin = make_plugin({
+        "keep_recent_turns": 2,
+        "trigger_ratio": 0.01,
+        "summary_output_tokens": 32,
+    })
     original = [Message(role="system", content="Goal continuation")]
     for index in range(6):
         call_id = f"call-{index}"
@@ -409,7 +517,7 @@ async def test_automatic_compaction_preserves_recent_tool_iterations():
         ),
         settings=LoopSettings(
             provider="test",
-            context_window=100,
+            context_window=1_000,
         ),
         session=make_session(1),
     )
@@ -613,6 +721,59 @@ async def test_automatic_compaction_rebuilds_context_before_provider_call(
     assert root.tag == "historical_context"
     assert root.find("conversation_summary") is not None
     assert (
-        plugin._last_compaction["context_tokens_after_estimate"]
-        < plugin._last_compaction["context_tokens_before"]
+        plugin.diagnostics()["last_compaction"]["context_tokens_after_estimate"]
+        < plugin.diagnostics()["last_compaction"]["context_tokens_before"]
     )
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_compacts_surface_and_retries_once(
+    state_store,
+    temp_workspace,
+):
+    class OverflowProvider(BaseProvider):
+        def __init__(self):
+            super().__init__(
+                model="active-model",
+                temperature=0,
+                max_output_tokens=None,
+            )
+            self.calls = [0]
+
+        async def _astream_once(self, _messages, **_kwargs):
+            self.calls[0] += 1
+            if self.calls[0] == 1:
+                raise ProviderContextOverflowError("context window exceeded")
+            yield ModelChunk(content="summary" if self.calls[0] == 2 else "answer")
+
+    plugin = make_plugin({
+        "keep_recent_turns": 1,
+        "trigger_ratio": 1.0,
+        "summary_output_tokens": 32,
+    })
+    setup = SetupContext(plugin)
+    original = history(3)
+    state_store.history.replace(original)
+    provider = OverflowProvider()
+    engine = make_engine(
+        llm=provider,
+        tool_registry=ToolRegistry(),
+        plugin_ctx=setup.ctx,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=RuntimeConfig(max_context_tokens=10_000),
+    )
+    plugin.state = engine.state
+    await engine.start_session()
+
+    events = [event async for event in engine.run_turn("continue")]
+
+    assert provider.calls[0] == 3
+    assert any(event["type"] == "assistant_message" for event in events)
+    assert engine.messages[0].role == "system"
+    assert "summary" in engine.messages[0].content

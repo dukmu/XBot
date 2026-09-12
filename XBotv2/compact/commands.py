@@ -7,22 +7,23 @@ from typing import Protocol
 from pydantic import JsonValue
 
 from XBotv2.commands import CommandResult
+from XBotv2.compact.protocol import CompactionMetrics
 
 
 class _CompactCommandOwner(Protocol):
     async def _compact_current_history(
         self,
-    ) -> tuple[dict[str, JsonValue] | None, dict[str, JsonValue]]: ...
+    ) -> tuple[dict[str, JsonValue] | None, CompactionMetrics | None]: ...
 
 
-def compact_result_message(metrics: dict[str, JsonValue]) -> str:
-    if not metrics:
+def compact_result_message(metrics: CompactionMetrics | None) -> str:
+    if metrics is None:
         return "Conversation history compacted."
-    usage = metrics.get("model_usage") or {}
+    usage = metrics.model_usage
     return (
         "Conversation history compacted "
-        f"from about {metrics.get('context_tokens_before', 0)} to "
-        f"{metrics.get('context_tokens_after_estimate', 0)} context tokens; "
+        f"from about {metrics.context_tokens_before} to "
+        f"{metrics.context_tokens_after_estimate} context tokens; "
         f"summary model used {usage.get('input_tokens', 0)} input and "
         f"{usage.get('output_tokens', 0)} output tokens."
     )

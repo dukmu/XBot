@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
 from XBotv2.agentloop.contracts import InboxInput
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import ConversationPage, HistoryNode, TrajectoryPage
+from XBotv2.core.history import (
+    ConversationPage,
+    HistoryNode,
+    TrajectoryPage,
+    TrajectoryTransaction,
+)
 from XBotv2.core.messages import Message
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.metadata import ThreadMetadata
@@ -83,6 +88,11 @@ class HistoryPort(Protocol):
     ) -> tuple[HistoryNode, ...]: ...
 
     def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
+
+    def open_transactions(
+        self,
+        transaction: TrajectoryTransaction,
+    ) -> frozenset[str]: ...
 
     def count(self) -> int: ...
 
@@ -186,4 +196,5 @@ __all__ = [
     "ThreadLifecycleWriterPort",
     "ThreadPersistenceFactory",
     "ThreadPersistencePort",
+    "TrajectoryTransaction",
 ]

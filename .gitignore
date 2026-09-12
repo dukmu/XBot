@@ -58,3 +58,6 @@ XCore/.pytest_cache/
 # local TUI smoke-test runtime state
 .tui-data/
 .tui-state/
+
+# Local stress-test results (the runner is a project tool; its output is not)
+scripts/stress/reports/
