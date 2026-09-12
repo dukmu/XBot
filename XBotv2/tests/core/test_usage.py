@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from xcore.state import StateService
 
@@ -105,6 +107,35 @@ async def test_auxiliary_usage_accumulates_without_replacing_main_context(tmp_pa
         "cache_creation_input_tokens": 0,
         "prompt_cache_write_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_usage_and_context_updates_are_serialized(tmp_path):
+    usage = UsageService(
+        StateService(path=tmp_path / "state.json").namespace("usage")
+    )
+    await usage.initialize([])
+
+    await asyncio.gather(*(
+        usage.add({
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "context_tokens": index + 1,
+        })
+        for index in range(32)
+    ))
+    await usage.update_context(777)
+
+    assert usage.snapshot().input_tokens == 32
+    assert usage.snapshot().output_tokens == 32
+    assert usage.snapshot().requests == 32
+    assert usage.snapshot().context_tokens == 777
+
+    restored = UsageService(
+        StateService(path=tmp_path / "state.json").namespace("usage")
+    )
+    await restored.initialize([])
+    assert restored.snapshot() == usage.snapshot()
 
 
 @pytest.mark.asyncio

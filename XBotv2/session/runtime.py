@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.agentloop import AgentLoopDriverPort
+from XBotv2.agentloop import AgentLoopDriverPort, agentloop_event
 from XBotv2.agentloop.contracts import InboxInput, InboxTarget
 from XBotv2.application import (
     RUNTIME_EVENT,
@@ -625,6 +625,7 @@ async def _execute_turn(
     interactive: bool | None,
 ) -> None:
     """Run one turn independently of any transport response consumer."""
+    turn_open = False
     try:
         live_interactive = (
             runtime.interactive if interactive is None else interactive
@@ -657,6 +658,10 @@ async def _execute_turn(
                             snapshot.messages
                         ).model_dump(mode="json")
                     router.emit(payload)
+                    if payload.type == "turn_started":
+                        turn_open = True
+                    elif payload.type in {"turn_finished", "turn_cancelled"}:
+                        turn_open = False
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
@@ -671,6 +676,12 @@ async def _execute_turn(
             str(exc),
             details={"exception_type": type(exc).__name__},
         ))
+        if turn_open:
+            # Shared-stream clients do not see the POST response's end marker.
+            # Close the published lifecycle even if error hooks or projection fail.
+            router.emit(_event_payload(agentloop_event(
+                "turn_finished", {"turn": runtime.engine.turn_count},
+            )))
     finally:
         router.finish()
         if runtime._active_router is router:

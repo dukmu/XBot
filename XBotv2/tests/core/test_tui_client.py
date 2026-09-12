@@ -2432,6 +2432,165 @@ def test_tui_state_records_engine_error_event():
     assert error_entries[0].key == "0"
 
 
+def test_tui_state_notices_only_unrequested_compaction():
+    """The plugin decides whether a compaction was unrequested."""
+
+    state = TuiState()
+    state.apply_event({
+        "type": "compaction_completed",
+        "data": {
+            "reason": "automatic",
+            "automatic": True,
+            "metrics": {"history_chars_before": 40_000, "history_chars_after": 900},
+        },
+    })
+    assert [notice.kind for notice in state.notices] == ["compact"]
+
+    state.apply_event({
+        "type": "compaction_completed",
+        "data": {
+            "reason": "manual",
+            "automatic": False,
+            "metrics": {"history_chars_before": 40_000, "history_chars_after": 900},
+        },
+    })
+    assert [notice.kind for notice in state.notices] == ["compact"]
+
+    state.apply_event({
+        "type": "compaction_failed",
+        "data": {
+            "reason": "context-overflow",
+            "automatic": True,
+            "message": "no room",
+        },
+    })
+    assert [notice.kind for notice in state.notices] == ["compact", "compact"]
+
+
+@pytest.mark.asyncio
+async def test_textual_stream_failure_releases_active_turn():
+    """A broken HTTP stream must not leave the composer stuck in Running."""
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def session_events(self):
+            await asyncio.sleep(3600)
+            yield {}
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(_frame("turn_started", {"turn": 1}))
+        await app._handle_stream_failure(
+            RuntimeError("provider disconnected"), source="session event stream"
+        )
+        await pilot.pause()
+
+        assert app.state.turn_active is False
+        assert app.state.status == "Error"
+        assert app.state.errors == [
+            "session event stream failed: provider disconnected"
+        ]
+        assert len([entry for entry in app.state.transcript if entry.kind == "error"]) == 1
+
+        # The POST compatibility stream can fail at the same time; don't add a
+        # second terminal error for the same turn.
+        await app._handle_stream_failure(
+            RuntimeError("same disconnect"), source="response stream"
+        )
+        assert len(app.state.errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_textual_session_events_reconnect_after_incomplete_stream():
+    """A transient SSE failure resumes from the session event cursor."""
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def session_events(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("incomplete SSE response")
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    app._session_attached = True
+    app.state.apply_event(_frame("turn_started", {"turn": 1}))
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        for _ in range(20):
+            await pilot.pause()
+            if app.session.calls >= 2 and not app.state.turn_active:
+                break
+
+        assert app.session.calls == 2
+        assert app.state.turn_active is False
+        assert app.state.errors == []
+
+
+@pytest.mark.asyncio
+async def test_textual_session_events_reconnect_after_unexpected_eof():
+    """An SSE end before turn completion is treated as an incomplete stream."""
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def session_events(self):
+            self.calls += 1
+            if self.calls > 1:
+                yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    app._session_attached = True
+    app.state.apply_event(_frame("turn_started", {"turn": 1}))
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        for _ in range(20):
+            await pilot.pause()
+            if app.session.calls >= 2 and not app.state.turn_active:
+                break
+
+        assert app.session.calls == 2
+        assert app.state.turn_active is False
+        assert app.state.errors == []
+
+
 def test_tui_state_closes_failed_turn_without_hiding_error():
     state = TuiState()
     state.apply_event(_frame("turn_started", {"turn": 1}))

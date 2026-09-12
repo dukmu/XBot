@@ -166,6 +166,35 @@ async def test_idle_user_turn_runs_directly(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_driver_failure_finishes_shared_turn_and_allows_next_input(tmp_path):
+    class FailingOnceEngine(FakeEngine):
+        async def run_turn(self, content, **kwargs):
+            if content == "fail":
+                yield {"type": "turn_started", "data": {"turn": 1}}
+                yield {"type": "assistant_message_delta", "data": {"content": "partial"}}
+                raise RuntimeError("response interrupted")
+            async for event in super().run_turn(content, **kwargs):
+                yield event
+
+    session = runtime(tmp_path)
+    session.engine = FailingOnceEngine()
+    shared = session.attach_event_stream()
+    failed = [event async for event in session.stream_message("fail", "failed-request")]
+    assert [event.type for event in failed][-2:] == ["error", "turn_finished"]
+    observed = []
+    async with asyncio.timeout(1):
+        async for frame in shared:
+            observed.append(frame.event.type)
+            if frame.event.type == "turn_finished":
+                break
+    assert "error" in observed
+    next_events = [event async for event in session.stream_message("retry", "next-request")]
+    assert any(event.type == "assistant_message" for event in next_events)
+    await shared.aclose()
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_turn_survives_response_stream_disconnect_and_replays(tmp_path):
     session = blocking_runtime(tmp_path)
     shared = session.attach_event_stream()

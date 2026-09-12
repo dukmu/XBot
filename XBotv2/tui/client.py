@@ -269,7 +269,7 @@ class TuiState:
         elif event_type == "compaction_completed":
             self.compaction_active = False
             self._refresh_status(reset_terminal=True)
-            if data.get("reason") == "automatic":
+            if data.get("automatic") is True:
                 metrics = data.get("metrics") or {}
                 self.append_notice(
                     "compact",
@@ -281,7 +281,7 @@ class TuiState:
         elif event_type == "compaction_failed":
             self.compaction_active = False
             self._refresh_status(reset_terminal=True)
-            if data.get("reason") == "automatic":
+            if data.get("automatic") is True:
                 self.append_notice(
                     "compact",
                     f"Automatic compaction failed: {data.get('message') or 'unknown error'}",

@@ -71,6 +71,10 @@ _REPLAY_BATCH = 50
 # Older/newer entries are re-mounted from ``state.transcript`` as the user
 # scrolls, so a long conversation never grows the DOM unboundedly.
 _MAX_MOUNTED_ENTRIES = _REPLAY_WINDOW + _REPLAY_BATCH
+# A disconnected event stream is resumed from TerminalSession's event cursor.
+# Keep retries short and bounded so a dead server still eventually releases an
+# active turn instead of leaving the TUI waiting forever.
+_SESSION_EVENT_RECONNECT_DELAYS = (0.05, 0.1, 0.25)
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -198,6 +202,11 @@ class XBotTextualApp(App[None]):
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
         self._interaction_response_task: asyncio.Task[None] | None = None
+        # A failed compatibility stream and the authoritative event stream can
+        # report the same broken turn independently.  Keep the local terminal
+        # transition idempotent so one transport failure does not produce two
+        # error entries.
+        self._stream_failure_reported = False
         self._turn_started_at: dict[int, float] = {}
         self._input_history: list[str] = []
         self._history_index: int | None = None
@@ -850,19 +859,46 @@ class XBotTextualApp(App[None]):
                 return
 
     async def _collect_session_events(self) -> None:
+        reconnect_attempt = 0
         try:
-            async for event in self.session.session_events():
+            while self._session_attached:
                 try:
-                    await self._consume_stream_event(event, pop_pending=True)
-                except Exception:  # noqa: BLE001
-                    # A single malformed event must not abort the stream,
-                    # otherwise the turn state (e.g. turn_active) stays stuck.
-                    logger.exception("tui session event failed type=%s", event.get("type"))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            if self.is_mounted:
-                self._record_error(exc)
+                    async for event in self.session.session_events():
+                        reconnect_attempt = 0
+                        try:
+                            await self._consume_stream_event(event, pop_pending=True)
+                        except Exception:  # noqa: BLE001
+                            # A single malformed event must not abort the stream,
+                            # otherwise the turn state (e.g. turn_active) stays stuck.
+                            logger.exception(
+                                "tui session event failed type=%s", event.get("type")
+                            )
+                    if not self._session_attached or not self.state.turn_active:
+                        return
+                    # An SSE end sentinel without a terminal turn event is an
+                    # incomplete response too.  Re-open from the session's
+                    # cursor so the missing terminal frame can be replayed.
+                    raise RuntimeError(
+                        "session event stream ended before the turn completed"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    if not self._session_attached:
+                        return
+                    if reconnect_attempt >= len(_SESSION_EVENT_RECONNECT_DELAYS):
+                        await self._handle_stream_failure(
+                            exc, source="session event stream"
+                        )
+                        return
+                    delay = _SESSION_EVENT_RECONNECT_DELAYS[reconnect_attempt]
+                    reconnect_attempt += 1
+                    logger.warning(
+                        "session event stream failed; reconnecting in %.2fs",
+                        delay,
+                        exc_info=True,
+                    )
+                    await asyncio.sleep(delay)
         finally:
             self._event_stream_connected = False
 
@@ -895,8 +931,39 @@ class XBotTextualApp(App[None]):
                     logger.exception("tui.collect_response event failed type=%s", event.get("type"))
         except Exception as exc:
             logger.exception("tui.collect_response failed")
-            self._record_error(exc)
+            await self._handle_stream_failure(exc, source="response stream")
         return rejected
+
+    async def _handle_stream_failure(
+        self, exc: BaseException, *, source: str
+    ) -> None:
+        """Turn a broken HTTP stream into a terminal local error.
+
+        The server normally closes a turn with an ``error``/``turn_finished``
+        event.  A provider or connection failure can instead terminate either
+        HTTP stream before that boundary, leaving ``turn_active`` set forever.
+        Apply the same state transition as a protocol error so the composer
+        and queued-input worker are released even when no terminal frame was
+        delivered.  The two TUI streams may fail together, hence the guard.
+        """
+        logger.error(
+            "tui.%s failed",
+            source,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        if self._stream_failure_reported:
+            return
+        if not self.state.turn_active:
+            self._record_error(exc)
+            return
+        self._stream_failure_reported = True
+        message = f"{source} failed: {exc}"
+        event = {
+            "type": "error",
+            "data": {"code": "client_stream_error", "message": message},
+        }
+        self.state.apply_event(event)
+        await self._handle_stream_event(event)
 
     async def _consume_stream_event(
         self,
@@ -1159,6 +1226,7 @@ class XBotTextualApp(App[None]):
         event_type = str(event.get("type") or "")
         refresh_input = False
         if event_type == "turn_started":
+            self._stream_failure_reported = False
             self._finalize_activity()
             await self._append_activity()
         elif event_type == "turn_finished":

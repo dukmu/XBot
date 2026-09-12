@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from pydantic import JsonValue
 
@@ -27,35 +28,37 @@ class UsageService:
         self._log = runtime_log.bind("usage")
         self._snapshot = UsageData()
         self._initialized = False
+        self._lock = asyncio.Lock()
 
     async def initialize(self, messages: Sequence[Message]) -> None:
-        if self._initialized:
-            return
-        stored = await self._store.get("snapshot")
-        source = "history"
-        if stored is None:
-            snapshot = UsageData()
-            for message in messages:
-                usage = message.usage_metadata
-                if usage:
-                    delta = UsageData.from_provider(usage)
-                    if not delta.is_empty():
-                        snapshot = snapshot.add(delta)
-            self._snapshot = snapshot
-            if snapshot.requests:
-                await self._store.set("snapshot", snapshot.to_snapshot())
-        else:
-            source = "snapshot"
-            if not isinstance(stored, Mapping):
-                raise TypeError("Persisted usage snapshot must be an object")
-            self._snapshot = UsageData.from_snapshot(stored)
-        self._initialized = True
-        self._log.info(
-            "usage.initialized",
-            source=source,
-            messages=len(messages),
-            **self._snapshot.totals(),
-        )
+        async with self._lock:
+            if self._initialized:
+                return
+            stored = await self._store.get("snapshot")
+            source = "history"
+            if stored is None:
+                snapshot = UsageData()
+                for message in messages:
+                    usage = message.usage_metadata
+                    if usage:
+                        delta = UsageData.from_provider(usage)
+                        if not delta.is_empty():
+                            snapshot = snapshot.add(delta)
+                self._snapshot = snapshot
+                if snapshot.requests:
+                    await self._store.set("snapshot", snapshot.to_snapshot())
+            else:
+                source = "snapshot"
+                if not isinstance(stored, Mapping):
+                    raise TypeError("Persisted usage snapshot must be an object")
+                self._snapshot = UsageData.from_snapshot(stored)
+            self._initialized = True
+            self._log.info(
+                "usage.initialized",
+                source=source,
+                messages=len(messages),
+                **self._snapshot.totals(),
+            )
 
     def snapshot(self) -> UsageData:
         return self._snapshot
@@ -66,53 +69,55 @@ class UsageService:
         *,
         update_context: bool = True,
     ) -> dict[str, int] | None:
-        if not self._initialized:
-            raise RuntimeError("UsageService must be initialized before recording usage")
-        delta = UsageData.from_provider(usage)
-        if delta.is_empty():
-            return None
-        updated = self._snapshot.add(delta)
-        self._snapshot = (
-            updated
-            if update_context
-            else updated.model_copy(
-                update={"context_tokens": self._snapshot.context_tokens}
+        async with self._lock:
+            if not self._initialized:
+                raise RuntimeError("UsageService must be initialized before recording usage")
+            delta = UsageData.from_provider(usage)
+            if delta.is_empty():
+                return None
+            updated = self._snapshot.add(delta)
+            self._snapshot = (
+                updated
+                if update_context
+                else updated.model_copy(
+                    update={"context_tokens": self._snapshot.context_tokens}
+                )
             )
-        )
-        await self._store.set("snapshot", self._snapshot.to_snapshot())
-        self._log.info(
-            "usage.recorded",
-            delta=delta.totals(),
-            context_updated=update_context,
-            cumulative=self._snapshot.totals(),
-        )
-        event = delta.to_event_dict()
-        if not update_context:
-            event["context_tokens"] = self._snapshot.context_tokens
-        return event
+            await self._store.set("snapshot", self._snapshot.to_snapshot())
+            self._log.info(
+                "usage.recorded",
+                delta=delta.totals(),
+                context_updated=update_context,
+                cumulative=self._snapshot.totals(),
+            )
+            event = delta.to_event_dict()
+            if not update_context:
+                event["context_tokens"] = self._snapshot.context_tokens
+            return event
 
     async def update_context(self, context_tokens: int) -> dict[str, int]:
         """Persist and publish a new effective-context size without a request."""
-        if not self._initialized:
-            raise RuntimeError("UsageService must be initialized before updating context")
-        if isinstance(context_tokens, bool) or context_tokens < 0:
-            raise ValueError("context_tokens must be a non-negative integer")
-        self._snapshot = self._snapshot.model_copy(
-            update={"context_tokens": context_tokens}
-        )
-        await self._store.set("snapshot", self._snapshot.to_snapshot())
-        self._log.info(
-            "usage.context_updated",
-            context_tokens=context_tokens,
-            cumulative=self._snapshot.totals(),
-        )
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "requests": 0,
-            "context_tokens": context_tokens,
-        }
+        async with self._lock:
+            if not self._initialized:
+                raise RuntimeError("UsageService must be initialized before updating context")
+            if isinstance(context_tokens, bool) or context_tokens < 0:
+                raise ValueError("context_tokens must be a non-negative integer")
+            self._snapshot = self._snapshot.model_copy(
+                update={"context_tokens": context_tokens}
+            )
+            await self._store.set("snapshot", self._snapshot.to_snapshot())
+            self._log.info(
+                "usage.context_updated",
+                context_tokens=context_tokens,
+                cumulative=self._snapshot.totals(),
+            )
+            return {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "requests": 0,
+                "context_tokens": context_tokens,
+            }
 
 
 class UsageHandlers:
