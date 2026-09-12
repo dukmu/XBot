@@ -216,13 +216,12 @@ class SessionManager(SessionsPort):
         return len(self._sessions)
 
     async def get(self, session_id: str, thread_id: str) -> SessionRuntime:
-        async with self._lock:
-            ctx = self._sessions.get((session_id, thread_id))
-        if ctx is None:
+        runtime = await self._runtime(session_id, thread_id)
+        if runtime is None:
             if self.paths.session(session_id).has_thread(thread_id):
                 raise ThreadNotActive(f"{session_id}/{thread_id}")
             raise SessionNotFound(f"{session_id}/{thread_id}")
-        return ctx
+        return runtime
 
     async def open_session(
         self,
@@ -402,7 +401,7 @@ class SessionManager(SessionsPort):
             await self._events.emit(
                 SESSION_RESOURCE_CHANGED,
                 SessionResourceChanged(
-                    await session_summary(self, session_id),
+                    await self.session_summary(session_id),
                     added=not session_preexisting,
                 ),
             )
@@ -498,7 +497,7 @@ class SessionManager(SessionsPort):
             return
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(await session_summary(self, session_id)),
+            SessionResourceChanged(await self.session_summary(session_id)),
         )
 
     async def close_all(self) -> None:
@@ -541,8 +540,33 @@ class SessionManager(SessionsPort):
         async with self._lock:
             return dict(self._sessions)
 
+    async def _runtime(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> SessionRuntime | None:
+        """One live runtime, without copying the whole active catalog."""
+        async with self._lock:
+            return self._sessions.get((session_id, thread_id))
+
+    async def _persisted_thread(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> ThreadPersistencePort:
+        """The on-disk reader for one thread, or a clear not-found error."""
+        session = self.paths.session(session_id)
+        if not session.has_thread(thread_id):
+            raise SessionNotFound(f"{session_id}/{thread_id}")
+        return self._thread_persistence(session, thread_id=thread_id)
+
     def session_exists(self, session_id: str) -> bool:
         return self.paths.session(session_id).root.is_dir()
+
+    def _require_session(self, session_id: str) -> None:
+        """Validate a session id without reading any of its trajectories."""
+        if not self.session_exists(session_id):
+            raise SessionNotFound(session_id)
 
     async def open(self, request: OpenSession) -> OpenedSession:
         runtime = await self.open_session(
@@ -564,13 +588,28 @@ class SessionManager(SessionsPort):
             path.name for path in root.iterdir() if path.is_dir()
         ) if root.is_dir() else []
         active = await self.active_threads()
-        return tuple([
-            await _build_session_summary(self, session_id, active)
-            for session_id in session_ids
-        ])
+        summaries = []
+        for session_id in session_ids:
+            try:
+                summaries.append(
+                    await _build_session_summary(self, session_id, active)
+                )
+            except Exception as exc:  # noqa: BLE001 - one session must not hide the catalog
+                self._log.warning(
+                    "session.catalog.unreadable",
+                    session_id=session_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc) or type(exc).__name__,
+                )
+                summaries.append(_unreadable_summary(self, session_id))
+        return tuple(summaries)
 
     async def session_summary(self, session_id: str) -> SessionSummary:
-        return await session_summary(self, session_id)
+        return await _build_session_summary(
+            self,
+            session_id,
+            await self.active_threads(),
+        )
 
     async def rename_session(
         self,
@@ -588,7 +627,7 @@ class SessionManager(SessionsPort):
         main_id = "agent" if "agent" in thread_ids else ""
         if not main_id:
             for thread_id in thread_ids:
-                thread = await thread_summary(self, session_id, thread_id)
+                thread = await self.thread_summary(session_id, thread_id)
                 if not thread.parent_thread_id:
                     main_id = thread_id
                     break
@@ -609,7 +648,7 @@ class SessionManager(SessionsPort):
             metadata = persistence.metadata.load()
             persistence.metadata.save(metadata.model_copy(update={"title": value}))
         self._log.info("session.renamed", session_id=session_id)
-        renamed = await session_summary(self, session_id)
+        renamed = await self.session_summary(session_id)
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
             SessionResourceChanged(renamed),
@@ -617,8 +656,8 @@ class SessionManager(SessionsPort):
         return renamed
 
     async def fork_session(self, session_id: str) -> str:
+        self._require_session(session_id)
         active = await self.active_threads()
-        await _build_session_summary(self, session_id, active)
         runtimes = _session_runtimes(active, session_id)
         if any(runtime.turn_lock.locked() for runtime in runtimes):
             raise OperationError(
@@ -653,15 +692,15 @@ class SessionManager(SessionsPort):
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
             SessionResourceChanged(
-                await session_summary(self, forked_id),
+                await self.session_summary(forked_id),
                 added=True,
             ),
         )
         return forked_id
 
     async def delete_session(self, session_id: str) -> None:
+        self._require_session(session_id)
         active = await self.active_threads()
-        await _build_session_summary(self, session_id, active)
         runtimes = _session_runtimes(active, session_id)
         if any(runtime.turn_lock.locked() for runtime in runtimes):
             raise OperationError(
@@ -678,15 +717,20 @@ class SessionManager(SessionsPort):
         )
 
     async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
+        self._require_session(session_id)
         active = await self.active_threads()
-        await _build_session_summary(self, session_id, active)
         return tuple([
-            await _thread_summary(self, session_id, thread_id, active)
+            await _thread_summary(
+                self,
+                session_id,
+                thread_id,
+                active.get((session_id, thread_id)),
+            )
             for thread_id in persisted_thread_ids(self.paths, session_id)
         ])
 
     async def open_thread(self, request: OpenThread) -> OpenedSession:
-        await session_summary(self, request.session_id)
+        await self.session_summary(request.session_id)
         parent_thread_id = request.parent_thread_id
         if request.mode == "resume":
             session = self.paths.session(request.session_id)
@@ -737,20 +781,22 @@ class SessionManager(SessionsPort):
         session_id: str,
         thread_id: str,
     ) -> ThreadSummary:
-        return await thread_summary(self, session_id, thread_id)
+        return await _thread_summary(
+            self,
+            session_id,
+            thread_id,
+            await self._runtime(session_id, thread_id),
+        )
 
     async def messages(
         self,
         session_id: str,
         thread_id: str,
     ) -> tuple[Message, ...]:
-        active = (await self.active_threads()).get((session_id, thread_id))
-        if active is not None:
-            return tuple(active.engine.messages)
-        session = self.paths.session(session_id)
-        if not session.has_thread(thread_id):
-            raise SessionNotFound(f"{session_id}/{thread_id}")
-        persistence = self._thread_persistence(session, thread_id=thread_id)
+        runtime = await self._runtime(session_id, thread_id)
+        if runtime is not None:
+            return tuple(runtime.engine.messages)
+        persistence = await self._persisted_thread(session_id, thread_id)
         return tuple(persistence.history.load_transcript())
 
     async def message_page(
@@ -767,10 +813,7 @@ class SessionManager(SessionsPort):
                     "invalid_cursor", "A message cursor requires a page limit."
                 )
             return ConversationPage(await self.messages(session_id, thread_id))
-        session = self.paths.session(session_id)
-        if not session.has_thread(thread_id):
-            raise SessionNotFound(f"{session_id}/{thread_id}")
-        persistence = self._thread_persistence(session, thread_id=thread_id)
+        persistence = await self._persisted_thread(session_id, thread_id)
         try:
             page = persistence.history.page_transcript(limit=limit, cursor=cursor)
         except HistoryCursorInvalid as exc:
@@ -790,10 +833,7 @@ class SessionManager(SessionsPort):
         cursor: str | None,
         limit: int,
     ) -> SessionTrajectoryPage:
-        session = self.paths.session(session_id)
-        if not session.has_thread(thread_id):
-            raise SessionNotFound(f"{session_id}/{thread_id}")
-        persistence = self._thread_persistence(session, thread_id=thread_id)
+        persistence = await self._persisted_thread(session_id, thread_id)
         try:
             page = persistence.history.page_trajectory(limit=limit, cursor=cursor)
         except HistoryCursorInvalid as exc:
@@ -813,13 +853,11 @@ class SessionManager(SessionsPort):
                 "artifact_not_found",
                 f"Artifact is not referenced by {session_id}/{thread_id}.",
             )
-        active = (await self.active_threads()).get((session_id, thread_id))
+        runtime = await self._runtime(session_id, thread_id)
         store = (
-            active.application.artifacts
-            if active is not None
-            else self._thread_persistence(
-                self.paths.session(session_id), thread_id=thread_id
-            ).artifacts
+            runtime.application.artifacts
+            if runtime is not None
+            else (await self._persisted_thread(session_id, thread_id)).artifacts
         )
         try:
             content = store.read(ref)
@@ -1203,26 +1241,12 @@ def _session_runtimes(
     ]
 
 
-async def thread_summary(
-    manager: SessionManager,
-    session_id: str,
-    thread_id: str,
-) -> ThreadSummary:
-    return await _thread_summary(
-        manager,
-        session_id,
-        thread_id,
-        await manager.active_threads(),
-    )
-
-
 async def _thread_summary(
     manager: SessionManager,
     session_id: str,
     thread_id: str,
-    active_threads: Mapping[tuple[str, str], SessionRuntime],
+    active: SessionRuntime | None,
 ) -> ThreadSummary:
-    active = active_threads.get((session_id, thread_id))
     if active is not None:
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
@@ -1248,13 +1272,7 @@ async def _thread_summary(
             title=metadata.title or session_id,
         )
 
-    session = manager.paths.session(session_id)
-    if not session.has_thread(thread_id):
-        raise SessionNotFound(f"{session_id}/{thread_id}")
-    persistence = manager._thread_persistence(
-        session,
-        thread_id=thread_id,
-    )
+    persistence = await manager._persisted_thread(session_id, thread_id)
     metadata = persistence.metadata.load()
     parent_thread_id = metadata.parent_thread_id
     nodes = persistence.history.load_surface()
@@ -1320,52 +1338,68 @@ def _history_artifact(
     return None
 
 
-async def session_summary(
-    manager: SessionManager,
-    session_id: str,
-) -> SessionSummary:
-    return await _build_session_summary(manager, session_id, await manager.active_threads())
-
-
 async def _build_session_summary(
     manager: SessionManager,
     session_id: str,
     active: Mapping[tuple[str, str], SessionRuntime],
 ) -> SessionSummary:
     session = manager.paths.session(session_id)
-    active_ids = {
-        thread_id
-        for (active_session_id, thread_id) in active
+    active_by_thread = {
+        thread_id: runtime
+        for (active_session_id, thread_id), runtime in active.items()
         if active_session_id == session_id
     }
-    if not session.root.is_dir() and not active_ids:
+    if not session.root.is_dir() and not active_by_thread:
         raise SessionNotFound(session_id)
     thread_ids = sorted(
-        set(persisted_thread_ids(manager.paths, session_id)) | active_ids
+        set(persisted_thread_ids(manager.paths, session_id)) | active_by_thread.keys()
     )
-    active_threads = len(active_ids)
     main_id = "agent" if "agent" in thread_ids else None
     if main_id is None:
         for candidate_id in thread_ids:
             candidate = await _thread_summary(
-                manager, session_id, candidate_id, active
+                manager,
+                session_id,
+                candidate_id,
+                active_by_thread.get(candidate_id),
             )
             if not candidate.parent_thread_id:
                 main_id = candidate_id
                 break
     main = (
-        await _thread_summary(manager, session_id, main_id, active)
+        await _thread_summary(
+            manager,
+            session_id,
+            main_id,
+            active_by_thread.get(main_id),
+        )
         if main_id
         else None
     )
     return SessionSummary(
         session_id=session_id,
-        status="active" if active_threads else "inactive",
-        active_threads=active_threads,
+        status="active" if active_by_thread else "inactive",
+        active_threads=len(active_by_thread),
         thread_count=len(thread_ids),
         workspace_root=main.workspace_root if main is not None else "",
         title=main.title if main is not None else session_id,
         blank=main is None or main.message_count == 0,
+    )
+
+
+def _unreadable_summary(
+    manager: SessionManager,
+    session_id: str,
+) -> SessionSummary:
+    """Keep an unreadable session visible so it can still be deleted."""
+    thread_ids = persisted_thread_ids(manager.paths, session_id)
+    return SessionSummary(
+        session_id=session_id,
+        status="inactive",
+        thread_count=len(thread_ids),
+        title=session_id,
+        blank=not thread_ids,
+        unreadable=True,
     )
 
 
@@ -1381,6 +1415,4 @@ __all__ = [
     "ThreadNotActive",
     "pending_interactions",
     "persisted_thread_ids",
-    "session_summary",
-    "thread_summary",
 ]

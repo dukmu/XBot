@@ -288,6 +288,9 @@ class SessionSummary(BaseModel):
     workspace_root: str = ""
     title: str = ""
     blank: bool = True
+    # A session whose trajectory cannot be read stays listed so it can be
+    # deleted; clients should show it as damaged instead of opening it.
+    unreadable: bool = False
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
