@@ -349,6 +349,52 @@ def test_tui_state_appends_assistant_deltas_to_one_message():
     assert [(m.role, m.content) for m in state.messages] == [("assistant", "Hello")]
 
 
+def test_json_payload_reuses_one_adapter_instead_of_rebuilding(monkeypatch):
+    """Every streamed frame must not recompile the wire->JSON adapter.
+
+    Building a ``TypeAdapter`` per frame recompiles a core schema (~1ms
+    measured). A streaming turn publishes far faster than the resulting
+    ~1000 events/s ceiling, so the client falls behind, its backlog overflows
+    the server's bounded 512-frame replay window, and the user is shown
+    ``session_event_cursor_expired``. The adapter must be built once.
+    """
+
+    from XBotv2.protocol.models import ServerEvent
+    from XBotv2.tui import terminal as terminal_module
+
+    constructions: list[object] = []
+    original = terminal_module.TypeAdapter
+
+    class CountingTypeAdapter:
+        def __init__(self, *args, **kwargs):
+            constructions.append(args)
+            self._inner = original(*args, **kwargs)
+
+        def validate_python(self, *args, **kwargs):
+            return self._inner.validate_python(*args, **kwargs)
+
+    # Patch after import: the module-level adapter already exists, so a
+    # correct implementation never touches TypeAdapter again at call time.
+    monkeypatch.setattr(terminal_module, "TypeAdapter", CountingTypeAdapter)
+
+    event = ServerEvent(
+        session_id="s",
+        thread_id="t",
+        sequence=7,
+        type="assistant_message_delta",
+        data={"reasoning": "think"},
+    )
+    payloads = [terminal_module._json_payload(event) for _ in range(50)]
+
+    assert constructions == [], (
+        "_json_payload rebuilt TypeAdapter per call; hoist it to module scope"
+    )
+    assert payloads[0] == payloads[-1]
+    assert payloads[0]["type"] == "assistant_message_delta"
+    assert payloads[0]["sequence"] == 7
+    assert payloads[0]["data"] == {"reasoning": "think"}
+
+
 def test_tui_state_distinguishes_thinking_from_visible_output() -> None:
     state = TuiState()
     state.apply_event({"type": "turn_started", "data": {"turn": 1}})

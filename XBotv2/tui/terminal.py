@@ -283,8 +283,17 @@ def _dump(model: WireModel) -> dict[str, JsonValue]:
     return payload
 
 
+# The wire->JSON normalization contract is static, so the validating adapter is
+# built once. Constructing a ``TypeAdapter`` per event recompiles a core schema
+# (~950us measured) and caps the client at roughly 1000 events/s. A streaming
+# turn publishes far faster than that, the client falls behind, and the backlog
+# overflows the server's bounded replay window -- surfacing to the user as
+# ``session_event_cursor_expired``.
+_JSON_PAYLOAD_ADAPTER = TypeAdapter(dict[str, JsonValue])
+
+
 def _json_payload(model: WireModel) -> dict[str, JsonValue]:
     """Normalize a wire model through the JSON contract at the client edge."""
-    return TypeAdapter(dict[str, JsonValue]).validate_python(
+    return _JSON_PAYLOAD_ADAPTER.validate_python(
         model.model_dump(mode="json")
     )
