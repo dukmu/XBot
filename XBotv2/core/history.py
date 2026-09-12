@@ -99,7 +99,13 @@ class HistorySink(Protocol):
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]: ...
 
-    def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
+    def record(
+        self,
+        event: str,
+        data: dict[str, JsonValue],
+        *,
+        durable: bool = False,
+    ) -> None: ...
 
     def open_transactions(
         self,
@@ -247,10 +253,16 @@ class ConversationHistory(Sequence[Message]):
             raise RuntimeError("History transcript sources are not current")
         return start
 
-    def record(self, event: str, data: dict[str, JsonValue]) -> None:
+    def record(
+        self,
+        event: str,
+        data: dict[str, JsonValue],
+        *,
+        durable: bool = False,
+    ) -> None:
         """Append a log-only trajectory event without changing the surface."""
         if self._sink is not None:
-            self._sink.record(event, data)
+            self._sink.record(event, data, durable=durable)
 
     def open_transactions(
         self,

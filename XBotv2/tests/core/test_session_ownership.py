@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -136,6 +137,33 @@ def test_ownership_is_shared_within_one_process(tmp_path):
     stdout, _stderr = allowed.communicate(timeout=60)
     assert allowed.returncode == 0, stdout
     assert stdout.strip() == "acquired"
+
+
+def test_concurrent_acquisition_in_one_process_is_shared(tmp_path):
+    """Threads racing for one session must share it, not fail on their own lock."""
+    root = _session_root(tmp_path)
+    acquired: list[object] = []
+    errors: list[BaseException] = []
+
+    def take() -> None:
+        try:
+            acquired.append(acquire_session(root, label="thread"))
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=take) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len({id(ownership) for ownership in acquired}) == 1
+    ownership = acquired[0]
+    assert ownership.count == 8
+    for _ in range(8):
+        ownership.release()
+    assert ownership.count == 0
 
 
 def test_ownership_is_released_when_the_owner_process_dies(tmp_path):

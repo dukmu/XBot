@@ -61,6 +61,7 @@ __all__ = [
     "LoopState",
     "LIST_TOOLS",
     "ModelRequest",
+    "ModelRequestErrorOutcome",
     "ToolGuard",
     "ToolCatalog",
     "ToolDescription",

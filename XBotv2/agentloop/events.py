@@ -86,6 +86,7 @@ SHORT_CIRCUIT_EVENTS = frozenset({
     Events.BEFORE_AGENT,
     Events.BEFORE_TOOL_SCHEMA_BIND,
     Events.AFTER_AGENT,
+    Events.MODEL_REQUEST_ERROR,
     Events.BEFORE_TOOLS,
     Events.BEFORE_TOOL_CALL,
     Events.AFTER_TOOLS,

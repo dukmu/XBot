@@ -243,7 +243,7 @@ def retryable_provider_error(error: Exception) -> bool:
     }
 
 
-def error_payload(error: object) -> Mapping[str, Any] | None:
+def _provider_error_payload(error: object) -> Mapping[str, Any] | None:
     """Return the provider error object of an SDK exception, when present."""
     body = getattr(error, "body", None)
     if not isinstance(body, Mapping):
@@ -266,7 +266,7 @@ def provider_context_overflow(
     Each adapter declares only the documented discriminators of its own
     protocol; the classification order lives here so adapters stay declarative.
     """
-    payload = error_payload(error)
+    payload = _provider_error_payload(error)
     error_type = str(payload.get("type") or "") if payload else ""
     code = str(payload.get("code") or "") if payload else ""
     message = str(payload.get("message") or "") if payload else ""
@@ -293,7 +293,6 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderRetryExhaustedError",
     "ProviderContextOverflowError",
-    "error_payload",
     "provider_context_overflow",
     "retryable_provider_error",
 ]

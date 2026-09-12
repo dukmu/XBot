@@ -174,9 +174,11 @@ async def build_compaction_proposal(
         else estimate_messages_tokens(prefix_messages)
     )
 
-    # If even an empty summary envelope cannot be smaller than the removable
-    # prefix, an automatic auxiliary call cannot improve the request.
-    if reason == "automatic":
+    # Threshold compaction may be pointless; manual and context-overflow
+    # compaction must still run even when the estimate says the summary will
+    # not shrink the request.
+    threshold_triggered = reason == "automatic"
+    if threshold_triggered:
         minimum_summary_estimate = estimate_messages_tokens([
             compacted_message("x", reason=reason)
         ])
@@ -275,7 +277,7 @@ async def build_compaction_proposal(
         1,
         context_tokens_before - removed_estimate + summary_estimate,
     )
-    if reason == "automatic" and context_tokens_after >= context_tokens_before:
+    if threshold_triggered and context_tokens_after >= context_tokens_before:
         message = (
             "Automatic compaction would not reduce the estimated context; "
             "the generated summary is not smaller than the removable prefix."

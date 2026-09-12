@@ -285,7 +285,7 @@ class CompactService:
             return None
 
         original_messages = list(ctx.messages)
-        reason = str(proposal.get("compact_reason") or "context")
+        reason = proposal["compact_reason"]
         proposed_messages = list(proposal["messages"])
         pre = BeforeCompact(
             messages=list(proposed_messages),
@@ -362,19 +362,22 @@ class CompactService:
                 else []
             )
             projection = replacement[0]
-            write_request_anchor(projection, RequestAnchor(
-                provider=ctx.session.provider if ctx.session is not None else "",
-                model=ctx.settings.model if ctx.settings is not None else "",
-                context_window=(
-                    ctx.settings.context_window if ctx.settings is not None else 0
-                ),
-                request_estimate=estimate_request_tokens(
-                    [*stable, *messages],
-                    list(request.tools) if request is not None else [],
-                ),
-                context_tokens=metrics.context_tokens_after_estimate,
-            ))
-            self.state.history.record("compaction/summary", {
+            # A manual compaction has no request route to record, so its
+            # projection is not anchored for later calibration.
+            if request is not None:
+                write_request_anchor(projection, RequestAnchor(
+                    provider=ctx.session.provider if ctx.session is not None else "",
+                    model=ctx.settings.model if ctx.settings is not None else "",
+                    context_window=(
+                        ctx.settings.context_window if ctx.settings is not None else 0
+                    ),
+                    request_estimate=estimate_request_tokens(
+                        [*stable, *messages],
+                        list(request.tools),
+                    ),
+                    context_tokens=metrics.context_tokens_after_estimate,
+                ))
+            self.state.history.record("compaction/summary", durable=True, data={
                 "compaction_id": compaction_id,
                 "reason": reason,
                 "summary": "\n".join(message.content for message in replacement),
@@ -453,7 +456,7 @@ class CompactService:
         data = {"compaction_id": str(proposal["compaction_id"])}
         if error:
             data["error"] = error
-        self.state.history.record("compaction/end", data)
+        self.state.history.record("compaction/end", data, durable=True)
 
     def _close_stale_compactions(self) -> None:
         """Close durable transactions a crash left without an end marker.
@@ -469,7 +472,7 @@ class CompactService:
                 "compaction transaction %s has no end marker; closing it as aborted",
                 compaction_id,
             )
-            self.state.history.record("compaction/end", {
+            self.state.history.record("compaction/end", durable=True, data={
                 "compaction_id": compaction_id,
                 "error": "aborted: the failed attempt recorded no end marker",
             })
@@ -529,7 +532,7 @@ class CompactService:
             proposal["source_node_ids"] = source_node_ids[:prefix_end]
             if self.state.history.node_ids()[:prefix_end] != source_node_ids[:prefix_end]:
                 compaction_id = str(proposal["compaction_id"])
-                self.state.history.record("compaction/end", {
+                self.state.history.record("compaction/end", durable=True, data={
                     "compaction_id": compaction_id,
                     "error": "selected history changed while summarizing",
                 })

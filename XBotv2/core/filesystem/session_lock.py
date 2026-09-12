@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover - POSIX advisory locks
     fcntl = None  # type: ignore[assignment]
 
-LOCK_FILE_NAME = "session.lock"
+_LOCK_FILE_NAME = "session.lock"
 
 
 class SessionOwnership:
@@ -66,26 +66,21 @@ def acquire_session(root: Path, *, label: str) -> SessionOwnership:
     """Own ``root`` for this process or fail with a stable error code."""
     resolved = Path(root).resolve()
     with _guard:
+        # Opening the lock file is serialized with the registry check: a second
+        # flock from this process would conflict with the first even though both
+        # would describe the same owner.
         existing = _owners.get(resolved)
         if existing is not None:
             existing._count += 1
             return existing
-    ownership = _lock_session(resolved, label)
-    with _guard:
-        registered = _owners.get(resolved)
-        if registered is not None:
-            # Another thread won the race; keep its descriptor and drop ours.
-            fcntl.flock(ownership._descriptor, fcntl.LOCK_UN)
-            os.close(ownership._descriptor)
-            registered._count += 1
-            return registered
+        ownership = _lock_session(resolved, label)
         _owners[resolved] = ownership
-    return ownership
+        return ownership
 
 
-def session_lock_path(root: Path) -> Path:
+def _session_lock_path(root: Path) -> Path:
     """The lock file one session's runtime ownership is recorded in."""
-    return Path(root) / LOCK_FILE_NAME
+    return Path(root) / _LOCK_FILE_NAME
 
 
 def _lock_session(root: Path, label: str) -> SessionOwnership:
@@ -96,7 +91,7 @@ def _lock_session(root: Path, label: str) -> SessionOwnership:
             "this platform does not provide",
         )
     root.mkdir(parents=True, exist_ok=True)
-    path = session_lock_path(root)
+    path = _session_lock_path(root)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -137,9 +132,4 @@ def _owner_suffix(path: Path) -> str:
     return f" (pid {pid}, {label})"
 
 
-__all__ = [
-    "LOCK_FILE_NAME",
-    "SessionOwnership",
-    "acquire_session",
-    "session_lock_path",
-]
+__all__ = ["SessionOwnership", "acquire_session"]

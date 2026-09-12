@@ -117,8 +117,16 @@ INPUT_USAGE_FIELDS = (
 )
 
 
+# State contract of the usage capability: the accounting snapshot every
+# consumer reads lives under this namespace and key.
+USAGE_STATE_NAMESPACE = "usage"
+USAGE_SNAPSHOT_KEY = "snapshot"
+
+
 __all__ = [
     "INPUT_USAGE_FIELDS",
+    "USAGE_SNAPSHOT_KEY",
+    "USAGE_STATE_NAMESPACE",
     "USAGE_COUNTER_FIELDS",
     "USAGE_FIELDS",
     "UsageData",

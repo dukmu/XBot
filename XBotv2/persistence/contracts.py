@@ -87,7 +87,13 @@ class HistoryPort(Protocol):
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]: ...
 
-    def record(self, event: str, data: dict[str, JsonValue]) -> None: ...
+    def record(
+        self,
+        event: str,
+        data: dict[str, JsonValue],
+        *,
+        durable: bool = False,
+    ) -> None: ...
 
     def open_transactions(
         self,

@@ -293,10 +293,14 @@ class Engine(AgentLoopDriverPort):
 
     @staticmethod
     def _request_error_outcome(result: Any) -> ModelRequestErrorOutcome:
-        """Validate one ``model/request-error`` hook result at the boundary."""
-        if not result:
+        """Read one ``model/request-error`` hook result at the boundary.
+
+        Other plugins may answer this event with their own keys, so only the
+        field this outcome defines is read instead of rejecting their dict.
+        """
+        if not isinstance(result, Mapping):
             return ModelRequestErrorOutcome()
-        return ModelRequestErrorOutcome.model_validate(result)
+        return ModelRequestErrorOutcome(retry=bool(result.get("retry")))
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -713,7 +717,6 @@ class Engine(AgentLoopDriverPort):
                 recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
                     err_ctx,
-                    short_circuit=True,
                 )
                 if self._request_error_outcome(recovery).retry:
                     retrying_iteration = True

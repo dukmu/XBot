@@ -44,9 +44,10 @@ Contract unification in the same branch:
   `automatic | manual | context-overflow`, and the `force_overflow` flag is gone
   because the reason already carries that decision. Wire events additionally
   carry `automatic`, so clients render the unrequested-compaction notice without
-  re-deriving the vocabulary. This fixes a real defect: the TUI still compared
-  `reason == "automatic"` while the service had renamed the threshold reason to
-  `"pressure"`, so automatic compaction notices never appeared.
+  re-deriving the vocabulary from the reason string. This fixes a real defect:
+  the TUI compared `reason == "automatic"` while the service satisfied that
+  condition only for threshold compaction, so the notice disappeared as soon as
+  the client-side comparison and the service vocabulary drifted.
 - One trajectory transaction query. `TrajectoryTransaction` lives in
   `core.history`, the history port exposes `open_transactions(transaction)`
   (replacing the three-argument `unmatched_event_ids`), and compaction declares
@@ -82,16 +83,17 @@ accumulated text on every delta. Provider usage is once again reported only
 through the finished `ModelResponse`.
 
 Verification for this branch, with the repository environment and full access:
-`pytest` over `XBotv2/tests` passed 893 tests, `pytest XCore/tests` passed 96,
+`pytest` over `XBotv2/tests` passed 894 tests, `pytest XCore/tests` passed 96,
 `pytest evaluation/tests` in the evaluation environment passed 8, `npx vitest
 run` passed 99 tests across 22 files, `npx tsc --noEmit` is clean, and
 `npx playwright test` passed 71 end-to-end tests with 1 skipped.
 
 Session ownership is tested with real child processes: a second process cannot
-own a session, ownership is shared and refcounted inside one process, a killed
-owner does not block the next runtime, readers keep working while a runtime owns
-the session, `start_application` refuses an owned session, and closing the
-application releases it. Torn-tail handling is pinned separately: readers ignore
+own a session, ownership is shared and refcounted (and safe when several
+threads race for it) inside one process, a killed owner does not block the next
+runtime, readers keep working while a runtime owns the session,
+`start_application` refuses an owned session, and closing the application
+releases it. Torn-tail handling is pinned separately: readers ignore
 a fragment without its newline and the next append removes it.
 
 A 20,000-record trajectory (6.6 MB) reads as follows before and after the fold

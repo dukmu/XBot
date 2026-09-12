@@ -13,7 +13,11 @@ from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import EventContext, Events, LoopState
 from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.core.usage import UsageData
+from XBotv2.core.usage import (
+    USAGE_SNAPSHOT_KEY,
+    USAGE_STATE_NAMESPACE,
+    UsageData,
+)
 
 
 class UsageService:
@@ -34,7 +38,7 @@ class UsageService:
         async with self._lock:
             if self._initialized:
                 return
-            stored = await self._store.get("snapshot")
+            stored = await self._store.get(USAGE_SNAPSHOT_KEY)
             source = "history"
             if stored is None:
                 snapshot = UsageData()
@@ -46,7 +50,10 @@ class UsageService:
                             snapshot = snapshot.add(delta)
                 self._snapshot = snapshot
                 if snapshot.requests:
-                    await self._store.set("snapshot", snapshot.to_snapshot())
+                    await self._store.set(
+                        USAGE_SNAPSHOT_KEY,
+                        snapshot.to_snapshot(),
+                    )
             else:
                 source = "snapshot"
                 if not isinstance(stored, Mapping):
@@ -83,7 +90,7 @@ class UsageService:
                     update={"context_tokens": self._snapshot.context_tokens}
                 )
             )
-            await self._store.set("snapshot", self._snapshot.to_snapshot())
+            await self._store.set(USAGE_SNAPSHOT_KEY, self._snapshot.to_snapshot())
             self._log.info(
                 "usage.recorded",
                 delta=delta.totals(),
@@ -105,7 +112,7 @@ class UsageService:
             self._snapshot = self._snapshot.model_copy(
                 update={"context_tokens": context_tokens}
             )
-            await self._store.set("snapshot", self._snapshot.to_snapshot())
+            await self._store.set(USAGE_SNAPSHOT_KEY, self._snapshot.to_snapshot())
             self._log.info(
                 "usage.context_updated",
                 context_tokens=context_tokens,
@@ -141,7 +148,10 @@ class UsageComponent:
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        service = UsageService(ctx.state.namespace("usage"), ctx.runtime_log)
+        service = UsageService(
+            ctx.state.namespace(USAGE_STATE_NAMESPACE),
+            ctx.runtime_log,
+        )
         handlers = UsageHandlers(service, ctx.loop_state)
         ctx.set("usage", service)
         ctx.on(Events.AFTER_MODEL_RESPONSE, handlers.record)

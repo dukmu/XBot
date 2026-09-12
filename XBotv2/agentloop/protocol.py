@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from fastapi import APIRouter
 from pydantic import Field, JsonValue, model_validator
 from XBotv2.protocol import ErrorEventData, WireModel
-from XBotv2.usage import UsageData
+from XBotv2.core.usage import UsageData
 from XBotv2.agentloop.contracts import LIST_TOOLS
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.tools import ToolCall

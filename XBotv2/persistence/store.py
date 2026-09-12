@@ -46,12 +46,12 @@ from XBotv2.persistence.contracts import (
 )
 from xcore.state import StateService
 
-# Ordinary telemetry is flushed with a bounded delay; transaction markers are
-# durability boundaries and are forced immediately.
+# Ordinary telemetry is flushed with a bounded delay; callers that declare a
+# durable record get an immediate flush instead.
+_SYNC_INTERVAL_SECONDS = 0.25
+
 TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
 
-_SYNC_EVENT_PREFIXES: tuple[str, ...] = ("compaction/",)
-_SYNC_INTERVAL_SECONDS = 0.25
 
 class _SurfaceState:
     """Incrementally folded current conversation surface."""
@@ -143,6 +143,7 @@ class _TrajectoryState:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.lock = threading.RLock()
+        self.users = 0
         self.records: list[TrajectoryRecord] | None = None
         self.surface: _SurfaceState | None = None
         self.transcript: _TranscriptState | None = None
@@ -253,16 +254,24 @@ def _trajectory_use(path: Path) -> Iterator[_TrajectoryState]:
             _trajectory_states[path] = state
         else:
             _trajectory_states.move_to_end(path)
-        state.lock.acquire()
+        state.users += 1
         _evict_idle_states(keep=path)
+    state.lock.acquire()
     try:
         yield state
     finally:
         state.lock.release()
+        with _trajectory_guard:
+            state.users -= 1
 
 
 def _evict_idle_states(*, keep: Path) -> None:
-    """Drop least recently used caches that no operation is using."""
+    """Drop least recently used caches that no operation is using.
+
+    A borrowed state (``users`` above zero) is never evicted, so an operation
+    keeps working on the same object even while the cache shrinks around it.
+    Neither the registry guard nor another state's lock blocks the caller.
+    """
     while True:
         cached = sum(
             len(state.records or ()) for state in _trajectory_states.values()
@@ -273,15 +282,14 @@ def _evict_idle_states(*, keep: Path) -> None:
         )
         if within_limit or len(_trajectory_states) <= 1:
             return
-        for candidate, state in list(_trajectory_states.items()):
-            if candidate == keep:
-                continue
-            if state.lock.acquire(blocking=False):
-                state.lock.release()
-                del _trajectory_states[candidate]
-                break
-        else:
+        idle = [
+            (candidate, state)
+            for candidate, state in _trajectory_states.items()
+            if candidate != keep and state.users == 0
+        ]
+        if not idle:
             return
+        del _trajectory_states[idle[0][0]]
 
 
 class MessageHistoryStore:
@@ -393,7 +401,13 @@ class MessageHistoryStore:
             for index, message in enumerate(messages)
         )
 
-    def record(self, event: str, data: dict[str, JsonValue]) -> None:
+    def record(
+        self,
+        event: str,
+        data: dict[str, JsonValue],
+        *,
+        durable: bool = False,
+    ) -> None:
         with _trajectory_use(self._path) as state:
             state.prepare_write(self._log)
             record = TrajectoryEventRecord(
@@ -402,11 +416,7 @@ class MessageHistoryStore:
                 data=data,
                 timestamp=utc_now(),
             )
-            self._append_records(
-                (record,),
-                state=state,
-                sync=event.startswith(_SYNC_EVENT_PREFIXES),
-            )
+            self._append_records((record,), state=state, sync=durable)
             state.wrote((record,))
         self._log.debug("persistence.trajectory.event", trajectory_event=event)
 
@@ -553,19 +563,6 @@ def _trajectory_record(value: Mapping[str, JsonValue]) -> TrajectoryRecord:
     if record_type == "event":
         return TrajectoryEventRecord.model_validate(value)
     raise ValueError(f"Unknown trajectory record type: {record_type!r}")
-
-
-def _fold_surface(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
-    state = _SurfaceState()
-    _apply_records(state, records)
-    return state.view()
-
-
-def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
-    """Fold only explicit user history edits; compaction remains model-only."""
-    state = _TranscriptState()
-    _apply_records(state, records)
-    return state.view()
 
 
 def _replacement_nodes(record: SurfaceReplaceRecord) -> list[HistoryNode]:

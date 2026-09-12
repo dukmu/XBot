@@ -220,10 +220,13 @@ def create_app(
         elif exc.code in {
             "event_stream_connected",
             "parent_thread_not_active",
+            "session_in_use",
             "task_not_background",
             "thread_busy",
         }:
             status = 409
+        elif exc.code == "session_locking_unavailable":
+            status = 500
         else:
             status = 400
         return JSONResponse(

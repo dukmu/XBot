@@ -151,7 +151,9 @@ def calibrated_context_tokens(
                 1,
                 context_tokens + current_estimate - anchor.request_estimate,
             )
-            return calibrated, current_estimate, "provider_calibrated"
+            return calibrated, current_estimate, (
+                "provider_calibrated" if measured else "compaction_calibrated"
+            )
     return current_estimate, current_estimate, "estimated"
 
 

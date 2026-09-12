@@ -572,7 +572,7 @@ class TestConversationHistory:
                 del operation, preserve_transcript
                 raise OSError("disk full")
 
-            def record(self, _event, _data):
+            def record(self, _event, _data, **_kwargs):
                 raise OSError("disk full")
 
             def open_transactions(self, _transaction):

@@ -510,7 +510,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
     case "compaction_completed":
       return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Conversation history compacted", eventIdentity(event))] };
     case "compaction_failed":
-      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
+      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.message) || stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
     case "usage":
       return {
         ...state,

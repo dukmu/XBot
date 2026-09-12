@@ -38,6 +38,7 @@ class TokenManagerPlugin:
             tools,
             list(ctx.messages),
             provider=ctx.session.provider,
+            model=ctx.settings.model,
             context_window=context_window,
         )
         self._latest = {

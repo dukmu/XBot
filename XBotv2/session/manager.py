@@ -24,7 +24,11 @@ from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.tools import ClientEvent
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.core.usage import UsageData
+from XBotv2.core.usage import (
+    USAGE_SNAPSHOT_KEY,
+    USAGE_STATE_NAMESPACE,
+    UsageData,
+)
 from XBotv2.core.providers import BaseProvider
 from XBotv2.permissions import PermissionsPort
 from XBotv2.core.timing import conversation_stats
@@ -1277,7 +1281,9 @@ async def _thread_summary(
 async def _read_usage(
     persistence: ThreadPersistencePort,
 ) -> UsageData:
-    stored = await persistence.state.namespace("usage").get("snapshot")
+    stored = await persistence.state.namespace(USAGE_STATE_NAMESPACE).get(
+        USAGE_SNAPSHOT_KEY
+    )
     if stored is None:
         return UsageData()
     if not isinstance(stored, dict):
