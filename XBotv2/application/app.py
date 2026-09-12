@@ -19,6 +19,10 @@ from XBotv2.application.boot import boot_application
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.core.filesystem.session_lock import (
+    SessionOwnership,
+    acquire_session,
+)
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.application.child import ChildApplications
 from XBotv2.application.client_events import ClientEventRouter
@@ -172,7 +176,14 @@ async def start_application(
         ),
     }
 
+    ownership: SessionOwnership | None = None
     try:
+        # One runtime owns a session: a second one must fail here instead of
+        # writing turns into the same trajectory.
+        ownership = acquire_session(
+            session_paths.root,
+            label=f"{session_id}/{thread_id}",
+        )
         plugin_ctx = Context(
             data_dir=thread_paths.plugin_state_dir,
             state_service=(
@@ -181,6 +192,7 @@ async def start_application(
                 else None
             ),
         )
+        plugin_ctx.dispose(ownership.release)
         for name, service in services.items():
             plugin_ctx.set(name, service)
         plugin_ctx = await boot_application(
@@ -192,6 +204,8 @@ async def start_application(
 
         return plugin_ctx
     except BaseException as startup_error:
+        if ownership is not None:
+            ownership.release()
         if plugin_ctx is not None:
             try:
                 await plugin_ctx.destroy()
