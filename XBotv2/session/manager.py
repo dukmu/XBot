@@ -1253,7 +1253,8 @@ async def _thread_summary(
     )
     metadata = persistence.metadata.load()
     parent_thread_id = metadata.parent_thread_id
-    messages = persistence.history.load()
+    nodes = persistence.history.load_surface()
+    messages = [node.message for node in nodes]
     return ThreadSummary(
         session_id=session_id,
         thread_id=thread_id,
@@ -1265,7 +1266,7 @@ async def _thread_summary(
         model=metadata.model,
         model_mode=metadata.model_mode,
         context_window=metadata.context_window,
-        message_count=persistence.history.count(),
+        message_count=len(nodes),
         usage=await _read_usage(persistence),
         session_stats=conversation_stats(messages),
         workspace_root=metadata.workspace_root,

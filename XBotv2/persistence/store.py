@@ -6,15 +6,10 @@ import json
 import os
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from weakref import WeakValueDictionary
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - POSIX advisory locks
-    fcntl = None  # type: ignore[assignment]
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
@@ -53,108 +48,240 @@ from xcore.state import StateService
 
 # Ordinary telemetry is flushed with a bounded delay; transaction markers are
 # durability boundaries and are forced immediately.
+TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
+
 _SYNC_EVENT_PREFIXES: tuple[str, ...] = ("compaction/",)
 _SYNC_INTERVAL_SECONDS = 0.25
 
-# One writer holds the exclusive lock per trajectory; a second process waits
-# briefly and then fails with an actionable error rather than corrupting the log.
-_LOCK_TIMEOUT_SECONDS = 10.0
-_LOCK_POLL_SECONDS = 0.01
+class _SurfaceState:
+    """Incrementally folded current conversation surface."""
+
+    def __init__(self) -> None:
+        self.nodes: list[HistoryNode] = []
+        self.revision = 0
+
+    def apply(self, record: TrajectoryRecord) -> None:
+        if isinstance(record, MessageRecord):
+            self.nodes.append(_sealed_node(str(record.position), record.to_message()))
+        elif isinstance(record, SurfaceReplaceRecord):
+            _replace_nodes(
+                self.nodes,
+                record.source_node_ids,
+                _replacement_nodes(record),
+                position=record.position,
+                scope="Surface",
+                source_term="source nodes",
+            )
+            self.revision = max(self.revision, record.position)
+
+    def view(self) -> tuple[HistoryNode, ...]:
+        return tuple(self.nodes)
 
 
-class _TrajectoryWriter:
-    """Position allocator and cross-process lock for one trajectory file.
+class _TranscriptState:
+    """Incrementally folded human transcript; compaction stays model-only."""
 
-    Threads of one process share the exclusive lock and the position counter;
-    other processes are excluded for the whole read-modify-append critical
-    section.  Readers take a shared lock so a partially written record is never
-    observed.
+    def __init__(self) -> None:
+        self.nodes: list[HistoryNode] = []
+        self.lineage: dict[str, tuple[str, ...]] = {}
+        self.revision = 0
+
+    def apply(self, record: TrajectoryRecord) -> None:
+        if isinstance(record, MessageRecord):
+            node_id = str(record.position)
+            self.nodes.append(_sealed_node(node_id, record.to_message()))
+            self.lineage[node_id] = (node_id,)
+        elif isinstance(record, SurfaceReplaceRecord):
+            sources = tuple(
+                origin
+                for source in record.source_node_ids
+                for origin in self.lineage.get(source, (source,))
+            )
+            replacements = _replacement_nodes(record)
+            if record.transcript == "preserve":
+                if len(replacements) != 1:
+                    raise ValueError(
+                        "Transcript-preserving replacement must produce one surface node"
+                    )
+                self.lineage[replacements[0].node_id] = sources
+                return
+            _replace_nodes(
+                self.nodes,
+                sources,
+                replacements,
+                position=record.position,
+                scope="Transcript",
+                source_term="sources",
+            )
+            for node in replacements:
+                self.lineage[node.node_id] = (node.node_id,)
+            self.revision = max(self.revision, record.position)
+
+    def view(self) -> tuple[HistoryNode, ...]:
+        return tuple(self.nodes)
+
+
+def _sealed_node(node_id: str, message: Message) -> HistoryNode:
+    node = HistoryNode(node_id, message)
+    node.message.seal()
+    return node
+
+
+def _apply_records(state: _SurfaceState | _TranscriptState, records: Sequence[TrajectoryRecord]) -> None:
+    for record in records:
+        state.apply(record)
+
+
+class _TrajectoryState:
+    """Process-wide cache and position allocator for one trajectory file.
+
+    The parsed trajectory and the folded projections of the current file
+    version are reused by every reader of the path; this process's own writes
+    extend them incrementally, and a file change made elsewhere drops them.
     """
 
     def __init__(self, path: Path) -> None:
+        self.path = path
         self.lock = threading.RLock()
+        self.records: list[TrajectoryRecord] | None = None
+        self.surface: _SurfaceState | None = None
+        self.transcript: _TranscriptState | None = None
         self.next_position = 1
         self.file_size = -1
+        self.read_size = -1
         self.last_sync = 0.0
-        self.lock_file = path.with_name(f"{path.name}.lock")
-        self._lock_fd: int | None = None
-        self._exclusive_thread: int | None = None
 
-    def _open_lock_file(self) -> int:
-        if fcntl is None:
-            raise RuntimeError(
-                "Cross-process history locking requires POSIX advisory locks "
-                "(fcntl), which this platform does not provide"
-            )
-        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
-        return os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+    def size(self) -> int:
+        return self.path.stat().st_size if self.path.exists() else 0
 
-    def _exclusive_descriptor(self) -> int:
-        if self._lock_fd is None:
-            self._lock_fd = self._open_lock_file()
-        return self._lock_fd
+    def recorded(self) -> list[TrajectoryRecord]:
+        """The parsed trajectory, re-read only when the file version changed."""
+        size = self.size()
+        if self.records is None or self.read_size != size:
+            self.surface = None
+            self.transcript = None
+            self.records = self._parse(size)
+        return self.records
 
-    @contextmanager
-    def hold_write(self) -> Iterator[None]:
-        """Own the trajectory for one read-modify-append critical section."""
-        thread = threading.get_ident()
-        with self.lock:
-            descriptor = self._exclusive_descriptor()
-            deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
-            while True:
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            "Timed out waiting for the history write lock "
-                            f"{self.lock_file}; another process is still "
-                            f"writing this trajectory after "
-                            f"{_LOCK_TIMEOUT_SECONDS:.0f}s"
-                        ) from None
-                    time.sleep(_LOCK_POLL_SECONDS)
-            self._exclusive_thread = thread
-            try:
-                yield
-            finally:
-                self._exclusive_thread = None
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+    def surface_state(self) -> _SurfaceState:
+        records = self.recorded()
+        if self.surface is None:
+            self.surface = _SurfaceState()
+            _apply_records(self.surface, records)
+        return self.surface
 
-    @contextmanager
-    def hold_read(self) -> Iterator[None]:
-        """Read the trajectory without observing another process's partial write."""
-        if self._exclusive_thread == threading.get_ident():
-            yield
+    def transcript_state(self) -> _TranscriptState:
+        records = self.recorded()
+        if self.transcript is None:
+            self.transcript = _TranscriptState()
+            _apply_records(self.transcript, records)
+        return self.transcript
+
+    def prepare_write(self, log: RuntimeLog) -> list[TrajectoryRecord]:
+        """Make positions and the file tail current before this process appends."""
+        size = self.size()
+        if (
+            self.records is not None
+            and self.read_size == size
+            and self.file_size == size
+        ):
+            self.next_position = len(self.records) + 1
+            return self.records
+        size = _drop_incomplete_tail(self.path, size, log)
+        self.surface = None
+        self.transcript = None
+        self.records = self._parse(size)
+        self.file_size = size
+        self.next_position = len(self.records) + 1
+        return self.records
+
+    def wrote(self, added: Sequence[TrajectoryRecord]) -> None:
+        """Extend the cache after this process appended records durably."""
+        self.records = [*(self.records or ()), *added]
+        self.next_position = len(self.records) + 1
+        self.file_size = self.read_size = self.size()
+        if self.surface is not None:
+            _apply_records(self.surface, added)
+        if self.transcript is not None:
+            _apply_records(self.transcript, added)
+
+    def replaced(
+        self,
+        prospective: list[TrajectoryRecord],
+        surface: _SurfaceState,
+        transcript: _TranscriptState,
+    ) -> None:
+        """Adopt one validated surface replacement as the cached trajectory."""
+        self.records = prospective
+        self.surface = surface
+        self.transcript = transcript
+        self.next_position = len(prospective) + 1
+        self.file_size = self.read_size = self.size()
+
+    def _parse(self, size: int) -> list[TrajectoryRecord]:
+        parsed: list[TrajectoryRecord] = []
+        for index, raw in enumerate(
+            _read_jsonl(self.path, "messages.jsonl"),
+            start=1,
+        ):
+            record = _trajectory_record(raw)
+            if record.position != index:
+                raise ValueError(
+                    "Trajectory positions must be contiguous and start at 1"
+                )
+            parsed.append(record)
+        self.read_size = size
+        return parsed
+
+
+# Bounded cache: a long-lived server must not keep every visited session's
+# trajectory and projections in memory.
+_CACHE_LIMIT = 8
+_CACHE_RECORD_BUDGET = 60_000
+
+_trajectory_states: "OrderedDict[Path, _TrajectoryState]" = OrderedDict()
+_trajectory_guard = threading.Lock()
+
+
+@contextmanager
+def _trajectory_use(path: Path) -> Iterator[_TrajectoryState]:
+    """Borrow the shared state for one operation while holding its lock."""
+    with _trajectory_guard:
+        state = _trajectory_states.get(path)
+        if state is None:
+            state = _TrajectoryState(path)
+            _trajectory_states[path] = state
+        else:
+            _trajectory_states.move_to_end(path)
+        state.lock.acquire()
+        _evict_idle_states(keep=path)
+    try:
+        yield state
+    finally:
+        state.lock.release()
+
+
+def _evict_idle_states(*, keep: Path) -> None:
+    """Drop least recently used caches that no operation is using."""
+    while True:
+        cached = sum(
+            len(state.records or ()) for state in _trajectory_states.values()
+        )
+        within_limit = (
+            len(_trajectory_states) <= _CACHE_LIMIT
+            and cached <= _CACHE_RECORD_BUDGET
+        )
+        if within_limit or len(_trajectory_states) <= 1:
             return
-        if not self.lock_file.parent.is_dir():
-            # Reading an absent thread must not create its state directory, and
-            # no writer can hold the lock before that directory exists.
-            yield
+        for candidate, state in list(_trajectory_states.items()):
+            if candidate == keep:
+                continue
+            if state.lock.acquire(blocking=False):
+                state.lock.release()
+                del _trajectory_states[candidate]
+                break
+        else:
             return
-        # A separate descriptor: converting the writer's own descriptor to a
-        # shared lock would drop its exclusivity mid-transaction.
-        descriptor = self._open_lock_file()
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_SH)
-            yield
-        finally:
-            os.close(descriptor)
-
-
-_trajectory_writers: WeakValueDictionary[Path, _TrajectoryWriter] = (
-    WeakValueDictionary()
-)
-_trajectory_writers_guard = threading.Lock()
-
-
-def _trajectory_writer(path: Path) -> _TrajectoryWriter:
-    with _trajectory_writers_guard:
-        writer = _trajectory_writers.get(path)
-        if writer is None:
-            writer = _TrajectoryWriter(path)
-            _trajectory_writers[path] = writer
-        return writer
 
 
 class MessageHistoryStore:
@@ -168,8 +295,6 @@ class MessageHistoryStore:
         self._path = paths.messages_file
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
-        self._next_position = 1
-        self._writer = _trajectory_writer(self._path)
 
     @property
     def path(self) -> Path:
@@ -188,34 +313,34 @@ class MessageHistoryStore:
 
     def load_transcript(self) -> list[Message]:
         """Derive the human transcript without hiding compacted conversation."""
-        return [node.message for node in _fold_transcript(self._records())]
+        with _trajectory_use(self._path) as state:
+            nodes = state.transcript_state().view()
+        return [node.message for node in nodes]
 
     def load_surface(self) -> tuple[HistoryNode, ...]:
-        records = self._records()
-        self._next_position = len(records) + 1
-        return _fold_surface(records)
+        with _trajectory_use(self._path) as state:
+            return state.surface_state().view()
 
     def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
         if not messages:
             return ()
-        with self._writer.hold_write():
-            self._sync_writer()
-            records = [
-                MessageRecord.from_message(
-                    message, self._writer.next_position + index
-                )
+        with _trajectory_use(self._path) as state:
+            state.prepare_write(self._log)
+            added = [
+                MessageRecord.from_message(message, state.next_position + index)
                 for index, message in enumerate(messages)
             ]
-            self._append_records(records)
-            self._advance_writer(len(records))
+            self._append_records(added, state=state)
+            state.wrote(added)
+            next_position = state.next_position
         self._log.debug(
             "persistence.history.appended",
-            messages=len(records),
-            next_position=self._next_position,
+            messages=len(added),
+            next_position=next_position,
         )
         return tuple(
             HistoryNode(str(record.position), message)
-            for record, message in zip(records, messages, strict=True)
+            for record, message in zip(added, messages, strict=True)
         )
 
     def replace(self, messages: Sequence[Message]) -> None:
@@ -238,11 +363,10 @@ class MessageHistoryStore:
         operation: str,
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]:
-        with self._writer.hold_write():
-            records = self._records()
-            self._reset_writer(len(records) + 1)
+        with _trajectory_use(self._path) as state:
+            records = state.prepare_write(self._log)
             record = SurfaceReplaceRecord(
-                position=self._writer.next_position,
+                position=state.next_position,
                 operation=operation,
                 transcript="preserve" if preserve_transcript else "replace",
                 source_node_ids=tuple(source_node_ids),
@@ -252,10 +376,12 @@ class MessageHistoryStore:
             )
             # Both projections must accept the transition before it becomes durable.
             prospective = [*records, record]
-            _fold_surface(prospective)
-            _fold_transcript(prospective)
-            self._append_records((record,))
-            self._advance_writer(1)
+            surface = _SurfaceState()
+            _apply_records(surface, prospective)
+            transcript = _TranscriptState()
+            _apply_records(transcript, prospective)
+            self._append_records((record,), state=state)
+            state.replaced(prospective, surface, transcript)
         self._log.info(
             "persistence.surface.replaced",
             operation=operation,
@@ -268,19 +394,20 @@ class MessageHistoryStore:
         )
 
     def record(self, event: str, data: dict[str, JsonValue]) -> None:
-        with self._writer.hold_write():
-            self._sync_writer()
+        with _trajectory_use(self._path) as state:
+            state.prepare_write(self._log)
             record = TrajectoryEventRecord(
-                position=self._writer.next_position,
+                position=state.next_position,
                 event=event,
                 data=data,
                 timestamp=utc_now(),
             )
             self._append_records(
                 (record,),
+                state=state,
                 sync=event.startswith(_SYNC_EVENT_PREFIXES),
             )
-            self._advance_writer(1)
+            state.wrote((record,))
         self._log.debug("persistence.trajectory.event", trajectory_event=event)
 
     def open_transactions(
@@ -289,7 +416,9 @@ class MessageHistoryStore:
     ) -> frozenset[str]:
         """Fold correlated start/end records without changing the surface."""
         open_ids: set[str] = set()
-        for record in self._records():
+        with _trajectory_use(self._path) as state:
+            records = state.recorded()
+        for record in records:
             if not isinstance(record, TrajectoryEventRecord):
                 continue
             correlation_id = str(record.data.get(transaction.id_field) or "")
@@ -302,18 +431,19 @@ class MessageHistoryStore:
         return frozenset(open_ids)
 
     def count(self) -> int:
-        return len(self.load_surface())
+        with _trajectory_use(self._path) as state:
+            return len(state.surface_state().nodes)
 
     def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
-        records = self._records()
-        nodes = _fold_surface(records)
-        return page_messages(
-            tuple(node.message for node in nodes),
-            revision=self._cursor_revision(records, "surface"),
-            limit=limit,
-            cursor=cursor,
-            out_of_range="History cursor is outside the current history",
-        )
+        with _trajectory_use(self._path) as state:
+            surface = state.surface_state()
+            return page_messages(
+                tuple(node.message for node in surface.nodes),
+                revision=self._revision(surface.revision, "surface"),
+                limit=limit,
+                cursor=cursor,
+                out_of_range="History cursor is outside the current history",
+            )
 
     def page_transcript(
         self,
@@ -321,15 +451,15 @@ class MessageHistoryStore:
         limit: int,
         cursor: str | None = None,
     ) -> ConversationPage:
-        records = self._records()
-        nodes = _fold_transcript(records)
-        return page_messages(
-            tuple(node.message for node in nodes),
-            revision=self._cursor_revision(records, "transcript"),
-            limit=limit,
-            cursor=cursor,
-            out_of_range="History cursor is outside the current history",
-        )
+        with _trajectory_use(self._path) as state:
+            transcript = state.transcript_state()
+            return page_messages(
+                tuple(node.message for node in transcript.nodes),
+                revision=self._revision(transcript.revision, "transcript"),
+                limit=limit,
+                cursor=cursor,
+                out_of_range="History cursor is outside the current history",
+            )
 
     def page_trajectory(
         self,
@@ -337,73 +467,32 @@ class MessageHistoryStore:
         limit: int,
         cursor: str | None = None,
     ) -> TrajectoryPage:
-        records = self._records()
-        revision = f"{self._cursor_scope}:trajectory"
-        end = len(records) if cursor is None else decode_history_cursor(cursor, revision)
-        if end < 0 or end > len(records):
-            raise HistoryCursorInvalid("Trajectory cursor is outside the current history")
-        start = max(0, end - limit)
+        with _trajectory_use(self._path) as state:
+            records = state.recorded()
+            revision = f"{self._cursor_scope}:trajectory"
+            end = len(records) if cursor is None else decode_history_cursor(cursor, revision)
+            if end < 0 or end > len(records):
+                raise HistoryCursorInvalid("Trajectory cursor is outside the current history")
+            start = max(0, end - limit)
+            items = tuple(
+                _trajectory_item(record) for record in records[start:end]
+            )
         return TrajectoryPage(
-            items=tuple(_trajectory_item(record) for record in records[start:end]),
+            items=items,
             next_cursor=encode_history_cursor(revision, start) if start else None,
         )
 
-    def _cursor_revision(
-        self,
-        records: Sequence[TrajectoryRecord],
-        projection: str,
-    ) -> str:
-        generation = max((
-            record.position
-            for record in records
-            if isinstance(record, SurfaceReplaceRecord)
-            and (
-                projection == "surface"
-                or record.transcript == "replace"
-            )
-        ), default=0)
+    def _revision(self, generation: int, projection: str) -> str:
         return f"{self._cursor_scope}:{projection}:{generation}"
 
     def has_history(self) -> bool:
         return self._path.exists() and self._path.stat().st_size > 0
 
-    def _sync_writer(self) -> None:
-        size = self._path.stat().st_size if self._path.exists() else 0
-        if self._writer.file_size == size:
-            self._next_position = self._writer.next_position
-            return
-        records = self._records()
-        self._reset_writer(len(records) + 1, file_size=size)
-
-    def _reset_writer(
-        self, next_position: int, *, file_size: int | None = None
-    ) -> None:
-        self._writer.next_position = next_position
-        self._writer.file_size = (
-            self._path.stat().st_size if file_size is None else file_size
-        )
-        self._next_position = next_position
-
-    def _advance_writer(self, records: int) -> None:
-        self._writer.next_position += records
-        self._writer.file_size = self._path.stat().st_size
-        self._next_position = self._writer.next_position
-
-    def _records(self) -> list[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord]:
-        with self._writer.hold_read():
-            records = [
-                _trajectory_record(raw)
-                for raw in _read_jsonl(self._path, "messages.jsonl")
-            ]
-        positions = [record.position for record in records]
-        if positions != list(range(1, len(records) + 1)):
-            raise ValueError("Trajectory positions must be contiguous and start at 1")
-        return records
-
     def _append_records(
         self,
         records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
         *,
+        state: _TrajectoryState,
         sync: bool = True,
     ) -> None:
         payload = "".join(
@@ -414,11 +503,6 @@ class MessageHistoryStore:
         descriptor = os.open(self._path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
         original_size = os.fstat(descriptor).st_size
         try:
-            if original_size:
-                with self._path.open("rb") as stream:
-                    stream.seek(-1, os.SEEK_END)
-                    if stream.read(1) != b"\n":
-                        raise ValueError("messages.jsonl ends with an incomplete record")
             view = memoryview(payload)
             while view:
                 written = os.write(descriptor, view)
@@ -426,9 +510,9 @@ class MessageHistoryStore:
                     raise OSError("Trajectory append made no progress")
                 view = view[written:]
             now = time.monotonic()
-            if sync or now - self._writer.last_sync >= _SYNC_INTERVAL_SECONDS:
+            if sync or now - state.last_sync >= _SYNC_INTERVAL_SECONDS:
                 os.fsync(descriptor)
-                self._writer.last_sync = now
+                state.last_sync = now
         except BaseException:
             os.ftruncate(descriptor, original_size)
             os.fsync(descriptor)
@@ -437,7 +521,6 @@ class MessageHistoryStore:
             os.close(descriptor)
 
 
-TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
 
 
 def _trajectory_item(record: TrajectoryRecord) -> (
@@ -473,60 +556,16 @@ def _trajectory_record(value: Mapping[str, JsonValue]) -> TrajectoryRecord:
 
 
 def _fold_surface(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
-    surface: list[HistoryNode] = []
-    for record in records:
-        if isinstance(record, MessageRecord):
-            surface.append(HistoryNode(str(record.position), record.to_message()))
-        elif isinstance(record, SurfaceReplaceRecord):
-            _replace_nodes(
-                surface,
-                record.source_node_ids,
-                _replacement_nodes(record),
-                position=record.position,
-                scope="Surface",
-                source_term="source nodes",
-            )
-    for node in surface:
-        node.message.seal()
-    return tuple(surface)
+    state = _SurfaceState()
+    _apply_records(state, records)
+    return state.view()
 
 
 def _fold_transcript(records: Sequence[TrajectoryRecord]) -> tuple[HistoryNode, ...]:
     """Fold only explicit user history edits; compaction remains model-only."""
-    transcript: list[HistoryNode] = []
-    lineage: dict[str, tuple[str, ...]] = {}
-    for record in records:
-        if isinstance(record, MessageRecord):
-            node_id = str(record.position)
-            transcript.append(HistoryNode(node_id, record.to_message()))
-            lineage[node_id] = (node_id,)
-        elif isinstance(record, SurfaceReplaceRecord):
-            sources = tuple(
-                origin
-                for source in record.source_node_ids
-                for origin in lineage.get(source, (source,))
-            )
-            replacements = _replacement_nodes(record)
-            if record.transcript == "preserve":
-                if len(replacements) != 1:
-                    raise ValueError(
-                        "Transcript-preserving replacement must produce one surface node"
-                    )
-                lineage[replacements[0].node_id] = sources
-                continue
-            _replace_nodes(
-                transcript,
-                sources,
-                replacements,
-                position=record.position,
-                scope="Transcript",
-                source_term="sources",
-            )
-            for node in replacements:
-                lineage[node.node_id] = (node.node_id,)
-    for node in transcript:
-        node.message.seal()
-    return tuple(transcript)
+    state = _TranscriptState()
+    _apply_records(state, records)
+    return state.view()
 
 
 def _replacement_nodes(record: SurfaceReplaceRecord) -> list[HistoryNode]:
@@ -677,12 +716,50 @@ def _read_json(path: Path, name: str) -> Mapping[str, JsonValue] | None:
     return value
 
 
+def _drop_incomplete_tail(
+    path: Path,
+    size: int,
+    log: RuntimeLog,
+) -> int:
+    """Truncate a final record a crash left without its newline.
+
+    The writer never continues an unacknowledged fragment: it removes the bytes
+    first, then appends from the last durable record.
+    """
+    if size == 0 or not path.exists():
+        return size
+    with path.open("rb") as stream:
+        stream.seek(-1, os.SEEK_END)
+        if stream.read(1) == b"\n":
+            return size
+        offset = size
+        while offset > 0:
+            chunk = min(4096, offset)
+            offset -= chunk
+            stream.seek(offset)
+            found = stream.read(chunk).rfind(b"\n")
+            if found >= 0:
+                offset += found + 1
+                break
+    os.truncate(path, offset)
+    log.warning(
+        "persistence.trajectory.tail_dropped",
+        dropped_bytes=size - offset,
+    )
+    return offset
+
+
 def _read_jsonl(path: Path, name: str) -> list[Mapping[str, JsonValue]]:
     if not path.exists():
         return []
     records: list[Mapping[str, JsonValue]] = []
     with path.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
+            if not line.endswith("\n"):
+                # The owning runtime appends whole lines, so a final fragment
+                # without its newline is an append still in flight rather than
+                # a durable record.
+                break
             try:
                 value = json.loads(line)
             except json.JSONDecodeError as exc:

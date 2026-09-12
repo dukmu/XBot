@@ -1,12 +1,7 @@
 """Conversation history and strict thread persistence tests."""
 
 import json
-import os
-import subprocess
-import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
@@ -30,64 +25,6 @@ TEST_TRANSACTION = TrajectoryTransaction(
     end_event="compaction/end",
     id_field="compaction_id",
 )
-
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-
-_APPEND_WORKER = """
-import sys
-from XBotv2.core.messages import Message
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.persistence.store import ThreadPersistence
-
-data_dir, thread_id, tag, count = sys.argv[1:5]
-paths = RuntimePaths.from_data_dir(data_dir).session("s1")
-history = ThreadPersistence.open(paths, thread_id=thread_id).history
-for index in range(int(count)):
-    history.append([Message(role="user", content=f"{tag}:{index}")])
-"""
-
-_HOLD_LOCK_WORKER = """
-import fcntl
-import os
-import sys
-import time
-
-lock_path, marker, seconds = sys.argv[1:4]
-descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-fcntl.flock(descriptor, fcntl.LOCK_EX)
-with open(marker, "w", encoding="utf-8") as stream:
-    stream.write("held")
-time.sleep(float(seconds))
-# Leave without unlocking: the kernel must release the lock on process exit.
-os._exit(0)
-"""
-
-
-def _child_env() -> dict[str, str]:
-    existing = os.environ.get("PYTHONPATH", "")
-    python_path = os.pathsep.join(
-        part for part in (str(_REPOSITORY_ROOT), existing) if part
-    )
-    return {**os.environ, "PYTHONPATH": python_path}
-
-
-def _spawn(script: str, *arguments: str) -> subprocess.Popen:
-    return subprocess.Popen(
-        [sys.executable, "-c", script, *arguments],
-        env=_child_env(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-
-def _wait_for_file(path: Path, timeout: float = 60.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not path.exists():
-        if time.monotonic() >= deadline:
-            raise AssertionError(f"{path} was not created in time")
-        time.sleep(0.01)
-
 
 def thread_persistence(tmp_path, session_id="s1"):
     return ThreadPersistence.create(
@@ -232,90 +169,24 @@ class TestMessageHistoryStore:
         assert persistence.history.load_transcript() == []
         assert not persistence.paths.state_dir.exists()
 
-    def test_processes_sharing_one_trajectory_keep_positions_unique(self, tmp_path):
-        """Four processes appending at once must not reuse a position."""
-        paths = thread_persistence(tmp_path).paths
-        processes = 4
-        per_process = 25
+    def test_torn_trailing_record_is_ignored_and_repaired(self, tmp_path):
+        """A record is durable only once its terminating newline is written."""
+        persistence = thread_persistence(tmp_path)
+        history = persistence.history
+        history.append([Message(role="user", content="durable")])
+        with history.path.open("a", encoding="utf-8") as stream:
+            stream.write('{"schema_version": 1')
 
-        children = [
-            _spawn(
-                _APPEND_WORKER,
-                str(tmp_path),
-                "t1",
-                f"p{index}",
-                str(per_process),
-            )
-            for index in range(processes)
+        assert [message.content for message in history.load()] == ["durable"]
+
+        history.append([Message(role="assistant", content="after repair")])
+
+        records = _raw_records(persistence)
+        assert [record["position"] for record in records] == [1, 2]
+        assert [message.content for message in history.load()] == [
+            "durable",
+            "after repair",
         ]
-        for child in children:
-            assert child.wait(timeout=120) == 0, child.communicate()[1]
-
-        reopened = ThreadPersistence.open(paths, thread_id="t1")
-        records = _raw_records(reopened)
-        positions = [record["position"] for record in records]
-        assert positions == list(range(1, processes * per_process + 1))
-        contents = [message.content for message in reopened.history.load()]
-        assert len(set(contents)) == processes * per_process
-        assert paths.messages_file.with_name(
-            f"{paths.messages_file.name}.lock"
-        ).exists()
-
-    def test_lock_is_released_when_the_holder_process_dies(self, tmp_path):
-        """A crashed writer must not lock the session forever."""
-        paths = thread_persistence(tmp_path).paths
-        lock_file = paths.messages_file.with_name(f"{paths.messages_file.name}.lock")
-        marker = tmp_path / "held"
-        child = _spawn(_HOLD_LOCK_WORKER, str(lock_file), str(marker), "0")
-        _wait_for_file(marker)
-        assert child.wait(timeout=120) == 0, "lock holder failed"
-
-        persistence = ThreadPersistence.open(paths, thread_id="t1")
-        persistence.history.append([Message(role="user", content="after crash")])
-
-        assert [message.content for message in persistence.history.load()] == [
-            "after crash"
-        ]
-
-    def test_reader_waits_for_another_process_writer(self, tmp_path):
-        """A read must not observe a trajectory another process is writing."""
-        paths = thread_persistence(tmp_path).paths
-        persistence = ThreadPersistence.open(paths, thread_id="t1")
-        persistence.history.append([Message(role="user", content="before")])
-        lock_file = paths.messages_file.with_name(f"{paths.messages_file.name}.lock")
-        marker = tmp_path / "held"
-        child = _spawn(_HOLD_LOCK_WORKER, str(lock_file), str(marker), "1")
-
-        try:
-            _wait_for_file(marker)
-            started = time.monotonic()
-            messages = persistence.history.load()
-            elapsed = time.monotonic() - started
-        finally:
-            child.wait(timeout=120)
-
-        assert [message.content for message in messages] == ["before"]
-        assert elapsed >= 0.5
-
-    def test_writer_reports_a_live_lock_holder(self, tmp_path, monkeypatch):
-        """Contention must fail loudly instead of corrupting the trajectory."""
-        from XBotv2.persistence import store as store_module
-
-        monkeypatch.setattr(store_module, "_LOCK_TIMEOUT_SECONDS", 0.2)
-        paths = thread_persistence(tmp_path).paths
-        persistence = ThreadPersistence.open(paths, thread_id="t1")
-        lock_file = paths.messages_file.with_name(f"{paths.messages_file.name}.lock")
-        marker = tmp_path / "held"
-        child = _spawn(_HOLD_LOCK_WORKER, str(lock_file), str(marker), "3")
-
-        try:
-            _wait_for_file(marker)
-            with pytest.raises(TimeoutError, match="another process"):
-                persistence.history.append([Message(role="user", content="blocked")])
-        finally:
-            child.wait(timeout=120)
-
-        assert persistence.history.load_surface() == ()
 
     def test_replace_appends_surface_operation_without_destroying_trajectory(
         self,
@@ -563,11 +434,11 @@ class TestMessageHistoryStore:
         with pytest.raises(HistoryCursorInvalid, match="current history"):
             second.history.page(limit=1, cursor=cursor)
 
-    def test_incomplete_record_is_an_explicit_error(self, tmp_path):
+    def test_invalid_complete_record_is_an_explicit_error(self, tmp_path):
         persistence = thread_persistence(tmp_path)
         persistence.history.append([Message(role="user", content="durable")])
         with persistence.history.path.open("a", encoding="utf-8") as stream:
-            stream.write('{"schema_version": 1')
+            stream.write('{"schema_version":\n')
 
         with pytest.raises(ValueError, match="Invalid messages.jsonl"):
             persistence.history.load()

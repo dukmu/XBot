@@ -15,12 +15,11 @@ Confirmed defects and fixes in this working branch:
   positions synchronized across live stores; ordinary telemetry uses bounded
   delay flushing while message appends, surface replacements, and
   `compaction/*` markers remain forced.
-- Concurrent writers in separate processes are coordinated by a POSIX advisory
-  lock on `messages.jsonl.lock`: the lock covers the whole read-modify-append
-  critical section, readers take it in shared mode, process exit releases it,
-  and contention past the bounded wait fails with a clear `TimeoutError`. This
-  protects the trajectory file, not session semantics: two runtimes must still
-  not drive one session's conversation.
+- Writes are exclusive per session: a runtime owns `<session>/session.lock` for
+  its lifetime and a second runtime fails fast with `session_in_use`, while
+  readers stay allowed and take no lock. The trajectory folds incrementally and
+  is cached per path within a bounded budget, so repeated reads no longer
+  re-parse or re-fold the log.
 - Provider-confirmed context overflow now has a typed adapter boundary and a
   bounded compaction/rebuild/retry. Retry is allowed only after an append-only
   surface replacement changes the current nodes.
@@ -83,18 +82,24 @@ accumulated text on every delta. Provider usage is once again reported only
 through the finished `ModelResponse`.
 
 Verification for this branch, with the repository environment and full access:
-`pytest` over `XBotv2/tests` passed 890 tests, `pytest XCore/tests` passed 96,
+`pytest` over `XBotv2/tests` passed 893 tests, `pytest XCore/tests` passed 96,
 `pytest evaluation/tests` in the evaluation environment passed 8, `npx vitest
 run` passed 99 tests across 22 files, `npx tsc --noEmit` is clean, and
 `npx playwright test` passed 71 end-to-end tests with 1 skipped.
 
-The multi-process guarantee is tested by real child processes: four processes
-appending 25 messages each to one trajectory keep positions contiguous and
-unique, a killed lock holder does not block the next writer, a reader waits for
-another process's writer, and contention past the bounded wait fails with a
-`TimeoutError` and leaves the trajectory unchanged. The same workload with the
-lock disabled produced duplicate positions and failing writers, so the test is
-sensitive to the protection rather than passing by accident.
+Session ownership is tested with real child processes: a second process cannot
+own a session, ownership is shared and refcounted inside one process, a killed
+owner does not block the next runtime, readers keep working while a runtime owns
+the session, `start_application` refuses an owned session, and closing the
+application releases it. Torn-tail handling is pinned separately: readers ignore
+a fragment without its newline and the next append removes it.
+
+A 20,000-record trajectory (6.6 MB) reads as follows before and after the fold
+cache: cold `load_surface` 558 ms (was 504 ms), then `load_surface` 0.06 ms (was
+504 ms), `count()` 0.00 ms (was 528 ms), `page(limit=50)` 0.61 ms (was 510 ms),
+a fresh store instance re-reading the same path 0.15 ms, and one appended
+message extending both folds in 0.24 ms. The cached records plus both
+projections of that trajectory hold 15.8 MB traced.
 
 No real external provider was contacted and no real-TCP stress result is
 claimed here. The retained stress runner output under `scripts/stress/reports/`

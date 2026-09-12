@@ -34,6 +34,18 @@ The conversation surface and the human transcript are separate projections.
 HTTP history uses opaque cursors bound to the projection revision; clients must
 not manufacture or compare cursor internals.
 
+Both projections are folded incrementally and cached per trajectory path inside
+the process, so a runtime reuses the parsed records of the current file version
+and extends the folds in place when it appends. A file changed by another
+process is detected by size and rebuilt on the next access. The cache is bounded
+by a trajectory count and a total record budget, and evicts only entries no
+operation is using.
+
+A record becomes durable when its terminating newline is written. Readers ignore
+a final fragment without that newline, because such a fragment is an append
+still in flight; a writer removes the fragment before its first append and
+never continues it.
+
 Durability boundaries differ by record kind. Message appends, surface
 replacements, and `compaction/*` transaction markers are fsynced before the
 call returns; ordinary telemetry events share a bounded-delay flush. A plugin
@@ -45,23 +57,25 @@ A plugin may bracket a multi-record commit with a `TrajectoryTransaction`
 ids still open with `open_transactions`. Callers resolve an open bracket
 explicitly; the store never rewrites or discards trajectory records.
 
-Trajectory writes are serialized across processes by a POSIX advisory lock on
-`messages.jsonl.lock` beside the trajectory. A writer owns that lock for the
-whole read-modify-append critical section, so positions stay unique and
-monotonic while several processes append; a reader takes the same lock in
-shared mode and therefore never parses a partially written record. The lock is
-released by the kernel when a writer exits, so a crashed process cannot lock a
-session forever.
+## Session ownership
 
-Contention is bounded: a writer that waits longer than the configured timeout
-fails with a `TimeoutError` naming the lock file instead of interleaving writes.
-The lock coordinates file mutations only. It does not make two runtimes share
-one session's conversation semantics, and it does not coordinate the plugin
-state or metadata files, which are replaced atomically by their own owner.
+Writers are exclusive per session: starting a runtime takes a POSIX advisory
+lock on `<session>/session.lock` for the lifetime of that runtime, so a second
+runtime on the same session fails with the stable `session_in_use` code instead
+of interleaving turns into one trajectory. Ownership is shared by every runtime
+the process starts for that session (a main thread and its subagent threads)
+and released when the last one closes; the kernel releases it if the process
+dies, so a crashed runtime cannot lock a session forever.
 
-Locking uses `fcntl`, so multi-process coordination requires a POSIX platform.
-On a platform without advisory locks, the first trajectory write fails with a
-clear error rather than silently reverting to unsynchronized appends.
+Readers are not blocked: history, transcript, and trajectory reads take no lock,
+which is why the torn-tail rule above exists. Ownership therefore guarantees
+"one writer", not "one process may touch the directory": tooling that writes
+`messages.jsonl` directly bypasses it and is unsupported, and plugin state,
+metadata, and inbox files are replaced atomically by their own owner rather than
+coordinated by this lock.
+
+Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
+advisory locks the runtime refuses to start rather than run without it.
 
 ## Plugin state
 
