@@ -14,8 +14,13 @@ Confirmed defects and fixes in this working branch:
   making append latency quadratic. A process-local writer allocator now keeps
   positions synchronized across live stores; ordinary telemetry uses bounded
   delay flushing while message appends, surface replacements, and
-  `compaction/*` markers remain forced. Multi-process ownership is still not
-  claimed.
+  `compaction/*` markers remain forced.
+- Concurrent writers in separate processes are coordinated by a POSIX advisory
+  lock on `messages.jsonl.lock`: the lock covers the whole read-modify-append
+  critical section, readers take it in shared mode, process exit releases it,
+  and contention past the bounded wait fails with a clear `TimeoutError`. This
+  protects the trajectory file, not session semantics: two runtimes must still
+  not drive one session's conversation.
 - Provider-confirmed context overflow now has a typed adapter boundary and a
   bounded compaction/rebuild/retry. Retry is allowed only after an append-only
   surface replacement changes the current nodes.
@@ -77,14 +82,24 @@ strip a `timing` field before comparing fixtures, and re-estimated the whole
 accumulated text on every delta. Provider usage is once again reported only
 through the finished `ModelResponse`.
 
-Verification for this branch: `pytest XBotv2/tests/core XBotv2/tests/integration`
-passed 880 tests; `npx vitest run src/state/runtime.test.ts` passed 38 tests and
-`npx tsc --noEmit` is clean. These are the only claims made here. No real
-provider, browser, multi-process, or real-TCP result is claimed: the socket and
-browser smoke paths could not be exercised in this sandbox, and the retained
-stress runner output under `scripts/stress/reports/` is local, git-ignored
-evidence that predates the current source and therefore is not presented as
-this branch's result.
+Verification for this branch, with the repository environment and full access:
+`pytest` over `XBotv2/tests` passed 890 tests, `pytest XCore/tests` passed 96,
+`pytest evaluation/tests` in the evaluation environment passed 8, `npx vitest
+run` passed 99 tests across 22 files, `npx tsc --noEmit` is clean, and
+`npx playwright test` passed 71 end-to-end tests with 1 skipped.
+
+The multi-process guarantee is tested by real child processes: four processes
+appending 25 messages each to one trajectory keep positions contiguous and
+unique, a killed lock holder does not block the next writer, a reader waits for
+another process's writer, and contention past the bounded wait fails with a
+`TimeoutError` and leaves the trajectory unchanged. The same workload with the
+lock disabled produced duplicate positions and failing writers, so the test is
+sensitive to the protection rather than passing by accident.
+
+No real external provider was contacted and no real-TCP stress result is
+claimed here. The retained stress runner output under `scripts/stress/reports/`
+is local, git-ignored evidence that predates the current source and is therefore
+not presented as this branch's result.
 
 ## 0.2 Plugin-owned configuration contracts (2026-09-10)
 

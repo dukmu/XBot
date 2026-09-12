@@ -6,9 +6,15 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from weakref import WeakValueDictionary
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX advisory locks
+    fcntl = None  # type: ignore[assignment]
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
@@ -50,15 +56,90 @@ from xcore.state import StateService
 _SYNC_EVENT_PREFIXES: tuple[str, ...] = ("compaction/",)
 _SYNC_INTERVAL_SECONDS = 0.25
 
+# One writer holds the exclusive lock per trajectory; a second process waits
+# briefly and then fails with an actionable error rather than corrupting the log.
+_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_POLL_SECONDS = 0.01
+
 
 class _TrajectoryWriter:
-    """Process-local position allocator shared by stores for one trajectory."""
+    """Position allocator and cross-process lock for one trajectory file.
 
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
+    Threads of one process share the exclusive lock and the position counter;
+    other processes are excluded for the whole read-modify-append critical
+    section.  Readers take a shared lock so a partially written record is never
+    observed.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.lock = threading.RLock()
         self.next_position = 1
         self.file_size = -1
         self.last_sync = 0.0
+        self.lock_file = path.with_name(f"{path.name}.lock")
+        self._lock_fd: int | None = None
+        self._exclusive_thread: int | None = None
+
+    def _open_lock_file(self) -> int:
+        if fcntl is None:
+            raise RuntimeError(
+                "Cross-process history locking requires POSIX advisory locks "
+                "(fcntl), which this platform does not provide"
+            )
+        self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        return os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+
+    def _exclusive_descriptor(self) -> int:
+        if self._lock_fd is None:
+            self._lock_fd = self._open_lock_file()
+        return self._lock_fd
+
+    @contextmanager
+    def hold_write(self) -> Iterator[None]:
+        """Own the trajectory for one read-modify-append critical section."""
+        thread = threading.get_ident()
+        with self.lock:
+            descriptor = self._exclusive_descriptor()
+            deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "Timed out waiting for the history write lock "
+                            f"{self.lock_file}; another process is still "
+                            f"writing this trajectory after "
+                            f"{_LOCK_TIMEOUT_SECONDS:.0f}s"
+                        ) from None
+                    time.sleep(_LOCK_POLL_SECONDS)
+            self._exclusive_thread = thread
+            try:
+                yield
+            finally:
+                self._exclusive_thread = None
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+    @contextmanager
+    def hold_read(self) -> Iterator[None]:
+        """Read the trajectory without observing another process's partial write."""
+        if self._exclusive_thread == threading.get_ident():
+            yield
+            return
+        if not self.lock_file.parent.is_dir():
+            # Reading an absent thread must not create its state directory, and
+            # no writer can hold the lock before that directory exists.
+            yield
+            return
+        # A separate descriptor: converting the writer's own descriptor to a
+        # shared lock would drop its exclusivity mid-transaction.
+        descriptor = self._open_lock_file()
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            yield
+        finally:
+            os.close(descriptor)
 
 
 _trajectory_writers: WeakValueDictionary[Path, _TrajectoryWriter] = (
@@ -71,7 +152,7 @@ def _trajectory_writer(path: Path) -> _TrajectoryWriter:
     with _trajectory_writers_guard:
         writer = _trajectory_writers.get(path)
         if writer is None:
-            writer = _TrajectoryWriter()
+            writer = _TrajectoryWriter(path)
             _trajectory_writers[path] = writer
         return writer
 
@@ -117,7 +198,7 @@ class MessageHistoryStore:
     def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
         if not messages:
             return ()
-        with self._writer.lock:
+        with self._writer.hold_write():
             self._sync_writer()
             records = [
                 MessageRecord.from_message(
@@ -157,7 +238,7 @@ class MessageHistoryStore:
         operation: str,
         preserve_transcript: bool,
     ) -> tuple[HistoryNode, ...]:
-        with self._writer.lock:
+        with self._writer.hold_write():
             records = self._records()
             self._reset_writer(len(records) + 1)
             record = SurfaceReplaceRecord(
@@ -187,7 +268,7 @@ class MessageHistoryStore:
         )
 
     def record(self, event: str, data: dict[str, JsonValue]) -> None:
-        with self._writer.lock:
+        with self._writer.hold_write():
             self._sync_writer()
             record = TrajectoryEventRecord(
                 position=self._writer.next_position,
@@ -309,10 +390,11 @@ class MessageHistoryStore:
         self._next_position = self._writer.next_position
 
     def _records(self) -> list[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord]:
-        records = [
-            _trajectory_record(raw)
-            for raw in _read_jsonl(self._path, "messages.jsonl")
-        ]
+        with self._writer.hold_read():
+            records = [
+                _trajectory_record(raw)
+                for raw in _read_jsonl(self._path, "messages.jsonl")
+            ]
         positions = [record.position for record in records]
         if positions != list(range(1, len(records) + 1)):
             raise ValueError("Trajectory positions must be contiguous and start at 1")

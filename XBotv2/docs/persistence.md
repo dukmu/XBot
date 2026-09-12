@@ -45,9 +45,23 @@ A plugin may bracket a multi-record commit with a `TrajectoryTransaction`
 ids still open with `open_transactions`. Callers resolve an open bracket
 explicitly; the store never rewrites or discards trajectory records.
 
-Trajectory positions are allocated by a process-local writer shared by the
-stores of one trajectory path. Concurrent appends from separate processes are
-not coordinated and are not a supported ownership model.
+Trajectory writes are serialized across processes by a POSIX advisory lock on
+`messages.jsonl.lock` beside the trajectory. A writer owns that lock for the
+whole read-modify-append critical section, so positions stay unique and
+monotonic while several processes append; a reader takes the same lock in
+shared mode and therefore never parses a partially written record. The lock is
+released by the kernel when a writer exits, so a crashed process cannot lock a
+session forever.
+
+Contention is bounded: a writer that waits longer than the configured timeout
+fails with a `TimeoutError` naming the lock file instead of interleaving writes.
+The lock coordinates file mutations only. It does not make two runtimes share
+one session's conversation semantics, and it does not coordinate the plugin
+state or metadata files, which are replaced atomically by their own owner.
+
+Locking uses `fcntl`, so multi-process coordination requires a POSIX platform.
+On a platform without advisory locks, the first trajectory write fails with a
+clear error rather than silently reverting to unsynchronized appends.
 
 ## Plugin state
 
