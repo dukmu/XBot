@@ -1033,7 +1033,7 @@ async def test_slash_status_appends_state_notice(scripted_session) -> None:
     assert len(status_notices) == 1
     body = status_notices[0].text
     assert "turn=0" in body
-    assert "mode=composing" in body  # Mode enum value
+    assert "mode=composing" in body  # scripted server status body
     assert scripted_session.sent == []
 
 

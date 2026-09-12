@@ -33,7 +33,6 @@ from XBotv2.tui.command import (
 )
 from XBotv2.tui.command_palette import CommandPalette
 from XBotv2.tui.completion_popup import CompletionPopup
-from XBotv2.tui.mode import Mode
 from XBotv2.tui.session_config import TuiSessionConfig
 from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from XBotv2.tui.trace import trace_event
@@ -502,19 +501,6 @@ class XBotTextualApp(App[None]):
         """Open the command palette modal (Ctrl+P)."""
 
         self.push_screen(CommandPalette(registry=self.commands))
-
-    def _current_tui_mode(self) -> Mode:
-        """Derive one keyboard-dispatch mode from protocol state."""
-
-        if self._choice_mode_active():
-            return Mode.CHOOSING
-        if self._interaction_response_pending:
-            return Mode.SUBMITTED
-        if self.state.status == "Error":
-            return Mode.ERROR
-        if self.state.turn_active:
-            return Mode.RUNNING
-        return Mode.COMPOSING
 
     async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
         if spec is None:
