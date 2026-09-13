@@ -471,6 +471,38 @@ export function useXBot() {
     setView(null);
   }, []);
 
+  const loadViewEarlier = useCallback(async () => {
+    const active = viewRef.current;
+    if (!active || active.loadingOlder || !active.olderCursor) return;
+    const current = currentSessionRef.current;
+    if (!current) return;
+    const step = viewStepRef.current;
+    viewRef.current = { ...active, loadingOlder: true };
+    setView({ ...viewRef.current });
+    try {
+      const trajectory = await api.listTrajectory(current.session_id, active.threadId, {
+        cursor: active.olderCursor,
+        limit: 160,
+      });
+      if (step !== viewStepRef.current) return;
+      viewRef.current = {
+        ...viewRef.current!,
+        entries: [
+          ...trajectoryEntries(trajectory.items),
+          ...viewRef.current!.entries,
+        ],
+        olderCursor: trajectory.next_cursor,
+        loadingOlder: false,
+      };
+      setView({ ...viewRef.current });
+    } catch (error) {
+      if (step === viewStepRef.current) {
+        viewRef.current = { ...viewRef.current!, loadingOlder: false };
+        setView({ ...viewRef.current });
+      }
+    }
+  }, [api]);
+
   const openThreadView = useCallback(async (thread: ThreadSummary) => {
     const current = state.current;
     if (!current || thread.thread_id === current.thread_id) return;
@@ -484,6 +516,8 @@ export function useXBot() {
       entries: [],
       cursor: 0,
       mainBusy: false,
+      olderCursor: null,
+      loadingOlder: false,
     };
     setView({ ...viewRef.current });
     const reconcile = async (cursorAfter: number) => {
@@ -495,6 +529,8 @@ export function useXBot() {
           ...viewRef.current!,
           entries: trajectoryEntries(trajectory.items),
           cursor: cursorAfter,
+          olderCursor: trajectory.next_cursor,
+          loadingOlder: false,
         };
         setView({ ...viewRef.current });
       } catch (error) {
@@ -1029,6 +1065,7 @@ export function useXBot() {
     selectThread,
     openThreadView,
     closeThreadView,
+    loadViewEarlier,
     view,
     sendMessage,
     updatePendingInput,

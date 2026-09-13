@@ -695,6 +695,8 @@ export interface ThreadViewState {
   entries: TimelineEntry[];
   cursor: number;
   mainBusy: boolean;
+  olderCursor: string | null;
+  loadingOlder: boolean;
 }
 
 export interface ThreadViewRolling {

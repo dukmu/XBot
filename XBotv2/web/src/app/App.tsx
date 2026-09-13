@@ -287,9 +287,9 @@ export function App() {
                   turnRunning={false}
                   onRetry={async () => undefined}
                   onBranch={async () => undefined}
-                  hasOlder={false}
-                  loadingOlder={false}
-                  onLoadOlder={async () => undefined}
+                  hasOlder={Boolean(runtime.view.olderCursor)}
+                  loadingOlder={runtime.view.loadingOlder}
+                  onLoadOlder={runtime.loadViewEarlier}
                 />
               </div>
             ) : (
