@@ -113,6 +113,8 @@ class UserInputRequiredData(WireModel):
 
     # source == "ask_user" additionally requires at least two options.
     # tool_call_id is non-empty for every wire request.
+    # resume_supported is true for live requests: open_session replays an
+    # unanswered request through pending_interactions.
 
 class UserInputResponseRequest(WireModel):
     request_id: str = Field(min_length=1)
@@ -280,3 +282,7 @@ ask_user() → interactions.request_user_input() →
 - **`session_closed` cancels all waiters**: if a session is closed
   while a waiter is active, all pending interactions resolve to
   `status="cancelled", reason="session_closed"`.
+- **`resume_supported` is true for live requests**: a client that
+  reloads or reconnects while a question is unanswered rebuilds the
+  dialog from `OpenSessionResponse.pending_interactions`; the request
+  is still lost if the client never re-opens the session.

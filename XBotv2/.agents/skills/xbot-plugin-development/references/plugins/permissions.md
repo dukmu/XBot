@@ -132,6 +132,10 @@ decision, persists session grants or installs proactive once grants, and emits
 `PERMISSION_DECIDED` only afterwards. Cancellation/invalid responses do not
 invoke the decision handler; terminal logs preserve the original failure.
 Pending calls recheck current deny rules after approval, including parent rules.
-Session close cancels pending waiters; pending requests themselves do not resume.
+Session close cancels pending waiters. An unanswered request is not lost while
+its turn is live: `open_session(mode="resume")` replays it through
+`pending_interactions` with `resume_supported: true`. A client that reconnects
+rebuilds the dialog from that field; deciding when to give up on an unanswered
+request is the client's responsibility, not a server-side timeout.
 
 See [sandbox.md](sandbox.md) for OS enforcement.

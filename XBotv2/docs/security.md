@@ -35,6 +35,12 @@ authorization path. It must not log raw command bodies, patch content, or
 permission regexes. Audit logs record request id, source, outcome, and failure
 class.
 
+While a turn is live, a client that reloads or reconnects rebuilds an
+unanswered dialog from `OpenSessionResponse.pending_interactions`; clients must
+not rely on the bounded event-replay window for a request that requires an
+answer. Deciding when an unanswered request may be abandoned is a client
+concern, not a server-side timeout.
+
 ## Sandbox and cwd
 
 The shell workspace is the default cwd. Omitted cwd and the explicit workspace

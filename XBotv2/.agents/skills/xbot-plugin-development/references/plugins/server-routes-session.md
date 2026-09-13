@@ -138,7 +138,14 @@ trajectory metadata and is intentionally not added to the legacy
 
 `OpenSessionResponse` and `SessionDescriptor` are Pydantic models. The
 response contains the resolved runtime descriptor, a projected history page,
-and pending inputs; it is not the same object as the internal `OpenedSession`.
+pending inputs, and unanswered client interactions; it is not the same object
+as the internal `OpenedSession`.
+
+`pending_interactions` replays the payload of every live interaction the
+session is still waiting on (`permission_request`, `user_input_required`).
+A client that reloads or reconnects must rebuild its dialog from this field:
+the request otherwise exists only in the event stream and is lost once the
+bounded replay window evicts it.
 
 ## SSE
 
@@ -161,6 +168,11 @@ including Agent-loop events (`assistant_message`, deltas, tool calls/results,
 turn lifecycle, usage, input rejection, and errors). Do not treat the two
 streams as interchangeable: the message stream is request-scoped, while the
 event stream is cursor-based and thread-scoped.
+
+`assistant_message.data.id` is persisted as `xbot_message_id` and is the key
+clients use to correlate one projected message with its durable record, so it
+must be unique per response. A retried or finalizing iteration is a different
+response and must not reuse the previous iteration's id.
 
 ## Errors and boundaries
 
