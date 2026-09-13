@@ -445,6 +445,10 @@ export function useXBot() {
     const current = state.current;
     const generation = navigationGeneration.current;
     const content = rawContent.trim();
+    if (state.viewingSubagent) {
+      notify("Subagent threads are read-only; switch to the main thread to chat.");
+      return false;
+    }
     if (!current || state.loading || (!content && attachments.length === 0)) return false;
     const requestId = crypto.randomUUID();
     const requestTarget = `${current.session_id}\n${current.thread_id}`;

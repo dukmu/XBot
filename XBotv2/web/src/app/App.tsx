@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, FolderSearch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
+import { AlertCircle, FolderSearch, GitBranch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
 import { CommandHelpDialog } from "../components/CommandHelpDialog";
@@ -290,9 +290,15 @@ export function App() {
                 onUpdate={runtime.updatePendingInput}
               />
               <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
+              {state.viewingSubagent && (
+                <div className="subagent-readonly-banner" role="status">
+                  <GitBranch size={14} />
+                  <span>Viewing a subagent thread — read-only. Switch to the main thread to chat.</span>
+                </div>
+              )}
               <Composer
                 running={state.turnRunning}
-                disabled={state.loading || runtime.commandRunning}
+                disabled={state.loading || runtime.commandRunning || state.viewingSubagent}
                 commands={commands}
                 draft={composerDraft}
                 allowImages={Boolean(state.providers

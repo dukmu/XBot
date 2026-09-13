@@ -96,6 +96,9 @@ export interface RuntimeState {
   usage: UsageData;
   sessionStats: SessionStatsData;
   turnRunning: boolean;
+  // A subagent thread is observed read-only: the runtime is attached to it for
+  // history and events, but the client never sends into it.
+  viewingSubagent: boolean;
   pendingInputs: PendingInput[];
   deliveryStates: Record<string, MessageEntry["deliveryState"]>;
   error: string;
@@ -150,6 +153,7 @@ export const initialRuntimeState: RuntimeState = {
   providers: [],
   agents: [],
   current: null,
+  viewingSubagent: false,
   entries: [],
   historyCursor: null,
   historyLoading: false,
@@ -195,6 +199,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         historyLoading: false,
         trajectory: [],
         trajectoryLoaded: false,
+        viewingSubagent: false,
         usage: normalizeUsage(action.session.usage),
         sessionStats: normalizeSessionStats(action.session.session_stats),
         interactions: pendingInteractions(action.session.pending_interactions),
@@ -247,6 +252,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         usage: normalizeUsage(action.thread.usage),
         sessionStats: normalizeSessionStats(action.thread.session_stats),
         turnRunning: action.thread.turn_status === "running",
+        viewingSubagent: action.thread.kind === "subagent",
       } : state;
     case "history":
       return {

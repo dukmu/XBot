@@ -452,6 +452,23 @@ describe("runtimeReducer", () => {
     expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
   });
 
+  it("marks a subagent thread view as read-only", () => {
+    const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const subagent = {
+      session_id: "session-1", thread_id: "agent-reviewer-1", status: "active" as const,
+      kind: "subagent" as const, turn_status: "idle" as const, parent_thread_id: "agent",
+      agent: "reviewer", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+      context_window: 1000, message_count: 2, usage: opened.usage,
+      session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+    };
+    const state = runtimeReducer(current, { type: "thread_synced", thread: subagent });
+    expect(state.viewingSubagent).toBe(true);
+
+    const main = { ...subagent, thread_id: "agent", kind: "main" as const, parent_thread_id: "" };
+    expect(runtimeReducer(state, { type: "thread_synced", thread: main }).viewingSubagent).toBe(false);
+    expect(runtimeReducer(initialRuntimeState, { type: "opened", session: opened }).viewingSubagent).toBe(false);
+  });
+
   it("streams reasoning and assistant content into one entry", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const committedEntries = state.entries;

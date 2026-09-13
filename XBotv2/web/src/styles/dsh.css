@@ -1549,3 +1549,24 @@ body {
   .schema-mapping-row.has-object .schema-mapping-remove,
   .schema-mapping-row.has-object .schema-fields { grid-area: auto; }
 }
+
+.subagent-readonly-banner {
+  display: flex;
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+  align-items: center;
+  gap: 8px;
+  margin-inline: auto;
+  margin-bottom: 8px;
+  padding: 7px 11px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-specific-tip);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.subagent-readonly-banner svg {
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+}
