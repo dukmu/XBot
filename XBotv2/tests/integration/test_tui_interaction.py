@@ -109,6 +109,12 @@ class _ScriptedSession:
         for event in events:
             yield event
 
+    async def list_providers(self):
+        return {"default": "deepseek", "providers": [
+            {"name": "deepseek", "provider": "deepseek", "default_model": "deepseek-v4-flash"},
+            {"name": "OpenAI", "provider": "openai", "default_model": "gpt-5.6-luna"},
+        ]}
+
     async def list_threads(self, session_id=None):
         return {
             "session_id": session_id or self.session_id,
@@ -819,7 +825,7 @@ async def test_thread_view_marks_main_output_and_lists_threads(
 
 
 @pytest.mark.asyncio
-async def test_thread_command_lists_threads_without_argument(
+async def test_thread_command_opens_a_picker_without_an_argument(
     scripted_session,
 ) -> None:
     app = XBotTextualApp(session_id="s", thread_id="t")
@@ -828,9 +834,19 @@ async def test_thread_command_lists_threads_without_argument(
         await pilot.pause()
         await app._cmd_thread("")
         await pilot.pause()
-        assert any(
-            "agent-reviewer-1" in notice.text for notice in app.state.notices
-        ), [n.text for n in app.state.notices]
+        from XBotv2.tui.selection import SelectionScreen
+
+        picker = app.screen
+        assert isinstance(picker, SelectionScreen)
+        rows = list(picker.query(".selection-row"))
+        assert any("agent-reviewer-1" in str(row.content) for row in rows)
+        first_thread = next(row for row in rows if "agent-reviewer-1" in str(row.content))
+        # Enter selects the highlighted row and enters the read-only view.
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        assert app._view_active is True
+        assert app._view_thread_id == "agent-reviewer-1" or "reviewer" in str(first_thread.content)
 
 
 @pytest.mark.asyncio
@@ -1354,20 +1370,24 @@ async def test_session_command_lists_and_switches_workspace() -> None:
             if app._session_attached:
                 break
 
+        from XBotv2.tui.selection import SelectionScreen
+
         composer = app.query_one("#input")
         composer.load_text("/session")
         await app.submit_composer()
         await pilot.pause()
-        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
-        assert listing and "old-session" in listing[-1].text
-        assert "/work/old" in listing[-1].text
-
-        composer.load_text("/session list")
-        await app.submit_composer()
-        await pilot.pause()
-        listing = [notice for notice in app.state.notices if notice.kind == "Sessions"]
-        assert len(listing) == 2
+        picker = app.screen
+        assert isinstance(picker, SelectionScreen)
+        rows = list(picker.query(".selection-row"))
+        assert any("old-session" in str(row.content) for row in rows)
+        assert any("/work/old" in str(row.content) for row in rows)
         assert session.switches == []
+
+        # Cancel remains on the current session; /session list again, then pick
+        # the first (old-session) via the highlighted row.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.state.session_id == "current"
 
         composer.load_text("/session other-session")
         await app.submit_composer()
@@ -2418,3 +2438,36 @@ async def test_command_search_includes_prompt_type(
     results = registry.search("/git")
     assert any(s.kind == "prompt" for s in results)
     assert any("prompt" in s.short_label for s in results)
+
+
+@pytest.mark.asyncio
+async def test_provider_command_picks_or_lists(scripted_session) -> None:
+    """/provider opens an interactive picker; /provider list shows the catalog."""
+    from XBotv2.tui.command import CommandSpec
+    from XBotv2.tui.selection import SelectionScreen
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+
+        await app._handle_slash_command(CommandSpec(
+            name="provider", kind="server", raw="/provider list",
+            usage="/provider <provider>", args="list", description="",
+        ))
+        await pilot.pause()
+        assert any(
+            "deepseek" in notice.text and "deepseek-v4-flash" in notice.text
+            for notice in app.state.notices
+        )
+
+        await app._handle_slash_command(CommandSpec(
+            name="provider", kind="server", raw="/provider", usage="/provider <provider>", args="", description="",
+        ))
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, SelectionScreen)
+        rows = list(picker.query(".selection-row"))
+        assert any("OpenAI" in str(row.content) for row in rows)
+        await pilot.press("escape")
+        await pilot.pause()

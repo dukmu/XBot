@@ -34,6 +34,7 @@ from XBotv2.tui.command import (
 from XBotv2.tui.command_palette import CommandPalette
 from XBotv2.tui.completion_popup import CompletionPopup
 from XBotv2.client import XBotClientError
+from XBotv2.tui.selection import SelectionScreen
 from XBotv2.tui.session_config import TuiSessionConfig
 from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from XBotv2.tui.trace import trace_event
@@ -585,6 +586,59 @@ class XBotTextualApp(App[None]):
         )
         await self._enter_thread_view(candidate["thread_id"], candidate.get("title") or "")
 
+    async def _show_providers(self) -> None:
+        """Read-only catalog view for ``/provider list``."""
+        try:
+            payload = await self.session.list_providers()
+        except Exception as exc:
+            self._record_error(exc)
+            return
+        providers = payload.get("providers") if isinstance(payload, dict) else []
+        lines = []
+        if isinstance(providers, list):
+            for item in providers:
+                if not isinstance(item, dict):
+                    continue
+                provider = str(item.get("provider") or "")
+                name = str(item.get("name") or "")
+                model = str(item.get("default_model") or "")
+                if not provider:
+                    continue
+                line = f"{name} ({provider})" if name and name != provider else provider
+                if model:
+                    line += f"  {model}"
+                lines.append(line)
+        await self._append_local_notice(
+            "Providers", "\n".join(lines) or "No providers available"
+        )
+
+    async def _pick_provider(self, on_choice) -> None:
+        """Choose a provider from the server catalog instead of typing its id."""
+        try:
+            payload = await self.session.list_providers()
+        except Exception as exc:
+            self._record_error(exc)
+            return
+        providers = payload.get("providers") if isinstance(payload, dict) else []
+        options = []
+        if isinstance(providers, list):
+            for item in providers:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                provider = str(item.get("provider") or "")
+                model = str(item.get("default_model") or "")
+                if not provider:
+                    continue
+                label = f"{name or provider}"
+                if model:
+                    label += f"  {model}"
+                options.append((provider, label))
+        if not options:
+            await self._append_local_notice("Providers", "No providers available")
+            return
+        self.push_screen(SelectionScreen("Providers", options), callback=on_choice)
+
     async def _thread_catalog(self) -> list[dict[str, str]]:
         try:
             payload = await self.session.list_threads(self.state.session_id)
@@ -628,15 +682,27 @@ class XBotTextualApp(App[None]):
             if not threads:
                 await self._append_local_notice("Threads", "No persisted threads")
                 return
-            lines = [
-                f"{t['thread_id']}  {t['kind']} {t['status']}"
-                + (f"  {t['message_count']} msg" if t["message_count"] else "")
-                + (f"  {t['title']}" if t["title"] else "")
-                for t in threads
-            ]
-            await self._append_local_notice("Threads", "\n".join(lines))
+            self._pick_thread(threads)
+            return
+        if value == "main":
             return
         await self._enter_thread_view(value, "")
+
+    def _pick_thread(self, threads: list[dict[str, str]]) -> None:
+        options = []
+        for thread in threads:
+            label = f"{thread['thread_id']}  {thread['kind']} {thread['status']}"
+            if thread["message_count"]:
+                label += f"  {thread['message_count']} msg"
+            if thread["title"]:
+                label += f"  {thread['title']}"
+            options.append((thread["thread_id"], label))
+        if len(options) == 1:
+            self.run_worker(self._enter_thread_view(options[0][0], options[0][1]))
+            return
+        self.push_screen(SelectionScreen("Threads", options), callback=lambda choice: (
+            self.run_worker(self._enter_thread_view(choice, "")) if choice else None
+        ))
 
     async def _enter_thread_view(self, thread_id: str, title: str) -> None:
         if self._view_active:
@@ -830,6 +896,29 @@ class XBotTextualApp(App[None]):
         if spec.name == "thread":
             await self._cmd_thread(spec.args)
             return
+        if spec.name == "provider":
+            provider_args = spec.args.strip()
+            if provider_args.lower() in {"list", "ls"}:
+                await self._show_providers()
+                return
+            if not provider_args:
+                await self._pick_provider(lambda choice: (
+                    self.run_worker(
+                        self._dispatch_remote_command(
+                            CommandSpec(
+                                name=spec.name,
+                                kind=spec.kind,
+                                description=spec.description,
+                                usage=spec.usage,
+                                raw=spec.raw,
+                                args=choice,
+                            )
+                        )
+                    )
+                    if choice
+                    else None
+                ))
+                return
         if spec.name == "new":
             args = spec.args.strip()
             await self._cmd_session(f"new {args}".strip())
@@ -861,14 +950,20 @@ class XBotTextualApp(App[None]):
             if not sessions:
                 await self._append_local_notice("Sessions", "No persisted sessions")
                 return
-            lines = []
+            options = []
             for item in sessions:
                 sid = str(item.get("session_id") or "")
                 title = str(item.get("title") or "")
                 workspace = str(item.get("workspace_root") or "")
-                suffix = f"  {workspace}" if workspace else ""
-                lines.append(f"{sid}{('  ' + title) if title else ''}{suffix}")
-            await self._append_local_notice("Sessions", "\n".join(lines))
+                label = f"{sid}"
+                if title:
+                    label += f"  {title}"
+                if workspace:
+                    label += f"  {workspace}"
+                options.append((sid, label))
+            self.push_screen(SelectionScreen("Sessions", options), callback=lambda choice: (
+                self.run_worker(self._cmd_session(choice)) if choice else None
+            ))
             return
         if values[0].lower() == "new":
             if len(values) > 2:

@@ -247,6 +247,9 @@ class TerminalSession:
     async def list_threads(self, session_id: str | None = None) -> dict[str, JsonValue]:
         return _dump(await self._client.list_threads(session_id or self._session_id))
 
+    async def list_providers(self) -> dict[str, JsonValue]:
+        return _dump(await self._client.list_providers())
+
     def stream_thread_events(
         self,
         thread_id: str,
