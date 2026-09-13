@@ -21,7 +21,7 @@ from XBotv2.core.tools import GuardDecision, ToolCall
 from XBotv2.agentloop.contracts import ToolRegistration
 from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
-from XBotv2.sandbox.contracts import PathAccess, SandboxConfig
+from XBotv2.sandbox.contracts import PathAccess, SandboxConfig, SandboxPort
 
 
 @dataclass
@@ -30,7 +30,7 @@ class SandboxResourceRule:
     access: PathAccess = "readonly"
 
 
-class SandboxPolicy:
+class SandboxPolicy(SandboxPort):
     def __init__(
         self,
         config: SandboxConfig | None = None,

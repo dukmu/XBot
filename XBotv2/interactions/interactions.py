@@ -7,12 +7,13 @@ import asyncio
 from pydantic import JsonValue
 
 from XBotv2.interactions.contracts import (
+    InteractionWaiterPort,
     InteractionNotPending,
     InteractionResult,
 )
 
 
-class InteractionWaiter:
+class InteractionWaiter(InteractionWaiterPort):
     def __init__(self) -> None:
         self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
 

@@ -14,9 +14,10 @@ from XBotv2.application.contracts import ClientEventSink, InteractionWaiterPort
 from pydantic import JsonValue
 
 from XBotv2.core.tools import ClientEvent
+from XBotv2.application.contracts import ClientEventsPort
 
 
-class ClientEventRouter:
+class ClientEventRouter(ClientEventsPort):
     """Route client events without coupling transports to feature services."""
 
     def __init__(self, parent: "ClientEventRouter | None" = None) -> None:
