@@ -246,14 +246,6 @@ function ClientSettings({ themePreference, onThemeChange }: Pick<SettingsDialogP
           })}
         </div>
       </section>
-
-      <section className="settings-section settings-note" aria-label="Client preference scope">
-        <span className="settings-note-icon"><Settings2 size={16} /></span>
-        <div>
-          <strong>Only this browser</strong>
-          <p>Client preferences do not change sessions, workspaces, providers, or server configuration.</p>
-        </div>
-      </section>
     </>
   );
 }

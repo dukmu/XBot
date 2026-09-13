@@ -1372,10 +1372,6 @@ body {
 .theme-option-copy strong { color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 600; }
 .theme-option-copy small { color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 1.4; }
 .theme-option-check { position: absolute; top: 12px; right: 12px; color: var(--dsw-alias-state-business-primary); }
-.settings-note { display: flex; align-items: flex-start; gap: 10px; color: var(--dsw-alias-label-secondary); background: var(--dsw-specific-tip); }
-.settings-note-icon { display: grid; flex: none; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: var(--dsw-alias-state-business-primary); background: var(--dsw-static-deepseek-50); }
-.settings-note strong { color: var(--dsw-alias-label-primary); font-size: 12px; }
-.settings-note p { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.5; }
 .server-settings-preview { display: grid; gap: 0; margin-top: 16px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
 .server-settings-preview > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; padding: 0 11px; border-bottom: 1px solid var(--dsw-alias-border-l1); font-size: 11px; }
 .server-settings-preview > div:last-child { border-bottom: 0; }
