@@ -269,7 +269,7 @@ describe("SchemaForm", () => {
     const onChange = vi.fn();
     render(<SchemaForm schema={mcpSchema} value={{ servers: {} }} onChange={onChange} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Servers" }));
     expect(onChange).toHaveBeenCalledWith({ servers: { "": { enabled: true, required: false } } });
   });
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { JsonObject } from "../api/types";
 import {
+  type FieldKind,
   type JsonSchema,
   type ResolvedField,
   UNSET_OPTION,
@@ -184,6 +185,15 @@ function FieldControl({ field, root, value, onChange, onClear }: {
   }
 }
 
+/** How the schema's own default reads next to a field the layer does not set. */
+function defaultHint(value: unknown): string {
+  if (typeof value === "string") {
+    if (!value) return "default empty";
+    return `default ${value.length > 28 ? `${value.slice(0, 28)}…` : value}`;
+  }
+  return `default ${JSON.stringify(value)}`;
+}
+
 /** Label row shared by every control, including the `Clear` layer action. */
 function FieldHeading({ field, value, onClear }: {
   field: ResolvedField;
@@ -193,7 +203,7 @@ function FieldHeading({ field, value, onClear }: {
   const hint = [
     field.hint,
     value === undefined && field.default !== undefined && field.default !== null
-      ? `default ${JSON.stringify(field.default)}`
+      ? defaultHint(field.default)
       : "",
   ].filter(Boolean).join(" · ");
   return (
@@ -261,7 +271,7 @@ function ArrayControl({ field, root, value, onChange }: {
   return (
     <div className="schema-array">
       {items.map((item, index) => (
-        <div className="schema-array-item" key={index}>
+        <div className={`schema-array-item${itemFields.length ? "" : " scalar"}`} key={index}>
           {itemFields.length ? (
             <fieldset className="schema-array-card">
               <legend>{field.label} {index + 1}</legend>
@@ -441,7 +451,7 @@ function MappingControl({ field, root, value, onChange }: {
         className="schema-mapping-add"
         onClick={() => onChange({ ...(isRecord(value) ? value : {}), "": blank() })}
       >
-        Add entry
+        Add {field.label}
       </button>
     </div>
   );
