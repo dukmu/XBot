@@ -70,10 +70,11 @@ projects the catalog's pydantic JSON Schema (`$defs`/`$ref`, `anyOf` null
 branches, enums, maps, arrays) into field descriptors and
 `components/SchemaForm.tsx` renders them. It edits exactly one layer, so
 `Clear` removes that key from the layer instead of writing the schema default,
-and saving replaces the layer's whole configuration object. The panel lists
-only plugins that declare a schema (the rest fold into one collapsible row),
-filters by name, keeps the plugin list and the save actions visible while the
-form scrolls, and enables `Save plugin configuration` only after a real change.
+and saving replaces the layer's whole configuration object. A picker selects the
+plugin, plugins without a schema are folded into one group, `Save plugin
+configuration` is enabled only after a real change (with `Discard` to drop it),
+and a page that edits a plugin layer elsewhere passes `ownedPluginIds` so the
+same rows are not offered twice.
 
 ## Verification
 

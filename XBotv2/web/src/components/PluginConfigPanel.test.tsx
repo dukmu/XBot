@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginConfigCatalog } from "../api/types";
-import { PluginConfigPanel } from "./PluginConfigPanel";
+import { PluginConfigPanel, type PluginConfigPanelProps } from "./PluginConfigPanel";
 
 const catalog: PluginConfigCatalog = {
   scope: "global",
@@ -49,7 +49,7 @@ const catalog: PluginConfigCatalog = {
   ],
 };
 
-function renderPanel() {
+function renderPanel(props: Partial<PluginConfigPanelProps> = {}) {
   const load = vi.fn().mockResolvedValue(catalog);
   const update = vi.fn().mockImplementation(
     (_sessionId: string, _threadId: string, pluginId: string, _scope: string, _revision: string, config: Record<string, unknown>) =>
@@ -64,43 +64,45 @@ function renderPanel() {
       }),
   );
   render(
-    <PluginConfigPanel sessionId="s1" threadId="t1" scope="global" load={load} update={update} />,
+    <PluginConfigPanel sessionId="s1" threadId="t1" scope="global" load={load} update={update} {...props} />,
   );
   return { load, update };
 }
 
-const pluginNav = () => within(screen.getByRole("navigation", { name: "Plugin configurations" }));
+const optionsOf = (parent: ParentNode) => Array.from(parent.querySelectorAll("option")).map((option) => (option as HTMLOptionElement).value);
+const topLevelOptions = (select: HTMLSelectElement) => Array.from(select.querySelectorAll(":scope > option")).map((option) => (option as HTMLOptionElement).value);
 
 describe("PluginConfigPanel", () => {
-  it("lists declared plugins and folds away the ones without a schema", async () => {
+  it("offers the declared plugins and folds away the rest", async () => {
     renderPanel();
 
-    expect(await screen.findByRole("button", { name: "compact Schema available" })).toBeVisible();
-    expect(pluginNav().getByRole("button", { name: "sandbox Schema available" })).toBeVisible();
-    expect(pluginNav().queryByRole("button", { name: /skills/ })).toBeNull();
+    const select = await screen.findByLabelText("Plugin") as HTMLSelectElement;
+    expect(topLevelOptions(select)).toEqual(["compact", "sandbox"]);
+    const folded = select.querySelector("optgroup");
+    expect(folded).toHaveAttribute("label", "No configuration declared");
+    expect(optionsOf(folded as HTMLElement)).toEqual(["skills"]);
+  });
 
-    fireEvent.click(screen.getByText("1 plugin declares no configuration"));
-    fireEvent.click(screen.getByRole("button", { name: "skills Not configurable" }));
+  it("leaves plugins another editor owns out of the picker", async () => {
+    renderPanel({ ownedPluginIds: ["sandbox"], ownedNote: "Sandbox is edited by the policy above." });
+
+    const select = await screen.findByLabelText("Plugin") as HTMLSelectElement;
+    expect(topLevelOptions(select)).toEqual(["compact"]);
+    expect(optionsOf(select)).toEqual(["compact", "skills"]);
+    expect(screen.getByText("Sandbox is edited by the policy above.")).toBeVisible();
+  });
+
+  it("explains a plugin that declares no configuration", async () => {
+    renderPanel();
+    fireEvent.change(await screen.findByLabelText("Plugin"), { target: { value: "skills" } });
+
     expect(screen.getByText("This plugin does not declare a Pydantic Config model.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Save plugin configuration" })).toBeNull();
   });
 
-  it("filters the plugin list", async () => {
-    renderPanel();
-    await screen.findByRole("button", { name: "compact Schema available" });
-
-    const filter = screen.getByLabelText("Filter plugins");
-    fireEvent.change(filter, { target: { value: "sand" } });
-    expect(pluginNav().getByRole("button", { name: "sandbox Schema available" })).toBeVisible();
-    expect(pluginNav().queryByRole("button", { name: /compact/ })).toBeNull();
-
-    fireEvent.change(filter, { target: { value: "nope" } });
-    expect(screen.getByText("No plugin matches “nope”.")).toBeVisible();
-  });
-
   it("saves only a changed layer and can discard the change", async () => {
     const { update } = renderPanel();
-    await screen.findByRole("button", { name: "compact Schema available" });
+    await screen.findByLabelText("Plugin");
 
     const save = screen.getByRole("button", { name: "Save plugin configuration" });
     expect(save).toBeDisabled();
@@ -124,7 +126,7 @@ describe("PluginConfigPanel", () => {
 
   it("blocks saving while a required field is empty", async () => {
     renderPanel();
-    fireEvent.click(await screen.findByRole("button", { name: "sandbox Schema available" }));
+    fireEvent.change(await screen.findByLabelText("Plugin"), { target: { value: "sandbox" } });
 
     fireEvent.change(screen.getByLabelText("Path"), { target: { value: "/tmp" } });
     expect(screen.getByRole("button", { name: "Save plugin configuration" })).toBeEnabled();
@@ -137,7 +139,7 @@ describe("PluginConfigPanel", () => {
 
   it("keeps the form usable when the advanced JSON is invalid", async () => {
     renderPanel();
-    await screen.findByRole("button", { name: "compact Schema available" });
+    await screen.findByLabelText("Plugin");
 
     fireEvent.click(screen.getByText("Advanced JSON"));
     const editor = screen.getByLabelText("Plugin configuration JSON");
@@ -150,5 +152,12 @@ describe("PluginConfigPanel", () => {
     fireEvent.change(editor, { target: { value: '{"automatic": false}' } });
     expect(screen.getByLabelText("Automatic")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "Save plugin configuration" })).toBeEnabled();
+  });
+
+  it("reports a catalog failure instead of an empty editor", async () => {
+    renderPanel({ load: vi.fn().mockRejectedValue(new Error("catalog unavailable")) });
+
+    expect(await screen.findByText("catalog unavailable")).toBeVisible();
+    expect(screen.queryByLabelText("Plugin")).toBeNull();
   });
 });

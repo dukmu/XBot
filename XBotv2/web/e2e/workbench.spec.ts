@@ -59,15 +59,22 @@ test("edits plugin configuration through the declared schema catalog", async ({ 
   await settingsDialog.getByRole("button", { name: "Workspace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Workspace settings" });
   await expect(dialog.getByRole("heading", { name: "Plugin configuration" })).toBeVisible();
-  const compact = dialog.getByRole("button", { name: "compact Schema available" });
-  await expect(compact).toBeVisible();
-  await compact.click();
+  const picker = dialog.getByLabel("Plugin", { exact: true });
+  await expect(picker).toHaveValue("compact");
+  await expect(picker.locator("option")).toHaveText(["compact", "llm"]);
+  const save = dialog.getByRole("button", { name: "Save plugin configuration" });
+  await expect(save).toBeDisabled();
   const request = page.waitForRequest((candidate) => (
     candidate.method() === "PATCH"
     && candidate.url().endsWith("/plugin-config/compact?scope=workspace")
   ));
   await dialog.getByLabel("automatic").uncheck();
-  await dialog.getByRole("button", { name: "Save plugin configuration" }).click();
+  await expect(dialog.getByText("Unsaved changes")).toBeVisible();
+  await expect(save).toBeEnabled();
+  await dialog.getByRole("button", { name: "Discard" }).click();
+  await expect(save).toBeDisabled();
+  await dialog.getByLabel("automatic").uncheck();
+  await save.click();
   expect((await request).postDataJSON()).toMatchObject({ config: { automatic: false } });
   await expect(dialog.getByText("Saved")).toBeVisible();
 });

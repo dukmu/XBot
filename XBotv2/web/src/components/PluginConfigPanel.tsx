@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
-import type { JsonObject, PluginConfigCatalog, PluginConfigDescriptor, PluginConfigScope } from "../api/types";
+import type { JsonObject, PluginConfigCatalog, PluginConfigScope } from "../api/types";
 import { SchemaForm } from "./SchemaForm";
 import { type JsonSchema, isRecord, schemaErrors } from "./schemaForm";
 
@@ -10,6 +9,9 @@ export interface PluginConfigPanelProps {
   scope?: PluginConfigScope;
   load: (sessionId: string, threadId: string, scope: PluginConfigScope) => Promise<PluginConfigCatalog>;
   update: (sessionId: string, threadId: string, pluginId: string, scope: PluginConfigScope, revision: string, config: JsonObject) => Promise<PluginConfigCatalog>;
+  /** Plugins another editor on this page already owns. */
+  ownedPluginIds?: readonly string[];
+  ownedNote?: string;
 }
 
 /** In-progress edits for one plugin layer, valid only for its `key`. */
@@ -34,14 +36,22 @@ function scopeTitle(scope: PluginConfigScope): string {
   return scope === "global" ? "Global" : scope === "session" ? "Session" : "Workspace";
 }
 
-export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load, update }: PluginConfigPanelProps) {
+export function PluginConfigPanel({
+  sessionId,
+  threadId,
+  scope: fixedScope,
+  load,
+  update,
+  ownedPluginIds,
+  ownedNote,
+}: PluginConfigPanelProps) {
   const [selectedScope, setSelectedScope] = useState<PluginConfigScope>(fixedScope || "workspace");
   const scope = fixedScope || selectedScope;
   const [catalog, setCatalog] = useState<PluginConfigCatalog | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState<ConfigDraft | null>(null);
-  const [query, setQuery] = useState("");
   const [status, setStatus] = useState("idle");
+  const ownedKey = (ownedPluginIds ?? []).join(",");
 
   useEffect(() => {
     if (!sessionId || !threadId) {
@@ -54,23 +64,23 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
     void load(sessionId, threadId, scope).then((value) => {
       if (!alive) return;
       setCatalog(value);
-      setSelectedId((current) => current && value.plugins.some((item) => item.plugin_id === current)
+      const owned = new Set(ownedKey ? ownedKey.split(",") : []);
+      setSelectedId((current) => current && value.plugins.some((item) => item.plugin_id === current && !owned.has(item.plugin_id))
         ? current
-        : value.plugins[0]?.plugin_id || "");
+        : value.plugins.find((item) => !owned.has(item.plugin_id))?.plugin_id || "");
       setStatus("ready");
     }).catch((error) => {
       if (alive) setStatus(error instanceof Error ? error.message : String(error));
     });
     return () => { alive = false; };
-  }, [load, scope, sessionId, threadId]);
+  }, [load, ownedKey, scope, sessionId, threadId]);
 
-  const plugins = useMemo(() => catalog?.plugins ?? [], [catalog]);
+  const plugins = useMemo(() => {
+    const owned = new Set(ownedPluginIds ?? []);
+    return (catalog?.plugins ?? []).filter((plugin) => !owned.has(plugin.plugin_id));
+  }, [catalog, ownedPluginIds]);
   const configurable = useMemo(() => plugins.filter((plugin) => plugin.editable), [plugins]);
   const silent = useMemo(() => plugins.filter((plugin) => !plugin.editable), [plugins]);
-  const term = query.trim().toLowerCase();
-  const listed = term
-    ? plugins.filter((plugin) => `${plugin.plugin_id} ${plugin.name}`.toLowerCase().includes(term))
-    : configurable;
 
   const selected = useMemo(
     () => plugins.find((plugin) => plugin.plugin_id === selectedId) ?? null,
@@ -143,95 +153,69 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
         : "Unsaved changes"
     : status === "ready" || status === "idle" ? "" : status;
 
-  const renderPlugin = (plugin: PluginConfigDescriptor) => (
-    <button
-      type="button"
-      key={plugin.plugin_id}
-      className={plugin.plugin_id === selectedId ? "selected" : ""}
-      aria-current={plugin.plugin_id === selectedId ? "true" : undefined}
-      onClick={() => setSelectedId(plugin.plugin_id)}
-    >
-      <strong>{plugin.plugin_id}{draft?.key === `${scope}:${plugin.plugin_id}` && <span className="plugin-config-dot" aria-hidden="true" />}</strong>
-      <small>{plugin.editable ? "Schema available" : "Not configurable"}</small>
-    </button>
-  );
-
   return (
     <section className="settings-section plugin-config-panel" aria-labelledby="plugin-config-title">
       <div className="settings-section-heading">
         <div>
           <h3 id="plugin-config-title">Plugin configuration</h3>
-          <p>Each plugin declares the configuration it accepts. A layer stores only what that scope overrides.</p>
+          <p>A layer stores only the keys this scope overrides; everything else keeps the plugin default.</p>
         </div>
-        <div className="plugin-config-heading-meta">
-          {!fixedScope && (
-            <label>
-              <span>Scope</span>
-              <select value={scope} onChange={(event) => setSelectedScope(event.target.value as PluginConfigScope)}>
-                <option value="workspace">Workspace</option>
-                <option value="global">Global</option>
-                <option value="session">Session</option>
-              </select>
-            </label>
-          )}
-          {catalog && <small className="plugin-config-revision" title={catalog.revision}>revision {catalog.revision.slice(0, 12)}</small>}
-        </div>
+        {catalog && <small className="plugin-config-revision" title={catalog.revision}>revision {catalog.revision.slice(0, 12)}</small>}
       </div>
 
       {!catalog && <p className="settings-save-status" aria-live="polite">{status}</p>}
 
       {catalog && (
-        <div className="plugin-config-layout">
-          <aside className="plugin-config-browser">
-            <label className="plugin-config-filter">
-              <Search size={13} aria-hidden="true" />
-              <input
-                type="search"
-                value={query}
-                aria-label="Filter plugins"
-                placeholder="Filter plugins"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-            <nav className="plugin-config-list" aria-label="Plugin configurations">
-              {listed.map(renderPlugin)}
-            </nav>
-            {term && !listed.length && <p className="plugin-config-hint">No plugin matches “{query.trim()}”.</p>}
-            {!term && !configurable.length && <p className="plugin-config-hint">No plugin declares a configuration schema.</p>}
-            {!term && silent.length > 0 && (
-              <details className="plugin-config-silent">
-                <summary>
-                  {silent.length === 1
-                    ? "1 plugin declares no configuration"
-                    : `${silent.length} plugins declare no configuration`}
-                </summary>
-                <nav className="plugin-config-list" aria-label="Plugins without configuration">
-                  {silent.map(renderPlugin)}
-                </nav>
-              </details>
+        <div className="plugin-config-editor">
+          <div className="plugin-config-bar">
+            {!fixedScope && (
+              <label className="plugin-config-picker">
+                <span>Scope</span>
+                <select aria-label="Scope" value={scope} onChange={(event) => setSelectedScope(event.target.value as PluginConfigScope)}>
+                  <option value="workspace">Workspace</option>
+                  <option value="global">Global</option>
+                  <option value="session">Session</option>
+                </select>
+              </label>
             )}
-          </aside>
+            <label className="plugin-config-picker">
+              <span>Plugin</span>
+              <select
+                aria-label="Plugin"
+                value={selectedId}
+                disabled={!plugins.length}
+                onChange={(event) => setSelectedId(event.target.value)}
+              >
+                {configurable.map((plugin) => (
+                  <option key={plugin.plugin_id} value={plugin.plugin_id}>{plugin.plugin_id}</option>
+                ))}
+                {silent.length > 0 && (
+                  <optgroup label="No configuration declared">
+                    {silent.map((plugin) => (
+                      <option key={plugin.plugin_id} value={plugin.plugin_id}>{plugin.plugin_id}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+            {selected?.editable && <span className="plugin-config-layer">{scopeTitle(scope)} layer</span>}
+            <span className="plugin-config-actions">
+              <small className={`plugin-config-status${dirty ? " dirty" : ""}`} aria-live="polite">{statusLine}</small>
+              {selected?.editable && dirty && (
+                <button type="button" className="secondary-button" onClick={() => setDraft(null)}>Discard</button>
+              )}
+              {selected?.editable && (
+                <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save()}>
+                  Save plugin configuration
+                </button>
+              )}
+            </span>
+          </div>
+
+          {ownedNote && <p className="plugin-config-owned">{ownedNote}</p>}
 
           {selected && (
-            <div className="plugin-config-editor">
-              <header className="plugin-config-editor-bar">
-                <div className="plugin-config-editor-title">
-                  <strong>{selected.name}</strong>
-                  <small>{selected.editable ? `${scopeTitle(scope)} layer` : "Read only"}</small>
-                </div>
-                <div className="plugin-config-editor-actions">
-                  <small className={`plugin-config-status${dirty ? " dirty" : ""}`} aria-live="polite">{statusLine}</small>
-                  {selected.editable && dirty && (
-                    <button type="button" className="secondary-button" onClick={() => setDraft(null)}>Discard</button>
-                  )}
-                  {selected.editable && (
-                    <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save()}>
-                      Save plugin configuration
-                    </button>
-                  )}
-                </div>
-              </header>
-
+            <>
               {!selected.editable && (
                 <p className="plugin-config-unavailable">
                   {selected.unavailable_reason || "This plugin declares no configuration schema."}
@@ -259,7 +243,7 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
                 <summary>Declared JSON Schema</summary>
                 <pre>{JSON.stringify(selected.config_schema, null, 2)}</pre>
               </details>
-            </div>
+            </>
           )}
         </div>
       )}

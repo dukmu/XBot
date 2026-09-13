@@ -1,4 +1,4 @@
-import { Check, Clock3, FolderCog, Globe2, Layers3, Monitor, Moon, Palette, Server, Settings2, Sun, X } from "lucide-react";
+import { Check, Clock3, FolderCog, Globe2, Layers3, Monitor, Moon, Palette, PanelLeftClose, PanelLeftOpen, Server, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PermissionDecision, SandboxAccess, SessionPolicy, SessionPolicyPatch } from "../api/types";
 import { PluginConfigPanel, type PluginConfigPanelProps } from "./PluginConfigPanel";
@@ -29,9 +29,31 @@ const themeOptions: readonly {
   { value: "dark", label: "Dark", description: "Use a low-glare dark interface.", icon: Moon },
 ];
 
+const NAV_STORAGE_KEY = "xbotv2.settingsNav";
+
+function readNavOpen(): boolean {
+  try {
+    return window.localStorage.getItem(NAV_STORAGE_KEY) !== "collapsed";
+  } catch {
+    return true;
+  }
+}
+
 export function SettingsDialog({ themePreference, onThemeChange, sessionId, threadId, loadSessionPolicy, updateSessionPolicy, loadPluginConfig, updatePluginConfig, onClose }: SettingsDialogProps) {
   const [scope, setScope] = useState<SettingsScope>("global");
+  const [navOpen, setNavOpen] = useState(readNavOpen);
   const closeButton = useRef<HTMLButtonElement>(null);
+
+  const toggleNav = () => {
+    setNavOpen((open) => {
+      try {
+        window.localStorage.setItem(NAV_STORAGE_KEY, open ? "collapsed" : "open");
+      } catch {
+        // A blocked storage area only costs the remembered preference.
+      }
+      return !open;
+    });
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -47,27 +69,41 @@ export function SettingsDialog({ themePreference, onThemeChange, sessionId, thre
       if (event.currentTarget === event.target) onClose();
     }}>
       <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <nav className="settings-nav" aria-label="Settings sections">
-          <div className="settings-nav-title"><Settings2 size={16} /> <span>Settings</span></div>
-          <button type="button" className={scope === "global" ? "active" : ""} aria-current={scope === "global" ? "page" : undefined} onClick={() => setScope("global")}>
-            <Globe2 size={15} /> Global
-          </button>
-          <button type="button" className={scope === "workspace" ? "active" : ""} aria-current={scope === "workspace" ? "page" : undefined} onClick={() => setScope("workspace")}>
-            <FolderCog size={15} /> Workspace
-          </button>
-          <button type="button" className={scope === "session" ? "active" : ""} aria-current={scope === "session" ? "page" : undefined} onClick={() => setScope("session")}>
-            <Layers3 size={15} /> Session
-          </button>
-          <button type="button" className={scope === "temporary" ? "active" : ""} aria-current={scope === "temporary" ? "page" : undefined} onClick={() => setScope("temporary")}>
-            <Clock3 size={15} /> Temporary
-          </button>
+        <nav className={`settings-nav${navOpen ? "" : " collapsed"}`} aria-label="Settings sections">
+          <div className="settings-nav-title">
+            <Settings2 className="settings-nav-mark" size={16} aria-hidden="true" />
+            <span>Settings</span>
+            <button
+              type="button"
+              className="settings-nav-toggle"
+              aria-expanded={navOpen}
+              aria-label={navOpen ? "Collapse settings navigation" : "Expand settings navigation"}
+              title={navOpen ? "Collapse navigation" : "Expand navigation"}
+              onClick={toggleNav}
+            >
+              {navOpen ? <PanelLeftClose size={14} aria-hidden="true" /> : <PanelLeftOpen size={14} aria-hidden="true" />}
+            </button>
+          </div>
+          {scopeOptions.map(({ value, label, icon: Icon }) => (
+            <button
+              key={value}
+              type="button"
+              className={scope === value ? "active" : ""}
+              aria-current={scope === value ? "page" : undefined}
+              aria-label={label}
+              title={navOpen ? undefined : label}
+              onClick={() => setScope(value)}
+            >
+              <Icon size={15} aria-hidden="true" /> <span>{label}</span>
+            </button>
+          ))}
         </nav>
 
         <div className="settings-content">
           <header className="settings-header">
             <div>
-              <span className="eyebrow">Preferences</span>
               <h2 id="settings-title">{scopeTitle(scope)}</h2>
+              <p className="settings-subtitle">{scopeDescription(scope)}</p>
             </div>
             <button ref={closeButton} type="button" className="icon-button" title="Close settings" aria-label="Close settings" onClick={onClose}>
               <X size={17} />
@@ -106,6 +142,26 @@ export function SettingsDialog({ themePreference, onThemeChange, sessionId, thre
   );
 }
 
+const scopeOptions: readonly { value: SettingsScope; label: string; icon: typeof Globe2 }[] = [
+  { value: "global", label: "Global", icon: Globe2 },
+  { value: "workspace", label: "Workspace", icon: FolderCog },
+  { value: "session", label: "Session", icon: Layers3 },
+  { value: "temporary", label: "Temporary", icon: Clock3 },
+];
+
+/** The policy panel and the plugin editor write the same session plugin layer. */
+const SESSION_POLICY_PLUGINS = ["permissions", "sandbox"] as const;
+
+function scopeDescription(scope: SettingsScope): string {
+  return scope === "global"
+    ? "Defaults for new sessions and this browser."
+    : scope === "workspace"
+      ? "Defaults for sessions in the active workspace."
+      : scope === "session"
+        ? "Overrides for the active session."
+        : "Per-turn overrides, not saved anywhere.";
+}
+
 function scopeTitle(scope: SettingsScope): string {
   return scope === "global"
     ? "Global settings"
@@ -124,10 +180,6 @@ function GlobalSettings({
 }: Pick<SettingsDialogProps, "themePreference" | "onThemeChange" | "sessionId" | "threadId" | "loadPluginConfig" | "updatePluginConfig">) {
   return (
     <div className="settings-sections">
-      <div className="settings-scope-intro">
-        <span className="settings-scope-badge"><Globe2 size={14} /></span>
-        <div><strong>Global</strong><p>Preferences and plugin defaults shared by new sessions.</p></div>
-      </div>
       <ClientSettings themePreference={themePreference} onThemeChange={onThemeChange} />
       <PluginConfigPanel
         sessionId={sessionId}
@@ -143,10 +195,6 @@ function GlobalSettings({
 function TemporarySettings() {
   return (
     <div className="settings-sections">
-      <div className="settings-scope-intro">
-        <span className="settings-scope-badge"><Clock3 size={14} /></span>
-        <div><strong>Temporary</strong><p>Per-turn overrides will appear here in a future release.</p></div>
-      </div>
       <section className="settings-empty" aria-label="Temporary settings unavailable">
         <Clock3 size={24} />
         <strong>No temporary settings yet</strong>
@@ -164,10 +212,6 @@ function WorkspaceSettings({
 }: Pick<SettingsDialogProps, "sessionId" | "threadId" | "loadPluginConfig" | "updatePluginConfig">) {
   return (
     <div className="settings-sections">
-      <div className="settings-scope-intro">
-        <span className="settings-scope-badge"><FolderCog size={14} /></span>
-        <div><strong>Workspace</strong><p>Plugin defaults shared by sessions in the active workspace.</p></div>
-      </div>
       <PluginConfigPanel
         sessionId={sessionId}
         threadId={threadId}
@@ -240,14 +284,12 @@ function SessionSettings({
   return (
     <div className="settings-sections">
       <SessionPolicyPanel sessionId={sessionId} load={loadSessionPolicy} update={updateSessionPolicy} />
-      <div className="settings-scope-intro">
-        <span className="settings-scope-badge"><Layers3 size={14} /></span>
-        <div><strong>Session</strong><p>Overrides for the active session. The editor uses each plugin's declared schema.</p></div>
-      </div>
       <PluginConfigPanel
         sessionId={sessionId}
         threadId={threadId}
         scope="session"
+        ownedPluginIds={SESSION_POLICY_PLUGINS}
+        ownedNote="Sandbox and permission rules are edited by the session policy above; both write this session's plugin layer."
         load={loadPluginConfig}
         update={updatePluginConfig}
       />
