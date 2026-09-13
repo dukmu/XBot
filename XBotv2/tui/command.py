@@ -106,6 +106,12 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
         usage="/resume [session-id [workspace]]",
         raw="/resume",
     ),
+    "thread": CommandSpec(
+        name="thread", kind="client",
+        description="View a session thread (subagents, read-only); list them with no argument",
+        usage="/thread [thread_id]",
+        raw="/thread",
+    ),
     "new": CommandSpec(
         name="new", kind="client",
         description="Create a new session in a workspace",
@@ -116,7 +122,7 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
 _CLIENT_ALIASES.update({f"/{name}": name for name in _CLIENT_COMMANDS})
 
 _CLIENT_SEARCH_ORDER = (
-    "help", "session", "resume", "new", "clear-screen", "thinking", "details", "attach", "copy", "exit",
+    "help", "session", "resume", "new", "thread", "clear-screen", "thinking", "details", "attach", "copy", "exit",
 )
 
 

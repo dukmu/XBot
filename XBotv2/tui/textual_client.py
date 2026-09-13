@@ -40,6 +40,7 @@ from XBotv2.tui.trace import trace_event
 from XBotv2.tui.textual_widgets import (
     ComposerTextArea,
     InlineChoice,
+    ThreadView,
     TranscriptScroll,
     TaskListWidget,
     _build_title,
@@ -147,6 +148,7 @@ class XBotTextualApp(App[None]):
         ("ctrl+d", "quit", "Quit"),
         ("escape", "clear_input", "Clear input"),
         ("ctrl+p", "open_palette", "Command palette"),
+        ("ctrl+t", "toggle_thread_view", "View session threads"),
     ]
 
     def __init__(
@@ -224,9 +226,18 @@ class XBotTextualApp(App[None]):
         self._tool_details_expanded = False
         self._pending_images: list[tuple[str, dict[str, str]]] = []
         self._transcript_follow: bool = False
+        # Read-only thread view: the user can look into a subagent thread while
+        # the attached (main) thread keeps streaming.
+        self._view_active = False
+        self._view_thread_id = ""
+        self._view_task: asyncio.Task | None = None
+        self._view_main_busy = False
+        self._view_rolling: list[str] = ["", ""]
+        self._view_catalog: list[dict[str, str]] = []
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
+        yield ThreadView(id="thread_view")
         yield CompletionPopup(id="completion_popup", registry=self.commands)
         with Horizontal(id="runtime_panels"):
             yield Collapsible(
@@ -412,6 +423,10 @@ class XBotTextualApp(App[None]):
         self._history_index = None
         self._resize_composer()
         self._refresh_all()
+        if self._view_active:
+            if text:
+                await self._view_send(text)
+            return
         if not text and not self._pending_images:
             return
         if text and self.commands.is_slash(text):
@@ -465,6 +480,9 @@ class XBotTextualApp(App[None]):
     def action_clear_input(self) -> None:
         """Return to the composer, or interrupt a turn / clear the input."""
 
+        if self._view_active:
+            self.run_worker(self._exit_thread_view(), exclusive=True)
+            return
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.has_focus and composer.display:
             composer.focus()
@@ -539,6 +557,201 @@ class XBotTextualApp(App[None]):
 
         self.push_screen(CommandPalette(registry=self.commands))
 
+    # --- read-only thread view ----------------------------------------
+    async def action_toggle_thread_view(self) -> None:
+        """Toggle between the main thread and the previously viewed thread."""
+        if self._view_active:
+            await self._exit_thread_view()
+            return
+        threads = await self._thread_catalog()
+        if not threads:
+            await self._append_local_notice("thread", "No threads available")
+            return
+        candidate = next(
+            (t for t in threads if t["thread_id"] != self.state.thread_id),
+            threads[0],
+        )
+        await self._enter_thread_view(candidate["thread_id"], candidate.get("title") or "")
+
+    async def _thread_catalog(self) -> list[dict[str, str]]:
+        try:
+            payload = await self.session.list_threads(self.state.session_id)
+        except Exception as exc:
+            self._record_error(exc)
+            return []
+        rows = payload.get("threads") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        catalog: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            catalog.append({
+                "thread_id": str(row.get("thread_id") or ""),
+                "kind": str(row.get("kind") or "subagent"),
+                "status": str(row.get("status") or ""),
+                "message_count": str(row.get("message_count") or ""),
+                "title": str(row.get("title") or ""),
+            })
+        self._view_catalog = [row for row in catalog if row["thread_id"]]
+        return self._view_catalog
+
+    async def _cmd_thread(self, args: str) -> None:
+        """List session threads or switch the view to one of them."""
+        if not self._server_reachable:
+            await self._append_local_notice("/thread", "Not connected")
+            return
+        value = args.strip()
+        if value in {"main", "agent", self.state.thread_id}:
+            # Returning to the main (attached) thread is the one command that
+            # always means "stop viewing".
+            if self._view_active:
+                await self._exit_thread_view()
+                await self._append_local_notice("/thread", "Back on the main thread")
+            return
+        if self._view_active:
+            await self._exit_thread_view()
+        if not value:
+            threads = await self._thread_catalog()
+            if not threads:
+                await self._append_local_notice("Threads", "No persisted threads")
+                return
+            lines = [
+                f"{t['thread_id']}  {t['kind']} {t['status']}"
+                + (f"  {t['message_count']} msg" if t["message_count"] else "")
+                + (f"  {t['title']}" if t["title"] else "")
+                for t in threads
+            ]
+            await self._append_local_notice("Threads", "\n".join(lines))
+            return
+        await self._enter_thread_view(value, "")
+
+    async def _enter_thread_view(self, thread_id: str, title: str) -> None:
+        if self._view_active:
+            await self._exit_thread_view()
+        self._view_active = True
+        self._view_thread_id = thread_id
+        self._view_main_busy = False
+        self._view_rolling = ["", ""]
+        view = self._safe_query_one("#thread_view", ThreadView)
+        transcript = self._safe_query_one("#transcript")
+        if view is None or transcript is None:
+            self._view_active = False
+            return
+        history = await self.session.read_thread_history(thread_id)
+        summary = title or self._thread_summary(thread_id)
+        view.show(thread_id, summary)
+        lines = [
+            self._history_line(item)
+            for item in history
+            if isinstance(item, dict)
+        ]
+        view.body.update("\n".join(line for line in lines if line) + ("\n" if lines else ""))
+        view.display = True
+        transcript.display = False
+        self._view_task = asyncio.create_task(self._pump_thread_view(thread_id))
+        self._refresh_input_mode()
+        self._refresh_status()
+
+    def _thread_summary(self, thread_id: str) -> str:
+        for thread in self._view_catalog:
+            if thread["thread_id"] == thread_id:
+                return f"{thread['kind']} {thread['status']}"
+        return "subagent"
+
+    async def _exit_thread_view(self) -> None:
+        if not self._view_active:
+            return
+        self._view_active = False
+        if self._view_task is not None:
+            self._view_task.cancel()
+            self._view_task = None
+        view = self._safe_query_one("#thread_view", ThreadView)
+        transcript = self._safe_query_one("#transcript")
+        if view is not None:
+            view.display = False
+        if transcript is not None:
+            transcript.display = True
+        self._view_thread_id = ""
+        self._view_main_busy = False
+        self._refresh_input_mode()
+        self._refresh_status()
+
+    async def _pump_thread_view(self, thread_id: str) -> None:
+        try:
+            async for event in self.session.stream_thread_events(thread_id):
+                if not self._view_active or self._view_thread_id != thread_id:
+                    return
+                line = self._view_event_line(event)
+                if line:
+                    view = self._safe_query_one("#thread_view", ThreadView)
+                    if view is not None:
+                        view.body.append(line + "\n")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a read-only view must not kill the app
+            if self._view_active:
+                await self._append_local_notice("thread", f"thread view error: {exc}")
+
+    def _history_line(self, item: dict[str, JsonValue]) -> str:
+        role = str(item.get("message", item).get("role") or "")
+        content = str(item.get("message", item).get("content") or "")
+        if role == "assistant":
+            reasoning = str(item.get("message", item).get("reasoning") or "")
+            return f"[assistant] {content}" + (
+                f"\n  > {reasoning}" if reasoning else ""
+            )
+        if role == "user":
+            return f"[user] {content}"
+        if role == "tool":
+            return f"[tool] {content}"
+        kind = str(item.get("kind") or "")
+        return f"[{kind}]" if kind else ""
+
+    def _view_event_line(self, event: dict[str, JsonValue]) -> str | None:
+        """One frame of a viewed thread as a display line, merging deltas."""
+        type_ = str(event.get("type") or "")
+        data = event.get("data")
+        data = data if isinstance(data, dict) else {}
+        if type_ == "assistant_message_delta":
+            self._view_rolling[0] += str(data.get("reasoning") or "")
+            self._view_rolling[1] += str(data.get("content") or "")
+            return None
+        flush = ""
+        if self._view_rolling[0] or self._view_rolling[1]:
+            if self._view_rolling[0]:
+                flush += f"  > {self._view_rolling[0]}"
+            if self._view_rolling[1]:
+                flush = (flush + "\n" if flush else "") + f"\u25b8 {self._view_rolling[1]}"
+            self._view_rolling = ["", ""]
+        own = ""
+        if type_ == "assistant_message":
+            own = f"[assistant] {data.get('content') or ''}"
+        elif type_ == "tool_started":
+            own = f"[tool] {data.get('name') or 'tool'}"
+        elif type_ == "tool_result":
+            content = str(data.get("content") or "")
+            own = f"[tool] {data.get('name') or 'tool'} {data.get('status') or ''}:\n{content.strip()}"
+        elif type_ == "message":
+            own = f"[user] {data.get('content') or ''}"
+        elif type_ == "turn_started":
+            own = f"— turn {data.get('turn') or ''} started"
+        elif type_ == "turn_finished":
+            own = f"— turn {data.get('turn') or ''} finished"
+        elif type_ == "usage":
+            return flush or None
+        elif type_ == "end":
+            return (flush + "\n" if flush else "") + "— stream ended"
+        combined = (flush + "\n" if flush else "") + own
+        return combined if combined.strip() else None
+
+    async def _view_send(self, content: str) -> None:
+        """Reserved send entry point: the view is read-only for now."""
+        await self._append_local_notice(
+            "thread",
+            "Sending into a thread while viewing it is not supported yet.",
+        )
+
     async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
         if spec is None:
             return
@@ -569,6 +782,9 @@ class XBotTextualApp(App[None]):
             return
         if spec.name == "resume":
             await self._cmd_session(spec.args.strip() or self.state.session_id)
+            return
+        if spec.name == "thread":
+            await self._cmd_thread(spec.args)
             return
         if spec.name == "new":
             args = spec.args.strip()
@@ -1069,6 +1285,19 @@ class XBotTextualApp(App[None]):
                     self._refresh_all()
                 return False
         self.state.apply_event(event)
+        if self._view_active:
+            if event_type in {"assistant_message", "assistant_message_delta", "tool_started", "tool_result"}:
+                self._view_main_busy = True
+                view = self._safe_query_one("#thread_view", ThreadView)
+                if view is not None and view.thread:
+                    view.set_main_busy(True, self._thread_summary(self._view_thread_id))
+            if (
+                self.state.pending_permission_payload is not None
+                or self.state.pending_user_input_payload is not None
+            ):
+                # Subagent threads never ask the user: any prompt belongs to the
+                # parent (main) thread and must be answered on the main view.
+                await self._exit_thread_view()
         await self._handle_stream_event(event)
         await self._start_interaction_response(event)
         return False
@@ -1621,6 +1850,14 @@ class XBotTextualApp(App[None]):
             hint.update("Waiting for response")
             if self.focused is composer:
                 self.set_focus(None)
+            return
+        if self._view_active:
+            # Read-only thread view: keep the composer visible but inert, and
+            # keep the input out of the way while the subagent thread streams.
+            composer.load_text("")
+            composer.disabled = True
+            hint.update(f"viewing {self._view_thread_id} — read-only · Ctrl+T / Esc to return")
+            self._set_input_placeholder("read-only thread view")
             return
         composer.disabled = False
         composer.display = True

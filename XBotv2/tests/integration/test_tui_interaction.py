@@ -109,6 +109,56 @@ class _ScriptedSession:
         for event in events:
             yield event
 
+    async def list_threads(self, session_id=None):
+        return {
+            "session_id": session_id or self.session_id,
+            "threads": [
+                {
+                    "session_id": session_id or self.session_id,
+                    "thread_id": "agent",
+                    "kind": "main",
+                    "status": "active",
+                    "message_count": 1,
+                    "title": "main",
+                },
+                {
+                    "session_id": session_id or self.session_id,
+                    "thread_id": "agent-reviewer-1",
+                    "kind": "subagent",
+                    "status": "running",
+                    "message_count": 3,
+                    "title": "reviewer",
+                    "parent_thread_id": "agent",
+                },
+            ],
+        }
+
+    async def read_thread_history(self, thread_id, *, limit=200):
+        self.thread_history_reads = getattr(self, "thread_history_reads", [])
+        self.thread_history_reads.append(thread_id)
+        return [
+            {
+                "kind": "message",
+                "position": 1,
+                "message": {
+                    "role": "user",
+                    "content": "review the diff",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            },
+            {
+                "kind": "message",
+                "position": 2,
+                "message": {
+                    "role": "assistant",
+                    "content": "I reviewed it.",
+                    "reasoning": "thinking hard",
+                    "tool_calls": [],
+                },
+            },
+        ]
+
     async def submit_user_input(self, request_id, answer):
         return {"type": "user_input_recorded", "data": {"request_id": request_id}}
 
@@ -576,6 +626,117 @@ async def test_completion_popup_respects_scrolled_away_position(
         assert not stream.is_vertical_scroll_end, (
             "scrolled-away user must not be pulled back to the bottom"
         )
+
+
+@pytest.mark.asyncio
+async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> None:
+    """/thread enters a read-only view: history rendered, live frames appended,
+    composer inert, and the main thread stays the only thing that can ask the user."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        await pilot.pause()
+
+        view = app.query_one("#thread_view", ThreadView)
+        transcript = app.query_one("#transcript")
+        assert view.display is True
+        assert transcript.display is False
+        assert app._view_active is True
+        assert "review the diff" in view.body.text
+        assert "I reviewed it." in view.body.text
+        assert "thinking hard" in view.body.text
+        assert "agent-reviewer-1" in str(view.query_one(".thread-view-header").content)
+
+        composer = app.query_one("#input")
+        assert composer.disabled is True
+
+        # Live frames of the viewed thread arrive through its own stream and
+        # extend the pane even though the fake session has no events queued.
+        view.body.append("~ subagent says something\n")
+        await pilot.pause()
+        assert "subagent says something" in view.body.text
+
+        # Esc leaves the view and restores the main transcript + composer.
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.pause()
+        assert app._view_active is False
+        assert view.display is False
+        assert transcript.display is True
+        assert composer.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_thread_view_exits_when_the_main_thread_needs_input(
+    scripted_session,
+) -> None:
+    """A user prompt belongs to the parent thread: viewing a subagent thread
+    returns to the main view so the turn cannot silently wait."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        assert app._view_active is True
+
+        app.state.apply_event({
+            "type": "permission_request",
+            "data": {"tool_call_id": "tool-x", "name": "shell", "args": {"command": "ls"}},
+        })
+        await app._consume_stream_event({
+            "type": "permission_request",
+            "data": {"tool_call_id": "tool-x", "name": "shell", "args": {"command": "ls"}},
+        })
+        await pilot.pause()
+        assert app._view_active is False
+        assert app.query_one("#transcript").display is True
+
+
+@pytest.mark.asyncio
+async def test_thread_view_marks_main_output_and_lists_threads(
+    scripted_session,
+) -> None:
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        view = app.query_one("#thread_view", ThreadView)
+
+        await app._consume_stream_event({
+            "type": "assistant_message_delta",
+            "data": {"content": "main thread is answering"},
+        })
+        await pilot.pause()
+        assert app._view_main_busy is True
+        assert "main: new output" in str(view.query_one(".thread-view-header").content)
+
+
+@pytest.mark.asyncio
+async def test_thread_command_lists_threads_without_argument(
+    scripted_session,
+) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("")
+        await pilot.pause()
+        assert any(
+            "agent-reviewer-1" in notice.text for notice in app.state.notices
+        ), [n.text for n in app.state.notices]
 
 
 @pytest.mark.asyncio

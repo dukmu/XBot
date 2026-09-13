@@ -23,6 +23,7 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
         "session",
         "resume",
         "new",
+        "thread",
         "clear-screen",
         "thinking",
         "details",
@@ -33,7 +34,7 @@ def test_search_commands_empty_query_returns_all_in_stable_order() -> None:
 
 
 def test_search_commands_whitespace_only_query_returns_all() -> None:
-    assert len(_registry().search("   ")) == 10
+    assert len(_registry().search("   ")) == 11
 
 
 def test_search_commands_slash_prefix_filters_by_name() -> None:
@@ -90,7 +91,7 @@ def test_search_commands_falls_back_to_substring() -> None:
 def test_search_commands_deduplicates_results() -> None:
     results = _registry().search("/")
     names = [spec.name for spec in results]
-    assert len(names) == len(set(names)) == 10
+    assert len(names) == len(set(names)) == 11
 
 
 def test_merge_server_adds_dynamic_completion() -> None:

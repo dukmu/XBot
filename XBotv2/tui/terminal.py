@@ -60,6 +60,9 @@ class TerminalSession:
         )
         self._session_attached = False
         self._event_cursor = 0
+        # Cursor for the read-only thread view stream; independent of the
+        # attached thread's own cursor.
+        self._view_cursor = 0
 
     @property
     def session_id(self) -> str:
@@ -107,9 +110,6 @@ class TerminalSession:
 
     async def list_sessions(self) -> dict[str, JsonValue]:
         return _dump(await self._client.list_sessions())
-
-    async def list_threads(self, session_id: str | None = None) -> dict[str, JsonValue]:
-        return _dump(await self._client.list_threads(session_id or self._session_id))
 
     async def switch(
         self,
@@ -243,6 +243,50 @@ class TerminalSession:
                 int(event.get("sequence") or 0),
             )
             yield event
+
+    async def list_threads(self, session_id: str | None = None) -> dict[str, JsonValue]:
+        return _dump(await self._client.list_threads(session_id or self._session_id))
+
+    def stream_thread_events(
+        self,
+        thread_id: str,
+    ) -> AsyncIterator[dict[str, JsonValue]]:
+        """Live frames of another thread of this session, without claiming it."""
+        stream = self._client.stream_events(
+            self._session_id,
+            thread_id,
+            after=self._view_cursor,
+        )
+
+        async def _frames():
+            async for event in self._events(stream, "thread_view"):
+                self._view_cursor = max(
+                    self._view_cursor,
+                    int(event.get("sequence") or 0),
+                )
+                yield event
+
+        return _frames()
+
+    async def read_thread_history(
+        self,
+        thread_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, JsonValue]]:
+        """Persisted conversation records of a thread (read-only, lock-free)."""
+        response = await self._client.list_trajectory(
+            self._session_id,
+            thread_id,
+            limit=limit,
+        )
+        payload = _dump(response)
+        items = payload.get("items")
+        return [
+            item
+            for item in items
+            if isinstance(item, dict) and item.get("kind") == "message"
+        ] if isinstance(items, list) else []
 
     async def submit_user_input(self, request_id: str, answer: JsonValue) -> dict[str, JsonValue]:
         return _dump(

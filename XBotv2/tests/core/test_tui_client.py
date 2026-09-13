@@ -804,6 +804,89 @@ async def test_textual_tool_refresh_treats_source_as_plain_text():
         assert "list[ToolCall]" in body.text
 
 
+async def test_facade_streams_other_threads_with_an_independent_cursor():
+    """The read-only thread view streams a second thread without touching the
+    attached thread's cursor."""
+    from XBotv2.tui.terminal import TerminalSession
+
+    from XBotv2.protocol.models import server_event
+
+    class StubClient:
+        def __init__(self):
+            self.called = []
+
+        def stream_events(self, session_id, thread_id, *, after=None):
+            self.called.append((session_id, thread_id, after))
+            events = [
+                server_event(
+                    type="assistant_message_delta",
+                    data={"content": "a"},
+                    sequence=7,
+                ),
+                server_event(type="end", data={}, sequence=8),
+            ]
+            return _async_iter(events)
+
+    session = TerminalSession(
+        session_id="s", thread_id="agent", base_url="http://test", client=StubClient()
+    )
+    frames = []
+    async for event in session.stream_thread_events("agent-reviewer-1"):
+        frames.append(event)
+    assert frames
+    assert session._view_cursor == 7  # the end sentinel is not a consumable frame
+    assert session._event_cursor == 0, "the main cursor must not move"
+    assert session._client.called[0][1] == "agent-reviewer-1"
+    assert session._client.called[0][2] == 0  # first call: from the start
+
+
+def test_facade_reads_thread_history_read_only():
+    """Persisted conversation of another thread comes back as message records."""
+    from XBotv2.tui.terminal import TerminalSession
+
+    class StubClient:
+        async def list_trajectory(self, session_id, thread_id, *, cursor=None, limit=160):
+            assert thread_id == "agent-reviewer-1"
+            return _trajectory_response()
+
+
+    async def run():
+        session = TerminalSession(
+            session_id="s", thread_id="agent", base_url="http://test", client=StubClient()
+        )
+        items = await session.read_thread_history("agent-reviewer-1", limit=50)
+        assert [item["message"]["role"] for item in items] == ["user", "assistant"]
+        assert items[1]["message"]["reasoning"] == "thinking hard"
+
+    asyncio.run(run())
+
+
+def _async_iter(events):
+    async def gen():
+        for event in events:
+            yield event
+    return gen()
+
+
+def _trajectory_response():
+    from XBotv2.session.contracts import SessionTrajectoryMessage, SessionHistoryItem
+    from XBotv2.session.protocol import ThreadTrajectoryResponse
+
+    first = SessionTrajectoryMessage(
+        position=1,
+        message=SessionHistoryItem(role="user", content="review the diff"),
+    )
+    second = SessionTrajectoryMessage(
+        position=2,
+        message=SessionHistoryItem(
+            role="assistant", content="I reviewed it.", reasoning="thinking hard"
+        ),
+    )
+    return ThreadTrajectoryResponse(
+        session_id="s", thread_id="agent-reviewer-1", items=[first, second]
+    )
+
+
 def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
     from XBotv2.tui.trace import trace_event
 

@@ -570,7 +570,9 @@ class BoundedText(Vertical):
         max_rows: int = BLOCK_MAX_ROWS,
     ) -> None:
         super().__init__(classes=classes, id=id)
-        self._max_rows = max(1, max_rows)
+        # max_rows=0 asks for a pane-sized window: the block fills its widget.
+        self._full_height = max_rows == 0
+        self._max_rows = 24 if self._full_height else max(1, max_rows)
         self._width_cache = 0
         self._row_cache: dict[tuple[int, int], list[Text]] = {}
         self._plain = ""
@@ -665,6 +667,35 @@ class BoundedText(Vertical):
         else:
             self._cursor = (0, 0)
             self._follow = True
+        self._render_window()
+
+    def append(self, suffix: str) -> None:
+        """Grow the block text without re-joining the whole content.
+
+        Used by live viewers (a thread's event stream) where each frame is a
+        fresh chunk; the window follows the tail unless the reader scrolled
+        back into the history.
+        """
+        if not suffix:
+            return
+        if not self._plain:
+            self.update(suffix)
+            return
+        newline = self._plain.endswith("\n")
+        added = suffix.split("\n")
+        if newline:
+            self._lines[-1] = added[0]
+        else:
+            self._lines[-1] += added[0]
+        self._lines.extend(added[1:])
+        self._plain += suffix
+        self._row_cache = {
+            key: rows
+            for key, rows in self._row_cache.items()
+            if key[0] < len(self._lines) - 1
+        }
+        if self._follow:
+            self._cursor = self._tail_cursor()
         self._render_window()
 
     def scroll_screen(self, direction: int) -> bool:
@@ -783,11 +814,13 @@ class BoundedText(Vertical):
         return self._cursor == (0, 0) and self._last_row_visible()
 
     def _budget(self) -> int:
-        """Rows one block may use: never more than a quarter of the screen."""
+        """Rows one block may use: the pane, or at most a quarter of a screen."""
         try:
-            height = self.screen.size.height
+            height = self.size.height if self._full_height else self.screen.size.height
         except Exception:  # noqa: BLE001 — not mounted yet
-            return BLOCK_MAX_ROWS
+            return 24 if self._full_height else BLOCK_MAX_ROWS
+        if self._full_height:
+            return max(4, height - 2)  # window rows plus the footer
         return max(3, min(BLOCK_MAX_ROWS, height // 4)) if height > 0 else BLOCK_MAX_ROWS
 
     def on_mount(self) -> None:
@@ -862,11 +895,13 @@ class BoundedText(Vertical):
         return self._cursor == (0, 0) and self._last_row_visible()
 
     def _budget(self) -> int:
-        """Rows one block may use: never more than a quarter of the screen."""
+        """Rows one block may use: the pane, or at most a quarter of a screen."""
         try:
-            height = self.screen.size.height
+            height = self.size.height if self._full_height else self.screen.size.height
         except Exception:  # noqa: BLE001 — not mounted yet
-            return BLOCK_MAX_ROWS
+            return 24 if self._full_height else BLOCK_MAX_ROWS
+        if self._full_height:
+            return max(4, height - 2)  # window rows plus the footer
         return max(3, min(BLOCK_MAX_ROWS, height // 4)) if height > 0 else BLOCK_MAX_ROWS
 
     def on_mount(self) -> None:
@@ -923,6 +958,45 @@ class BoundedText(Vertical):
             else:
                 line, row = line + 1, 0
         return rows
+
+
+class ThreadView(Vertical):
+    """A read-only pane over one session thread: history plus live frames.
+
+    The body is a pane-sized :class:`BoundedText`, so a long subagent thread
+    stays bounded and scrollable by the wheel, tap marks, or the arrow keys
+    the same way every other block behaves. The header always shows the
+    return affordance and whether the attached (main) thread produced new
+    output while this one is being read.
+    """
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._header = Static("", classes="thread-view-header")
+        self._body = BoundedText("", classes="thread-view-body", max_rows=0)
+        self.thread = ""
+
+    def compose(self):
+        yield self._header
+        yield self._body
+
+    @property
+    def body(self) -> BoundedText:
+        return self._body
+
+    def show(self, thread_id: str, summary: str) -> None:
+        self.thread = thread_id
+        self._body.update("")
+        self._refresh_header(summary, main_busy=False)
+
+    def set_main_busy(self, busy: bool, summary: str = "") -> None:
+        self._refresh_header(summary, main_busy=busy)
+
+    def _refresh_header(self, summary: str, main_busy: bool) -> None:
+        busy = " · main: new output" if main_busy else ""
+        self._header.update(
+            f"viewing thread {self.thread} · {summary} · read-only{busy} · Ctrl+T / Esc to return"
+        )
 
 
 @dataclass(frozen=True)

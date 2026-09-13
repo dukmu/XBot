@@ -96,7 +96,7 @@ Screen {
     padding: 0 1;
 }
 
-#transcript {
+#transcript, #thread_view {
     height: 1fr;
     padding: 1 2 0 2;
     background: #0f1115;
@@ -195,6 +195,22 @@ Screen {
 /* The focused transcript marks its left edge without taking a text row. */
 #transcript:focus {
     outline-left: solid #4a5b7d;
+}
+
+#thread_view {
+    display: none;
+}
+
+.thread-view-header {
+    width: 1fr;
+    height: 1;
+    color: #bb9af7;
+}
+
+.thread-view-body {
+    width: 1fr;
+    height: 1fr;
+    color: #d6dae2;
 }
 
 .user .meta {
