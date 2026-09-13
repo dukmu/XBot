@@ -262,7 +262,6 @@ export function App() {
             <Timeline
               key={`${state.current.session_id}/${state.current.thread_id}`}
               entries={state.entries}
-              assistantDraft={state.assistantDraft}
               turnRunning={state.turnRunning}
               onRetry={runtime.retryLast}
               onBranch={runtime.fork}

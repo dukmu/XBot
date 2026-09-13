@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
-import { initialRuntimeState, runtimeReducer } from "./runtime";
+import { historyEntries, initialRuntimeState, runtimeReducer } from "./runtime";
 
 const opened: OpenSessionResponse = {
   session_id: "session-1",
@@ -452,15 +452,15 @@ describe("runtimeReducer", () => {
     expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
   });
 
-  it("assembles streaming reasoning and assistant content once", () => {
+  it("streams reasoning and assistant content into one entry", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const committedEntries = state.entries;
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { reasoning: "inspect " }) });
-    expect(state.entries).toBe(committedEntries);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ role: "assistant", reasoning: "inspect ", streaming: true });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "hello" }) });
-    expect(state.entries).toBe(committedEntries);
-    expect(state.entries).toEqual([]);
-    expect(state.assistantDraft).toMatchObject({ content: "hello", reasoning: "inspect " });
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "hello", reasoning: "inspect ", streaming: true });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message", { content: "hello", tool_calls: [] }) });
 
     expect(state.entries).toHaveLength(1);
@@ -471,7 +471,7 @@ describe("runtimeReducer", () => {
       reasoning: "inspect ",
       streaming: false,
     });
-    expect(state.assistantDraft).toBeNull();
+    expect(committedEntries).toEqual([]);
   });
 
   it("applies a streaming batch in wire order", () => {
@@ -704,6 +704,7 @@ describe("runtimeReducer", () => {
           id: "assistant-1",
           role: "assistant",
           content: "finished while reconnecting",
+          reasoning: "checked the reconnect path",
           tool_calls: [], tool_call_id: "", status: "", data: null,
           error: null, artifacts: [], images: [],
         },
@@ -718,7 +719,10 @@ describe("runtimeReducer", () => {
       }),
     });
 
-    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+    const messages = state.entries.filter((entry) => entry.kind === "message");
+    expect(messages).toHaveLength(1);
+    // The live event carries no reasoning; the durable one is preserved.
+    expect(messages[0]).toMatchObject({ reasoning: "checked the reconnect path" });
   });
 
   it("keeps live entries while a newer trajectory baseline is applied", () => {
@@ -918,6 +922,126 @@ describe("runtimeReducer", () => {
     expect(state.entries.find((entry) => entry.kind === "message")).toMatchObject({ streaming: false });
   });
 
+  it("renders a persisted tool result even when its call is outside display history", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "history",
+      history: [{
+        role: "tool",
+        content: "cached output",
+        tool_calls: [],
+        tool_call_id: "call-orphan",
+        status: "success",
+        data: null,
+        error: null,
+        artifacts: [],
+        images: [],
+      }],
+    });
+
+    expect(state.entries[0]).toMatchObject({
+      kind: "tool",
+      toolCallId: "call-orphan",
+      result: "cached output",
+    });
+  });
+
+  it("keeps streamed assistant text when a history page replaces the timeline", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "events", events: [
+      event("turn_started", { turn: 1 }),
+      event("assistant_message_delta", { content: "FINAL ANSWER" }),
+      event("history_updated", { operation: "compact:automatic", turns: 1, history: [] }),
+    ] });
+
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "FINAL ANSWER")).toBe(true);
+  });
+
+  it("keeps streamed assistant text when a durable trajectory is already loaded", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "question",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, { type: "events", events: [
+      event("assistant_message_delta", { content: "X" }),
+      event("history_updated", { operation: "compact:automatic", turns: 1, history: [] }),
+    ] });
+
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "X")).toBe(true);
+  });
+
+  it("keeps both bodies when two server messages reuse one id", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 7 }),
+        event("assistant_message_delta", { content: "step answer " }),
+        event("assistant_message", {
+          id: "assistant-7-200",
+          content: "step answer",
+          tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+        }),
+        event("tool_calls_started", { tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }] }),
+        event("tool_result", { tool_call_id: "call-1", name: "shell", content: "ok", status: "success" }),
+        event("assistant_message_delta", { content: "# Final Answer\n\nAll done." }),
+        event("assistant_message", { id: "assistant-7-200", content: "# Final Answer\n\nAll done.", tool_calls: [] }),
+        event("turn_finished", { turn: 7 }),
+      ],
+    });
+
+    const texts = state.entries
+      .filter((entry) => entry.kind === "message" && entry.role === "assistant")
+      .map((entry) => (entry.kind === "message" ? entry.content : ""));
+    expect(texts).toContain("step answer");
+    expect(texts).toContain("# Final Answer\n\nAll done.");
+  });
+
+  it("renders one entry for an idempotent replay of one assistant message", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("assistant_message", { id: "assistant-1-1-abcd", content: "same", tool_calls: [] }),
+        event("assistant_message", { id: "assistant-1-1-abcd", content: "same", tool_calls: [] }),
+      ],
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "same" });
+  });
+
+  it("keeps in-flight streamed text when a trajectory baseline arrives", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "half a sen" }) });
+    state = runtimeReducer(state, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "question",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], images: [],
+        },
+      }],
+      bufferedEvents: [event("assistant_message_delta", { content: "tence." })],
+    });
+
+    expect(state.entries.some((entry) => (
+      entry.kind === "message" && entry.content === "half a sentence."
+    ))).toBe(true);
+  });
+
   it("restores unanswered interactions from an open response", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "opened",
@@ -956,26 +1080,58 @@ describe("runtimeReducer", () => {
     expect(state.interactions[0]).toMatchObject({ kind: "permission", tool_call: { id: "call-1" } });
   });
 
-  it("renders a persisted tool result even when its call is outside display history", () => {
+  it("projects live streaming and durable history in the same order", () => {
+    const historyItem = (role: "user" | "assistant" | "tool", extra: Record<string, unknown> = {}) => ({
+      role,
+      content: "",
+      tool_calls: [],
+      tool_call_id: "",
+      status: "",
+      data: null,
+      error: null,
+      artifacts: [],
+      images: [],
+      ...extra,
+    });
+    const history = [
+      historyItem("user", { id: "user-1", content: "question" }),
+      historyItem("assistant", {
+        id: "assistant-1-1-abcd",
+        content: "step answer",
+        tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+      }),
+      historyItem("tool", { tool_call_id: "call-1", content: "ok", status: "success" }),
+      historyItem("assistant", { id: "assistant-1-2-efgh", content: "final answer" }),
+    ];
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
-        role: "tool",
-        content: "cached output",
-        tool_calls: [],
-        tool_call_id: "call-orphan",
-        status: "success",
-        data: null,
-        error: null,
-        artifacts: [],
-        images: [],
-      }],
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("message", { id: "user-1", role: "user", content: "question" }),
+        event("assistant_message_delta", { reasoning: "thinking " }),
+        event("assistant_message_delta", { content: "step answer" }),
+        event("tool_call_delta", { tool_calls: [{ tool_call_id: "call-1", name: "shell", args_delta: '{"command":"pwd"}' }] }),
+        event("assistant_message", {
+          id: "assistant-1-1-abcd",
+          content: "step answer",
+          tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+        }),
+        event("tool_calls_started", { tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }] }),
+        event("tool_result", { tool_call_id: "call-1", name: "shell", content: "ok", status: "success" }),
+        event("assistant_message_delta", { content: "final answer" }),
+        event("assistant_message", { id: "assistant-1-2-efgh", content: "final answer", tool_calls: [] }),
+        event("turn_finished", { turn: 1 }),
+      ],
     });
 
-    expect(state.entries[0]).toMatchObject({
-      kind: "tool",
-      toolCallId: "call-orphan",
-      result: "cached output",
-    });
+    expect(visibleProjection(state.entries)).toEqual(visibleProjection(historyEntries(history)));
   });
 });
+
+function visibleProjection(entries: ReturnType<typeof historyEntries>): string[] {
+  return entries
+    .filter((entry) => entry.kind === "message" || entry.kind === "tool")
+    .map((entry) => (entry.kind === "message"
+      ? `message:${entry.role}:${entry.content}`
+      : `tool:${entry.toolCallId}`));
+}

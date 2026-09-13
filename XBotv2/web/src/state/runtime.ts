@@ -86,7 +86,6 @@ export interface RuntimeState {
   agents: AgentInfo[];
   current: RuntimeSession | null;
   entries: TimelineEntry[];
-  assistantDraft: MessageEntry | null;
   historyCursor: string | null;
   historyLoading: boolean;
   trajectory: TrajectoryItem[];
@@ -152,7 +151,6 @@ export const initialRuntimeState: RuntimeState = {
   agents: [],
   current: null,
   entries: [],
-  assistantDraft: null,
   historyCursor: null,
   historyLoading: false,
   trajectory: [],
@@ -193,7 +191,6 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         loading: false,
         current: runtimeSession(action.session),
         entries: historyEntries(action.session.history),
-        assistantDraft: null,
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
         trajectory: [],
@@ -221,7 +218,6 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         agents: [],
         current: null,
         entries: [],
-        assistantDraft: null,
         historyCursor: null,
         historyLoading: false,
         trajectory: [],
@@ -255,8 +251,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
     case "history":
       return {
         ...state,
-        entries: historyEntries(action.history),
-        assistantDraft: null,
+        entries: carryStreamingAssistant(historyEntries(action.history), state.entries),
         historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
       };
     case "history_prepend": {
@@ -274,13 +269,17 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, historyLoading: action.value };
     case "trajectory":
       {
-        // A trajectory refresh is authoritative for persisted records, but
-        // frames received while it was in flight are not part of that page.
-        // Keep those live entries until a later refresh folds them into the
-        // durable baseline instead of briefly erasing them from the view.
-        const live = state.trajectoryLoaded
-          ? state.entries.filter((entry) => entry.origin !== "trajectory")
-          : [];
+        // A trajectory refresh is the durable baseline for the whole timeline,
+        // so the initial load replaces the entries seeded by the history page
+        // (keeping them would render every message twice).  Two kinds of live
+        // entry are not part of that page and must survive: frames received
+        // while the request was in flight once a baseline exists, and the
+        // assistant text still streaming from the current turn.
+        const live = state.entries.filter((entry) => (
+          state.trajectoryLoaded
+            ? entry.origin !== "trajectory"
+            : entry.kind === "message" && entry.streaming
+        ));
       const baselineEntries = trajectoryEntries(action.items);
       const baseline = {
         ...state,
@@ -362,8 +361,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return {
         ...state,
         turnRunning: false,
-        entries: commitAssistantDraft(state.entries, state.assistantDraft),
-        assistantDraft: null,
+        entries: finalizeAssistantEntries(state.entries),
         error: action.message,
       };
     case "interaction_resolved":
@@ -430,7 +428,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ...state,
         turnRunning: false,
         entries: [
-          ...commitAssistantDraft(state.entries, state.assistantDraft),
+          ...finalizeAssistantEntries(state.entries),
           runtimeEntry(
             "turn",
             event.type,
@@ -440,7 +438,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
             eventIdentity(event),
           ),
         ],
-        assistantDraft: null,
         current: updateSlots(state.current, data.status_slots),
         sessionStats: Object.hasOwn(data, "session_stats")
           ? normalizeSessionStats(data.session_stats)
@@ -449,8 +446,8 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
     case "assistant_message_delta":
       return {
         ...state,
-        assistantDraft: updateAssistantDraft(
-          state.assistantDraft,
+        entries: appendAssistantDelta(
+          state.entries,
           stringValue(data.content),
           stringValue(data.reasoning),
         ),
@@ -460,13 +457,11 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ...state,
         entries: applyAssistantMessage(
           state.entries,
-          state.assistantDraft,
           stringValue(data.content),
           stringValue(data.reasoning),
           arrayValue(data.tool_calls),
           stringValue(data.id),
         ),
-        assistantDraft: null,
         sessionStats: addAssistantTiming(state.sessionStats, data.timing),
         current: updateSlots(state.current, data.status_slots),
       };
@@ -621,9 +616,12 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ));
       }
       if (state.trajectoryLoaded) {
+        // The durable trajectory is the authoritative surface once it has been
+        // loaded, so this history page is not projected over it; the next
+        // trajectory refresh picks the mutation up.  In-flight assistant text
+        // already lives in ``entries`` and therefore survives either way.
         return {
           ...state,
-          assistantDraft: null,
           historyCursor: null,
           sessionStats: Object.hasOwn(data, "session_stats")
             ? normalizeSessionStats(data.session_stats)
@@ -632,8 +630,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       }
       return {
         ...state,
-        entries,
-        assistantDraft: null,
+        entries: carryStreamingAssistant(entries, state.entries),
         historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
         sessionStats: Object.hasOwn(data, "session_stats")
           ? normalizeSessionStats(data.session_stats)
@@ -659,10 +656,9 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           ...state,
           turnRunning: false,
           entries: [
-            ...commitAssistantDraft(state.entries, state.assistantDraft),
+            ...finalizeAssistantEntries(state.entries),
             noticeEntry(message, "error"),
           ],
-          assistantDraft: null,
           error: message,
         };
       }
@@ -899,57 +895,110 @@ function trajectoryEventContent(event: string, data: JsonObject): string {
   return stringValue(data.message) || event;
 }
 
-function updateAssistantDraft(
-  draft: MessageEntry | null,
+/**
+ * Assistant text streams into ``entries`` from its first delta, so the live
+ * projection and durable history share one ordered surface.  ``streaming``
+ * marks the entry that later server output still updates in place.
+ */
+function appendAssistantDelta(
+  entries: TimelineEntry[],
   content: string,
   reasoning: string,
-): MessageEntry {
-  if (draft) {
-    return {
-      ...draft,
-      content: draft.content + content,
-      reasoning: draft.reasoning + reasoning,
-    };
+): TimelineEntry[] {
+  if (!content && !reasoning) return entries;
+  const index = streamingAssistantIndex(entries);
+  if (index < 0) {
+    return [...entries, {
+      ...messageEntry("assistant", content),
+      reasoning,
+      streaming: true,
+    }];
   }
-  return { ...messageEntry("assistant", content), reasoning, streaming: true };
+  return entries.map((entry, entryIndex) => (
+    entryIndex === index && entry.kind === "message"
+      ? {
+        ...entry,
+        content: entry.content + content,
+        reasoning: entry.reasoning + reasoning,
+        streaming: true,
+      }
+      : entry
+  ));
 }
 
 function applyAssistantMessage(
   entries: TimelineEntry[],
-  draft: MessageEntry | null,
   content: string,
   reasoning: string,
   calls: unknown[],
   messageId: string,
 ): TimelineEntry[] {
-  if (messageId && entries.some((entry) => entry.kind === "message" && entry.messageId === messageId)) {
-    return upsertToolCalls(entries, calls);
+  const streamingIndex = streamingAssistantIndex(entries);
+  if (streamingIndex >= 0) {
+    const next = entries.map((entry, index) => (
+      index === streamingIndex && entry.kind === "message"
+        ? {
+          ...entry,
+          content: content || entry.content,
+          reasoning: reasoning || entry.reasoning,
+          streaming: false,
+          messageId: messageId || entry.messageId,
+        }
+        : entry
+    ));
+    return upsertToolCalls(next, calls);
   }
-  let copy = entries;
-  if (draft) {
-    copy = [...copy, {
-      ...draft,
-      content: content || draft.content,
-      reasoning: reasoning || draft.reasoning,
-      streaming: false,
-      messageId,
-    }];
-  } else if (content || reasoning) {
-    copy = [...copy, {
-      ...messageEntry("assistant", content),
-      reasoning,
-      messageId,
-    }];
+  const existingIndex = messageId
+    ? entries.findIndex((entry) => entry.kind === "message" && entry.messageId === messageId)
+    : -1;
+  if (existingIndex >= 0 && (entries[existingIndex] as MessageEntry).content === content) {
+    // The same message replayed by a durable page or a resumed stream.
+    // ``assistant_message`` carries no reasoning, so fill it in when the
+    // stored entry lacks it and never overwrite what the store already has.
+    const next = reasoning
+      ? entries.map((entry, index) => (
+        index === existingIndex && entry.kind === "message" && !entry.reasoning
+          ? { ...entry, reasoning }
+          : entry
+      ))
+      : entries;
+    return upsertToolCalls(next, calls);
   }
-  copy = upsertToolCalls(copy, calls);
-  return copy;
+  // A reused id with a different body means two server messages share one id;
+  // keep the newer body as its own entry instead of hiding it behind the id.
+  if (!content && !reasoning) return upsertToolCalls(entries, calls);
+  return upsertToolCalls([
+    ...entries,
+    { ...messageEntry("assistant", content), reasoning, messageId },
+  ], calls);
 }
 
-function commitAssistantDraft(
+function streamingAssistantIndex(entries: TimelineEntry[]): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" && entry.role === "assistant") {
+      return entry.streaming ? index : -1;
+    }
+  }
+  return -1;
+}
+
+/** Close an in-flight assistant entry when its turn ends without a message. */
+function finalizeAssistantEntries(entries: TimelineEntry[]): TimelineEntry[] {
+  const streaming = entries.some((entry) => entry.kind === "message" && entry.streaming);
+  if (!streaming) return entries;
+  return entries.map((entry) => (
+    entry.kind === "message" && entry.streaming ? { ...entry, streaming: false } : entry
+  ));
+}
+
+/** Keep assistant text that a durable history page does not carry yet. */
+function carryStreamingAssistant(
   entries: TimelineEntry[],
-  draft: MessageEntry | null,
+  previous: TimelineEntry[],
 ): TimelineEntry[] {
-  return draft ? [...entries, { ...draft, streaming: false }] : entries;
+  const live = previous.filter((entry) => entry.kind === "message" && entry.streaming);
+  return live.length ? [...entries, ...live] : entries;
 }
 
 function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {

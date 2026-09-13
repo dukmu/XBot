@@ -2,7 +2,6 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { ChevronRight, ChevronUp, LoaderCircle } from "lucide-react";
 import type { TimelineEntry } from "../state/runtime";
 import { ConversationNode } from "./ConversationNode";
-import { MessageItem } from "./MessageItem";
 
 const TIMELINE_WINDOW = 160;
 const TIMELINE_BATCH = 80;
@@ -10,7 +9,6 @@ const FOLLOW_THRESHOLD = 32;
 
 interface TimelineProps {
   entries: TimelineEntry[];
-  assistantDraft: Extract<TimelineEntry, { kind: "message" }> | null;
   turnRunning: boolean;
   onRetry: () => Promise<void>;
   onBranch: () => Promise<void>;
@@ -21,7 +19,6 @@ interface TimelineProps {
 
 export const Timeline = memo(function Timeline({
   entries,
-  assistantDraft,
   turnRunning,
   onRetry,
   onBranch,
@@ -46,6 +43,7 @@ export const Timeline = memo(function Timeline({
     () => entries.slice(range.start, range.end),
     [entries, range.start, range.end],
   );
+  const streaming = entries.some((entry) => entry.kind === "message" && entry.streaming);
 
   useLayoutEffect(() => {
     const previous = previousLength.current;
@@ -113,7 +111,7 @@ export const Timeline = memo(function Timeline({
     // they have already moved away from the end.
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
     if (distance <= FOLLOW_THRESHOLD) element.scrollTo({ top: element.scrollHeight });
-  }, [entries, assistantDraft?.content, assistantDraft?.reasoning]);
+  }, [entries]);
 
   useEffect(() => {
     const element = scrollerOf(list.current);
@@ -162,10 +160,7 @@ export const Timeline = memo(function Timeline({
             />
           </div>
         ))}
-        {assistantDraft && (
-          <div className="timeline-node timeline-node-message"><MessageItem entry={assistantDraft} /></div>
-        )}
-        {turnRunning && !assistantDraft && (
+        {turnRunning && !streaming && (
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
         )}
       </div>
@@ -178,7 +173,6 @@ export const Timeline = memo(function Timeline({
   );
 }, (previous, next) => (
   previous.entries === next.entries
-  && previous.assistantDraft === next.assistantDraft
   && previous.turnRunning === next.turnRunning
   && previous.hasOlder === next.hasOlder
   && previous.loadingOlder === next.loadingOlder
