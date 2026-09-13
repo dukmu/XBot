@@ -669,6 +669,20 @@ class BoundedText(Vertical):
             self._follow = True
         self._render_window()
 
+    class TopReached(Message):
+        """The window reached the first row; a viewer may lazy-load older text."""
+
+    def prepend(self, text: str) -> None:
+        """Insert older text before the current content, keeping the view put."""
+        if not text:
+            return
+        added = text.split("\n")
+        line, row = self._cursor
+        self._lines = added + (self._lines if self._plain else [""])
+        self._plain = text + self._plain
+        self._cursor = (line + len(added), row)
+        self._render_window()
+
     def append(self, suffix: str) -> None:
         """Grow the block text without re-joining the whole content.
 
@@ -843,11 +857,14 @@ class BoundedText(Vertical):
         if self.scroll_rows(-3):
             event.stop()
             event.prevent_default()
+        elif self._cursor == (0, 0):
+            self.post_message(self.TopReached())
 
     # Keyboard scrolling replaces the touch gesture while the block has focus;
     # at either end the keystroke is left to bubble to the transcript.
     def key_up(self) -> None:
-        self.scroll_rows(-1)
+        if not self.scroll_rows(-1) and self._cursor == (0, 0):
+            self.post_message(self.TopReached())
 
     def key_down(self) -> None:
         self.scroll_rows(1)
@@ -872,94 +889,6 @@ class BoundedText(Vertical):
         self._follow = True
         self._render_window()
 
-    def _render_window(self) -> None:
-        self._max_rows = self._budget()
-        rows = self._visible_rows()
-        self._window.update(Text("\n").join(rows) if rows else Text(""))
-        # The row count changes as the window moves; ask for a layout pass.
-        self.refresh(layout=True)
-        first, last = self.window_range
-        total = len(self._lines)
-        counter = (
-            f"{first}–{last} of {total} lines"
-            if total > 1 and not self._whole_block_visible()
-            else ""
-        )
-        self._counter.update(counter)
-        self._up.display = self._cursor != (0, 0)
-        self._down.display = not self._last_row_visible()
-        # No empty row under a block that fits entirely.
-        self._foot.display = self._up.display or self._down.display or bool(counter)
-
-    def _whole_block_visible(self) -> bool:
-        return self._cursor == (0, 0) and self._last_row_visible()
-
-    def _budget(self) -> int:
-        """Rows one block may use: the pane, or at most a quarter of a screen."""
-        try:
-            height = self.size.height if self._full_height else self.screen.size.height
-        except Exception:  # noqa: BLE001 — not mounted yet
-            return 24 if self._full_height else BLOCK_MAX_ROWS
-        if self._full_height:
-            return max(4, height - 2)  # window rows plus the footer
-        return max(3, min(BLOCK_MAX_ROWS, height // 4)) if height > 0 else BLOCK_MAX_ROWS
-
-    def on_mount(self) -> None:
-        # The block is filled before it has a screen; lay out the window once
-        # the real width and height are known.
-        self._render_window()
-
-    def on_resize(self, event: events.Resize) -> None:
-        changed = event.size.width != self._width_cache or self._budget() != self._max_rows
-        self._width_cache = event.size.width
-        if changed:
-            self._render_window()
-
-    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        if self.scroll_rows(3):
-            event.stop()
-            event.prevent_default()
-
-    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        if self.scroll_rows(-3):
-            event.stop()
-            event.prevent_default()
-
-    # Keyboard scrolling replaces the touch gesture while the block has focus;
-    # at either end the keystroke is left to bubble to the transcript.
-    def key_up(self) -> None:
-        self.scroll_rows(-1)
-
-    def key_down(self) -> None:
-        self.scroll_rows(1)
-
-    def key_pageup(self) -> None:
-        self.scroll_screen(-1)
-
-    def key_pagedown(self) -> None:
-        self.scroll_screen(1)
-
-    def key_home(self) -> None:
-        if self.scroll_rows(-self._start_row()):
-            return
-
-    def key_end(self) -> None:
-        self.scroll_rows(self.line_count + self._max_rows)
-
-    def _start_row(self) -> int:
-        cursor = self._cursor
-        rows = 0
-        line, row = 0, 0
-        width = self._width()
-        while (line, row) < cursor:
-            rows += 1
-            if row + 1 < len(self._rows(line, width)):
-                row += 1
-            else:
-                line, row = line + 1, 0
-        return rows
-
-
 class ThreadView(Vertical):
     """A read-only pane over one session thread: history plus live frames.
 
@@ -970,11 +899,17 @@ class ThreadView(Vertical):
     output while this one is being read.
     """
 
+    class OlderRequested(Message):
+        """The reader reached the top; the app may lazy-load older history."""
+
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
         self._header = Static("", classes="thread-view-header")
         self._body = BoundedText("", classes="thread-view-body", max_rows=0)
         self.thread = ""
+
+    def on_bounded_text_top_reached(self, _event: "BoundedText.TopReached") -> None:
+        self.post_message(self.OlderRequested())
 
     def compose(self):
         yield self._header

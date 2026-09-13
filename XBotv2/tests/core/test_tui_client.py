@@ -854,9 +854,12 @@ def test_facade_reads_thread_history_read_only():
         session = TerminalSession(
             session_id="s", thread_id="agent", base_url="http://test", client=StubClient()
         )
-        items = await session.read_thread_history("agent-reviewer-1", limit=50)
+        items, next_cursor = await session.read_thread_history(
+            "agent-reviewer-1", limit=50
+        )
         assert [item["message"]["role"] for item in items] == ["user", "assistant"]
         assert items[1]["message"]["reasoning"] == "thinking hard"
+        assert next_cursor is None  # no older pages in this stub
 
     asyncio.run(run())
 

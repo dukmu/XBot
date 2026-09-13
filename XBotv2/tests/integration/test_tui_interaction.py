@@ -133,31 +133,48 @@ class _ScriptedSession:
             ],
         }
 
-    async def read_thread_history(self, thread_id, *, limit=200):
+    async def read_thread_history(self, thread_id, *, cursor=None, limit=200):
         self.thread_history_reads = getattr(self, "thread_history_reads", [])
-        self.thread_history_reads.append(thread_id)
-        return [
-            {
-                "kind": "message",
-                "position": 1,
-                "message": {
-                    "role": "user",
-                    "content": "review the diff",
-                    "reasoning": "",
-                    "tool_calls": [],
+        self.thread_history_reads.append((thread_id, cursor))
+        if cursor == "older":
+            return (
+                [{
+                    "kind": "message",
+                    "position": 0,
+                    "message": {
+                        "role": "user",
+                        "content": "earlier question",
+                        "reasoning": "",
+                        "tool_calls": [],
+                    },
+                }],
+                None,
+            )
+        return (
+            [
+                {
+                    "kind": "message",
+                    "position": 1,
+                    "message": {
+                        "role": "user",
+                        "content": "review the diff",
+                        "reasoning": "",
+                        "tool_calls": [],
+                    },
                 },
-            },
-            {
-                "kind": "message",
-                "position": 2,
-                "message": {
-                    "role": "assistant",
-                    "content": "I reviewed it.",
-                    "reasoning": "thinking hard",
-                    "tool_calls": [],
+                {
+                    "kind": "message",
+                    "position": 2,
+                    "message": {
+                        "role": "assistant",
+                        "content": "I reviewed it.",
+                        "reasoning": "thinking hard",
+                        "tool_calls": [],
+                    },
                 },
-            },
-        ]
+            ],
+            "older",
+        )
 
     async def submit_user_input(self, request_id, answer):
         return {"type": "user_input_recorded", "data": {"request_id": request_id}}
@@ -713,6 +730,40 @@ async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> N
         assert view.display is False
         assert transcript.display is True
         assert composer.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_thread_view_lazy_loads_older_history_on_scroll_top(
+    scripted_session,
+) -> None:
+    """Reaching the top of a long thread pulls the previous page in place."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        view = app.query_one("#thread_view", ThreadView)
+        assert scripted_session.thread_history_reads == [("agent-reviewer-1", None)]
+        assert view.body.text.startswith("[user] review the diff")
+        assert app._view_older_cursor == "older"
+
+        # The reader reaches the very top: the older page is prepended and the
+        # view stays anchored instead of jumping.
+        while view.body.window_range[0] > 1:
+            view.body.scroll_rows(-1)
+        view.body.post_message(view.body.TopReached())
+        await pilot.pause()
+        await pilot.pause()
+        assert scripted_session.thread_history_reads == [
+            ("agent-reviewer-1", None),
+            ("agent-reviewer-1", "older"),
+        ]
+        assert view.body.text.startswith("[user] earlier question")
+        assert "review the diff" in view.body.text
+        assert app._view_older_cursor is None
 
 
 @pytest.mark.asyncio

@@ -235,6 +235,8 @@ class XBotTextualApp(App[None]):
         self._view_main_busy = False
         self._view_rolling: list[str] = ["", ""]
         self._view_catalog: list[dict[str, str]] = []
+        self._view_older_cursor: str | None = None
+        self._view_loading_older = False
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
@@ -270,6 +272,10 @@ class XBotTextualApp(App[None]):
         self._refresh_all()
         self._activity_timer = self.set_interval(0.5, self._tick_activity)
         self.run_worker(self._connect, exclusive=True, name="connect")
+
+    @on(ThreadView.OlderRequested)
+    def _on_view_older_requested(self) -> None:
+        self.run_worker(self._load_older_thread_history(), exclusive=False)
 
     @on(TranscriptScroll.ReplayTopReached)
     def _handle_replay_top(self) -> None:
@@ -425,8 +431,13 @@ class XBotTextualApp(App[None]):
         self._resize_composer()
         self._refresh_all()
         if self._view_active:
+            # There is no client-facing channel into a subagent thread; the
+            # view is read-only and the composer is disabled.
             if text:
-                await self._view_send(text)
+                await self._append_local_notice(
+                    "thread",
+                    "Thread views are read-only; press Esc to return to the main thread.",
+                )
             return
         if not text and not self._pending_images:
             return
@@ -639,7 +650,8 @@ class XBotTextualApp(App[None]):
         if view is None or transcript is None:
             self._view_active = False
             return
-        history = await self.session.read_thread_history(thread_id)
+        history, older_cursor = await self.session.read_thread_history(thread_id)
+        self._view_older_cursor = older_cursor
         summary = title or self._thread_summary(thread_id)
         view.show(thread_id, summary)
         lines = [
@@ -650,6 +662,7 @@ class XBotTextualApp(App[None]):
         view.body.update("\n".join(line for line in lines if line) + ("\n" if lines else ""))
         view.display = True
         transcript.display = False
+
         self._view_task = asyncio.create_task(self._pump_thread_view(thread_id))
         self._refresh_input_mode()
         self._refresh_status()
@@ -675,6 +688,8 @@ class XBotTextualApp(App[None]):
             transcript.display = True
         self._view_thread_id = ""
         self._view_main_busy = False
+        self._view_older_cursor = None
+        self._view_loading_older = False
         self._refresh_input_mode()
         self._refresh_status()
 
@@ -746,12 +761,40 @@ class XBotTextualApp(App[None]):
         combined = (flush + "\n" if flush else "") + own
         return combined if combined.strip() else None
 
-    async def _view_send(self, content: str) -> None:
-        """Reserved send entry point: the view is read-only for now."""
-        await self._append_local_notice(
-            "thread",
-            "Sending into a thread while viewing it is not supported yet.",
-        )
+    async def _load_older_thread_history(self) -> None:
+        """Scroll-up at the top pulls the previous page of the viewed thread."""
+        if (
+            not self._view_active
+            or self._view_loading_older
+            or not self._view_older_cursor
+        ):
+            return
+        thread_id = self._view_thread_id
+        self._view_loading_older = True
+        try:
+            records, older_cursor = await self.session.read_thread_history(
+                thread_id,
+                cursor=self._view_older_cursor,
+            )
+        except Exception as exc:  # noqa: BLE001 — a read-only pane must not crash
+            self._view_older_cursor = None
+            await self._append_local_notice("thread", f"older history failed: {exc}")
+            return
+        finally:
+            self._view_loading_older = False
+        if not self._view_active or self._view_thread_id != thread_id:
+            return
+        self._view_older_cursor = older_cursor
+        lines = [
+            self._history_line(item)
+            for item in records
+            if isinstance(item, dict)
+        ]
+        text = "\n".join(line for line in lines if line)
+        if text:
+            view = self._safe_query_one("#thread_view", ThreadView)
+            if view is not None:
+                view.body.prepend(text + "\n")
 
     async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
         if spec is None:

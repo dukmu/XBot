@@ -272,21 +272,29 @@ class TerminalSession:
         self,
         thread_id: str,
         *,
+        cursor: str | None = None,
         limit: int = 200,
-    ) -> list[dict[str, JsonValue]]:
-        """Persisted conversation records of a thread (read-only, lock-free)."""
+    ) -> tuple[list[dict[str, JsonValue]], str | None]:
+        """Persisted conversation records of a thread (read-only, lock-free).
+
+        Returns the message records and the cursor for older pages, so a long
+        subagent thread can be paged back lazily.
+        """
         response = await self._client.list_trajectory(
             self._session_id,
             thread_id,
+            cursor=cursor,
             limit=limit,
         )
         payload = _dump(response)
         items = payload.get("items")
-        return [
+        records = [
             item
             for item in items
             if isinstance(item, dict) and item.get("kind") == "message"
         ] if isinstance(items, list) else []
+        next_cursor = payload.get("next_cursor")
+        return records, str(next_cursor) if next_cursor else None
 
     async def submit_user_input(self, request_id: str, answer: JsonValue) -> dict[str, JsonValue]:
         return _dump(
