@@ -6,13 +6,14 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from textwrap import shorten
+from textwrap import shorten, wrap
 from typing import Any
 
 from pydantic import JsonValue
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import events
 from textual.message import Message
 from textual.events import Key
@@ -386,6 +387,13 @@ class ComposerTextArea(TextArea):
                     event.prevent_default()
                     app._accept_completion(spec)
                     return
+            if event.key == "tab":
+                # Leaving the input moves focus into the transcript, where the
+                # arrow keys scroll what is under the cursor.
+                event.stop()
+                event.prevent_default()
+                self.screen.focus_next()
+                return
             if event.key == "up" and popup_visible and popup is not None:
                 event.stop()
                 event.prevent_default()
@@ -420,18 +428,21 @@ class ComposerTextArea(TextArea):
 
 
 class TranscriptScroll(VerticalScroll):
-    """Mouse-scrollable transcript that never takes keyboard focus.
+    """Transcript that scrolls with the wheel or with the keyboard.
 
-    Emits :class:`ReplayTopReached` when the user scrolls to the top while
-    older replayed history is still unmounted, so the app can lazy-load it.
-    Emits :class:`Scrolled` after any user-initiated scroll so the app can
-    track whether it should keep following the live tail, and
-    :class:`HeightChanged` when the viewport height changes (e.g. the
-    slash-completion popup appears), so the app can re-pin a follower to the
-    bottom instead of leaving it stranded mid-scroll.
+    Scrolling is the same act either way: the wheel over the transcript, an
+    arrow key while it holds focus, and a focused block reaching its end all
+    move this viewport (see :class:`BoundedText`).  Emits
+    :class:`ReplayTopReached` when the user scrolls to the top while older
+    replayed history is still unmounted, so the app can lazy-load it.  Emits
+    :class:`Scrolled` after any user-initiated scroll so the app can track
+    whether it should keep following the live tail, and :class:`HeightChanged`
+    when the viewport height changes (e.g. the slash-completion popup appears),
+    so the app can re-pin a follower to the bottom instead of leaving it
+    stranded mid-scroll.
     """
 
-    can_focus = False
+    can_focus = True
 
     class ReplayTopReached(Message):
         pass
@@ -484,6 +495,425 @@ class TranscriptScroll(VerticalScroll):
         if self.is_vertical_scroll_end:
             self.post_message(self.ReplayBottomReached())
         self._post_scrolled()
+
+    def scroll_page_up(self, *args, **kwargs) -> None:
+        super().scroll_page_up(*args, **kwargs)
+        # A page jump settles on the next refresh, so report the resulting
+        # position then instead of reading a stale offset here.
+        self.call_after_refresh(self._post_page_scroll)
+
+    def scroll_page_down(self, *args, **kwargs) -> None:
+        super().scroll_page_down(*args, **kwargs)
+        self.call_after_refresh(self._post_page_scroll)
+
+    def scroll_home(self, *args, **kwargs) -> None:
+        super().scroll_home(*args, **kwargs)
+        self.call_after_refresh(self._post_page_scroll)
+
+    def _post_page_scroll(self) -> None:
+        if self.scroll_y <= 0:
+            self.post_message(self.ReplayTopReached())
+        if self.is_vertical_scroll_end:
+            self.post_message(self.ReplayBottomReached())
+        self._post_scrolled()
+
+
+BLOCK_MAX_ROWS = 9
+"""Rows one reasoning or tool-detail block may occupy before it windows."""
+
+# Only used to ask Rich for wrapped rows; the width is always passed in.
+_MEASURE_CONSOLE = Console(width=80)
+
+
+class BlockStep(Static):
+    """A tap target that scrolls the block it belongs to (no keyboard needed)."""
+
+    def __init__(self, mark: str, block: "BoundedText", direction: int, *, classes: str) -> None:
+        super().__init__(mark, classes=classes)
+        self._block = block
+        self._direction = direction
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._block.scroll_screen(self._direction)
+
+
+class BoundedText(Vertical):
+    """A fixed-height window over the wrapped text of one collapsible block.
+
+    A long reasoning trace or tool result is rendered a window of rows at a
+    time, so one block can never take over the transcript and never costs a
+    full-document render. The window follows the tail while the text streams;
+    afterwards the wheel over the block, the tap marks in its footer, or the
+    arrow keys while the block holds focus scroll it. At either end of the text
+    the scroll is left alone, so the focused block hands the keystroke to the
+    transcript instead of trapping the reader.
+    """
+
+    can_focus = True
+
+    def __init__(
+        self,
+        content: Any = "",
+        *,
+        classes: str = "",
+        id: str | None = None,
+        max_rows: int = BLOCK_MAX_ROWS,
+    ) -> None:
+        super().__init__(classes=classes, id=id)
+        self._max_rows = max(1, max_rows)
+        self._width_cache = 0
+        self._row_cache: dict[tuple[int, int], list[Text]] = {}
+        self._plain = ""
+        self._lines: list[str] = [""]
+        self._cursor = (0, 0)  # first visible (logical line, wrapped row)
+        self._follow = True
+        self._style = "default"
+        self._window = Static(Text(""), classes="block-window")
+        self._up = BlockStep("▲", self, -1, classes="block-step up")
+        self._down = BlockStep("▼", self, 1, classes="block-step down")
+        self._counter = Static("", classes="block-counter")
+        self._foot = Horizontal(self._up, self._counter, self._down, classes="block-foot")
+        if content:
+            self.update(content)
+
+    def compose(self):
+        yield self._window
+        yield self._foot
+
+    @property
+    def text(self) -> str:
+        """The complete block text, independent of the visible window."""
+        return self._plain
+
+    @property
+    def window_text(self) -> str:
+        """The wrapped rows currently rendered."""
+        return "\n".join(row.plain for row in self._visible_rows())
+
+    @property
+    def line_count(self) -> int:
+        return len(self._lines)
+
+    @property
+    def max_rows(self) -> int:
+        """Rows this block may render, scaled to the current screen."""
+        return self._max_rows
+
+    @property
+    def window_range(self) -> tuple[int, int]:
+        """1-based inclusive range of the logical lines the window touches."""
+        start = self._cursor[0]
+        end = start
+        seen = 0
+        width = self._width()
+        while end < len(self._lines) and seen < self._max_rows:
+            seen += len(self._rows(end, width))
+            end += 1
+        return (start + 1, max(end, start + 1))
+
+    @property
+    def at_end(self) -> bool:
+        """Whether the last row of the text is inside the current window."""
+        return self._last_row_visible()
+
+    def update(self, renderable: Any = "") -> None:
+        """Replace the block text, keeping the window and tail-follow state."""
+        if isinstance(renderable, Text):
+            text = renderable.plain
+            self._style = str(renderable.style or "default")
+        else:
+            text = "" if renderable is None else str(renderable)
+        previous = self._plain
+        if text == previous:
+            # A refresh that re-sends the same accumulated text is a no-op:
+            # resetting the window here would yank a streaming block back to
+            # its head and defeat tail-following.
+            return
+        # Streaming re-sends the whole accumulated text; only the appended tail
+        # is re-split so a growing block stays cheap to update.
+        tail = min(64, len(previous))
+        growing = (
+            bool(previous)
+            and len(text) > len(previous)
+            and text.startswith(previous[:64])
+            and text[len(previous) - tail:len(previous)] == previous[-tail:]
+        )
+        if growing:
+            added = text[len(previous):].split("\n")
+            self._lines[-1] += added[0]
+            self._lines.extend(added[1:])
+            self._row_cache = {
+                key: rows for key, rows in self._row_cache.items() if key[0] < len(self._lines) - 1
+            }
+        else:
+            self._lines = text.split("\n")
+            self._row_cache.clear()
+        self._plain = text
+        if growing:
+            if self._follow:
+                self._cursor = self._tail_cursor()
+        else:
+            self._cursor = (0, 0)
+            self._follow = True
+        self._render_window()
+
+    def scroll_screen(self, direction: int) -> bool:
+        """Scroll this block by one screenful in ``direction``."""
+        return self.scroll_rows(direction * max(1, self._max_rows - 1))
+
+    def scroll_rows(self, rows: int) -> bool:
+        """Scroll the window by ``rows`` rendered rows; whether it moved."""
+        cursor = self._cursor
+        step = 1 if rows > 0 else -1
+        for _ in range(abs(rows)):
+            moved = self._step(step)
+            if not moved:
+                break
+        if self._cursor == cursor:
+            return False
+        self._follow = self.at_end
+        self._render_window()
+        return True
+
+    # --- row geometry -------------------------------------------------
+    def _width(self) -> int:
+        # ``size`` is 0 until the first layout pass; the resize event carries the
+        # real width and re-renders the window.
+        return max(4, (self._width_cache or self.size.width) - 2)
+
+    def _rows(self, line_index: int, width: int) -> list[Text]:
+        """Wrapped rows of one logical line, memoized for the visible window."""
+        key = (line_index, width)
+        rows = self._row_cache.get(key)
+        if rows is not None:
+            return rows
+        text = Text(self._lines[line_index], style=self._style, no_wrap=False, justify="left")
+        rows = [Text(row.plain.rstrip(), style=self._style) for row in text.wrap(_MEASURE_CONSOLE, width)]
+        if len(self._row_cache) > 32:
+            self._row_cache.clear()
+        self._row_cache[key] = rows or [Text("", style=self._style)]
+        return self._row_cache[key]
+
+    def _step(self, direction: int) -> bool:
+        line, row = self._cursor
+        if direction > 0:
+            rows = self._rows(line, self._width())
+            if row + 1 < len(rows):
+                self._cursor = (line, row + 1)
+                return True
+            if line + 1 >= len(self._lines):
+                return False
+            self._cursor = (line + 1, 0)
+            return True
+        if row > 0:
+            self._cursor = (line, row - 1)
+            return True
+        if line == 0:
+            return False
+        previous = self._rows(line - 1, self._width())
+        self._cursor = (line - 1, max(0, len(previous) - 1))
+        return True
+
+    def _tail_cursor(self) -> tuple[int, int]:
+        """Cursor that shows the newest rows of the block."""
+        cursor = self._cursor
+        self._cursor = (max(0, len(self._lines) - 1), 0)
+        for _ in range(self._max_rows - 1):
+            if not self._step(-1):
+                break
+        tail = self._cursor
+        self._cursor = cursor
+        return tail
+
+    def _last_row_visible(self) -> bool:
+        """Whether the end of the text fits in the window from the cursor on."""
+        rows = 0
+        line, row = self._cursor
+        width = self._width()
+        while line < len(self._lines):
+            remaining = len(self._rows(line, width)) - row
+            if remaining > self._max_rows - rows:
+                return False
+            rows += remaining
+            line += 1
+            row = 0
+        return True
+
+    def _visible_rows(self) -> list[Text]:
+        rows: list[Text] = []
+        line, row = self._cursor
+        width = self._width()
+        while line < len(self._lines) and len(rows) < self._max_rows:
+            wrapped = self._rows(line, width)
+            rows.extend(wrapped[row:row + (self._max_rows - len(rows))])
+            line += 1
+            row = 0
+        return rows
+
+    def _render_window(self) -> None:
+        self._max_rows = self._budget()
+        rows = self._visible_rows()
+        self._window.update(Text("\n").join(rows) if rows else Text(""))
+        # The row count changes as the window moves; ask for a layout pass.
+        self.refresh(layout=True)
+        first, last = self.window_range
+        total = len(self._lines)
+        counter = (
+            f"{first}–{last} of {total} lines"
+            if total > 1 and not self._whole_block_visible()
+            else ""
+        )
+        self._counter.update(counter)
+        self._up.display = self._cursor != (0, 0)
+        self._down.display = not self._last_row_visible()
+        # No empty row under a block that fits entirely.
+        self._foot.display = self._up.display or self._down.display or bool(counter)
+
+    def _whole_block_visible(self) -> bool:
+        return self._cursor == (0, 0) and self._last_row_visible()
+
+    def _budget(self) -> int:
+        """Rows one block may use: never more than a quarter of the screen."""
+        try:
+            height = self.screen.size.height
+        except Exception:  # noqa: BLE001 — not mounted yet
+            return BLOCK_MAX_ROWS
+        return max(3, min(BLOCK_MAX_ROWS, height // 4)) if height > 0 else BLOCK_MAX_ROWS
+
+    def on_mount(self) -> None:
+        # The block is filled before it has a screen; lay out the window once
+        # the real width and height are known.
+        self._render_window()
+
+    def on_resize(self, event: events.Resize) -> None:
+        changed = event.size.width != self._width_cache or self._budget() != self._max_rows
+        self._width_cache = event.size.width
+        if changed:
+            self._render_window()
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.scroll_rows(3):
+            event.stop()
+            event.prevent_default()
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.scroll_rows(-3):
+            event.stop()
+            event.prevent_default()
+
+    # Keyboard scrolling replaces the touch gesture while the block has focus;
+    # at either end the keystroke is left to bubble to the transcript.
+    def key_up(self) -> None:
+        self.scroll_rows(-1)
+
+    def key_down(self) -> None:
+        self.scroll_rows(1)
+
+    def key_pageup(self) -> None:
+        self.scroll_screen(-1)
+
+    def key_pagedown(self) -> None:
+        self.scroll_screen(1)
+
+    def key_home(self) -> None:
+        if self._cursor == (0, 0):
+            return  # the transcript takes Home from here
+        self._cursor = (0, 0)
+        self._follow = False
+        self._render_window()
+
+    def key_end(self) -> None:
+        if self.at_end:
+            return  # the transcript takes End from here
+        self._cursor = self._tail_cursor()
+        self._follow = True
+        self._render_window()
+
+    def _render_window(self) -> None:
+        self._max_rows = self._budget()
+        rows = self._visible_rows()
+        self._window.update(Text("\n").join(rows) if rows else Text(""))
+        # The row count changes as the window moves; ask for a layout pass.
+        self.refresh(layout=True)
+        first, last = self.window_range
+        total = len(self._lines)
+        counter = (
+            f"{first}–{last} of {total} lines"
+            if total > 1 and not self._whole_block_visible()
+            else ""
+        )
+        self._counter.update(counter)
+        self._up.display = self._cursor != (0, 0)
+        self._down.display = not self._last_row_visible()
+        # No empty row under a block that fits entirely.
+        self._foot.display = self._up.display or self._down.display or bool(counter)
+
+    def _whole_block_visible(self) -> bool:
+        return self._cursor == (0, 0) and self._last_row_visible()
+
+    def _budget(self) -> int:
+        """Rows one block may use: never more than a quarter of the screen."""
+        try:
+            height = self.screen.size.height
+        except Exception:  # noqa: BLE001 — not mounted yet
+            return BLOCK_MAX_ROWS
+        return max(3, min(BLOCK_MAX_ROWS, height // 4)) if height > 0 else BLOCK_MAX_ROWS
+
+    def on_mount(self) -> None:
+        # The block is filled before it has a screen; lay out the window once
+        # the real width and height are known.
+        self._render_window()
+
+    def on_resize(self, event: events.Resize) -> None:
+        changed = event.size.width != self._width_cache or self._budget() != self._max_rows
+        self._width_cache = event.size.width
+        if changed:
+            self._render_window()
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.scroll_rows(3):
+            event.stop()
+            event.prevent_default()
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.scroll_rows(-3):
+            event.stop()
+            event.prevent_default()
+
+    # Keyboard scrolling replaces the touch gesture while the block has focus;
+    # at either end the keystroke is left to bubble to the transcript.
+    def key_up(self) -> None:
+        self.scroll_rows(-1)
+
+    def key_down(self) -> None:
+        self.scroll_rows(1)
+
+    def key_pageup(self) -> None:
+        self.scroll_screen(-1)
+
+    def key_pagedown(self) -> None:
+        self.scroll_screen(1)
+
+    def key_home(self) -> None:
+        if self.scroll_rows(-self._start_row()):
+            return
+
+    def key_end(self) -> None:
+        self.scroll_rows(self.line_count + self._max_rows)
+
+    def _start_row(self) -> int:
+        cursor = self._cursor
+        rows = 0
+        line, row = 0, 0
+        width = self._width()
+        while (line, row) < cursor:
+            rows += 1
+            if row + 1 < len(self._rows(line, width)):
+                row += 1
+            else:
+                line, row = line + 1, 0
+        return rows
 
 
 @dataclass(frozen=True)
@@ -545,10 +975,10 @@ def tool_widget(tool: TuiTool, *, details_expanded: bool = False) -> Vertical:
 
 
 def reasoning_widget(reasoning: Text, *, expanded: bool = False) -> Collapsible:
-    """Render model reasoning as a compact, collapsed transcript section."""
+    """Render model reasoning as a compact, windowed transcript section."""
 
     return Collapsible(
-        Static(reasoning, classes="reasoning"),
+        BoundedText(reasoning, classes="reasoning"),
         title="Thinking",
         collapsed=not expanded,
         classes="reasoning-block",
@@ -556,10 +986,10 @@ def reasoning_widget(reasoning: Text, *, expanded: bool = False) -> Collapsible:
 
 
 def tool_detail_widget(detail: str, *, expanded: bool = False) -> Collapsible:
-    """Render tool arguments and results without hiding the live summary."""
+    """Render tool arguments and results in a bounded, windowed section."""
 
     return Collapsible(
-        Static(render_text(detail), classes="body"),
+        BoundedText(render_text(detail), classes="body"),
         title="Details",
         collapsed=not expanded,
         classes="tool-details",

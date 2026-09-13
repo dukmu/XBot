@@ -65,14 +65,14 @@ _CLIENT_COMMANDS: dict[str, CommandSpec] = {
     "thinking": CommandSpec(
         name="thinking",
         kind="client",
-        description="Expand or collapse model reasoning",
+        description="Expand a scrollable window of model reasoning, or collapse it",
         usage="/thinking [on|off|toggle]",
         raw="/thinking",
     ),
     "details": CommandSpec(
         name="details",
         kind="client",
-        description="Expand or collapse tool execution details",
+        description="Expand a scrollable window of tool details, or collapse it",
         usage="/details [on|off|toggle]",
         raw="/details",
     ),

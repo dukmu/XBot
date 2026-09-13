@@ -133,11 +133,62 @@ Screen {
     color: #8b95a7;
 }
 
-.reasoning-block .reasoning {
+/* Window rows plus the one-row footer: a block can never take the screen. */
+.reasoning-block .reasoning, .tool-details .body {
     width: 1fr;
     height: auto;
+    max-height: 10;
+    overflow-y: hidden;
     padding: 0 0 0 1;
     color: #8b95a7;
+}
+
+.tool-details .body {
+    color: #d6dae2;
+}
+
+.block-window {
+    width: 1fr;
+    height: auto;
+    max-height: 9;
+    overflow-y: hidden;
+}
+
+.block-foot {
+    height: 1;
+    width: 1fr;
+    color: #6b7484;
+}
+
+.block-foot .block-counter {
+    width: 1fr;
+    content-align: center middle;
+}
+
+.block-step {
+    width: 3;
+    text-align: center;
+    color: #7aa2f7;
+}
+
+.block-step:hover {
+    color: #d6dae2;
+    background: #2a2f3a;
+}
+
+/* Focus follows the scroll: the focused block and the focused transcript show
+   where the arrow keys and the wheel will act. */
+.reasoning-block .reasoning:focus, .tool-details .body:focus {
+    background: #1b2029;
+}
+
+.reasoning-block .reasoning:focus .block-foot, .tool-details .body:focus .block-foot {
+    color: #c8d0dc;
+}
+
+/* The focused transcript marks its left edge without taking a text row. */
+#transcript:focus {
+    outline-left: solid #4a5b7d;
 }
 
 .user .meta {

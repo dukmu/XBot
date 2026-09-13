@@ -801,7 +801,7 @@ async def test_textual_tool_refresh_treats_source_as_plain_text():
         await app._refresh_changed_tool_widgets()
 
         body = app.query_one(".tool .body")
-        assert "list[ToolCall]" in body.content.plain
+        assert "list[ToolCall]" in body.text
 
 
 def test_tui_trace_writes_unicode_jsonl(tmp_path, monkeypatch):
@@ -1143,7 +1143,7 @@ async def test_textual_app_restores_session_usage_and_displays_server_command():
 
 
 @pytest.mark.asyncio
-async def test_textual_app_headless_keeps_transcript_non_focusable():
+async def test_textual_app_headless_scrolls_transcript_by_keyboard():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
@@ -1165,7 +1165,27 @@ async def test_textual_app_headless_keeps_transcript_non_focusable():
         transcript = app.query_one("#transcript")
         input_widget = app.query_one("#input")
 
-        assert transcript.can_focus is False
+        # The transcript takes focus so the arrow keys scroll what the wheel
+        # would scroll; the composer starts focused for typing.
+        assert transcript.can_focus is True
+        assert app.focused is input_widget
+
+        app.state.append_message("user", "\n".join(f"line {i}" for i in range(60)))
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        transcript.scroll_end(animate=False)
+        await pilot.pause()
+        bottom = transcript.scroll_y
+        transcript.focus()
+        await pilot.press("up")
+        await pilot.pause()
+        assert transcript.scroll_y < bottom
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert transcript.scroll_y > bottom - 1
+        # Escape returns to the composer instead of clearing it.
+        await pilot.press("escape")
+        await pilot.pause()
         assert app.focused is input_widget
 
 

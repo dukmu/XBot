@@ -1302,7 +1302,9 @@ async def test_assistant_message_body_renders_in_transcript(
 async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
     scripted_session,
 ) -> None:
-    from textual.widgets import Collapsible, Static
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
 
     app = XBotTextualApp(session_id="s", thread_id="t")
     app.session = scripted_session
@@ -1334,9 +1336,7 @@ async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
         await pilot.pause()
 
         assert block.collapsed is False
-        assert "First thought and more" in str(
-            block.query_one(".reasoning", Static).content
-        )
+        assert "First thought and more" in block.query_one(".reasoning", BoundedText).text
         composer = app.query_one("#input")
         assert app.focused is composer
         await pilot.press("n", "e", "x", "t", "enter")
@@ -1351,7 +1351,9 @@ async def test_streaming_reasoning_is_collapsible_and_preserves_user_state(
 async def test_resumed_reasoning_is_rendered_as_a_collapsible_block(
     scripted_session,
 ) -> None:
-    from textual.widgets import Collapsible, Static
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
 
     app = XBotTextualApp(session_id="s", thread_id="t")
     app.session = scripted_session
@@ -1368,9 +1370,7 @@ async def test_resumed_reasoning_is_rendered_as_a_collapsible_block(
 
         block = app.query_one(".reasoning-block", Collapsible)
         assert block.collapsed is True
-        assert "Persisted thought" in str(
-            block.query_one(".reasoning", Static).content
-        )
+        assert "Persisted thought" in block.query_one(".reasoning", BoundedText).text
 
 
 @pytest.mark.asyncio
@@ -1458,7 +1458,9 @@ async def test_collapsed_reasoning_does_not_pull_scrolled_history_to_bottom(
 async def test_tool_details_are_collapsible_and_update_in_place(
     scripted_session,
 ) -> None:
-    from textual.widgets import Collapsible, Static
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
 
     app = XBotTextualApp(session_id="s", thread_id="t")
     app.session = scripted_session
@@ -1498,7 +1500,298 @@ async def test_tool_details_are_collapsible_and_update_in_place(
         await pilot.pause()
 
         assert block.collapsed is False
-        assert "/workspace" in str(block.query_one(".body", Static).content)
+        assert "/workspace" in block.query_one(".body", BoundedText).text
+
+
+@pytest.mark.asyncio
+async def test_long_thinking_window_scrolls_with_wheel_tap_and_keys(
+    scripted_session,
+) -> None:
+    """A long block shows a slice, pages by wheel/tap, and never eats the scroll."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BLOCK_MAX_ROWS, BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        lines = [f"thought line {index}" for index in range(60)]
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "\n".join(lines)}}
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        text = block.query_one(".reasoning", BoundedText)
+        assert block.collapsed is False
+        # The budget scales with the screen, and the block never exceeds it.
+        assert text.max_rows == max(3, app.size.height // 4)
+        assert len(text.window_text.splitlines()) <= text.max_rows
+        assert text.size.height <= BLOCK_MAX_ROWS + 1
+        assert text.line_count == 60
+        assert len(text.window_text.splitlines()) == text.max_rows
+        assert text.window_text.splitlines() == lines[:text.max_rows]
+        assert text.text == "\n".join(lines)
+        # The block is bounded, so it cannot take the window from the transcript.
+        assert text.size.height <= BLOCK_MAX_ROWS + 1  # window rows + footer
+        assert block.size.height <= text.size.height + 3
+        assert block.size.height < app.size.height // 2
+        assert text.query_one(".block-step.up").display is False
+        assert text.query_one(".block-step.down").display is True
+
+        # Wheel: consumed while the window can move, released at the end.
+        class Wheel:
+            def __init__(self) -> None:
+                self.stopped = False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+            def prevent_default(self) -> None:
+                pass
+
+        first = Wheel()
+        text._on_mouse_scroll_down(first)
+        assert first.stopped is True
+        assert text.window_text.splitlines()[0] == lines[3]
+
+        text.scroll_rows(text.line_count)
+        assert text.at_end
+        assert text.window_text.splitlines()[-1] == lines[-1]
+        last = Wheel()
+        text._on_mouse_scroll_down(last)
+        assert last.stopped is False, "the transcript must keep the wheel at the end"
+
+        # Touch: the footer marks scroll without any keyboard.
+        text.scroll_rows(-text.line_count)
+        await pilot.pause()
+        await pilot.click(text.query_one(".block-step.down"))
+        await pilot.pause()
+        assert text.window_range[0] > 1
+
+
+@pytest.mark.asyncio
+async def test_wrapped_lines_stay_inside_the_block_and_remain_reachable(
+    scripted_session,
+) -> None:
+    """Long unbroken text wraps; paging still reaches every line."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BLOCK_MAX_ROWS, BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(60, 30)) as pilot:
+        await pilot.pause()
+        lines = [f"line {index:02d} " + "x" * 120 for index in range(25)]
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "\n".join(lines)}}
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        text = block.query_one(".reasoning", BoundedText)
+        # Wrapped rows, not logical lines, fill the window and the block stays
+        # bounded instead of overflowing sideways.
+        assert len(text.window_text.splitlines()) == text.max_rows
+        await pilot.pause()
+        assert block.size.height <= text.max_rows + 3
+
+        seen: list[str] = []
+        while True:
+            rows = text.window_text.splitlines()
+            seen.append(rows[0])  # each page contributes its newest row
+            if not text.scroll_rows(1):
+                seen.extend(rows[1:])
+                break
+        assert text.at_end
+        joined = "".join(seen)
+        for index in range(len(lines)):
+            assert f"line {index:02d}" in joined, f"line {index:02d} unreachable"
+        # Every character of the long runs survives the window.
+        assert joined.count("x") == 25 * 120
+
+
+@pytest.mark.asyncio
+async def test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript(
+    scripted_session,
+) -> None:
+    """Arrow keys scroll what is focused, and the block releases them at its end."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        for index in range(40):
+            app.state.append_message("user", f"message {index} with padding words")
+        app.state.apply_event(
+            {
+                "type": "assistant_message_delta",
+                "data": {"reasoning": "\n".join(f"thought {i:02d}" for i in range(40))},
+            }
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        text = app.query_one(".reasoning-block", Collapsible).query_one(
+            ".reasoning", BoundedText
+        )
+        transcript = app.query_one("#transcript")
+        transcript.scroll_home(animate=False)
+        text.focus()
+        await pilot.pause()
+        assert app.focused is text
+
+        start = text.window_range[0]
+        await pilot.press("down")
+        await pilot.pause()
+        assert text.window_range[0] == start + 1, "Down scrolls the focused block"
+        await pilot.press("up")
+        await pilot.pause()
+        assert text.window_range[0] == start
+
+        # At the end of the block the same key scrolls the transcript: the
+        # keyboard gesture keeps working instead of being swallowed.
+        text.scroll_rows(text.line_count + text.max_rows)
+        await pilot.pause()
+        assert text.at_end
+        before = transcript.scroll_y
+        await pilot.press("down")
+        await pilot.pause()
+        assert transcript.scroll_y > before
+
+
+@pytest.mark.asyncio
+async def test_thinking_follows_the_tail_unless_the_user_scrolled_away(
+    scripted_session,
+) -> None:
+    """A streaming thinking block follows the newest content; a reader who
+    scrolled back into the history is left alone; at the tail it follows again.
+    Re-sending the same text stays a no-op so a refresh cannot yank the window.
+    """
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 40)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {
+                "type": "assistant_message_delta",
+                "data": {"reasoning": "\n".join(f"thought {i:02d}" for i in range(20))},
+            }
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        reasoning = app.query_one(".reasoning-block", Collapsible).query_one(
+            ".reasoning", BoundedText
+        )
+
+        # Streaming growth follows the newest lines.
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "\nfresh A"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+        assert reasoning.window_text.endswith("fresh A")
+        assert reasoning.at_end
+
+        # The reader scrolls back into the history: the next chunk must not
+        # yank the window back to the tail.
+        reasoning.scroll_rows(-3)
+        frozen = reasoning.window_range
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "\nfresh B"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+        assert reasoning.window_range == frozen
+        assert "fresh B" not in reasoning.window_text
+
+        # Back at the tail the block follows again, including no-op refreshes
+        # that re-send the same text.
+        reasoning.scroll_rows(reasoning.line_count)
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "\nfresh C"}}
+        )
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+        assert reasoning.window_text.endswith("fresh C")
+        assert reasoning.at_end
+        await app._refresh_streaming_assistant_widget()
+        await pilot.pause()
+        assert reasoning.window_text.endswith("fresh C")
+        assert reasoning.at_end
+
+
+@pytest.mark.asyncio
+async def test_tab_leaves_the_composer_for_the_scrollable_region(
+    scripted_session,
+) -> None:
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        assert app.focused is composer
+        await pilot.press("tab")
+        await pilot.pause()
+        assert app.focused is not composer, "Tab must reach the transcript"
+        assert "\t" not in composer.text, "Tab does not insert into the input"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is composer
+
+
+@pytest.mark.asyncio
+async def test_streaming_thinking_follows_the_tail_inside_the_window(
+    scripted_session,
+) -> None:
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BLOCK_MAX_ROWS, BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event(
+            {"type": "assistant_message_delta", "data": {"reasoning": "first"}}
+        )
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        reasoning = app.query_one(".reasoning-block", Collapsible).query_one(
+            ".reasoning", BoundedText
+        )
+        assert reasoning.window_text == "first"
+
+        for index in range(BLOCK_MAX_ROWS + 20):
+            app.state.apply_event(
+                {
+                    "type": "assistant_message_delta",
+                    "data": {"reasoning": f"\nline {index}"},
+                }
+            )
+            await app._refresh_streaming_assistant_widget()
+            await pilot.pause()
+
+        assert reasoning.at_end, "a streaming block keeps its newest lines visible"
+        assert reasoning.window_text.splitlines()[-1] == f"line {BLOCK_MAX_ROWS + 19}"
+        assert reasoning.line_count == BLOCK_MAX_ROWS + 21
 
 
 @pytest.mark.asyncio
@@ -1614,22 +1907,21 @@ async def test_help_body_renders_each_command_on_its_own_row(
 
 
 @pytest.mark.asyncio
-async def test_long_body_does_not_truncate_or_inner_scroll(
+async def test_long_bodies_keep_full_text_and_bounded_blocks(
     scripted_session,
 ) -> None:
-    """Long bodies must render in full; only the transcript scrolls.
+    """A long message renders in full; reasoning and tool details window.
 
-    Per user direction (2026-06-05): each entry — message or tool
-    result — must be fully displayed without an inner scroll widget.
-    The whole ``#transcript`` may scroll, but never any single
-    entry on its own.
+    Per user direction (2026-09-13): the thinking and tool-detail blocks show a
+    slice that pages in place, so one block can never take the window. The full
+    text stays in state and in the block, every line is reachable, and no entry
+    nests a scroll container.
     """
 
-    # A multi-line body with far more lines than the visible viewport
-    # so any truncation / max-height cap would show up as missing
-    # content in the rendered widget.
     long_lines = "\n".join(f"line {i:03d}: lorem ipsum" for i in range(40))
     tool_lines = "\n".join(f"row {i:03d}" for i in range(40))
+
+    from XBotv2.tui.textual_widgets import BLOCK_MAX_ROWS, BoundedText
 
     app = XBotTextualApp(
         session_id="s",
@@ -1665,9 +1957,7 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
         assert "row 000" in tools[-1].summary
         assert "row 039" in tools[-1].result
 
-        # 2. Each entry is laid out as title + full body; we walk
-        #    the DOM and assert there is no inner scrollbar widget
-        #    nested under any entry.
+        # 2. No entry nests a scroll container.
         from textual.containers import VerticalScroll
 
         def _walk(widget):
@@ -1681,22 +1971,18 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
                 f"inner VerticalScroll inside transcript: {w!r}"
             )
 
-        # 3. The body widget's renderable preserves every line.
-        #    Find the Static for the assistant body and assert that
-        #    its plain text contains both the first and the last
-        #    line of the long content — if any line is missing, the
-        #    body was truncated at mount time.
+        # 3. The assistant body still renders every line.
         from textual.widgets import Static as TStatic
 
-        def _collect_bodies(widget):
+        def _collect_statics(widget):
             if isinstance(widget, TStatic) and "body" in (widget.classes or []):
                 yield widget
             for child in getattr(widget, "children", []):
-                yield from _collect_bodies(child)
+                yield from _collect_statics(child)
 
-        body_texts = []
+        body_widgets = []
         for w in transcript.children:
-            body_texts.extend(_collect_bodies(w))
+            body_widgets.extend(_collect_statics(w))
         from rich.markdown import Markdown
 
         joined = "\n".join(
@@ -1707,13 +1993,28 @@ async def test_long_body_does_not_truncate_or_inner_scroll(
                 if b.visual is not None and hasattr(b.visual, "plain")
                 else ""
             )
-            for b in body_texts
+            for b in body_widgets
         )
         for line in (long_lines.splitlines()[0],
                      long_lines.splitlines()[10],
                      long_lines.splitlines()[-1]):
-            assert line in joined, f"missing line {line!r} in body DOM"
-        assert "row 039" in joined
+            assert line in joined, f"missing line {line!r} in assistant body"
+
+        # 4. The tool detail keeps the whole result behind a bounded window.
+        block = app.query_one(".tool-details")
+        block.collapsed = False
+        await pilot.pause()
+        detail = block.query_one(".body", BoundedText)
+        assert detail.text.startswith("result: row 000")
+        assert detail.text.endswith("row 039")
+        assert detail.line_count == 40
+        assert detail.window_range[1] - detail.window_range[0] + 1 < 40
+        assert detail.size.height <= BLOCK_MAX_ROWS + 1
+        # Title and chrome included, one block stays far below half the screen.
+        assert block.size.height <= detail.size.height + 3
+        assert block.size.height < app.size.height // 2
+        detail.scroll_rows(detail.line_count)
+        assert detail.window_text.splitlines()[-1] == "row 039"
 
         transcript.scroll_end(animate=False)
         await pilot.pause()

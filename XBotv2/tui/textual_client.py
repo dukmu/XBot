@@ -463,8 +463,12 @@ class XBotTextualApp(App[None]):
         )
 
     def action_clear_input(self) -> None:
-        """Interrupt a turn or clear the composer."""
+        """Return to the composer, or interrupt a turn / clear the input."""
 
+        composer = self._safe_query_one("#input", ComposerTextArea)
+        if composer is not None and not composer.has_focus and composer.display:
+            composer.focus()
+            return
         if self.state.turn_active or self._pending_messages:
             self.action_interrupt_turn()
             return
@@ -1641,7 +1645,11 @@ class XBotTextualApp(App[None]):
             self._set_input_placeholder("Message XBotv2 (queue)")
         else:
             count = len(self._pending_images)
-            hint.update(f"{count} image{'s' if count != 1 else ''} attached" if count else "")
+            hint.update(
+                f"{count} image{'s' if count != 1 else ''} attached"
+                if count
+                else "Tab scrolls the transcript · Esc returns to the input"
+            )
             self._set_input_placeholder("Message XBotv2")
         if self.focused is None:
             composer.focus()
@@ -1795,11 +1803,9 @@ class XBotTextualApp(App[None]):
             stream.scroll_page_down(animate=False)
         else:
             stream.scroll_page_up(animate=False)
-        self.call_after_refresh(
-            lambda s=stream: setattr(
-                self, "_transcript_follow", s.is_vertical_scroll_end
-            )
-        )
+        # An explicit page move releases the live tail right away; the settled
+        # position reported by the transcript re-enables it at the bottom.
+        self._transcript_follow = False
 
     def _remember_input(self, text: str) -> None:
         if not text:
