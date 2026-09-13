@@ -84,14 +84,6 @@ describe("PluginConfigPanel", () => {
     expect(screen.queryByRole("button", { name: "Save plugin configuration" })).toBeNull();
   });
 
-  it("leaves plugins another editor owns out of the list", async () => {
-    renderPanel({ ownedPluginIds: ["sandbox"], ownedNote: "Sandbox is edited by the policy above." });
-
-    await screen.findByRole("button", { name: "compact" });
-    expect(listedPlugins()).toEqual(["compact"]);
-    expect(screen.getByText("Sandbox is edited by the policy above.")).toBeVisible();
-  });
-
   it("saves only a changed layer and can discard the change", async () => {
     const { update } = renderPanel();
     await screen.findByRole("button", { name: "compact" });

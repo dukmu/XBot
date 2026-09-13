@@ -9,9 +9,6 @@ export interface PluginConfigPanelProps {
   scope?: PluginConfigScope;
   load: (sessionId: string, threadId: string, scope: PluginConfigScope) => Promise<PluginConfigCatalog>;
   update: (sessionId: string, threadId: string, pluginId: string, scope: PluginConfigScope, revision: string, config: JsonObject) => Promise<PluginConfigCatalog>;
-  /** Plugins another editor on this page already owns. */
-  ownedPluginIds?: readonly string[];
-  ownedNote?: string;
 }
 
 /** In-progress edits for one plugin layer, valid only for its `key`. */
@@ -42,8 +39,6 @@ export function PluginConfigPanel({
   scope: fixedScope,
   load,
   update,
-  ownedPluginIds,
-  ownedNote,
 }: PluginConfigPanelProps) {
   const [selectedScope, setSelectedScope] = useState<PluginConfigScope>(fixedScope || "workspace");
   const scope = fixedScope || selectedScope;
@@ -51,7 +46,6 @@ export function PluginConfigPanel({
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState<ConfigDraft | null>(null);
   const [status, setStatus] = useState("idle");
-  const ownedKey = (ownedPluginIds ?? []).join(",");
 
   useEffect(() => {
     if (!sessionId || !threadId) {
@@ -64,21 +58,17 @@ export function PluginConfigPanel({
     void load(sessionId, threadId, scope).then((value) => {
       if (!alive) return;
       setCatalog(value);
-      const owned = new Set(ownedKey ? ownedKey.split(",") : []);
-      setSelectedId((current) => current && value.plugins.some((item) => item.plugin_id === current && !owned.has(item.plugin_id))
+      setSelectedId((current) => current && value.plugins.some((item) => item.plugin_id === current)
         ? current
-        : value.plugins.find((item) => !owned.has(item.plugin_id))?.plugin_id || "");
+        : value.plugins[0]?.plugin_id || "");
       setStatus("ready");
     }).catch((error) => {
       if (alive) setStatus(error instanceof Error ? error.message : String(error));
     });
     return () => { alive = false; };
-  }, [load, ownedKey, scope, sessionId, threadId]);
+  }, [load, scope, sessionId, threadId]);
 
-  const plugins = useMemo(() => {
-    const owned = new Set(ownedPluginIds ?? []);
-    return (catalog?.plugins ?? []).filter((plugin) => !owned.has(plugin.plugin_id));
-  }, [catalog, ownedPluginIds]);
+  const plugins = useMemo(() => catalog?.plugins ?? [], [catalog]);
   const configurable = useMemo(() => plugins.filter((plugin) => plugin.editable), [plugins]);
   const silent = useMemo(() => plugins.filter((plugin) => !plugin.editable), [plugins]);
 
@@ -159,6 +149,7 @@ export function PluginConfigPanel({
       key={plugin.plugin_id}
       className={plugin.plugin_id === selectedId ? "selected" : ""}
       aria-current={plugin.plugin_id === selectedId ? "true" : undefined}
+      title={plugin.plugin_id}
       onClick={() => setSelectedId(plugin.plugin_id)}
     >
       <span>{plugin.plugin_id}</span>
@@ -224,8 +215,6 @@ export function PluginConfigPanel({
                 )}
               </span>
             </div>
-
-            {ownedNote && <p className="plugin-config-owned">{ownedNote}</p>}
 
             {selected && (
               <>

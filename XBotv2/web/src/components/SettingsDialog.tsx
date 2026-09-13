@@ -1,6 +1,5 @@
-import { Check, Clock3, FolderCog, Globe2, Layers3, Monitor, Moon, Palette, PanelLeftClose, PanelLeftOpen, Server, Settings2, Sun, X } from "lucide-react";
+import { Check, Clock3, FolderCog, Globe2, Layers3, Monitor, Moon, Palette, PanelLeftClose, PanelLeftOpen, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { PermissionDecision, SessionPolicy, SessionPolicyPatch } from "../api/types";
 import { PluginConfigPanel, type PluginConfigPanelProps } from "./PluginConfigPanel";
 
 export type ThemePreference = "system" | "light" | "dark";
@@ -11,8 +10,6 @@ interface SettingsDialogProps {
   onThemeChange: (preference: ThemePreference) => void;
   sessionId?: string;
   threadId?: string;
-  loadSessionPolicy?: (sessionId: string) => Promise<SessionPolicy>;
-  updateSessionPolicy?: (sessionId: string, patch: SessionPolicyPatch) => Promise<SessionPolicy>;
   loadPluginConfig: PluginConfigPanelProps["load"];
   updatePluginConfig: PluginConfigPanelProps["update"];
   onClose: () => void;
@@ -39,7 +36,7 @@ function readNavOpen(): boolean {
   }
 }
 
-export function SettingsDialog({ themePreference, onThemeChange, sessionId, threadId, loadSessionPolicy, updateSessionPolicy, loadPluginConfig, updatePluginConfig, onClose }: SettingsDialogProps) {
+export function SettingsDialog({ themePreference, onThemeChange, sessionId, threadId, loadPluginConfig, updatePluginConfig, onClose }: SettingsDialogProps) {
   const [scope, setScope] = useState<SettingsScope>("global");
   const [navOpen, setNavOpen] = useState(readNavOpen);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -130,8 +127,6 @@ export function SettingsDialog({ themePreference, onThemeChange, sessionId, thre
             <SessionSettings
               sessionId={sessionId}
               threadId={threadId}
-              loadSessionPolicy={loadSessionPolicy}
-              updateSessionPolicy={updateSessionPolicy}
               loadPluginConfig={loadPluginConfig}
               updatePluginConfig={updatePluginConfig}
             />
@@ -148,9 +143,6 @@ const scopeOptions: readonly { value: SettingsScope; label: string; icon: typeof
   { value: "session", label: "Session", icon: Layers3 },
   { value: "temporary", label: "Temporary", icon: Clock3 },
 ];
-
-/** The permission panel and the plugin editor write the same session plugin layer. */
-const SESSION_POLICY_PLUGINS = ["permissions"] as const;
 
 function scopeDescription(scope: SettingsScope): string {
   return scope === "global"
@@ -269,128 +261,18 @@ function ClientSettings({ themePreference, onThemeChange }: Pick<SettingsDialogP
 function SessionSettings({
   sessionId,
   threadId,
-  loadSessionPolicy,
-  updateSessionPolicy,
   loadPluginConfig,
   updatePluginConfig,
-}: {
-  sessionId?: string;
-  threadId?: string;
-  loadSessionPolicy: SettingsDialogProps["loadSessionPolicy"];
-  updateSessionPolicy: SettingsDialogProps["updateSessionPolicy"];
-  loadPluginConfig: PluginConfigPanelProps["load"];
-  updatePluginConfig: PluginConfigPanelProps["update"];
-}) {
+}: Pick<SettingsDialogProps, "sessionId" | "threadId" | "loadPluginConfig" | "updatePluginConfig">) {
   return (
     <div className="settings-sections">
-      <ToolPermissionPanel sessionId={sessionId} load={loadSessionPolicy} update={updateSessionPolicy} />
       <PluginConfigPanel
         sessionId={sessionId}
         threadId={threadId}
         scope="session"
-        ownedPluginIds={SESSION_POLICY_PLUGINS}
-        ownedNote="The permission rules above are the same session layer entry, so they are not listed twice."
         load={loadPluginConfig}
         update={updatePluginConfig}
       />
     </div>
   );
 }
-
-function ToolPermissionPanel({
-  sessionId,
-  load,
-  update,
-}: {
-  sessionId?: string;
-  load?: (sessionId: string) => Promise<SessionPolicy>;
-  update?: (sessionId: string, patch: SessionPolicyPatch) => Promise<SessionPolicy>;
-}) {
-  const [policy, setPolicy] = useState<SessionPolicy | null>(null);
-  const [tool, setTool] = useState("");
-  const [decision, setDecision] = useState<PermissionDecision | "inherit">("ask");
-  const [status, setStatus] = useState("loading");
-
-  useEffect(() => {
-    if (!sessionId || !load) {
-      setPolicy(null);
-      setStatus(sessionId ? "Server policy unavailable." : "Open a session to edit its permissions.");
-      return;
-    }
-    let active = true;
-    setStatus("Loading session policy…");
-    void load(sessionId).then((value) => {
-      if (!active) return;
-      setPolicy(value);
-      setStatus("ready");
-    }).catch((error) => {
-      if (active) setStatus(error instanceof Error ? error.message : String(error));
-    });
-    return () => { active = false; };
-  }, [load, sessionId]);
-
-  const name = tool.trim();
-  const save = async () => {
-    if (!sessionId || !update || !name) return;
-    setStatus("saving");
-    try {
-      const updated = await update(sessionId, decision === "inherit"
-        ? { remove_permissions: [name] }
-        : { permissions: { [name]: decision } });
-      setPolicy(updated);
-      setTool("");
-      setStatus("saved");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  if (!load || !update) return null;
-
-  return (
-    <section className="settings-section" aria-labelledby="tool-permissions-title">
-      <div className="settings-section-heading">
-        <div>
-          <h3 id="tool-permissions-title">Tool permissions</h3>
-          <p>One tool name per save. Anything else about this session is in the plugin configuration below.</p>
-        </div>
-        <Server size={18} aria-hidden="true" />
-      </div>
-      {!policy && <p className="settings-save-status" role="status">{status}</p>}
-      {policy && (
-        <div className="tool-permission-form">
-          <div className="permission-rule-editor">
-            <input
-              value={tool}
-              onChange={(event) => setTool(event.target.value)}
-              placeholder="Exact Tool name (optional)"
-              aria-label="Permission Tool name"
-            />
-            <select value={decision} onChange={(event) => setDecision(event.target.value as PermissionDecision | "inherit")} aria-label="Permission decision">
-              <option value="ask">ask</option><option value="allow">allow</option><option value="deny">deny</option><option value="inherit">inherit (remove)</option>
-            </select>
-            <button type="button" className="primary-button" disabled={!name || status === "saving"} onClick={() => void save()}>
-              {status === "saving" ? "Saving…" : "Save permission"}
-            </button>
-          </div>
-          {permissionSummary(policy) && <small className="plugin-config-owned">{permissionSummary(policy)}</small>}
-          <small className="settings-save-status" role="status">{status === "saved" ? "Saved" : status !== "ready" && status !== "saving" ? status : ""}</small>
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** What this session already overrides, so the editor is not a blind input. */
-function permissionSummary(policy: SessionPolicy): string {
-  const groups = Object.entries(policy.permissions)
-    .map(([decision, rules]) => {
-      const names = (Array.isArray(rules) ? rules : [])
-        .map((rule) => (rule && typeof rule.tool === "string" ? rule.tool : ""))
-        .filter(Boolean);
-      return names.length ? `${decision}: ${names.join(", ")}` : "";
-    })
-    .filter(Boolean);
-  return groups.length ? `This session overrides ${groups.join(" · ")}.` : "";
-}
-

@@ -73,8 +73,8 @@ branches, enums, maps, arrays) into field descriptors and
 and saving replaces the layer's whole configuration object. The plugin list is
 narrow and stays visible while the form scrolls, plugins without a schema are
 folded into one group, `Save plugin configuration` is enabled only after a real
-change (with `Discard` to drop it), and a page that edits a plugin layer
-elsewhere passes `ownedPluginIds` so the same rows are not offered twice.
+change (with `Discard` to drop it), so a plugin layer is never edited from two
+places on the same page.
 
 ## Verification
 

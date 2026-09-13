@@ -26,27 +26,6 @@ test("opens VS Code-style settings scopes and applies the theme locally", async 
   await expect(page.getByRole("dialog", { name: "Session settings" })).toHaveCount(0);
 });
 
-test("saves one session tool permission", async ({ page }) => {
-  await openDemoSession(page);
-  if ((page.viewportSize()?.width || 0) <= 820) {
-    await page.getByRole("button", { name: "Open sessions" }).click();
-  }
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("button", { name: "Session", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Session settings" });
-  await expect(dialog.getByRole("heading", { name: "Tool permissions" })).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "Session security policy" })).toHaveCount(0);
-  const request = page.waitForRequest((candidate) => (
-    candidate.method() === "PATCH"
-    && candidate.url().endsWith("/sessions/demo-session/policy")
-  ));
-  await dialog.getByLabel("Permission Tool name").fill("shell");
-  await dialog.getByLabel("Permission decision").selectOption("allow");
-  await dialog.getByRole("button", { name: "Save permission" }).click();
-  expect((await request).postDataJSON()).toMatchObject({ permissions: { shell: "allow" } });
-  await expect(dialog.getByRole("status")).toContainText("Saved");
-});
-
 test("edits plugin configuration through the declared schema catalog", async ({ page }) => {
   await openDemoSession(page);
   if ((page.viewportSize()?.width || 0) <= 820) {
@@ -727,9 +706,6 @@ async function mockProtocol(page: Page) {
   let demoSessionTitle = "Demo session";
   let regenerated = false;
   let cleared = false;
-  let sessionPolicy: { permissions: Record<string, Array<Record<string, string>>>; sandbox: Record<string, unknown> } = {
-    permissions: {}, sandbox: {},
-  };
   let pluginConfigRevision = "plugin-config-rev-1";
   let pluginConfig = { automatic: true };
   const archivedSessions = new Set<string>();
@@ -803,28 +779,6 @@ async function mockProtocol(page: Page) {
         }],
       }],
     });
-    if (path === "/sessions/demo-session/policy" && method === "GET") return json(route, {
-      session_id: "demo-session", permissions: sessionPolicy.permissions, effective_permissions: {}, sandbox: {}, effective_sandbox: {},
-    });
-    if (path === "/sessions/demo-session/policy" && method === "PATCH") {
-      const patch = request.postDataJSON() as {
-        permissions?: Record<string, string>;
-        remove_permissions?: string[];
-      };
-      for (const tool of patch.remove_permissions || []) {
-        for (const rules of Object.values(sessionPolicy.permissions)) {
-          const kept = rules.filter((rule) => rule.tool !== `^${tool}$`);
-          rules.length = 0;
-          rules.push(...kept);
-        }
-      }
-      for (const [tool, decision] of Object.entries(patch.permissions || {})) {
-        (sessionPolicy.permissions[decision] ||= []).unshift({ tool: `^${tool}$` });
-      }
-      return json(route, {
-        session_id: "demo-session", permissions: sessionPolicy.permissions, effective_permissions: {}, sandbox: {}, effective_sandbox: {},
-      });
-    }
     if (path === "/sessions/demo-session/threads/agent/plugin-config" && method === "GET") {
       return json(route, {
         scope: url.searchParams.get("scope") || "workspace",
