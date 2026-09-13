@@ -101,6 +101,7 @@ class TuiNotice:
 @dataclass
 class TuiState:
     session_id: str = "default"
+    session_title: str = ""
     thread_id: str = "agent"
     agent_name: str = "XBotv2"
     workspace_root: str = ""

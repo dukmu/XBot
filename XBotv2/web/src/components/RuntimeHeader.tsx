@@ -30,7 +30,7 @@ export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffo
         <Menu size={18} />
       </button>
       <div className="runtime-title">
-        <strong>{current ? threadTitle(current.thread_id, current.agent_name) : "XBot"}</strong>
+        <strong>{current ? (current.title || threadTitle(current.thread_id, current.agent_name)) : "XBot"}</strong>
         {current && <span title={current.workspace_root}>{current.workspace_root}</span>}
       </div>
       {current && utilities && <div className="header-utilities">{utilities}</div>}

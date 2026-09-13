@@ -355,6 +355,7 @@ class XBotTextualApp(App[None]):
     async def _apply_open_session(self, session: dict[str, JsonValue] | None) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
+            self.state.session_title = str(session.get("title") or self.state.session_title)
             self.state.thread_id = str(session.get("thread_id") or self.state.thread_id)
             self.state.agent_name = str(session.get("agent_name") or self.state.agent_name)
             self.state.workspace_root = str(session.get("workspace_root") or "")
@@ -1598,6 +1599,7 @@ class XBotTextualApp(App[None]):
             status_renderable(
                 status=self.state.status,
                 session_id=self.state.session_id,
+                session_title=self.state.session_title,
                 thread_id=self.state.thread_id,
                 workspace_root=self.state.workspace_root,
                 provider=self.state.provider,

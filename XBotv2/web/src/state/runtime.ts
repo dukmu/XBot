@@ -1455,6 +1455,7 @@ function runtimeSession(session: OpenSessionResponse): RuntimeSession {
   return {
     session_id: session.session_id,
     thread_id: session.thread_id,
+    title: session.title,
     agent_name: session.agent_name,
     workspace_root: session.workspace_root,
     provider: session.provider,

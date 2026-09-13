@@ -257,6 +257,7 @@ class OpenThread:
 class SessionDescriptor(BaseModel):
     session_id: str
     thread_id: str
+    title: str = ""
     agent_name: str
     workspace_root: str
     provider: str

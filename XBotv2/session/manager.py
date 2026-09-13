@@ -1267,6 +1267,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
     return OpenedSession(
         session_id=runtime.session_id,
         thread_id=runtime.thread_id,
+        title=snapshot.metadata.title or runtime.session_id,
         agent_name=snapshot.agent,
         workspace_root=runtime.workspace_root,
         provider=runtime.provider_name,

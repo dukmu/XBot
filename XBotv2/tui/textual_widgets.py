@@ -90,6 +90,7 @@ def status_renderable(
     *,
     status: str,
     session_id: str,
+    session_title: str = "",
     thread_id: str,
     workspace_root: str,
     provider: str,
@@ -170,8 +171,11 @@ def status_renderable(
     if workspace:
         optional.append((f"cwd:{workspace[:20]}", "cyan"))
     if width >= 120:
-        session = session_id if thread_id == "agent" else f"{session_id}/{thread_id}"
-        optional.append((f"session:{session}", "dim"))
+        label = session_title or session_id
+        session = label if thread_id == "agent" else f"{label}/{thread_id}"
+        optional.append((f"session:{session[:44]}", "dim"))
+    elif session_title and session_title != session_id and width >= 96:
+        optional.append((f"title:{session_title[:24]}", "dim"))
     for candidate in optional:
         if _segments_width([*segments, candidate]) <= width:
             segments.append(candidate)

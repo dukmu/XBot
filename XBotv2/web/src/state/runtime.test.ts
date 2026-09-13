@@ -5,6 +5,7 @@ import { applyViewEvent, historyEntries, initialRuntimeState, runtimeReducer, ty
 const opened: OpenSessionResponse = {
   session_id: "session-1",
   thread_id: "agent",
+  title: "session-1",
   status: "ready",
   agent_name: "default",
   workspace_root: "/workspace",

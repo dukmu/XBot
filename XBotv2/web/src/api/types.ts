@@ -125,6 +125,7 @@ export interface HistoryItem {
 export interface OpenSessionResponse {
   session_id: string;
   thread_id: string;
+  title: string;
   status: "ready";
   agent_name: string;
   workspace_root: string;
