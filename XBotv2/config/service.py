@@ -58,13 +58,16 @@ class ConfigService(SettingsPort):
     def user_context(self) -> UserContext:
         return self._user_context
 
-    def load_plugin_tree(self, workspace: Path, session_id: str) -> PluginTree:
+    def load_plugin_tree(
+        self, workspace: Path, session_id: str, thread_id: str = "agent"
+    ) -> PluginTree:
         from XBotv2.config.loader import load_plugin_tree
 
         return load_plugin_tree(
             self.paths,
             workspace,
             session_id,
+            thread_id=thread_id,
             extra_plugins=self._extra_plugins,
             plugin_dirs=self._plugin_dirs,
             is_subagent=self._is_subagent,

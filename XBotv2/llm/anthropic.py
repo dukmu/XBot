@@ -40,6 +40,7 @@ class AnthropicProvider(BaseProvider):
         reasoning_effort: str | None = None,
         thinking: str | None = None,
         extra_body: dict[str, JsonValue] | None = None,
+        extra_headers: dict[str, str] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
@@ -62,6 +63,8 @@ class AnthropicProvider(BaseProvider):
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
+        if extra_headers:
+            kwargs["default_headers"] = dict(extra_headers)
         self.client = AsyncAnthropic(**kwargs)
 
     # Anthropic reports an oversized prompt as a 400 invalid_request_error
@@ -474,6 +477,7 @@ def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
     return AnthropicProvider(
         **_provider_arguments(provider_config, model_config),
         artifacts=artifacts,
+        extra_headers=provider_config.headers or None,
     )
 
 

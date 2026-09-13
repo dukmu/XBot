@@ -635,3 +635,46 @@ class TestSkillPermissionScope:
             scope.add(allowed=["shell", "filesystem_read("])
 
         assert scope.check("shell") is None
+
+
+def test_skill_content_expands_session_runtime_variables(tmp_path):
+    """SKILL.md goes through the same two-pass variable expansion as config."""
+    from XBotv2.core.variables import RuntimeVariables
+    from XBotv2.skills.registry import SkillRegistry
+    from XBotv2.skills.skill_tool import load_skill
+
+    import pytest_asyncio  # noqa: F401  (module already relied on by fixtures)
+
+    (tmp_path / ".agents" / "skills" / "demo-skill").mkdir(parents=True)
+    (tmp_path / ".agents" / "skills" / "demo-skill" / "SKILL.md").write_text(
+        "---\n"
+        "name: demo-skill\n"
+        "description: A skill that expands session variables\n"
+        "---\n"
+        "# demo-skill\n\n"
+        "Work inside the workspace:\n"
+        "```var\n${workspace}\n```\n"
+        "Session:\n"
+        "```var\n${session_id}\n```\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry()
+    registry.discover(tmp_path)
+    variables = RuntimeVariables({
+        **RuntimeVariables.from_roots(
+            workspace=tmp_path, data_dir=tmp_path,
+            session_dir=tmp_path, thread_dir=tmp_path,
+            state_dir=tmp_path,
+        ),
+        "session_id": "skills-session",
+    })
+
+    import asyncio
+    content = asyncio.run(load_skill(
+        "demo-skill",
+        skill_registry=registry,
+        variables=variables,
+    ))
+    assert str(tmp_path) in content
+    assert "skills-session" in content
+    assert "${session_id}" not in content

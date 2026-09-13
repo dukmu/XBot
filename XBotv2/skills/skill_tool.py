@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from XBotv2.core.variables import RuntimeVariables
     from XBotv2.skills.registry import SkillRegistry
 
 
@@ -23,13 +24,19 @@ async def load_skill(
     arguments: str = "",
     skill_registry: "SkillRegistry | None" = None,
     sandbox: "SandboxRunner | None" = None,
+    variables: "RuntimeVariables | None" = None,
 ) -> str:
     if skill_registry is None:
         return "Error: skills plugin not loaded"
     skill = skill_registry.load_skill(name)
     if skill is None:
         return f"Error: skill '{name}' not found"
-    content = _substitute_arguments(skill.content, arguments)
+    content = skill.content
+    if variables is not None:
+        content = variables.expand_markdown(
+            content, source=f"skill:{name}"
+        )
+    content = _substitute_arguments(content, arguments)
     return await _preprocess(content, sandbox=sandbox)
 
 

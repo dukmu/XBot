@@ -86,6 +86,7 @@ class AgentsService(AgentRuntimePort):
             self._settings.load_plugin_tree(
                 options.workspace_root,
                 options.session_id,
+                thread_id=options.thread_id,
             )
         )
         stored_metadata = state.metadata.value
@@ -237,6 +238,7 @@ class AgentsService(AgentRuntimePort):
             self._settings.load_plugin_tree(
                 state.session.workspace_root,
                 state.session.session_id,
+                thread_id=state.session.thread_id,
             )
         )
         definition = definition or self.active_definition()

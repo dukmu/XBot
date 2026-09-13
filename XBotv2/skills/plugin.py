@@ -38,6 +38,7 @@ class SkillToolHandler:
             self._skill.name,
             skill_registry=self._runtime._registry,
             sandbox=self._runtime._sandbox,
+            variables=self._runtime._variables,
         )
         self._runtime._activate_skill(self._skill)
         return ToolResult.success(
@@ -68,6 +69,7 @@ class SkillsPlugin:
         del config
         self._tools: ToolsPort = ctx.tools
         self._commands = ctx.commands
+        self._variables: RuntimeVariables = ctx.variables
         self._sandbox = ctx.sandbox
         self._runtime_paths: RuntimePaths = ctx.runtime_paths
         ctx.dispose(self._cleanup_runtime)

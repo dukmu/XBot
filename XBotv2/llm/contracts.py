@@ -68,6 +68,10 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None
     default_model: str
     models: list[ModelConfig] = Field(default_factory=list)
+    # Extra request headers appended to every call, e.g.
+    # ``x-opencode-session: "${session_id}"`` (expanded automatically with the
+    # session's runtime variables by the config-load boundary).
+    headers: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_catalog(self) -> "ProviderConfig":

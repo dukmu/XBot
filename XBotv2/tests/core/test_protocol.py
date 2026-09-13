@@ -75,7 +75,7 @@ class TestProviderConfig:
             protocol="openai",
             default_model="gpt-4",
             models=[ModelConfig(model="gpt-4")],
-            api_key="${TEST_KEY}",
+            api_key="expanded-key",
         )
         llm = self._create(config)
         assert llm.client.api_key == "expanded-key"
@@ -131,7 +131,7 @@ class TestProviderConfigLoader:
         deepseek = parse_provider_config({
             "protocol": "openai",
             "base_url": "https://api.example.com/v1",
-            "api_key": "${TEST_API_KEY}",
+            "api_key": "sk-test-123",
             "default_model": "deepseek-chat",
             "models": [
                 {"model": "deepseek-chat", "temperature": 0.7},
@@ -143,7 +143,7 @@ class TestProviderConfigLoader:
         assert deepseek.resolve().model == "deepseek-chat"
         assert deepseek.resolve("deepseek-reasoner").model == "deepseek-reasoner"
         assert deepseek.base_url == "https://api.example.com/v1"
-        assert deepseek.api_key == "sk-test-123"  # env var expanded
+        assert deepseek.api_key == "sk-test-123"  # boundary-expanded value
 
         openai = parse_provider_config({
             "protocol": "openai",
@@ -235,16 +235,30 @@ class TestProviderConfigLoader:
         ):
             service.provider_config("nonexistent_provider")
 
-    def test_missing_env_var_is_rejected(self):
-        from XBotv2.llm.config import parse_provider_config
+    def test_missing_env_var_is_rejected(self, tmp_path, monkeypatch):
+        """An unset ${env:NAME} fails closed at the config-load boundary."""
+        from XBotv2.config.loader import load_plugin_tree
+        from XBotv2.core.paths import RuntimePaths
 
+        (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "config" / "plugins.yaml").write_text(
+            "plugins:\n"
+            "- id: llm\n"
+            "  name: llm\n"
+            "  config:\n"
+            "    providers:\n"
+            "      custom:\n"
+            "        protocol: openai\n"
+            "        default_model: gpt-4\n"
+            "        api_key: \"${env:NONEXISTENT_VAR}\"\n",
+            encoding="utf-8",
+        )
         with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
-            parse_provider_config({
-                "protocol": "openai",
-                "default_model": "gpt-4",
-                "models": [{"model": "gpt-4"}],
-                "api_key": "${NONEXISTENT_VAR}",
-            })
+            load_plugin_tree(
+                RuntimePaths.from_data_dir(tmp_path),
+                tmp_path,
+                session_id="s1",
+            )
 
     def test_api_key_env_resolves_from_environment(self, monkeypatch):
         from XBotv2.llm.config import parse_provider_config

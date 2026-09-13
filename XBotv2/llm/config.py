@@ -17,32 +17,10 @@ being silently sent to a vendor.
 from __future__ import annotations
 
 import os
-import re
+
 from pydantic import JsonValue
 
 from XBotv2.llm.contracts import ModelConfig, ProviderConfig
-
-_ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
-
-
-def expand_env(value: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name not in os.environ:
-            raise ValueError(f"Environment variable {name} is not set")
-        return os.environ[name]
-
-    return _ENV.sub(replace, value)
-
-
-def _expand(value: JsonValue) -> JsonValue:
-    if isinstance(value, str):
-        return expand_env(value)
-    if isinstance(value, dict):
-        return {key: _expand(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_expand(item) for item in value]
-    return value
 
 
 def merge_request_extras(
@@ -78,7 +56,9 @@ def parse_provider_config(
     is never stored in configuration.  ``require_key=False`` (listing path)
     leaves the key unresolved.
     """
-    values = _expand(dict(raw))
+    # Environment references were expanded at the config-load boundary
+    # (``expand_env_refs`` over the plugin tree); this parser validates only.
+    values = dict(raw)
     api_key_env = values.pop("api_key_env", None)
     if api_key_env and not values.get("api_key"):
         env_name = str(api_key_env)
@@ -92,7 +72,6 @@ def parse_provider_config(
 __all__ = [
     "ModelConfig",
     "ProviderConfig",
-    "expand_env",
     "merge_request_extras",
     "parse_provider_config",
 ]

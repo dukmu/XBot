@@ -7,7 +7,7 @@ import json
 import os
 from pydantic import JsonValue
 
-from XBotv2.llm.config import ModelConfig, ProviderConfig, expand_env
+from XBotv2.llm.config import ModelConfig, ProviderConfig
 
 logger = logging.getLogger("xbotv2.llm")
 
@@ -48,15 +48,13 @@ def _provider_arguments(
     model_config: ModelConfig,
 ) -> dict[str, JsonValue]:
     """Resolve configuration shared by concrete remote adapters."""
-    api_key = expand_env(provider_config.api_key or "")
+    api_key = provider_config.api_key or ""
     _require_api_key(provider_config.protocol, model_config.model, api_key)
     max_retries, retry_backoff_factor = _retry_settings()
     return {
         "model": model_config.model,
         "api_key": api_key,
-        "base_url": expand_env(provider_config.base_url)
-        if provider_config.base_url
-        else None,
+        "base_url": provider_config.base_url,
         "temperature": model_config.temperature,
         "max_output_tokens": model_config.max_output_tokens,
         "reasoning_effort": model_config.reasoning_effort,

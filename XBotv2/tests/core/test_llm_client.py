@@ -1,5 +1,7 @@
 """Tests for llm provider message conversion."""
 
+import os
+
 from types import SimpleNamespace
 
 import pytest
@@ -695,7 +697,7 @@ def test_provider_config_accepts_vendor_extra_body(monkeypatch):
                 "max_output_tokens": 1024,
                 "extra_body": {
                     "thinking": {"type": "enabled", "budget_tokens": 4096},
-                    "vendor_flag": "${VENDOR_FLAG}",
+                    "vendor_flag": os.environ.get("VENDOR_FLAG", "off"),
                 },
             }
         ],

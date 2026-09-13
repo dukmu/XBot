@@ -46,6 +46,7 @@ class OpenAICompatibleProvider(BaseProvider):
         reasoning_effort: str | None = None,
         thinking: str | None = None,
         extra_body: dict[str, JsonValue] | None = None,
+        extra_headers: dict[str, str] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
@@ -68,6 +69,8 @@ class OpenAICompatibleProvider(BaseProvider):
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = dict(extra_body or {})
+        if extra_headers:
+            kwargs["default_headers"] = dict(extra_headers)
         self.client = AsyncOpenAI(**kwargs)
 
     # Documented OpenAI-compatible overflow discriminators.  llama.cpp reports
@@ -365,6 +368,7 @@ def create_openai_provider(provider_config, model_config, *, artifacts=None):
     return OpenAICompatibleProvider(
         **_provider_arguments(provider_config, model_config),
         artifacts=artifacts,
+        extra_headers=provider_config.headers or None,
     )
 
 

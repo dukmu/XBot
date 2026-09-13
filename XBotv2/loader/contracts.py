@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from pydantic import JsonValue, TypeAdapter
 
+from XBotv2.core.variables import expand_env_refs
+
 
 class LoadError(RuntimeError):
     """A tree entry failed to load or did not activate."""
@@ -53,12 +55,7 @@ _TOP_LEVEL_FIELDS = frozenset({"plugins", "entries"})
 
 def _resolve_ref(value: Any) -> Any:
     if isinstance(value, str):
-        match = re.fullmatch(r"\$\{([^}]+)\}", value)
-        if match:
-            ref = match.group(1)
-            if ref.startswith("env:"):
-                return os.environ.get(ref[4:], "")
-        return value
+        return expand_env_refs(value, source="plugin tree")
     if isinstance(value, dict):
         return {key: _resolve_ref(item) for key, item in value.items()}
     if isinstance(value, list):

@@ -7,37 +7,26 @@ validate their own entry with the Pydantic model declared by that plugin.
 
 from __future__ import annotations
 
-import os
-import re
+from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
 from pydantic import JsonValue
+
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.variables import RuntimeVariables
 from XBotv2.loader import resolve_agent_tree
 from XBotv2.loader.contracts import PluginTree
 from XBotv2.loader.runtime import plugin_config_schema, validate_plugin_config
-from XBotv2.core.paths import RuntimePaths
 
 
-_ENV = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
-
-
-def expand_env(value: str) -> str:
-    """Expand environment references and reject missing variables."""
-    if not isinstance(value, str):
-        return value
-
-    def replace(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name not in os.environ:
-            raise ValueError(f"Environment variable {name} is not set")
-        return os.environ[name]
-
-    return _ENV.sub(replace, value)
 
 
 def load_plugin_tree(
     paths: RuntimePaths,
     workspace_root: Path | str,
     session_id: str | None = None,
+    thread_id: str = "agent",
     extra_plugins: list[dict[str, JsonValue]] | None = None,
     plugin_dirs: list[Path | str] | None = None,
     is_subagent: bool = False,
@@ -47,6 +36,15 @@ def load_plugin_tree(
 
     The returned entries contain only generic declaration data.  No plugin
     identifier or plugin-owned field is interpreted here.
+
+    The two-pass variable contract:
+
+    1. ``${env:NAME}`` references were expanded while the document loaded
+       (``expand_env_refs`` over the plugin tree), before a session exists;
+    2. once a session identity is known this loader expands every
+       ``${name}`` runtime reference (``workspace``, ``session_id``,
+       ``thread_id``, ...) in each plugin config with the session's
+       ``RuntimeVariables``, so consumers receive plain values.
     """
     workspace = Path(workspace_root).resolve()
     tree = resolve_agent_tree(
@@ -58,6 +56,11 @@ def load_plugin_tree(
         extra_plugins=extra_plugins,
         session_id=session_id,
     )
+    if session_id is not None:
+        variables = RuntimeVariables.for_thread(
+            paths, workspace, paths.session(session_id).thread(thread_id)
+        )
+        tree = tree_with_expanded_configs(tree, variables)
     for entry in tree.entries:
         validate_plugin_config(
             plugin_config_schema(entry),
@@ -66,7 +69,22 @@ def load_plugin_tree(
     return tree
 
 
+def tree_with_expanded_configs(
+    tree: PluginTree,
+    variables: RuntimeVariables,
+) -> PluginTree:
+    """Expand every runtime reference in all plugin configs, once."""
+    return PluginTree([
+        replace(
+            entry,
+            config=cast(
+                dict[str, JsonValue], variables.expand_config(entry.config)
+            ),
+        )
+        for entry in tree.entries
+    ])
+
+
 __all__ = [
-    "expand_env",
     "load_plugin_tree",
 ]
