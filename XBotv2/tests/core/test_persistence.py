@@ -26,12 +26,13 @@ TEST_TRANSACTION = TrajectoryTransaction(
     id_field="compaction_id",
 )
 
-def thread_persistence(tmp_path, session_id="s1"):
+def thread_persistence(tmp_path, session_id="s1", *, defer_metadata=False):
     return ThreadPersistence.create(
         RuntimePaths.from_data_dir(tmp_path).session(session_id),
         thread_id="t1",
         workspace_root="/workspace",
         provider="default",
+        defer_metadata=defer_metadata,
     )
 
 
@@ -735,3 +736,29 @@ def _raw_records(persistence: ThreadPersistence) -> list[dict]:
         json.loads(line)
         for line in persistence.history.path.read_text(encoding="utf-8").splitlines()
     ]
+
+
+class TestLazyPersist:
+    """A brand-new session is invisible until its first durable record."""
+
+    def test_deferred_metadata_stays_buffered_until_first_write(self, tmp_path):
+        persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
+        persisted = persistence.metadata.load()
+        assert persisted.title == ""
+        # Buffering: saving does not touch the metadata file yet.
+        persistence.metadata.save(ThreadMetadata(title="late title"))
+        assert not persistence.paths.metadata_file.exists()
+        assert persistence.metadata.load().title == ""
+
+        # The first history record flushes the pending metadata.
+        persistence.history.append([
+            Message(role="assistant", content="first")
+        ])
+        assert persistence.paths.metadata_file.exists()
+        assert persistence.metadata.load().title == "late title"
+
+    def test_history_write_is_the_evidence_boundary(self, tmp_path):
+        persistence = thread_persistence(tmp_path, session_id="s1")
+        assert not persistence.has_persisted_state()
+        persistence.history.append([Message(role="user", content="hi")])
+        assert persistence.has_persisted_state()

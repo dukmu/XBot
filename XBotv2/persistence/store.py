@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -299,10 +299,13 @@ class MessageHistoryStore:
         self,
         paths: ThreadPaths,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+        *,
+        on_first_write: Callable[[], None] | None = None,
     ) -> None:
         self._path = paths.messages_file
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
+        self._on_first_write = on_first_write
 
     @property
     def path(self) -> Path:
@@ -519,6 +522,10 @@ class MessageHistoryStore:
                 if written == 0:
                     raise OSError("Trajectory append made no progress")
                 view = view[written:]
+            if original_size == 0 and self._on_first_write is not None:
+                # The first durable record is what turns an opened session into
+                # a real one; metadata flushed here rides along with it.
+                self._on_first_write()
             now = time.monotonic()
             if sync or now - state.last_sync >= _SYNC_INTERVAL_SECONDS:
                 os.fsync(descriptor)
@@ -618,6 +625,38 @@ class ThreadMetadataStore:
             json.dumps(metadata.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
         )
         self._log.debug("persistence.metadata.saved")
+
+
+class DeferredThreadMetadataStore:
+    """Buffer metadata writes until the thread's first durable record.
+
+    A brand-new session is opened without writing anything to disk, so an
+    abort before the first message leaves no empty session behind. The buffer
+    is flushed on the first history write, which is when the session becomes
+    real.
+    """
+
+    def __init__(self, real: ThreadMetadataStore) -> None:
+        self._real = real
+        self._pending: ThreadMetadata | None = None
+        self._deferred = True
+
+    def load(self) -> ThreadMetadata:
+        return self._real.load()
+
+    def save(self, metadata: ThreadMetadata) -> None:
+        if self._deferred:
+            self._pending = metadata
+        else:
+            self._real.save(metadata)
+
+    def flush(self) -> None:
+        # The first durable record ends the deferral: from then on metadata
+        # writes go straight to disk like a normal store.
+        self._deferred = False
+        if self._pending is not None:
+            self._real.save(self._pending)
+            self._pending = None
 
 
 class InboxStore:
@@ -780,6 +819,7 @@ class ThreadPersistence:
         workspace_root: str = "",
         provider: str = "",
         artifacts: ArtifactStorePort | None = None,
+        metadata: ThreadMetadataStore | DeferredThreadMetadataStore | None = None,
     ) -> None:
         self.paths = paths
         self.session_id = paths.session_id
@@ -791,13 +831,21 @@ class ThreadPersistence:
             session_id=self.session_id,
             thread_id=self.thread_id,
         )
-        self.history = MessageHistoryStore(paths, runtime_log)
+        self.metadata = metadata or ThreadMetadataStore(paths, runtime_log)
+        self.history = MessageHistoryStore(
+            paths,
+            runtime_log,
+            on_first_write=(
+                self.metadata.flush
+                if isinstance(self.metadata, DeferredThreadMetadataStore)
+                else None
+            ),
+        )
         self.artifacts: ArtifactStorePort = (
             artifacts
             if artifacts is not None
             else ArtifactStore(paths, runtime_log)
         )
-        self.metadata = ThreadMetadataStore(paths, runtime_log)
         self.inbox = InboxStore(paths, runtime_log)
         self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
         self.state = state
@@ -819,15 +867,25 @@ class ThreadPersistence:
         workspace_root: str,
         provider: str,
         artifacts: ArtifactStorePort | None = None,
+        defer_metadata: bool = False,
     ) -> "ThreadPersistence":
         thread_paths = _thread_paths(paths, thread_id)
+        # The directory itself is inert: a session only becomes visible through
+        # evidence (metadata or a message), so an unused open leaves nothing a
+        # listing shows or a GC pass cannot reclaim.
         thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
+        metadata = (
+            DeferredThreadMetadataStore(ThreadMetadataStore(thread_paths))
+            if defer_metadata
+            else None
+        )
         return cls(
             thread_paths,
             state=StateService(path=thread_paths.plugin_state_file),
             workspace_root=workspace_root,
             provider=provider,
             artifacts=artifacts,
+            metadata=metadata,
         )
 
     @classmethod

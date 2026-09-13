@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import shutil
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack
@@ -134,6 +135,7 @@ class SessionManager(SessionsPort):
         ] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
+        self.empty_session_timeout: float | None = 24 * 60 * 60
 
     def _thread_persistence(
         self,
@@ -179,6 +181,7 @@ class SessionManager(SessionsPort):
         if self.idle_timeout is None or self.idle_timeout <= 0:
             return
         now = time.monotonic()
+        await self._gc_empty_sessions(now)
         async with self._lock:
             due = [
                 ctx
@@ -193,6 +196,48 @@ class SessionManager(SessionsPort):
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
         for ctx in due:
             await self._close_runtime(ctx, "idle_timeout")
+
+    async def _gc_empty_sessions(self, now: float) -> None:
+        """Remove session directories that never accumulated real state.
+
+        A session that was opened but had no message, metadata, inbox, or
+        plugin state before being abandoned is worthless on disk. Fresh
+        directories are left alone for a grace period so a just-opened session
+        that is about to be written to does not disappear mid-use; only
+        abandoned (or legacy) empties are reclaimed.
+        """
+        if not self.empty_session_timeout:
+            return
+        root = self.paths.sessions_dir
+        if not root.is_dir():
+            return
+        active_session_ids = {sid for sid, _ in await self.active_threads()}
+        for candidate in root.iterdir():
+            if not candidate.is_dir() or candidate.name in active_session_ids:
+                continue
+            try:
+                # ``st_mtime`` is wall-clock time; compare it against
+                # ``time.time()``, not the monotonic clock used for idling.
+                age_seconds = time.time() - candidate.stat().st_mtime
+            except OSError:
+                continue
+            if age_seconds < self.empty_session_timeout:
+                continue
+            if persisted_thread_ids(self.paths, candidate.name):
+                continue
+            try:
+                shutil.rmtree(candidate)
+                self._log.info(
+                    "session.gc.removed_empty",
+                    session_id=candidate.name,
+                    age_seconds=round(age_seconds),
+                )
+            except OSError as exc:
+                self._log.warning(
+                    "session.gc.failed",
+                    session_id=candidate.name,
+                    error_type=type(exc).__name__,
+                )
 
     async def _close_runtime(
         self,
@@ -360,6 +405,7 @@ class SessionManager(SessionsPort):
                 parent_thread_id=parent_thread_id,
                 parent_permission_system=parent_permission_system,
                 is_subagent=is_subagent,
+                defer_persist=mode == "new",
             ))
             engine = application.driver
             if mode == "resume":
@@ -589,6 +635,13 @@ class SessionManager(SessionsPort):
             path.name for path in root.iterdir() if path.is_dir()
         ) if root.is_dir() else []
         active = await self.active_threads()
+        active_session_ids = {sid for sid, _ in active}
+        session_ids = [
+            session_id
+            for session_id in session_ids
+            if session_id in active_session_ids
+            or persisted_thread_ids(self.paths, session_id)
+        ]
         summaries = []
         for session_id in session_ids:
             try:
@@ -720,6 +773,14 @@ class SessionManager(SessionsPort):
     async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
         self._require_session(session_id)
         active = await self.active_threads()
+        thread_ids = {
+            *persisted_thread_ids(self.paths, session_id),
+            *(
+                thread_id
+                for (active_session_id, thread_id), _runtime in active.items()
+                if active_session_id == session_id
+            ),
+        }
         return tuple([
             await _thread_summary(
                 self,
@@ -727,7 +788,7 @@ class SessionManager(SessionsPort):
                 thread_id,
                 active.get((session_id, thread_id)),
             )
-            for thread_id in persisted_thread_ids(self.paths, session_id)
+            for thread_id in sorted(thread_ids)
         ])
 
     async def open_thread(self, request: OpenThread) -> OpenedSession:
@@ -1197,7 +1258,7 @@ def _has_persisted_session(
     thread_id: str,
 ) -> bool:
     """Whether a thread has committed real session evidence on disk."""
-    return session_paths.thread(thread_id).metadata_file.exists()
+    return thread_has_evidence(session_paths, thread_id)
 
 
 async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
@@ -1225,12 +1286,32 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
     )
 
 
+def thread_has_evidence(
+    session_paths: "SessionPaths", thread_id: str
+) -> bool:
+    """Whether a thread committed real durable state.
+
+    An opened-but-unused session holds only the ownership lock file; evidence
+    is what makes it a session the user can actually resume: metadata, a
+    message, a pending inbox, or plugin state.
+    """
+    thread = session_paths.thread(thread_id)
+    return (
+        thread.metadata_file.exists()
+        or thread.messages_file.exists()
+        or thread.inbox_file.exists()
+        or thread.plugin_state_file.exists()
+    )
+
+
 def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:
     session = paths.session(session_id)
     thread_ids: set[str] = set()
     if session.threads_dir.is_dir():
         thread_ids.update(
-            path.name for path in session.threads_dir.iterdir() if path.is_dir()
+            path.name
+            for path in session.threads_dir.iterdir()
+            if path.is_dir() and thread_has_evidence(session, path.name)
         )
     return sorted(thread_ids)
 

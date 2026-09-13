@@ -1433,8 +1433,9 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert ctx.application._context.tools._registry.get("edit") is None
         assert ctx.engine.settings.model == "explorer-model"
         assert ctx.engine.settings.context_window == 64000
+        # History was written before the switch, so the deferred metadata sink
+        # flushed on that first record and the disk is authoritative again.
         assert ctx.application._context.thread_persistence.metadata.load().agent == "Explorer"
-
         child_only = await ac.put(
             "/sessions/switch-primary/threads/main/agent",
             json={"name": "worker"},

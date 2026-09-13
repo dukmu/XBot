@@ -61,6 +61,7 @@ async def start_application(
     parent_thread_id: str = "",
     is_subagent: bool = False,
     interactive: bool = True,
+    defer_persist: bool = False,
     extra_plugins: list[dict[str, JsonValue]] | None = None,
     client_events: ClientEventsPort | None = None,
 ) -> Context:
@@ -105,6 +106,7 @@ async def start_application(
             thread_id=thread_id,
             workspace_root=str(workspace_root),
             provider=provider_name,
+            defer_metadata=defer_persist,
         )
         if persistence_enabled
         else None
@@ -249,6 +251,7 @@ async def create_agent_application(
         parent_permission_system=options.parent_permission_system,
         is_subagent=options.is_subagent,
         interactive=options.interactive,
+        defer_persist=options.defer_persist,
     )
     return mounted_application(context)
 

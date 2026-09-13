@@ -1,5 +1,8 @@
 """Session catalog resilience: one unreadable session must not hide the rest."""
 
+import os
+import time
+
 import pytest
 
 from XBotv2.core.messages import Message
@@ -85,3 +88,46 @@ async def test_mutating_a_missing_session_still_fails_clearly(tmp_path):
 
     with pytest.raises(SessionNotFound):
         await manager.delete_session("absent")
+
+
+async def test_new_session_is_invisible_until_it_has_evidence(tmp_path):
+    """An opened-but-unused session is not listed and has nothing to resume."""
+    manager = _manager(tmp_path)
+    active = await manager.active_threads()
+    assert not active
+
+    _write_new_session(tmp_path, "ghost")
+    listed = await manager.list_sessions()
+    assert [s.session_id for s in listed] == []
+
+    # Evidence (a message record) makes it visible
+    _write_evidence(tmp_path, "ghost")
+    listed = await manager.list_sessions()
+    assert [s.session_id for s in listed] == ["ghost"]
+
+
+async def test_empty_session_gc_reclaims_abandoned_ghosts(tmp_path):
+    manager = _manager(tmp_path)
+    _write_new_session(tmp_path, "ghost")
+    directory = tmp_path / "sessions" / "ghost"
+    assert directory.exists()
+    manager.empty_session_timeout = 60
+    # Backdate the ghost so it is already past the grace period.
+    old = time.time() - 3600
+    os.utime(directory, (old, old))
+
+    await manager._gc_empty_sessions(time.monotonic())
+    assert not directory.exists()
+    assert await manager.list_sessions() == ()
+
+
+def _write_new_session(tmp_path, session_id):
+    root = tmp_path / "sessions" / session_id
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "session.lock").touch()
+
+
+def _write_evidence(tmp_path, session_id):
+    paths = RuntimePaths.from_data_dir(tmp_path).session(session_id).thread("agent")
+    paths.messages_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.messages_file.write_text("{}\n", encoding="utf-8")

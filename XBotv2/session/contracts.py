@@ -459,6 +459,9 @@ class AgentApplicationOptions:
     parent_permission_system: PermissionsPort | None = None
     is_subagent: bool = False
     interactive: bool = True
+    # A brand-new session does not materialize on disk until its first record;
+    # resume sessions persist metadata immediately.
+    defer_persist: bool = False
 
 
 class AgentApplicationFactory(Protocol):
