@@ -137,6 +137,21 @@ test("answers a permission request through the interaction endpoint", async ({ p
   await expect(page.getByRole("heading", { name: "Approval required" })).toBeHidden();
 });
 
+test("rebuilds an unanswered approval after a reload", async ({ page }) => {
+  await openDemoSession(page);
+  const composer = page.getByRole("textbox", { name: "Message XBot" });
+  await composer.fill("Write a report");
+  await composer.press("Enter");
+  await expect(page.getByRole("heading", { name: "Approval required" })).toBeVisible();
+
+  await page.reload();
+
+  // The request only exists in the event stream; the resumed session snapshot
+  // must replay it or the dialog is unreachable.
+  await expect(page.getByRole("heading", { name: "Approval required" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Approval required" }).locator(".permission-tool strong")).toHaveText("filesystem_write");
+});
+
 test("renders Todo state as a checklist", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
@@ -713,6 +728,7 @@ async function mockProtocol(page: Page) {
   let pluginConfigRevision = "plugin-config-rev-1";
   let pluginConfig = { automatic: true };
   const archivedSessions = new Set<string>();
+  let pendingPermission: { type: string; data: Record<string, unknown> } | null = null;
   let pendingInputs: Array<{
     message_id: string;
     content: string;
@@ -885,11 +901,14 @@ async function mockProtocol(page: Page) {
     if (path === "/sessions" && method === "POST") {
       const payload = request.postDataJSON();
       const sessionId = String(payload.session_id || "demo-session");
-      return json(route, openSession(
-        sessionId,
-        String(payload.workspace_root || ""),
-        Number(payload.history_limit || 0),
-      ));
+      return json(route, {
+        ...openSession(
+          sessionId,
+          String(payload.workspace_root || ""),
+          Number(payload.history_limit || 0),
+        ),
+        pending_interactions: payload.mode === "resume" && pendingPermission ? [pendingPermission] : [],
+      });
     }
     if (path === "/sessions/demo-session/threads" && method === "POST") {
       return json(route, openSubagentSession());
@@ -1184,6 +1203,7 @@ async function mockProtocol(page: Page) {
             resume_supported: true,
           },
         }];
+        pendingPermission = events[0];
         publishRuntime(routeSessionId, events, requestId);
         return sse(route, events);
       }

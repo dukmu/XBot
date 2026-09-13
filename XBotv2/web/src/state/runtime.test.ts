@@ -18,6 +18,7 @@ const opened: OpenSessionResponse = {
   event_cursor: 0,
   status_slots: {},
   pending_inputs: [],
+  pending_interactions: [],
 };
 
 function event(type: string, data: Record<string, unknown>): ServerEvent {
@@ -915,6 +916,44 @@ describe("runtimeReducer", () => {
     expect(state.turnRunning).toBe(false);
     expect(state.entries.at(-1)).toMatchObject({ kind: "notice", level: "error", content: "provider failed" });
     expect(state.entries.find((entry) => entry.kind === "message")).toMatchObject({ streaming: false });
+  });
+
+  it("restores unanswered interactions from an open response", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "opened",
+      session: {
+        ...opened,
+        pending_interactions: [
+          {
+            type: "permission_request",
+            data: {
+              request_id: "permission-1",
+              source: "permission_system",
+              reason: "write file",
+              tool_call: { id: "call-1", name: "filesystem_write", args: { path: "a.txt" } },
+              resume_supported: true,
+            },
+          },
+          {
+            type: "user_input_required",
+            data: {
+              request_id: "input-1",
+              source: "ask_user",
+              tool_call_id: "call-2",
+              question: "Choose one",
+              options: [
+                { label: "A", description: "First" },
+                { label: "B", description: "Second" },
+              ],
+            },
+          },
+          { type: "unrelated_event", data: { request_id: "ignored" } },
+        ],
+      },
+    });
+
+    expect(state.interactions.map((item) => item.request_id)).toEqual(["permission-1", "input-1"]);
+    expect(state.interactions[0]).toMatchObject({ kind: "permission", tool_call: { id: "call-1" } });
   });
 
   it("renders a persisted tool result even when its call is outside display history", () => {

@@ -104,7 +104,7 @@ export interface RuntimeState {
 
 export type RuntimeSession = Omit<
   OpenSessionResponse,
-  "history" | "history_cursor" | "status" | "usage" | "session_stats" | "pending_inputs"
+  "history" | "history_cursor" | "status" | "usage" | "session_stats" | "pending_inputs" | "pending_interactions"
 >;
 
 export type RuntimeAction =
@@ -200,7 +200,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         trajectoryLoaded: false,
         usage: normalizeUsage(action.session.usage),
         sessionStats: normalizeSessionStats(action.session.session_stats),
-        interactions: [],
+        interactions: pendingInteractions(action.session.pending_interactions),
         tasks: {},
         todos: [],
         turnRunning: false,
@@ -1091,6 +1091,29 @@ function eventIdentity(event: ServerEvent): string {
 function queueInteraction(state: RuntimeState, request: InteractionRequest): RuntimeState {
   if (!request.request_id || state.interactions.some((item) => item.request_id === request.request_id)) return state;
   return { ...state, interactions: [...state.interactions, request] };
+}
+
+/**
+ * Rebuild unanswered dialogs from an open/resume response.  A client that
+ * reloads or reconnects while an approval is pending can otherwise never show
+ * the dialog again, because the request only exists in the live event stream.
+ */
+function pendingInteractions(items: unknown): InteractionRequest[] {
+  const pending: InteractionRequest[] = [];
+  for (const raw of arrayValue(items)) {
+    const item = objectValue(raw);
+    const type = stringValue(item.type);
+    const data = objectValue(item.data);
+    const request = type === "permission_request"
+      ? permissionRequest(data)
+      : type === "user_input_required"
+        ? userInputRequest(data)
+        : null;
+    if (!request?.request_id) continue;
+    if (pending.some((existing) => existing.request_id === request.request_id)) continue;
+    pending.push(request);
+  }
+  return pending;
 }
 
 function permissionRequest(data: JsonObject): InteractionRequest {

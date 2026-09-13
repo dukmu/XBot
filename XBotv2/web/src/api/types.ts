@@ -139,6 +139,16 @@ export interface OpenSessionResponse {
   event_cursor: number;
   status_slots: Record<string, string>;
   pending_inputs: PendingInput[];
+  pending_interactions: PendingInteraction[];
+}
+
+/**
+ * One unanswered client interaction, replayed by an open/resume response so a
+ * reloaded client can present the dialog again.
+ */
+export interface PendingInteraction {
+  type: string;
+  data: JsonObject;
 }
 
 export interface PendingInput {
