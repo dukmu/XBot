@@ -277,9 +277,10 @@ async def test_human_command_compacts_and_persists_immediately(
     setup.ctx.on(RUNTIME_EVENT, record_runtime_event)
     result = await setup.commands["compact"].handler("")
 
+    history_text = state_store.history.path.read_text(encoding="utf-8")
     records = [
         json.loads(line)
-        for line in state_store.history.path.read_text(encoding="utf-8").splitlines()
+        for line in history_text.splitlines()
     ]
     assert all(record["schema_version"] == 1 for record in records)
     trajectory = state_store.history.path.read_text(encoding="utf-8")
@@ -290,12 +291,25 @@ async def test_human_command_compacts_and_persists_immediately(
         record for record in records
         if record.get("event") == "compaction/summary"
     )
-    assert summary_record["data"]["raw_output"] == {
-        "content": "Earlier requirements.",
-        "reasoning": "Selected durable facts.",
-        "response_metadata": {"request_id": "compact-request"},
-        "additional_kwargs": {"finish_reason": "stop"},
-    }
+    # The summary text lives once, in the surface replacement it produced; the
+    # marker record carries metadata only so compaction never double-writes it.
+    # The marker carries metadata only: the summary text belongs to the
+    # surface replacement it produces, so it is not stored a second time.
+    assert "summary" not in summary_record["data"]
+    assert "raw_output" not in summary_record["data"]
+    assert summary_record["data"]["reason"] == "manual"
+    summary_replacements = [
+        record for record in records
+        if record.get("record_type") == "surface_replace"
+        and record.get("transcript") == "preserve"
+    ]
+    assert len(summary_replacements) == 1
+    replacement_texts = [
+        part["text"]
+        for message in summary_replacements[0]["messages"]
+        for part in message["parts"]
+    ]
+    assert any("Earlier requirements." in text for text in replacement_texts)
     assert summary_record["data"]["provider"] == "trace-provider"
     assert summary_record["data"]["model"] == "trace-model"
 

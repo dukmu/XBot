@@ -1876,6 +1876,10 @@ async def test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript(
         text.scroll_rows(text.line_count + text.max_rows)
         await pilot.pause()
         assert text.at_end
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        assert transcript.scroll_y == 0
+        assert transcript.max_scroll_y > 0, "the transcript must be scrollable"
         before = transcript.scroll_y
         await pilot.press("down")
         await pilot.pause()

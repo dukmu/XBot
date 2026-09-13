@@ -47,16 +47,6 @@ UsageRecorder = Callable[[dict[str, int]], Awaitable[None]]
 TrajectoryRecorder = Callable[[str, dict[str, JsonValue]], None]
 
 
-def _response_trace(response: ModelResponse) -> dict[str, JsonValue]:
-    """Return the complete provider-neutral response fields as JSON."""
-    return {
-        "content": response.content,
-        "reasoning": response.reasoning,
-        "response_metadata": response.response_metadata,
-        "additional_kwargs": response.additional_kwargs,
-    }
-
-
 def _summary_input(
     messages: Sequence[Message],
     split: int,
@@ -325,7 +315,6 @@ async def build_compaction_proposal(
         "prefix_end": split,
         "compaction_id": compaction_id,
         "summary": summary,
-        "raw_output": _response_trace(response),
         "compact_reason": reason,
         "compact_metrics": metrics,
     }

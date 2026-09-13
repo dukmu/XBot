@@ -29,7 +29,6 @@ class CompactionProposal(TypedDict):
     prefix_end: int
     compaction_id: str
     summary: str
-    raw_output: dict[str, JsonValue]
     compact_reason: CompactionReason
     compact_metrics: CompactionMetrics
     source_node_ids: NotRequired[list[str]]

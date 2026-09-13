@@ -377,11 +377,12 @@ class CompactService:
                     ),
                     context_tokens=metrics.context_tokens_after_estimate,
                 ))
+            # The replacement message in the surface replacement below is the
+            # authoritative copy of the summary text; this marker carries only
+            # metadata so one compaction never stores the same summary twice.
             self.state.history.record("compaction/summary", durable=True, data={
                 "compaction_id": compaction_id,
                 "reason": reason,
-                "summary": "\n".join(message.content for message in replacement),
-                "raw_output": proposal["raw_output"],
                 "source_node_ids": list(proposal["source_node_ids"]),
                 "provider": self._provider(ctx),
                 "model": self._model(ctx),
