@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { clearOpenSession, readOpenSession, writeOpenSession } from "./openSession";
 import { XBotApi, XBotApiError } from "../api/client";
 import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, TaskData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
@@ -102,6 +103,11 @@ export function useXBot() {
   const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
     if (generation !== navigationGeneration.current) return;
     currentSessionRef.current = session;
+    writeOpenSession({
+      session_id: session.session_id,
+      thread_id: session.thread_id,
+      workspace_root: session.workspace_root || "",
+    });
     latestEventSequenceRef.current = session.event_cursor;
     // A trajectory request belongs to the previous thread.  Drop its raw
     // window before attaching the new stream so delayed responses cannot
@@ -208,6 +214,8 @@ export function useXBot() {
     }
   }, [workspaceCatalog, reportError]);
 
+  const restoreAttempted = useRef(false);
+
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -221,6 +229,25 @@ export function useXBot() {
         dispatch({ type: "providers", providers: providers.providers });
         dispatch({ type: "server_reachable", value: true });
         dispatch({ type: "loading", value: false });
+        const saved = readOpenSession();
+        if (!saved || restoreAttempted.current) return;
+        restoreAttempted.current = true;
+        // Resume the session this browser had open. The resume response replays
+        // unanswered interactions, so an approval dialog survives a reload.
+        const generation = ++navigationGeneration.current;
+        try {
+          const session = await api.openSession({
+            sessionId: saved.session_id,
+            threadId: saved.thread_id,
+            workspaceRoot: saved.workspace_root || undefined,
+            mode: "resume",
+          });
+          if (!alive || generation !== navigationGeneration.current) return;
+          await activate(session, generation);
+        } catch (error) {
+          clearOpenSession();
+          if (alive && generation === navigationGeneration.current) reportError(error);
+        }
       } catch (error) {
         if (alive) reportError(error);
       }
@@ -231,7 +258,7 @@ export function useXBot() {
       runtimeEvents.stop();
       for (const controller of messageControllers.current.keys()) controller.abort();
     };
-  }, [api, workspaceCatalog, reportError, runtimeEvents]);
+  }, [activate, api, workspaceCatalog, reportError, runtimeEvents]);
 
   const openExistingSession = useCallback(async (sessionId?: string, workspaceRoot?: string) => {
     if (navigationBlocked || commandInFlight.current) {
@@ -768,6 +795,7 @@ export function useXBot() {
         ++navigationGeneration.current;
         currentSessionRef.current = null;
         reconcileInFlight.current = false;
+        clearOpenSession();
         resetStreamingState();
         setCommands([]);
         setNotification("");
