@@ -2651,6 +2651,161 @@ async def test_textual_session_events_recover_an_expired_cursor():
 
 
 @pytest.mark.asyncio
+async def test_textual_session_events_rebuild_the_baseline_after_repeated_evictions():
+    """A cursor that keeps expiring falls back to a fresh session snapshot."""
+
+    from XBotv2.client import XBotClientError
+    from XBotv2.protocol import ErrorResponse
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    def expired() -> XBotClientError:
+        return XBotClientError(409, ErrorResponse(
+            code="session_event_cursor_expired",
+            message="cursor expired",
+            details={"oldest_sequence": 7},
+            retryable=True,
+        ))
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+            self.rewinds: list[int] = []
+            self.rebuilds = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        def rewind_event_cursor(self, sequence: int) -> None:
+            self.rewinds.append(sequence)
+
+        async def refresh_baseline(self):
+            self.rebuilds += 1
+            return {"session_id": "s", "thread_id": "t", "history": []}
+
+        async def session_events(self):
+            self.calls += 1
+            if self.calls <= 4:
+                raise expired()
+            yield {"type": "turn_finished", "data": {"turn": 1}}
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    app._session_attached = True
+    app.state.apply_event(_frame("turn_started", {"turn": 1}))
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        for _ in range(40):
+            await pilot.pause()
+            if app.session.rebuilds and not app.state.turn_active:
+                break
+
+        # Three rewind recoveries, then the session snapshot, then the turn.
+        assert app.session.rewinds == [6, 6, 6]
+        assert app.session.rebuilds == 1
+        assert app.session.calls == 5
+        assert app.state.turn_active is False
+        assert app.state.errors == []
+
+
+@pytest.mark.asyncio
+async def test_textual_session_events_bound_baseline_rebuilds():
+    """A session that never offers a usable cursor still ends in one error."""
+
+    from XBotv2.client import XBotClientError
+    from XBotv2.protocol import ErrorResponse
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+            self.rebuilds = 0
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        def rewind_event_cursor(self, sequence: int) -> None:
+            del sequence
+
+        async def refresh_baseline(self):
+            self.rebuilds += 1
+            return {"session_id": "s", "thread_id": "t", "history": []}
+
+        async def session_events(self):
+            self.calls += 1
+            raise XBotClientError(409, ErrorResponse(
+                code="session_event_cursor_expired",
+                message="cursor expired",
+                details={"oldest_sequence": 7},
+                retryable=True,
+            ))
+            yield  # pragma: no cover — keeps this an async generator
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = FakeSession()
+    app._session_attached = True
+    app.state.apply_event(_frame("turn_started", {"turn": 1}))
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        for _ in range(60):
+            await pilot.pause()
+            if app.state.errors:
+                break
+
+        assert app.session.rebuilds == 2
+        # Parallel to the bounded rewind/reconnect budgets, not an endless loop:
+        # 3 rewinds + 1 rebuild, twice, then 3 reconnect attempts + the terminal
+        # failure.
+        assert app.session.calls <= 15
+        assert app.state.turn_active is False
+        assert app.state.errors
+
+
+@pytest.mark.asyncio
+async def test_open_session_restores_pending_interactions():
+    """A reloaded client rebuilds an unanswered approval dialog."""
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app._apply_open_session({
+            "session_id": "s",
+            "thread_id": "t",
+            "history": [],
+            "pending_interactions": [
+                {
+                    "type": "permission_request",
+                    "data": {
+                        "request_id": "permission:call-1",
+                        "source": "permission_system",
+                        "reason": "write the report",
+                        "tool_call": {
+                            "id": "call-1",
+                            "name": "filesystem_write",
+                            "args": {"path": "report.md"},
+                        },
+                        "resume_supported": True,
+                    },
+                },
+            ],
+        })
+
+        assert app.state.pending_permission_payload is not None
+        assert app.state.pending_permission_payload["request_id"] == "permission:call-1"
+
+
+@pytest.mark.asyncio
 async def test_textual_session_events_reconnect_after_unexpected_eof():
     """An SSE end before turn completion is treated as an incomplete stream."""
 

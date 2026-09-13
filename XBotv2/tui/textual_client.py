@@ -78,6 +78,10 @@ _SESSION_EVENT_RECONNECT_DELAYS = (0.05, 0.1, 0.25)
 # A cursor the server has already evicted is recoverable: resubscribe from the
 # oldest frame it still holds instead of failing the turn.
 _SESSION_EVENT_CURSOR_RECOVERIES = 3
+# When even the oldest retained frame is behind, the session snapshot is the
+# recovery point: re-open the session for a fresh cursor, history, and pending
+# interactions. Bounded, because a rebuild resets the rewind budget above.
+_SESSION_EVENT_BASELINE_REBUILDS = 2
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -351,6 +355,31 @@ class XBotTextualApp(App[None]):
             if isinstance(history, list):
                 self.state.restore_history(history)
                 await self._render_replay_window()
+            if self._restore_pending_interactions(session):
+                await self._render_new_transcript_entries()
+                self._refresh_status()
+
+    def _restore_pending_interactions(self, session: dict[str, JsonValue]) -> bool:
+        """Rebuild unanswered dialogs from an open/resume snapshot.
+
+        A live approval or question exists only in the event stream, so a
+        reloaded or reconnected client would otherwise never see the dialog
+        again and the turn would look stuck.
+        """
+        pending = session.get("pending_interactions")
+        if not isinstance(pending, list):
+            return False
+        restored = False
+        for item in pending:
+            if not isinstance(item, dict):
+                continue
+            event_type = str(item.get("type") or "")
+            data = item.get("data")
+            if not event_type or not isinstance(data, dict):
+                continue
+            self.state.apply_event({"type": event_type, "data": data})
+            restored = True
+        return restored
 
     def _start_session_events(self) -> None:
         if not hasattr(self.session, "session_events"):
@@ -860,9 +889,36 @@ class XBotTextualApp(App[None]):
         logger.warning("session event cursor expired; replaying from %s", rewind)
         return True
 
+    async def _rebuild_session_baseline(self, exc: BaseException) -> bool:
+        """Re-open the session for a fresh cursor after an eviction.
+
+        The replay window moving past this client's cursor says nothing about
+        the session's health, so the Web client rebuilds its baseline instead of
+        reporting an error. Do the same: adopt the snapshot (cursor, history,
+        unanswered interactions) and resubscribe from it.
+        """
+        if not isinstance(exc, XBotClientError):
+            return False
+        if exc.code != "session_event_cursor_expired":
+            return False
+        refresh = getattr(self.session, "refresh_baseline", None)
+        if not callable(refresh):
+            return False
+        try:
+            session = await refresh()
+        except Exception:  # noqa: BLE001 — an unreachable snapshot is a real failure
+            logger.warning("session baseline rebuild failed", exc_info=True)
+            return False
+        if not isinstance(session, dict):
+            return False
+        await self._apply_open_session(session)
+        logger.warning("session event cursor expired; rebuilt the client baseline")
+        return True
+
     async def _collect_session_events(self) -> None:
         reconnect_attempt = 0
         cursor_recoveries = 0
+        baseline_rebuilds = 0
         try:
             while self._session_attached:
                 try:
@@ -894,6 +950,16 @@ class XBotTextualApp(App[None]):
                         and self._recover_expired_cursor(exc)
                     ):
                         cursor_recoveries += 1
+                        continue
+                    if (
+                        baseline_rebuilds < _SESSION_EVENT_BASELINE_REBUILDS
+                        and await self._rebuild_session_baseline(exc)
+                    ):
+                        baseline_rebuilds += 1
+                        # The eviction was about the old cursor, so the rewind
+                        # budget and the reconnect streak start over.
+                        cursor_recoveries = 0
+                        reconnect_attempt = 0
                         continue
                     if reconnect_attempt >= len(_SESSION_EVENT_RECONNECT_DELAYS):
                         await self._handle_stream_failure(

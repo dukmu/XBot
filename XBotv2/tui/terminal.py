@@ -207,6 +207,28 @@ class TerminalSession:
         """Resume the shared event stream from a server-provided recovery point."""
         self._event_cursor = max(0, sequence)
 
+    async def refresh_baseline(self) -> dict[str, JsonValue] | None:
+        """Re-open this session and adopt the snapshot as the new baseline.
+
+        An evicted cursor means the client can no longer describe a contiguous
+        stream. Re-opening reuses the live session runtime and returns the
+        current event cursor, history, pending inputs, and unanswered
+        interactions, so the client can resynchronize instead of failing.
+        """
+        if not self._session_attached:
+            return None
+        open_kwargs: dict[str, Any] = dict(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            workspace_root=self._workspace_root,
+            mode="resume",
+        )
+        if self._agent:
+            open_kwargs["agent"] = self._agent
+        opened = await self._client.open_session(**open_kwargs)
+        self._event_cursor = opened.event_cursor
+        return _dump(opened)
+
     async def session_events(self) -> AsyncIterator[dict[str, JsonValue]]:
         """Yield turns initiated by runtime general messages."""
 
