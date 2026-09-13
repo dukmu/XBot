@@ -3439,13 +3439,20 @@ async def test_textual_task_panel_updates_in_place():
         app.state.apply_event(event)
         await app._handle_stream_event(event)
         await pilot.pause()
+        from XBotv2.tui.textual_widgets import BoundedText
+
         panel = app.query_one("#task_panel", Collapsible)
         body = app.query_one("#task_list", TaskListWidget)
-        row = body.query_one(".task-row", Static)
+        block = body.query_one(".subagent-task", Collapsible)
 
         assert panel.display is True
         assert panel.title == "Tasks (1 running)"
-        assert "task-1" in row.render().plain
+        assert "task-1" in str(block.title or "")
+        block.collapsed = False
+        await pilot.pause()
+        assert "command: sleep 30" in block.query_one(
+            ".task-detail", BoundedText
+        ).text
 
 
 def test_tui_state_prunes_successful_tasks_but_keeps_failures():
@@ -3512,18 +3519,21 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
     app.session = FakeSession()
 
     async with app.run_test(headless=True, size=(80, 18)) as pilot:
+        from XBotv2.tui.textual_widgets import BoundedText
+
         widget = app.query_one("#task_list", TaskListWidget)
         widget.update_tasks([task], width=80)
         await pilot.pause()
         subagent = widget.query_one(SubagentTaskWidget)
-        body = subagent.query_one(".subagent-output")
-
         assert subagent.collapsed is True
-        assert "reviewer" in str(subagent.title)
+        assert "reviewer" in str(subagent.title or "")
         subagent.collapsed = False
         await pilot.pause()
-        assert isinstance(body, VerticalScroll)
-        assert body.styles.height.value == 6
+        detail = subagent.query_one(".task-detail", BoundedText)
+        assert "command: reviewer: inspect changes" in detail.text
+        assert "line 0" in detail.text and "line 19" in detail.text
+        assert detail.line_count >= 20
+        assert detail.size.height <= 8
 
 
 @pytest.mark.asyncio

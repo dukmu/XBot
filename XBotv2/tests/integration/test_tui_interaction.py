@@ -579,6 +579,57 @@ async def test_completion_popup_respects_scrolled_away_position(
 
 
 @pytest.mark.asyncio
+async def test_long_task_command_is_truncated_in_title_but_full_behind_the_window(
+    scripted_session,
+) -> None:
+    """A long command/params stays readable: the collapsed title clips it and
+    the expandable body shows the full record in a bounded, scrollable window."""
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(100, 30)) as pilot:
+        await pilot.pause()
+        command = "python -m tools.run --flag " + "param_" * 40
+        output = "\n".join(f"log line {i}" for i in range(80))
+        app.state.apply_event({
+            "type": "task_updated",
+            "data": {
+                "task_id": "long-task",
+                "command": command,
+                "kind": "shell",
+                "cwd": "/workspace",
+                "status": "completed",
+                "created_at": 1.0,
+                "started_at": 1.0,
+                "finished_at": 2.0,
+                "output": output,
+                "error": "",
+                "thread_id": "",
+            },
+        })
+        await app._handle_stream_event({"type": "task_updated", "data": {"task_id": "long-task"}})
+        app._refresh_task_panel()
+        await pilot.pause()
+
+        block = app.query_one(".subagent-task")
+        title = block.title or ""
+        assert "..." in title, "the collapsed title must be truncated, not the data"
+
+        block.collapsed = False
+        await pilot.pause()
+        detail = block.query_one(".task-detail", BoundedText)
+        assert "command: " + command in detail.text
+        assert "param_" * 40 in detail.text
+        assert "log line 79" in detail.text
+        assert "log line 0" in detail.text
+        # Windowed: only a slice is rendered, and paging reaches the last line.
+        assert len(detail.window_text.splitlines()) <= detail.max_rows
+        detail.scroll_rows(detail.line_count)
+        assert detail.window_text.endswith("log line 79")
+
+
+@pytest.mark.asyncio
 async def test_narrow_completion_tasks_status_and_composer_do_not_overlap(
     scripted_session,
 ) -> None:

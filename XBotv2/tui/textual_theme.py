@@ -75,14 +75,20 @@ Screen {
     color: #bb9af7;
 }
 
-.subagent-output {
-    height: 6;
-    max-height: 6;
+.subagent-task .task-detail {
+    width: 1fr;
+    height: auto;
+    max-height: 8;  /* one expanded task window plus its footer */
     padding: 0 0 0 2;
     color: #8b95a7;
-    overflow-y: auto;
-    scrollbar-color: #7aa2f7;
-    scrollbar-background: #171a21;
+}
+
+.subagent-task .task-detail .block-window {
+    max-height: 7;
+}
+
+.subagent-task .task-detail .block-foot {
+    color: #6b7484;
 }
 
 #queue_list {

@@ -245,7 +245,7 @@ def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
 
 
 class SubagentTaskWidget(Collapsible):
-    """One expandable subagent task with a fixed-height scrollable body."""
+    """One expandable task with the full command/details behind a bounded window."""
 
     def __init__(
         self,
@@ -255,22 +255,40 @@ class SubagentTaskWidget(Collapsible):
         collapsed: bool = True,
     ) -> None:
         self.task_id = task.task_id
-        output = task.error or task.output or "Waiting for subagent output..."
-        details = [f"thread: {task.thread_id or '-'}"]
-        total = int(task.usage.get("total_tokens") or 0)
-        if total:
-            details.append(f"tokens: {_compact_count(total)}")
-        details.extend(("", output))
-        body = VerticalScroll(
-            Static("\n".join(details), markup=False),
-            classes="subagent-output",
-        )
         super().__init__(
-            body,
+            BoundedText(task_detail_text(task), classes="task-detail"),
             title=_task_title(task, width=width),
             collapsed=collapsed,
             classes="subagent-task",
         )
+
+
+def task_detail_text(task: TuiTask) -> str:
+    """The full task record, unwrapped: the compact row never truncates it."""
+    parts: list[str] = []
+    if task.command:
+        parts.append(f"command: {task.command}")
+    if task.cwd:
+        parts.append(f"cwd: {task.cwd}")
+    meta = [f"kind: {task.kind}"]
+    if task.agent:
+        meta.append(f"agent: {task.agent}")
+    meta.append(f"status: {task.status}")
+    if task.thread_id:
+        meta.append(f"thread: {task.thread_id}")
+    usage = task.usage
+    if usage:
+        total = int(usage.get("total_tokens") or 0)
+        if total:
+            meta.append(f"tokens: {_compact_count(total)}")
+    parts.append("  ".join(meta))
+    if task.output.strip():
+        parts.append("output:")
+        parts.append(task.output.rstrip())
+    if task.error.strip():
+        parts.append("error:")
+        parts.append(task.error.rstrip())
+    return "\n".join(parts)
 
 
 class TaskListWidget(VerticalScroll):
@@ -306,23 +324,14 @@ class TaskListWidget(VerticalScroll):
         }
         self._signature = signature
         self.remove_children()
-        widgets: list[Static | SubagentTaskWidget] = []
-        for task in tasks:
-            if task.kind == "agent":
-                widgets.append(
-                    SubagentTaskWidget(
-                        task,
-                        width=width,
-                        collapsed=task.task_id not in expanded,
-                    )
-                )
-            else:
-                widgets.append(
-                    Static(
-                        tasks_renderable([task], width=width),
-                        classes="task-row",
-                    )
-                )
+        widgets: list[SubagentTaskWidget] = [
+            SubagentTaskWidget(
+                task,
+                width=width,
+                collapsed=task.task_id not in expanded,
+            )
+            for task in tasks
+        ]
         if widgets:
             self.mount(*widgets)
 
