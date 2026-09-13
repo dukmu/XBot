@@ -65,6 +65,10 @@ class CompactionCompletedData(WireModel):
     # Clients render a notice for unrequested compaction without re-deriving
     # the reason vocabulary themselves.
     automatic: bool = False
+    # The live summary travels on the event so a client can show what was kept
+    # without reading the trajectory back; the durable copy stays in the
+    # surface replacement.
+    summary: str = ""
 
 
 class CompactionFailedData(WireModel):

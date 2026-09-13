@@ -2595,15 +2595,20 @@ def test_tui_state_notices_only_unrequested_compaction():
     })
     assert [notice.kind for notice in state.notices] == ["compact"]
 
+    # A manual compaction is user-visible too: the transcript entry carries
+    # the live summary payload for the expandable context row.
     state.apply_event({
         "type": "compaction_completed",
         "data": {
             "reason": "manual",
             "automatic": False,
+            "summary": "kept requirements",
             "metrics": {"history_chars_before": 40_000, "history_chars_after": 900},
         },
     })
-    assert [notice.kind for notice in state.notices] == ["compact"]
+    compact_notices = [notice for notice in state.notices if notice.kind == "compact"]
+    assert len(compact_notices) == 2
+    assert compact_notices[1].payload == {"reason": "manual", "automatic": False, "summary": "kept requirements", "metrics": {"history_chars_before": 40_000, "history_chars_after": 900}}
 
     state.apply_event({
         "type": "compaction_failed",
@@ -2613,7 +2618,7 @@ def test_tui_state_notices_only_unrequested_compaction():
             "message": "no room",
         },
     })
-    assert [notice.kind for notice in state.notices] == ["compact", "compact"]
+    assert len([notice for notice in state.notices if notice.kind == "compact"]) == 3
 
 
 @pytest.mark.asyncio

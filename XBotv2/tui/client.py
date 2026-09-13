@@ -269,15 +269,16 @@ class TuiState:
         elif event_type == "compaction_completed":
             self.compaction_active = False
             self._refresh_status(reset_terminal=True)
-            if data.get("automatic") is True:
-                metrics = data.get("metrics") or {}
-                self.append_notice(
-                    "compact",
-                    "Conversation compacted "
-                    f"({metrics.get('history_chars_before', 0)} to "
-                    f"{metrics.get('history_chars_after', 0)} characters).",
-                    payload=data,
-                )
+            metrics = data.get("metrics") or {}
+            self.append_notice(
+                "compact",
+                "Conversation compacted "
+                f"({metrics.get('history_chars_before', 0)} to "
+                f"{metrics.get('history_chars_after', 0)} characters, "
+                f"{metrics.get('messages_before', 0)} to "
+                f"{metrics.get('messages_after', 0)} messages)",
+                payload=data,
+            )
         elif event_type == "compaction_failed":
             self.compaction_active = False
             self._refresh_status(reset_terminal=True)

@@ -75,3 +75,12 @@
   .lifecycle { min-height: 22px; font-size: 12px; }
   .lifecycle code { font-size: 10px; }
 }
+
+.compact summary {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+}
+
+.compact summary code {
+  font-weight: 400;
+}

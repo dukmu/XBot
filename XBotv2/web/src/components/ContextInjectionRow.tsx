@@ -5,23 +5,22 @@ import type { RuntimeEntry } from "../state/runtime";
 import styles from "./ContextInjectionRow.module.css";
 
 export function ContextInjectionRow({ entry }: { entry: RuntimeEntry }) {
-  const lifecycle = entry.source === "turn" || entry.source === "compact";
-  if (lifecycle) {
-    const Icon = entry.source === "compact" ? Layers3 : Activity;
+  if (entry.source === "turn") {
     return (
       <div className={`${styles.row} ${styles.lifecycle}`} role="status">
-        <Icon size={14} />
+        <Activity size={14} />
         <span>{entry.content}</span>
         <code>{entry.event}</code>
       </div>
     );
   }
+  const compact = entry.source === "compact";
   return (
-    <details className={styles.row}>
+    <details className={`${styles.row}${compact ? ` ${styles.compact}` : ""}`}>
       <summary>
         <Layers3 size={14} />
-        <span>Injected context</span>
-        <code>{entry.source} · {entry.event}</code>
+        <span>{compact ? "Compacted context" : "Injected context"}</span>
+        <code>{entry.source}{entry.event ? ` · ${entry.event}` : ""}</code>
         <ChevronRight size={13} className={styles.chevron} />
       </summary>
       <div className={`${styles.body} markdown-body`}>

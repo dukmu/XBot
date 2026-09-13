@@ -629,6 +629,49 @@ async def test_completion_popup_respects_scrolled_away_position(
 
 
 @pytest.mark.asyncio
+async def test_compaction_appears_as_an_expandable_transcript_entry(
+    scripted_session,
+) -> None:
+    """A compaction is visible in the transcript, not silent: the entry is
+    collapsed by default and expands to the full summary."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    summary = "\n".join(f"summary line {i:02d}" for i in range(30))
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._consume_stream_event({
+            "type": "compaction_completed",
+            "data": {
+                "reason": "manual",
+                "automatic": False,
+                "summary": summary,
+                "metrics": {
+                    "messages_before": 40,
+                    "messages_after": 12,
+                    "history_chars_before": 9000,
+                    "history_chars_after": 4000,
+                },
+            },
+        })
+        await pilot.pause()
+
+        block = app.query_one(".compact-block", Collapsible)
+        assert block.collapsed is True
+        assert "Conversation compacted" in str(block.title or "")
+        assert "9000 to 4000" in str(block.title or "")
+
+        block.collapsed = False
+        await pilot.pause()
+        detail = block.query_one(".compact-summary", BoundedText)
+        assert detail.text == summary
+        assert len(detail.window_text.splitlines()) <= detail.max_rows
+
+
+@pytest.mark.asyncio
 async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> None:
     """/thread enters a read-only view: history rendered, live frames appended,
     composer inert, and the main thread stays the only thing that can ask the user."""

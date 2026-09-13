@@ -503,7 +503,18 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
     case "compaction_started":
       return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Compacting conversation history…", eventIdentity(event))] };
     case "compaction_completed":
-      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Conversation history compacted", eventIdentity(event))] };
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          runtimeEntry(
+            "compact",
+            event.type,
+            stringValue(data.summary) || "Conversation history compacted",
+            eventIdentity(event),
+          ),
+        ],
+      };
     case "compaction_failed":
       return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.message) || stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
     case "usage":
@@ -753,7 +764,9 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
     if (item.transcript === "preserve") {
       if (replacements.length === 1) lineage.set(replacements[0].nodeId, sourceIds);
       const compactionId = item.operation.startsWith("compact:") ? item.operation.slice(8) : "";
-      upsertCompactionGroup(groups, item.position, compactionId, item.operation, {});
+      upsertCompactionGroup(groups, item.position, compactionId, item.operation, {
+        summary: compactionSummaryText(item.messages[0]),
+      });
       continue;
     }
     const indexes = sourceIds
@@ -831,6 +844,18 @@ function isEmptyObject(value: unknown): boolean {
     && typeof value === "object"
     && !Array.isArray(value)
     && Object.keys(value).length === 0;
+}
+
+/**
+ * The durable summary is a `historical_context`/`conversation_summary` prompt
+ * container; pull its text out so a reloaded view can show what was kept.
+ */
+function compactionSummaryText(message: HistoryItem | undefined): string {
+  if (!message || typeof message.content !== "string") return "";
+  const match = message.content.match(
+    /<conversation_summary[^>]*>([\s\S]*?)<\/conversation_summary>/,
+  );
+  return (match ? match[1] : "").trim();
 }
 
 function upsertCompactionGroup(

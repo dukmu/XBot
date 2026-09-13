@@ -429,6 +429,9 @@ class CompactService:
                 "reason": reason,
                 "metrics": metrics,
                 "automatic": is_automatic_compaction(reason),
+                # The live summary is event-only: the durable trajectory keeps
+                # the single copy inside the surface replacement.
+                "summary": "\n".join(message.content for message in replacement),
             },
         ))
         return {"rebuild": True}

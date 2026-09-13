@@ -1006,6 +1006,17 @@ class InlineChoice:
     payload: dict[str, str]
 
 
+def compact_widget(*, title: str, summary: str) -> Collapsible:
+    """A collapsed context entry whose body holds the full compaction summary."""
+
+    return Collapsible(
+        BoundedText(summary, classes="compact-summary"),
+        title=title,
+        collapsed=True,
+        classes="compact-block",
+    )
+
+
 def message_widget(
     state: TuiState,
     message: TuiMessage,

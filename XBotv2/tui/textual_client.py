@@ -47,6 +47,7 @@ from XBotv2.tui.textual_widgets import (
     _markdown_plain_text,
     entry_widget,
     message_widget,
+    compact_widget,
     notice_title,
     queue_renderable,
     render_message,
@@ -2387,6 +2388,13 @@ class XBotTextualApp(App[None]):
                 if choices and source != "ask_user":
                     choices.append(InlineChoice("Other", "answer_custom", {}))
             return self._request_widget(notice, key=key, title=f"{notice.ts}  question", choices=choices)
+        if notice.kind == "compact":
+            summary = str(notice.payload.get("summary") or "")
+            if summary:
+                return compact_widget(
+                    title=f"{notice.ts}  {notice.text}",
+                    summary=summary,
+                )
         return entry_widget("notice", f"{notice.ts}  {notice_title(notice.kind)}", notice.text)
 
     def _request_widget(

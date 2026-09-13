@@ -91,6 +91,31 @@ Screen {
     color: #6b7484;
 }
 
+.compact-block {
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+.compact-block CollapsibleTitle {
+    height: 1;
+    padding: 0 0 0 2;
+    color: #e0af68;
+}
+
+.compact-block .compact-summary {
+    width: 1fr;
+    height: auto;
+    max-height: 8;
+    padding: 0 0 0 2;
+    color: #d6dae2;
+}
+
+.compact-block .compact-summary .block-window {
+    max-height: 7;
+}
+
 #queue_list {
     height: auto;
     padding: 0 1;
