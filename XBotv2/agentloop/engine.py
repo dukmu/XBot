@@ -769,7 +769,13 @@ class Engine(AgentLoopDriverPort):
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
             response_metadata = dict(response.response_metadata)
-            response_id = f"assistant-{self.turn_count}-{iteration}"
+            # The turn and iteration counters do not identify one response:
+            # ``iteration`` is reused by the retry and the finalizing paths,
+            # and a regenerated turn reuses its ``turn_count``.  The id is
+            # persisted as ``xbot_message_id`` and clients key on it, so a
+            # repeated id makes two different assistant messages look like
+            # one and silently hides the second.
+            response_id = f"assistant-{self.turn_count}-{iteration}-{uuid.uuid4().hex[:8]}"
             response_additional = dict(response.additional_kwargs)
             response_additional["xbot_message_id"] = response_id
             response_msg = Message(

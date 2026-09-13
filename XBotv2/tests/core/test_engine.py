@@ -496,6 +496,49 @@ class TestEngineBasics:
         )
         assert llm.bound_tools == []
 
+    @pytest.mark.asyncio
+    async def test_assistant_message_ids_stay_unique_within_a_turn(
+        self, state_store, temp_workspace
+    ):
+        """The finalizing round reuses ``iteration``; the id must not collide.
+
+        ``xbot_message_id`` is persisted and clients key on it, so a repeated
+        id makes two different assistant messages look like one and hides the
+        second body.
+        """
+        responses = [
+            {
+                "content": f"Call {i}",
+                "tool_calls": [
+                    {"name": "echo", "args": {"message": str(i)}, "id": f"call_{i}"}
+                ],
+            }
+            for i in range(3)
+        ]
+        responses.append({"content": "Budget exhausted; work remains."})
+        llm = MockLLM(responses=responses)
+        registry = ToolRegistry()
+        registry.register(echo_tool)
+
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        engine.max_iterations = 3
+        events = [e async for e in engine.run_turn("loop")]
+
+        ids = [
+            str(event["data"]["id"])
+            for event in events
+            if event["type"] == "assistant_message"
+        ]
+        assert len(ids) == 4
+        assert len(set(ids)) == len(ids)
+        persisted = [
+            str(message.additional_kwargs.get("xbot_message_id") or "")
+            for message in engine.messages
+            if message.role == "assistant"
+        ]
+        assert len(persisted) == len(ids)
+        assert len(set(persisted)) == len(persisted)
+
 
 class TestEngineHooks:
     """Hook integration in the engine."""

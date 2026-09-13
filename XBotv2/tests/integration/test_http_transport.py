@@ -2707,6 +2707,10 @@ async def test_http_messages_sse_stream_turn_events(
     timing = assistant["data"].pop("timing")
     assert timing["llm_ms"] >= timing["ttft_ms"] >= 0
     assert timing["decode_ms"] >= 0
+    # The id carries a per-response uniqueness suffix; the fixture pins the
+    # stable ``assistant-<turn>-<iteration>`` prefix only.
+    assert assistant["data"]["id"].startswith("assistant-1-1-")
+    assistant["data"]["id"] = "assistant-1-1"
     finished = next(e for e in events if e.get("type") == "turn_finished")
     session_stats = finished["data"].pop("session_stats")
     assert session_stats["turns"] == 1
