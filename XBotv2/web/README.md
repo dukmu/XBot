@@ -65,6 +65,13 @@ The reducer is the only place that converts `ServerEvent` envelopes into UI
 state. Tool execution stays inside the Agent runtime; the browser only answers
 interactions and calls typed resource mutations.
 
+The plugin configuration editor is schema-driven: `components/schemaForm.ts`
+projects the catalog's pydantic JSON Schema (`$defs`/`$ref`, `anyOf` null
+branches, enums, maps, arrays) into field descriptors and
+`components/SchemaForm.tsx` renders them. It edits exactly one layer, so
+`Clear` removes that key from the layer instead of writing the schema default,
+and saving replaces the layer's whole configuration object.
+
 ## Verification
 
 ```bash

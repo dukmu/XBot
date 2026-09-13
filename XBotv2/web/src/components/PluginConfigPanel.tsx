@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { JsonObject, PluginConfigCatalog, PluginConfigScope } from "../api/types";
-
-type JsonSchema = {
-  type?: string;
-  title?: string;
-  description?: string;
-  enum?: unknown[];
-  properties?: Record<string, JsonSchema>;
-};
+import { SchemaForm } from "./SchemaForm";
+import { type JsonSchema, isRecord, schemaErrors } from "./schemaForm";
 
 export interface PluginConfigPanelProps {
   sessionId?: string;
@@ -17,12 +11,30 @@ export interface PluginConfigPanelProps {
   update: (sessionId: string, threadId: string, pluginId: string, scope: PluginConfigScope, revision: string, config: JsonObject) => Promise<PluginConfigCatalog>;
 }
 
+/** Recursive layer merge, matching how the server resolves a configuration. */
+function mergeLayers(base: JsonObject, overlay: JsonObject): JsonObject {
+  const merged: JsonObject = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    const current = merged[key];
+    merged[key] = isRecord(current) && isRecord(value) ? mergeLayers(current, value) : value;
+  }
+  return merged;
+}
+
+/** In-progress edits for one plugin layer, valid only for its `key`. */
+interface ConfigDraft {
+  key: string;
+  config: JsonObject;
+  text: string;
+  error: string;
+}
+
 export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load, update }: PluginConfigPanelProps) {
   const [selectedScope, setSelectedScope] = useState<PluginConfigScope>(fixedScope || "workspace");
   const scope = fixedScope || selectedScope;
   const [catalog, setCatalog] = useState<PluginConfigCatalog | null>(null);
   const [selectedId, setSelectedId] = useState("");
-  const [draft, setDraft] = useState("{}");
+  const [draft, setDraft] = useState<ConfigDraft | null>(null);
   const [status, setStatus] = useState("idle");
 
   useEffect(() => {
@@ -51,21 +63,38 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
     [catalog, selectedId],
   );
 
-  useEffect(() => {
-    setDraft(selected ? JSON.stringify(selected.scope_config, null, 2) : "{}");
-  }, [selected]);
+  // The draft is keyed by layer+plugin: a selection change simply falls back to
+  // the stored layer instead of needing a synchronizing effect.
+  const draftKey = `${scope}:${selected?.plugin_id ?? ""}`;
+  const active = draft?.key === draftKey ? draft : null;
+  const stored = selected?.scope_config ?? null;
+  const config = active?.config ?? stored;
+  const jsonDraft = active?.text ?? JSON.stringify(stored, null, 2);
+  const jsonError = active?.error ?? "";
+
+  const applyConfig = (next: JsonObject) => {
+    setDraft({ key: draftKey, config: next, text: JSON.stringify(next, null, 2), error: "" });
+  };
+
+  const editJson = (text: string) => {
+    try {
+      const value: unknown = JSON.parse(text);
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Configuration must be a JSON object.");
+      }
+      setDraft({ key: draftKey, config: value as JsonObject, text, error: "" });
+    } catch (error) {
+      setDraft({
+        key: draftKey,
+        config: config ?? {},
+        text,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   const save = async () => {
-    if (!sessionId || !threadId || !catalog || !selected || !selected.editable) return;
-    let config: JsonObject;
-    try {
-      const value: unknown = JSON.parse(draft);
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Configuration must be a JSON object.");
-      config = value as JsonObject;
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-      return;
-    }
+    if (!sessionId || !threadId || !catalog || !selected || !selected.editable || !config) return;
     setStatus("Saving…");
     try {
       const updated = await update(sessionId, threadId, selected.plugin_id, scope, catalog.revision, config);
@@ -76,22 +105,20 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
     }
   };
 
-  const parsedDraft = useMemo(() => {
-    try {
-      const value: unknown = JSON.parse(draft);
-      return value && typeof value === "object" && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : null;
-    } catch {
-      return null;
-    }
-  }, [draft]);
-
   const schema = selected?.config_schema as JsonSchema | null | undefined;
-  const setField = (name: string, value: unknown) => {
-    if (!parsedDraft) return;
-    setDraft(JSON.stringify({ ...parsedDraft, [name]: value }, null, 2));
-  };
+  // The server validates the patch against the layers below it, so a value the
+  // lower layers already supply is not a missing required field. The merge
+  // mirrors the server's own layer merge.
+  const gate = useMemo(
+    () => (config ? mergeLayers(selected?.effective_config ?? {}, config) : null),
+    [config, selected],
+  );
+  const errors = useMemo(
+    () => (gate && schema?.properties ? schemaErrors(schema, gate) : {}),
+    [gate, schema],
+  );
+  const errorCount = Object.keys(errors).length;
+  const blocked = errorCount > 0 || Boolean(jsonError);
 
   return (
     <section className="settings-section plugin-config-panel" aria-labelledby="plugin-config-title">
@@ -127,72 +154,36 @@ export function PluginConfigPanel({ sessionId, threadId, scope: fixedScope, load
             <strong>{selected.name}</strong>
             {!selected.editable && <small>{selected.unavailable_reason}</small>}
           </div>
-          {selected.editable && schema?.properties && parsedDraft && (
-            <div className="plugin-config-fields" aria-label="Schema fields">
-              {Object.entries(schema.properties).map(([name, field]) => {
-                const value = parsedDraft[name];
-                const label = field.title || name;
-                if (field.enum?.length) {
-                  return <label key={name}><span>{label}</span><select
-                    aria-label={label}
-                    value={String(value ?? "")}
-                    onChange={(event) => setField(name, event.target.value)}
-                  >
-                    {field.enum.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
-                  </select>{field.description && <small>{field.description}</small>}</label>;
-                }
-                if (field.type === "boolean") {
-                  return <label key={name} className="plugin-config-checkbox"><span>{label}</span><input
-                    type="checkbox"
-                    aria-label={label}
-                    checked={value === true}
-                    onChange={(event) => setField(name, event.target.checked)}
-                  />{field.description && <small>{field.description}</small>}</label>;
-                }
-                if (field.type === "number" || field.type === "integer") {
-                  return <label key={name}><span>{label}</span><input
-                    type="number"
-                    aria-label={label}
-                    value={typeof value === "number" ? value : ""}
-                    onChange={(event) => setField(name, event.target.value === "" ? null : Number(event.target.value))}
-                  />{field.description && <small>{field.description}</small>}</label>;
-                }
-                if (field.type === "string") {
-                  return <label key={name}><span>{label}</span><input
-                    type="text"
-                    aria-label={label}
-                    value={typeof value === "string" ? value : ""}
-                    onChange={(event) => setField(name, event.target.value)}
-                  />{field.description && <small>{field.description}</small>}</label>;
-                }
-                return <label key={name} className="plugin-config-json"><span>{label} (JSON)</span><textarea
-                  aria-label={`${label} JSON`}
-                  value={JSON.stringify(value ?? null, null, 2)}
-                  spellCheck={false}
-                  onChange={(event) => {
-                    try { setField(name, JSON.parse(event.target.value)); } catch { /* save reports malformed JSON */ }
-                  }}
-                />{field.description && <small>{field.description}</small>}</label>;
-              })}
-            </div>
+          {selected.editable && schema?.properties && config && (
+            <SchemaForm
+              schema={schema}
+              value={config}
+              onChange={applyConfig}
+            />
+          )}
+          {selected.editable && errorCount > 0 && (
+            <p className="schema-form-summary" role="alert">
+              {errorCount === 1 ? "1 field needs attention before saving." : `${errorCount} fields need attention before saving.`}
+            </p>
           )}
           {selected.editable && <details className="plugin-config-json-advanced">
             <summary>Advanced JSON</summary>
             <label className="plugin-config-json">
               <span>Layer configuration JSON</span>
               <textarea
-                value={draft}
+                value={jsonDraft}
                 spellCheck={false}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => editJson(event.target.value)}
                 aria-label="Plugin configuration JSON"
               />
             </label>
+            {jsonError && <small className="schema-field-error" role="alert">{jsonError}</small>}
           </details>}
           <details>
             <summary>Declared JSON Schema</summary>
             <pre>{JSON.stringify(selected.config_schema, null, 2)}</pre>
           </details>
-          {selected.editable && <button type="button" className="primary-button" onClick={() => void save()} disabled={status === "Saving…"}>Save plugin configuration</button>}
+          {selected.editable && <button type="button" className="primary-button" onClick={() => void save()} disabled={status === "Saving…" || blocked}>Save plugin configuration</button>}
           <small className="settings-save-status" aria-live="polite">{status === "saved" ? "Saved" : status !== "ready" && status !== "Saving…" ? status : ""}</small>
         </div>}
       </div>}
