@@ -27,7 +27,14 @@ export const Timeline = memo(function Timeline({
   onLoadOlder,
 }: TimelineProps) {
   const list = useRef<HTMLDivElement>(null);
-  const shouldFollow = useRef(true);
+  const inner = useRef<HTMLDivElement>(null);
+  // Following is explicit user intent, not a pixel measurement: while it
+  // holds, new output pins the view to the bottom.  Measuring the distance on
+  // every render instead made a single large step (markdown commit, batch
+  // flush, image load) look like the user had scrolled away and never
+  // resumed following.
+  const following = useRef(true);
+  const lastScrollTop = useRef(0);
   const previousLength = useRef(0);
   const pendingPrependHeight = useRef<number | null>(null);
   const [windowRange, setWindowRange] = useState({ start: -1, end: -1 });
@@ -52,7 +59,7 @@ export const Timeline = memo(function Timeline({
       if (current.start < 0) {
         return range;
       }
-      if (entries.length > previous && shouldFollow.current) {
+      if (entries.length > previous && following.current) {
         return {
           start: Math.max(0, entries.length - TIMELINE_WINDOW),
           end: entries.length,
@@ -79,7 +86,7 @@ export const Timeline = memo(function Timeline({
   const loadEarlier = () => {
     const element = scrollerOf(list.current);
     if (!element || (range.start <= 0 && !hasOlder)) return;
-    shouldFollow.current = false;
+    following.current = false;
     setShowLatest(true);
     pendingPrependHeight.current = element.scrollHeight;
     if (range.start <= 0) {
@@ -93,7 +100,7 @@ export const Timeline = memo(function Timeline({
   };
 
   const scrollToLatest = () => {
-    shouldFollow.current = true;
+    following.current = true;
     setShowLatest(false);
     setWindowRange({
       start: Math.max(0, entries.length - TIMELINE_WINDOW),
@@ -105,28 +112,34 @@ export const Timeline = memo(function Timeline({
 
   useLayoutEffect(() => {
     const element = scrollerOf(list.current);
-    if (!element || !shouldFollow.current) return;
-    // Re-check the distance at the point of the update.  A scroll event can
-    // be queued behind a streamed delta; never pull the user back down after
-    // they have already moved away from the end.
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distance <= FOLLOW_THRESHOLD) element.scrollTo({ top: element.scrollHeight });
+    if (!element || !following.current) return;
+    element.scrollTo({ top: element.scrollHeight });
   }, [entries]);
 
   useEffect(() => {
     const element = scrollerOf(list.current);
     if (!element) return;
+    lastScrollTop.current = element.scrollTop;
     const onScroll = () => {
-      const following = element.scrollHeight - element.scrollTop - element.clientHeight <= FOLLOW_THRESHOLD;
-      shouldFollow.current = following;
-      setShowLatest(!following || range.end < entries.length);
+      const top = element.scrollTop;
+      const distance = element.scrollHeight - top - element.clientHeight;
+      const movedUp = top < lastScrollTop.current - 1;
+      lastScrollTop.current = top;
+      if (distance <= FOLLOW_THRESHOLD) {
+        following.current = true;
+      } else if (movedUp) {
+        // Only an upward move means the user left the end.  Growth below the
+        // viewport keeps ``scrollTop`` unchanged and must not stop following.
+        following.current = false;
+      }
+      setShowLatest(!following.current || range.end < entries.length);
     };
     const onWheel = (event: WheelEvent) => {
       if (!(event.target instanceof Node) || !list.current?.contains(event.target)) return;
       if (event.deltaY < 0) {
         // Record the user's intent before the browser dispatches the paired
         // scroll event, so a streamed render in between cannot steal focus.
-        shouldFollow.current = false;
+        following.current = false;
         setShowLatest(true);
       }
     };
@@ -138,12 +151,27 @@ export const Timeline = memo(function Timeline({
     };
   }, [entries.length, range.end]);
 
+  useEffect(() => {
+    const element = scrollerOf(list.current);
+    const content = inner.current;
+    if (!element || !content || typeof ResizeObserver === "undefined") return;
+    // Height that lands after the render (markdown commit, code highlight,
+    // image load) produces no entry change; observe the content box so a
+    // following view still reaches the true bottom.
+    const observer = new ResizeObserver(() => {
+      if (!following.current) return;
+      element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div
       className="timeline"
       ref={list}
     >
-      <div className="timeline-inner">
+      <div className="timeline-inner" ref={inner}>
         {(range.start > 0 || hasOlder) && (
           <button className="timeline-older" type="button" disabled={loadingOlder} onClick={loadEarlier}>
             {loadingOlder ? <LoaderCircle size={14} className="spin" /> : <ChevronUp size={14} />} Older messages
