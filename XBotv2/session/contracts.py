@@ -273,6 +273,7 @@ class SessionDescriptor(BaseModel):
 class OpenedSession(SessionDescriptor):
     history: tuple[Message, ...]
     pending_inputs: tuple["PendingInputData", ...] = ()
+    pending_interactions: tuple["PendingInteractionData", ...] = ()
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         extra="forbid",
@@ -336,6 +337,19 @@ class PendingInputData(BaseModel):
     source: str = "user"
     image_count: int = 0
     artifact_count: int = 0
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class PendingInteractionData(BaseModel):
+    """One unanswered client interaction, replayable from an open response.
+
+    A live approval or question only exists in the event stream, so a client
+    that reloads or reconnects while it is pending must be able to rebuild the
+    dialog from the session snapshot instead of losing it.
+    """
+
+    type: str
+    data: dict[str, JsonValue] = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -589,6 +603,7 @@ __all__ = [
     "OpenThread",
     "PREPARE_FORK",
     "PendingInputData",
+    "PendingInteractionData",
     "PendingInputUpdate",
     "PrepareFork",
     "RegenerateMessage",

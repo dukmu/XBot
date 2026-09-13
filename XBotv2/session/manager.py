@@ -55,6 +55,7 @@ from XBotv2.session.contracts import (
     OpenSession,
     OpenThread,
     PendingInputData,
+    PendingInteractionData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
@@ -1217,6 +1218,10 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
         pending_inputs=runtime.pending_inputs(),
+        pending_interactions=tuple(
+            PendingInteractionData(type=event.type, data=dict(event.data))
+            for event in runtime.application.client_events.pending_interactions()
+        ),
     )
 
 

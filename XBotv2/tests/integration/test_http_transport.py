@@ -4070,6 +4070,93 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_real_http_open_session_replays_an_unanswered_interaction(
+    tmp_path: Path,
+) -> None:
+    """A resumed session returns the question its client never answered.
+
+    The request otherwise exists only in the bounded event-replay window, so a
+    client that reloads or reconnects would lose the dialog and the turn would
+    look stuck.
+    """
+    llm = MockLLM(responses=[
+        {
+            "content": "asking",
+            "tool_calls": [
+                {
+                    "name": "ask_user",
+                    "args": {
+                        "question": "Continue?",
+                        "options": [
+                            {"label": "continue", "description": "Keep working."},
+                            {"label": "stop", "description": "Stop now."},
+                        ],
+                    },
+                    "id": "call_ask",
+                },
+            ],
+        },
+        {"content": "continued"},
+    ])
+
+    async with _real_terminal_session(
+        tmp_path,
+        llm=llm,
+        sandbox_enabled=False,
+    ) as session:
+        events: list[dict[str, Any]] = []
+        submitted = asyncio.create_task(_drain_stream(
+            session.send_message("ask before continuing")
+        ))
+        request_id = ""
+
+        async def wait_for_question() -> None:
+            nonlocal request_id
+            async for event in session.session_events():
+                events.append(event)
+                if event.get("type") == "permission_request":
+                    # The configured policy asks before `ask_user` runs.
+                    await session.respond_permission(
+                        event["data"]["request_id"],
+                        "allow",
+                    )
+                elif event.get("type") == "user_input_required":
+                    request_id = str(event["data"]["request_id"])
+                    return
+
+        try:
+            await asyncio.wait_for(wait_for_question(), timeout=20.0)
+        except TimeoutError:
+            pytest.fail(f"wait_for_question timed out; events={events!r}")
+
+        assert request_id
+        snapshot = await asyncio.wait_for(session.refresh_baseline(), timeout=20.0)
+        assert snapshot is not None
+        pending = snapshot["pending_interactions"]
+        assert [item["type"] for item in pending] == ["user_input_required"]
+        assert pending[0]["data"]["request_id"] == request_id
+        assert pending[0]["data"]["question"] == "Continue?"
+        assert pending[0]["data"]["resume_supported"] is True
+
+        await session.submit_user_input(request_id, "continue")
+
+        async def wait_for_turn_end() -> None:
+            async for event in session.session_events():
+                events.append(event)
+                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                    return
+
+        try:
+            await asyncio.wait_for(wait_for_turn_end(), timeout=20.0)
+        except TimeoutError:
+            pytest.fail(f"wait_for_turn_end timed out; events={events!r}")
+        await submitted
+
+    assert "user_input_required" in [event.get("type") for event in events]
+    assert "turn_finished" in [event.get("type") for event in events]
+
+
+@pytest.mark.asyncio
 async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
     llm = MockLLM(responses=[
         {

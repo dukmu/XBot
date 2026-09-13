@@ -29,6 +29,8 @@ class PermissionRequestData(WireModel):
     permission: RequestedPermissionData | None = None
     decision: Literal["ask"] = "ask"
     reason: str
+    # True when an unanswered request is replayed by a session snapshot, so a
+    # client that reconnects can rebuild the dialog instead of losing it.
     resume_supported: bool = False
 
     @model_validator(mode="after")

@@ -27,7 +27,7 @@ class Client:
     def __init__(self, response):
         self.response = response
 
-    async def request(self, event):
+    async def request(self, event, **_kwargs):
         return self.response
 
 
@@ -87,6 +87,56 @@ async def test_policy_deny_added_while_waiting_prevents_execution_and_grant(tmp_
     assert result.action == "deny"
     assert await store.all() == {}
     assert events.items[-1][1].decision == "deny"
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_retains_its_payload_for_replay(tmp_path):
+    """A reconnect during the wait can only rebuild the dialog with the payload.
+
+    The router previously kept only the future/request id, so an unanswered
+    approval was unrecoverable once the bounded replay window evicted it.
+    """
+    from XBotv2.application.client_events import ClientEventRouter
+    from XBotv2.core.tools import ClientEvent
+    from XBotv2.permissions.protocol import PermissionRequestData
+
+    events = Events()
+    waiter = InteractionWaiter()
+    router = ClientEventRouter()
+    retained_while_waiting: list[list[ClientEvent]] = []
+
+    async def answer_after_probe(event, *, timeout_seconds=None, tool_call_id=""):
+        del timeout_seconds, tool_call_id
+        request_id = str(event.data["request_id"])
+        waiter.register(request_id)
+        # A reconnect during the wait can only rebuild the dialog with the
+        # payload, not just the request id.
+        retained_while_waiting.append(router.pending_interactions())
+        result = waiter.answer(request_id, decision="allow", scope="once")
+        return {
+            "request_id": result.request_id,
+            "status": result.status,
+            "decision": result.decision,
+        }
+
+    router.set_sink(answer_after_probe)
+    approval = ApprovalService(events, router, waiter)
+    request = ClientEvent(
+        type="permission_request",
+        data=PermissionRequestData(
+            request_id="permission:call-1",
+            source="permission_system",
+            tool_call=ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
+            reason="inspect",
+        ).model_dump(exclude_none=True),
+    )
+    decision = await approval.request(request)
+
+    assert decision.decision == "allow"
+    assert [item.type for item in retained_while_waiting[0]] == ["permission_request"]
+    assert retained_while_waiting[0][0].data["tool_call"]["id"] == "call-1"
+    # Once answered, the snapshot no longer replays it.
+    assert router.pending_interactions() == []
 
 
 @pytest.mark.asyncio

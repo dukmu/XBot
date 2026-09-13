@@ -23,6 +23,7 @@ class ClientEventRouter:
         self._parent = parent
         self._sink: ClientEventSink | None = None
         self._waiters: dict[str, InteractionWaiterPort] = {}
+        self._pending: dict[str, ClientEvent] = {}
 
     def set_sink(self, sink: ClientEventSink | None) -> ClientEventSink | None:
         previous = self._sink
@@ -36,19 +37,29 @@ class ClientEventRouter:
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
     ) -> dict[str, JsonValue] | None:
-        if self._sink is not None:
+        if self._sink is None:
+            if self._parent is not None:
+                return await self._parent.request(
+                    event,
+                    timeout_seconds=timeout_seconds,
+                    tool_call_id=tool_call_id,
+                )
+            return None
+        request_id = str(event.data.get("request_id") or "")
+        if request_id:
+            # Retain the payload, not only the id: a client that reloads or
+            # reconnects while the interaction is unanswered can only present
+            # the dialog again if the session snapshot can replay it.
+            self._pending[request_id] = event
+        try:
             return await self._sink(
                 event,
                 timeout_seconds=timeout_seconds,
                 tool_call_id=tool_call_id,
             )
-        if self._parent is not None:
-            return await self._parent.request(
-                event,
-                timeout_seconds=timeout_seconds,
-                tool_call_id=tool_call_id,
-            )
-        return None
+        finally:
+            if request_id:
+                self._pending.pop(request_id, None)
 
     def register_waiter(
         self,
@@ -74,3 +85,7 @@ class ClientEventRouter:
         for waiter in self._waiters.values():
             pending.extend(waiter.pending_request_ids())
         return pending
+
+    def pending_interactions(self) -> list[ClientEvent]:
+        """Payloads of the requests this router is still waiting on."""
+        return list(self._pending.values())

@@ -71,6 +71,7 @@ class InteractionsService(InteractionsPort):
             question=question,
             options=list(options or []),
             timeout_seconds=timeout_seconds,
+            resume_supported=True,
         )
         client_event = ClientEvent(
             type="user_input_required",

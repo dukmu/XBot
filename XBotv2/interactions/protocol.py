@@ -28,6 +28,8 @@ class UserInputRequiredData(WireModel):
     question: str = Field(min_length=1)
     options: list[UserInputOption] = Field(default_factory=list)
     timeout_seconds: float | None = Field(default=None, gt=0)
+    # True when an unanswered request is replayed by a session snapshot, so a
+    # client that reconnects can rebuild the dialog instead of losing it.
     resume_supported: bool = False
 
     @model_validator(mode="after")

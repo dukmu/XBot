@@ -43,6 +43,7 @@ from XBotv2.session.contracts import (
     OpenSession,
     OpenThread,
     PendingInputData,
+    PendingInteractionData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
@@ -95,6 +96,7 @@ class OpenSessionResponse(SessionDescriptor):
     history: list[SessionHistoryItem] = Field(default_factory=list)
     history_cursor: str | None = None
     pending_inputs: list["PendingInputData"] = Field(default_factory=list)
+    pending_interactions: list[PendingInteractionData] = Field(default_factory=list)
 
 
 class OpenThreadRequest(WireModel):

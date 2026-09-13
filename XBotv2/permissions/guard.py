@@ -43,7 +43,7 @@ class PermissionGuard:
             tool_call=tool_call,
             decision="ask",
             reason=reason,
-            resume_supported=False,
+            resume_supported=True,
         )
         event = ClientEvent(
             type="permission_request",

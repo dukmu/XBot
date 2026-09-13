@@ -35,7 +35,7 @@ async def request_tool_permission(
         permission={"tool": tool, "params": params},
         decision="ask",
         reason=reason,
-        resume_supported=False,
+        resume_supported=True,
     )
     event = ClientEvent(
         type="permission_request",
