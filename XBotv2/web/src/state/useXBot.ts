@@ -7,13 +7,27 @@ import { WorkspaceManager } from "../client/WorkspaceManager";
 import { SessionCatalog } from "../client/SessionCatalog";
 import { RuntimeEventController } from "../client/RuntimeEventController";
 import { WorkspaceCatalogController } from "../client/WorkspaceCatalogController";
-import { initialRuntimeState, runtimeReducer } from "./runtime";
+import {
+  type ThreadViewRolling,
+  type ThreadViewState,
+  applyViewEvent,
+  initialRuntimeState,
+  runtimeEntry,
+  runtimeReducer,
+  trajectoryEntries,
+} from "./runtime";
 
 const apiBase = import.meta.env.VITE_XBOT_API_BASE || "/api";
 
 export function useXBot() {
   const api = useMemo(() => new XBotApi(apiBase), []);
   const [state, dispatch] = useReducer(runtimeReducer, initialRuntimeState);
+  const [view, setView] = useState<ThreadViewState | null>(null);
+  const viewRef = useRef<ThreadViewState | null>(null);
+  const viewRollingRef = useRef<ThreadViewRolling>({ reasoning: "", content: "" });
+  const viewAbortRef = useRef<AbortController | null>(null);
+  const viewStepRef = useRef(0);
+
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [commandRunning, setCommandRunning] = useState(false);
   const [notification, setNotification] = useState("");
@@ -62,6 +76,17 @@ export function useXBot() {
         return;
       }
       dispatch({ type: "events", events });
+      if (
+        viewRef.current
+        && events.some((event) => (
+          event.type === "assistant_message" || event.type === "assistant_message_delta"
+          || event.type === "tool_started" || event.type === "tool_result"
+        ))
+      ) {
+        setView((active: ThreadViewState | null) => (
+          active ? { ...active, mainBusy: true } : active
+        ));
+      }
       if (events.some((event) => event.type === "history_updated")) {
         trajectoryRefreshPending.current = true;
       }
@@ -437,6 +462,87 @@ export function useXBot() {
       if (generation === navigationGeneration.current) dispatch({ type: "loading", value: false });
     }
   }, [activate, api, commandRunning, navigationBlocked, notify, reportError, resetStreamingState, startEventStream, state.current, state.loading]);
+
+  const closeThreadView = useCallback(() => {
+    viewStepRef.current += 1;
+    viewAbortRef.current?.abort();
+    viewAbortRef.current = null;
+    viewRef.current = null;
+    setView(null);
+  }, []);
+
+  const openThreadView = useCallback(async (thread: ThreadSummary) => {
+    const current = state.current;
+    if (!current || thread.thread_id === current.thread_id) return;
+    closeThreadView();
+    const sessionId = current.session_id;
+    const step = viewStepRef.current;
+    viewRollingRef.current = { reasoning: "", content: "" };
+    viewRef.current = {
+      threadId: thread.thread_id,
+      title: thread.agent || thread.thread_id,
+      entries: [],
+      cursor: 0,
+      mainBusy: false,
+    };
+    setView({ ...viewRef.current });
+    const reconcile = async (cursorAfter: number) => {
+      try {
+        const trajectory = await api.listTrajectory(sessionId, thread.thread_id, { limit: 160 });
+        if (step !== viewStepRef.current) return;
+        viewRollingRef.current = { reasoning: "", content: "" };
+        viewRef.current = {
+          ...viewRef.current!,
+          entries: trajectoryEntries(trajectory.items),
+          cursor: cursorAfter,
+        };
+        setView({ ...viewRef.current });
+      } catch (error) {
+        if (step === viewStepRef.current) {
+          viewRef.current = {
+            ...viewRef.current!,
+            entries: [...viewRef.current!.entries, runtimeEntry("view", "error", `history reload failed: ${error instanceof Error ? error.message : String(error)}`, `view:error:${step}`)],
+          };
+          setView({ ...viewRef.current });
+        }
+      }
+    };
+    await reconcile(0);
+    if (step !== viewStepRef.current) return;
+    const controller = new AbortController();
+    viewAbortRef.current = controller;
+    let cursor = 0;
+    try {
+      for await (const event of api.streamEvents(sessionId, thread.thread_id, cursor, controller.signal)) {
+        if (step !== viewStepRef.current) return;
+        if (event.sequence <= cursor) continue;
+        if (event.sequence !== cursor + 1) {
+          // A replay gap means the view cursor is stale; rebase from history.
+          cursor = event.sequence;
+          await reconcile(cursor);
+          continue;
+        }
+        cursor = event.sequence;
+        viewRef.current = {
+          ...viewRef.current!,
+          cursor,
+          entries: applyViewEvent(viewRef.current!.entries, event, viewRollingRef.current),
+        };
+        setView({ ...viewRef.current });
+      }
+    } catch (error) {
+      if (step === viewStepRef.current) {
+        viewRef.current = {
+          ...viewRef.current!,
+          entries: [
+            ...viewRef.current!.entries,
+            runtimeEntry("view", "stream", `thread stream ended: ${error instanceof Error ? error.message : String(error)}`, `view:stream:${step}`),
+          ],
+        };
+        setView({ ...viewRef.current });
+      }
+    }
+  }, [api, closeThreadView, state.current]);
 
   const sendMessage = useCallback(async (
     rawContent: string,
@@ -921,6 +1027,9 @@ export function useXBot() {
     createSession,
     resumeSession,
     selectThread,
+    openThreadView,
+    closeThreadView,
+    view,
     sendMessage,
     updatePendingInput,
     retryLast,

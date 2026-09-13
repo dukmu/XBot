@@ -256,19 +256,54 @@ export function App() {
           <div className="conversation-scroll" data-conversation-scroll>
             <ThreadActivityPanel
               threads={state.threads}
-              currentThreadId={state.current.thread_id}
-              onSelect={(thread) => void runtime.selectThread(thread)}
+              currentThreadId={runtime.view?.threadId ?? state.current.thread_id}
+              onSelect={(thread) => {
+                if (thread.thread_id === state.current?.thread_id) {
+                  runtime.closeThreadView();
+                  return;
+                }
+                void runtime.openThreadView(thread);
+              }}
             />
-            <Timeline
-              key={`${state.current.session_id}/${state.current.thread_id}`}
-              entries={state.entries}
-              turnRunning={state.turnRunning}
-              onRetry={runtime.retryLast}
-              onBranch={runtime.fork}
-              hasOlder={Boolean(state.historyCursor)}
-              loadingOlder={state.historyLoading}
-              onLoadOlder={runtime.loadEarlier}
-            />
+            {runtime.view ? (
+              <div className="thread-view">
+                <header className="thread-view-header" role="status">
+                  <GitBranch size={14} />
+                  <strong>{runtime.view.title}</strong>
+                  <code>{runtime.view.threadId}</code>
+                  <span>read-only · main thread keeps running</span>
+                  {runtime.view.mainBusy && <em className="thread-view-busy">main: new output</em>}
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => runtime.closeThreadView()}
+                  >
+                    Back to main
+                  </button>
+                </header>
+                <Timeline
+                  key={`view/${runtime.view.threadId}`}
+                  entries={runtime.view.entries}
+                  turnRunning={false}
+                  onRetry={async () => undefined}
+                  onBranch={async () => undefined}
+                  hasOlder={false}
+                  loadingOlder={false}
+                  onLoadOlder={async () => undefined}
+                />
+              </div>
+            ) : (
+              <Timeline
+                key={`${state.current.session_id}/${state.current.thread_id}`}
+                entries={state.entries}
+                turnRunning={state.turnRunning}
+                onRetry={runtime.retryLast}
+                onBranch={runtime.fork}
+                hasOlder={Boolean(state.historyCursor)}
+                loadingOlder={state.historyLoading}
+                onLoadOlder={runtime.loadEarlier}
+              />
+            )}
             <div className="runtime-controls">
               {pendingCommand && (
                 <div className="command-progress" role="status">
@@ -290,15 +325,15 @@ export function App() {
                 onUpdate={runtime.updatePendingInput}
               />
               <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
-              {state.viewingSubagent && (
+              {runtime.view && (
                 <div className="subagent-readonly-banner" role="status">
                   <GitBranch size={14} />
-                  <span>Viewing a subagent thread — read-only. Switch to the main thread to chat.</span>
+                  <span>Viewing another thread — the composer stays off; the main thread keeps running.</span>
                 </div>
               )}
               <Composer
                 running={state.turnRunning}
-                disabled={state.loading || runtime.commandRunning || state.viewingSubagent}
+                disabled={state.loading || runtime.commandRunning || Boolean(runtime.view)}
                 commands={commands}
                 draft={composerDraft}
                 allowImages={Boolean(state.providers

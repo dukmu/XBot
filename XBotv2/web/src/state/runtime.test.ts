@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
-import { historyEntries, initialRuntimeState, runtimeReducer } from "./runtime";
+import { applyViewEvent, historyEntries, initialRuntimeState, runtimeReducer, type TimelineEntry } from "./runtime";
 
 const opened: OpenSessionResponse = {
   session_id: "session-1",
@@ -467,6 +467,26 @@ describe("runtimeReducer", () => {
     const main = { ...subagent, thread_id: "agent", kind: "main" as const, parent_thread_id: "" };
     expect(runtimeReducer(state, { type: "thread_synced", thread: main }).viewingSubagent).toBe(false);
     expect(runtimeReducer(initialRuntimeState, { type: "opened", session: opened }).viewingSubagent).toBe(false);
+  });
+
+  it("projects a viewed thread's live frames without touching the main entries", () => {
+    const rolling = { reasoning: "", content: "" };
+    let entries: TimelineEntry[] = [];
+    entries = applyViewEvent(entries, event("assistant_message_delta", { content: "partial" }), rolling);
+    expect(entries).toHaveLength(0);
+    // The accumulated delta flushes at the turn boundary.
+    entries = applyViewEvent(entries, event("turn_finished", { turn: 1 }), rolling);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: "message", content: "partial", reasoning: "" });
+    expect(entries[1]).toMatchObject({ kind: "runtime", content: "Turn 1 finished" });
+    // A discrete assistant message appends its own entry.
+    entries = applyViewEvent(entries, event("assistant_message", { content: "final answer" }), rolling);
+    expect(entries).toHaveLength(3);
+    expect(entries[2]).toMatchObject({ kind: "message", content: "final answer" });
+
+    entries = applyViewEvent(entries, event("tool_result", { name: "shell", status: "success", content: "ok" }), rolling);
+    expect(entries[3]).toMatchObject({ kind: "runtime" });
+    expect((entries[3] as { content: string }).content).toContain("shell");
   });
 
   it("streams reasoning and assistant content into one entry", () => {

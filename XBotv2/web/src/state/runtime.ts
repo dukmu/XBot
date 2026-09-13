@@ -684,6 +684,92 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
   }
 }
 
+/**
+ * A read-only parallel view of another thread: the main thread keeps running
+ * underneath while this projects that thread's history and live events into a
+ * separate entry list (see `useXBot.openThreadView`).
+ */
+export interface ThreadViewState {
+  threadId: string;
+  title: string;
+  entries: TimelineEntry[];
+  cursor: number;
+  mainBusy: boolean;
+}
+
+export interface ThreadViewRolling {
+  reasoning: string;
+  content: string;
+}
+
+function flushViewRolling(
+  entries: TimelineEntry[],
+  rolling: ThreadViewRolling,
+): TimelineEntry[] {
+  const content = rolling.content.trim();
+  const reasoning = rolling.reasoning.trim();
+  rolling.content = "";
+  rolling.reasoning = "";
+  if (!content && !reasoning) return entries;
+  const entry = messageEntry("assistant", content);
+  return [...entries, { ...entry, reasoning, messageId: entry.messageId || `view:${Math.random().toString(36).slice(2)}` }];
+}
+
+function viewToolLine(data: JsonObject, event: string): string {
+  const content = stringValue(data.content) || stringValue(data.summary) || "";
+  const preview = content.replace(/\s+/g, " ").trim().slice(0, 120);
+  const summary = `[tool] ${stringValue(data.name) || "tool"} ${stringValue(data.status) || ""}`;
+  return preview ? `${summary}${preview ? `\n${preview}` : ""}` : summary;
+}
+
+/** Map one thread's live frame onto its view entries. */
+export function applyViewEvent(
+  entries: TimelineEntry[],
+  event: ServerEvent,
+  rolling: ThreadViewRolling,
+): TimelineEntry[] {
+  const data = event.data;
+  switch (event.type) {
+    case "assistant_message_delta":
+      rolling.reasoning += stringValue(data.reasoning);
+      rolling.content += stringValue(data.content);
+      return entries;
+    case "assistant_message":
+      return applyAssistantMessage(
+        flushViewRolling(entries, rolling),
+        stringValue(data.content),
+        stringValue(data.reasoning),
+        arrayValue(data.tool_calls),
+        stringValue(data.id),
+      );
+    case "turn_started":
+    case "turn_finished":
+    case "turn_cancelled": {
+      const flushed = flushViewRolling(entries, rolling);
+      const label = event.type === "turn_started"
+        ? `Turn ${numberValue(data.turn) || "?"} started`
+        : event.type === "turn_cancelled"
+          ? `Turn ${numberValue(data.turn) || "?"} cancelled`
+          : `Turn ${numberValue(data.turn) || "?"} finished`;
+      return [...flushed, runtimeEntry("turn", event.type, label, eventIdentity(event))];
+    }
+    case "tool_result":
+    case "tool_started":
+    case "tool_call_delta":
+      return [
+        ...flushViewRolling(entries, rolling),
+        runtimeEntry("tool", event.type, viewToolLine(data, event.type), eventIdentity(event)),
+      ];
+    case "message":
+      return [
+        ...flushViewRolling(entries, rolling),
+        { ...messageEntry("user", stringValue(data.content)), messageId: stringValue(data.id) || `view:${event.sequence}` },
+      ];
+    default:
+      return entries;
+  }
+}
+
 export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
@@ -1159,7 +1245,7 @@ function updatePermissionTool(entries: TimelineEntry[], data: JsonObject, status
     : entry);
 }
 
-function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {
+export function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {
   return { id: id || nextId("runtime"), kind: "runtime", source, event, content, messageId: "" };
 }
 

@@ -1570,3 +1570,26 @@ body {
   flex: none;
   color: var(--dsw-alias-state-business-primary);
 }
+
+.thread-view {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.thread-view-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.thread-view-header svg { flex: none; color: var(--dsw-alias-state-business-primary); }
+.thread-view-header strong { color: var(--dsw-alias-label-primary); font-size: 13px; }
+.thread-view-header code { color: var(--dsw-alias-label-caption); font-size: 11px; }
+.thread-view-header .thread-view-busy { color: var(--dsw-alias-state-business-primary); font-style: normal; }
+.thread-view-header .secondary-button { margin-left: auto; }
