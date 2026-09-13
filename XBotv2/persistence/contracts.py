@@ -130,6 +130,9 @@ class MetadataPort(Protocol):
     def save(self, metadata: ThreadMetadata) -> None: ...
 
 
+
+
+
 class InboxPersistencePort(Protocol):
     """Durable inbox operations owned by the persistence plugin."""
 

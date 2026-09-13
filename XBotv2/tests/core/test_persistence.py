@@ -741,19 +741,18 @@ def _raw_records(persistence: ThreadPersistence) -> list[dict]:
 class TestLazyPersist:
     """A brand-new session is invisible until its first durable record."""
 
-    def test_deferred_metadata_stays_buffered_until_first_write(self, tmp_path):
+    def test_deferred_metadata_stays_buffered_until_materialize(self, tmp_path):
         persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
-        persisted = persistence.metadata.load()
-        assert persisted.title == ""
+        assert persistence.metadata.load().title == ""
         # Buffering: saving does not touch the metadata file yet.
         persistence.metadata.save(ThreadMetadata(title="late title"))
         assert not persistence.paths.metadata_file.exists()
         assert persistence.metadata.load().title == ""
 
-        # The first history record flushes the pending metadata.
-        persistence.history.append([
-            Message(role="assistant", content="first")
-        ])
+        # materialize() is the persistence component's transition: the first
+        # committed turn makes the thread durable, then flushes what was
+        # buffered while the session was still empty.
+        persistence.materialize()
         assert persistence.paths.metadata_file.exists()
         assert persistence.metadata.load().title == "late title"
 

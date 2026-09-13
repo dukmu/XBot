@@ -5,10 +5,21 @@ from __future__ import annotations
 from pydantic import JsonValue
 from xcore import Context
 
+from XBotv2.agentloop import Events
 from XBotv2.core.history import ConversationHistory
+from XBotv2.persistence.store import DeferredThreadMetadataStore, ThreadPersistence
 from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.persistence.store import ThreadPersistence
+
+
+def _materialize_after_first_turn(persistence: ThreadPersistence):
+    """Flush deferred metadata once the first committed turn makes it durable."""
+
+    async def _hook(_event: str, *_args: object) -> None:
+        persistence.materialize()
+
+    return _hook
 
 
 def thread_persistence_factory(
@@ -42,6 +53,10 @@ class ThreadPersistenceComponent:
         }
         pending_inputs = persistence.inbox.reconcile(committed_input_ids)
         state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
+        if state.resumed is False and isinstance(
+            persistence.metadata, DeferredThreadMetadataStore
+        ):
+            ctx.on(Events.TURN_END, _materialize_after_first_turn(persistence))
         state.resumed = persistence.has_persisted_state()
         state.metadata = ThreadMetadataState(
             persistence.metadata.load(),

@@ -28,6 +28,13 @@ from XBotv2.core.history import (
 )
 from XBotv2.core.messages import Message
 from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.persistence.contracts import (
+    HistoryPort,
+    InboxPersistencePort,
+    MetadataPort,
+    ThreadLifecyclePort,
+    ThreadPersistencePort,
+)
 from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
@@ -292,20 +299,17 @@ def _evict_idle_states(*, keep: Path) -> None:
         del _trajectory_states[idle[0][0]]
 
 
-class MessageHistoryStore:
+class MessageHistoryStore(HistoryPort):
     """Append-only trajectory store with one deterministic message surface."""
 
     def __init__(
         self,
         paths: ThreadPaths,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
-        *,
-        on_first_write: Callable[[], None] | None = None,
     ) -> None:
         self._path = paths.messages_file
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
-        self._on_first_write = on_first_write
 
     @property
     def path(self) -> Path:
@@ -522,10 +526,6 @@ class MessageHistoryStore:
                 if written == 0:
                     raise OSError("Trajectory append made no progress")
                 view = view[written:]
-            if original_size == 0 and self._on_first_write is not None:
-                # The first durable record is what turns an opened session into
-                # a real one; metadata flushed here rides along with it.
-                self._on_first_write()
             now = time.monotonic()
             if sync or now - state.last_sync >= _SYNC_INTERVAL_SECONDS:
                 os.fsync(descriptor)
@@ -604,7 +604,7 @@ def _replace_nodes(
     nodes[start:start + len(source_ids)] = replacements
 
 
-class ThreadMetadataStore:
+class ThreadMetadataStore(MetadataPort):
     def __init__(
         self,
         paths: ThreadPaths,
@@ -627,39 +627,44 @@ class ThreadMetadataStore:
         self._log.debug("persistence.metadata.saved")
 
 
-class DeferredThreadMetadataStore:
-    """Buffer metadata writes until the thread's first durable record.
+class DeferredThreadMetadataStore(MetadataPort):
+    """Metadata that stays off disk until the thread has a durable record.
 
-    A brand-new session is opened without writing anything to disk, so an
-    abort before the first message leaves no empty session behind. The buffer
-    is flushed on the first history write, which is when the session becomes
-    real.
+    ``save`` buffers while the messages file is empty and writes through once
+    it exists; ``flush`` is the explicit materialization call used by the
+    persistence component after the first committed turn.
     """
 
-    def __init__(self, real: ThreadMetadataStore) -> None:
+    def __init__(
+        self,
+        real: ThreadMetadataStore,
+        messages_file: Path,
+    ) -> None:
         self._real = real
+        self._messages_file = messages_file
+        self._flushed = False
         self._pending: ThreadMetadata | None = None
-        self._deferred = True
+
+    def _has_records(self) -> bool:
+        return self._messages_file.exists() and self._messages_file.stat().st_size > 0
 
     def load(self) -> ThreadMetadata:
         return self._real.load()
 
     def save(self, metadata: ThreadMetadata) -> None:
-        if self._deferred:
-            self._pending = metadata
-        else:
+        if self._flushed or self._has_records():
             self._real.save(metadata)
+        else:
+            self._pending = metadata
 
     def flush(self) -> None:
-        # The first durable record ends the deferral: from then on metadata
-        # writes go straight to disk like a normal store.
-        self._deferred = False
+        self._flushed = True
         if self._pending is not None:
             self._real.save(self._pending)
             self._pending = None
 
 
-class InboxStore:
+class InboxStore(InboxPersistencePort):
     """Atomic projection of inputs not yet committed to conversation history."""
 
     def __init__(
@@ -700,7 +705,7 @@ class InboxStore:
         return pending
 
 
-class ThreadLifecycleStore:
+class ThreadLifecycleStore(ThreadLifecyclePort):
     def __init__(
         self,
         paths: ThreadPaths,
@@ -808,7 +813,7 @@ def _read_jsonl(path: Path, name: str) -> list[Mapping[str, JsonValue]]:
     return records
 
 
-class ThreadPersistence:
+class ThreadPersistence(ThreadPersistencePort):
     """Typed persistence composition for one session thread."""
 
     def __init__(
@@ -832,15 +837,7 @@ class ThreadPersistence:
             thread_id=self.thread_id,
         )
         self.metadata = metadata or ThreadMetadataStore(paths, runtime_log)
-        self.history = MessageHistoryStore(
-            paths,
-            runtime_log,
-            on_first_write=(
-                self.metadata.flush
-                if isinstance(self.metadata, DeferredThreadMetadataStore)
-                else None
-            ),
-        )
+        self.history = MessageHistoryStore(paths, runtime_log)
         self.artifacts: ArtifactStorePort = (
             artifacts
             if artifacts is not None
@@ -849,6 +846,16 @@ class ThreadPersistence:
         self.inbox = InboxStore(paths, runtime_log)
         self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
         self.state = state
+
+    def materialize(self) -> None:
+        """Persist buffered state now that the thread has a durable record.
+
+        A new session defers metadata until it actually has a message; the
+        persistence component calls this once the first turn commits. It is a
+        no-op for every later turn and for resumed sessions.
+        """
+        if isinstance(self.metadata, DeferredThreadMetadataStore):
+            self.metadata.flush()
 
     def has_persisted_state(self) -> bool:
         return (
@@ -875,7 +882,10 @@ class ThreadPersistence:
         # listing shows or a GC pass cannot reclaim.
         thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
         metadata = (
-            DeferredThreadMetadataStore(ThreadMetadataStore(thread_paths))
+            DeferredThreadMetadataStore(
+                ThreadMetadataStore(thread_paths),
+                messages_file=thread_paths.messages_file,
+            )
             if defer_metadata
             else None
         )

@@ -12,7 +12,7 @@ from XBotv2.loader.contracts import PluginEntry, PluginOverlay, PluginTree
 DEFAULT_TREE = Path(__file__).resolve().parents[1] / "xcore.yaml"
 SUBAGENT_FORBIDDEN_PLUGINS = frozenset({"subagents"})
 OPTIONAL_CAPABILITIES = frozenset({
-    "goal", "todolist", "skills", "mcp_plugin", "compact", "subagents",
+    "goal", "todolist", "skills", "mcp_plugin", "compact", "caption", "subagents",
     "browser", "token_manager", "workspace_instructions",
 })
 

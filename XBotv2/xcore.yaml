@@ -257,3 +257,6 @@
 - id: server
   name: server
   profiles: [server]
+
+- id: caption
+  name: caption

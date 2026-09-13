@@ -1,0 +1,25 @@
+"""Public configuration contracts for session captioning."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CaptionConfig(BaseModel):
+    """The persisted and resolved configuration for ``caption``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Whether the first user message triggers an independent LLM caption
+    # request (the request itself is never stored as conversation). Off by
+    # default: it costs one extra provider call per new session, so it is an
+    # explicit opt-in.
+    auto: bool = False
+    # Whether the main agent is granted the caption tool. Exposed means
+    # writable; when disabled the title is human-facing only.
+    allow_access: bool = True
+    max_chars: int = Field(default=60, ge=10, le=200)
+    output_tokens: int = Field(default=48, ge=8, le=256)
+
+
+__all__ = ["CaptionConfig"]
