@@ -8,6 +8,7 @@ lifecycle do not belong to the carrier.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from functools import partial
 import time
 from pydantic import JsonValue
@@ -52,8 +53,8 @@ class WebServer:
         misconfiguration and raises before any route is added. The disposer
         removes exactly the routes this router added.
         """
-        existing = _route_keys(self.app)
-        incoming = _route_keys(router)
+        existing = route_keys(self.app)
+        incoming = route_keys(router)
         conflicts = sorted(incoming & existing)
         if conflicts:
             raise RuntimeError(
@@ -96,14 +97,34 @@ class WebServer:
         return True
 
 
-def _route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
+def route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
+    """Return the ``(method, path)`` pairs an application or router dispatches.
+
+    ``include_router`` used to copy a child router's routes into the parent
+    list, so walking ``owner.routes`` found everything.  Current FastAPI
+    appends one wrapper object instead and resolves the child lazily, which
+    made a flat walk stop seeing every contributed router.
+    """
     keys: set[tuple[str, str]] = set()
-    for route in getattr(owner, "routes", []):
+    for route in _iter_routes(owner):
         path = getattr(route, "path", None)
-        methods = getattr(route, "methods", None) or set()
-        for method in methods:
+        if path is None:
+            continue
+        for method in getattr(route, "methods", None) or set():
             keys.add((method.upper(), str(path)))
     return keys
+
+
+def _iter_routes(owner: object) -> Iterator[BaseRoute]:
+    """Yield every dispatchable route, descending into included routers."""
+    for route in getattr(owner, "routes", None) or ():
+        nested = getattr(route, "original_router", None)
+        if nested is None and getattr(route, "routes", None):
+            nested = route
+        if nested is None:
+            yield route
+        else:
+            yield from _iter_routes(nested)
 
 
 def _remove_routes(app: FastAPI, routes: list[BaseRoute]) -> Disposer:

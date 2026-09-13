@@ -4,12 +4,13 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import httpx
 import yaml
 from fastapi import APIRouter, FastAPI
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution
-from XBotv2.server.plugin import WebServer
+from XBotv2.server.plugin import WebServer, route_keys
 
 
 def test_web_server_register_is_an_effect() -> None:
@@ -25,7 +26,7 @@ def test_web_server_register_is_an_effect() -> None:
         return {"ok": True}
 
     def paths() -> set[str]:
-        return {getattr(route, "path", None) for route in app.routes}
+        return {path for _method, path in route_keys(app)}
 
     assert "/hmr/marker" not in paths()
     dispose = carrier.register(router)
@@ -33,6 +34,29 @@ def test_web_server_register_is_an_effect() -> None:
 
     dispose()
     assert "/hmr/marker" not in paths()
+
+
+@pytest.mark.asyncio
+async def test_mounted_router_is_dispatched_until_its_disposer_runs() -> None:
+    """Registration is an effect on real dispatch, not only on route bookkeeping."""
+
+    app = FastAPI()
+    carrier = WebServer(app)
+
+    router = APIRouter()
+
+    @router.get("/effect/probe")
+    async def probe() -> dict[str, bool]:
+        return {"ok": True}
+
+    dispose = carrier.register(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        assert (await client.get("/effect/probe")).json() == {"ok": True}
+        dispose()
+        assert (await client.get("/effect/probe")).status_code == 404
 
 
 def test_web_server_duplicate_path_is_rejected() -> None:
@@ -134,10 +158,6 @@ async def test_router_contribution_is_routed_through_xcore(booted_server) -> Non
         RouteContribution(owner="test", router=router),
     )
     assert callable(dispose)
-    assert "/event-owned" in {
-        getattr(route, "path", None) for route in booted_server.server.routes
-    }
+    assert "/event-owned" in {path for _method, path in route_keys(booted_server.server)}
     dispose()
-    assert "/event-owned" not in {
-        getattr(route, "path", None) for route in booted_server.server.routes
-    }
+    assert "/event-owned" not in {path for _method, path in route_keys(booted_server.server)}
