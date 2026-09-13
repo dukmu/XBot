@@ -1,6 +1,6 @@
 import { Check, Clock3, FolderCog, Globe2, Layers3, Monitor, Moon, Palette, PanelLeftClose, PanelLeftOpen, Server, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { PermissionDecision, SandboxAccess, SessionPolicy, SessionPolicyPatch } from "../api/types";
+import type { PermissionDecision, SessionPolicy, SessionPolicyPatch } from "../api/types";
 import { PluginConfigPanel, type PluginConfigPanelProps } from "./PluginConfigPanel";
 
 export type ThemePreference = "system" | "light" | "dark";
@@ -149,8 +149,8 @@ const scopeOptions: readonly { value: SettingsScope; label: string; icon: typeof
   { value: "temporary", label: "Temporary", icon: Clock3 },
 ];
 
-/** The policy panel and the plugin editor write the same session plugin layer. */
-const SESSION_POLICY_PLUGINS = ["permissions", "sandbox"] as const;
+/** The permission panel and the plugin editor write the same session plugin layer. */
+const SESSION_POLICY_PLUGINS = ["permissions"] as const;
 
 function scopeDescription(scope: SettingsScope): string {
   return scope === "global"
@@ -283,13 +283,13 @@ function SessionSettings({
 }) {
   return (
     <div className="settings-sections">
-      <SessionPolicyPanel sessionId={sessionId} load={loadSessionPolicy} update={updateSessionPolicy} />
+      <ToolPermissionPanel sessionId={sessionId} load={loadSessionPolicy} update={updateSessionPolicy} />
       <PluginConfigPanel
         sessionId={sessionId}
         threadId={threadId}
         scope="session"
         ownedPluginIds={SESSION_POLICY_PLUGINS}
-        ownedNote="Sandbox and permission rules are edited by the session policy above; both write this session's plugin layer."
+        ownedNote="The permission rules above are the same session layer entry, so they are not listed twice."
         load={loadPluginConfig}
         update={updatePluginConfig}
       />
@@ -297,11 +297,7 @@ function SessionSettings({
   );
 }
 
-const sandboxFields = ["enabled", "network"] as const;
-const accessFields = ["external_read", "external_write", "workspace_read", "workspace_write"] as const;
-type SandboxSetting = "" | boolean | SandboxAccess;
-
-function SessionPolicyPanel({
+function ToolPermissionPanel({
   sessionId,
   load,
   update,
@@ -311,7 +307,6 @@ function SessionPolicyPanel({
   update?: (sessionId: string, patch: SessionPolicyPatch) => Promise<SessionPolicy>;
 }) {
   const [policy, setPolicy] = useState<SessionPolicy | null>(null);
-  const [sandbox, setSandbox] = useState<Record<string, SandboxSetting>>({});
   const [tool, setTool] = useState("");
   const [decision, setDecision] = useState<PermissionDecision | "inherit">("ask");
   const [status, setStatus] = useState("loading");
@@ -319,7 +314,7 @@ function SessionPolicyPanel({
   useEffect(() => {
     if (!sessionId || !load) {
       setPolicy(null);
-      setStatus(sessionId ? "Server policy unavailable." : "Open a session to edit its server policy.");
+      setStatus(sessionId ? "Server policy unavailable." : "Open a session to edit its permissions.");
       return;
     }
     let active = true;
@@ -327,7 +322,6 @@ function SessionPolicyPanel({
     void load(sessionId).then((value) => {
       if (!active) return;
       setPolicy(value);
-      setSandbox(policySandboxOverrides(value));
       setStatus("ready");
     }).catch((error) => {
       if (active) setStatus(error instanceof Error ? error.message : String(error));
@@ -335,30 +329,15 @@ function SessionPolicyPanel({
     return () => { active = false; };
   }, [load, sessionId]);
 
+  const name = tool.trim();
   const save = async () => {
-    if (!sessionId || !update) return;
+    if (!sessionId || !update || !name) return;
     setStatus("saving");
     try {
-      const baseline = policy?.sandbox || {};
-      const sandboxPatch: Record<string, boolean | SandboxAccess> = {};
-      const removeSandbox: string[] = [];
-      for (const [key, value] of Object.entries(sandbox)) {
-        if (value === "") {
-          if (Object.hasOwn(baseline, key)) removeSandbox.push(key);
-        } else if (baseline[key] !== value) sandboxPatch[key] = value;
-      }
-      const permissionPatch = tool.trim()
-        ? decision === "inherit"
-          ? { remove_permissions: [tool.trim()] }
-          : { permissions: { [tool.trim()]: decision } }
-        : {};
-      const updated = await update(sessionId, {
-        ...(Object.keys(sandboxPatch).length ? { sandbox: sandboxPatch } : {}),
-        ...(removeSandbox.length ? { remove_sandbox: removeSandbox } : {}),
-        ...permissionPatch,
-      });
+      const updated = await update(sessionId, decision === "inherit"
+        ? { remove_permissions: [name] }
+        : { permissions: { [name]: decision } });
       setPolicy(updated);
-      setSandbox(policySandboxOverrides(updated));
       setTool("");
       setStatus("saved");
     } catch (error) {
@@ -369,58 +348,49 @@ function SessionPolicyPanel({
   if (!load || !update) return null;
 
   return (
-    <section className="settings-section" aria-labelledby="server-policy-title">
+    <section className="settings-section" aria-labelledby="tool-permissions-title">
       <div className="settings-section-heading">
         <div>
-          <h3 id="server-policy-title">Session security policy</h3>
-          <p>Sandbox and tool permissions are stored by the server for this session.</p>
+          <h3 id="tool-permissions-title">Tool permissions</h3>
+          <p>One tool name per save. Anything else about this session is in the plugin configuration below.</p>
         </div>
         <Server size={18} aria-hidden="true" />
       </div>
       {!policy && <p className="settings-save-status" role="status">{status}</p>}
-      {policy && <div className="server-settings-form">
-        {sandboxFields.map((field) => <label key={field}>
-          <span>{field === "enabled" ? "Sandbox enabled" : "Network access"}</span>
-          <select value={String(sandbox[field] ?? "")} onChange={(event) => setSandbox({ ...sandbox, [field]: booleanSetting(event.target.value) })}>
-            <option value="">inherit ({Boolean(policy.effective_sandbox[field]) ? "enabled" : "disabled"})</option>
-            <option value="true">enabled</option><option value="false">disabled</option>
-          </select>
-        </label>)}
-        {accessFields.map((field) => <label key={field}>
-          <span>{policyFieldLabel(field)}</span>
-          <select value={String(sandbox[field] ?? "")} onChange={(event) => setSandbox({ ...sandbox, [field]: event.target.value as SandboxSetting })}>
-            <option value="">inherit ({sandboxAccess(policy.effective_sandbox[field])})</option>
-            {(["allow", "readonly", "readwrite", "deny"] as const).map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </label>)}
-        <div className="permission-rule-editor">
-          <input value={tool} onChange={(event) => setTool(event.target.value)} placeholder="Exact Tool name (optional)" aria-label="Permission Tool name" />
-          <select value={decision} onChange={(event) => setDecision(event.target.value as PermissionDecision | "inherit")} aria-label="Permission decision">
-            <option value="ask">ask</option><option value="allow">allow</option><option value="deny">deny</option><option value="inherit">inherit (remove)</option>
-          </select>
+      {policy && (
+        <div className="tool-permission-form">
+          <div className="permission-rule-editor">
+            <input
+              value={tool}
+              onChange={(event) => setTool(event.target.value)}
+              placeholder="Exact Tool name (optional)"
+              aria-label="Permission Tool name"
+            />
+            <select value={decision} onChange={(event) => setDecision(event.target.value as PermissionDecision | "inherit")} aria-label="Permission decision">
+              <option value="ask">ask</option><option value="allow">allow</option><option value="deny">deny</option><option value="inherit">inherit (remove)</option>
+            </select>
+            <button type="button" className="primary-button" disabled={!name || status === "saving"} onClick={() => void save()}>
+              {status === "saving" ? "Saving…" : "Save permission"}
+            </button>
+          </div>
+          {permissionSummary(policy) && <small className="plugin-config-owned">{permissionSummary(policy)}</small>}
+          <small className="settings-save-status" role="status">{status === "saved" ? "Saved" : status !== "ready" && status !== "saving" ? status : ""}</small>
         </div>
-        <button type="button" className="primary-button" disabled={status === "saving"} onClick={() => void save()}>{status === "saving" ? "Saving…" : "Save server policy"}</button>
-        <small className="settings-save-status" role="status">{status === "saved" ? "Saved" : status !== "ready" && status !== "saving" ? status : ""}</small>
-      </div>}
+      )}
     </section>
   );
 }
 
-function policySandboxOverrides(policy: SessionPolicy): Record<string, SandboxSetting> {
-  return Object.fromEntries([...sandboxFields, ...accessFields].map((field) => {
-    const value = policy.sandbox[field];
-    return [field, typeof value === "boolean" || typeof value === "string" ? value as SandboxSetting : ""];
-  }));
+/** What this session already overrides, so the editor is not a blind input. */
+function permissionSummary(policy: SessionPolicy): string {
+  const groups = Object.entries(policy.permissions)
+    .map(([decision, rules]) => {
+      const names = (Array.isArray(rules) ? rules : [])
+        .map((rule) => (rule && typeof rule.tool === "string" ? rule.tool : ""))
+        .filter(Boolean);
+      return names.length ? `${decision}: ${names.join(", ")}` : "";
+    })
+    .filter(Boolean);
+  return groups.length ? `This session overrides ${groups.join(" · ")}.` : "";
 }
 
-function booleanSetting(value: string): "" | boolean {
-  return value === "" ? "" : value === "true";
-}
-
-function sandboxAccess(value: unknown): SandboxAccess {
-  return value === "allow" || value === "deny" || value === "readonly" || value === "readwrite" ? value : "deny";
-}
-
-function policyFieldLabel(field: string): string {
-  return field.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
-}

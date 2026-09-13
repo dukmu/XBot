@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { JsonObject, PluginConfigCatalog, PluginConfigScope } from "../api/types";
+import type { JsonObject, PluginConfigCatalog, PluginConfigDescriptor, PluginConfigScope } from "../api/types";
 import { SchemaForm } from "./SchemaForm";
 import { type JsonSchema, isRecord, schemaErrors } from "./schemaForm";
 
@@ -153,6 +153,19 @@ export function PluginConfigPanel({
         : "Unsaved changes"
     : status === "ready" || status === "idle" ? "" : status;
 
+  const renderItem = (plugin: PluginConfigDescriptor) => (
+    <button
+      type="button"
+      key={plugin.plugin_id}
+      className={plugin.plugin_id === selectedId ? "selected" : ""}
+      aria-current={plugin.plugin_id === selectedId ? "true" : undefined}
+      onClick={() => setSelectedId(plugin.plugin_id)}
+    >
+      <span>{plugin.plugin_id}</span>
+      {draft?.key === `${scope}:${plugin.plugin_id}` && <span className="plugin-config-dot" aria-hidden="true" />}
+    </button>
+  );
+
   return (
     <section className="settings-section plugin-config-panel" aria-labelledby="plugin-config-title">
       <div className="settings-section-heading">
@@ -166,10 +179,10 @@ export function PluginConfigPanel({
       {!catalog && <p className="settings-save-status" aria-live="polite">{status}</p>}
 
       {catalog && (
-        <div className="plugin-config-editor">
-          <div className="plugin-config-bar">
+        <div className="plugin-config-layout">
+          <aside className="plugin-config-browser">
             {!fixedScope && (
-              <label className="plugin-config-picker">
+              <label className="plugin-config-scope">
                 <span>Scope</span>
                 <select aria-label="Scope" value={scope} onChange={(event) => setSelectedScope(event.target.value as PluginConfigScope)}>
                   <option value="workspace">Workspace</option>
@@ -178,73 +191,74 @@ export function PluginConfigPanel({
                 </select>
               </label>
             )}
-            <label className="plugin-config-picker">
-              <span>Plugin</span>
-              <select
-                aria-label="Plugin"
-                value={selectedId}
-                disabled={!plugins.length}
-                onChange={(event) => setSelectedId(event.target.value)}
-              >
-                {configurable.map((plugin) => (
-                  <option key={plugin.plugin_id} value={plugin.plugin_id}>{plugin.plugin_id}</option>
-                ))}
-                {silent.length > 0 && (
-                  <optgroup label="No configuration declared">
-                    {silent.map((plugin) => (
-                      <option key={plugin.plugin_id} value={plugin.plugin_id}>{plugin.plugin_id}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </label>
-            {selected?.editable && <span className="plugin-config-layer">{scopeTitle(scope)} layer</span>}
-            <span className="plugin-config-actions">
-              <small className={`plugin-config-status${dirty ? " dirty" : ""}`} aria-live="polite">{statusLine}</small>
-              {selected?.editable && dirty && (
-                <button type="button" className="secondary-button" onClick={() => setDraft(null)}>Discard</button>
-              )}
-              {selected?.editable && (
-                <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save()}>
-                  Save plugin configuration
-                </button>
-              )}
-            </span>
-          </div>
-
-          {ownedNote && <p className="plugin-config-owned">{ownedNote}</p>}
-
-          {selected && (
-            <>
-              {!selected.editable && (
-                <p className="plugin-config-unavailable">
-                  {selected.unavailable_reason || "This plugin declares no configuration schema."}
-                </p>
-              )}
-              {selected.editable && schema?.properties && config && (
-                <SchemaForm schema={schema} value={config} onChange={applyConfig} />
-              )}
-              {selected.editable && (
-                <details className="plugin-config-advanced">
-                  <summary>Advanced JSON</summary>
-                  <label className="plugin-config-json">
-                    <span>Layer configuration JSON</span>
-                    <textarea
-                      value={jsonDraft}
-                      spellCheck={false}
-                      onChange={(event) => editJson(event.target.value)}
-                      aria-label="Plugin configuration JSON"
-                    />
-                  </label>
-                  {jsonError && <small className="schema-field-error" role="alert">{jsonError}</small>}
-                </details>
-              )}
-              <details className="plugin-config-advanced">
-                <summary>Declared JSON Schema</summary>
-                <pre>{JSON.stringify(selected.config_schema, null, 2)}</pre>
+            <nav className="plugin-config-list" aria-label="Plugin configurations">
+              {configurable.map(renderItem)}
+            </nav>
+            {!configurable.length && <p className="plugin-config-hint">No plugin declares a configuration schema.</p>}
+            {silent.length > 0 && (
+              <details className="plugin-config-silent">
+                <summary>
+                  {silent.length === 1
+                    ? "1 plugin declares no configuration"
+                    : `${silent.length} plugins declare no configuration`}
+                </summary>
+                <nav className="plugin-config-list" aria-label="Plugins without configuration">
+                  {silent.map(renderItem)}
+                </nav>
               </details>
-            </>
-          )}
+            )}
+          </aside>
+
+          <div className="plugin-config-editor">
+            <div className="plugin-config-bar">
+              {selected?.editable && <span className="plugin-config-layer">{scopeTitle(scope)} layer</span>}
+              <span className="plugin-config-actions">
+                <small className={`plugin-config-status${dirty ? " dirty" : ""}`} aria-live="polite">{statusLine}</small>
+                {selected?.editable && dirty && (
+                  <button type="button" className="secondary-button" onClick={() => setDraft(null)}>Discard</button>
+                )}
+                {selected?.editable && (
+                  <button type="button" className="primary-button" disabled={!canSave} onClick={() => void save()}>
+                    Save plugin configuration
+                  </button>
+                )}
+              </span>
+            </div>
+
+            {ownedNote && <p className="plugin-config-owned">{ownedNote}</p>}
+
+            {selected && (
+              <>
+                {!selected.editable && (
+                  <p className="plugin-config-unavailable">
+                    {selected.unavailable_reason || "This plugin declares no configuration schema."}
+                  </p>
+                )}
+                {selected.editable && schema?.properties && config && (
+                  <SchemaForm schema={schema} value={config} onChange={applyConfig} />
+                )}
+                {selected.editable && (
+                  <details className="plugin-config-advanced">
+                    <summary>Advanced JSON</summary>
+                    <label className="plugin-config-json">
+                      <span>Layer configuration JSON</span>
+                      <textarea
+                        value={jsonDraft}
+                        spellCheck={false}
+                        onChange={(event) => editJson(event.target.value)}
+                        aria-label="Plugin configuration JSON"
+                      />
+                    </label>
+                    {jsonError && <small className="schema-field-error" role="alert">{jsonError}</small>}
+                  </details>
+                )}
+                <details className="plugin-config-advanced">
+                  <summary>Declared JSON Schema</summary>
+                  <pre>{JSON.stringify(selected.config_schema, null, 2)}</pre>
+                </details>
+              </>
+            )}
+          </div>
         </div>
       )}
     </section>

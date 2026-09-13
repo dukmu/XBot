@@ -26,27 +26,25 @@ test("opens VS Code-style settings scopes and applies the theme locally", async 
   await expect(page.getByRole("dialog", { name: "Session settings" })).toHaveCount(0);
 });
 
-test("loads and saves the active session security policy", async ({ page }) => {
+test("saves one session tool permission", async ({ page }) => {
   await openDemoSession(page);
   if ((page.viewportSize()?.width || 0) <= 820) {
     await page.getByRole("button", { name: "Open sessions" }).click();
   }
   await page.getByRole("button", { name: "Open settings" }).click();
   await page.getByRole("button", { name: "Session", exact: true }).click();
-  await expect(page.getByText("Session security policy")).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Session settings" });
+  await expect(dialog.getByRole("heading", { name: "Tool permissions" })).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Session security policy" })).toHaveCount(0);
   const request = page.waitForRequest((candidate) => (
     candidate.method() === "PATCH"
     && candidate.url().endsWith("/sessions/demo-session/policy")
   ));
-  await page.getByLabel("Network access").selectOption("false");
-  await page.getByLabel("Permission Tool name").fill("shell");
-  await page.getByLabel("Permission decision").selectOption("allow");
-  await page.getByRole("button", { name: "Save server policy" }).click();
-  expect((await request).postDataJSON()).toMatchObject({
-    permissions: { shell: "allow" },
-    sandbox: { network: false },
-  });
-  await expect(page.getByRole("dialog", { name: "Session settings" }).getByRole("status")).toContainText("Saved");
+  await dialog.getByLabel("Permission Tool name").fill("shell");
+  await dialog.getByLabel("Permission decision").selectOption("allow");
+  await dialog.getByRole("button", { name: "Save permission" }).click();
+  expect((await request).postDataJSON()).toMatchObject({ permissions: { shell: "allow" } });
+  await expect(dialog.getByRole("status")).toContainText("Saved");
 });
 
 test("edits plugin configuration through the declared schema catalog", async ({ page }) => {
@@ -59,9 +57,10 @@ test("edits plugin configuration through the declared schema catalog", async ({ 
   await settingsDialog.getByRole("button", { name: "Workspace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Workspace settings" });
   await expect(dialog.getByRole("heading", { name: "Plugin configuration" })).toBeVisible();
-  const picker = dialog.getByLabel("Plugin", { exact: true });
-  await expect(picker).toHaveValue("compact");
-  await expect(picker.locator("option")).toHaveText(["compact", "llm"]);
+  const list = dialog.getByRole("navigation", { name: "Plugin configurations" });
+  await expect(list.getByRole("button")).toHaveText(["compact"]);
+  await expect(dialog.getByText("1 plugin declares no configuration")).toBeVisible();
+  await list.getByRole("button", { name: "compact", exact: true }).click();
   const save = dialog.getByRole("button", { name: "Save plugin configuration" });
   await expect(save).toBeDisabled();
   const request = page.waitForRequest((candidate) => (
@@ -728,9 +727,8 @@ async function mockProtocol(page: Page) {
   let demoSessionTitle = "Demo session";
   let regenerated = false;
   let cleared = false;
-  let sessionPolicy = {
-    enabled: true, network: true, external_read: "readonly", external_write: "deny",
-    workspace_read: "allow", workspace_write: "allow",
+  let sessionPolicy: { permissions: Record<string, Array<Record<string, string>>>; sandbox: Record<string, unknown> } = {
+    permissions: {}, sandbox: {},
   };
   let pluginConfigRevision = "plugin-config-rev-1";
   let pluginConfig = { automatic: true };
@@ -806,12 +804,25 @@ async function mockProtocol(page: Page) {
       }],
     });
     if (path === "/sessions/demo-session/policy" && method === "GET") return json(route, {
-      session_id: "demo-session", permissions: {}, effective_permissions: {}, sandbox: {}, effective_sandbox: sessionPolicy,
+      session_id: "demo-session", permissions: sessionPolicy.permissions, effective_permissions: {}, sandbox: {}, effective_sandbox: {},
     });
     if (path === "/sessions/demo-session/policy" && method === "PATCH") {
-      sessionPolicy = { ...sessionPolicy, ...(request.postDataJSON().sandbox || {}) };
+      const patch = request.postDataJSON() as {
+        permissions?: Record<string, string>;
+        remove_permissions?: string[];
+      };
+      for (const tool of patch.remove_permissions || []) {
+        for (const rules of Object.values(sessionPolicy.permissions)) {
+          const kept = rules.filter((rule) => rule.tool !== `^${tool}$`);
+          rules.length = 0;
+          rules.push(...kept);
+        }
+      }
+      for (const [tool, decision] of Object.entries(patch.permissions || {})) {
+        (sessionPolicy.permissions[decision] ||= []).unshift({ tool: `^${tool}$` });
+      }
       return json(route, {
-        session_id: "demo-session", permissions: {}, effective_permissions: {}, sandbox: request.postDataJSON().sandbox || {}, effective_sandbox: sessionPolicy,
+        session_id: "demo-session", permissions: sessionPolicy.permissions, effective_permissions: {}, sandbox: {}, effective_sandbox: {},
       });
     }
     if (path === "/sessions/demo-session/threads/agent/plugin-config" && method === "GET") {
