@@ -87,7 +87,8 @@ class _ScriptedSession:
         ]}
 
     async def run_command(self, command, args, raw, *, kind="server"):
-        del args, raw
+        self.commands_run = getattr(self, "commands_run", [])
+        self.commands_run.append((command, list(args), raw))
         if command == "status":
             return {"data": {"message": "turn=0 mode=composing"}}
         return {"data": {"message": f"ran {command}"}}
@@ -2469,5 +2470,17 @@ async def test_provider_command_picks_or_lists(scripted_session) -> None:
         assert isinstance(picker, SelectionScreen)
         rows = list(picker.query(".selection-row"))
         assert any("OpenAI" in str(row.content) for row in rows)
+        scripted_session.commands_run = []
+        app._session_attached = True
+        await pilot.press("down")  # OpenAI
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        # The picker value is the configured provider NAME (the key the server
+        # validates) and the command switches via ``use``: a bare
+        # ``/provider <name>`` or a protocol value would change nothing.
+        assert scripted_session.commands_run == [
+            ("provider", ["use", "OpenAI"], "/provider use OpenAI"),
+        ]
         await pilot.press("escape")
         await pilot.pause()

@@ -629,12 +629,14 @@ class XBotTextualApp(App[None]):
                 name = str(item.get("name") or "")
                 provider = str(item.get("provider") or "")
                 model = str(item.get("default_model") or "")
-                if not provider:
+                if not name:
                     continue
-                label = f"{name or provider}"
+                label = name
+                if provider and provider != name:
+                    label += f" ({provider})"
                 if model:
                     label += f"  {model}"
-                options.append((provider, label))
+                options.append((name, label))
         if not options:
             await self._append_local_notice("Providers", "No providers available")
             return
@@ -863,71 +865,107 @@ class XBotTextualApp(App[None]):
             if view is not None:
                 view.body.prepend(text + "\n")
 
+    # Command execution table: name -> bound handler.  Only TUI-local commands
+    # and interactive overrides are registered here; every server command from
+    # the catalog is executed by the single default remote forwarder, so the
+    # dispatcher never branches per command name.
+    _CLIENT_HANDLERS = {
+        "exit": "_cmd_exit",
+        "clear-screen": "_cmd_clear_entry",
+        "copy": "_cmd_copy",
+        "help": "_cmd_help_entry",
+        "thinking": "_cmd_thinking_toggle",
+        "details": "_cmd_details_toggle",
+        "attach": "_cmd_attach_entry",
+        "session": "_cmd_session_entry",
+        "resume": "_cmd_resume",
+        "new": "_cmd_new",
+        "thread": "_cmd_thread_entry",
+        "provider": "_cmd_provider",
+    }
+
     async def _handle_slash_command(self, spec: CommandSpec | None) -> None:
         if spec is None:
             return
         trace_event("tui.slash", {"name": spec.name, "raw": spec.raw, "kind": spec.kind})
-        if spec.name == "exit":
-            self.exit()
-            return
-        if spec.name == "clear-screen" and spec.kind == "client":
-            await self._cmd_clear()
-            return
-        if spec.name == "copy":
-            self.action_copy_last()
-            return
-        if spec.name == "help":
-            await self._cmd_help(spec.args.strip() if spec.args else None)
-            return
-        if spec.name == "thinking":
-            await self._cmd_toggle_blocks("thinking", spec.args)
-            return
-        if spec.name == "details":
-            await self._cmd_toggle_blocks("details", spec.args)
-            return
-        if spec.name == "attach":
-            await self._cmd_attach(spec.args)
-            return
-        if spec.name == "session":
-            await self._cmd_session(spec.args)
-            return
-        if spec.name == "resume":
-            await self._cmd_session(spec.args.strip() or self.state.session_id)
-            return
-        if spec.name == "thread":
-            await self._cmd_thread(spec.args)
-            return
-        if spec.name == "provider":
-            provider_args = spec.args.strip()
-            if provider_args.lower() in {"list", "ls"}:
-                await self._show_providers()
+        handler = self._command_handler(spec.name)
+        if handler is None:
+            if spec.name == "unknown" or spec.kind == "unknown":
+                await self._append_local_notice(
+                    "Unknown command", spec.display_label
+                )
                 return
-            if not provider_args:
-                await self._pick_provider(lambda choice: (
-                    self.run_worker(
-                        self._dispatch_remote_command(
-                            CommandSpec(
-                                name=spec.name,
-                                kind=spec.kind,
-                                description=spec.description,
-                                usage=spec.usage,
-                                raw=spec.raw,
-                                args=choice,
-                            )
+            handler = self._dispatch_remote_command
+        await handler(spec)
+
+    def _command_handler(self, name: str):
+        """Resolve one command to its bound handler, or None for the default."""
+        method = self._CLIENT_HANDLERS.get(name)
+        if method is None:
+            return None
+        return getattr(self, method, None)
+
+    async def _cmd_exit(self, _spec: CommandSpec) -> None:
+        self.exit()
+
+    async def _cmd_copy(self, _spec: CommandSpec) -> None:
+        self.action_copy_last()
+
+    async def _cmd_clear_entry(self, _spec: CommandSpec) -> None:
+        await self._cmd_clear()
+
+    async def _cmd_help_entry(self, spec: CommandSpec) -> None:
+        await self._cmd_help(spec.args.strip() if spec.args else None)
+
+    async def _cmd_attach_entry(self, spec: CommandSpec) -> None:
+        await self._cmd_attach(spec.args)
+
+    async def _cmd_session_entry(self, spec: CommandSpec) -> None:
+        await self._cmd_session(spec.args)
+
+    async def _cmd_thread_entry(self, spec: CommandSpec) -> None:
+        await self._cmd_thread(spec.args)
+
+    async def _cmd_resume(self, spec: CommandSpec) -> None:
+        await self._cmd_session(spec.args.strip() or self.state.session_id)
+
+    async def _cmd_new(self, spec: CommandSpec) -> None:
+        await self._cmd_session(f"new {spec.args.strip()}".strip())
+
+    async def _cmd_thinking_toggle(self, spec: CommandSpec) -> None:
+        await self._cmd_toggle_blocks("thinking", spec.args)
+
+    async def _cmd_details_toggle(self, spec: CommandSpec) -> None:
+        await self._cmd_toggle_blocks("details", spec.args)
+
+    async def _cmd_provider(self, spec: CommandSpec) -> None:
+        """Provider: interactive picker on no args, local list, else remote."""
+        provider_args = spec.args.strip()
+        if provider_args.lower() in {"list", "ls"}:
+            await self._show_providers()
+            return
+        if not provider_args:
+            await self._pick_provider(lambda choice: (
+                self.run_worker(
+                    self._dispatch_remote_command(
+                        CommandSpec(
+                            name=spec.name,
+                            kind=spec.kind,
+                            description=spec.description,
+                            usage=spec.usage,
+                            raw=f"/{spec.name} use {choice}",
+                            args=f"use {choice}",
                         )
                     )
-                    if choice
-                    else None
-                ))
-                return
-        if spec.name == "new":
-            args = spec.args.strip()
-            await self._cmd_session(f"new {args}".strip())
-            return
-        if spec.name == "unknown":
-            await self._append_local_notice("Unknown command", spec.display_label)
+                )
+                if choice
+                else None
+            ))
             return
         await self._dispatch_remote_command(spec)
+
+    async def _cmd_exit_spec(self, spec: CommandSpec) -> None:
+        self.exit()
 
     async def _cmd_session(self, args: str) -> None:
         """List or switch sessions using the same persisted session API as WebUI."""

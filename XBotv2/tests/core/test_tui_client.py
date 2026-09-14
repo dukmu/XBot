@@ -27,21 +27,24 @@ async def test_clear_dispatch_distinguishes_screen_and_history_commands():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class Handler:
-        _cmd_clear = AsyncMock()
+        _cmd_clear_entry = AsyncMock()
         _dispatch_remote_command = AsyncMock()
+
+        def _command_handler(self, name):
+            return self._cmd_clear_entry if name == "clear-screen" else None
 
     handler = Handler()
     await XBotTextualApp._handle_slash_command(handler, CommandSpec(
         name="clear-screen", kind="client", description="clear", raw="/clear-screen",
     ))
-    handler._cmd_clear.assert_awaited_once()
+    handler._cmd_clear_entry.assert_awaited_once()
     handler._dispatch_remote_command.assert_not_awaited()
 
-    handler._cmd_clear.reset_mock()
+    handler._cmd_clear_entry.reset_mock()
     await XBotTextualApp._handle_slash_command(handler, CommandSpec(
         name="clear", kind="client", description="clear history", raw="/clear",
     ))
-    handler._cmd_clear.assert_not_awaited()
+    handler._cmd_clear_entry.assert_not_awaited()
     handler._dispatch_remote_command.assert_awaited_once()
 
 
