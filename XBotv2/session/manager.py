@@ -239,6 +239,36 @@ class SessionManager(SessionsPort):
                     error_type=type(exc).__name__,
                 )
 
+    def _observe_metadata(self, runtime: SessionRuntime) -> None:
+        """Translate a runtime's metadata changes into catalog changes.
+
+        The runtime publishes the general fact; this process-level owner
+        decides that a changed title is what clients need to see, so a
+        caption (or any other writer) refreshes every open session list
+        without knowing anything about events.
+        """
+
+        def _observer(previous, current) -> None:
+            if previous.title == current.title:
+                return
+            asyncio.ensure_future(
+                self._publish_session_change(runtime.session_id)
+            )
+
+        runtime._metadata_dispose = runtime.application.loop_state.metadata.observe(
+            _observer
+        )
+
+    async def _publish_session_change(self, session_id: str) -> None:
+        try:
+            summary = await self.session_summary(session_id)
+        except Exception:  # noqa: BLE001 — a vanished session needs no catalog event
+            return
+        await self._events.emit(
+            SESSION_RESOURCE_CHANGED,
+            SessionResourceChanged(summary),
+        )
+
     async def _close_runtime(
         self,
         runtime: SessionRuntime,
@@ -249,6 +279,9 @@ class SessionManager(SessionsPort):
             thread_id=runtime.thread_id,
         )
         try:
+            if runtime._metadata_dispose is not None:
+                runtime._metadata_dispose()
+                runtime._metadata_dispose = None
             await runtime.close(reason)
         finally:
             reset_log_context(log_token)
@@ -434,6 +467,7 @@ class SessionManager(SessionsPort):
                 raise
             async with self._lock:
                 self._sessions[key] = ctx
+            self._observe_metadata(ctx)
             pending_resumed = (
                 ctx.resume_pending_inputs() if mode == "resume" else False
             )

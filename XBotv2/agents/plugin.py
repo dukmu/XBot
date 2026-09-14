@@ -50,7 +50,6 @@ _RUNTIME_DEPENDENCIES = [
     "loop_state",
     "commands",
     "agent_options",
-    "thread_metadata",
     "runtime_log",
 ]
 
@@ -88,7 +87,6 @@ async def mount_runtime(ctx: Context) -> None:
         model=ctx.model,
         tools=ctx.tools,
         artifacts=ctx.artifacts,
-        metadata=ctx.thread_metadata,
         runtime_log=ctx.runtime_log,
     )
     ctx.set("agent_runtime", service)

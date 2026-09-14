@@ -34,7 +34,7 @@ from XBotv2.coretools.contracts import CoreToolsConfig
 from XBotv2.loader.contracts import PluginTree
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
+from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.llm import (
     EffortSelection,
@@ -62,7 +62,6 @@ class AgentsService(AgentRuntimePort):
         model: ModelPort,
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
-        metadata: ThreadMetadataState,
         runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog
@@ -74,14 +73,12 @@ class AgentsService(AgentRuntimePort):
         self._model = model
         self._tools = tools
         self._artifacts = artifacts
-        self._metadata = metadata
         self._log = runtime_log.bind("agent")
         self._engine: AgentLoopDriverPort | None = None
 
     async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort:
         """Resolve one Agent and publish the driver returned by its factory."""
         state = self._state
-        state.metadata = self._metadata
         config = self._runtime_config(
             self._settings.load_plugin_tree(
                 options.workspace_root,

@@ -7,10 +7,12 @@ from xcore import Context
 
 from XBotv2.agentloop import Events
 from XBotv2.core.history import ConversationHistory
-from XBotv2.persistence.store import DeferredThreadMetadataStore, ThreadPersistence
-from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.store import (
+    DeferredThreadMetadataStore,
+    ThreadMetadataStore,
+    ThreadPersistence,
+)
 
 
 def _materialize_after_first_turn(persistence: ThreadPersistence):
@@ -58,10 +60,10 @@ class ThreadPersistenceComponent:
         ):
             ctx.on(Events.TURN_END, _materialize_after_first_turn(persistence))
         state.resumed = persistence.has_persisted_state()
-        state.metadata = ThreadMetadataState(
-            persistence.metadata.load(),
-            sink=persistence.metadata,
-        )
+        # Durability is one observer of the metadata value, not a private
+        # hook inside it: the state owns the value, persistence reacts to it.
+        state.metadata.replace(persistence.metadata.load())
+        state.metadata.observe(_save_metadata(persistence.metadata))
         state.inbox_items = pending_inputs
         state.inbox_sink = persistence.inbox
         state.session.provider = persistence.provider
@@ -77,6 +79,15 @@ class ThreadPersistenceComponent:
         )
 
         ctx.set("thread_metadata", state.metadata)
+
+
+def _save_metadata(store: ThreadMetadataStore):
+    """Adapt the change observer to the durable writer."""
+
+    def _observer(_previous, current) -> None:
+        store.save(current)
+
+    return _observer
 
 
 def mount_thread_persistence(ctx: Context) -> None:

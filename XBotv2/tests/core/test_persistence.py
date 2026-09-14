@@ -618,9 +618,9 @@ class TestThreadMetadataStore:
 
     def test_metadata_state_persists_each_typed_replacement(self, tmp_path):
         persistence = thread_persistence(tmp_path)
-        state = ThreadMetadataState(
-            persistence.metadata.load(),
-            sink=persistence.metadata,
+        state = ThreadMetadataState(persistence.metadata.load())
+        state.observe(
+            lambda _previous, current: persistence.metadata.save(current)
         )
         selected = ThreadMetadata(
             provider="mock",
@@ -633,6 +633,26 @@ class TestThreadMetadataStore:
 
         assert state.value == selected
         assert persistence.metadata.load() == selected
+
+    def test_metadata_state_announces_every_change_generically(self, tmp_path):
+        """Observers see whole values; field semantics belong to them."""
+        state = ThreadMetadataState()
+        seen: list[tuple[ThreadMetadata, ThreadMetadata]] = []
+        dispose = state.observe(lambda previous, current: seen.append((previous, current)))
+
+        state.update(title="first")
+        state.update(provider="mock")
+        state.replace(state.value)          # same value: no event
+
+        assert [(p.title, c.title) for p, c in seen] == [
+            ("", "first"),
+            ("first", "first"),
+        ]
+        assert seen[1][1].provider == "mock"
+
+        dispose()
+        state.update(title="after dispose")
+        assert len(seen) == 2
 
 
 class TestInboxStore:

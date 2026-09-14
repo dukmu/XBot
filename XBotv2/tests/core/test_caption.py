@@ -1,5 +1,7 @@
 """Caption plugin: auto-title on the first user message + agent tool."""
 
+import asyncio
+
 import pytest
 from plugin_harness import mount_plugin_standalone
 
@@ -181,3 +183,83 @@ async def test_caption_failure_is_silent():
     await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)  # must not raise
     assert plugin.title == ""
     assert plugin.model.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_caption_title_reaches_the_session_catalog(tmp_path):
+    """A caption wrote the title; open clients must hear about it.
+
+    Nothing in the caption path knows about events: it writes the metadata
+    value, the runtime announces the change, and the process-level session
+    owner turns that into the catalog change clients already consume.
+    """
+    from XBotv2.application.app import create_agent_application
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.llm.mock import MockLLM
+    from XBotv2.session.contracts import (
+        AgentApplicationOptions,
+        OpenSession,
+        SESSION_RESOURCE_CHANGED,
+    )
+    from XBotv2.session.manager import SessionManager
+
+    class _Events:
+        def __init__(self) -> None:
+            self.seen: list[tuple[str, object]] = []
+
+        async def emit(self, event, *args) -> None:
+            self.seen.append((event, args))
+
+    paths = RuntimePaths.from_data_dir(tmp_path)
+    events = _Events()
+    model = MockLLM(responses=[
+        {"content": "Billing migration plan"},
+        {"content": "acknowledged"},
+    ])
+
+    async def factory(options):
+        return await create_agent_application(AgentApplicationOptions(
+            paths=options.paths,
+            provider_name=options.provider_name,
+            session_id=options.session_id,
+            thread_id=options.thread_id,
+            workspace_root=options.workspace_root,
+            no_plugins=False,
+            model_override=model,
+        ))
+
+    manager = SessionManager(
+        paths,
+        events,
+        thread_persistence_factory=None,
+        application_factory=factory,
+        idle_timeout=None,
+    )
+    try:
+        await manager.open(OpenSession(
+            session_id="caption-catalog",
+            thread_id="agent",
+            provider_name="default",
+            workspace_root=str(tmp_path),
+            no_plugins=False,
+            mode="new",
+        ))
+        runtime = await manager.get("caption-catalog", "agent")
+        events.seen.clear()
+
+        async for _event in runtime.engine.run_turn("port billing to the ledger"):
+            pass
+        for _ in range(20):
+            if any(name == SESSION_RESOURCE_CHANGED for name, _ in events.seen):
+                break
+            await asyncio.sleep(0.05)
+
+        summaries = [
+            args[0].session
+            for name, args in events.seen
+            if name == SESSION_RESOURCE_CHANGED
+        ]
+        assert summaries, [name for name, _ in events.seen]
+        assert summaries[-1].title == "Billing migration plan"
+    finally:
+        await manager.close_all()

@@ -119,6 +119,7 @@ class AgentApplicationPort(Protocol):
     history: SessionHistoryPort
     history_pages: ConversationPageReader
     usage: UsageSnapshotPort
+    loop_state: LoopStateView
     persistence_available: bool
     parent_permissions: PermissionsPort
 

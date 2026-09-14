@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -146,6 +147,8 @@ class SessionRuntime(SessionPort):
     last_activity: float = field(default_factory=time.monotonic)
     _wakeup_requested: bool = False
     _active_router: "TurnEventRouter | None" = field(default=None, init=False)
+    # Releases the metadata observer the session manager installs.
+    _metadata_dispose: Callable[[], None] | None = field(default=None, init=False)
     _log: RuntimeLog = field(init=False)
 
     def __post_init__(self) -> None:
