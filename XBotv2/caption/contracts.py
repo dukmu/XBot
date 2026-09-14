@@ -11,10 +11,10 @@ class CaptionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Whether the first user message triggers an independent LLM caption
-    # request (the request itself is never stored as conversation). Off by
-    # default: it costs one extra provider call per new session, so it is an
-    # explicit opt-in.
-    auto: bool = False
+    # request (the request itself is never stored as conversation). On by
+    # default so every session gets a readable title; an explicit model
+    # override (a temporary binding) never triggers it.
+    auto: bool = True
     # Whether the main agent is granted the caption tool. Exposed means
     # writable; when disabled the title is human-facing only.
     allow_access: bool = True

@@ -988,6 +988,7 @@ async def test_todo_and_usage_survive_http_close_resume(
 ) -> None:
     client = full_client
     set_llm_override(full_http_app, MockLLM(responses=[
+        {"content": "session title"},  # caption auto-titles the first message
         {
             "content": "Planning.",
             "tool_calls": [{
@@ -1397,7 +1398,10 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
     app.state.manager = server.sessions
     app.state.paths = server.runtime_paths
     app.state.workspace_root = server.workspace_root
-    set_llm_override(app, MockLLM(responses=[{"content": "existing answer"}]))
+    set_llm_override(app, MockLLM(responses=[
+        {"content": "session title"},  # caption auto-titles the first message
+        {"content": "existing answer"},
+    ]))
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
@@ -4356,6 +4360,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     skills_app,
 ) -> None:
     set_llm_override(skills_app, MockLLM(responses=[
+        {"content": "session title"},  # caption auto-titles the first message
         {
             "content": "",
             "tool_calls": [{
@@ -4491,7 +4496,10 @@ Follow this test instruction: $ARGUMENTS
 """,
         encoding="utf-8",
     )
-    llm = MockLLM(responses=[{"content": "expanded"}])
+    llm = MockLLM(responses=[
+        {"content": "session title"},  # caption auto-titles the first message
+        {"content": "expanded"},
+    ])
     set_llm_override(skills_app, llm)
     await skills_client.post(
         "/sessions",
@@ -4513,7 +4521,8 @@ Follow this test instruction: $ARGUMENTS
         json={"content": "/xbot-test-prompt verify boundaries"},
     )
     assert response.status_code == 200
-    model_messages = llm.get_call_messages(0)
+    # Call 0 is the automatic caption; the skill turn is the latest call.
+    model_messages = llm.get_call_messages(llm.call_count - 1)
     expanded = next(
         message for message in model_messages if message.role == "user"
     )

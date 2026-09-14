@@ -73,6 +73,11 @@ def mount_ctx(state_store):
 
     ctx.set("model", ModelService())
     ctx.set("artifacts", state_store.artifacts)
+    from XBotv2.agents.contracts import AgentCreateOptions
+
+    ctx.set("agent_options", AgentCreateOptions(
+        session_id="s", thread_id="t", workspace_root="."
+    ))
     ctx.set("thread_persistence", state_store)
     ctx.set("thread_paths", state_store.paths)
     ctx.set("loop_state", LoopState(

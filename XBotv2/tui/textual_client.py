@@ -995,7 +995,8 @@ class XBotTextualApp(App[None]):
                 title = str(item.get("title") or "")
                 workspace = str(item.get("workspace_root") or "")
                 label = f"{sid}"
-                if title:
+                # The title falls back to the session id: show it only once.
+                if title and title != sid:
                     label += f"  {title}"
                 if workspace:
                     label += f"  {workspace}"

@@ -11,7 +11,7 @@ from XBotv2.caption.tools import build_caption_tool
 
 
 class CaptionPlugin:
-    inject = ["model", "loop_state", "session"]
+    inject = ["model", "loop_state", "session", "agent_options"]
     name = "caption"
     Config = CaptionConfig
 
@@ -23,6 +23,7 @@ class CaptionPlugin:
             session_id=ctx.session.session_id,
             thread_id=ctx.session.thread_id,
             config=config,
+            is_subagent=ctx.agent_options.is_subagent,
         )
         ctx.on(Events.BEFORE_CONTEXT, service._on_before_context)
         if config.allow_access:

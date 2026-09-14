@@ -74,7 +74,9 @@ class TestApplicationStartupBasics:
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "Hello!"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "Hello!"}]),
         )
         assert application is not None
         assert application.engine.turn_count == 0
@@ -87,7 +89,9 @@ class TestApplicationStartupBasics:
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="noninteractive",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
             interactive=False,
         )
 
@@ -124,7 +128,9 @@ class TestApplicationStartupBasics:
             session_id="cache-config",
             workspace_root=temp_workspace,
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert captured == {
@@ -141,7 +147,9 @@ class TestApplicationStartupBasics:
                 provider_name="typo",
                 session_id="unknown-provider",
                 plugin_dirs=[],
-                llm_override=MockLLM(responses=[]),
+                llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
             )
 
     @pytest.mark.asyncio
@@ -188,7 +196,9 @@ class TestApplicationStartupBasics:
             session_id="configured-provider",
             workspace_root=temp_workspace,
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert application.engine.settings.provider == "workspace"
@@ -203,7 +213,9 @@ class TestApplicationStartupBasics:
             session_id="explicit-provider",
             workspace_root=plain_workspace,
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert explicit.engine.settings.provider == "global"
@@ -304,7 +316,9 @@ plugin = InitFailPlugin()""",
                 session_id="init-fail",
                 thread_id="t",
                 plugin_dirs=[plugins_root],
-                llm_override=MockLLM(responses=[]),
+                llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
             )
         assert dispose_marker.read_text(encoding="utf-8") == "disposed"
         assert str(plugins_root) not in sys.path
@@ -372,7 +386,9 @@ plugin = NormalClosePlugin()""",
             session_id="normal-close",
             thread_id="t",
             plugin_dirs=[plugins_root],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
         engine = application.engine
         tool_name = "plugin:normal-close:runtime_tool"
@@ -399,7 +415,9 @@ plugin = NormalClosePlugin()""",
                 session_id="../escape",
                 thread_id="test-thread",
                 plugin_dirs=[],
-                llm_override=MockLLM(responses=[]),
+                llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
             )
 
         assert not (tmp_path / "escape").exists()
@@ -412,7 +430,9 @@ plugin = NormalClosePlugin()""",
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
         tool_names = set(application.engine.tools.names())
         assert {
@@ -439,7 +459,9 @@ plugin = NormalClosePlugin()""",
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="default-tools",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert {
@@ -464,7 +486,9 @@ plugin = NormalClosePlugin()""",
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert application.engine.tools.names() == ("read",)
@@ -480,7 +504,9 @@ plugin = NormalClosePlugin()""",
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
         assert application.engine.tools.names() == ()
 
@@ -518,7 +544,9 @@ plugin = SimplePlugin()
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[plugins_root],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert application.engine.tools.names() == ("plugin_tool",)
@@ -554,7 +582,9 @@ async def before_user_message(ctx):
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "ok"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}]),
         )
 
         events = [e async for e in application.engine.run_turn("hello")]
@@ -575,7 +605,9 @@ async def before_user_message(ctx):
                 session_id="test-session",
                 thread_id="test-thread",
                 plugin_dirs=[],
-                llm_override=MockLLM(responses=[]),
+                llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
             )
 
     @pytest.mark.asyncio
@@ -608,7 +640,9 @@ async def before_user_message(ctx):
             thread_id="test-thread",
             workspace_root=temp_workspace,
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "ok"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}]),
         )
         print("DIAG listener:", application._bus.listener_count("before/user-message-accept"))
         print("DIAG overlay:", (temp_workspace / ".xbot" / "plugins.yaml").is_file())
@@ -653,6 +687,8 @@ async def before_user_message(ctx):
             encoding="utf-8",
         )
         llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+
             {"tool_calls": [{
                 "id": "call_greeting",
                 "name": "workspace_greeting",
@@ -712,7 +748,9 @@ plugin = ConfiguredPlugin()
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[plugin_root],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert json.loads(output_path.read_text(encoding="utf-8")) == {"value": 42}
@@ -725,7 +763,9 @@ plugin = ConfiguredPlugin()
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "Hello from application_startup!"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "Hello from application_startup!"}]),
         )
         # Override workspace for the sandbox
         application.sandbox.workspace_root = temp_workspace
@@ -743,7 +783,9 @@ plugin = ConfiguredPlugin()
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
         assert application.thread_persistence.session_id == "test-session"
         assert application.thread_persistence.paths.metadata_file.exists()
@@ -759,7 +801,9 @@ plugin = ConfiguredPlugin()
             "Keep ${workspace} and ${UNRELATED} literal.",
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[{"content": "ok"}])
+        llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
@@ -770,7 +814,7 @@ plugin = ConfiguredPlugin()
 
         _ = [e async for e in application.engine.run_turn("hello")]
 
-        system = llm.get_call_messages(0)[0]
+        system = llm.get_call_messages(llm.call_count - 1)[0]
         root = ET.fromstring(system.content)
         workspace = root.find("workspace_instructions")
         assert workspace is not None
@@ -787,6 +831,8 @@ plugin = ConfiguredPlugin()
         instructions = temp_workspace / "AGENTS.md"
         instructions.write_text("Workspace rule version one.", encoding="utf-8")
         llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+
             {"content": "first"},
             {"content": "second"},
             {"content": "third"},
@@ -804,9 +850,10 @@ plugin = ConfiguredPlugin()
         instructions.unlink()
         _ = [event async for event in application.engine.run_turn("third turn")]
 
-        first_system = str(llm.get_call_messages(0)[0].content)
-        second_system = str(llm.get_call_messages(1)[0].content)
-        third_system = str(llm.get_call_messages(2)[0].content)
+        # Call 0 belongs to the automatic caption; the three turns are 1..3.
+        first_system = str(llm.get_call_messages(1)[0].content)
+        second_system = str(llm.get_call_messages(2)[0].content)
+        third_system = str(llm.get_call_messages(3)[0].content)
         assert "Workspace rule version one." in first_system
         assert "Workspace rule version two." not in first_system
         assert "Workspace rule version two." in second_system
@@ -833,7 +880,9 @@ plugin = ConfiguredPlugin()
             }]),
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[{"content": "ok"}])
+        llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="identity",
@@ -845,7 +894,7 @@ plugin = ConfiguredPlugin()
 
         _ = [event async for event in application.engine.run_turn("hello")]
 
-        root = ET.fromstring(llm.get_call_messages(0)[0].content)
+        root = ET.fromstring(llm.get_call_messages(llm.call_count - 1)[0].content)
         runtime = root.findtext("runtime_environment") or ""
         assert "Human: Ada (human-7)" in runtime
         assert f"- workspace: {temp_workspace}" in runtime
@@ -864,7 +913,9 @@ plugin = ConfiguredPlugin()
             "---\ndescription: Default Agent\nmode: all\n---\nAgent workflow.",
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[{"content": "ok"}])
+        llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="instruction-sources",
@@ -874,7 +925,7 @@ plugin = ConfiguredPlugin()
 
         _ = [event async for event in application.engine.run_turn("hello")]
 
-        root = ET.fromstring(llm.get_call_messages(0)[0].content)
+        root = ET.fromstring(llm.get_call_messages(llm.call_count - 1)[0].content)
         assert root.findtext("developer_instructions").strip() == "Configured rule."
         assert root.findtext("agent_instructions").strip() == "Agent workflow."
 
@@ -892,7 +943,9 @@ plugin = ConfiguredPlugin()
             }], sort_keys=False),
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[{"content": "ok"}])
+        llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="test-session",
@@ -903,7 +956,7 @@ plugin = ConfiguredPlugin()
 
         _ = [event async for event in application.engine.run_turn("hello")]
 
-        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
+        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(llm.call_count - 1))
         assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
@@ -930,7 +983,9 @@ plugin = ConfiguredPlugin()
             session_id="workspace-disabled-agents",
             thread_id="main",
             workspace_root=temp_workspace,
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert application.agent_catalog.get("reviewer") is not None
@@ -950,7 +1005,9 @@ plugin = ConfiguredPlugin()
             "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[{"content": "ok"}])
+        llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="catalog",
@@ -960,7 +1017,7 @@ plugin = ConfiguredPlugin()
         )
 
         _ = [event async for event in application.engine.run_turn("hello")]
-        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(0))
+        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(llm.call_count - 1))
         assert "- reviewer: Workspace reviewer" in prompt
         await application.stop()
 
@@ -971,6 +1028,8 @@ plugin = ConfiguredPlugin()
             "allow": [{"tool": "shell"}],
         }}})
         llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+
             {
                 "content": "checking cwd",
                 "tool_calls": [
@@ -1000,7 +1059,9 @@ plugin = ConfiguredPlugin()
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         session_id = application.thread_persistence.session_id
@@ -1035,7 +1096,9 @@ plugin = ConfiguredPlugin()
             session_id="test-session",
             thread_id="test-thread",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         assert application.permissions.check("read", {}) == "allow"
@@ -1056,7 +1119,9 @@ plugin = ConfiguredPlugin()
             session_id="test-session",
             workspace_root=temp_workspace,
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
         ps = application.permissions
@@ -1210,7 +1275,9 @@ class TestApplicationStartupNoPlugins:
             session_id="test-session",
             thread_id="test-thread",
             no_plugins=True,
-            llm_override=MockLLM(responses=[{"content": "I work without plugins!"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "I work without plugins!"}]),
         )
         application.sandbox.workspace_root = temp_workspace
 
@@ -1240,7 +1307,9 @@ class TestApplicationStartupNoPlugins:
             session_id="memory-only",
             thread_id="t",
             workspace_root=temp_workspace,
-            llm_override=MockLLM(responses=[{"content": "in memory"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "in memory"}]),
         )
         assert application.get("thread_persistence", strict=False) is None
         assert application.artifacts is not None
@@ -1265,7 +1334,9 @@ class TestMemoryLoading:
             session_id="mem-test",
             thread_id="t",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "ok"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}]),
         )
         assert "Important facts" in getattr(application.engine.settings, "memory", "")
 
@@ -1277,6 +1348,8 @@ class TestMemoryLoading:
             session_id="mem-missing",
             thread_id="t",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[{"content": "ok"}]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "ok"}]),
         )
         assert getattr(application.engine.settings, "memory", "") == ""

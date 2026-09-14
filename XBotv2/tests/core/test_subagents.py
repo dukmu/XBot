@@ -113,6 +113,7 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
     llm = RoutingLLM(
         child_marker="Act as the workspace reviewer",
         parents=[
+            {"content": "session title"},  # caption auto-titles the parent's first message
             {
                 "content": "Delegating review",
                 "tool_calls": [{
@@ -166,13 +167,14 @@ async def test_subagent_flow_runs_child_and_returns_to_parent(
         and event["data"]["content"] == "Parent summary"
         for event in events
     )
+    # Call 0 belongs to the automatic caption; the real turn starts at 1.
     assert "reviewer: Review a focused change" in "\n".join(
-        str(message.content) for message in llm.get_call_messages(0)
+        str(message.content) for message in llm.get_call_messages(1)
     )
     assert all(
         str(messages[0].content).count("<core_instructions>") == 1
         for messages in (
-            llm.get_call_messages(0),
+            llm.get_call_messages(1),
             llm.get_call_messages(1),
         )
     )
@@ -220,6 +222,7 @@ async def test_subagent_can_ask_user_through_parent_session(
     llm = RoutingLLM(
         child_marker="Ask for the missing detail",
         parents=[
+            {"content": "session title"},  # caption auto-titles the parent's first message
             {
                 "content": "Delegating",
                 "tool_calls": [{
@@ -321,6 +324,7 @@ async def test_subagent_can_request_permission_through_parent_session(
     llm = RoutingLLM(
         child_marker="Read only the requested file",
         parents=[
+            {"content": "session title"},  # caption auto-titles the parent's first message
             {
                 "content": "Delegating",
                 "tool_calls": [{
@@ -409,7 +413,9 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
         encoding="utf-8",
     )
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    first_llm = MockLLM(responses=[{"content": "built"}])
+    first_llm = MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+{"content": "built"}])
     first_application = await start_application(
         paths=paths,
         session_id="primary-session",
@@ -425,8 +431,9 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
 
     assert first.settings.agent_name == "builder"
     assert first.tools.enabled() == ()
+    # Call 0 belongs to the automatic caption; the turn is call 1.
     assert "Follow the builder workflow." in "\n".join(
-        str(message.content) for message in first_llm.get_call_messages(0)
+        str(message.content) for message in first_llm.get_call_messages(1)
     )
     assert first_application.thread_persistence.metadata.load().agent == "builder"
     await first.close_session()
@@ -447,7 +454,9 @@ async def test_primary_agent_configures_engine_and_resumes_from_thread_metadata(
         session_id="primary-session",
         thread_id="agent",
         workspace_root=temp_workspace,
-        llm_override=MockLLM(responses=[]),
+        llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
     )
     resumed = resumed_application.engine
     await resumed.start_session()
@@ -495,7 +504,9 @@ async def test_workspace_agent_overrides_builtin_definition(
         session_id="agent-precedence",
         workspace_root=temp_workspace,
         selected_agent="reviewer",
-        llm_override=MockLLM(responses=[]),
+        llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
     )
 
     engine = application.engine
@@ -537,7 +548,9 @@ async def test_new_primary_thread_selects_builtin_default_agent(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="default-agent",
         workspace_root=temp_workspace,
-        llm_override=MockLLM(responses=[]),
+        llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
     )
 
     engine = application.engine
@@ -564,7 +577,9 @@ async def test_subagent_runtime_does_not_load_subagents_plugin(
         workspace_root=temp_workspace,
         agent_definition=definition,
         is_subagent=True,
-        llm_override=MockLLM(responses=[]),
+        llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
     )
 
     engine = application.engine
@@ -586,7 +601,9 @@ async def test_unknown_primary_agent_does_not_leave_new_session(tmp_path):
             paths=paths,
             session_id="invalid-primary",
             selected_agent="missing",
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
     assert not paths.session("invalid-primary").root.exists()
@@ -614,7 +631,9 @@ async def test_invalid_workspace_agent_fails_startup_and_rolls_back_session(
             paths=paths,
             session_id="invalid-definition",
             workspace_root=workspace,
-            llm_override=MockLLM(responses=[]),
+            llm_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+]),
         )
 
     assert not paths.session("invalid-definition").root.exists()

@@ -64,6 +64,7 @@ class CaptionService:
         session_id: str,
         thread_id: str,
         config: CaptionConfig,
+        is_subagent: bool = False,
     ) -> None:
         self._events = events
         self.model = model
@@ -71,6 +72,8 @@ class CaptionService:
         self._session_id = session_id
         self._thread_id = thread_id
         self.config = config
+        # Subagent threads are named by their parent session, never here.
+        self._is_subagent = is_subagent
         self._captioned = False
 
     @property
@@ -81,9 +84,7 @@ class CaptionService:
         return self.config.allow_access and not self.state.value.parent_thread_id
 
     def _is_first_turn(self, ctx: EventContext) -> bool:
-        if self._captioned:
-            return False
-        if self.state.value.parent_thread_id:
+        if self._captioned or self._is_subagent:
             return False
         if self.state.value.title:
             return False

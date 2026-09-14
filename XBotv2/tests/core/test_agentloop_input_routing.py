@@ -27,7 +27,10 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         await release.wait()
         return "done"
 
+    # The caption plugin auto-titles the first user message with its own
+    # model call, so the mock must serve that call plus the turn's two.
     provider = MockLLM(responses=[
+        {"content": "session title"},
         {"tool_calls": [{"id": "call-1", "name": "blocker", "args": {}}]},
         {"content": "merged reply"},
     ])
@@ -119,7 +122,11 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         thread_id="agent",
         workspace_root=temp_workspace,
         plugin_dirs=[],
-        llm_override=MockLLM(responses=[{"content": "observed"}]),
+        # caption auto-titles this session too: serve it before the turn.
+        llm_override=MockLLM(responses=[
+            {"content": "session title"},
+            {"content": "observed"},
+        ]),
     )
     resumed = resumed_services.engine
     assert resumed.pending_input_count == 1

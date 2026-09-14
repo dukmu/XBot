@@ -145,7 +145,10 @@ async def test_engine_smoke_persists_user_image_attachment(
 ):
     payload = base64.b64decode(PNG_BASE64)
     llm = MockLLM(
-        responses=[{"content": "red square"}],
+        responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+            {"content": "red square"},
+        ],
         input_modalities=["text", "image"],
     )
     application = await start_application(
@@ -173,12 +176,13 @@ async def test_engine_smoke_persists_user_image_attachment(
     user_messages = [message for message in engine.messages if message.role == "user"]
     assert user_messages[-1].images == [image]
 
-    provider_user = next(
+    provider_users = [
         message
-        for message in llm.get_call_messages(0)
+        for index in range(1, llm.call_count)
+        for message in llm.get_call_messages(index)
         if message.role == "user"
-    )
-    assert provider_user.images == [image]
+    ]
+    assert provider_users[-1].images == [image]
     assert application.artifacts.exists(image.path)
 
     persisted = application.thread_persistence.history.path.read_text(encoding="utf-8")

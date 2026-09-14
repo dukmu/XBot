@@ -73,14 +73,12 @@ async def test_auto_caption_skips_subagent_threads():
         Message(role="user", content="hello"),
     ]
 
-    # A subagent thread never captions: the title is main-thread owned.
+    # A subagent thread never captions: the main thread owns the title.
+    plugin._is_subagent = True
     sub = EventContext(
         session=SessionInfo("s", "child", workspace_root="/work", turn_count=1),
         messages=list(original),
     )
-    plugin.state.replace(plugin.state.value.model_copy(
-        update={"parent_thread_id": "agent"}
-    ))
     await plugin._events.serial(Events.BEFORE_CONTEXT, sub)
     assert plugin.title == ""
     assert plugin.model.call_count == 0
