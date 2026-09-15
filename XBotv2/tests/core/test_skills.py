@@ -598,8 +598,10 @@ class TestSkillPermissionScope:
         scope = SkillPermissionScope()
         scope.add(allowed=["shell(git *)"])
         assert scope.check("shell", {"command": "git status"}) == "allow"
-        assert scope.check("shell", {"command": "rm -rf build"}) is None
-        assert scope.check("read", {"path": "README.md"}) is None
+        # An allowlist is a real restriction: everything outside it is
+        # restricted while the skill is active.
+        assert scope.check("shell", {"command": "rm -rf build"}) == "restrict"
+        assert scope.check("read", {"path": "README.md"}) == "restrict"
 
     def test_disallowed_overrides_allowed(self):
         from XBotv2.skills.permission_scope import SkillPermissionScope
@@ -678,3 +680,56 @@ def test_skill_content_expands_session_runtime_variables(tmp_path):
     assert str(tmp_path) in content
     assert "skills-session" in content
     assert "${session_id}" not in content
+
+
+@pytest.mark.asyncio
+async def test_active_skill_allowlist_restricts_other_tools(
+    skill_workspace, state_store
+):
+    """An activated skill's ``allowed-tools`` is enforced by the guard: tools
+    outside the allowlist are denied while the skill is active, and the
+    skill's own invocation tool stays callable."""
+    from XBotv2.skills.plugin import SkillsPlugin
+    from plugin_harness import mount_plugin
+    from XBotv2.agentloop.contracts import ToolRegistration
+    from XBotv2.core.tools import Tool, ToolCall
+
+    plugin = SkillsPlugin()
+    mount_plugin(plugin, state_store)
+    plugin._registry.discover(skill_workspace)
+    plugin._permission_scope.add(allowed=["shell(git *)"], disallowed=[])
+    plugin._active_skills.add("test-skill")
+
+    entry = ToolRegistration(
+        tool=Tool.from_function(lambda: "x", name="read"),
+        registered_name="read",
+    )
+    denied = await plugin._guard_tool_scope(
+        ToolCall(id="c1", name="read", args={"path": "README.md"}),
+        entry,
+    )
+    assert denied is not None
+    assert denied.reason is not None and "allowed-tools" in denied.reason
+
+    allowed_entry = ToolRegistration(
+        tool=Tool.from_function(lambda **_: "x", name="shell"),
+        registered_name="shell",
+        namespace="builtin",
+    )
+    allowed = await plugin._guard_tool_scope(
+        ToolCall(id="c2", name="shell", args={"command": "git status"}),
+        allowed_entry,
+    )
+    assert allowed is None
+
+    # The skill's own invocation tools are exempt from the restriction.
+    skill_entry = ToolRegistration(
+        tool=Tool.from_function(lambda **_: "x", name="test-skill"),
+        registered_name="test-skill",
+        namespace="skills",
+    )
+    skill_call = await plugin._guard_tool_scope(
+        ToolCall(id="c3", name="test-skill", args={}),
+        skill_entry,
+    )
+    assert skill_call is None

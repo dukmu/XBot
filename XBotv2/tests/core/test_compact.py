@@ -14,7 +14,7 @@ from XBotv2.compact.plugin import (
 )
 from XBotv2.compact.history import tool_pairing_boundaries
 from XBotv2.compact.protocol import COMPACTION_TRANSACTION
-from XBotv2.compact.summary import invoke_llm
+from XBotv2.llm import invoke_llm
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.compact import POST_COMPACT, PRE_COMPACT
 from XBotv2.core import (
@@ -265,7 +265,7 @@ async def test_human_command_compacts_and_persists_immediately(
     )
     setup.ctx.model.replace(llm)
     plugin.state = engine.state
-    engine.state.metadata.update(provider="trace-provider", model="trace-model")
+    await engine.state.metadata.update(provider="trace-provider", model="trace-model")
     engine.state.session.turn_count = 3
     await engine.start_session()
     runtime_events = []
@@ -791,3 +791,44 @@ async def test_context_overflow_compacts_surface_and_retries_once(
     assert any(event["type"] == "assistant_message" for event in events)
     assert engine.messages[0].role == "system"
     assert "summary" in engine.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_turn_count_survives_compaction(state_store, temp_workspace):
+    """turn_count is a lifetime counter with one owner (the loop driver):
+    compaction must never recompute it from the shrunken visible surface."""
+    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
+    setup = SetupContext(plugin)
+    state_store.history.replace(history(3))
+    llm = MockLLM(responses=[{
+        "content": "Earlier requirements.",
+        "usage_metadata": {"input_tokens": 5, "output_tokens": 2},
+    }])
+    engine = make_engine(
+        llm=llm,
+        tool_registry=ToolRegistry(),
+        plugin_ctx=setup.ctx,
+        state_store=state_store,
+        context_builder=ContextBuilder(),
+        sandbox_policy=SandboxPolicy(
+            enabled=False,
+            workspace_root=str(temp_workspace),
+        ),
+        permission_system=PermissionSystem(default_decision="allow"),
+        config=RuntimeConfig(),
+    )
+    setup.ctx.model.replace(llm)
+    plugin.state = engine.state
+    await engine.state.metadata.update(provider="trace-provider", model="trace-model")
+    engine.state.turn_count = 3  # engine-owned lifetime counter
+    await engine.start_session()
+
+    result = await setup.commands["compact"].handler("")
+
+    assert result.status == "ok"
+    # The counter and its session mirror are preserved through compaction.
+    assert engine.state.turn_count == 3
+    assert engine.state.session.turn_count == 3
+    # The visible surface shrank: the preserved value is not a recount.
+    user_turns = sum(1 for m in engine.messages if m.role == "user")
+    assert user_turns < 3

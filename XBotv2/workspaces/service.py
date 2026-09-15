@@ -101,7 +101,9 @@ class WorkspaceRegistry(WorkspacesPort):
         )
 
     async def create(self, path: Path | str) -> tuple[WorkspaceView, bool]:
-        record, created = await self._register(path)
+        record, created = await self._register(
+            self._require_existing_directory(path)
+        )
         listing = await self.list()
         workspace = next(
             item for item in listing.items
@@ -110,7 +112,12 @@ class WorkspaceRegistry(WorkspacesPort):
         return workspace, created
 
     async def ensure(self, path: Path | str) -> bool:
-        """Ensure registry identity without projecting potentially corrupt sessions."""
+        """Ensure registry identity without projecting potentially corrupt sessions.
+
+        Boot-time identity: like ``attach_session`` it records membership and
+        must not fail because the launch workspace directory is not present
+        yet (only explicit ``create`` validates the directory).
+        """
         _record, created = await self._register(path)
         return created
 
@@ -119,7 +126,13 @@ class WorkspaceRegistry(WorkspacesPort):
         session_id: str,
         workspace_root: Path | str,
     ) -> None:
-        """Persist membership from a committed Session resource event."""
+        """Persist membership from a committed Session resource event.
+
+        A projection of a *live* session: it records membership and must
+        never veto the session lifecycle, so it does not require the
+        directory to exist on disk (the session may have moved or been
+        cleaned up while still active).
+        """
         await self._register(workspace_root, session_id=session_id)
 
     async def detach_session(self, session_id: str) -> None:
@@ -173,10 +186,10 @@ class WorkspaceRegistry(WorkspacesPort):
         *,
         session_id: str = "",
     ) -> tuple[WorkspaceRecord, bool]:
-        resolved = Path(path).expanduser().resolve()
-        if not resolved.is_dir():
-            raise ValueError("Workspace path must be an existing directory")
-        value = str(resolved)
+        # Explicit user-facing creation validates the directory (see
+        # _require_existing_directory); projections never do, so a deleted
+        # workspace dir cannot break a live session's lifecycle.
+        value = str(Path(path).expanduser().resolve())
         async with self._lock:
             snapshot = await self._snapshot()
             existing = next(
@@ -204,7 +217,7 @@ class WorkspaceRegistry(WorkspacesPort):
                 record = WorkspaceRecord(
                     id=f"ws_{uuid.uuid4().hex[:12]}",
                     path=value,
-                    title=resolved.name or value,
+                    title=Path(value).name or value,
                     session_ids=(session_id,) if session_id else (),
                     created_at=now,
                     updated_at=now,
@@ -385,6 +398,14 @@ class WorkspaceRegistry(WorkspacesPort):
             ArchivedSessionsChanged(archived_session_ids),
         )
         return archived_session_ids
+
+    @staticmethod
+    def _require_existing_directory(path: Path | str) -> str:
+        """Explicit, user-facing creation validates the workspace directory."""
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError("Workspace path must be an existing directory")
+        return str(resolved)
 
     async def _snapshot(self) -> WorkspaceSnapshot:
         stored = await self._state.get("snapshot")

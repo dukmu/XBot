@@ -90,7 +90,7 @@ async def test_auto_caption_skips_subagent_threads():
 async def test_auto_caption_respects_an_existing_title():
     plugin = make_plugin({"auto": True, "allow_access": True})
     plugin.model = MockLLM(responses=[{"content": "overwrite me"}])
-    plugin.state.update(title="User-set title")
+    await plugin.state.update(title="User-set title")
     ctx = EventContext(
         session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
         messages=[
@@ -150,7 +150,7 @@ async def test_caption_tool_gets_and_sets():
 async def test_caption_tool_refuses_on_subagent_threads():
     plugin = make_plugin({"auto": False, "allow_access": True})
     plugin.model = MockLLM(responses=[])
-    plugin.state.replace(plugin.state.value.model_copy(
+    await plugin.state.replace(plugin.state.value.model_copy(
         update={"parent_thread_id": "agent"}
     ))
     setup = SetupContext(plugin)
@@ -263,3 +263,130 @@ async def test_caption_title_reaches_the_session_catalog(tmp_path):
         assert summaries[-1].title == "Billing migration plan"
     finally:
         await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_metadata_change_stays_off_the_runtime_event_stream(tmp_path):
+    """Metadata mutations announce on the app bus — never on the runtime stream.
+
+    The bounded replay stream is the transport boundary for runtime/protocol
+    events only; a title write (or any metadata mutation) surfaces to clients
+    through catalog events, so subscribers of one channel never see the other
+    channel's traffic.
+    """
+    from XBotv2.application.app import create_agent_application
+    from XBotv2.core.metadata import THREAD_METADATA_CHANGED
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.llm.mock import MockLLM
+    from XBotv2.session.contracts import (
+        AgentApplicationOptions,
+        OpenSession,
+        SESSION_RESOURCE_CHANGED,
+    )
+    from XBotv2.session.manager import SessionManager
+
+    class _Events:
+        def __init__(self) -> None:
+            self.seen: list[tuple[str, object]] = []
+
+        async def emit(self, event, *args) -> None:
+            self.seen.append((event, args))
+
+    paths = RuntimePaths.from_data_dir(tmp_path)
+    events = _Events()
+    model = MockLLM(responses=[{"content": "acknowledged"}])
+
+    async def factory(options):
+        return await create_agent_application(AgentApplicationOptions(
+            paths=options.paths,
+            provider_name=options.provider_name,
+            session_id=options.session_id,
+            thread_id=options.thread_id,
+            workspace_root=options.workspace_root,
+            no_plugins=False,
+            model_override=model,
+        ))
+
+    manager = SessionManager(
+        paths,
+        events,
+        thread_persistence_factory=None,
+        application_factory=factory,
+        idle_timeout=None,
+    )
+    try:
+        opened = await manager.open(OpenSession(
+            session_id="boundary-check",
+            thread_id="agent",
+            provider_name="default",
+            workspace_root=str(tmp_path),
+            no_plugins=False,
+            mode="new",
+        ))
+        runtime = await manager.get("boundary-check", "agent")
+        events.seen.clear()
+
+        bus_changes = []
+        runtime.application.events.on(
+            THREAD_METADATA_CHANGED,
+            lambda change: bus_changes.append(change),
+        )
+        stream = runtime.attach_event_stream(after=opened.event_cursor)
+
+        await runtime.application.loop_state.metadata.update(title="Stream check")
+
+        # The write announced on the application bus with both values.
+        assert [
+            (change.previous.title, change.current.title)
+            for change in bus_changes
+        ] == [("", "Stream check")]
+        # The process-level catalog owner turned that into the catalog event
+        # clients consume.
+        assert [name for name, _ in events.seen] == [SESSION_RESOURCE_CHANGED]
+        # The runtime replay stream is the transport boundary for runtime
+        # events only: the title change published nothing on it.
+        assert runtime.event_stream.sequence == opened.event_cursor
+    finally:
+        await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_transient_provider_failure_retries_caption_on_next_turn():
+    """A failed caption request must not permanently disable auto-title: the
+    next turn retries (the failure leaves the request state clean)."""
+    plugin = make_plugin({"auto": True, "allow_access": True})
+    plugin.model = MockLLM(responses=[{"content": "retried title"}])
+
+    async def fail_once(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    original = [
+        Message(role="system", content=_SYSTEM),
+        Message(role="user", content="first message"),
+    ]
+
+    # First turn: the provider fails; no title is applied and no permanent
+    # flag is set.
+    import XBotv2.caption.service as caption_service
+
+    failing = caption_service.invoke_llm
+    caption_service.invoke_llm = fail_once
+    try:
+        ctx = EventContext(
+            session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
+            messages=list(original),
+        )
+        await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
+    finally:
+        caption_service.invoke_llm = failing
+
+    assert plugin.title == ""
+    assert plugin.model.call_count == 0
+
+    # Second turn: the retry succeeds and captions the session.
+    retry_ctx = EventContext(
+        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
+        messages=list(original),
+    )
+    await plugin._events.serial(Events.BEFORE_CONTEXT, retry_ctx)
+    assert plugin.title == "retried title"

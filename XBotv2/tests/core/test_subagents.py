@@ -42,7 +42,7 @@ class RuntimeApplication:
         self.driver = driver
         self.events = context
         self.client_events = SimpleNamespace(
-            set_sink=lambda _sink: None,
+            install=lambda _sink: (lambda: None),
         )
 
     async def status_slots(self):
@@ -664,7 +664,7 @@ def _make_session(tmp_path, *, registry, factory):
 
 @pytest.mark.asyncio
 async def test_agent_runtime_rejects_unknown_and_primary_agents(tmp_path):
-    registry = AgentCatalog()
+    registry = AgentCatalog(ownership="caller")
     registry.register(
         AgentDefinition(name="primary", description="Primary", mode="primary")
     )
@@ -708,7 +708,7 @@ class _ChildSession:
 
 @pytest.mark.asyncio
 async def test_background_subagent_returns_immediately_and_completes(tmp_path):
-    agent_registry = AgentCatalog()
+    agent_registry = AgentCatalog(ownership="caller")
     definition = AgentDefinition(name="worker", description="Do focused work")
     agent_registry.register(definition)
     release = asyncio.Event()
@@ -740,7 +740,7 @@ async def test_background_subagent_returns_immediately_and_completes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
-    agent_registry = AgentCatalog()
+    agent_registry = AgentCatalog(ownership="caller")
     agent_registry.register(
         AgentDefinition(name="worker", description="Do focused work")
     )
@@ -783,7 +783,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
         application=RuntimeApplication(services, parent_engine),
         engine=parent_engine,
     )
-    services.set("commands", CommandsService())
+    services.set("commands", CommandsService(ownership="caller"))
     services.set("engine", parent_engine)
     JobsRuntimeComponent().apply(services, JobsConfig())
     job_registry = services.jobs
@@ -821,7 +821,7 @@ async def test_session_runtime_buffers_background_subagent_completion(tmp_path):
 
 @pytest.mark.asyncio
 async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
-    agent_registry = AgentCatalog()
+    agent_registry = AgentCatalog(ownership="caller")
     agent_registry.register(
         AgentDefinition(name="worker", description="Do focused work")
     )

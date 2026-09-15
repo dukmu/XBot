@@ -15,6 +15,7 @@ from XBotv2.agentloop import AgentLoopDriverPort, EventContext, EventPort, Event
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
+from XBotv2.jobs.contracts import TASK_COMPLETED, TASK_UPDATED
 from XBotv2.jobs.protocol import (
     build_tasks_router,
     task_completion_event,
@@ -55,13 +56,20 @@ class JobsRuntimeComponent:
 
     def apply(self, ctx: Context, config: JobsConfig) -> None:
         max_concurrent = config.max_concurrent_subagents
-        registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
+        # The registry publishes lifecycle transitions on the bus; this
+        # component subscribes with fiber-owned listeners, so notifications
+        # are delivered whenever the registry runs — never by assignment
+        # order inside apply.
+        registry = JobRegistry(
+            limits={JobKind.SUBAGENT: max_concurrent},
+            publisher=ctx,
+        )
         ctx.set("jobs", registry)
         for command in build_jobs_commands(registry):
             ctx.commands.register(command)
         handlers = JobHandlers(registry, ctx.engine, ctx)
-        registry.on_update = handlers.publish_update
-        registry.on_complete = handlers.publish_completion
+        ctx.on(TASK_UPDATED, handlers.publish_update)
+        ctx.on(TASK_COMPLETED, handlers.publish_completion)
         ctx.on(LIST_TASKS.name, handlers.list_tasks)
         ctx.on(STOP_TASK.name, handlers.stop_task)
         ctx.on(STOP_ALL_TASKS.name, handlers.stop_all)

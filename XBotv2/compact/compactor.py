@@ -34,11 +34,11 @@ from XBotv2.compact.protocol import (
 )
 from XBotv2.compact.summary import (
     compacted_message,
-    invoke_llm,
     model_usage,
     normalize_summary,
     summary_request,
 )
+from XBotv2.llm import invoke_llm
 
 logger = logging.getLogger("xbotv2.compact")
 

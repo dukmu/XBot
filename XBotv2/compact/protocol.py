@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue
 
 from XBotv2.core import ClientEvent
 from XBotv2.core.history import TrajectoryTransaction
-from XBotv2.core.tools import _validated_client_event
+from XBotv2.core.tools import validated_client_event
 from XBotv2.protocol import WireModel
 
 # Why a compaction ran; the only reason vocabulary shared with clients.
@@ -92,7 +92,7 @@ _EVENT_MODELS: dict[str, type[WireModel]] = {
 
 def compact_event(type: CompactEventType, data: dict[str, JsonValue]) -> ClientEvent:
     """Validate a Compact-owned event before publishing it through XCore."""
-    return _validated_client_event(type, data, _EVENT_MODELS[type])
+    return validated_client_event(type, data, _EVENT_MODELS[type])
 
 
 __all__ = [

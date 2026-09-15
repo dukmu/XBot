@@ -48,7 +48,7 @@ class SkillToolHandler:
 
 
 class SkillsPlugin:
-    inject = ["tools", "commands", "sandbox", "runtime_paths"]
+    inject = ["tools", "commands", "variables", "sandbox", "runtime_paths"]
     name = "skills"
 
     def __init__(self) -> None:
@@ -114,12 +114,16 @@ class SkillsPlugin:
                     self._skill_tools.append(registered_name)
                     self._model_skill_names.add(skill.name)
                 if skill.user_invocable:
-                    command_name = self._commands.register(Command(
-                        name=skill.name,
-                        kind="prompt",
-                        description=skill.description,
-                        usage=f"/{skill.name} [instructions]",
-                    ))
+                    command_name = self._commands.register(
+                        Command(
+                            name=skill.name,
+                            kind="prompt",
+                            description=skill.description,
+                            usage=f"/{skill.name} [instructions]",
+                        ),
+                        # Session-init registration: _cleanup_runtime releases it.
+                        cleanup="caller",
+                    )
                     self._skill_commands.append(command_name)
         except Exception:
             self._cleanup_runtime()
@@ -132,6 +136,9 @@ class SkillsPlugin:
         return self._tools.register(
             self._skill_as_tool(skill),
             namespace=f"skills:{skill.scope}",
+            # Skill tools are registered on session init (outside apply) and
+            # released by _cleanup_runtime on session close/unload.
+            cleanup="caller",
         )
 
     async def _on_before_tool_schema(self, ctx: EventContext):
@@ -230,10 +237,15 @@ class SkillsPlugin:
     async def _guard_tool_scope(
         self,
         tool_call: ToolCall,
-        _entry: ToolRegistration,
+        entry: ToolRegistration,
     ) -> GuardDecision | None:
         if not self._active_skills:
             return
+        if entry is not None and entry.namespace == "skills":
+            # The plugin's own skill-invocation tools stay callable while a
+            # skill's allowlist is in force (they are the door into a skill,
+            # not tools the skill itself exercises).
+            return None
         tool_name = tool_call.name
         if not tool_name:
             return
@@ -242,6 +254,12 @@ class SkillsPlugin:
             return GuardDecision(
                 "deny",
                 f"Tool '{tool_name}' is denied by the active skill",
+                source="skills",
+            )
+        if decision == "restrict":
+            return GuardDecision(
+                "deny",
+                f"Tool '{tool_name}' is outside the active skill's allowed-tools",
                 source="skills",
             )
         return None

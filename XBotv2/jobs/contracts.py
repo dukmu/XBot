@@ -248,6 +248,18 @@ LIST_TASKS = Operation("jobs/list", EmptyRequest, TaskCatalog)
 STOP_TASK = Operation("jobs/stop", StopTask, StoppedTasks)
 STOP_ALL_TASKS = Operation("jobs/stop-all", EmptyRequest, StoppedTasks)
 
+#: Bus events published by the registry for each lifecycle transition; the
+#: jobs plugin subscribes with fiber-owned listeners, so notification
+#: delivery never depends on assignment order inside apply.
+TASK_UPDATED = "task/updated"
+TASK_COMPLETED = "task/completed"
+
+
+class TaskEventPort(Protocol):
+    """Narrow bus surface the registry publishes lifecycle events on."""
+
+    async def emit(self, event: str, *args: object) -> None: ...
+
 
 __all__ = [
     "CancelResult",
@@ -274,7 +286,10 @@ __all__ = [
     "STOP_TASK",
     "StopTask",
     "StoppedTasks",
+    "TASK_COMPLETED",
+    "TASK_UPDATED",
     "TaskCatalog",
+    "TaskEventPort",
     "TaskSnapshot",
     "TERMINAL_STATES",
     "TextOutputStorePort",

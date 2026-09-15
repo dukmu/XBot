@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 import json
-from typing import Literal
+from typing import Literal, Protocol
 from pydantic import JsonValue
 
 from xcore import Context
@@ -14,18 +15,31 @@ from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 from XBotv2.commands import Command, CommandEffect, CommandResult
 from XBotv2.core import Tool, ToolResult
+from XBotv2.core.usage import UsageData
 from XBotv2.goal.models import GOAL_STATUSES, GoalSnapshot
 
 
 _MAX_TEXT_CHARS = 2_000
 
 
+class UsagePort(Protocol):
+    """Cumulative-thread usage the goal continuation budget reads."""
+
+    def snapshot(self) -> UsageData: ...
+
+
 class GoalService:
     """Own one thread's typed Goal state and continuation scheduling."""
 
-    def __init__(self, store: StateService, engine: AgentLoopDriverPort) -> None:
+    def __init__(
+        self,
+        store: StateService,
+        engine: AgentLoopDriverPort,
+        usage: UsagePort | None = None,
+    ) -> None:
         self._store = store
         self._engine = engine
+        self._usage = usage
         self._continuation_pending = False
 
     async def snapshot(self) -> GoalSnapshot | None:
@@ -139,12 +153,25 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None or self._continuation_pending:
             return
+        if await self._budget_exhausted(goal):
+            # The human-supplied total-token budget is enforced: continued
+            # work stops and the goal is recorded as blocked.
+            await self._write(goal.model_copy(update={
+                "status": "blocked",
+                "summary": "Token budget exhausted; goal stopped.",
+            }))
+            return
         self._continuation_pending = True
         await self._engine.followup(
             "[goal continuation]",
             source="goal",
             metadata={"continuation": True},
         )
+
+    async def _budget_exhausted(self, goal: GoalSnapshot) -> bool:
+        if goal.token_budget is None or self._usage is None:
+            return False
+        return self._usage.snapshot().total_tokens >= goal.token_budget
 
     async def _create(
         self,
@@ -243,20 +270,34 @@ class GoalService:
 class GoalPlugin:
     """Register a GoalService for each mounted application."""
 
-    inject = ["tools", "commands", "engine", "state"]
+    inject = {
+        "required": ["tools", "commands", "engine", "state"],
+        "optional": ["usage"],
+    }
     name = "goal"
 
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        service = GoalService(ctx.state.namespace(self.name), ctx.engine)
+        service = GoalService(
+            ctx.state.namespace(self.name),
+            ctx.engine,
+            usage=ctx.get("usage", strict=False),
+        )
         ctx.set("goal", service)
         ctx.on(Events.TURN_START, service.start_goal_turn)
         ctx.on(Events.TURN_END, service.on_turn_end)
         ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
-        ctx.tools.register(Tool.from_function(service.create_goal, name="create_goal"))
-        ctx.tools.register(Tool.from_function(service.get_goal, name="get_goal"))
-        ctx.tools.register(Tool.from_function(service.update_goal, name="update_goal"))
+        # Owners declare the model-facing category (goal reasoning).
+        ctx.tools.register(replace(
+            Tool.from_function(service.create_goal, name="create_goal"), kind="think"
+        ))
+        ctx.tools.register(replace(
+            Tool.from_function(service.get_goal, name="get_goal"), kind="think"
+        ))
+        ctx.tools.register(replace(
+            Tool.from_function(service.update_goal, name="update_goal"), kind="think"
+        ))
         ctx.commands.register(Command(
             name="goal",
             description="Set or manage the persistent session goal.",

@@ -24,7 +24,12 @@ from XBotv2.core import (
 from XBotv2.agentloop import EventContext, Events, LoopSettings, LoopState
 from XBotv2.commands import CommandResult
 from XBotv2.llm.contracts import ModelPort
-from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged, SessionInfo
+from XBotv2.session.contracts import (
+    HISTORY_CHANGED,
+    HistoryChanged,
+    SessionInfo,
+    compaction_summary_text,
+)
 
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_proposal
@@ -377,9 +382,19 @@ class CompactService:
                     ),
                     context_tokens=metrics.context_tokens_after_estimate,
                 ))
-            # The replacement message in the surface replacement below is the
-            # authoritative copy of the summary text; this marker carries only
-            # metadata so one compaction never stores the same summary twice.
+            # Commit the authoritative surface first, then the metadata-only
+            # marker: a crash between the two leaves a compacted surface with
+            # no marker (safe), never a phantom marker without a replacement.
+            self.state.replace_message_range(
+                0,
+                prefix_end,
+                list(replacement),
+                operation=f"compact:{compaction_id}",
+                preserve_transcript=True,
+            )
+            # The replacement message above is the authoritative copy of the
+            # summary text; this marker carries only metadata so one
+            # compaction never stores the same summary twice.
             self.state.history.record("compaction/summary", durable=True, data={
                 "compaction_id": compaction_id,
                 "reason": reason,
@@ -389,13 +404,6 @@ class CompactService:
                 "usage": dict(metrics.model_usage),
                 "metrics": metrics.model_dump(mode="json"),
             })
-            self.state.replace_message_range(
-                0,
-                prefix_end,
-                list(replacement),
-                operation=f"compact:{compaction_id}",
-                preserve_transcript=True,
-            )
             ctx.messages = list(self.state.messages)
             usage_event = await self._usage.update_context(
                 metrics.context_tokens_after_estimate
@@ -430,8 +438,9 @@ class CompactService:
                 "metrics": metrics,
                 "automatic": is_automatic_compaction(reason),
                 # The live summary is event-only: the durable trajectory keeps
-                # the single copy inside the surface replacement.
-                "summary": "\n".join(message.content for message in replacement),
+                # the single copy inside the surface replacement. It carries
+                # the same cleaned text clients see on replay.
+                "summary": compaction_summary_text(replacement),
             },
         ))
         return {"rebuild": True}

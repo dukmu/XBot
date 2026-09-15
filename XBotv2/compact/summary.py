@@ -1,4 +1,4 @@
-"""Summary prompt, normalization, and auxiliary-model helpers."""
+"""Summary prompt construction and normalization."""
 
 from __future__ import annotations
 
@@ -8,12 +8,9 @@ from pydantic import JsonValue
 from XBotv2.core import (
     MESSAGE_FORMAT_KEY,
     Message,
-    ModelResponse,
-    ModelRequestOptions,
     prompt_container,
     prompt_element,
 )
-from XBotv2.llm.contracts import ModelPort
 
 
 _SUMMARY_HEADING = "## Conversation Summary"
@@ -134,31 +131,8 @@ def model_usage(usage: Mapping[str, JsonValue] | None) -> dict[str, int]:
     return result
 
 
-async def invoke_llm(
-    llm: ModelPort,
-    messages: list[Message],
-    *,
-    output_tokens: int | None = None,
-) -> ModelResponse:
-    """Run one unbound auxiliary model call for compaction."""
-    from XBotv2.core.messages import merge_model_chunk
-
-    aggregate: ModelResponse | None = None
-    options = (
-        ModelRequestOptions(max_output_tokens=max(1, int(output_tokens)))
-        if output_tokens is not None
-        else None
-    )
-    async for chunk in llm.astream(messages, options=options):
-        aggregate = merge_model_chunk(aggregate, chunk)
-    if aggregate is None:
-        raise RuntimeError("Compaction model produced no response")
-    return aggregate
-
-
 __all__ = [
     "compacted_message",
-    "invoke_llm",
     "limit_summary",
     "model_usage",
     "normalize_summary",

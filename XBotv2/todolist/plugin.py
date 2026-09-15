@@ -137,6 +137,7 @@ class TodolistRuntimeComponent:
                 description=inspect.getdoc(service.update_todos) or "",
                 function=service.update_todos,
                 parameters=_UPDATE_TODOS_SCHEMA,
+                kind="think",
             ),
         )
 

@@ -282,3 +282,33 @@ async def test_workspace_baseline_cursor_precedes_the_snapshot_read(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["event_cursor"] == 7
+
+
+@pytest.mark.asyncio
+async def test_attach_session_never_requires_the_directory_to_exist(tmp_path):
+    """Session-lifecycle projections (attach/detach) must not be able to veto
+    a live session when its workspace directory was deleted on disk; only
+    explicit user-facing creation validates the directory."""
+    missing = tmp_path / "deleted-workspace"
+    assert not missing.exists()
+    # The session manager knows the live session even though its workspace
+    # directory was deleted on disk.
+    sessions = Sessions([
+        SimpleNamespace(session_id="s-live", workspace_root=str(missing)),
+    ])
+    state_file = tmp_path / "state.json"
+    registry = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+
+    # Projection attaches even though the directory is gone.
+    await registry.attach_session("s-live", missing)
+    listing = await registry.list()
+    views = [view for view in listing.items if view.path == str(missing.resolve())]
+    assert len(views) == 1
+    assert "s-live" in views[0].session_ids
+
+    # Boot-time identity also tolerates a missing directory (the record
+    # already exists here, so ensure reports "not created").
+    assert await registry.ensure(missing) is False
+    # ...while explicit creation still validates loudly.
+    with pytest.raises(ValueError, match="existing directory"):
+        await registry.create(missing)

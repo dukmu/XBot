@@ -9,16 +9,17 @@ from xcore import Context
 from XBotv2.agentloop.events import EventContext
 
 from XBotv2.caption.contracts import CaptionConfig
-from XBotv2.compact.summary import invoke_llm
 from XBotv2.core import Message
 from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
 
 logger = logging.getLogger("xbotv2.caption")
 
 _SYSTEM = (
     "You derive one short, human-readable title for a chat session. "
-    "Return only the title text, no quotes, no explanation, on a single line."
+    "Return only the title text on a single line: no quotes, no explanation, "
+    "and no reasoning or thinking output."
 )
 
 
@@ -42,6 +43,26 @@ def caption_request(
         Message(role="system", content=_SYSTEM),
         Message(role="user", content=user),
     ]
+
+
+def _fallback_title(conversation: Sequence[Message], max_chars: int) -> str:
+    """A deterministic caption when the auxiliary model returns no text.
+
+    Thinking models routinely spend a small output budget on reasoning and
+    emit no content, which would leave sessions untitled. The first human
+    message is the best signal the session already holds.
+    """
+    latest = " ".join(
+        str(message.content)
+        for message in conversation
+        if message.role == "user"
+    ).strip()
+    if not latest:
+        return ""
+    title = " ".join(latest.split())
+    if len(title) > max_chars:
+        title = title[: max_chars - 1].rstrip() + "…"
+    return title
 
 
 def _clean_title(raw: str, max_chars: int) -> str:
@@ -88,8 +109,9 @@ class CaptionService:
             return False
         if self.state.value.title:
             return False
-        turn_count = ctx.session.turn_count if getattr(ctx.session, "turn_count", None) is not None else 0
-        if int(turn_count or 0) > 1:
+        # turn_count is owned by the loop state and mirrored onto the session
+        # identity; no capability probing is needed here.
+        if int(ctx.session.turn_count or 0) > 1:
             return False
         return any(message.role == "user" for message in ctx.messages)
 
@@ -97,7 +119,6 @@ class CaptionService:
         """Fire one independent caption request on the first user message."""
         if not self.config.auto or not self._is_first_turn(ctx):
             return
-        self._captioned = True
         request = caption_request(ctx.messages, self.config.max_chars)
         try:
             response = await invoke_llm(
@@ -109,15 +130,20 @@ class CaptionService:
             logger.exception("caption.request.failed")
             return
         title = _clean_title(response.content or "", self.config.max_chars)
+        if not title:
+            title = _fallback_title(ctx.messages, self.config.max_chars)
         if title:
-            self._apply_title(title)
+            # Only a successfully applied title disables future attempts; a
+            # transient provider failure leaves _captioned False so the next
+            # turn retries instead of permanently disabling auto-title.
+            await self._apply_title(title)
 
-    def _apply_title(self, title: str) -> None:
+    async def _apply_title(self, title: str) -> None:
         if not title.strip():
             raise ValueError("Session title must be non-empty")
         if len(title) > 200:
             raise ValueError("Session title must not exceed 200 characters")
-        self.state.update(title=title)
+        await self.state.update(title=title)
         self._captioned = True
         logger.info("caption.applied title=%s", title)
 
@@ -130,5 +156,5 @@ class CaptionService:
 
     async def caption_set(self, title: str) -> str:
         cleaned = _clean_title(title, self.config.max_chars)
-        self._apply_title(cleaned)
+        await self._apply_title(cleaned)
         return cleaned

@@ -12,10 +12,12 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from XBotv2.jobs.contracts import (
     TERMINAL_STATES,
+    TASK_COMPLETED,
+    TASK_UPDATED,
     CancelResult,
     Job,
     JobError,
@@ -27,6 +29,7 @@ from XBotv2.jobs.contracts import (
     JobStatus,
     JobSummary,
     MAX_SUMMARY_CHARS,
+    TaskEventPort,
     WaitResult,
     WaitMode,
     JobRunner,
@@ -37,8 +40,6 @@ from XBotv2.jobs.runner import JobContext
 from pydantic import JsonValue
 
 logger = logging.getLogger("xbotv2.jobs")
-
-TaskCallback = Callable[[TaskSnapshot], Awaitable[None]]
 
 # Client-facing kind names preserved for the protocol / TUI task surface.
 _PROTOCOL_KIND = {
@@ -65,6 +66,7 @@ class JobRegistry(JobsPort):
         *,
         limits: dict[JobKind, int] | None = None,
         prefix: str = "job",
+        publisher: TaskEventPort | None = None,
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
         self._completion_events: dict[JobId, asyncio.Event] = {}
@@ -77,9 +79,9 @@ class JobRegistry(JobsPort):
             for kind, limit in (limits or {}).items()
         }
         self._closing = False
-        # Session wiring hooks; both receive a protocol-facing snapshot.
-        self.on_update: TaskCallback | None = None
-        self.on_complete: TaskCallback | None = None
+        # Lifecycle transitions are published on the bus; the owning plugin
+        # subscribes with fiber-owned listeners (never assigned attributes).
+        self._publisher = publisher
 
     @property
     def closing(self) -> bool:
@@ -254,11 +256,14 @@ class JobRegistry(JobsPort):
             return CancelResult(
                 id=job_id, status=job.status.value, cancelled=False
             )
-        if job.status is JobStatus.PENDING:
+        runner_task = self._tasks.get(job.id)
+        # A PENDING job that never started has no task: writing the terminal
+        # state is safe because nothing can later overwrite it.
+        if job.status is JobStatus.PENDING and (
+            runner_task is None or runner_task.done()
+        ):
             await self._finish(job, JobStatus.CANCELLED)
             return CancelResult(id=job_id, status=job.status.value, cancelled=True)
-
-        runner_task = self._tasks.get(job.id)
         if runner_task is None or runner_task.done():
             return CancelResult(
                 id=job_id, status=job.status.value, cancelled=False
@@ -269,9 +274,19 @@ class JobRegistry(JobsPort):
                 await runner.cancel(job)
             except BaseException:  # noqa: BLE001 - cancellation must proceed
                 logger.exception("runner.cancel failed for job %s", job_id)
+        # A PENDING job still queued behind its kind's semaphore owns a live
+        # task: cancel it so _execute records the terminal transition exactly
+        # once. Short-cutting the status here would let the queued runner
+        # start later and report completion twice.
         runner_task.cancel()
         await asyncio.gather(runner_task, return_exceptions=True)
-        return CancelResult(id=job_id, status=job.status.value, cancelled=True)
+        # Report what actually happened: a job that finished (or failed)
+        # during cancellation was not cancelled.
+        return CancelResult(
+            id=job_id,
+            status=job.status.value,
+            cancelled=job.status is JobStatus.CANCELLED,
+        )
 
     def remove(self, job_id: JobId) -> None:
         """Drop one terminal job and its outputs from the registry."""
@@ -287,16 +302,50 @@ class JobRegistry(JobsPort):
     async def stop_all(self) -> list[TaskSnapshot]:
         """Cancel every non-terminal job and return their final snapshots."""
         active = [job for job in self._jobs.values() if not job.terminal]
+        # Gracefully stop runners first, concurrently, so live children begin
+        # their own shutdown before any task is cancelled.
+        await asyncio.gather(
+            *(
+                self._graceful_runner_cancel(job)
+                for job in active
+                if self._has_live_task(job.id)
+            ),
+            return_exceptions=True,
+        )
+        # Cancel every live task before awaiting any of them. Cancelling in
+        # one synchronous batch prevents a slot released by one cancellation
+        # from being re-acquired by a still-PENDING task mid-loop: a queued
+        # task resumes with cancellation pending and dies at the semaphore
+        # instead of starting its runner.
         for job in active:
-            await self.cancel(job.id)
+            task = self._tasks.get(job.id)
+            if task is not None and not task.done():
+                task.cancel()
+            elif job.status is JobStatus.PENDING:
+                await self._finish(job, JobStatus.CANCELLED)
+        for job in active:
+            task = self._tasks.get(job.id)
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
         return [self.snapshot(job) for job in active]
+
+    def _has_live_task(self, job_id: JobId) -> bool:
+        task = self._tasks.get(job_id)
+        return task is not None and not task.done()
+
+    async def _graceful_runner_cancel(self, job: Job) -> None:
+        runner = self._runners.get(job.id)
+        if runner is None:
+            return
+        try:
+            await runner.cancel(job)
+        except BaseException:  # noqa: BLE001 - cancellation must proceed
+            logger.exception("runner.cancel failed for job %s", job.id)
 
     async def shutdown(self) -> list[TaskSnapshot]:
         """Cancel all non-terminal jobs; drop terminal jobs' outputs."""
         self._closing = True
         # Suppress completion notices: shutdown is not an ordinary completion.
-        self.on_update = None
-        self.on_complete = None
         snapshots = await self.stop_all()
         self.remove_all()
         return snapshots
@@ -317,6 +366,14 @@ class JobRegistry(JobsPort):
             if semaphore is not None:
                 await semaphore.acquire()
                 acquired = True
+            if job.terminal:
+                # A terminal state recorded while this task was queued wins
+                # over starting the runner (defensive guard: the cancel path
+                # cancels the task instead, so future writers cannot quietly
+                # resurrect a cancelled runner).
+                if job.finished_at is None:
+                    await self._finish(job, job.status)
+                return
             job.status = JobStatus.RUNNING
             job.started_at = time.time()
             await self._notify_update(job)
@@ -336,6 +393,10 @@ class JobRegistry(JobsPort):
             await self._finish(job, job.status)
 
     async def _finish(self, job: Job, status: JobStatus) -> None:
+        if job.finished_at is not None:
+            # Exactly one terminal transition per job: the first writer owns
+            # the notification, so waiters observe the state once.
+            return
         job.status = status
         job.finished_at = time.time()
         # A completion waiter observes the fully published terminal transition,
@@ -351,22 +412,23 @@ class JobRegistry(JobsPort):
     # ------------------------------------------------------------------
 
     async def _notify_update(self, job: Job) -> None:
-        if self.on_update is None:
+        if self._publisher is None or self._closing:
             return
         try:
-            await self.on_update(self.snapshot(job))
+            await self._publisher.emit(TASK_UPDATED, self.snapshot(job))
         except BaseException:  # noqa: BLE001 - notify must not break jobs
-            logger.exception("job on_update hook failed for %s", job.id)
+            logger.exception("job update publish failed for %s", job.id)
 
     async def _notify_complete(self, job: Job) -> None:
-        if self.on_complete is None:
+        if self._publisher is None or self._closing:
             return
         try:
-            await self.on_complete(
-                self.snapshot(job, full_output=(job.kind is JobKind.SUBAGENT))
+            await self._publisher.emit(
+                TASK_COMPLETED,
+                self.snapshot(job, full_output=(job.kind is JobKind.SUBAGENT)),
             )
         except BaseException:  # noqa: BLE001 - notify must not break cleanup
-            logger.exception("job on_complete hook failed for %s", job.id)
+            logger.exception("job completion publish failed for %s", job.id)
 
     # ------------------------------------------------------------------
     # Snapshot / rendering

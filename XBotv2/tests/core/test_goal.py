@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 import pytest
 import yaml
 
+from XBotv2.core.usage import UsageData
 from XBotv2.goal.plugin import GoalPlugin, GoalService
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
 from XBotv2.agentloop import EventContext, Events
@@ -439,3 +440,46 @@ def _is_goal_runtime_event(message) -> bool:
     except ET.ParseError:
         return False
     return event.tag == "runtime_event" and event.attrib.get("source") == "goal"
+
+
+@pytest.mark.asyncio
+async def test_goal_token_budget_stops_continuation_scheduling(state_store):
+    """A human-supplied total-token budget is enforced by the continuation
+    scheduler: once the thread usage reaches the budget, the next scheduled
+    continuation is suppressed and the goal is recorded as blocked."""
+    harness = make_plugin(state_store)
+    usage = FakeUsage(UsageData(total_tokens=8))
+    harness.service._usage = usage  # wire the optional usage port
+
+    created = await harness.service.create_goal("stabilize the API", token_budget=10)
+    assert created.status == "success"
+    assert harness.driver.requests == []
+
+    # turn end schedules a continuation while below budget.
+    await harness.service.on_turn_end(_FakeStop("completed"))
+    assert len(harness.driver.requests) == 1
+
+    harness.driver.requests.clear()
+    # The scheduled continuation ran and consumed it.
+    harness.service._continuation_pending = False
+    usage.value = UsageData(total_tokens=10)  # budget reached
+    await harness.service.on_turn_end(_FakeStop("completed"))
+
+    assert harness.driver.requests == []
+    goal = await harness.service.snapshot()
+    assert goal is not None
+    assert goal.status == "blocked"
+    assert "budget" in goal.summary
+
+
+class FakeUsage:
+    def __init__(self, value: UsageData) -> None:
+        self.value = value
+
+    def snapshot(self) -> UsageData:
+        return self.value
+
+
+class _FakeStop:
+    def __init__(self, stop_reason: str) -> None:
+        self.stop_reason = stop_reason

@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from XBotv2.agents.contracts import AgentCatalogPort
 from XBotv2.application import (
-    APPLICATION_INITIALIZED,
-    ApplicationInitialized,
     ChildApplication,
     ChildApplicationRequest,
     ChildApplicationsPort,
@@ -34,8 +32,9 @@ from XBotv2.jobs import (
     parse_job_status,
 )
 from XBotv2.persistence import ThreadLifecycleWriterPort
+from XBotv2.context_builder import CONTEXT_COMPONENTS_BUILT, ContextComponentsBuilt
+from XBotv2.context_builder.contracts import ContextComponent
 from XBotv2.permissions import PermissionsPort
-from XBotv2.prompts.contracts import PromptsPort
 from XBotv2.session.contracts import SessionPort
 
 _MAX_PROMPT_PREVIEW = 100
@@ -61,7 +60,6 @@ class SubagentLauncher:
         self._lifecycle = lifecycle
         self._parent_permissions = parent_permissions
         self._client_events = client_events
-        self._active: list[ChildApplication] = []
 
     async def spawn_subagent(
         self,
@@ -76,7 +74,10 @@ class SubagentLauncher:
             raise SubagentAgentError(f"Unknown subagent: {agent}")
         if not prompt.strip():
             raise SubagentAgentError("Subagent prompt cannot be empty")
-        child = await self._children.spawn(
+        # The child application's lifecycle belongs to the executor
+        # (SubagentRunner/children service); the launcher holds no extra
+        # reference, so completed children are not pinned for the session.
+        return await self._children.spawn(
             ChildApplicationRequest(
                 definition=definition,
                 thread_id=self._session.new_thread_id(definition.name),
@@ -86,8 +87,6 @@ class SubagentLauncher:
             ),
             self._lifecycle,
         )
-        self._active.append(child)
-        return child
 
 
 class SubagentRunner:
@@ -242,11 +241,16 @@ class SubagentTools:
 
 
 class SubagentCatalogPrompt:
-    def __init__(self, catalog: AgentCatalogPort, prompts: PromptsPort) -> None:
+    def __init__(self, catalog: AgentCatalogPort) -> None:
         self._catalog = catalog
-        self._prompts = prompts
 
-    def publish(self, _event: ApplicationInitialized) -> None:
+    def contribute(self, event: ContextComponentsBuilt) -> None:
+        """Append the visible-subagent catalog to one build's components.
+
+        Dynamic per-build content (the catalog and hidden flags can change),
+        so it joins the component list at build time instead of registering
+        a static, ownerless prompt fragment from a listener.
+        """
         visible = [
             definition
             for definition in self._catalog.definitions()
@@ -259,11 +263,13 @@ class SubagentCatalogPrompt:
             f"- {definition.name}: {definition.description}"
             for definition in visible
         )
-        self._prompts.add(
-            "context_suffix",
-            "\n".join(lines),
+        event.components.append(ContextComponent(
+            role="system",
             source="available_subagents",
-        )
+            content="\n".join(lines),
+            plugin_name="xbot.subagents",
+            stage="context_suffix",
+        ))
 
 
 def _preview(value: str, limit: int) -> str:

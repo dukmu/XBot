@@ -33,6 +33,10 @@ class SkillPermissionScope:
         for pattern in reversed(self._allowed):
             if any(pattern.search(target) for target in targets):
                 return "allow"
+        if self._allowed:
+            # An allowlist is in force for this turn: tools outside it are
+            # restricted, not merely unlisted.
+            return "restrict"
         return None
 
     def clear(self) -> None:

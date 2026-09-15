@@ -4,7 +4,7 @@ import json
 import pytest
 
 from XBotv2.application import RUNTIME_EVENT
-from XBotv2.jobs import JobKind, JobResult
+from XBotv2.jobs import JobKind, JobResult, JobStatus
 from XBotv2.jobs.plugin import JobsRuntimeComponent
 from XBotv2.jobs.contracts import JobsConfig
 from XBotv2.jobs.registry import JobRegistry
@@ -25,11 +25,28 @@ import xcore
 from XBotv2.sandbox.policy import SandboxPolicy
 
 
-def make_tools(temp_workspace, *, sandbox=None):
-    registry = JobRegistry()
+class _RecordingPublisher:
+    """A TaskEventPort stub recording completed task ids."""
+
+    def __init__(self, completions: list[str]) -> None:
+        self._completions = completions
+
+    async def emit(self, event, *args) -> None:
+        from XBotv2.jobs.contracts import TASK_COMPLETED
+
+        if event == TASK_COMPLETED and args:
+            snapshot = args[0]
+            self._completions.append(snapshot.task_id)
+
+
+def make_tools(temp_workspace, *, sandbox=None, approval_layer=None, publisher=None):
+    registry = JobRegistry(publisher=publisher)
     tools = {
         tool.name: tool
-        for tool in shell_tools(sandbox, registry, str(temp_workspace))
+        for tool in shell_tools(
+            sandbox, registry, str(temp_workspace),
+            approval_layer=approval_layer,
+        )
     }
     return registry, tools
 
@@ -55,7 +72,7 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
 
     ctx = xcore.Context()
     engine = Engine()
-    ctx.set("commands", CommandsService())
+    ctx.set("commands", CommandsService(ownership="caller"))
     ctx.set("engine", engine)
     runtime_events = []
 
@@ -78,10 +95,11 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
         output="x",
     )
 
-    assert ctx.jobs.on_update is not None
-    assert ctx.jobs.on_complete is not None
-    await ctx.jobs.on_update(snapshot)
-    await ctx.jobs.on_complete(snapshot)
+    assert ctx.jobs is not None
+    from XBotv2.jobs.contracts import TASK_COMPLETED, TASK_UPDATED
+
+    await ctx.emit(TASK_UPDATED, snapshot)
+    await ctx.emit(TASK_COMPLETED, snapshot)
 
     assert [event.type for event in runtime_events] == [
         "task_updated",
@@ -151,7 +169,17 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
         return "output"
 
     patch_shell_executor(monkeypatch, run)
-    registry, tools = make_tools(temp_workspace, sandbox=object())
+    # An active approval layer is required for escalation: without one the
+    # tool fails closed before execution.
+    registry, tools = make_tools(
+        temp_workspace,
+        sandbox=object(),
+        approval_layer=object(),
+    )
+    no_layer_registry, no_layer_tools = make_tools(
+        temp_workspace,
+        sandbox=object(),
+    )
 
     foreground = await invoke(
         tools, "shell",
@@ -175,6 +203,21 @@ async def test_escalated_shell_bypasses_sandbox_in_both_modes(
     assert foreground.status == "success"
     assert foreground.content == "output"
     assert sandboxes == [None, None]
+
+    # Without an approval layer the same call is refused (fail closed).
+    refused = await invoke(
+        no_layer_tools, "shell",
+        {"command": "install dependency",
+         "sandbox_permissions": "require_escalated",
+         "justification": "Install a required dependency."},
+        no_layer_registry,
+        sandbox=object(),
+    )
+    assert refused.status == "error"
+    assert refused.content == (
+        "Sandbox escape requires an active approval layer; none is mounted "
+        "(enable the permissions plugin)"
+    )
 
 
 @pytest.mark.asyncio
@@ -231,12 +274,9 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
 
     patch_shell_executor(monkeypatch, run)
     completions = []
-    registry, tools = make_tools(temp_workspace)
+    publisher = _RecordingPublisher(completions)
+    registry, tools = make_tools(temp_workspace, publisher=publisher)
 
-    async def record_completion(task):
-        completions.append(task)
-
-    registry.on_complete = record_completion
     started = await invoke(tools, "shell", {"command": "sleep 30", "background": True}, registry)
     await asyncio.sleep(0)
 
@@ -244,6 +284,89 @@ async def test_shutdown_stops_jobs_without_completion_delivery(
 
     assert registry.get_or_none(started.content.split("Started ")[1]) is None
     assert completions == []
+
+
+class _ControllableRunner:
+    """A JobRunner that blocks until released; records invocations."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.run_count = 0
+
+    async def run(self, job, ctx):
+        del job, ctx
+        self.run_count += 1
+        self.started.set()
+        await self.release.wait()
+        return JobResult(summary="ran")
+
+    async def cancel(self, job) -> None:
+        del job
+
+
+async def _start_blocking_and_queued(registry):
+    """Start one blocking job and queue a second behind its kind semaphore."""
+    first = _ControllableRunner()
+    job1 = await registry.create(kind=JobKind.SHELL)
+    registry.start(job1.id, first)
+    await asyncio.wait_for(first.started.wait(), timeout=1)
+    queued = _ControllableRunner()
+    job2 = await registry.create(kind=JobKind.SHELL)
+    registry.start(job2.id, queued)
+    await asyncio.sleep(0)  # let the second task block on the semaphore
+    return first, job1, queued, job2
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_job_never_starts_and_completes_once():
+    """Cancelling a job queued behind its kind's semaphore must cancel the
+    underlying task: the runner must never run and the terminal transition
+    (and its completion notice) must be published exactly once."""
+    completions: list[str] = []
+    registry = JobRegistry(
+        limits={JobKind.SHELL: 1},
+        publisher=_RecordingPublisher(completions),
+    )
+
+    first, job1, queued, job2 = await _start_blocking_and_queued(registry)
+    assert job1.status is JobStatus.RUNNING
+    assert job2.status is JobStatus.PENDING
+    assert queued.run_count == 0
+
+    result = await registry.cancel(job2.id)
+    assert result.cancelled is True
+    assert job2.status is JobStatus.CANCELLED
+    assert queued.run_count == 0
+
+    # Free the slot: the cancelled task owns no future, so nothing resumes.
+    first.release.set()
+    await registry.wait([job1.id])
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert queued.run_count == 0
+    assert job2.status is JobStatus.CANCELLED
+    # Exactly one completion notice per job — the cancelled job never
+    # reported a second, resumed completion.
+    assert sorted(completions) == [job1.id, job2.id]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_queued_job_before_it_starts():
+    """shutdown() must cancel queued tasks too, so a job queued behind the
+    semaphore cannot spawn and run against a closing (or closed) session."""
+    registry = JobRegistry(limits={JobKind.SHELL: 1})
+    first, job1, queued, job2 = await _start_blocking_and_queued(registry)
+    del job1
+    assert job2.status is JobStatus.PENDING
+
+    snapshots = await asyncio.wait_for(registry.shutdown(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert queued.run_count == 0
+    assert all(snap.status == "stopped" for snap in snapshots)
+    del first
 
 
 @pytest.mark.asyncio
@@ -276,7 +399,9 @@ async def test_escalated_background_shell_requires_approval(
     job_registry = JobRegistry()
     registry.register(next(
         tool
-        for tool in shell_tools(sandbox, job_registry, str(temp_workspace))
+        for tool in shell_tools(
+            sandbox, job_registry, str(temp_workspace), approval_layer=object()
+        )
         if tool.name == "shell"
     ))
     events = []
@@ -287,7 +412,7 @@ async def test_escalated_background_shell_requires_approval(
 
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
-    client_events.set_sink(approve)
+    client_events.install(approve)
     approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
@@ -336,7 +461,7 @@ async def test_denied_background_shell_escalation_creates_no_job(
 
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
-    client_events.set_sink(deny)
+    client_events.install(deny)
     approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
@@ -429,3 +554,34 @@ async def test_host_shell_returns_complete_output_for_common_cache(
     result = await run_shell_command("generate", cwd=str(temp_workspace))
 
     assert result == "x" * 100_001
+
+
+@pytest.mark.asyncio
+async def test_pipeline_denies_escalation_without_approval_guard(temp_workspace):
+    """The execution pipeline fails closed: an escaping tool call without an
+    approval-capable guard in the pipeline never reaches dispatch, even when
+    the tool itself is mounted with an approval layer."""
+    job_registry = JobRegistry()
+    sandbox = SandboxPolicy(enabled=False, workspace_root=str(temp_workspace))
+    shell = next(
+        tool
+        for tool in shell_tools(
+            sandbox, job_registry, str(temp_workspace), approval_layer=object()
+        )
+        if tool.name == "shell"
+    )
+    registry = ToolRegistry()
+    registry.register(shell)
+    ctx = make_tool_ctx(registry, sandbox=sandbox)  # no permissions guard
+
+    results = await ctx.tools.execute_all([
+        ToolCall(id="c1", name="shell", args={
+            "command": "pwd",
+            "sandbox_permissions": "require_escalated",
+            "justification": "Need host access.",
+        }),
+    ])
+
+    assert results[0].status == "error"
+    assert "approval layer" in results[0].content
+    assert job_registry.all() == []

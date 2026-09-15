@@ -19,7 +19,10 @@ class CaptionConfig(BaseModel):
     # writable; when disabled the title is human-facing only.
     allow_access: bool = True
     max_chars: int = Field(default=60, ge=10, le=200)
-    output_tokens: int = Field(default=48, ge=8, le=256)
+    # An output budget a thinking model can spare for one short title after
+    # its reasoning; ``caption.service`` still derives a deterministic title
+    # from the first user message when the model emits no content.
+    output_tokens: int = Field(default=96, ge=8, le=256)
 
 
 __all__ = ["CaptionConfig"]

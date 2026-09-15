@@ -14,7 +14,6 @@ from XBotv2.compact.history import (
 )
 from XBotv2.compact.service import CompactService
 from XBotv2.compact.summary import (
-    invoke_llm as _invoke_llm,
     limit_summary as _limit_summary,
     model_usage as _model_usage,
     strip_summary_heading as _strip_summary_heading,
@@ -63,7 +62,6 @@ __all__ = [
     "_compact_prefix_end",
     "_compact_result_message",
     "_history_chars",
-    "_invoke_llm",
     "_limit_summary",
     "_model_usage",
     "_strip_summary_heading",

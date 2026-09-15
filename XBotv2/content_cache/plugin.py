@@ -14,7 +14,11 @@ from XBotv2.core.messages import Message
 
 
 class ContentCacheService:
-    """Create and reuse provider copies for oversized current user messages."""
+    """Create and reuse provider copies for oversized current user messages.
+
+    Only the most recent oversized user message is ever consulted, so the
+    memoization holds at most one entry and is cleared at turn end.
+    """
 
     def __init__(
         self,
@@ -23,7 +27,7 @@ class ContentCacheService:
     ) -> None:
         self._artifacts = artifacts
         self._config = config
-        self._cached: dict[int, tuple[Message, Message]] = {}
+        self._cached: tuple[int, Message, Message] | None = None
 
     def bind_current_user_message(self, messages: list[Message]) -> list[Message]:
         index = next(
@@ -37,9 +41,15 @@ class ContentCacheService:
         if index is None:
             return messages
         source = messages[index]
-        cached = self._cached.get(id(source))
-        if cached is not None and cached[0] is source:
-            bounded = cached[1]
+        cached = (
+            self._cached
+            if self._cached is not None
+            and self._cached[0] == id(source)
+            and self._cached[1] is source
+            else None
+        )
+        if cached is not None:
+            bounded = cached[2]
         else:
             bounded, artifact = cache_user_message(
                 source,
@@ -50,10 +60,14 @@ class ContentCacheService:
             )
             if artifact is None:
                 return messages
-            self._cached[id(source)] = (source, bounded)
+            # Bounded by design: replacing the slot keeps exactly one entry.
+            self._cached = (id(source), source, bounded)
         bound = list(messages)
         bound[index] = bounded
         return bound
+
+    def clear(self) -> None:
+        self._cached = None
 
 
 class ContentCacheHandler:
@@ -67,6 +81,9 @@ class ContentCacheHandler:
                 request.messages
             )
 
+    async def clear_cache(self, _event: EventContext) -> None:
+        self._service.clear()
+
 
 class ContentCacheComponent:
     inject = ["artifacts"]
@@ -79,9 +96,17 @@ class ContentCacheComponent:
             config,
         )
         ctx.set("content_cache", service)
+        # An independent observer: binding the bounded copy of an oversized
+        # user message must happen even when another listener answers the
+        # request first (e.g. a compaction rebuild).
         ctx.on(
             Events.BEFORE_MODEL_REQUEST,
             ContentCacheHandler(service).bind_model_request,
+            prepend=True,
+        )
+        ctx.on(
+            Events.TURN_END,
+            ContentCacheHandler(service).clear_cache,
         )
 
 

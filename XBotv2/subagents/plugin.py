@@ -9,7 +9,7 @@ from XBotv2.subagents.service import (
     SubagentLauncher,
     SubagentTools,
 )
-from XBotv2.application import APPLICATION_INITIALIZED
+from XBotv2.context_builder import CONTEXT_COMPONENTS_BUILT
 from XBotv2.core import Tool
 from XBotv2.subagents.contracts import SubagentsConfig
 
@@ -23,7 +23,6 @@ class SubagentsRuntimeComponent:
         "client_events",
         "jobs",
         "tools",
-        "prompts",
         "thread_persistence",
     ]
     name = "xbot.subagents"
@@ -34,9 +33,11 @@ class SubagentsRuntimeComponent:
         config: SubagentsConfig,
     ) -> None:
         timeout_seconds = config.timeout_seconds
+        # The catalog is contributed per build (dynamic content), not as a
+        # static fragment registered from an out-of-apply listener.
         ctx.on(
-            APPLICATION_INITIALIZED,
-            SubagentCatalogPrompt(ctx.agent_catalog, ctx.prompts).publish,
+            CONTEXT_COMPONENTS_BUILT,
+            SubagentCatalogPrompt(ctx.agent_catalog).contribute,
         )
         handlers = SubagentTools(
             registry=ctx.jobs,
