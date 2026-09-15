@@ -279,7 +279,14 @@ async def _read_image_url(
     media_type: str | None,
     sandbox: SandboxPort | None,
 ) -> tuple[bytes, str | None, dict[str, JsonValue]]:
-    if sandbox is not None and not sandbox.network:
+    if sandbox is None:
+        # Fail closed: with no policy to consult, URL media reads cannot be
+        # assumed open.
+        raise _ImageError(
+            "sandbox_unavailable",
+            "Network access requires an active sandbox policy",
+        )
+    if not sandbox.network:
         raise _ImageError(
             "network_disabled",
             "Sandbox network access is disabled",
@@ -631,12 +638,30 @@ def filesystem_tools(
     artifacts: ArtifactStorePort | None = None,
 ) -> tuple[Tool, ...]:
     """Build the merged filesystem Tools for one session sandbox."""
+    kinds = {
+        "read": "read",
+        "edit": "edit",
+        "path": "read",
+        "search": "search",
+    }
+    # Selector arguments: what a session grant minted from one call covers.
+    selectors = {
+        "read": ("path", "mode"),
+        "edit": ("path", "mode", "overwrite", "recursive", "parents"),
+        "path": (
+            "operation", "source", "destination",
+            "overwrite", "recursive", "parents", "mode",
+        ),
+        "search": ("query", "path", "mode"),
+    }
     return tuple(
         replace(
             Tool.from_function(function, name=name),
             function=partial(function, sandbox=sandbox, artifacts=artifacts)
             if function is read
             else partial(function, sandbox=sandbox),
+            kind=kinds[name],
+            grant_selectors=selectors[name],
         )
         for name, function in (
             ("read", read),

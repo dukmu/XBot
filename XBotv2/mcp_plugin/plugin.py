@@ -207,6 +207,9 @@ class MCPPlugin:
         return self._tools.register(
             tool,
             namespace=f"mcp:{server_name}",
+            # Registration happens when the session announces itself, outside
+            # this plugin's apply; the plugin owns release via _rollback_all.
+            cleanup="caller",
         )
 
     def _register_resource_bridge(
@@ -330,7 +333,11 @@ class MCPPlugin:
         }
 
     async def _dispose(self) -> None:
-        await self._client.disconnect_all()
+        # Unload must undo the tool registrations too: _rollback_all
+        # unregisters every mcp:* tool this fiber registered, so an unload
+        # without SESSION_CLOSE (dependency restart, plugin reload) never
+        # leaves stale tools pointing at a disconnected client.
+        await self._rollback_all()
         self._server_status.clear()
         self._server_tools.clear()
         self._initialized = False

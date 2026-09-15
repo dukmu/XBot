@@ -490,6 +490,27 @@ describe("runtimeReducer", () => {
     expect((entries[3] as { content: string }).content).toContain("shell");
   });
 
+  it("does not duplicate a replayed accepted input in a viewed thread", () => {
+    const rolling = { reasoning: "", content: "" };
+    let entries: TimelineEntry[] = [];
+    entries = applyViewEvent(
+      entries,
+      event("message", { id: "sub-turn-1", role: "user", content: "worker task" }),
+      rolling,
+    );
+    expect(entries).toHaveLength(1);
+
+    // The observer replays the full thread event stream over the same
+    // trajectory, so the same accepted input must not appear twice.
+    entries = applyViewEvent(
+      entries,
+      event("message", { id: "sub-turn-1", role: "user", content: "worker task" }),
+      rolling,
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "message", messageId: "sub-turn-1" });
+  });
+
   it("streams reasoning and assistant content into one entry", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const committedEntries = state.entries;
@@ -685,7 +706,7 @@ describe("runtimeReducer", () => {
         { position: 1, kind: "message", message_id: "context-1", message },
         { position: 2, kind: "event", event: "compaction/start", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:00Z" },
         { position: 3, kind: "event", event: "compaction/summary", data: { compaction_id: "c1", summary: "summary" }, timestamp: "2026-01-01T00:00:01Z" },
-        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [] },
+        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [], summary: "Compacted summary" },
         { position: 5, kind: "event", event: "compaction/end", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:02Z" },
       ],
     });
@@ -693,6 +714,34 @@ describe("runtimeReducer", () => {
     expect(state.entries).toHaveLength(2);
     expect(state.entries[0]).toMatchObject({ kind: "runtime", source: "skills", content: "Injected instructions" });
     expect(state.entries[1]).toMatchObject({ kind: "runtime", source: "compact", event: "compaction/end" });
+  });
+
+  it("replays the durable compaction summary instead of a placeholder", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [
+        { position: 1, kind: "event", event: "compaction/start", data: { compaction_id: "c9" }, timestamp: "2026-01-01T00:00:00Z" },
+        {
+          position: 2,
+          kind: "surface_replace",
+          operation: "compact:c9",
+          transcript: "preserve",
+          source_node_ids: ["0"],
+          messages: [],
+          summary: "What the session kept: billing migration decisions.",
+        },
+        { position: 3, kind: "event", event: "compaction/end", data: { compaction_id: "c9" }, timestamp: "2026-01-01T00:00:02Z" },
+      ],
+    });
+
+    const compactEntries = state.entries.filter(
+      (entry) => entry.kind === "runtime" && entry.source === "compact",
+    );
+    expect(compactEntries).toHaveLength(1);
+    expect(compactEntries[0]).toMatchObject({
+      content: "What the session kept: billing migration decisions.",
+    });
   });
 
   it("reconciles assistant tool calls with results stored in later trajectory records", () => {

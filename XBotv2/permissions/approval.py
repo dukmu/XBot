@@ -29,7 +29,6 @@ class ApprovalService(ApprovalPort):
         self.waiter.cancel_all("session_closed")
 
     async def request(self, client_event: ClientEvent) -> ApprovalDecision:
-        await self._events.emit(Events.CLIENT_EVENT, EventContext(client_event=client_event))
         result = await self._client_events.request(client_event)
         status = result.get("status", "answered") if result is not None else "unavailable"
         DEFAULT_RUNTIME_LOG.bind("permissions").info(

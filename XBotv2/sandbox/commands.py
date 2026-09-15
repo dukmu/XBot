@@ -42,7 +42,8 @@ def build_sandbox_commands(settings: SettingsPort) -> tuple[Command, ...]:
                 f"read={effective.get('external_read')} write={effective.get('external_write')}",
                 f"  Resources: {len(resources)} effective, "
                 f"{len(session.get('resources', []))} session-local",
-                "The sandbox is enforced after permissions; permission approval cannot bypass it.",
+                "Permission approval gates escalated (sandbox-escaping) shell calls; "
+                "without an active approval layer such calls fail closed.",
                 "Use /sandbox resources, set, reset, add, or remove.",
             ]
             return CommandResult("\n".join(lines))

@@ -218,6 +218,7 @@ export interface TrajectorySurfaceReplaceItem {
   transcript: "preserve" | "replace";
   source_node_ids: string[];
   messages: HistoryItem[];
+  summary: string;
 }
 
 export interface TrajectoryEventItem {

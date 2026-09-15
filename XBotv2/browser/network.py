@@ -217,7 +217,15 @@ def _extract_html(content: bytes, url: str) -> tuple[str, dict[str, str]]:
 
 
 def network_available(sandbox: SandboxPort | None) -> ToolResult | None:
-    if sandbox is not None and not sandbox.network:
+    if sandbox is None:
+        # Fail closed: with no policy to consult, network access cannot be
+        # assumed open. The browser plugin always injects the sandbox, so a
+        # missing policy is a wiring error worth surfacing loudly.
+        return ToolResult.failure(
+            "sandbox_unavailable",
+            "Network access requires an active sandbox policy",
+        )
+    if not sandbox.network:
         return ToolResult.failure(
             "network_disabled",
             "Network access is disabled by the active sandbox policy",

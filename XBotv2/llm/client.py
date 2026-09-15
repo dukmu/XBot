@@ -66,12 +66,37 @@ def _provider_arguments(
     }
 
 
-def _parse_tool_args(raw: str) -> dict[str, JsonValue]:
-    try:
-        value = json.loads(raw) if raw else {}
-    except (json.JSONDecodeError, TypeError):
+class ToolArgumentsError(ValueError):
+    """A provider delivered tool-call arguments that are not a JSON object.
+
+    Raised at the provider boundary so a malformed call surfaces as a loud
+    error instead of executing the tool with fabricated empty arguments.
+    """
+
+    code = "invalid_tool_arguments"
+
+
+def _parse_tool_args(
+    raw: str,
+    *,
+    tool_name: str = "",
+) -> dict[str, JsonValue]:
+    """Parse provider tool-call arguments, failing loudly when malformed."""
+    if not raw:
         return {}
-    return value if isinstance(value, dict) else {}
+    label = tool_name or "tool"
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ToolArgumentsError(
+            f"Malformed tool-call arguments for {label}: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise ToolArgumentsError(
+            f"Tool-call arguments for {label} must be a JSON object, "
+            f"got {type(value).__name__}"
+        )
+    return value
 
 
 __all__ = [
@@ -79,5 +104,6 @@ __all__ = [
     "_require_api_key",
     "_retry_settings",
     "_provider_arguments",
+    "ToolArgumentsError",
     "_parse_tool_args",
 ]

@@ -216,7 +216,7 @@ class XBotClient:
     ) -> PluginConfigCatalog:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/plugin-config",
+            f"{thread_path(session_id, thread_id)}/plugin-config",
             PluginConfigCatalog,
             params={"scope": scope},
         )
@@ -230,7 +230,7 @@ class XBotClient:
     ) -> PluginConfigCatalog:
         return await self._request(
             "PATCH",
-            f"{_thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
+            f"{thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
             PluginConfigCatalog,
             patch,
             params={"scope": patch.scope},
@@ -285,21 +285,21 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> ThreadSummary:
         return await self._request(
-            "GET", _thread_path(session_id, thread_id), ThreadSummary
+            "GET", thread_path(session_id, thread_id), ThreadSummary
         )
 
     async def close_thread(
         self, session_id: str, thread_id: str
     ) -> CloseResponse:
         return await self._request(
-            "POST", f"{_thread_path(session_id, thread_id)}/close", CloseResponse
+            "POST", f"{thread_path(session_id, thread_id)}/close", CloseResponse
         )
 
     async def list_agents(
         self, session_id: str, thread_id: str
     ) -> AgentListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/agents", AgentListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/agents", AgentListResponse
         )
 
     async def select_agent(
@@ -307,7 +307,7 @@ class XBotClient:
     ) -> AgentSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/agent",
+            f"{thread_path(session_id, thread_id)}/agent",
             AgentSelectionResponse,
             AgentSelectionRequest(name=name),
         )
@@ -317,7 +317,7 @@ class XBotClient:
     ) -> EffortSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/effort",
+            f"{thread_path(session_id, thread_id)}/effort",
             EffortSelectionResponse,
             EffortSelectionRequest(effort=effort),
         )
@@ -331,7 +331,7 @@ class XBotClient:
     ) -> ProviderSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/provider",
+            f"{thread_path(session_id, thread_id)}/provider",
             ProviderSelectionResponse,
             ProviderSelectionRequest(name=name, model=model),
         )
@@ -340,7 +340,7 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> ToolListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/tools", ToolListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/tools", ToolListResponse
         )
 
     async def list_messages(
@@ -353,7 +353,7 @@ class XBotClient:
     ) -> ThreadMessagesResponse:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/messages",
+            f"{thread_path(session_id, thread_id)}/messages",
             ThreadMessagesResponse,
             params={
                 key: value
@@ -372,7 +372,7 @@ class XBotClient:
     ) -> ThreadTrajectoryResponse:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/trajectory",
+            f"{thread_path(session_id, thread_id)}/trajectory",
             ThreadTrajectoryResponse,
             params={
                 key: value
@@ -388,7 +388,7 @@ class XBotClient:
         artifact_id: str,
     ) -> bytes:
         response = await self._http.get(
-            f"{_thread_path(session_id, thread_id)}/artifacts/"
+            f"{thread_path(session_id, thread_id)}/artifacts/"
             f"{quote(artifact_id, safe='/')}"
         )
         await _raise_for_status(response)
@@ -399,7 +399,7 @@ class XBotClient:
     ) -> HistoryMutationResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/clear",
+            f"{thread_path(session_id, thread_id)}/history/clear",
             HistoryMutationResponse,
         )
 
@@ -408,7 +408,7 @@ class XBotClient:
     ) -> HistoryMutationResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/undo",
+            f"{thread_path(session_id, thread_id)}/history/undo",
             HistoryMutationResponse,
             UndoRequest(count=count),
         )
@@ -417,7 +417,7 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> TaskListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/tasks", TaskListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/tasks", TaskListResponse
         )
 
     async def stop_task(
@@ -425,7 +425,7 @@ class XBotClient:
     ) -> TaskStopResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/tasks/{_segment(task_id)}/stop",
+            f"{thread_path(session_id, thread_id)}/tasks/{_segment(task_id)}/stop",
             TaskStopResponse,
         )
 
@@ -434,7 +434,7 @@ class XBotClient:
     ) -> TaskStopResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/tasks/stop",
+            f"{thread_path(session_id, thread_id)}/tasks/stop",
             TaskStopResponse,
         )
 
@@ -442,7 +442,7 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> InterruptResponse:
         return await self._request(
-            "POST", f"{_thread_path(session_id, thread_id)}/interrupt", InterruptResponse
+            "POST", f"{thread_path(session_id, thread_id)}/interrupt", InterruptResponse
         )
 
     async def respond_permission(
@@ -456,7 +456,7 @@ class XBotClient:
     ) -> InteractionResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/interactions/permission-response",
+            f"{thread_path(session_id, thread_id)}/interactions/permission-response",
             InteractionResponse,
             PermissionResponseRequest(
                 request_id=request_id,
@@ -475,7 +475,7 @@ class XBotClient:
     ) -> InteractionResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/interactions/user-input",
+            f"{thread_path(session_id, thread_id)}/interactions/user-input",
             InteractionResponse,
             UserInputResponseRequest(request_id=request_id, answer=answer),
         )
@@ -487,7 +487,7 @@ class XBotClient:
     ) -> PendingInputListResponse:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/queue",
+            f"{thread_path(session_id, thread_id)}/queue",
             PendingInputListResponse,
         )
 
@@ -502,7 +502,7 @@ class XBotClient:
     ) -> PendingInputListResponse:
         return await self._request(
             "PATCH",
-            f"{_thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
+            f"{thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
             PendingInputListResponse,
             PendingInputUpdateRequest(action=action, content=content),
         )
@@ -520,7 +520,7 @@ class XBotClient:
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/messages",
+            f"{thread_path(session_id, thread_id)}/messages",
             MessageRequest(
                 content=content,
                 request_id=request_id,
@@ -539,7 +539,7 @@ class XBotClient:
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/regenerate",
+            f"{thread_path(session_id, thread_id)}/history/regenerate",
             RegenerateRequest(request_id=request_id),
         )
 
@@ -552,7 +552,7 @@ class XBotClient:
     ) -> AsyncIterator[ServerEvent]:
         return self._stream(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/events",
+            f"{thread_path(session_id, thread_id)}/events",
             params={"after": after} if after is not None else None,
         )
 
@@ -604,7 +604,7 @@ class XBotClient:
                 yield decode_server_event(message)
 
 
-def _thread_path(session_id: str, thread_id: str) -> str:
+def thread_path(session_id: str, thread_id: str) -> str:
     return f"/sessions/{_segment(session_id)}/threads/{_segment(thread_id)}"
 
 

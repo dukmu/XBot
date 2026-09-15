@@ -194,7 +194,9 @@ class OpenAICompatibleProvider(BaseProvider):
             ToolCall(
                 id=buffer["id"],
                 name=buffer["name"],
-                args=_parse_tool_args(buffer["args"]),
+                args=_parse_tool_args(
+                    buffer["args"], tool_name=str(buffer.get("name") or "")
+                ),
             )
             for buffer in tool_call_buffers.values()
             if buffer["name"]

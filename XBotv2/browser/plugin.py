@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from typing import Literal
 from pydantic import JsonValue
 
@@ -57,7 +59,8 @@ class BrowserPlugin:
             self.browser_screenshot,
             self.browser_close,
         ):
-            ctx.tools.register(Tool.from_function(function))
+            # Owners declare the model-facing category (web access).
+            ctx.tools.register(replace(Tool.from_function(function), kind="fetch"))
 
     async def web_search(
         self,
@@ -112,7 +115,7 @@ class BrowserPlugin:
             url: Absolute public http/https URL, or absolute file:// URL within
                 the sandbox-approved filesystem scope.
         """
-        return await self._browser_session().open(url, sandbox=self._sandbox)
+        return await self._browser_session().open(url)
 
     async def browser_snapshot(self) -> ToolResult:
         """Read the active page text and refresh its interactive element refs.
@@ -185,6 +188,7 @@ class BrowserPlugin:
                 artifacts=self._artifacts,
                 headless=bool(self._browser_options["headless"]),
                 timeout_seconds=float(self._browser_options["timeout_seconds"]),
+                sandbox=self._sandbox,
             )
         return self._browser
 

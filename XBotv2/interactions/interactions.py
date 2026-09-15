@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 
 from pydantic import JsonValue
@@ -11,6 +13,8 @@ from XBotv2.interactions.contracts import (
     InteractionNotPending,
     InteractionResult,
 )
+
+logger = logging.getLogger("xbotv2.interactions")
 
 
 class InteractionWaiter(InteractionWaiterPort):
@@ -64,8 +68,15 @@ class InteractionWaiter(InteractionWaiterPort):
         future = self._pending.get(request_id)
         if future is None:
             raise InteractionNotPending(f"No live interaction request: {request_id}")
-        if not future.done():
-            future.set_result(result)
+        if future.done():
+            # A second answer for the same request is dropped; say so instead
+            # of silently discarding a caller's decision.
+            logger.warning(
+                "interaction.resolve.duplicate",
+                extra={"request_id": request_id},
+            )
+            return result
+        future.set_result(result)
         return result
 
     def answer(self, request_id: str, *, answer: JsonValue = None, decision: str = "", scope: str = "once") -> InteractionResult:

@@ -2452,15 +2452,18 @@ async def test_provider_command_picks_or_lists(scripted_session) -> None:
     async with app.run_test(headless=True, size=(90, 30)) as pilot:
         await pilot.pause()
 
+        scripted_session.commands_run = []
         await app._handle_slash_command(CommandSpec(
             name="provider", kind="server", raw="/provider list",
             usage="/provider <provider>", args="list", description="",
         ))
         await pilot.pause()
-        assert any(
-            "deepseek" in notice.text and "deepseek-v4-flash" in notice.text
-            for notice in app.state.notices
-        )
+        # The server owns list rendering: the client forwards the command
+        # instead of reimplementing the catalog view.
+        assert scripted_session.commands_run == [
+            ("provider", ["list"], "/provider list"),
+        ]
+        assert any("ran provider" in notice.text for notice in app.state.notices)
 
         await app._handle_slash_command(CommandSpec(
             name="provider", kind="server", raw="/provider", usage="/provider <provider>", args="", description="",

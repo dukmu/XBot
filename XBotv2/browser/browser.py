@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import time
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from XBotv2.core import ArtifactKind, ArtifactStorePort, ToolResult
 from XBotv2.sandbox.contracts import SandboxPort
 
 from .network import UrlPolicy, network_available
+
+logger = logging.getLogger("xbotv2.browser")
 
 
 _SNAPSHOT_SCRIPT = """
@@ -53,35 +57,32 @@ class BrowserSession:
         artifacts: ArtifactStorePort,
         headless: bool,
         timeout_seconds: float,
+        sandbox: SandboxPort | None = None,
     ) -> None:
         self.policy = policy
         self.artifacts = artifacts
         self.headless = headless
         self.timeout_ms = int(timeout_seconds * 1000)
+        # Bound at construction: the guard route reads it outside any call.
+        self._sandbox = sandbox
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
-        self._sandbox: Any = None
 
     @property
     def active(self) -> bool:
         return self._page is not None and not self._page.is_closed()
 
-    async def open(
-        self,
-        url: str,
-        *,
-        sandbox: SandboxPort | None = None,
-    ) -> ToolResult:
+    async def open(self, url: str) -> ToolResult:
+        sandbox = self._sandbox
         try:
             if urlsplit(url.strip()).scheme.lower() != "file":
                 unavailable = network_available(sandbox)
                 if unavailable is not None:
                     return unavailable
-            self._sandbox = sandbox
             target = await self._target_url(url, sandbox)
-            page = await self._ensure_page(sandbox)
+            page = await self._ensure_page()
             await page.goto(target, wait_until="domcontentloaded", timeout=self.timeout_ms)
             return await self.snapshot()
         except Exception as exc:
@@ -190,23 +191,24 @@ class BrowserSession:
         )
 
     async def shutdown(self) -> None:
+        # Teardown must proceed, but a failed close is a real signal: record
+        # it instead of discarding it.
         for resource in (self._context, self._browser):
             if resource is not None:
                 try:
                     await resource.close()
                 except Exception:
-                    pass
+                    logger.exception("browser.resource.close.failed")
         if self._playwright is not None:
             try:
                 await self._playwright.stop()
             except Exception:
-                pass
+                logger.exception("browser.playwright.stop.failed")
         self._page = self._context = self._browser = self._playwright = None
 
-    async def _ensure_page(self, sandbox: SandboxPort | None = None) -> Any:
+    async def _ensure_page(self) -> Any:
         if self.active:
             return self._page
-        self._sandbox = sandbox
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()

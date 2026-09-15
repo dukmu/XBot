@@ -537,6 +537,7 @@ class XBotACPAgent:
         try:
             summary = await self._thread(session_id)
             mapper = ACPEventMapper(context_size=summary.context_window)
+            fallback_window = summary.context_window
             async for frame in events:
                 await self._resolve_interaction(session_id, frame.event)
                 active = self._active_prompts.get(session_id)
@@ -546,7 +547,16 @@ class XBotACPAgent:
                     else None
                 )
                 event_mapper = active_prompt.mapper if active_prompt else mapper
-                for update in event_mapper.updates(frame.event.model_dump()):
+                if frame.event.type == "agent_configured":
+                    # Track the live window locally: the mapper instance is
+                    # never mutated from outside.
+                    window = frame.event.data.get("context_window")
+                    if isinstance(window, int) and window > 0:
+                        fallback_window = window
+                for update in event_mapper.updates(
+                    frame.event.model_dump(),
+                    fallback_context_size=fallback_window,
+                ):
                     await self._update(session_id, update)
                 if active_prompt is not None:
                     if frame.event.type in {
@@ -568,6 +578,18 @@ class XBotACPAgent:
                 error_type=type(exc).__name__,
             )
             raise
+        finally:
+            # The session stream can end without a turn terminal frame (the
+            # session closed, or the subscription stopped) and the task can be
+            # cancelled. An active prompt must be released either way, or its
+            # waiter — and the session's prompt slot — hang forever.
+            active = self._active_prompts.get(session_id)
+            if active is not None and not active.completed.is_set():
+                if active.failure is None:
+                    active.failure = RuntimeError(
+                        "session event stream ended before the turn completed"
+                    )
+                active.completed.set()
 
     async def _update(self, session_id: str, update: Any) -> None:
         if self.connection is None:

@@ -15,6 +15,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
+from XBotv2.agentloop.contracts import runtime_input_labels
 from XBotv2.session import SessionHistoryItem
 
 
@@ -29,7 +30,13 @@ class ACPEventMapper:
         self._context_size = context_size
         self._tasks: set[str] = set()
 
-    def updates(self, event: dict[str, Any]) -> list[Any]:
+
+    def updates(
+        self,
+        event: dict[str, Any],
+        *,
+        fallback_context_size: int | None = None,
+    ) -> list[Any]:
         event_type = str(event.get("type") or "")
         data = event.get("data") or {}
 
@@ -59,7 +66,9 @@ class ACPEventMapper:
                 start_tool_call(
                     str(call["id"]),
                     str(call["name"]),
-                    kind=_tool_kind(str(call["name"])),
+                    # The tool owner declares the category upstream; the
+                    # carrier renders it and never re-derives a taxonomy.
+                    kind=call.get("kind") or None,
                     status="pending",
                     raw_input=call.get("args"),
                 )
@@ -136,7 +145,11 @@ class ACPEventMapper:
                         self.usage[key] = current[key]
                     else:
                         self.usage[key] += current[key]
-            size = int(data.get("max_context_tokens") or self._context_size)
+            size = int(
+                data.get("max_context_tokens")
+                or fallback_context_size
+                or self._context_size
+            )
             return [
                 UsageUpdate(
                     session_update="usage_update",
@@ -158,10 +171,9 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
     updates: list[Any] = []
     for index, item in enumerate(items):
         if item.role == "user" and item.content:
-            if item.runtime is not None:
-                runtime = item.runtime
-                source = str(runtime.get("source") or "runtime")
-                event = str(runtime.get("event") or "message")
+            labels = runtime_input_labels(item.runtime)
+            if labels is not None:
+                source, event = labels
                 updates.append(start_tool_call(
                     item.input_id or f"runtime-input-{index}",
                     f"Injected context · {source} / {event}",
@@ -183,10 +195,11 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
             if item.content:
                 updates.append(update_agent_message_text(item.content))
             for call in item.tool_calls:
+                # Replay has no registry to consult, so it does not invent a
+                # category: the client renders the call without one.
                 updates.append(start_tool_call(
                     call.id,
                     call.name,
-                    kind=_tool_kind(call.name),
                     status="pending",
                     raw_input=call.args,
                 ))
@@ -238,22 +251,6 @@ def _task_status(status: str) -> str:
     if status in {"failed", "stopped"}:
         return "failed"
     return "in_progress"
-
-
-def _tool_kind(name: str) -> str:
-    if name == "read":
-        return "read"
-    if name in {"edit", "path"}:
-        return "edit"
-    if name in {"shell", "shell_start", "run_command"}:
-        return "execute"
-    if "search" in name:
-        return "search"
-    if "fetch" in name:
-        return "fetch"
-    if name in {"update_todos", "create_goal", "update_goal"}:
-        return "think"
-    return "other"
 
 
 __all__ = ["ACPEventMapper", "replay_history"]

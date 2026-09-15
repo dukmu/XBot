@@ -17,6 +17,7 @@ from XBotv2.llm.contracts import (
     SELECT_PROVIDER,
     SelectEffort,
     SelectProvider,
+    invoke_llm,
 )
 from XBotv2.llm.protocol import (
     EffortSelectionRequest,
@@ -46,4 +47,5 @@ __all__ = [
     "SELECT_PROVIDER",
     "SelectEffort",
     "SelectProvider",
+    "invoke_llm",
 ]

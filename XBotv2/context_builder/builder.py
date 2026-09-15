@@ -96,8 +96,13 @@ class ContextBuilder:
         stage: PromptFragmentStage,
         plugin_name: str,
     ) -> None:
-        """Remove a plugin's fragment."""
-        self._fragments.get(stage, {}).pop(plugin_name, None)
+        """Remove a plugin's fragment (validates the stage like register)."""
+        if stage not in self.FRAGMENT_STAGES:
+            raise ValueError(
+                f"Unknown fragment stage: {stage!r}. "
+                f"Choose from {self.FRAGMENT_STAGES}"
+            )
+        self._fragments[stage].pop(plugin_name, None)
 
     def build(
         self,
@@ -299,11 +304,17 @@ def _render_system_component(
             attributes={"source": component.source_path},
         )
     if component.source == "plugin_fragment":
+        if not component.plugin_name:
+            # A fragment without an owner cannot be attributed or released;
+            # rendering it as "unknown" hid exactly that defect.
+            raise ValueError(
+                "plugin_fragment components must carry an owning plugin name"
+            )
         return prompt_element(
             "plugin_instruction",
             content,
             attributes={
-                "name": component.plugin_name or "unknown",
+                "name": component.plugin_name,
                 "stage": component.stage,
                 "source": component.source_path,
             },

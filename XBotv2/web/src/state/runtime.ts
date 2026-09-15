@@ -763,10 +763,21 @@ export function applyViewEvent(
         runtimeEntry("tool", event.type, viewToolLine(data, event.type), eventIdentity(event)),
       ];
     case "message":
-      return [
-        ...flushViewRolling(entries, rolling),
-        { ...messageEntry("user", stringValue(data.content)), messageId: stringValue(data.id) || `view:${event.sequence}` },
-      ];
+      {
+        // The observed thread replays its full event stream on top of the
+        // trajectory; a replayed accepted input must not render twice.
+        const id = stringValue(data.id);
+        const existing = entries.findIndex((entry) => (
+          (entry.kind === "message" || entry.kind === "runtime") && entry.messageId === id
+        ));
+        if (existing >= 0) {
+          return flushViewRolling(entries, rolling);
+        }
+        return [
+          ...flushViewRolling(entries, rolling),
+          { ...messageEntry("user", stringValue(data.content)), messageId: id || `view:${event.sequence}` },
+        ];
+      }
     default:
       return entries;
   }
@@ -859,7 +870,7 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
       if (replacements.length === 1) lineage.set(replacements[0].nodeId, sourceIds);
       const compactionId = item.operation.startsWith("compact:") ? item.operation.slice(8) : "";
       upsertCompactionGroup(groups, item.position, compactionId, item.operation, {
-        summary: compactionSummaryText(item.messages[0]),
+        summary: stringValue(item.summary) || compactionSummaryText(item.messages[0]),
       });
       continue;
     }

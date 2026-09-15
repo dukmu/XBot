@@ -40,6 +40,7 @@ from XBotv2.permissions.system import (
 from XBotv2.permissions.protocol import ApprovalDecision, PermissionRequestData
 from XBotv2.permissions.approval import ApprovalService
 from XBotv2.agentloop import Events
+from XBotv2.agentloop.contracts import ToolsPort
 
 class PermissionsService(PermissionsPort):
     """Stable plugin capability whose concrete policy remains plugin-owned."""
@@ -50,12 +51,14 @@ class PermissionsService(PermissionsPort):
         variables: RuntimeVariables,
         store: StateService,
         parent: PermissionsPort | None = None,
+        tools: ToolsPort | None = None,
     ) -> None:
         self._base_config = PermissionConfig.model_validate(config)
         self._agent_overlay: dict[str, JsonValue] | None = None
         self._grants: list[PermissionRuleConfig] = []
         self._store = store
         self._lock = asyncio.Lock()
+        self._tools = tools
         self._system = PermissionSystem(variables=variables, parent=parent)
         self._rebuild()
 
@@ -123,8 +126,20 @@ class PermissionsService(PermissionsPort):
 
     def rule_for_call(self, call: ToolCall) -> dict[str, JsonValue]:
         return permission_rule_for_tool_call(
-            call, workspace=self._system.variables.get("workspace"),
+            call,
+            workspace=self._system.variables.get("workspace"),
+            # The tool owner declares which arguments define the grant scope;
+            # permissions never keeps its own copy of that vocabulary.
+            selectors=self._grant_selectors(call.name),
         )
+
+    def _grant_selectors(self, tool_name: str) -> tuple[str, ...] | None:
+        if self._tools is None or not tool_name:
+            return None
+        tool = self._tools.resolve(tool_name)
+        if tool is None:
+            return None
+        return tuple(tool.grant_selectors) or None
 
     def _replace_grants(self, rules: list[PermissionRuleConfig]) -> None:
         self._grants = rules
@@ -209,6 +224,7 @@ class PermissionsComponent:
             ctx.variables,
             ctx.state.namespace("permissions"),
             parent=ctx.parent_permissions.value,
+            tools=ctx.tools,
         )
         ctx.set("permissions", permissions)
         for command in build_permissions_commands(ctx.settings, permissions):
@@ -221,7 +237,7 @@ class PermissionsComponent:
             ctx.emit,
             handlers.apply_decision,
         )
-        ctx.tools.guard(guard.check)
+        ctx.tools.guard(guard.check, approval=True)
         ctx.on(APPLICATION_INITIALIZED, handlers.configure_initial, prepend=True)
         ctx.on(AGENT_CONFIGURED, handlers.configure_agent, prepend=True)
         ctx.on(POLICY_CHANGED, handlers.update_policy)

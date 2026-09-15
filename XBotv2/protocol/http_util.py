@@ -62,7 +62,7 @@ class HttpServerError(Exception):
         self.retryable = retryable
 
 
-def _error_payload(
+def error_payload(
     code: str,
     message: str,
     *,

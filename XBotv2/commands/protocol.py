@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.commands.contracts import (
+    split_command_args,
     CommandDescription,
     CommandExecution,
     EXECUTE_COMMAND,
@@ -69,11 +70,11 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
         args = payload.args
         if args is None:
             try:
-                parts = shlex.split(raw)
+                parts = split_command_args(raw)
             except ValueError as exc:
                 raise HttpServerError(
                     "invalid_request",
-                    f"Invalid command syntax: {exc}",
+                    str(exc),
                     status=400,
                 ) from exc
             if not command and parts:

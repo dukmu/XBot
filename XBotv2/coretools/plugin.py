@@ -22,9 +22,12 @@ from XBotv2.coretools.contracts import (
 )
 
 class CoreToolsComponent:
-    inject = [
-        "tools", "session", "artifacts", "sandbox", "jobs", "workspace_root",
-    ]
+    inject = {
+        "required": ["tools", "session", "artifacts", "sandbox", "jobs", "workspace_root"],
+        # The approval layer is optional: without it, escalating shell calls
+        # fail closed at call time instead of running unsandboxed.
+        "optional": ["permissions"],
+    }
     """Register base tools and core event listeners (mounted after tools)."""
 
     name = "xbot.coretools"
@@ -57,7 +60,14 @@ class CoreToolsComponent:
         # covers path, URL, and base64 media input (images today).
         tools = (
             *filesystem_tools(ctx.sandbox, artifacts),
-            *shell_tools(ctx.sandbox, ctx.jobs, str(ctx.workspace_root)),
+            *shell_tools(
+                ctx.sandbox,
+                ctx.jobs,
+                str(ctx.workspace_root),
+                # Resolved lazily per call: order-independent whether or not
+                # the permissions plugin mounts.
+                approval_layer=lambda: ctx.get("permissions", strict=False),
+            ),
         )
         for tool in tools:
             ctx.tools.register(tool)

@@ -316,6 +316,11 @@ class XBotTextualApp(App[None]):
     async def on_unmount(self) -> None:
         self._cancel_interaction_response()
         await self._cancel_tool_refresh_timer()
+        # Both pumps are raw tasks owned by this screen's lifecycle: leaving
+        # them alive keeps a 20 Hz render loop and a thread-view SSE
+        # subscription running against an unmounted DOM.
+        await self._cancel_stream_timer()
+        await self._exit_thread_view()
         self._deferred_tool_ids.clear()
         self._stop_session_events()
         if self._server_reachable:
@@ -352,6 +357,46 @@ class XBotTextualApp(App[None]):
         except Exception as exc:
             self._record_error(exc)
 
+    async def _refresh_session_identity(self) -> None:
+        """Re-read the session descriptor's identity fields at turn end.
+
+        The descriptor is the single source of the session title: a caption
+        written during the turn becomes visible here without a client-only
+        event. Only identity fields are applied; transcript/queue state is
+        owned by the event stream.
+        """
+        try:
+            session = await self.session.refresh_descriptor()
+        except Exception:
+            logger.exception("failed to refresh session descriptor")
+            return
+        if not isinstance(session, dict):
+            return
+        title = str(session.get("title") or "")
+        agent_name = str(session.get("agent_name") or "")
+        provider = str(session.get("provider") or "")
+        model = str(session.get("model") or "")
+        model_mode = str(session.get("model_mode") or "")
+        context_window = int(session.get("context_window") or 0)
+        changed = (
+            title != self.state.session_title
+            or agent_name != self.state.agent_name
+            or provider != self.state.provider
+            or model != self.state.model
+            or model_mode != self.state.model_mode
+            or context_window != self.state.context_window
+        )
+        if not changed:
+            return
+        self.state.session_title = title or self.state.session_title
+        self.state.agent_name = agent_name or self.state.agent_name
+        self.state.provider = provider or self.state.provider
+        self.state.model = model or self.state.model
+        self.state.model_mode = model_mode or self.state.model_mode
+        if context_window:
+            self.state.context_window = context_window
+        self._refresh_all()
+
     async def _apply_open_session(self, session: dict[str, JsonValue] | None) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
@@ -374,10 +419,43 @@ class XBotTextualApp(App[None]):
             history = session.get("history")
             if isinstance(history, list):
                 self.state.restore_history(history)
+                await self._restore_compaction_entries()
                 await self._render_replay_window()
             if self._restore_pending_interactions(session):
                 await self._render_new_transcript_entries()
                 self._refresh_status()
+
+    async def _restore_compaction_entries(self) -> None:
+        """Rebuild expandable compaction entries a resumed session had.
+
+        Compactions live in the event stream, so a reloaded client would
+        otherwise lose them; the durable summary comes from the trajectory
+        replay. The entries are prepended in front of the surviving messages:
+        each one folds an earlier prefix that is no longer in the surface.
+        """
+        try:
+            compactions = await self.session.read_thread_compactions(
+                self.state.thread_id,
+            )
+        except Exception:  # noqa: BLE001 — a read-only replay must not break resume
+            logger.warning("thread compaction replay failed", exc_info=True)
+            return
+        for item in reversed(compactions):
+            summary = str(item.get("summary") or "")
+            if not summary:
+                continue
+            self.state.notices.append(TuiNotice(
+                kind="compact",
+                text="Conversation compacted",
+                payload={"summary": summary},
+            ))
+            self.state.transcript.insert(
+                0,
+                TuiTranscriptEntry(
+                    kind="notice",
+                    key=str(len(self.state.notices) - 1),
+                ),
+            )
 
     def _restore_pending_interactions(self, session: dict[str, JsonValue]) -> bool:
         """Rebuild unanswered dialogs from an open/resume snapshot.
@@ -587,32 +665,6 @@ class XBotTextualApp(App[None]):
         )
         await self._enter_thread_view(candidate["thread_id"], candidate.get("title") or "")
 
-    async def _show_providers(self) -> None:
-        """Read-only catalog view for ``/provider list``."""
-        try:
-            payload = await self.session.list_providers()
-        except Exception as exc:
-            self._record_error(exc)
-            return
-        providers = payload.get("providers") if isinstance(payload, dict) else []
-        lines = []
-        if isinstance(providers, list):
-            for item in providers:
-                if not isinstance(item, dict):
-                    continue
-                provider = str(item.get("provider") or "")
-                name = str(item.get("name") or "")
-                model = str(item.get("default_model") or "")
-                if not provider:
-                    continue
-                line = f"{name} ({provider})" if name and name != provider else provider
-                if model:
-                    line += f"  {model}"
-                lines.append(line)
-        await self._append_local_notice(
-            "Providers", "\n".join(lines) or "No providers available"
-        )
-
     async def _pick_provider(self, on_choice) -> None:
         """Choose a provider from the server catalog instead of typing its id."""
         try:
@@ -791,6 +843,10 @@ class XBotTextualApp(App[None]):
         if role == "tool":
             return f"[tool] {content}"
         kind = str(item.get("kind") or "")
+        if kind == "surface_replace":
+            summary = str(item.get("summary") or "")
+            if summary:
+                return f"[compact] {summary}"
         return f"[{kind}]" if kind else ""
 
     def _view_event_line(self, event: dict[str, JsonValue]) -> str | None:
@@ -812,8 +868,11 @@ class XBotTextualApp(App[None]):
         own = ""
         if type_ == "assistant_message":
             own = f"[assistant] {data.get('content') or ''}"
-        elif type_ == "tool_started":
-            own = f"[tool] {data.get('name') or 'tool'}"
+        elif type_ == "tool_calls_started":
+            own = "\n".join(
+                f"[tool] {str(call.get('name') or 'tool')}"
+                for call in data.get("tool_calls") or []
+            )
         elif type_ == "tool_result":
             content = str(data.get("content") or "")
             own = f"[tool] {data.get('name') or 'tool'} {data.get('status') or ''}:\n{content.strip()}"
@@ -939,11 +998,13 @@ class XBotTextualApp(App[None]):
         await self._cmd_toggle_blocks("details", spec.args)
 
     async def _cmd_provider(self, spec: CommandSpec) -> None:
-        """Provider: interactive picker on no args, local list, else remote."""
+        """Provider: interactive picker on no args; the server owns the rest.
+
+        ``/provider`` (no args) opens the picker this client requires;
+        ``status``/``list``/``use`` keep the server's single definition and
+        rendering instead of a client-side reimplementation.
+        """
         provider_args = spec.args.strip()
-        if provider_args.lower() in {"list", "ls"}:
-            await self._show_providers()
-            return
         if not provider_args:
             await self._pick_provider(lambda choice: (
                 self.run_worker(
@@ -1465,7 +1526,12 @@ class XBotTextualApp(App[None]):
                 return False
         self.state.apply_event(event)
         if self._view_active:
-            if event_type in {"assistant_message", "assistant_message_delta", "tool_started", "tool_result"}:
+            if event_type in {
+                "assistant_message",
+                "assistant_message_delta",
+                "tool_calls_started",
+                "tool_result",
+            }:
                 self._view_main_busy = True
                 view = self._safe_query_one("#thread_view", ThreadView)
                 if view is not None and view.thread:
@@ -1724,6 +1790,7 @@ class XBotTextualApp(App[None]):
             await self._flush_tool_refresh()
             self._finalize_activity()
             await self._refresh_changed_tool_widgets()
+            await self._refresh_session_identity()
             refresh_input = True
         elif event_type == "turn_cancelled":
             self._cancel_interaction_response()
@@ -1869,7 +1936,9 @@ class XBotTextualApp(App[None]):
         self._transcript_follow = False
         try:
             async with self._render_lock:
-                stream = self.query_one("#transcript", VerticalScroll)
+                stream = self._safe_query_one("#transcript", VerticalScroll)
+                if stream is None:
+                    return
                 batch_start = max(0, self._window_start - _REPLAY_BATCH)
                 entries = self.state.transcript[batch_start:self._window_start]
                 if not entries:
@@ -1897,7 +1966,9 @@ class XBotTextualApp(App[None]):
     async def _load_newer_replay(self) -> None:
         """Shift the bounded replay window toward the live tail."""
         async with self._render_lock:
-            stream = self.query_one("#transcript", VerticalScroll)
+            stream = self._safe_query_one("#transcript", VerticalScroll)
+            if stream is None:
+                return
             if self._window_end >= len(self.state.transcript):
                 await self._drop_leading_excess(stream, follow=True)
                 return
@@ -1910,7 +1981,9 @@ class XBotTextualApp(App[None]):
 
     async def _render_new_transcript_entries(self) -> bool:
         async with self._render_lock:
-            stream = self.query_one("#transcript", VerticalScroll)
+            stream = self._safe_query_one("#transcript", VerticalScroll)
+            if stream is None:
+                return False
             end = len(self.state.transcript)
             if end <= self._window_end:
                 # Follow the live tail only when the user is already at the

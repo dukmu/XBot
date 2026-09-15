@@ -150,8 +150,7 @@ async def test_invalid_remote_syntax_is_a_notice_not_tui_error() -> None:
 def test_tui_state_applies_protocol_events_and_renders_lines():
     state = TuiState()
     frames = [
-        _frame("hello_ok", {"server_name": "xbotv2"}),
-        _frame("session_ready", {"agent_name": "TestBot"}),
+        _frame("agent_configured", {"agent_name": "TestBot", "provider": "mock"}),
         _frame("turn_started", {"turn": 1}),
         _frame(
             "assistant_message",
@@ -3817,3 +3816,73 @@ async def test_replay_window_scrolls_all_the_way_to_the_beginning():
             guard += 1
             assert guard < 50, "scroll-down never re-mounted the tail"
         assert app._window_end == 300
+
+
+@pytest.mark.asyncio
+async def test_provider_command_keeps_local_picker_and_remote_view():
+    """``/provider`` (no args) opens the client picker the user requires;
+    every other form is forwarded so the server owns list/status rendering."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        _pick_provider = AsyncMock()
+        _dispatch_remote_command = AsyncMock()
+
+    handler = Handler()
+    app = XBotTextualApp
+
+    await app._cmd_provider(handler, CommandSpec(
+        name="provider", kind="client", description="provider", raw="/provider", args="",
+    ))
+    handler._pick_provider.assert_awaited_once()
+    handler._dispatch_remote_command.assert_not_awaited()
+
+    handler._pick_provider.reset_mock()
+    await app._cmd_provider(handler, CommandSpec(
+        name="provider", kind="client", description="provider",
+        raw="/provider list", args="list",
+    ))
+    handler._pick_provider.assert_not_awaited()
+    handler._dispatch_remote_command.assert_awaited_once()
+
+    # The removed client alias is no longer special-cased: it forwards too.
+    handler._dispatch_remote_command.reset_mock()
+    await app._cmd_provider(handler, CommandSpec(
+        name="provider", kind="client", description="provider",
+        raw="/provider ls", args="ls",
+    ))
+    handler._dispatch_remote_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_refresh_applies_the_captioned_title():
+    """The session descriptor is the single source of identity fields: the
+    turn-end refresh makes a title written mid-session (caption) visible."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from XBotv2.tui.client import TuiState
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    handler = SimpleNamespace(
+        session=SimpleNamespace(
+            refresh_descriptor=AsyncMock(return_value={
+                "title": "Python GIL 讨论",
+                "agent_name": "default",
+                "provider": "minimax",
+                "model": "MiniMax-M2",
+                "model_mode": "",
+                "context_window": 200000,
+            }),
+        ),
+        state=TuiState(session_title="session-1"),
+        _refresh_all=Mock(),
+    )
+
+    await XBotTextualApp._refresh_session_identity(handler)
+
+    assert handler.state.session_title == "Python GIL 讨论"
+    assert handler.state.provider == "minimax"
+    assert handler.state.model == "MiniMax-M2"
+    assert handler.state.context_window == 200000
+    handler._refresh_all.assert_called_once()

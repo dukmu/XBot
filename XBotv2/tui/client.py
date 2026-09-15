@@ -144,12 +144,10 @@ class TuiState:
                 if str(name).strip() and str(value).strip()
             }
 
-        if event_type == "hello_ok":
-            self.status = f"Connected to {data.get('server_name') or 'server'}"
-        elif event_type == "session_ready":
-            self.agent_name = str(data.get("agent_name") or self.agent_name)
-            self.status = "Ready"
-        elif event_type == "turn_started":
+        # Handshake/ready state is driven by the connection path
+        # (``_connect``/session snapshot); the protocol emits no
+        # ``hello_ok``/``session_ready``/``status``/``shutdown_ok`` frames.
+        if event_type == "turn_started":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
             self._clear_pending_interactions(tool_status="cancelled")
@@ -289,8 +287,6 @@ class TuiState:
                     f"Automatic compaction failed: {data.get('message') or 'unknown error'}",
                     payload=data,
                 )
-        elif event_type == "status":
-            self.status = str(data.get("text") or data.get("message") or self.status)
         elif event_type == "client_message":
             self.append_notice("client_message", str(data.get("message") or data))
         elif event_type == "permission_request":
@@ -392,8 +388,6 @@ class TuiState:
             self.status = "Error"
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
-        elif event_type == "shutdown_ok":
-            self.status = "Shutdown"
 
     def append_message(self, role: str, content: str) -> None:
         self.messages.append(TuiMessage(role=role, content=content))
@@ -508,8 +502,6 @@ class TuiState:
                 self._changed_tool_ids.add(tool.tool_call_id)
 
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:
-        if self.status == "Shutdown":
-            return
         if (
             self.status in {"Error", "Interrupted", "Permission denied"}
             and not reset_terminal

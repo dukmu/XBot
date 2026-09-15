@@ -8,10 +8,18 @@ config and are served through ``ctx.llm``.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from pydantic import JsonValue
 
+from XBotv2.config.loader import load_plugin_tree
+from XBotv2.config.plugin_catalog import update_plugin_config
+from XBotv2.config.policy import load_session_policy, patch_session_policy
+
+logger = logging.getLogger("xbotv2.config")
+
 from XBotv2.config.contracts import (
+    ConfigPluginConfig,
     PatchPluginConfig,
     PatchPolicy,
     PluginConfigCatalog,
@@ -38,7 +46,6 @@ class ConfigService(SettingsPort):
         workspace_root: Path,
         events: ApplicationEventsPort,
         runtime_log: RuntimeLog,
-        user_context: UserContext | None = None,
         extra_plugins: list[dict[str, JsonValue]] | None = None,
         plugin_dirs: list[Path | str] | None = None,
         is_subagent: bool = False,
@@ -49,20 +56,30 @@ class ConfigService(SettingsPort):
         self.workspace_root = workspace_root
         self.events = events
         self._log = runtime_log.bind("config", session_id=session_id)
-        self._user_context = user_context or UserContext()
         self._extra_plugins = extra_plugins or []
         self._plugin_dirs = plugin_dirs or []
         self._is_subagent = is_subagent
         self._no_plugins = no_plugins
 
     def user_context(self) -> UserContext:
-        return self._user_context
+        """Read the user identity from the live resolved Config declaration.
+
+        Session-scope overlay writes change the resolved tree; returning a
+        construction-time capture made this reader stale while ``policy()``
+        already re-resolved. Both now read the same source at call time.
+        """
+        tree = self.load_plugin_tree(self.workspace_root, self.session_id)
+        entry = tree.entry("config")
+        if entry is None or entry.disabled:
+            raise RuntimeError(
+                "The resolved plugin tree has no enabled 'config' entry; "
+                "cannot resolve the user context"
+            )
+        return ConfigPluginConfig.model_validate(entry.config).user
 
     def load_plugin_tree(
         self, workspace: Path, session_id: str, thread_id: str = "agent"
     ) -> PluginTree:
-        from XBotv2.config.loader import load_plugin_tree
-
         return load_plugin_tree(
             self.paths,
             workspace,
@@ -80,8 +97,6 @@ class ConfigService(SettingsPort):
         return self.paths.memory_file.read_text(encoding="utf-8")
 
     def policy(self) -> PolicySnapshot:
-        from XBotv2.config.policy import load_session_policy
-
         tree = self.load_plugin_tree(self.workspace_root, self.session_id)
         permissions = _entry_config(tree, "permissions")
         sandbox = _entry_config(tree, "sandbox")
@@ -92,8 +107,6 @@ class ConfigService(SettingsPort):
         )
 
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot:
-        from XBotv2.config.policy import patch_session_policy
-
         policy = patch_session_policy(
             paths=self.paths,
             session_id=self.session_id,
@@ -143,8 +156,6 @@ class ConfigService(SettingsPort):
         patch: PatchPluginConfig,
         session_id: str,
     ) -> PluginConfigCatalog:
-        from XBotv2.config.plugin_catalog import update_plugin_config
-
         return update_plugin_config(
             self.paths,
             workspace,
@@ -158,6 +169,17 @@ __all__ = ["ConfigService"]
 
 
 def _entry_config(tree: PluginTree, plugin_id: str) -> dict[str, JsonValue]:
-    """Return one generic plugin declaration without validating its fields."""
+    """Return one generic plugin declaration without validating its fields.
+
+    A missing or disabled entry is reported: an absent policy entry must not
+    look identical to "no overrides", or a typo'd/disabled plugin silently
+    degrades to model defaults.
+    """
     entry = tree.entry(plugin_id)
-    return dict(entry.config) if entry is not None and not entry.disabled else {}
+    if entry is None:
+        logger.info("config.policy.entry.missing plugin=%s", plugin_id)
+        return {}
+    if entry.disabled:
+        logger.info("config.policy.entry.disabled plugin=%s", plugin_id)
+        return {}
+    return dict(entry.config)

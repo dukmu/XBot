@@ -88,11 +88,19 @@ class TestPermissionSystemBasics:
         assert denied.check("edit", arguments) == "allow"
 
     def test_filesystem_write_session_rule_records_only_path(self):
-        rule = permission_rule_for_tool_call(ToolCall(
-            id="call-1",
-            name="edit",
-            args={"path": "notes.md", "mode": "write", "content": "large private document"},
-        ))
+        # The tool owner declares the grant scope; the rule builder reads it
+        # instead of keeping its own copy of the argument vocabulary.
+        from XBotv2.coretools.filesystem import filesystem_tools
+
+        edit_tool = next(tool for tool in filesystem_tools(None) if tool.name == "edit")
+        rule = permission_rule_for_tool_call(
+            ToolCall(
+                id="call-1",
+                name="edit",
+                args={"path": "notes.md", "mode": "write", "content": "large private document"},
+            ),
+            selectors=edit_tool.grant_selectors,
+        )
 
         assert rule == {
             "tool": "edit",
@@ -109,11 +117,17 @@ class TestPermissionSystemBasics:
         ) == "ask"
 
     def test_filesystem_move_rule_records_both_paths_and_overwrite(self):
-        rule = permission_rule_for_tool_call(ToolCall(
-            id="call-1",
-            name="path",
-            args={"operation": "move", "source": "a.txt", "destination": "b.txt", "overwrite": True},
-        ))
+        from XBotv2.coretools.filesystem import filesystem_tools
+
+        path_tool = next(tool for tool in filesystem_tools(None) if tool.name == "path")
+        rule = permission_rule_for_tool_call(
+            ToolCall(
+                id="call-1",
+                name="path",
+                args={"operation": "move", "source": "a.txt", "destination": "b.txt", "overwrite": True},
+            ),
+            selectors=path_tool.grant_selectors,
+        )
 
         assert rule == {
             "tool": "path",
@@ -299,3 +313,30 @@ def _shipped_args(tool_name: str) -> dict[str, Any]:
     if tool_name == "path":
         return {"operation": "mkdir", "path": "notes.md"}
     return {"path": "notes.md"}
+
+
+def test_grant_scope_follows_owner_declaration_not_a_private_copy():
+    """A tool's declared selectors define the grant scope; a tool that
+    declares none constrains every scalar argument (no drift window)."""
+    from XBotv2.permissions.rules import permission_rule_for_tool_call
+
+    # Declared selectors: bulk payload stays out of the rule.
+    declared = permission_rule_for_tool_call(
+        ToolCall(id="c1", name="edit", args={
+            "path": "notes.md", "mode": "write", "content": "big body",
+        }),
+        selectors=("path", "mode"),
+    )
+    assert declared["params"] == {"path": "notes\\.md", "mode": "write"}
+
+    # No declaration: every scalar argument is constrained, so a newly added
+    # argument can never silently widen a previously minted grant.
+    undeclared = permission_rule_for_tool_call(
+        ToolCall(id="c2", name="custom_tool", args={
+            "target": "a", "brand_new_argument": "b",
+        }),
+    )
+    assert undeclared["params"] == {
+        "brand_new_argument": "b",
+        "target": "a",
+    }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -45,6 +46,14 @@ class SandboxPort(Protocol):
         operation: str,
         args: dict[str, JsonValue],
     ) -> dict[str, JsonValue]: ...
+
+    def resolve_read_path(self, path: str) -> Path: ...
+
+    def check_filesystem_access(
+        self,
+        operation: str,
+        args: dict[str, JsonValue],
+    ) -> list[dict[str, JsonValue]]: ...
 
 
 __all__ = [

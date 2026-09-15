@@ -82,22 +82,15 @@ class SandboxPolicy(SandboxPort):
         return rule
 
     def replace_config(self, config: SandboxConfig) -> None:
-        """Replace policy state without invalidating runtime references."""
-        replacement = SandboxPolicy(
-            config,
-            data_root=self.data_root,
-            workspace_root=self.workspace_root,
-            session_root=self.session_root,
-            variables=self.variables,
-        )
-        self.enabled = replacement.enabled
-        self._network = replacement._network
-        self.external_read = replacement.external_read
-        self.external_write = replacement.external_write
-        self.workspace_read = replacement.workspace_read
-        self.workspace_write = replacement.workspace_write
-        self._rules = replacement._rules
-        self._backend = replacement._backend
+        """Replace policy state without invalidating runtime references.
+
+        The single ``_load_config`` loader owns how a config maps onto policy
+        state, so a new ``SandboxConfig`` field can never be forgotten here
+        (the previous hand-copied field list silently kept stale values).
+        """
+        self._rules = []
+        self._load_config(config)
+        self._backend = BubblewrapBackend(self.workspace_root, network=self._network)
 
     # ------------------------------------------------------------------
     # Sandbox capabilities (system I/O isolated via bwrap)
@@ -335,10 +328,16 @@ class SandboxPolicy(SandboxPort):
 
         return self._guard
 
-    def _guard(self, tool_call: ToolCall, _entry: ToolRegistration) -> GuardDecision | None:
+    def _guard(self, tool_call: ToolCall, entry: ToolRegistration) -> GuardDecision | None:
         args = dict(tool_call.args or {})
+        # Escalation is a declared capability of the tool (owner = coretools),
+        # not a hard-coded tool name. The tool refuses to discharge it without
+        # an approval layer, and the pipeline denies it without an
+        # approval-capable guard; here we simply exempt declared escalation
+        # from path checks (an escaped shell runs outside the policy by
+        # definition).
         escalated = (
-            tool_call.name == "shell"
+            getattr(getattr(entry, "tool", None), "escapes_sandbox", False)
             and args.get("sandbox_permissions") == "require_escalated"
         )
         if escalated:

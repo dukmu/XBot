@@ -360,3 +360,55 @@ class TestSanitization:
         sanitized = context_builder._sanitize_history(messages)
         tool_msgs = [m for m in sanitized if m.role == "tool"]
         assert len(tool_msgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_prompt_fragment_registration_outside_apply_fails_loudly():
+    """A static prompt fragment is fiber state: registering one outside a
+    plugin apply() must fail loudly instead of producing an ownerless
+    fragment that nothing can release."""
+    from XBotv2.prompts.plugin import PromptsService
+
+    service = PromptsService(ContextBuilder())
+
+    with pytest.raises(RuntimeError, match="owning fiber"):
+        service.add("context_suffix", "orphan text", source="orphan")
+
+
+@pytest.mark.asyncio
+async def test_subagent_catalog_is_contributed_per_build():
+    """The subagent catalog joins each build's components dynamically, so an
+    unloaded plugin leaves no residual fragment behind."""
+    from XBotv2.context_builder import (
+        CONTEXT_COMPONENTS_BUILT,
+        ContextComponentsBuilt,
+    )
+    from XBotv2.subagents.service import SubagentCatalogPrompt
+
+    class Definition:
+        def __init__(self, name, mode="subagent", hidden=False):
+            self.name = name
+            self.description = f"{name} description"
+            self.mode = mode
+            self.hidden = hidden
+
+    class Catalog:
+        def definitions(self):
+            return (
+                Definition("scout"),
+                Definition("hidden-helper", hidden=True),
+                Definition("primary", mode="primary"),
+            )
+
+    prompt = SubagentCatalogPrompt(Catalog())
+    first = ContextComponentsBuilt(components=[])
+    prompt.contribute(first)
+    assert [c.source for c in first.components] == ["available_subagents"]
+    assert "scout" in first.components[0].content
+    assert "hidden-helper" not in first.components[0].content
+    assert "primary" not in first.components[0].content
+
+    # A later build gets a fresh contribution: no residue from the previous.
+    second = ContextComponentsBuilt(components=[])
+    prompt.contribute(second)
+    assert len(second.components) == 1

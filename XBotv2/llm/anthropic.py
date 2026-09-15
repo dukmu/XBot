@@ -230,7 +230,8 @@ class AnthropicProvider(BaseProvider):
                     metadata = tool_blocks.get(index)
                     if metadata is not None:
                         args = _parse_tool_args(
-                            "".join(tool_json.get(index, []))
+                            "".join(tool_json.get(index, [])),
+                            tool_name=str(metadata.get("name") or ""),
                         )
                         metadata["input"] = args
                         yield ModelChunk(

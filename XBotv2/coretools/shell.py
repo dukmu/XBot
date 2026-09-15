@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 from typing import Literal
@@ -36,6 +37,23 @@ from XBotv2.jobs import (
 )
 from XBotv2.core.tools import Tool, ToolResult
 from XBotv2.sandbox.contracts import SandboxPort
+
+#: Lazily-resolved approval-layer capability. The shell tool discharges
+#: escalation only while an approval layer is active; resolving at call time
+#: keeps the check independent of plugin-tree order.
+ApprovalLayer = Callable[[], object | None] | object | None
+
+
+def _resolve_approval_layer(approval_layer: ApprovalLayer) -> object | None:
+    if callable(approval_layer):
+        return approval_layer()
+    return approval_layer
+
+
+_ESCALATION_UNAVAILABLE = (
+    "Sandbox escape requires an active approval layer; none is mounted "
+    "(enable the permissions plugin)"
+)
 
 
 class ShellCommandError(RuntimeError):
@@ -106,6 +124,7 @@ async def shell(
     sandbox: SandboxPort | None = None,
     job_registry: JobsPort | None = None,
     default_cwd: str | None = None,
+    approval_layer: ApprovalLayer = None,
 ) -> ToolResult:
     """Run a shell command in the foreground, or start one in the background.
 
@@ -141,6 +160,13 @@ async def shell(
                 "invalid_sandbox_request",
                 _ESCALATION_JUSTIFICATION_REQUIRED,
             )
+        if _resolve_approval_layer(approval_layer) is None:
+            # Fail closed: without an approval layer nobody can ever approve
+            # this escape, so the command must not run unsandboxed.
+            return ToolResult.failure(
+                "sandbox_escape_unavailable",
+                _ESCALATION_UNAVAILABLE,
+            )
     if background:
         return await start_shell(
             command,
@@ -150,6 +176,7 @@ async def shell(
             justification=justification,
             sandbox=sandbox,
             job_registry=job_registry,
+            approval_layer=approval_layer,
         )
     active_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
@@ -177,6 +204,7 @@ async def start_shell(
     *,
     sandbox: SandboxPort | None = None,
     job_registry: JobsPort | None = None,
+    approval_layer: ApprovalLayer = None,
 ) -> ToolResult:
     """Start a shell command in the background and return its job ID.
 
@@ -205,6 +233,11 @@ async def start_shell(
             return ToolResult.failure(
                 "invalid_sandbox_request",
                 _ESCALATION_JUSTIFICATION_REQUIRED,
+            )
+        if _resolve_approval_layer(approval_layer) is None:
+            return ToolResult.failure(
+                "sandbox_escape_unavailable",
+                _ESCALATION_UNAVAILABLE,
             )
     if job_registry is None:
         return ToolResult.failure(
@@ -370,25 +403,47 @@ def shell_tools(
     sandbox: SandboxPort | None,
     job_registry: JobsPort,
     default_cwd: str,
+    approval_layer: ApprovalLayer = None,
 ) -> tuple[Tool, ...]:
-    """Build the shell Tools for one session's runtime services."""
+    """Build the shell Tools for one session's runtime services.
+
+    The shell tool declares ``escapes_sandbox`` (its escalating capability);
+    the approval layer is resolved lazily at call time so the mount does not
+    depend on plugin-tree order.
+    """
     bindings = (
         (shell, {
             "sandbox": sandbox,
             "job_registry": job_registry,
             "default_cwd": default_cwd,
+            "approval_layer": approval_layer,
         }),
         (list_shells, {"job_registry": job_registry}),
         (wait_shell, {"job_registry": job_registry}),
         (read_shell, {"job_registry": job_registry}),
         (cancel_shell, {"job_registry": job_registry}),
     )
-    return tuple(
+    tools = tuple(
         replace(
             Tool.from_function(function),
             function=partial(function, **dependencies),
         )
         for function, dependencies in bindings
+    )
+    # Owners declare the model-facing category (all shell tools execute) and
+    # the arguments that define a session grant's scope.
+    return tuple(
+        replace(
+            tool,
+            escapes_sandbox=tool.name == "shell",
+            kind="execute",
+            grant_selectors=(
+                ("command", "cwd", "sandbox_permissions")
+                if tool.name == "shell"
+                else ()
+            ),
+        )
+        for tool in tools
     )
 
 

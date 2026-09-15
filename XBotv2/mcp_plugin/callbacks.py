@@ -12,6 +12,7 @@ from mcp.shared.context import RequestContext
 
 from XBotv2.core import Message, prompt_element
 from XBotv2.interactions.contracts import InteractionsPort
+from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
 from XBotv2.session.contracts import SessionPort
 
@@ -42,13 +43,14 @@ def client_callbacks(
                     message="XBot sampling currently accepts text content only",
                 )
             messages.append(Message(role=message.role, content=text))
-        aggregate: Any = None
-        async for chunk in model.astream(messages):
-            aggregate = _merge_response(aggregate, chunk)
-        if aggregate is None:
+        try:
+            # The llm package owns the single-shot calling convention; MCP
+            # sampling uses it instead of re-implementing the merge loop.
+            aggregate = await invoke_llm(model, messages)
+        except RuntimeError as exc:
             return types.ErrorData(
                 code=-32603,
-                message="Model invocation produced no response",
+                message=str(exc),
             )
         if aggregate.tool_calls:
             return types.ErrorData(
@@ -101,13 +103,6 @@ def client_callbacks(
         "list_roots_callback": roots,
         "logging_callback": log_message,
     }
-
-
-def _merge_response(aggregate: Any, chunk: Any) -> Any:
-    """Merge one provider chunk into an aggregate response."""
-    from XBotv2.core.messages import merge_model_chunk
-
-    return merge_model_chunk(aggregate, chunk)
 
 
 def _sampling_text(content: Any) -> str | None:

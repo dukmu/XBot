@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Literal
 
 from pydantic import JsonValue, TypeAdapter
 
-from XBotv2.client import XBotClient, _thread_path
+from XBotv2.client import XBotClient, thread_path
 from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.protocol import ServerEvent, WireModel
 from XBotv2.session.protocol import SessionMode
@@ -103,9 +103,28 @@ class TerminalSession:
         self._event_cursor = session.event_cursor
         return _dump(session)
 
+    async def refresh_descriptor(self) -> dict[str, JsonValue] | None:
+        """Re-read the open session descriptor (title/agent/provider).
+
+        Same protocol call the WebUI uses to reconcile a live session; the
+        descriptor is the single source of a session's identity fields, so a
+        title written mid-session (caption) becomes visible without inventing
+        a client-only event.
+        """
+        if not self._session_attached:
+            return None
+        session = await self._client.open_session(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            workspace_root=self._workspace_root,
+            mode="resume",
+        )
+        self._event_cursor = session.event_cursor
+        return _dump(session)
+
     async def list_commands(self) -> dict[str, JsonValue]:
         return _dump(await self._client._request(
-            "GET", f"{self._thread_path}/commands", CommandListResponse
+            "GET", f"{self.thread_path}/commands", CommandListResponse
         ))
 
     async def list_sessions(self) -> dict[str, JsonValue]:
@@ -157,7 +176,7 @@ class TerminalSession:
     ) -> dict[str, JsonValue]:
         return _dump(await self._client._request(
             "POST",
-            f"{self._thread_path}/commands",
+            f"{self.thread_path}/commands",
             CommandResponse,
             CommandRequest(command=command, args=args, raw=raw, kind=kind),
         ))
@@ -271,6 +290,41 @@ class TerminalSession:
 
         return _frames()
 
+    async def read_thread_compactions(
+        self,
+        thread_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, JsonValue]]:
+        """Durable compaction summaries of a thread (read-only, lock-free).
+
+        Returns one record per compaction in trajectory order with at least
+        ``position`` and ``summary``, so a resumed client can rebuild the
+        expandable transcript entries the live stream showed earlier.
+        """
+        response = await self._client.list_trajectory(
+            self._session_id,
+            thread_id,
+            cursor=None,
+            limit=limit,
+        )
+        payload = _dump(response)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return []
+        compactions: list[dict[str, JsonValue]] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("kind") != "surface_replace":
+                continue
+            summary = str(item.get("summary") or "")
+            if not summary:
+                continue
+            compactions.append({
+                "position": int(item.get("position") or 0),
+                "summary": summary,
+            })
+        return compactions
+
     async def read_thread_history(
         self,
         thread_id: str,
@@ -330,8 +384,8 @@ class TerminalSession:
         return _dump(await self._client.interrupt(self._session_id, self._thread_id))
 
     @property
-    def _thread_path(self) -> str:
-        return _thread_path(self._session_id, self._thread_id)
+    def thread_path(self) -> str:
+        return thread_path(self._session_id, self._thread_id)
 
     async def _events(
         self,

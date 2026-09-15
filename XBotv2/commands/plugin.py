@@ -7,6 +7,8 @@ registering plugin unloads.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from functools import partial
 from pydantic import JsonValue
 
@@ -37,14 +39,29 @@ from XBotv2.core.operations import EmptyRequest
 class CommandsService(CommandsPort):
     """Plugin-facing command registry with fiber-scoped auto-unregister."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
         self._commands: dict[str, Command] = {}
+        # Composition-level default for registrations made outside a plugin
+        # apply: "fiber" stays loud, "caller" states the composer owns release.
+        self._ownership = ownership
 
-    def register(self, command: Command) -> str:
+    def register(
+        self,
+        command: Command,
+        *,
+        cleanup: Literal["fiber", "caller"] | None = None,
+    ) -> str:
         if command.name in self._commands:
             raise ValueError(f"Command {command.name!r} is already registered")
         self._commands[command.name] = command
-        bound_effect(partial(self.unregister, command.name))
+        if bound_effect(partial(self.unregister, command.name)) is False:
+            if (cleanup or self._ownership) != "caller":
+                # No owner could ever release this command: undo it.
+                self.unregister(command.name)
+                raise RuntimeError(
+                    f"Command {command.name!r} was registered outside a plugin "
+                    "apply(); pass cleanup='caller' when the caller owns release"
+                )
         return command.name
 
     def unregister(self, name: str) -> bool:

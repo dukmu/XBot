@@ -7,6 +7,7 @@ from pydantic import Field
 
 from XBotv2.core.operations import EmptyRequest, dispatch_operation
 from XBotv2.llm.contracts import (
+    LlmSelectionError,
     LIST_PROVIDERS,
     ProviderCatalog,
     SELECT_EFFORT,
@@ -70,9 +71,9 @@ def build_router(*, events: EventPort, sessions: SessionsPort) -> APIRouter:
                 SELECT_PROVIDER,
                 SelectProvider(payload.name, payload.model),
             )
-        except ValueError as exc:
-            code = "model_not_found" if "Unknown model" in str(exc) else "provider_not_found"
-            raise HttpServerError(code, str(exc), status=404) from exc
+        except LlmSelectionError as exc:
+            # The selection error carries the wire code; no message matching.
+            raise HttpServerError(exc.code, str(exc), status=404) from exc
         return ProviderSelectionResponse(
             session_id=session_id,
             thread_id=thread_id,

@@ -858,3 +858,18 @@ async def test_openai_extra_body_merges_vendor_config():
         "thinking": {"type": "enabled", "budget_tokens": 4096},
         "top_p": 0.9,
     }
+
+
+def test_malformed_tool_call_arguments_fail_loudly():
+    """A provider that delivers malformed tool-call arguments must raise at
+    the boundary instead of fabricating empty arguments for the tool."""
+    from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args
+
+    assert _parse_tool_args("") == {}
+    assert _parse_tool_args('{"a": 1}', tool_name="shell") == {"a": 1}
+
+    with pytest.raises(ToolArgumentsError, match="shell"):
+        _parse_tool_args("{not json", tool_name="shell")
+
+    with pytest.raises(ToolArgumentsError, match="JSON object"):
+        _parse_tool_args('["not", "an", "object"]', tool_name="edit")

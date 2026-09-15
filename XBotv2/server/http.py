@@ -26,7 +26,7 @@ from XBotv2.core.runtime_logging import (
     push_log_context,
     reset_log_context,
 )
-from XBotv2.protocol.http_util import HttpServerError, _error_payload
+from XBotv2.protocol.http_util import HttpServerError, error_payload
 from XBotv2.protocol import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.server.contracts import (
@@ -203,7 +203,7 @@ def create_app(
     async def _on_http_error(_: Request, exc: HttpServerError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status,
-            content=_error_payload(
+            content=error_payload(
                 exc.code,
                 exc.message,
                 details=exc.details,
@@ -231,7 +231,7 @@ def create_app(
             status = 400
         return JSONResponse(
             status_code=status,
-            content=_error_payload(
+            content=error_payload(
                 exc.code,
                 exc.message,
                 retryable=exc.retryable,
@@ -244,7 +244,7 @@ def create_app(
     ) -> JSONResponse:
         return JSONResponse(
             status_code=400,
-            content=_error_payload(
+            content=error_payload(
                 "invalid_request",
                 "Request does not match the protocol schema",
                 details={

@@ -41,7 +41,6 @@ class ConfigPlugin:
             session_id=ctx.session_launch.session_id,
             workspace_root=ctx.session_launch.workspace_root,
             events=ctx,
-            user_context=config.user,
             runtime_log=ctx.runtime_log,
             extra_plugins=ctx.plugin_overrides,
             plugin_dirs=ctx.plugin_dirs,

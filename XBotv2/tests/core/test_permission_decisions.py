@@ -119,7 +119,7 @@ async def test_pending_approval_retains_its_payload_for_replay(tmp_path):
             "decision": result.decision,
         }
 
-    router.set_sink(answer_after_probe)
+    router.install(answer_after_probe)
     approval = ApprovalService(events, router, waiter)
     request = ClientEvent(
         type="permission_request",

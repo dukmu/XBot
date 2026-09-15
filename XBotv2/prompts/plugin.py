@@ -27,9 +27,21 @@ class PromptsService(PromptsPort):
         *,
         source: str | None = None,
     ) -> None:
+        """Register one fragment owned by the applying plugin's fiber.
+
+        Static fragments are fiber state: registering outside a plugin
+        ``apply`` would produce an ownerless fragment that nothing ever
+        releases. Dynamic per-build content belongs to
+        ``CONTEXT_COMPONENTS_BUILT`` instead.
+        """
         plugin_name = current_plugin_name()
+        if bound_effect(partial(self.remove, stage, plugin_name)) is False:
+            raise RuntimeError(
+                "Prompt fragments must be registered from within a plugin "
+                f"apply() (no owning fiber for source={source!r}); contribute "
+                "per-build components via CONTEXT_COMPONENTS_BUILT instead"
+            )
         self._builder.register_fragment(stage, plugin_name, text, source=source)
-        bound_effect(partial(self.remove, stage, plugin_name))
 
     def remove(self, stage: PromptFragmentStage, plugin_name: str) -> None:
         self._builder.unregister_fragment(stage, plugin_name)

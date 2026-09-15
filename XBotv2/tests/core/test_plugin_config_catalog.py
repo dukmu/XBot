@@ -95,7 +95,10 @@ def test_session_scope_uses_workspace_as_its_lower_layer(tmp_path):
     )
 
     catalog = plugin_config_catalog(paths, workspace, "session", "session-1")
-    assert catalog.applies_to == "current_session"
+    # Session-scope writes are read live by settings readers, but mounted
+    # plugins keep their config until the next mount, so the catalog reports
+    # the conservative value instead of promising current-session behavior.
+    assert catalog.applies_to == "new_sessions"
     compact = next(item for item in catalog.plugins if item.plugin_id == "compact")
     assert compact.effective_config["automatic"] is False
 
@@ -151,3 +154,45 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
     assert external.config_schema["type"] == "object"
     assert external.config_schema["properties"]["enabled"]["type"] == "boolean"
     assert external.config_schema["additionalProperties"] is False
+
+
+def test_user_context_follows_session_overlay_writes(tmp_path):
+    """The settings service reads the user identity live: a session-scope
+    overlay write is visible without rebuilding the service, matching the
+    freshness policy() already had."""
+    from XBotv2.config.service import ConfigService
+    from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
+    from xcore import Context
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_initial_config(paths)
+
+    service = ConfigService(
+        paths,
+        session_id="s",
+        workspace_root=workspace,
+        events=Context(),
+        runtime_log=DEFAULT_RUNTIME_LOG,
+    )
+    # The resolved tree is the single source of the user context.
+    assert service.user_context().user_name == "User"
+
+    catalog = plugin_config_catalog(paths, workspace, "session", "s")
+    update_plugin_config(
+        paths,
+        workspace,
+        "config",
+        PatchPluginConfig(
+            scope="session",
+            revision=catalog.revision,
+            config={"user": {"user_name": "live-user", "user_id": "live-id"}},
+        ),
+        session_id="s",
+    )
+
+    # Same service instance: the reader re-resolves the overlay.
+    refreshed = service.user_context()
+    assert refreshed.user_name == "live-user"
+    assert refreshed.user_id == "live-id"

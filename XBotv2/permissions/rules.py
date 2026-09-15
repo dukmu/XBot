@@ -42,23 +42,24 @@ def permission_rule_for_tool_call(
     tool_call: ToolCall,
     *,
     workspace: str | None = None,
+    selectors: tuple[str, ...] | None = None,
 ) -> dict[str, JsonValue]:
+    """Mint the rule covering one tool call's authorization scope.
+
+    ``selectors`` are the tool owner's declared scope arguments
+    (``Tool.grant_selectors``); when the owner declares none, every scalar
+    argument is constrained. The permissions package therefore never keeps
+    its own copy of another package's argument vocabulary — a new argument
+    is covered (narrowed) automatically instead of silently widening a
+    previously minted grant.
+    """
     tool_name = tool_call.name
     if not tool_name:
         return {}
     rule: dict[str, JsonValue] = {"tool": re.escape(tool_name)}
     args = effective_args(tool_name, tool_call.args, workspace)
-    if tool_name == "shell":
-        args = {
-            key: value
-            for key, value in args.items()
-            if key in {"command", "cwd", "sandbox_permissions"}
-        }
-    elif tool_name in {"edit", "path"}:
-        retained = {
-            "path", "source", "destination", "overwrite", "recursive", "parents", "mode", "operation"
-        }
-        args = {key: value for key, value in args.items() if key in retained}
+    if selectors:
+        args = {key: value for key, value in args.items() if key in selectors}
     params = {
         key: re.escape(str(value))
         for key, value in sorted(args.items())

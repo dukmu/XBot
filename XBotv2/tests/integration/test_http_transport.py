@@ -79,7 +79,7 @@ class RuntimeApplication:
         self._context = context
         self.driver = driver
         self.events = context
-        self.client_events = SimpleNamespace(set_sink=lambda _sink: None)
+        self.client_events = SimpleNamespace(install=lambda _sink: (lambda: None))
 
     async def status_slots(self):
         return {}

@@ -58,7 +58,11 @@ def plugin_config_catalog(
         scope=scope,
         workspace_root=str(workspace),
         revision=_revision(overlay_path),
-        applies_to="current_session" if scope == "session" else "new_sessions",
+        # Session-scope overlays are read live by the settings service
+        # (policy/user_context), but a mounted plugin keeps the config it
+        # applied with until it is next mounted: the catalog therefore does
+        # not promise current-session application.
+        applies_to="new_sessions",
         plugins=plugins,
     )
 

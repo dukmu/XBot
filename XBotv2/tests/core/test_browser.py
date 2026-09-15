@@ -39,12 +39,10 @@ async def test_browser_open_http_uses_unified_network_guard(tmp_path, artifact_s
         artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
-    )
-
-    result = await browser.open(
-        "https://example.com/page",
         sandbox=NoNetworkSandbox(tmp_path),
     )
+
+    result = await browser.open("https://example.com/page")
 
     assert result.status == "error"
     assert result.error is not None
@@ -168,8 +166,7 @@ async def test_browser_open_accepts_file_url_with_sandbox(tmp_path, artifact_sto
             super().__init__(**kwargs)
             self.opened = ""
 
-        async def _ensure_page(self, sandbox=None):
-            self._sandbox = sandbox
+        async def _ensure_page(self):
             return self
 
         async def goto(self, url, **_kwargs):
@@ -185,12 +182,10 @@ async def test_browser_open_accepts_file_url_with_sandbox(tmp_path, artifact_sto
         artifacts=artifact_store,
         headless=True,
         timeout_seconds=5,
-    )
-
-    result = await browser.open(
-        page.as_uri(),
         sandbox=FakeBrowserSandbox(tmp_path),
     )
+
+    result = await browser.open(page.as_uri())
 
     assert result.status == "success"
     assert browser.opened == "file://" + str(page)
@@ -288,3 +283,23 @@ async def test_web_fetch_follows_redirects_and_limits_response_size():
     assert oversized.error is not None
     assert oversized.error.code == "fetch_failed"
     assert "size limit" in oversized.error.message
+
+
+@pytest.mark.asyncio
+async def test_browser_network_fails_closed_without_sandbox_policy(
+    tmp_path, artifact_store
+):
+    """With no sandbox policy to consult, network access must fail closed
+    instead of silently opening."""
+    browser = BrowserSession(
+        policy=UrlPolicy(),
+        artifacts=artifact_store,
+        headless=True,
+        timeout_seconds=5,
+    )
+
+    result = await browser.open("https://example.com/page")
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert result.error.code == "sandbox_unavailable"

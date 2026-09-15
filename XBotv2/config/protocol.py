@@ -19,6 +19,7 @@ from XBotv2.config.contracts import (
     PluginConfigUnavailable,
     SettingsPort,
 )
+from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import HttpServerError
@@ -107,15 +108,36 @@ def _policy_response(
 def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter:
     router = APIRouter()
 
+    async def _main_thread_id(session_id: str) -> str:
+        """Resolve the session's main thread deterministically.
+
+        ``dispatch_all`` returns every active thread (sorted by id), so
+        taking its first element silently depended on thread-id ordering
+        (e.g. a subagent thread could win). The session-scoped policy route
+        addresses the main thread explicitly.
+        """
+        threads = await sessions.list_threads(session_id)
+        main = next(
+            (thread.thread_id for thread in threads if thread.kind == "main"),
+            "",
+        )
+        if not main:
+            raise OperationError(
+                "thread_not_active",
+                "Session policy requires an active main thread.",
+            )
+        return main
+
     @router.get(
         "/sessions/{session_id}/policy",
         operation_id="get_session_policy",
     )
     async def get_session_policy(session_id: str) -> SessionPolicyResponse:
-        snapshots = await sessions.dispatch_all(
-            session_id, GET_POLICY, EmptyRequest()
+        thread_id = await _main_thread_id(session_id)
+        snapshot = await sessions.dispatch(
+            session_id, thread_id, GET_POLICY, EmptyRequest()
         )
-        return _policy_response(session_id, snapshots[0])
+        return _policy_response(session_id, snapshot)
 
     @router.patch(
         "/sessions/{session_id}/policy",
@@ -125,8 +147,10 @@ def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter
         session_id: str,
         payload: SessionPolicyPatch,
     ) -> SessionPolicyResponse:
-        snapshots = await sessions.dispatch_all(
+        thread_id = await _main_thread_id(session_id)
+        snapshot = await sessions.dispatch(
             session_id,
+            thread_id,
             UPDATE_POLICY,
             PatchPolicy(
                 permissions=dict(payload.permissions) or None,
@@ -135,7 +159,7 @@ def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter
                 remove_sandbox=tuple(payload.remove_sandbox),
             ),
         )
-        return _policy_response(session_id, snapshots[0])
+        return _policy_response(session_id, snapshot)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/plugin-config",

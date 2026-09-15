@@ -9,7 +9,12 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import Message, ModelChunk
+from XBotv2.core.messages import (
+    Message,
+    ModelChunk,
+    ModelResponse,
+    merge_model_chunk,
+)
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.providers import BaseProvider, ModelRequestOptions
 
@@ -90,10 +95,27 @@ class ProviderConfig(BaseModel):
         for candidate in self.models:
             if candidate.model == name:
                 return candidate
-        raise ValueError(
+        raise UnknownModelError(
             f"Unknown model {name!r} for protocol {self.protocol!r}; "
             "configured models: " + ", ".join(m.model for m in self.models)
         )
+
+
+class LlmSelectionError(ValueError):
+    """A provider/model selection failed for a stated, typed reason.
+
+    The wire layer maps ``code`` instead of pattern-matching message text.
+    """
+
+    code = "provider_not_found"
+
+
+class UnknownModelError(LlmSelectionError):
+    code = "model_not_found"
+
+
+class UnknownProviderError(LlmSelectionError):
+    code = "provider_not_found"
 
 
 class LlmConfig(BaseModel):
@@ -151,6 +173,32 @@ class ModelPort(Protocol):
         *,
         options: ModelRequestOptions | None = None,
     ) -> AsyncIterator[ModelChunk]: ...
+
+
+async def invoke_llm(
+    llm: ModelPort,
+    messages: list[Message],
+    *,
+    output_tokens: int | None = None,
+) -> ModelResponse:
+    """Run one unbound auxiliary model call and return the merged response.
+
+    This is the single-shot calling convention over any ``ModelPort`` for
+    auxiliary requests that never enter the conversation (compaction
+    summaries, session captions). The loop's own streaming remains the
+    port's ``astream``; providers implement nothing extra for this.
+    """
+    aggregate: ModelResponse | None = None
+    options = (
+        ModelRequestOptions(max_output_tokens=max(1, int(output_tokens)))
+        if output_tokens is not None
+        else None
+    )
+    async for chunk in llm.astream(messages, options=options):
+        aggregate = merge_model_chunk(aggregate, chunk)
+    if aggregate is None:
+        raise RuntimeError("Auxiliary model call produced no response")
+    return aggregate
 
 
 class LlmServicePort(LlmCatalogPort, Protocol):
@@ -226,6 +274,9 @@ SELECT_EFFORT = Operation(
 
 __all__ = [
     "LlmConfig",
+    "LlmSelectionError",
+    "UnknownModelError",
+    "UnknownProviderError",
     "EffortSelection",
     "LIST_PROVIDERS",
     "LlmCatalogPort",
@@ -239,4 +290,5 @@ __all__ = [
     "SELECT_PROVIDER",
     "SelectEffort",
     "SelectProvider",
+    "invoke_llm",
 ]

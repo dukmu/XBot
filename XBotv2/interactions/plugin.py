@@ -4,7 +4,7 @@ Provides ``ctx.interactions`` — the in-memory coordination for model-facing
 interaction requests (``ask_user`` input).  The service owns one
 ``InteractionWaiter`` per engine turn, exposes the submit/cancel/pending
 surface the session uses, and routes blocking ``user_input_required``
-events through an installable live sink (the protocol) or the waiter.
+events through the installed live sink (the protocol) or the waiter.
 """
 
 from __future__ import annotations
@@ -19,10 +19,11 @@ from XBotv2.interactions import UserInputRequiredData
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
 from XBotv2.core.tools import ClientEvent
+from XBotv2.interactions.tools import build_ask_user_tool, send_message
 
 
 class InteractionsService(InteractionsPort):
-    """Per-engine interaction coordination with an installable event sink."""
+    """Per-engine interaction coordination with an installed event sink."""
 
     def __init__(
         self,
@@ -54,9 +55,9 @@ class InteractionsService(InteractionsPort):
     ) -> dict[str, JsonValue]:
         """Publish and resolve one user-input request owned by this plugin.
 
-        The caller owns ``CLIENT_EVENT`` dispatch (the tool pipeline emits
-        it alongside the tool message).  This service only routes the event
-        through the installed live sink (preferred) or the fallback waiter.
+        The event travels on the turn stream itself (the tool pipeline yields
+        it alongside the tool message). This service only routes it through
+        the installed live sink (preferred) or the fallback waiter.
         Without a live sink the request fails closed to ``unsupported`` so
         the turn never hangs on a client that cannot answer.  Returns the
         answered dict (``status=answered`` with the answer, or a closed
@@ -76,10 +77,6 @@ class InteractionsService(InteractionsPort):
         client_event = ClientEvent(
             type="user_input_required",
             data=payload.model_dump(),
-        )
-        await self._events.emit(
-            Events.CLIENT_EVENT,
-            EventContext(client_event=client_event),
         )
         sink_result = await self._client_events.request(
             client_event,
@@ -118,8 +115,6 @@ class InteractionsComponent:
         ctx.dispose(ctx.client_events.register_waiter(
             "user_input_required", service.waiter
         ))
-        from XBotv2.interactions.tools import build_ask_user_tool, send_message
-
         ctx.tools.register(send_message)
         if ctx.session_launch.interactive:
             ctx.tools.register(build_ask_user_tool(service))

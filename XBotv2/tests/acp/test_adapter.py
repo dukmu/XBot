@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 import socket
 from types import SimpleNamespace
 from typing import Any
@@ -512,3 +513,32 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         "hello",
         "real runtime",
     ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_is_released_when_the_session_stream_ends() -> None:
+    """A session stream that ends without a turn terminal frame must release
+    the active prompt instead of hanging its waiter and the prompt slot."""
+    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
+    from XBotv2.acp_plugin.events import ACPEventMapper
+
+    class ThreadSummary:
+        context_window = 4096
+
+    class Sessions:
+        async def thread_summary(self, session_id, thread_id):
+            del session_id, thread_id
+            return ThreadSummary()
+
+    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
+    agent._active_prompts["s"] = prompt
+
+    async def empty_stream():
+        if False:  # pragma: no cover - an async generator with no frames
+            yield None
+
+    await agent._forward_session_events("s", empty_stream())
+
+    assert prompt.completed.is_set()
+    assert isinstance(prompt.failure, RuntimeError)

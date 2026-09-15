@@ -25,6 +25,7 @@ from XBotv2.core.providers import BaseProvider, ModelRequestOptions
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import Message, ModelChunk
 from XBotv2.llm.contracts import (
+    UnknownProviderError,
     LlmServicePort,
     ModelDescription,
     ModelPort,
@@ -124,7 +125,7 @@ class LlmService(LlmServicePort):
         raw = self._providers.get(name)
         if raw is None:
             available = ", ".join(self.names()) or "(none)"
-            raise ValueError(
+            raise UnknownProviderError(
                 f"Unknown provider config: {name}. "
                 f"Configured providers: {available}."
             )
