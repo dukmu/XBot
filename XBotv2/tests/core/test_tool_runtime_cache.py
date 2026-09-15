@@ -24,7 +24,7 @@ from XBotv2.interactions.tools import build_ask_user_tool
 from XBotv2.agentloop.engine import Engine
 from XBotv2.context_builder.plugin import ContextBuilderComponent
 import xcore
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import AgentInbox, EventContext, Events
 from XBotv2.session import SessionInfo
 from XBotv2.agentloop import LoopSettings, LoopState
 from XBotv2.core.messages import Message
@@ -276,7 +276,7 @@ async def test_live_permission_allow_executes_current_tool_call(temp_workspace):
 
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
-    client_events.set_sink(approve)
+    client_events.install(approve)
     approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
@@ -313,7 +313,7 @@ async def test_builtin_ask_user_rejects_empty_or_unstructured_options() -> None:
 
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
-    client_events.set_sink(answer)
+    client_events.install(answer)
     interactions = InteractionsService(service_ctx, client_events)
     registry = ToolRegistry()
     registry.register(build_ask_user_tool(interactions))
@@ -550,7 +550,7 @@ async def test_shell_can_request_sandbox_escalation_before_execution(tmp_path):
 
     service_ctx = xcore.Context()
     client_events = ClientEventRouter()
-    client_events.set_sink(approve)
+    client_events.install(approve)
     approval = ApprovalService(service_ctx, client_events, InteractionWaiter())
     ctx = make_tool_ctx(
         registry,
@@ -897,6 +897,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
     )
     ContextBuilderComponent().apply(plugin_ctx)
     state = LoopState(
+        plugin_ctx,
         session=SessionInfo(
             session_id=state_store.session_id,
             thread_id=state_store.thread_id,
@@ -914,6 +915,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
         events=plugin_ctx,
         state=state,
         settings=LoopSettings(provider="default", workspace=str(temp_workspace)),
+        inbox=AgentInbox(),
     )
 
     events = [e async for e in engine.run_turn("run large")]

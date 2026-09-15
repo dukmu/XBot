@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 from xcore import Context
-from XBotv2.agentloop import LoopState
+from XBotv2.agentloop import AgentInbox, LoopState, ctx_splice_recorder
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
@@ -35,7 +35,14 @@ _MANAGER_DEPENDENCIES = {
 
 
 class SessionRuntimeComponent:
-    inject = ["runtime_paths", "session_launch", "commands", "artifacts"]
+    inject = {
+        # ``artifacts`` is not read here, but the inject dependency set
+        # determines the scope this callback mounts into: dropping it mounts
+        # the runtime component before the session scope owns
+        # ``workspace_root`` and duplicates that registration.
+        "required": ["runtime_paths", "session_launch", "commands", "artifacts"],
+        "optional": ["thread_persistence"],
+    }
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
@@ -61,8 +68,24 @@ class SessionRuntimeComponent:
             workspace_root=str(workspace_root),
             provider="default",
         )
-        state = LoopState(session=info, variables=variables)
-        artifacts = ctx.artifacts
+        persistence = ctx.get("thread_persistence", strict=False)
+        # The loop state and its metadata register themselves on the context
+        # at construction; the inbox service (durable or transient) is composed
+        # separately and the loop driver requires it as a constructor argument,
+        # so availability, not plugin-tree order, decides when the engine can
+        # be built.
+        state = LoopState(
+            ctx,
+            session=info,
+            variables=variables,
+        )
+        if persistence is None:
+            # No durable store: a transient inbox keeps the loop self-contained
+            # while still handing ``agent_inbox`` to the engine composition,
+            # which depends on it whenever it mounts.
+            ctx.set("agent_inbox", AgentInbox(
+                record_splice=ctx_splice_recorder(ctx),
+            ))
         session = Session(
             events=ctx,
             info=info,
@@ -78,8 +101,10 @@ class SessionRuntimeComponent:
         ctx.set("data_root", data_root)
         ctx.set("variables", variables)
         ctx.set("thread_paths", thread_paths)
-        ctx.set("loop_state", state)
-        for command in build_session_commands(session):
+        for command in build_session_commands(
+            session,
+            pending_input_count=lambda: ctx.engine.pending_input_count,
+        ):
             ctx.commands.register(command)
 
 

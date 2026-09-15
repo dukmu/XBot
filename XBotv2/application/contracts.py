@@ -68,10 +68,7 @@ class ClientEventSink(Protocol):
 
 
 class ClientEventsPort(Protocol):
-    def set_sink(
-        self,
-        sink: ClientEventSink | None,
-    ) -> ClientEventSink | None: ...
+    def install(self, sink: ClientEventSink | None) -> Callable[[], None]: ...
 
     async def request(
         self,

@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import Field, JsonValue, model_validator
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
-    _error_payload,
+    error_payload,
     _sse_response,
     HttpServerError,
     _format_sse,
@@ -30,7 +30,7 @@ from XBotv2.permissions import PermissionResponseRequest
 from XBotv2.protocol import ErrorEventData, WireModel
 from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationPage
-from XBotv2.core.tools import ClientEvent, _validated_client_event
+from XBotv2.core.tools import ClientEvent, validated_client_event
 from XBotv2.core.timing import SessionStats, conversation_stats
 from XBotv2.server import ModelOverride, ServerOptions
 from XBotv2.session.contracts import SessionsPort
@@ -231,7 +231,7 @@ def session_event(
     data: dict[str, JsonValue],
 ) -> ClientEvent:
     """Validate one Session-owned event at its producer boundary."""
-    return _validated_client_event(type, data, _SESSION_EVENT_MODELS[type])
+    return validated_client_event(type, data, _SESSION_EVENT_MODELS[type])
 
 
 def session_error_event(
@@ -241,7 +241,7 @@ def session_error_event(
     details: dict[str, JsonValue] | None = None,
 ) -> ClientEvent:
     """Validate a Session-produced generic error event."""
-    return _validated_client_event(
+    return validated_client_event(
         "error",
         {"code": code, "message": message, "details": details or {}},
         ErrorEventData,
@@ -407,7 +407,7 @@ async def _session_not_found(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=404,
-        content=_error_payload("session_not_found", str(exc)),
+        content=error_payload("session_not_found", str(exc)),
     )
 
 
@@ -416,7 +416,7 @@ async def _thread_not_active(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=409,
-        content=_error_payload("thread_not_active", str(exc), retryable=True),
+        content=error_payload("thread_not_active", str(exc), retryable=True),
     )
 
 

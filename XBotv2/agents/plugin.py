@@ -37,7 +37,6 @@ _CATALOG_DEPENDENCIES = [
     "data_root",
     "variables",
     "workspace_root",
-    "session_launch",
 ]
 _RUNTIME_DEPENDENCIES = [
     "agent_catalog",
@@ -48,6 +47,10 @@ _RUNTIME_DEPENDENCIES = [
     "tools",
     "artifacts",
     "loop_state",
+    # The durable inbox is composed by the persistence hydrate; requiring it
+    # here builds the engine only after restored input is on hand, with no
+    # reliance on plugin-tree order.
+    "agent_inbox",
     "commands",
     "agent_options",
     "runtime_log",
@@ -87,6 +90,7 @@ async def mount_runtime(ctx: Context) -> None:
         model=ctx.model,
         tools=ctx.tools,
         artifacts=ctx.artifacts,
+        inbox=ctx.agent_inbox,
         runtime_log=ctx.runtime_log,
     )
     ctx.set("agent_runtime", service)

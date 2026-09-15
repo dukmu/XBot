@@ -93,7 +93,7 @@ class Session:
     def provider(self) -> str:
         return self.state.session.provider
 
-    def status(self) -> SessionStatus:
+    def status(self, *, pending_input_count: int) -> SessionStatus:
         return SessionStatus(
             session_id=self.session_id,
             thread_id=self.thread_id,
@@ -107,7 +107,7 @@ class Session:
             resumed=self.state.resumed,
             turn_count=self.state.turn_count,
             message_count=len(self.state.history),
-            pending_inputs=len(self.state.inbox_items),
+            pending_inputs=pending_input_count,
         )
 
     async def fork(self) -> str:
@@ -120,11 +120,14 @@ class Session:
     # -- history mutations --------------------------------------------------
 
     async def clear_history(self) -> int:
-        """Remove every user turn; caller owns idle-check and turn lock."""
+        """Remove every user turn; caller owns idle-check and turn lock.
+
+        The lifetime turn counter is intentionally preserved (like
+        ``SessionStats``); only the visible surface is cleared.
+        """
         history = self.state.history
         removed = sum(message.role == "user" for message in history)
         history.clear()
-        self.state._update_turn_count()
         await self._announce_history_change("clear")
         return removed
 
@@ -137,7 +140,6 @@ class Session:
                 "invalid_undo_count",
                 str(exc),
             ) from exc
-        self.state._update_turn_count()
         await self._announce_history_change("undo", count)
         return list(messages)
 
@@ -165,7 +167,6 @@ class Session:
             (),
             operation="regenerate",
         )
-        self.state._update_turn_count()
         await self._announce_history_change("regenerate", 1)
         return message
 

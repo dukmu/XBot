@@ -17,7 +17,6 @@ from xcore import Context
 
 from XBotv2.application.boot import boot_application
 from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.metadata import ThreadMetadataState
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.session_lock import (
     SessionOwnership,
@@ -167,16 +166,9 @@ async def start_application(
         "client_events": ClientEventRouter(parent=client_events),
         "child_applications": children,
         "artifacts": artifacts,
-        (
-            "thread_persistence"
-            if thread_persistence is not None
-            else "thread_metadata"
-        ): (
-            thread_persistence
-            if thread_persistence is not None
-            else ThreadMetadataState()
-        ),
     }
+    if thread_persistence is not None:
+        services["thread_persistence"] = thread_persistence
 
     ownership: SessionOwnership | None = None
     try:

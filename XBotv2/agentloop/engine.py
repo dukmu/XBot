@@ -35,6 +35,7 @@ from XBotv2.agentloop.inbox import AgentInbox
 from XBotv2.agentloop.protocol import agentloop_event
 from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
 from XBotv2.agentloop.contracts import (
+    runtime_input_value,
     DEFAULT_MAX_ITERATIONS,
     LoopSettings,
     LoopSettingsUpdate,
@@ -95,13 +96,7 @@ def _runtime_input(
     metadata: dict[str, JsonValue] | None,
 ) -> dict[str, JsonValue]:
     """Retain display provenance without copying private inbox payloads."""
-    if source == "user":
-        return {}
-    values = metadata or {}
-    event = values.get("kind")
-    if not isinstance(event, str) or not event:
-        event = "continuation" if values.get("continuation") else "injected"
-    return {"runtime_input": {"source": source, "event": event}}
+    return runtime_input_value(source, metadata)
 
 
 @dataclass(slots=True)
@@ -227,6 +222,7 @@ class Engine(AgentLoopDriverPort):
         settings: LoopSettings,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
+        inbox: AgentInbox,
     ) -> None:
         self.model_client = model_client
         self.tools = tools
@@ -235,11 +231,7 @@ class Engine(AgentLoopDriverPort):
         self.settings = settings
         self.max_iterations = max_iterations
         self._log = runtime_log.bind("engine")
-        self.inbox = AgentInbox(
-            items=state.inbox_items,
-            sink=state.inbox_sink,
-            record_splice=self._record_inbox_splice,
-        )
+        self.inbox = inbox
         self.continuation: bool = False
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -275,8 +267,12 @@ class Engine(AgentLoopDriverPort):
     ) -> Any:
         """Dispatch one runtime event on the plugin context.
 
-        Short-circuit events use ``ctx.serial`` (first non-``None`` result is
-        interpreted by the caller); observer events use ``ctx.emit``.
+        Short-circuit events use ``ctx.serial``: listeners run in registration
+        order and the first non-``None`` dict answer wins, so later listeners
+        do not run. Independent observers of a short-circuit event must
+        therefore register with ``prepend=True`` (they never answer) — that
+        is the explicit priority contract for these events; observers of
+        non-short-circuit events use ``ctx.emit`` and all run.
         """
         if short_circuit is None:
             short_circuit = event in SHORT_CIRCUIT_EVENTS
@@ -316,7 +312,6 @@ class Engine(AgentLoopDriverPort):
 
     async def _resume_loaded_state(self) -> None:
         self._close_interrupted_tool_calls("session_restarted")
-        self.session.turn_count = self.turn_count
         ctx = self._make_event_context()
         await self._dispatch(Events.SESSION_RESUME, ctx, short_circuit=False)
         await self._publish_state_change()
@@ -368,6 +363,11 @@ class Engine(AgentLoopDriverPort):
             results = list(after_result["tool_results"])
         return results
 
+    def _tool_kind(self, name: str) -> str:
+        """Read the tool owner's declared model-facing category."""
+        tool = self.tools.resolve(name) if name else None
+        return str(getattr(tool, "kind", "") or "other")
+
     async def _record_inbox_splice(self, event: InboxSplice) -> None:
         """Publish an inbox mutation before its live projection changes."""
         await self._dispatch(
@@ -375,9 +375,6 @@ class Engine(AgentLoopDriverPort):
             self._make_event_context(inbox_splice=event),
             short_circuit=False,
         )
-
-    def set_wake_driver(self, wake_driver: Callable[[], None] | None) -> None:
-        self.inbox.set_wake_driver(wake_driver)
 
     async def followup(
         self,
@@ -900,7 +897,14 @@ class Engine(AgentLoopDriverPort):
             "tool_calls_started",
             {
                 "tool_calls": [
-                    call.model_dump(mode="json") for call in tool_calls
+                    {
+                        **call.model_dump(mode="json"),
+                        # The owning package declares the model-facing
+                        # category; clients (ACP) render it directly instead
+                        # of re-deriving a taxonomy from tool names.
+                        "kind": self._tool_kind(call.name),
+                    }
+                    for call in tool_calls
                 ]
             },
         )
@@ -946,12 +950,8 @@ class Engine(AgentLoopDriverPort):
         ):
             client_events = message.client_events
             for client_event in client_events:
-                event_ctx = self._make_event_context(tool_result=message,
-                    client_event=client_event,
-                )
-                await self._dispatch(Events.CLIENT_EVENT, event_ctx,
-                    short_circuit=False,
-                )
+                # Client events travel on the turn stream itself; there is no
+                # separate listener on a bus channel that nobody subscribes to.
                 yield client_event.model_dump(mode="json")
             yield agentloop_event("tool_result", event_payload)
 
@@ -1549,7 +1549,6 @@ class Engine(AgentLoopDriverPort):
 
         if new_turn:
             self.turn_count += 1
-            self.session.turn_count = self.turn_count
         self.messages.append(Message(
             role="user",
             content=user_input,

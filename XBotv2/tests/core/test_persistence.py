@@ -1,15 +1,21 @@
 """Conversation history and strict thread persistence tests."""
 
+import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import xcore
 
 from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.history import ConversationHistory, TrajectoryTransaction
 from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
+from XBotv2.core.metadata import (
+    THREAD_METADATA_CHANGED,
+    ThreadMetadata,
+    ThreadMetadataState,
+)
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.tools import ToolCall
@@ -359,6 +365,42 @@ class TestMessageHistoryStore:
         reopened.history.record("compaction/end", {"compaction_id": "c1"})
         assert reopened.history.open_transactions(TEST_TRANSACTION) == frozenset()
 
+    def test_trajectory_replay_carries_the_durable_compaction_summary(self, tmp_path):
+        """A replayed compaction shows its summary, with one durable copy.
+
+        The replacement record is a system prompt container, so it is absent
+        from the human transcript replay; the boundary derives the summary
+        text for clients from that single durable copy.
+        """
+        from XBotv2.compact.summary import compacted_message
+        from XBotv2.session.contracts import trajectory_replay
+
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="first question")])
+        nodes = persistence.history.replace_surface(
+            [str(persistence.history.load_surface()[0].node_id)],
+            [compacted_message("Kept decisions and open questions.", reason="manual")],
+            operation="compact:abc123",
+            preserve_transcript=True,
+        )
+        assert len(nodes) == 1
+
+        page = persistence.history.page_trajectory(limit=50)
+        replayed = trajectory_replay(page)
+        replacements = [
+            item for item in replayed.items if item.kind == "surface_replace"
+        ]
+
+        assert len(replacements) == 1
+        assert replacements[0].summary == "Kept decisions and open questions."
+        # The system prompt container never leaks into the transcript replay.
+        assert replacements[0].messages == ()
+        records = _raw_records(persistence)
+        assert sum(
+            "Kept decisions and open questions." in json.dumps(record)
+            for record in records
+        ) == 1
+
     def test_compact_preserves_transcript_cursor_but_invalidates_surface_cursor(
         self,
         tmp_path,
@@ -618,9 +660,16 @@ class TestThreadMetadataStore:
 
     def test_metadata_state_persists_each_typed_replacement(self, tmp_path):
         persistence = thread_persistence(tmp_path)
-        state = ThreadMetadataState(persistence.metadata.load())
-        state.observe(
-            lambda _previous, current: persistence.metadata.save(current)
+        ctx = xcore.Context()
+        state = ThreadMetadataState(
+            ctx,
+            session_id="s",
+            thread_id="t",
+            value=persistence.metadata.load(),
+        )
+        ctx.on(
+            THREAD_METADATA_CHANGED,
+            lambda change: persistence.metadata.save(change.current),
         )
         selected = ThreadMetadata(
             provider="mock",
@@ -629,29 +678,35 @@ class TestThreadMetadataStore:
             workspace_root="/workspace",
         )
 
-        state.replace(selected)
+        asyncio.run(state.replace(selected))
 
         assert state.value == selected
         assert persistence.metadata.load() == selected
 
-    def test_metadata_state_announces_every_change_generically(self, tmp_path):
-        """Observers see whole values; field semantics belong to them."""
-        state = ThreadMetadataState()
+    def test_metadata_state_announces_every_change_generically(self):
+        """Subscribers see whole values; field semantics belong to them."""
+        ctx = xcore.Context()
+        state = ThreadMetadataState(ctx, session_id="s", thread_id="t")
         seen: list[tuple[ThreadMetadata, ThreadMetadata]] = []
-        dispose = state.observe(lambda previous, current: seen.append((previous, current)))
+        dispose = ctx.on(
+            THREAD_METADATA_CHANGED,
+            lambda change: seen.append((change.previous, change.current)),
+        )
 
-        state.update(title="first")
-        state.update(provider="mock")
-        state.replace(state.value)          # same value: no event
+        async def _drive() -> None:
+            await state.update(title="first")
+            await state.update(provider="mock")
+            await state.replace(state.value)          # same value: no event
+            dispose()
+            await state.update(title="after dispose")
+
+        asyncio.run(_drive())
 
         assert [(p.title, c.title) for p, c in seen] == [
             ("", "first"),
             ("first", "first"),
         ]
         assert seen[1][1].provider == "mock"
-
-        dispose()
-        state.update(title="after dispose")
         assert len(seen) == 2
 
 
@@ -781,3 +836,29 @@ class TestLazyPersist:
         assert not persistence.has_persisted_state()
         persistence.history.append([Message(role="user", content="hi")])
         assert persistence.has_persisted_state()
+
+    def test_write_through_after_evidence_never_resurrects_a_buffered_snapshot(
+        self, tmp_path,
+    ):
+        """A caption-style write order must keep the newest value durable.
+
+        The first metadata save happens while the thread has no message yet
+        (buffered); the first message then makes the thread durable, a later
+        metadata write passes through, and the explicit materialize at the
+        first TURN_END must not overwrite it with the older buffered value.
+        """
+        persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
+        persistence.metadata.save(ThreadMetadata(
+            provider="mock",
+            model="mock-1",
+            title="",
+        ))
+        persistence.history.append([Message(role="user", content="hi")])
+        persistence.metadata.save(ThreadMetadata(
+            provider="mock",
+            model="mock-1",
+            title="captioned title",
+        ))
+        persistence.materialize()
+
+        assert persistence.metadata.load().title == "captioned title"

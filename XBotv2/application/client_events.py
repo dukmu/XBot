@@ -1,7 +1,8 @@
 """Application-owned routing for live client events.
 
 Feature services publish their own event payloads and register their own
-waiters. Transports install one sink here instead of discovering every
+waiters. Transports install one live sink through ``install`` (which
+returns its disposer) instead of discovering every
 feature plugin that may need a client response.
 """
 
@@ -26,10 +27,21 @@ class ClientEventRouter(ClientEventsPort):
         self._waiters: dict[str, InteractionWaiterPort] = {}
         self._pending: dict[str, ClientEvent] = {}
 
-    def set_sink(self, sink: ClientEventSink | None) -> ClientEventSink | None:
+    def install(self, sink: ClientEventSink | None) -> Callable[[], None]:
+        """Install one live sink and return its disposer.
+
+        The installer owns the disposer, so restoring the previous sink is a
+        single idempotent call instead of a manual save/restore dance on a
+        shared field.
+        """
         previous = self._sink
         self._sink = sink
-        return previous
+
+        def dispose() -> None:
+            if self._sink is sink:
+                self._sink = previous
+
+        return dispose
 
     async def request(
         self,

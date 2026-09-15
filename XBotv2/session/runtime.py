@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import aclosing, asynccontextmanager, nullcontext
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -23,6 +22,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.timing import conversation_stats
+from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
 from XBotv2.core.paths import RuntimePaths
 from pydantic import JsonValue
 
@@ -147,8 +147,6 @@ class SessionRuntime(SessionPort):
     last_activity: float = field(default_factory=time.monotonic)
     _wakeup_requested: bool = False
     _active_router: "TurnEventRouter | None" = field(default=None, init=False)
-    # Releases the metadata observer the session manager installs.
-    _metadata_dispose: Callable[[], None] | None = field(default=None, init=False)
     _log: RuntimeLog = field(init=False)
 
     def __post_init__(self) -> None:
@@ -157,7 +155,6 @@ class SessionRuntime(SessionPort):
             session_id=self.session_id,
             thread_id=self.thread_id,
         )
-        self.engine.set_wake_driver(self._request_wakeup)
         self.touch()
         events = self.application.events
         events.on(Events.INBOX_SPLICE, self._on_inbox_splice)
@@ -214,6 +211,10 @@ class SessionRuntime(SessionPort):
         payload = event.inbox_splice
         if payload is None:
             return
+        if payload.wake:
+            # The producer declares the wake intent; the runtime owns whether
+            # and when the loop actually runs.
+            self._request_wakeup()
         splice_event = ClientEvent(
             type="agent/inbox/spliced",
             data=payload.model_dump(mode="json"),
@@ -609,12 +610,13 @@ async def _live_interaction_sink(
     runtime: SessionRuntime,
     router: TurnEventRouter,
 ) -> AsyncIterator[None]:
-    client_events = runtime.application.client_events
-    previous = client_events.set_sink(router.live_sink)
+    # Installing the turn's live sink returns its disposer: the runtime owns
+    # release, so the shared router is never left swapped.
+    dispose = runtime.application.client_events.install(router.live_sink)
     try:
         yield
     finally:
-        client_events.set_sink(previous)
+        dispose()
 
 
 async def _execute_turn(

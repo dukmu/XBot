@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from XBotv2.commands import (
     Command,
     CommandResult,
@@ -12,11 +14,17 @@ from XBotv2.commands import (
 from XBotv2.session.contracts import SessionPort
 
 
-def build_session_commands(session: SessionPort) -> tuple[Command, ...]:
+def build_session_commands(
+    session: SessionPort,
+    *,
+    pending_input_count: Callable[[], int],
+) -> tuple[Command, ...]:
     async def status_command(raw_args: str) -> CommandResult:
         if raw_args.strip():
             return command_usage("/status")
-        status = session.status()
+        # The engine is the single owner of pending input state; the command
+        # asks it live instead of projecting a frozen snapshot.
+        status = session.status(pending_input_count=pending_input_count())
         return CommandResult("\n".join((
             "Session",
             f"  ID: {status.session_id}",

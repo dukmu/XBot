@@ -85,6 +85,24 @@ def validate_mounted_tree(
         if handle.state is FiberState.FAILED:
             assert handle.error is not None
             raise handle.error
+    # Nested inject mounts (capability mounts such as subagents, skills, or
+    # HTTP contributions) may legitimately stay pending when a composition
+    # does not need them (e.g. headless runs without a server). They are
+    # reported distinguishably so a typo'd dependency ("blocked") is not
+    # silently indistinguishable from "not needed".
+    blocked_nested = [
+        handle for handle in nested
+        if handle.state is not FiberState.RUNNING
+    ]
+    if blocked_nested:
+        logger.info(
+            "plugin.activation.deferred nested=%s",
+            ", ".join(
+                f"{handle.name}(state={handle.state.value}, "
+                f"missing={list(handle.missing_dependencies)})"
+                for handle in blocked_nested
+            ),
+        )
     for entry_id, handle in handles.items():
         if handle.state is not FiberState.RUNNING:
             logger.error(

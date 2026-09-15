@@ -5,9 +5,11 @@ from __future__ import annotations
 from pydantic import JsonValue
 from xcore import Context
 
-from XBotv2.agentloop import Events
+from XBotv2.agentloop import AgentInbox, Events, ctx_splice_recorder
 from XBotv2.core.history import ConversationHistory
+from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
 from XBotv2.core.paths import SessionPaths
+from XBotv2.core.timing import conversation_stats
 from XBotv2.persistence.store import (
     DeferredThreadMetadataStore,
     ThreadMetadataStore,
@@ -22,6 +24,15 @@ def _materialize_after_first_turn(persistence: ThreadPersistence):
         persistence.materialize()
 
     return _hook
+
+
+def _save_metadata(store: ThreadMetadataStore | DeferredThreadMetadataStore):
+    """Durable subscriber of the metadata fact: write every accepted change."""
+
+    def _on_changed(change: ThreadMetadataChanged) -> None:
+        store.save(change.current)
+
+    return _on_changed
 
 
 def thread_persistence_factory(
@@ -43,7 +54,7 @@ class ThreadPersistenceComponent:
     inject = ["loop_state", "thread_persistence", "runtime_log"]
     name = "xbot.persistence"
 
-    def apply(
+    async def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
         state = ctx.loop_state
@@ -55,18 +66,31 @@ class ThreadPersistenceComponent:
         }
         pending_inputs = persistence.inbox.reconcile(committed_input_ids)
         state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
+        # Restore the lifetime turn counter from the durable surface once:
+        # compaction folds ``SessionStats`` (including turns) into the summary
+        # message, so this value survives compaction and restart. History
+        # mutations never recompute it.
+        state.restore_turn_count(conversation_stats(messages).turns)
         if state.resumed is False and isinstance(
             persistence.metadata, DeferredThreadMetadataStore
         ):
             ctx.on(Events.TURN_END, _materialize_after_first_turn(persistence))
-        state.resumed = persistence.has_persisted_state()
-        # Durability is one observer of the metadata value, not a private
-        # hook inside it: the state owns the value, persistence reacts to it.
-        state.metadata.replace(persistence.metadata.load())
-        state.metadata.observe(_save_metadata(persistence.metadata))
-        state.inbox_items = pending_inputs
-        state.inbox_sink = persistence.inbox
-        state.session.provider = persistence.provider
+        state.restore_resumed(persistence.has_persisted_state())
+        # The durable inbox is composed here and handed to the loop driver at
+        # construction, so its availability, not plugin-tree order, decides
+        # when the engine can be built.
+        ctx.set("agent_inbox", AgentInbox(
+            items=pending_inputs,
+            sink=persistence.inbox,
+            record_splice=ctx_splice_recorder(ctx),
+        ))
+        state.set_provider(persistence.provider)
+        # Durability subscribes to the metadata fact, not to the value holder:
+        # the state announces, persistence reacts. The initial load happens
+        # before the listener is registered, so hydration never rewrites the
+        # file it just read; every later change is saved by the listener.
+        await state.metadata.replace(persistence.metadata.load())
+        ctx.on(THREAD_METADATA_CHANGED, _save_metadata(persistence.metadata))
 
         ctx.runtime_log.bind("persistence").info(
             "persistence.hydrated",
@@ -78,20 +102,9 @@ class ThreadPersistenceComponent:
             provider=persistence.provider,
         )
 
-        ctx.set("thread_metadata", state.metadata)
 
-
-def _save_metadata(store: ThreadMetadataStore):
-    """Adapt the change observer to the durable writer."""
-
-    def _observer(_previous, current) -> None:
-        store.save(current)
-
-    return _observer
-
-
-def mount_thread_persistence(ctx: Context) -> None:
-    ThreadPersistenceComponent().apply(ctx)
+async def mount_thread_persistence(ctx: Context) -> None:
+    await ThreadPersistenceComponent().apply(ctx)
 
 
 class PersistencePlugin:

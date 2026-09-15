@@ -52,10 +52,10 @@ def mount_ctx(state_store):
         data_dir=state_store.paths.plugin_state_dir,
         state_service=state_store.state,
     )
-    ctx.set("tools", ToolsService(ToolRegistry()))
-    ctx.set("commands", CommandsService())
+    ctx.set("tools", ToolsService(ToolRegistry(), ownership="caller"))
+    ctx.set("commands", CommandsService(ownership="caller"))
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agent_catalog", AgentCatalog())
+    ctx.set("agent_catalog", AgentCatalog(ownership="caller"))
     ctx.set("jobs", JobRegistry())
     ctx.set("interactions", TestInteractions())
     ctx.set("usage", TestUsage())
@@ -80,14 +80,15 @@ def mount_ctx(state_store):
     ))
     ctx.set("thread_persistence", state_store)
     ctx.set("thread_paths", state_store.paths)
-    ctx.set("loop_state", LoopState(
+    LoopState(
+        ctx,
         session=SessionInfo(
             session_id=state_store.session_id,
             thread_id=state_store.thread_id,
             workspace_root=str(state_store.workspace_root),
             provider="default",
         ),
-    ))
+    )
     ctx.set("session", ctx.loop_state.session)
     ctx.set("sandbox", SandboxPolicy(
         SandboxConfig(enabled=False),

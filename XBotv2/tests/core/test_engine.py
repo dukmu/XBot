@@ -2002,3 +2002,143 @@ async def test_additional_kwargs_merged_across_streaming_chunks(state_store, tem
     assistant = [e for e in events if e["type"] == "assistant_message"]
     assert len(assistant) == 1
     assert assistant[0]["data"]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_stops_foreground_tool_but_not_background_jobs(
+    state_store, temp_workspace
+):
+    """ESC (turn interrupt) terminates the in-flight foreground tool call —
+    including its streamed rendering — while background jobs and subagent
+    jobs keep running and remain individually cancellable."""
+    from XBotv2.agentloop import AgentInbox
+    from XBotv2.jobs import JobKind, JobResult, JobStatus
+
+    tool_started = asyncio.Event()
+    tool_finished = asyncio.Event()
+
+    async def block() -> str:
+        tool_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            tool_finished.set()
+        return "never"
+
+    block_tool = Tool.from_function(block, name="block")
+    registry = ToolRegistry()
+    registry.register(block_tool)
+    llm = MockLLM(responses=[{
+        "content": "",
+        "tool_calls": [{"name": "block", "args": {}, "id": "call_block"}],
+    }])
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+
+    class HoldingRunner:
+        running = False
+
+        async def run(self, job, ctx):
+            del job, ctx
+            self.running = True
+            await asyncio.Event().wait()
+            return JobResult(summary="bg done")
+
+        async def cancel(self, job):
+            del job
+
+    # A background job owned by its own registry: independent of the turn.
+    jobs = JobRegistry(limits={JobKind.SHELL: 1})
+    runner = HoldingRunner()
+    bg = await jobs.create(kind=JobKind.SHELL)
+    jobs.start(bg.id, runner)
+    await asyncio.sleep(0)
+    assert bg.status is JobStatus.RUNNING
+
+    events: list[dict] = []
+
+    async def consume():
+        async for event in engine.run_turn("go"):
+            events.append(event)
+
+    turn_task = asyncio.create_task(consume())
+    await asyncio.wait_for(tool_started.wait(), timeout=1)
+    assert not tool_finished.is_set()
+
+    # ESC: interrupt the running turn.
+    turn_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn_task
+
+    # The foreground tool call was terminated (not left running).
+    assert tool_finished.is_set()
+    assert any(event["type"] == "turn_cancelled" for event in events)
+    # The rendering stream ended with the turn: the cancelled event is
+    # terminal and no further rendering events follow it.
+    assert events[-1]["type"] == "turn_cancelled"
+
+    # Background jobs are untouched by the interrupt and stay cancellable.
+    assert bg.status is JobStatus.RUNNING
+    result = await jobs.cancel(bg.id)
+    assert result.cancelled is True
+    assert bg.status is JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_started_carries_owner_declared_kind(
+    state_store, temp_workspace
+):
+    """The tool-call event carries the category its owning package declared,
+    so clients render it without re-deriving a taxonomy from names."""
+    from dataclasses import replace
+
+    async def think_tool() -> str:
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(replace(
+        Tool.from_function(think_tool, name="think_tool"),
+        kind="think",
+    ))
+    llm = MockLLM(responses=[
+        {"content": "", "tool_calls": [
+            {"name": "think_tool", "args": {}, "id": "call_think"},
+        ]},
+        {"content": "done"},
+    ])
+    engine = make_engine(llm, registry, state_store, temp_workspace)
+
+    events = [e async for e in engine.run_turn("go")]
+    started = next(e for e in events if e["type"] == "tool_calls_started")
+
+    assert started["data"]["tool_calls"][0]["kind"] == "think"
+
+
+@pytest.mark.asyncio
+async def test_observer_listener_runs_even_when_a_short_circuit_listener_answers(
+    state_store, temp_workspace
+):
+    """Independent observers of a short-circuit event register with
+    prepend=True, so answering that event elsewhere cannot skip them."""
+    observed: list[str] = []
+
+    async def answer(_ctx):
+        return {"rebuild": True}
+
+    async def observer(_ctx):
+        observed.append("ran")
+
+    plugin_ctx = xcore.Context()
+    plugin_ctx.on(Events.BEFORE_CONTEXT, answer)
+    plugin_ctx.on(Events.BEFORE_CONTEXT, observer, prepend=True)
+    engine = make_engine_with_hooks(
+        MockLLM(responses=[{"content": "hi"}]),
+        ToolRegistry(),
+        state_store,
+        temp_workspace,
+        plugin_ctx,
+    )
+
+    events = [e async for e in engine.run_turn("go")]
+
+    assert observed == ["ran"]
+    assert events

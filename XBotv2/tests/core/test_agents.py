@@ -18,7 +18,7 @@ def test_agent_definition_requires_stable_name_and_description():
 
 
 def test_catalog_enforces_name_ownership():
-    catalog = AgentCatalog()
+    catalog = AgentCatalog(ownership="caller")
     definition = AgentDefinition(name="reviewer", description="Review code")
 
     assert catalog.register(definition) == "reviewer"
@@ -30,7 +30,7 @@ def test_catalog_enforces_name_ownership():
 
 
 def test_catalog_workspace_overlay_replaces_and_restores_base():
-    catalog = AgentCatalog()
+    catalog = AgentCatalog(ownership="caller")
     base = AgentDefinition(name="reviewer", description="Base reviewer")
     overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
 
@@ -47,7 +47,7 @@ def test_catalog_workspace_overlay_replaces_and_restores_base():
 
 
 def test_catalog_base_unload_keeps_workspace_overlay():
-    catalog = AgentCatalog()
+    catalog = AgentCatalog(ownership="caller")
     base = AgentDefinition(name="reviewer", description="Base reviewer")
     overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
 
@@ -62,7 +62,7 @@ def test_catalog_base_unload_keeps_workspace_overlay():
 
 
 def test_catalog_layer_rejects_duplicate_names():
-    catalog = AgentCatalog()
+    catalog = AgentCatalog(ownership="caller")
     catalog.register(AgentDefinition(name="worker", description="Worker"))
     with pytest.raises(ValueError, match="already registered"):
         catalog.register(AgentDefinition(name="worker", description="Other"))

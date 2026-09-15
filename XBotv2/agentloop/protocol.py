@@ -62,8 +62,22 @@ class InputRejectedData(WireModel):
     request_id: str = ""
 
 
+class ToolCallStartedItem(WireModel):
+    """One started tool call with its owner-declared category.
+
+    ``kind`` is declared by the tool's owning package and rendered by
+    clients (ACP); it is never re-derived from the tool name.
+    """
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+    type: Literal["tool_call"] = "tool_call"
+    kind: str = "other"
+
+
 class ToolCallsStartedData(WireModel):
-    tool_calls: list[ToolCall] = Field(min_length=1)
+    tool_calls: list[ToolCallStartedItem] = Field(min_length=1)
 
 
 class ToolCallDeltaItemData(WireModel):
@@ -177,6 +191,7 @@ __all__ = [
     "InputRejectedData",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",
+    "ToolCallStartedItem",
     "ToolCallsStartedData",
     "ToolInfo",
     "ToolListResponse",

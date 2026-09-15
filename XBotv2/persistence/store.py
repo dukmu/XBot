@@ -653,7 +653,11 @@ class DeferredThreadMetadataStore(MetadataPort):
 
     def save(self, metadata: ThreadMetadata) -> None:
         if self._flushed or self._has_records():
+            # The thread is durable: write through and drop any earlier
+            # buffered snapshot — the file is now the authoritative state, so
+            # a later flush must not resurrect the pre-write value.
             self._real.save(metadata)
+            self._pending = None
         else:
             self._pending = metadata
 

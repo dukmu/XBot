@@ -16,16 +16,26 @@ from typing import Protocol
 from pydantic import JsonValue
 
 from XBotv2.agentloop.contracts import InboxInput, InboxSink, InboxSplice, InboxTarget
+from XBotv2.agentloop.events import EventContext, Events
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import ImageContent
 
 
 SpliceRecorder = Callable[[InboxSplice], Awaitable[None]]
-WakeDriver = Callable[[], None]
 
 
-class InboxSink(Protocol):
-    def replace(self, items: Sequence[InboxInput]) -> None: ...
+def ctx_splice_recorder(ctx):
+    """Adapt one XCore context into an ``InboxSplice`` recorder.
+
+    Inbox mutations are published on the owning context's bus as a fiber
+    event; the returned async callable is the adapter used wherever the
+    durable inbox is composed.
+    """
+
+    async def _record(splice: InboxSplice) -> None:
+        await ctx.emit(Events.INBOX_SPLICE, EventContext(inbox_splice=splice))
+
+    return _record
 
 
 class AgentInbox:
@@ -41,7 +51,6 @@ class AgentInbox:
         items: Iterable[InboxInput] = (),
         sink: InboxSink | None = None,
         record_splice: SpliceRecorder | None = None,
-        wake_driver: WakeDriver | None = None,
     ) -> None:
         self._next_turn: deque[InboxInput] = deque()
         self._next_step: deque[InboxInput] = deque()
@@ -50,15 +59,11 @@ class AgentInbox:
         self._lock = asyncio.Lock()
         self._sink = sink
         self._record_splice = record_splice
-        self._wake_driver = wake_driver
         for item in items:
             if item.message_id in self._ids:
                 raise ValueError(f"Duplicate restored inbox id: {item.message_id}")
             self._queue(item.target).append(item)
             self._ids.add(item.message_id)
-
-    def set_wake_driver(self, wake_driver: WakeDriver | None) -> None:
-        self._wake_driver = wake_driver
 
     async def send(
         self,
@@ -88,9 +93,9 @@ class AgentInbox:
             self._persist([*self._items(), item])
             self._queue(target).append(item)
             self._ids.add(item.message_id)
-            await self._record("insert", target, [item])
-        if wakeup and self._wake_driver is not None:
-            self._wake_driver()
+            # The splice carries the wake intent to the owning session; the
+            # inbox holds no callback into the runtime.
+            await self._record("insert", target, [item], wake=wakeup)
         return item
 
     async def followup(
@@ -323,6 +328,8 @@ class AgentInbox:
         operation: str,
         target: InboxTarget | None,
         items: list[InboxInput],
+        *,
+        wake: bool = False,
     ) -> None:
         if self._record_splice is None:
             return
@@ -331,6 +338,7 @@ class AgentInbox:
             target=target,
             message_ids=[item.message_id for item in items],
             items=list(items),
+            wake=wake,
         ))
 
     def __len__(self) -> int:

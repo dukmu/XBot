@@ -12,6 +12,11 @@ from XBotv2.core.artifacts import ArtifactRef, ImageContent
 from XBotv2.core.tools import ClientEvent, ToolCall, ToolCallDelta
 
 
+#: Additional-kwarg key carrying display provenance for injected turns
+#: (non-human user messages produced by the loop or other plugins).
+RUNTIME_INPUT_KEY = "runtime_input"
+
+
 class TextPart(BaseModel):
     type: Literal["text"] = "text"
     text: str

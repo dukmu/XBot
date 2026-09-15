@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterable, Mapping
@@ -20,7 +21,7 @@ from XBotv2.core.history import (
     TrajectoryPage,
     TrajectorySurfaceReplace,
 )
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import RUNTIME_INPUT_KEY, Message
 from XBotv2.core.operations import Operation
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
@@ -118,6 +119,12 @@ class SessionTrajectorySurfaceReplace(BaseModel):
     transcript: Literal["preserve", "replace"]
     source_node_ids: tuple[str, ...]
     messages: tuple[SessionHistoryItem, ...]
+    #: The durable summary text of a compaction replacement. The replacement
+    #: message is a system prompt container that the human transcript replay
+    #: must not surface verbatim; this derived field lets clients render the
+    #: expandable compaction entry after a reload without storing the summary
+    #: a second time (the durable record keeps exactly one copy).
+    summary: str = ""
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -151,7 +158,7 @@ def conversation_replay(messages: Iterable[Message]) -> tuple[SessionHistoryItem
         content = str(message.content or "")
         if message.role == "tool" and additional.get(MESSAGE_FORMAT_KEY):
             content = tool_result_display_content(content)
-        runtime_value = additional.get("runtime_input")
+        runtime_value = additional.get(RUNTIME_INPUT_KEY)
         timing = message.response_metadata.get(TIMING_METADATA_KEY)
         replay.append(SessionHistoryItem(
             role=message.role,
@@ -197,6 +204,7 @@ def trajectory_replay(page: TrajectoryPage) -> SessionTrajectoryPage:
                 transcript=item.transcript,
                 source_node_ids=item.source_node_ids,
                 messages=conversation_replay(item.messages),
+                summary=compaction_summary_text(item.messages),
             ))
         elif isinstance(item, TrajectoryEvent):
             items.append(SessionTrajectoryEvent(
@@ -206,6 +214,24 @@ def trajectory_replay(page: TrajectoryPage) -> SessionTrajectoryPage:
                 timestamp=item.timestamp,
             ))
     return SessionTrajectoryPage(items=tuple(items), next_cursor=page.next_cursor)
+
+
+def compaction_summary_text(messages: Iterable[Message]) -> str:
+    """Read the summary text out of a compaction replacement.
+
+    The replacement message carries the summary inside a
+    ``conversation_summary`` prompt container; clients render that text as
+    the expandable compaction entry.
+    """
+    for message in messages:
+        content = str(message.content or "")
+        match = re.search(
+            r"<conversation_summary[^>]*>([\s\S]*?)</conversation_summary>",
+            content,
+        )
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _artifacts(message: Message) -> tuple[ArtifactRef, ...]:
@@ -479,7 +505,7 @@ class SessionPort(Protocol):
     @property
     def provider(self) -> str: ...
     def new_thread_id(self, owner: str) -> str: ...
-    def status(self) -> SessionStatus: ...
+    def status(self, *, pending_input_count: int) -> SessionStatus: ...
     async def fork(self) -> str: ...
     async def clear_history(self) -> int: ...
     async def undo_history(self, count: int) -> list[Message]: ...

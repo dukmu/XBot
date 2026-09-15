@@ -74,6 +74,7 @@ async def execute_tools(
     guards: tuple[ToolGuard, ...] = (),
     context_factory: Callable[..., EventContext] | None = None,
     runtime_log: RuntimeLog = _DEFAULT_TOOL_LOG,
+    approval_layer_active: bool = False,
 ) -> list[Message]:
     """Execute tool calls through the guard pipeline.
 
@@ -81,6 +82,8 @@ async def execute_tools(
     1. ``BEFORE_TOOL_CALL`` event waterfall (rewrite only).
     2. Schema validation.
     3. Registered guards. Guards must resolve their own policy to allow/deny.
+       Sandbox-escaping calls are additionally gated: without an
+       approval-capable guard in the pipeline they fail closed before dispatch.
     4. Dispatch with standard invocation metadata.
     5. ``AFTER_TOOL_CALL``.
 
@@ -89,6 +92,7 @@ async def execute_tools(
         registry: ToolRegistry instance.
         events: Narrow event dispatcher used by the loop.
         context_factory: callable that builds EventContext objects (optional).
+        approval_layer_active: whether an approval-capable guard is mounted.
 
     Returns:
         List of tool messages (one per tool call).
@@ -137,6 +141,7 @@ async def execute_tools(
             guards=guards,
             context_factory=context_factory,
             runtime_log=runtime_log,
+            approval_layer_active=approval_layer_active,
             results=results,
             observed_tool_calls=observed_tool_calls,
         )
@@ -235,6 +240,7 @@ async def _execute_one_tool(
     guards: tuple[ToolGuard, ...],
     context_factory: Callable[..., EventContext] | None,
     runtime_log: RuntimeLog,
+    approval_layer_active: bool,
     results: list[Message], observed_tool_calls: list[ToolCall],
 ) -> None:
     tool_id = call.id
@@ -323,6 +329,40 @@ async def _execute_one_tool(
             call,
             reason,
         )
+        return
+
+    # Fail closed on sandbox escalation: an escaping tool call is only
+    # reachable while an approval-capable guard is mounted. Without one,
+    # no channel could ever grant the escape, so the call must not reach
+    # dispatch (it would run outside the sandbox silently).
+    if (
+        getattr(tool, "escapes_sandbox", False)
+        and args.get("sandbox_permissions") == "require_escalated"
+        and not approval_layer_active
+    ):
+        reason = (
+            "Sandbox escape requires an active approval layer; none is mounted"
+        )
+        _log_tool_finish(
+            runtime_log,
+            started,
+            call_id=tool_id,
+            name=tool_name,
+            status="denied",
+            level=logging.WARNING,
+        )
+        await _emit_tool_denied(
+            events,
+            context_factory,
+            call,
+            reason,
+        )
+        _append_timed_result(
+            results,
+            _error_message(call, reason),
+            started,
+        )
+        observed_tool_calls.append(call)
         return
 
     # Guards own their policy dependencies. The executor only combines their

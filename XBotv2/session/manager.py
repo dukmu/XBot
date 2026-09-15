@@ -79,6 +79,8 @@ from XBotv2.core.operations import (
     ResponseT,
     dispatch_operation,
 )
+from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
+
 
 async def _announce_runtime_events(
     manager: "SessionManager",
@@ -239,25 +241,23 @@ class SessionManager(SessionsPort):
                     error_type=type(exc).__name__,
                 )
 
-    def _observe_metadata(self, runtime: SessionRuntime) -> None:
+    def _subscribe_metadata_changes(self, runtime: SessionRuntime) -> None:
         """Translate a runtime's metadata changes into catalog changes.
 
-        The runtime publishes the general fact; this process-level owner
-        decides that a changed title is what clients need to see, so a
-        caption (or any other writer) refreshes every open session list
-        without knowing anything about events.
+        The runtime publishes the general fact on its own application bus;
+        this process-level owner listens there and decides that a changed
+        title is what clients need to see, so a caption (or any other writer)
+        refreshes every open session list without knowing anything about
+        events. The listener is registered on the application context and is
+        released with its fiber when the runtime closes.
         """
 
-        def _observer(previous, current) -> None:
-            if previous.title == current.title:
+        async def _on_changed(change: ThreadMetadataChanged) -> None:
+            if change.previous.title == change.current.title:
                 return
-            asyncio.ensure_future(
-                self._publish_session_change(runtime.session_id)
-            )
+            await self._publish_session_change(runtime.session_id)
 
-        runtime._metadata_dispose = runtime.application.loop_state.metadata.observe(
-            _observer
-        )
+        runtime.application.events.on(THREAD_METADATA_CHANGED, _on_changed)
 
     async def _publish_session_change(self, session_id: str) -> None:
         try:
@@ -279,9 +279,6 @@ class SessionManager(SessionsPort):
             thread_id=runtime.thread_id,
         )
         try:
-            if runtime._metadata_dispose is not None:
-                runtime._metadata_dispose()
-                runtime._metadata_dispose = None
             await runtime.close(reason)
         finally:
             reset_log_context(log_token)
@@ -467,7 +464,7 @@ class SessionManager(SessionsPort):
                 raise
             async with self._lock:
                 self._sessions[key] = ctx
-            self._observe_metadata(ctx)
+            self._subscribe_metadata_changes(ctx)
             pending_resumed = (
                 ctx.resume_pending_inputs() if mode == "resume" else False
             )
@@ -726,7 +723,7 @@ class SessionManager(SessionsPort):
             )
         active = active_threads.get((session_id, main_id))
         if active is not None:
-            active.application.loop_state.metadata.update(title=value)
+            await active.application.loop_state.metadata.update(title=value)
         else:
             persistence = self._thread_persistence(
                 self.paths.session(session_id),

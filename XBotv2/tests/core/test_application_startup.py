@@ -289,6 +289,8 @@ class InitFailPlugin:
         name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:init-fail",
+            # Session-init registration: this plugin owns release itself.
+            cleanup="caller",
         )
         self._tool_names.append(name)
         raise RuntimeError("session init failed")
@@ -359,6 +361,7 @@ class NormalClosePlugin:
         name = self.ctx.tools.register(
             Tool.from_function(runtime_tool),
             namespace="plugin:normal-close",
+            cleanup="caller",
         )
         self._tool_names.append(name)
 

@@ -26,6 +26,7 @@ from XBotv2.agentloop.events import (
     Events,
     SHORT_CIRCUIT_EVENTS,
 )
+from XBotv2.agentloop.inbox import AgentInbox, ctx_splice_recorder
 from XBotv2.agentloop.protocol import (
     AgentLoopEventType,
     AssistantMessageData,
@@ -42,6 +43,7 @@ from XBotv2.agentloop.protocol import (
     agentloop_event,
 )
 __all__ = [
+    "AgentInbox",
     "AgentLoopDriverPort",
     "AgentLoopEventType",
     "AgentLoopFactoryPort",
@@ -77,4 +79,5 @@ __all__ = [
     "TurnData",
     "SHORT_CIRCUIT_EVENTS",
     "agentloop_event",
+    "ctx_splice_recorder",
 ]

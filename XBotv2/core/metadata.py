@@ -1,17 +1,17 @@
-"""Typed thread metadata and its observable mutation boundary."""
+"""Typed thread metadata and the bus event that announces every change."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from xcore import Context
+from xcore.service import Service
 
 
 THREAD_METADATA_SCHEMA_VERSION = 1
-
-MetadataObserver = Callable[["ThreadMetadata", "ThreadMetadata"], None]
 
 
 class ThreadMetadata(BaseModel):
@@ -33,52 +33,6 @@ class ThreadMetadata(BaseModel):
         return cls.model_validate({"schema_version": 1, **value})
 
 
-class ThreadMetadataState:
-    """Owns one thread's metadata; every accepted change is observable.
-
-    The instance identity is permanent: callers hold it for the lifetime of
-    the runtime and mutate it in place, so nobody has to rebind or rebind-proof
-    it. Observers receive the complete previous and current values and decide
-    which fields matter to them.
-    """
-
-    __slots__ = ("_value", "_observers")
-
-    def __init__(self, value: ThreadMetadata | None = None) -> None:
-        self._value = value or ThreadMetadata()
-        self._observers: list[MetadataObserver] = []
-
-    @property
-    def value(self) -> ThreadMetadata:
-        return self._value
-
-    def observe(self, observer: MetadataObserver) -> Callable[[], None]:
-        """Subscribe to value changes; the returned callable unsubscribes."""
-
-        self._observers.append(observer)
-
-        def _dispose() -> None:
-            try:
-                self._observers.remove(observer)
-            except ValueError:
-                pass
-
-        return _dispose
-
-    def replace(self, value: ThreadMetadata) -> None:
-        if value == self._value:
-            return
-        previous = self._value
-        self._value = value
-        for observer in tuple(self._observers):
-            observer(previous, value)
-
-    def update(self, **values: JsonValue) -> None:
-        self.replace(ThreadMetadata.model_validate({
-            **self._value.model_dump(), **values,
-        }))
-
-
 THREAD_METADATA_CHANGED = "metadata/changed"
 
 
@@ -86,8 +40,8 @@ THREAD_METADATA_CHANGED = "metadata/changed"
 class ThreadMetadataChanged:
     """One accepted metadata change, published as a general fact.
 
-    Subscribers decide which fields matter to them; the publisher carries the
-    whole previous and current values and interprets no field itself.
+    The publisher interprets no field: subscribers decide which fields matter
+    to them and receive the complete previous and current values.
     """
 
     session_id: str
@@ -96,10 +50,60 @@ class ThreadMetadataChanged:
     current: ThreadMetadata
 
 
+class ThreadMetadataState(Service):
+    """Owns one thread's metadata; every accepted change is a bus event.
+
+    The instance is provided on the owning context as ``thread_metadata`` at
+    construction and is released with the owning fiber; identity is permanent,
+    so callers never rebind or rebind-proof it. ``replace``/``update`` are the
+    only write paths and announce ``metadata/changed`` with the whole previous
+    and current values before returning, so a durable writer that awaited the
+    write has already handed the change to every subscriber.
+    """
+
+    name = "thread_metadata"
+
+    def __init__(
+        self,
+        ctx: Context,
+        *,
+        session_id: str = "",
+        thread_id: str = "",
+        value: ThreadMetadata | None = None,
+    ) -> None:
+        super().__init__(ctx, name=self.name)
+        self._session_id = session_id
+        self._thread_id = thread_id
+        self._value = value or ThreadMetadata()
+
+    @property
+    def value(self) -> ThreadMetadata:
+        return self._value
+
+    async def replace(self, value: ThreadMetadata) -> None:
+        if value == self._value:
+            return
+        previous = self._value
+        self._value = value
+        await self.ctx.emit(
+            THREAD_METADATA_CHANGED,
+            ThreadMetadataChanged(
+                session_id=self._session_id,
+                thread_id=self._thread_id,
+                previous=previous,
+                current=value,
+            ),
+        )
+
+    async def update(self, **values: JsonValue) -> None:
+        await self.replace(ThreadMetadata.model_validate({
+            **self._value.model_dump(), **values,
+        }))
+
+
 __all__ = [
     "THREAD_METADATA_CHANGED",
     "THREAD_METADATA_SCHEMA_VERSION",
-    "MetadataObserver",
     "ThreadMetadata",
     "ThreadMetadataChanged",
     "ThreadMetadataState",

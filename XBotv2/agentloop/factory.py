@@ -22,5 +22,6 @@ class AgentLoopFactory(AgentLoopFactoryPort):
             settings=options.settings,
             max_iterations=options.max_iterations,
             runtime_log=self._runtime_log,
+            inbox=options.inbox,
         )
         return engine

@@ -63,7 +63,6 @@ class Events:
     ASSISTANT_MESSAGE = "assistant/message"
     TOOL_MESSAGE = "tool/message"
     # Permissions / client
-    CLIENT_EVENT = "client/event"
     # Core state projection changed. Persistence is one possible observer;
     # the loop does not request or name storage operations.
     STATE_CHANGED = "state/changed"

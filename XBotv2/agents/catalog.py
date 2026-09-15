@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 from xcore import bound_effect, current_plugin_name
 
@@ -15,7 +16,8 @@ from XBotv2.core.variables import RuntimeVariables
 class AgentCatalog(AgentCatalogPort):
     """Store immutable definitions in base and workspace-overlay layers."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
+        self._ownership = ownership
         self._base: dict[str, AgentDefinition] = {}
         self._base_owners: dict[str, str] = {}
         self._overlay: dict[str, AgentDefinition] = {}
@@ -34,7 +36,14 @@ class AgentCatalog(AgentCatalogPort):
             raise ValueError(f"Agent {definition.name!r} is already registered")
         layer[definition.name] = definition
         owners[definition.name] = owner
-        bound_effect(partial(self._unregister, definition.name, owner=owner))
+        if bound_effect(partial(self._unregister, definition.name, owner=owner)) is False:
+            if self._ownership != "caller":
+                self._unregister(definition.name, owner=owner)
+                raise RuntimeError(
+                    f"Agent {definition.name!r} was registered outside a plugin "
+                    "apply(); compose the catalog with ownership='caller' when "
+                    "the caller owns release"
+                )
         return definition.name
 
     def register_markdown(
@@ -52,7 +61,14 @@ class AgentCatalog(AgentCatalogPort):
             for definition in load_definitions(directory, variables)
         )
         if names and bind_cleanup:
-            bound_effect(partial(self._unregister_many, names, owner))
+            if bound_effect(partial(self._unregister_many, names, owner)) is False:
+                if self._ownership != "caller":
+                    self._unregister_many(names, owner)
+                    raise RuntimeError(
+                        "Agent definitions were registered outside a plugin "
+                        "apply(); compose the catalog with ownership='caller' "
+                        "or pass an explicit owner"
+                    )
         return names
 
     def unregister_owned(

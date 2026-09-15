@@ -41,9 +41,9 @@ def make_plugin_ctx(tmp_path):
 
     ctx = Context(data_dir=tmp_path)
     ctx.set("tools", ToolsService(ToolRegistry()))
-    ctx.set("commands", CommandsService())
+    ctx.set("commands", CommandsService(ownership="caller"))
     ctx.set("prompts", PromptsService(ContextBuilder()))
-    ctx.set("agent_catalog", AgentCatalog())
+    ctx.set("agent_catalog", AgentCatalog(ownership="caller"))
     ctx.set("jobs", JobRegistry())
     ctx.set("variables", RuntimeVariables())
     ctx.set("workspace_root", tmp_path)

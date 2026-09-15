@@ -57,7 +57,7 @@ class ClientEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def _validated_client_event(
+def validated_client_event(
     event_type: str,
     data: Mapping[str, object],
     model: type[BaseModel],
@@ -109,6 +109,23 @@ class Tool:
     function: Callable[..., Any]
     parameters: dict[str, Any]
     tool_call_parameter: str | None = None
+    #: Declared by the owning package: this tool requests execution outside
+    #: the sandbox when its arguments ask for escalation. The tool itself
+    #: refuses to discharge escalation without an active approval layer, and
+    #: the execution pipeline requires an approval-capable guard for these
+    #: calls — the sandbox and permission layers read this declaration instead
+    #: of hard-coding tool names.
+    escapes_sandbox: bool = False
+    #: Declared by the owning package: the model-facing category of this tool
+    #: (``read``/``edit``/``execute``/``search``/``fetch``/``think``/``other``).
+    #: Clients such as ACP render it directly; carriers consume the
+    #: declaration instead of re-deriving a taxonomy from tool names.
+    kind: str = "other"
+    #: Declared by the owning package: the argument names that define this
+    #: tool's authorization scope when a session grant is minted from one
+    #: call (selectors, not bulk payloads). Empty means "constrain every
+    #: scalar argument", which is the conservative fallback.
+    grant_selectors: tuple[str, ...] = ()
 
     @classmethod
     def from_function(cls, function: Callable[..., Any], *, name: str | None = None) -> "Tool":

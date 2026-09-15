@@ -22,17 +22,12 @@ class MemoryInboxSink:
 @pytest.mark.asyncio
 async def test_aliases_share_two_fifo_targets_and_wakeup_semantics():
     splices = []
-    wakeups = []
     sink = MemoryInboxSink()
 
     async def record(event):
         splices.append(event)
 
-    inbox = AgentInbox(
-        sink=sink,
-        record_splice=record,
-        wake_driver=lambda: wakeups.append(1),
-    )
+    inbox = AgentInbox(sink=sink, record_splice=record)
     injected = await inbox.inject("notice", message_id="notice")
     steered = await inbox.steer("correction", message_id="steer")
     followed = await inbox.followup("question", message_id="followup")
@@ -40,7 +35,9 @@ async def test_aliases_share_two_fifo_targets_and_wakeup_semantics():
     assert injected.target is InboxTarget.NEXT_STEP
     assert steered.target is InboxTarget.NEXT_STEP
     assert followed.target is InboxTarget.NEXT_TURN
-    assert len(wakeups) == 2
+    # The wake intent travels on the splice: inject is silent, steer/followup
+    # wake the owning runtime.
+    assert [splice.wake for splice in splices[:3]] == [False, True, True]
     assert sink.sizes[:3] == [1, 2, 3]
 
     claimed = await inbox.claim_turn()

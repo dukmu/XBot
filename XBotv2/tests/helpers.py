@@ -50,7 +50,9 @@ def make_tool_ctx(
     ctx = base or xcore.Context()
     tools_service = ctx.get("tools", strict=False)
     if tools_service is None:
-        tools_service = ToolsService(registry, events=ctx)
+        # The harness composes and owns this context, so registrations made
+        # outside a plugin apply are caller-owned here.
+        tools_service = ToolsService(registry, events=ctx, ownership="caller")
         ctx.set("tools", tools_service)
     if permissions is not None:
         from XBotv2.permissions.guard import PermissionGuard
@@ -63,13 +65,13 @@ def make_tool_ctx(
             ctx.emit,
             _ignore_permission_decision,
         )
-        tools_service.guard(guard.check)
+        tools_service.guard(guard.check, approval=True, cleanup="caller")
     if sandbox is not None:
         if ctx.get("sandbox", strict=False) is None:
             ctx.set("sandbox", sandbox)
-        tools_service.guard(sandbox.make_guard())
+        tools_service.guard(sandbox.make_guard(), cleanup="caller")
     for guard in extra_guards:
-        tools_service.guard(guard)
+        tools_service.guard(guard, cleanup="caller")
     if approval is not None:
         ctx.set("approval", approval)
     if interactions is not None:
@@ -118,14 +120,20 @@ def make_engine(
         base=plugin_ctx,
     )
     runtime_config = config or RuntimeConfig()
-    state = LoopState(
-        session=SessionInfo(
-            session_id=state_store.session_id,
-            thread_id=state_store.thread_id,
-            workspace_root=str(state_store.workspace_root),
-            provider="default",
-        ),
-    )
+    # Bind the engine to the context's conversation state, creating it (and
+    # registering it) only when nothing has provided one yet — the same
+    # composition the session plugin performs in application boot.
+    state = events.get("loop_state", strict=False)
+    if state is None:
+        state = LoopState(
+            events,
+            session=SessionInfo(
+                session_id=state_store.session_id,
+                thread_id=state_store.thread_id,
+                workspace_root=str(state_store.workspace_root),
+                provider="default",
+            ),
+        )
     state.set_history(ConversationHistory(
         sink=state_store.history,
         nodes=state_store.history.load_surface(),
@@ -181,10 +189,15 @@ def make_engine(
         )
 
     events.on(BUILD_CONTEXT, _build_context)
+    from XBotv2.agentloop import AgentInbox
+
     return Engine(
         model_client=llm,
         tools=events.tools,
         events=events,
         state=state,
         settings=settings,
+        # Direct engine construction is explicit about its inbox; no
+        # silent transient fallback.
+        inbox=AgentInbox(),
     )

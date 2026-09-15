@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 import uuid
@@ -11,9 +11,11 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, Protocol, TypedD
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.messages import ImageContent, Message
+from XBotv2.core.messages import RUNTIME_INPUT_KEY, ImageContent, Message
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from xcore import Context
+from xcore.service import Service
 
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.tools import GuardDecision, Tool, ToolCall
@@ -21,6 +23,7 @@ from XBotv2.session.contracts import SessionInfo
 
 if TYPE_CHECKING:
     from XBotv2.agentloop.events import EventContext, EventPort
+    from XBotv2.agentloop.inbox import AgentInbox
     from XBotv2.llm.contracts import ModelPort
 
 DEFAULT_MAX_ITERATIONS = 200
@@ -51,6 +54,9 @@ class InboxSplice(BaseModel):
     target: InboxTarget | None = None
     message_ids: list[str] = Field(default_factory=list)
     items: list[InboxInput] = Field(default_factory=list)
+    #: The producer's wake intent: the owning session runtime wakes the loop
+    #: for a waking splice and stays idle for a non-waking one (inject).
+    wake: bool = False
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -58,20 +64,34 @@ class InboxSink(Protocol):
     def replace(self, items: Sequence[InboxInput]) -> None: ...
 
 
-class LoopState:
-    """Mutable conversation state owned by the Agent loop."""
+class LoopState(Service):
+    """Mutable conversation state owned by the Agent loop.
+
+    Constructing the state provides it on the context as ``loop_state`` (and
+    constructs the thread's ``thread_metadata``) for the owning fiber's
+    lifetime; nobody rebinds either afterwards. The durable inbox is composed
+    separately and handed to the loop driver at construction.
+
+    ``turn_count`` is a lifetime counter with one owner (the loop driver): it
+    increments when a turn is accepted and is preserved across compaction and
+    history edits, exactly like ``SessionStats``. History mutations never
+    recompute it; hydration restores it explicitly from the durable surface.
+    """
+
+    name = "loop_state"
 
     def __init__(
         self,
+        ctx: Context,
+        *,
         session: SessionInfo,
         messages: list[Message] | ConversationHistory | None = None,
         turn_count: int = 0,
         resumed: bool = False,
         metadata: ThreadMetadata | dict[str, JsonValue] | None = None,
-        inbox_items: list[InboxInput] | None = None,
-        inbox_sink: InboxSink | None = None,
         variables: RuntimeVariables = RuntimeVariables(),
     ) -> None:
+        super().__init__(ctx, name=self.name)
         self.session = session
         self.variables = variables
         self.history = (
@@ -79,27 +99,60 @@ class LoopState:
             if isinstance(messages, ConversationHistory)
             else ConversationHistory(messages or ())
         )
+        self._turn_count = 0
         self.turn_count = turn_count
         self.resumed = resumed
         self.metadata = ThreadMetadataState(
-            metadata
-            if isinstance(metadata, ThreadMetadata)
-            else ThreadMetadata.from_state(metadata or {})
+            ctx,
+            session_id=session.session_id,
+            thread_id=session.thread_id,
+            value=(
+                metadata
+                if isinstance(metadata, ThreadMetadata)
+                else ThreadMetadata.from_state(metadata or {})
+            ),
         )
-        self.inbox_items = list(inbox_items or [])
-        self.inbox_sink = inbox_sink
 
     @property
     def messages(self) -> ConversationHistory:
         return self.history
 
+    @property
+    def turn_count(self) -> int:
+        return self._turn_count
+
+    @turn_count.setter
+    def turn_count(self, value: int) -> None:
+        # One counter, one mirror: the session projection follows the state.
+        self._turn_count = value
+        self.session.turn_count = value
+
+    def restore_turn_count(self, count: int) -> None:
+        """Restore the lifetime counter from the durable surface (hydration).
+
+        Only the loop driver increments it; hydration restores it once on a
+        resumed session.
+        """
+        self.turn_count = count
+
+    def restore_resumed(self, resumed: bool) -> None:
+        """Record whether this session resumed durable state (hydration)."""
+        self.resumed = resumed
+
+    def set_provider(self, provider: str) -> None:
+        """Update the session-identity projection of the active provider.
+
+        The authoritative provider lives in thread metadata (announced on the
+        bus); this mirror exists for readers that hold only the session
+        identity, and is written through one named transition.
+        """
+        self.session.provider = provider
+
     def set_history(self, history: ConversationHistory) -> None:
         self.history = history
-        self._update_turn_count()
 
     def replace_messages(self, messages: list[Message]) -> None:
         self.history.replace(messages, operation="replace")
-        self._update_turn_count()
 
     def replace_message_range(
         self,
@@ -117,11 +170,6 @@ class LoopState:
             operation=operation,
             preserve_transcript=preserve_transcript,
         )
-        self._update_turn_count()
-
-    def _update_turn_count(self) -> None:
-        self.turn_count = sum(message.role == "user" for message in self.history)
-        self.session.turn_count = self.turn_count
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +264,9 @@ class LoopFactoryOptions:
     state: LoopState
     settings: LoopSettings
     max_iterations: int
+    #: The composed inbox (durable after hydration, transient otherwise),
+    #: bound at construction by the agent_inbox service dependency.
+    inbox: "AgentInbox"
 
 
 class AgentLoopDriverPort(Protocol):
@@ -225,7 +276,6 @@ class AgentLoopDriverPort(Protocol):
     pending_input_count: int
     pending_inputs: Sequence[InboxInput]
 
-    def set_wake_driver(self, callback: Callable[[], None]) -> None: ...
     async def start_session(self) -> None: ...
     async def close_session(self) -> None: ...
     async def discard_inputs(self) -> None: ...
@@ -320,7 +370,44 @@ class AgentLoopFactoryPort(Protocol):
 LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)
 
 
+#: Additional-kwarg key carrying display provenance for injected turns.
+def runtime_input_value(
+    source: str,
+    metadata: dict[str, JsonValue] | None,
+) -> dict[str, JsonValue]:
+    """Build the persisted display provenance for a non-human user message."""
+    if source == "user":
+        return {}
+    values = metadata or {}
+    event = values.get("kind")
+    if not isinstance(event, str) or not event:
+        event = "continuation" if values.get("continuation") else "injected"
+    return {RUNTIME_INPUT_KEY: {"source": source, "event": event}}
+
+
+def runtime_input_labels(
+    runtime: Mapping[str, object] | None,
+) -> tuple[str, str] | None:
+    """Read the (source, event) labels of an injected turn.
+
+    Returns ``None`` when the persisted shape does not carry both labels, so
+    consumers never invent a provenance that was not recorded.
+    """
+    if not isinstance(runtime, Mapping):
+        return None
+    source = runtime.get("source")
+    event = runtime.get("event")
+    if not isinstance(source, str) or not source:
+        return None
+    if not isinstance(event, str) or not event:
+        return None
+    return source, event
+
+
 __all__ = [
+    "RUNTIME_INPUT_KEY",
+    "runtime_input_labels",
+    "runtime_input_value",
     "AgentLoopDriverPort",
     "AgentLoopFactoryPort",
     "DEFAULT_MAX_ITERATIONS",

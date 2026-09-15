@@ -20,6 +20,7 @@ from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.application import ApplicationEventsPort
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
+    AgentInbox,
     AgentLoopDriverPort,
     AgentLoopFactoryPort,
     LoopFactoryOptions,
@@ -62,6 +63,7 @@ class AgentsService(AgentRuntimePort):
         model: ModelPort,
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
+        inbox: AgentInbox,
         runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog
@@ -73,6 +75,7 @@ class AgentsService(AgentRuntimePort):
         self._model = model
         self._tools = tools
         self._artifacts = artifacts
+        self._inbox = inbox
         self._log = runtime_log.bind("agent")
         self._engine: AgentLoopDriverPort | None = None
 
@@ -110,8 +113,8 @@ class AgentsService(AgentRuntimePort):
             else model_config.max_context_tokens
         )
         config.max_output_tokens = model_config.max_output_tokens
-        state.session.provider = provider_name
-        state.metadata.replace(ThreadMetadata(
+        state.set_provider(provider_name)
+        await state.metadata.replace(ThreadMetadata(
             agent=definition.name if definition is not None else "",
             agent_definition=(
                 definition.model_dump(mode="json")
@@ -163,6 +166,7 @@ class AgentsService(AgentRuntimePort):
                 if definition is not None and definition.max_iterations is not None
                 else DEFAULT_MAX_ITERATIONS
             ),
+            inbox=self._inbox,
         ))
         self._engine = engine
         self._log.info(
@@ -285,8 +289,8 @@ class AgentsService(AgentRuntimePort):
             agent_instructions=config.agent_instructions,
             memory=config.memory,
         )
-        state.session.provider = provider_name
-        state.metadata.update(
+        state.set_provider(provider_name)
+        await state.metadata.update(
             agent=definition.name,
             agent_definition=definition.model_dump(mode="json"),
             provider=provider_name,
@@ -351,8 +355,8 @@ class AgentsService(AgentRuntimePort):
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens or 0,
         )
-        state.session.provider = name
-        state.metadata.update(
+        state.set_provider(name)
+        await state.metadata.update(
             provider=name,
             model=model_config.model,
             model_mode=model_config.model_mode,
@@ -421,7 +425,7 @@ class AgentsService(AgentRuntimePort):
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens or 0,
         )
-        self._state.metadata.update(
+        await self._state.metadata.update(
             provider=provider_name,
             model=model_name,
             model_mode=model_config.model_mode,
