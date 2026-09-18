@@ -57,11 +57,6 @@ class AssistantMessageDeltaData(WireModel):
         return self
 
 
-class InputRejectedData(WireModel):
-    reason: str
-    request_id: str = ""
-
-
 class ToolCallStartedItem(WireModel):
     """One started tool call with its owner-declared category.
 
@@ -119,7 +114,6 @@ AgentLoopEventType = Literal[
     "assistant_message",
     "assistant_message_delta",
     "error",
-    "input_rejected",
     "tool_call_delta",
     "tool_calls_started",
     "tool_result",
@@ -133,7 +127,6 @@ _EVENT_MODELS: dict[str, type[WireModel]] = {
     "assistant_message": AssistantMessageData,
     "assistant_message_delta": AssistantMessageDeltaData,
     "error": ErrorEventData,
-    "input_rejected": InputRejectedData,
     "tool_call_delta": ToolCallDeltaData,
     "tool_calls_started": ToolCallsStartedData,
     "tool_result": ToolResultData,
@@ -188,7 +181,6 @@ __all__ = [
     "AgentLoopEventType",
     "AssistantMessageData",
     "AssistantMessageDeltaData",
-    "InputRejectedData",
     "ToolCallDeltaData",
     "ToolCallDeltaItemData",
     "ToolCallStartedItem",

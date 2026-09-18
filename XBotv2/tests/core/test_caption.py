@@ -1,6 +1,7 @@
 """Caption plugin: auto-title on the first user message + agent tool."""
 
 import asyncio
+import logging
 
 import pytest
 from plugin_harness import mount_plugin_standalone
@@ -41,7 +42,8 @@ def _event_context(messages, *, turn_count=1, parent_thread_id=""):
 
 
 @pytest.mark.asyncio
-async def test_auto_caption_requests_an_independent_title_once():
+async def test_auto_caption_requests_an_independent_title_once(caplog):
+    caplog.set_level(logging.INFO, logger="xbotv2.caption")
     plugin = make_plugin({"auto": True, "allow_access": True})
     plugin.model = MockLLM(responses=[{"content": '  "Billing migration plan"  '}])
     original = [
@@ -56,6 +58,13 @@ async def test_auto_caption_requests_an_independent_title_once():
     await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
 
     assert plugin.title == "Billing migration plan"
+    caption_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "xbotv2.caption"
+    ]
+    assert "caption.applied" in caption_logs
+    assert "Billing migration plan" not in "\n".join(caption_logs)
     # The caption request is independent: the conversation is untouched.
     assert [message.content for message in ctx.messages] == [
         message.content for message in original
@@ -331,7 +340,7 @@ async def test_metadata_change_stays_off_the_runtime_event_stream(tmp_path):
             THREAD_METADATA_CHANGED,
             lambda change: bus_changes.append(change),
         )
-        stream = runtime.attach_event_stream(after=opened.event_cursor)
+        stream = runtime.event_stream.subscribe(after=opened.event_cursor)
 
         await runtime.application.loop_state.metadata.update(title="Stream check")
 

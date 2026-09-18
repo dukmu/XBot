@@ -7,7 +7,7 @@ import base64
 import binascii
 import shutil
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Literal, Protocol
@@ -22,6 +22,7 @@ from XBotv2.core.runtime_logging import (
 from XBotv2.core.errors import OperationError
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.messages import ImageContent, Message
+from XBotv2.agentloop import EventContext, Events
 from XBotv2.core.tools import ClientEvent
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
@@ -33,11 +34,7 @@ from XBotv2.core.usage import (
 from XBotv2.core.providers import BaseProvider
 from XBotv2.permissions import PermissionsPort
 from XBotv2.core.timing import conversation_stats
-from XBotv2.session.runtime import (
-    SessionRuntime,
-    regenerate_turn_stream,
-    require_idle,
-)
+from XBotv2.session.runtime import SessionRuntime, require_idle, start_regenerate_turn
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
     AgentApplicationOptions,
@@ -61,7 +58,7 @@ from XBotv2.session.contracts import (
     RegenerateMessage,
     SendMessage,
     SessionExists,
-    SessionEventFrame,
+    SessionEventSubscription,
     SessionNotFound,
     SessionTrajectoryPage,
     SessionSummary,
@@ -70,7 +67,6 @@ from XBotv2.session.contracts import (
     new_session_id,
     trajectory_replay,
 )
-from XBotv2.session.event_stream import SessionEventSubscription
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
 from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
 from XBotv2.core.operations import (
@@ -80,30 +76,6 @@ from XBotv2.core.operations import (
     dispatch_operation,
 )
 from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
-
-
-async def _announce_runtime_events(
-    manager: "SessionManager",
-    runtime: SessionRuntime,
-    events: AsyncIterator[ClientEvent],
-) -> AsyncIterator[ClientEvent]:
-    announced = False
-    async for event in events:
-        if not announced:
-            announced = True
-            await manager._emit_session_changed(runtime.session_id)
-        yield event
-
-
-async def _runtime_events(
-    runtime: SessionRuntime,
-    events: SessionEventSubscription,
-) -> AsyncIterator[SessionEventFrame]:
-    try:
-        async for event in events:
-            yield event
-    finally:
-        runtime.detach_event_stream(events)
 
 
 class ResourceEvents(Protocol):
@@ -126,6 +98,7 @@ class SessionManager(SessionsPort):
     ) -> None:
         self.paths = paths
         self._events = events
+        self._published_summaries: dict[str, SessionSummary] = {}
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
         self.thread_persistence_factory = thread_persistence_factory
@@ -190,7 +163,6 @@ class SessionManager(SessionsPort):
                 for ctx in self._sessions.values()
                 if now - ctx.last_activity >= self.idle_timeout
                 and not ctx.turn_lock.locked()
-                and not ctx.pending_responses
                 and ctx.engine.pending_input_count == 0
                 and ctx.event_stream.subscriber_count == 0
             ]
@@ -259,11 +231,27 @@ class SessionManager(SessionsPort):
 
         runtime.application.events.on(THREAD_METADATA_CHANGED, _on_changed)
 
+    def _subscribe_state_changes(self, runtime: SessionRuntime) -> None:
+        """Refresh the session catalog when durable conversation state lands.
+
+        A transport submission is acknowledged before the engine commits the
+        message, so catalog changes must be published from the state-change
+        boundary where the summary already reflects it.
+        """
+
+        async def _on_changed(_: EventContext) -> None:
+            await self._publish_session_change(runtime.session_id)
+
+        runtime.application.events.on(Events.STATE_CHANGED, _on_changed)
+
     async def _publish_session_change(self, session_id: str) -> None:
         try:
             summary = await self.session_summary(session_id)
         except Exception:  # noqa: BLE001 — a vanished session needs no catalog event
             return
+        if self._published_summaries.get(session_id) == summary:
+            return
+        self._published_summaries[session_id] = summary
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
             SessionResourceChanged(summary),
@@ -465,6 +453,7 @@ class SessionManager(SessionsPort):
             async with self._lock:
                 self._sessions[key] = ctx
             self._subscribe_metadata_changes(ctx)
+            self._subscribe_state_changes(ctx)
             pending_resumed = (
                 ctx.resume_pending_inputs() if mode == "resume" else False
             )
@@ -476,10 +465,12 @@ class SessionManager(SessionsPort):
                 pending_resumed=pending_resumed,
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
             )
+            opened_summary = await self.session_summary(session_id)
+            self._published_summaries[session_id] = opened_summary
             await self._events.emit(
                 SESSION_RESOURCE_CHANGED,
                 SessionResourceChanged(
-                    await self.session_summary(session_id),
+                    opened_summary,
                     added=not session_preexisting,
                 ),
             )
@@ -573,10 +564,7 @@ class SessionManager(SessionsPort):
     async def _emit_session_changed(self, session_id: str) -> None:
         if not self.session_exists(session_id):
             return
-        await self._events.emit(
-            SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(await self.session_summary(session_id)),
-        )
+        await self._publish_session_change(session_id)
 
     async def close_all(self) -> None:
         async with self._lock:
@@ -774,12 +762,11 @@ class SessionManager(SessionsPort):
             forked_session_id=forked_id,
             threads=len(runtimes),
         )
+        forked_summary = await self.session_summary(forked_id)
+        self._published_summaries[forked_id] = forked_summary
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(
-                await self.session_summary(forked_id),
-                added=True,
-            ),
+            SessionResourceChanged(forked_summary, added=True),
         )
         return forked_id
 
@@ -795,6 +782,7 @@ class SessionManager(SessionsPort):
             )
         await self.close_session(session_id, reason="session_deleted")
         delete_persisted_session(self.paths, session_id)
+        self._published_summaries.pop(session_id, None)
         self._log.info("session.deleted", session_id=session_id)
         await self._events.emit(
             SESSION_RESOURCE_REMOVED,
@@ -1006,11 +994,32 @@ class SessionManager(SessionsPort):
         await self._emit_session_changed(session_id)
         return HistoryMutation(removed_turns=count, messages=tuple(messages))
 
-    async def stream_message(
-        self,
-        request: SendMessage,
-    ) -> AsyncIterator[ClientEvent]:
+    async def send_message(self, request: SendMessage) -> None:
         runtime = await self.get(request.session_id, request.thread_id)
+        images, attachments = self._store_message_inputs(runtime, request)
+        self._log.info(
+            "session.message.accepted",
+            session_id=request.session_id,
+            thread_id=request.thread_id,
+            request_id=request.request_id,
+            delivery=request.delivery,
+            content_chars=len(request.content),
+            images=len(images),
+            attachments=len(attachments),
+        )
+        await runtime.send_message(
+            request.content,
+            request.request_id,
+            delivery=request.delivery,
+            images=images,
+            artifacts=attachments,
+        )
+
+    @staticmethod
+    def _store_message_inputs(
+        runtime: SessionRuntime,
+        request: SendMessage,
+    ) -> tuple[list[ImageContent], list[ArtifactRef]]:
         images = []
         for item in request.images:
             ref = runtime.application.artifacts.put(
@@ -1030,27 +1039,7 @@ class SessionManager(SessionsPort):
             )
             for item in request.attachments
         ]
-        self._log.info(
-            "session.message.accepted",
-            session_id=request.session_id,
-            thread_id=request.thread_id,
-            request_id=request.request_id,
-            delivery=request.delivery,
-            content_chars=len(request.content),
-            images=len(images),
-            attachments=len(attachments),
-        )
-        return _announce_runtime_events(
-            self,
-            runtime,
-            runtime.stream_message(
-                request.content,
-                request.request_id,
-                delivery=request.delivery,
-                images=images,
-                artifacts=attachments,
-            ),
-        )
+        return images, attachments
 
     async def pending_inputs(
         self,
@@ -1083,7 +1072,7 @@ class SessionManager(SessionsPort):
     async def regenerate_message(
         self,
         request: RegenerateMessage,
-    ) -> AsyncIterator[ClientEvent]:
+    ) -> None:
         runtime = await self.get(request.session_id, request.thread_id)
         require_idle(runtime, "regenerate a response")
         self._log.info(
@@ -1092,11 +1081,7 @@ class SessionManager(SessionsPort):
             thread_id=request.thread_id,
             request_id=request.request_id,
         )
-        return _announce_runtime_events(
-            self,
-            runtime,
-            regenerate_turn_stream(runtime, request_id=request.request_id),
-        )
+        await start_regenerate_turn(runtime, request_id=request.request_id)
 
     async def stream_events(
         self,
@@ -1104,10 +1089,9 @@ class SessionManager(SessionsPort):
         thread_id: str,
         *,
         after: int | None = None,
-    ) -> AsyncIterator[SessionEventFrame]:
+    ) -> SessionEventSubscription:
         runtime = await self.get(session_id, thread_id)
-        events = runtime.attach_event_stream(after)
-        return _runtime_events(runtime, events)
+        return runtime.event_stream.subscribe(after)
 
     async def respond_permission(
         self,

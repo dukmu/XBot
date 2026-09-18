@@ -1,9 +1,10 @@
-"""Micro-benchmark for the HTTP/SSE transport.
+"""Micro-benchmark for in-process HTTP submission and session events.
 
-Measures the round-trip latency for sending a user message and
-receiving the ``turn_finished`` event. The script spins up a FastAPI
-app in-process via ``httpx.ASGITransport`` (no real socket) and a
-mock LLM, so it is safe to run on CI without external dependencies.
+Measures the latency from submitting a user message over in-process HTTP to
+receiving its terminal ``turn_finished`` event from the authoritative session
+event stream. The script uses ``httpx.ASGITransport`` (no real socket) and a
+mock LLM, so it is safe to run on CI without external dependencies. It does
+not model a long-lived HTTP SSE response.
 
 Run with::
 
@@ -17,12 +18,12 @@ layer, not to assert absolute thresholds.
 from __future__ import annotations
 
 import asyncio
-import json
 import statistics
 import time
 from collections import Counter
+from functools import partial
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import httpx
 import pytest
@@ -32,7 +33,7 @@ from XBotv2.core.paths import RuntimePaths
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
-from XBotv2.server.http import set_llm_override
+from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 
 
@@ -95,8 +96,10 @@ async def http_app(tmp_path: Path):
         no_plugins=True,
     )
     app = server.server
-    set_llm_override(
-        app, MockLLM(responses=[{"content": "bench reply"}] * 200)
+    app.state.manager = server.sessions
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{"content": "bench reply"}] * 200),
     )
     try:
         yield app
@@ -119,13 +122,15 @@ async def client(http_app) -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_http_turn_latency_distribution(client: httpx.AsyncClient) -> None:
+async def test_http_turn_latency_distribution(
+    client: httpx.AsyncClient,
+    http_app,
+) -> None:
     """Run 50 turns and report end-to-end latency statistics.
 
-    The test is *informational* — it always passes, but prints a
-    summary so the bench report can quote realistic numbers. The
-    reported metric is wall-clock from "first byte of request" to
-    "turn_finished event observed".
+    The test is *informational* — it always passes, but prints a summary so
+    the bench report can quote realistic numbers. The reported metric is
+    wall-clock from the HTTP submit to the authoritative session event.
     """
 
     open_resp = await client.post(
@@ -137,31 +142,22 @@ async def test_http_turn_latency_distribution(client: httpx.AsyncClient) -> None
     event_type_counter: Counter[str] = Counter()
 
     for turn_idx in range(50):
+        runtime = await http_app.state.manager.get("bench", "t")
+        events = runtime.event_stream.subscribe()
         started = time.perf_counter()
-        async with client.stream(
-            "POST",
-            "/sessions/bench/threads/t/messages",
-            json={"content": f"turn-{turn_idx}", "request_id": f"r-{turn_idx}"},
-        ) as response:
-            assert response.status_code == 200
-            body = "".join([chunk async for chunk in response.aiter_text()])
-
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        latencies_ms.append(elapsed_ms)
-
-        # Parse and count event types
-        for raw_frame in body.split("\n\n"):
-            if not raw_frame.strip():
-                continue
-            for line in raw_frame.splitlines():
-                if line.startswith("data:"):
-                    text = line.split(":", 1)[1].strip()
-                    if text:
-                        try:
-                            event = json.loads(text)
-                            event_type_counter[event.get("type", "?")] += 1
-                        except json.JSONDecodeError:
-                            pass
+        try:
+            response = await client.post(
+                "/sessions/bench/threads/t/messages",
+                json={"content": f"turn-{turn_idx}", "request_id": f"r-{turn_idx}"},
+            )
+            assert response.status_code == 202
+            async for frame in events:
+                event_type_counter[frame.event.type] += 1
+                if frame.event.type == "turn_finished":
+                    break
+            latencies_ms.append((time.perf_counter() - started) * 1000.0)
+        finally:
+            await events.aclose()
 
     summary = {
         "count": len(latencies_ms),
@@ -178,16 +174,16 @@ async def test_http_turn_latency_distribution(client: httpx.AsyncClient) -> None
     }
 
     # Print in a way that shows up under `pytest -s`.
-    print("\n[bench] HTTP turn latency summary:")
+    print("\n[bench] HTTP submit + session-event delivery latency:")
     for key, value in summary.items():
         print(f"  {key}: {value}")
 
     # The bench should produce the canonical 4 events per turn.
     expected_per_turn = {
+        "message": 1,
         "turn_started": 1,
         "assistant_message": 1,
         "turn_finished": 1,
-        "end": 1,
     }
     for event_type, per_turn in expected_per_turn.items():
         assert event_type_counter[event_type] == 50 * per_turn, (

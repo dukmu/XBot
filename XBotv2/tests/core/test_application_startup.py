@@ -3,6 +3,7 @@
 import json
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,47 @@ import yaml
 
 from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
+from XBotv2.session.contracts import AgentApplicationOptions
+
+
+@pytest.mark.asyncio
+async def test_agent_application_factory_model_override_precedence(
+    tmp_path,
+    monkeypatch,
+):
+    import XBotv2.application.app as application_app
+
+    captured = []
+
+    async def capture_start_application(**kwargs):
+        captured.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(application_app, "start_application", capture_start_application)
+    monkeypatch.setattr(application_app, "mounted_application", lambda context: context)
+
+    options = AgentApplicationOptions(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+        provider_name="default",
+        session_id="factory-session",
+        thread_id="agent",
+        workspace_root=tmp_path,
+        no_plugins=True,
+    )
+    factory_default = MockLLM(responses=[])
+    explicit = MockLLM(responses=[])
+
+    await application_app.create_agent_application(
+        options,
+        model_override=factory_default,
+    )
+    await application_app.create_agent_application(
+        replace(options, model_override=explicit),
+        model_override=factory_default,
+    )
+
+    assert captured[0]["llm_override"] is factory_default
+    assert captured[1]["llm_override"] is explicit
 
 
 class TestApplicationStartupBasics:

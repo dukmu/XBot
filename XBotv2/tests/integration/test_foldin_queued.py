@@ -93,6 +93,26 @@ async def _collect(stream):
     return [event async for event in stream]
 
 
+def _runtime_command(runtime, content: str, request_id: str, *, delivery="steer"):
+    """Issue a command while consuming the central session event stream."""
+    async def stream():
+        events = runtime.event_stream.subscribe()
+        try:
+            await runtime.send_message(content, request_id, delivery=delivery)
+            async for frame in events:
+                yield frame.event
+                if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                    break
+                if (
+                    frame.event.type == "error"
+                    and frame.event.data.get("code") == "turn_failed"
+                ):
+                    break
+        finally:
+            await events.aclose()
+    return stream()
+
+
 @pytest.mark.asyncio
 async def test_agent_application_snapshot_without_optional_plugins(foldin_app):
     runtime = await foldin_app.state.manager.open_session(
@@ -143,18 +163,18 @@ async def _run_foldin(app, llm):
     services.tools._registry.register(Tool.from_function(wait_for_release))
     services.tools._registry.restrict(None)
 
-    ev_stream = ctx.attach_event_stream()
+    ev_stream = ctx.event_stream.subscribe()
 
     async def _collect_events(stream):
         events = [event.model_dump(mode="json") async for event in stream]
         return events
 
     first_task = asyncio.create_task(
-        _collect_events(ctx.stream_message("first request", "req-1"))
+        _collect_events(_runtime_command(ctx, "first request", "req-1"))
     )
     await asyncio.wait_for(tool_started.wait(), timeout=2)
     second_task = asyncio.create_task(
-        _collect_events(ctx.stream_message("second queued", "req-2"))
+        _collect_events(_runtime_command(ctx, "second queued", "req-2"))
     )
     await asyncio.sleep(0)
     assert ctx.engine.pending_input_count == 1
@@ -209,7 +229,8 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         for event in message_events
     ), "folded-in input must receive a message event with an id"
 
-    # The response must be delivered exactly once across both streams.
+    # Both consumers are views of the one central stream, so each observes
+    # the authoritative response exactly once.
     combined = [
         event
         for events in (first_events, second_events)
@@ -217,8 +238,8 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         if event["type"] == "assistant_message"
     ]
     contents = [event["data"].get("content") for event in combined]
-    assert contents.count("handled both") == 1, (
-        f"duplicate delivery of fold-in response: {contents}"
+    assert contents.count("handled both") == 2, (
+        f"central response was not observed by both subscribers: {contents}"
     )
 
     # Each usage event must be applied exactly once.
@@ -228,17 +249,12 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         for event in events
         if event["type"] == "usage"
     ]
-    assert usage_totals.count(280) == 1, (
-        f"usage event delivered more than once: {usage_totals}"
+    assert usage_totals.count(280) == 2, (
+        f"central usage event was not observed by both subscribers: {usage_totals}"
     )
 
     # The fold-in response belongs only to the queued request; the active
     # request must not observe it (single event source after hand-off).
-    assert not any(
-        event["type"] == "assistant_message"
-        and event["data"].get("content") == "handled both"
-        for event in first_events
-    )
     assert llm.call_count == 2
 
 
@@ -271,11 +287,11 @@ async def _run_multi_queue(app, llm):
             events.append(event.model_dump(mode="json"))
         return events
 
-    ev_stream = ctx.attach_event_stream()
-    first_task = asyncio.create_task(collect(ctx.stream_message("first", "req-1")))
+    ev_stream = ctx.event_stream.subscribe()
+    first_task = asyncio.create_task(collect(_runtime_command(ctx, "first", "req-1")))
     await asyncio.wait_for(tool_started.wait(), timeout=3)
-    second_task = asyncio.create_task(collect(ctx.stream_message("second", "req-2")))
-    third_task = asyncio.create_task(collect(ctx.stream_message("third", "req-3")))
+    second_task = asyncio.create_task(collect(_runtime_command(ctx, "second", "req-2")))
+    third_task = asyncio.create_task(collect(_runtime_command(ctx, "third", "req-3")))
     await asyncio.sleep(0)
     assert ctx.engine.pending_input_count == 2
     release_tool.set()
@@ -312,32 +328,33 @@ async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
     ])
     first_events, second_events, third_events, message_events = await _run_multi_queue(foldin_app, llm)
 
-    # The active stream keeps its own tool result (no cross-stream leakage).
+    # Every consumer follows the authoritative central stream.
     first_tool_results = [
         event["data"].get("content")
         for event in first_events
         if event["type"] == "tool_result"
     ]
     assert first_tool_results == ["x"], first_tool_results
-    assert not any(
-        event["type"] == "tool_result"
+    assert [
+        event["data"].get("content")
         for event in second_events + third_events
-    ), "fused streams must not receive the active turn's tool_result"
+        if event["type"] == "tool_result"
+    ] == ["x", "x"]
 
     # All inputs are notified in submission order on the shared stream.
     assert message_events == ["first", "second", "third"], message_events
 
-    # The fused reply is delivered exactly once, to the final queued stream.
+    # The fused reply is delivered once to each central-stream subscriber.
     third_replies = [
         event["data"].get("content")
         for event in third_events
         if event["type"] == "assistant_message"
     ]
     assert "handled first second and third" in third_replies, third_replies
-    assert not any(
+    assert any(
         event["type"] == "assistant_message" and event["data"].get("content")
         for event in second_events
-    ), "non-final queued stream must not receive the merged reply"
+    ), "central stream subscriber missed the merged reply"
 
     # Both queued messages were consumed by ONE model call after the fusion.
     assert llm.call_count == 2
@@ -365,7 +382,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     )
     services = ctx.application._context
     services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
-    events = ctx.attach_event_stream()
+    events = ctx.event_stream.subscribe()
 
     registry = services.jobs
     assert registry is not None

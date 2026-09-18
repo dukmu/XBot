@@ -41,10 +41,10 @@ protocol handshake is `POST /hello`.
 | GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `ThreadMessagesResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `ThreadTrajectoryResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
-| POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | SSE turn stream |
+| POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted` command submission |
 | POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutationResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | SSE turn stream |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | `202 Accepted` command submission |
 | GET | `/sessions/{session_id}/threads/{thread_id}/queue` | `list_pending_inputs` | `PendingInputListResponse` |
 | PATCH | `/sessions/{session_id}/threads/{thread_id}/queue/{message_id}` | `update_pending_input` | updated `PendingInputListResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/events` | `stream_events` | replay/live SSE stream |
@@ -54,6 +54,23 @@ protocol handshake is `POST /hello`.
 thread, request, event type, and typed data. The event stream is replayable
 from an opaque `after` cursor; an expired cursor is an explicit conflict, not
 silent truncation.
+
+Message and regeneration POSTs are command submissions and always return
+`202 Accepted`, regardless of `Accept`. Subscribe to `GET .../events` for all
+turn, tool, background-task, and regeneration events; it is the sole SSE
+transport and supports replay through the `after` cursor.
+
+Each connection owns only its cursor over the session's authoritative event
+log. Closing the connection releases that cursor; it does not cancel the
+session turn or any background job.
+
+An attached session SSE consumer receives every live frame in sequence while
+its cursor remains inside the retained replay window. The live notification is
+only a bounded wakeup; a slow consumer is never silently truncated or
+detached. If it falls behind the replay window, the server returns an
+explicit cursor conflict. Clients should keep network reading independent
+from expensive rendering and recover from a cursor conflict with the session
+snapshot's returned `event_cursor`.
 
 Queued and steering inputs use the same replayable stream as conversation
 output. `input_accepted`, `input_claimed`, and `input_consumed` carry

@@ -4,30 +4,61 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+
 from XBotv2.core.tools import ClientEvent
-from XBotv2.core.replay import (
-    ReplaySubscriber,
-    ReplaySubscription,
-    fan_out,
+from XBotv2.session.contracts import (
+    SessionEventCursorExpired,
+    SessionEventFrame,
+    SessionEventSubscription as SessionEventSubscriptionPort,
 )
-from XBotv2.session.contracts import SessionEventCursorExpired, SessionEventFrame
 
 
-class SessionEventSubscription(ReplaySubscription[SessionEventFrame]):
+@dataclass(slots=True, eq=False)
+class _SessionSubscriber:
+    """A one-slot wakeup for a cursor over the central replay window."""
+
+    wakeups: asyncio.Queue[None]
+    closed: bool = False
+
+
+class _SessionEventSubscription(AsyncIterator[SessionEventFrame]):
     def __init__(
         self,
         stream: "SessionEventStream",
-        subscriber: ReplaySubscriber[SessionEventFrame],
-        replay: tuple[SessionEventFrame, ...],
+        subscriber: _SessionSubscriber,
         cursor: int,
     ) -> None:
-        super().__init__(
-            stream=stream,
-            subscriber=subscriber,
-            replay=replay,
-            cursor=cursor,
-            cursor_error=SessionEventCursorExpired,
-        )
+        self._stream = stream
+        self._subscriber = subscriber
+        self._cursor = cursor
+        self._closed = False
+
+    def __aiter__(self) -> "_SessionEventSubscription":
+        return self
+
+    async def __anext__(self) -> SessionEventFrame:
+        try:
+            while not self._closed and not self._subscriber.closed:
+                frame = self._stream.frame_after(self._cursor)
+                if frame is not None:
+                    self._cursor = frame.sequence
+                    return frame
+                await self._subscriber.wakeups.get()
+            raise StopAsyncIteration
+        except BaseException:
+            self.close()
+            raise
+
+    async def aclose(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stream.detach(self._subscriber)
 
 
 class SessionEventStream:
@@ -36,7 +67,7 @@ class SessionEventStream:
             raise ValueError("Session event capacity must be positive")
         self._capacity = capacity
         self._frames: deque[SessionEventFrame] = deque(maxlen=capacity)
-        self._subscribers: set[ReplaySubscriber[SessionEventFrame]] = set()
+        self._subscribers: set[_SessionSubscriber] = set()
         self._sequence = 0
         self._closed = False
 
@@ -50,7 +81,9 @@ class SessionEventStream:
 
     @property
     def oldest_sequence(self) -> int:
-        return self._frames[0].sequence if self._frames else self._sequence + 1
+        if not self._frames:
+            return self._sequence + 1
+        return self._frames[0].sequence
 
     def publish(
         self,
@@ -63,36 +96,59 @@ class SessionEventStream:
         self._sequence += 1
         frame = SessionEventFrame(self._sequence, request_id, event)
         self._frames.append(frame)
-        fan_out(self._subscribers, frame)
+        # Subscribers retain only a cursor. A single coalesced wakeup tells
+        # them to pull all available frames from the central bounded window.
+        # This keeps both producer and subscriber memory bounded without
+        # silently dropping a reliable frame into a full per-client queue.
+        for subscriber in tuple(self._subscribers):
+            if subscriber.closed or subscriber.wakeups.full():
+                continue
+            subscriber.wakeups.put_nowait(None)
         return frame
 
-    def subscribe(self, after: int | None = None) -> SessionEventSubscription:
+    def subscribe(self, after: int | None = None) -> SessionEventSubscriptionPort:
         cursor = self._sequence if after is None else after
         if cursor < 0 or cursor > self._sequence:
             raise ValueError("Session event cursor is outside the current sequence")
         oldest = self.oldest_sequence
         if cursor < oldest - 1:
             raise SessionEventCursorExpired(cursor, oldest)
-        replay = tuple(frame for frame in self._frames if frame.sequence > cursor)
-        subscriber = ReplaySubscriber(asyncio.Queue(maxsize=self._capacity))
+        subscriber = _SessionSubscriber(asyncio.Queue(maxsize=1))
         self._subscribers.add(subscriber)
-        return SessionEventSubscription(self, subscriber, replay, cursor)
+        return _SessionEventSubscription(self, subscriber, cursor)
 
-    def detach(self, subscriber: ReplaySubscriber[SessionEventFrame]) -> None:
+    def frame_after(self, cursor: int) -> SessionEventFrame | None:
+        if cursor < self.oldest_sequence - 1:
+            raise SessionEventCursorExpired(cursor, self.oldest_sequence)
+        next_sequence = cursor + 1
+        if next_sequence > self._sequence:
+            return None
+        # ``deque`` is indexed relative to the oldest retained frame.  Using
+        # the global sequence modulo capacity here is incorrect after the
+        # first eviction because sequence zero is not the deque's origin.
+        index = next_sequence - self.oldest_sequence
+        if index < 0 or index >= len(self._frames):
+            raise SessionEventCursorExpired(cursor, self.oldest_sequence)
+        frame = self._frames[index]
+        if frame.sequence != next_sequence:
+            raise SessionEventCursorExpired(cursor, self.oldest_sequence)
+        return frame
+
+    def detach(self, subscriber: _SessionSubscriber) -> None:
+        subscriber.closed = True
         self._subscribers.discard(subscriber)
+        if subscriber.wakeups.empty():
+            subscriber.wakeups.put_nowait(None)
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
         for subscriber in tuple(self._subscribers):
-            while subscriber.queue.full():
-                subscriber.queue.get_nowait()
-            subscriber.queue.put_nowait(None)
+            self.detach(subscriber)
         self._subscribers.clear()
 
 
 __all__ = [
     "SessionEventStream",
-    "SessionEventSubscription",
 ]

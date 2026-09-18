@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,9 +11,9 @@ import uvicorn
 import yaml
 
 from XBotv2.application.server import start_server_application
+from XBotv2.application.app import create_agent_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
-from XBotv2.server.http import set_llm_override
 
 
 async def main() -> None:
@@ -77,9 +78,9 @@ async def main() -> None:
             workspace_root=str(workspace),
             no_plugins=True,
         )
-        set_llm_override(
-            application.server,
-            MockLLM(
+        application.sessions.application_factory = partial(
+            create_agent_application,
+            model_override=MockLLM(
                 responses=[
                     {
                         "content": "A real MockLLM response through the XBot HTTP stream.",

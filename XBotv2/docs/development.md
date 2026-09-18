@@ -33,6 +33,27 @@ when changing a public facade, and keep declarations in `contracts.py`,
 Web/TUI behavior, provider interoperability, socket permissions, or
 documentation accuracy.
 
+## Embedded application composition
+
+For an embedded server or test harness, install a provider default on the
+session manager before opening the first session:
+
+```python
+from functools import partial
+
+from XBotv2.application.app import create_agent_application
+
+sessions.application_factory = partial(
+    create_agent_application,
+    model_override=mock_provider,
+)
+```
+
+An explicit `AgentApplicationOptions.model_override` supplied when opening a
+session takes precedence over the factory default. This keeps test and host
+composition in the application layer without adding a transport-specific
+override hook.
+
 ## Documentation maintenance
 
 When a public contract, route, tree entry, state owner, or security behavior

@@ -491,10 +491,12 @@ async def _run_once(args):
         engine=engine,
         interactive=False,
     )
+    events = runtime.event_stream.subscribe()
     try:
-        async for event in runtime.stream_message(args.prompt, "once"):
-            etype = event.get("type", "")
-            data = event.get("data", {})
+        await runtime.send_message(args.prompt, "once")
+        async for frame in events:
+            etype = frame.event.type
+            data = frame.event.data
 
             if etype == "assistant_message":
                 content = data.get("content", "")
@@ -510,7 +512,14 @@ async def _run_once(args):
                 print(f"\n[permission denied] {data.get('reason', '')}")
             elif etype == "error":
                 print(f"\nError: {data.get('message', 'unknown')}")
+            if etype in {"turn_finished", "turn_cancelled"} or (
+                etype == "error" and data.get("code") == "turn_failed"
+            ):
+                # A failed turn may never reach ``turn_started`` and therefore
+                # has no lifecycle terminal frame; the typed error ends it.
+                break
     finally:
+        await events.aclose()
         await runtime.close()
 
 

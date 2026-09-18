@@ -429,12 +429,13 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         current: updateSlots(state.current, data.status_slots),
       };
     case "turn_finished":
-    case "turn_cancelled":
+    case "turn_cancelled": {
+      const status = event.type === "turn_cancelled" ? "cancelled" : "error";
       return {
         ...state,
         turnRunning: false,
         entries: [
-          ...finalizeAssistantEntries(state.entries),
+          ...finalizePendingTools(finalizeAssistantEntries(state.entries), status),
           runtimeEntry(
             "turn",
             event.type,
@@ -449,6 +450,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           ? normalizeSessionStats(data.session_stats)
           : state.sessionStats,
       };
+    }
     case "assistant_message_delta":
       return {
         ...state,
@@ -566,15 +568,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ...state,
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
         current: updateSlots(state.current, data.status_slots),
-      };
-    case "input_rejected":
-      return {
-        ...state,
-        entries: [
-          ...state.entries,
-          noticeEntry(stringValue(data.reason) || "Input rejected", "error"),
-        ],
-        turnRunning: false,
       };
     case "message": {
       const id = stringValue(data.id);
@@ -1119,6 +1112,14 @@ function finalizeAssistantEntries(entries: TimelineEntry[]): TimelineEntry[] {
   if (!streaming) return entries;
   return entries.map((entry) => (
     entry.kind === "message" && entry.streaming ? { ...entry, streaming: false } : entry
+  ));
+}
+
+function finalizePendingTools(entries: TimelineEntry[], status: string): TimelineEntry[] {
+  return entries.map((entry) => (
+    entry.kind === "tool" && !terminalToolStatus(entry.status)
+      ? { ...entry, status }
+      : entry
   ));
 }
 

@@ -33,7 +33,7 @@ from XBotv2.permissions.system import (
     normalize_agent_permissions,
 )
 
-from XBotv2.subagents.service import SubagentLauncher, SubagentRunner
+from XBotv2.subagents.service import SubagentLauncher, SubagentRunner, SubagentTools
 
 
 class RuntimeApplication:
@@ -281,19 +281,24 @@ async def test_subagent_can_ask_user_through_parent_session(
         engine=engine,
     )
 
-    events = []
-    async for event in runtime.stream_message("Clarify this", "request-1"):
-        events.append(event)
+    events = runtime.event_stream.subscribe()
+    await runtime.send_message("Clarify this", "request-1")
+    frames = []
+    async for frame in events:
+        event = frame.event
+        frames.append(event)
         if event.type == "user_input_required":
             application.client_events.waiter("user_input_required").answer(
                 event.data["request_id"], answer="A"
             )
+        if event.type == "turn_finished":
+            break
 
-    assert any(event.type == "user_input_required" for event in events)
+    assert any(event.type == "user_input_required" for event in frames)
     assert any(
         event.type == "assistant_message"
         and event.data["content"] == "Parent received the clarification"
-        for event in events
+        for event in frames
     )
     await runtime.close()
     await asyncio.get_running_loop().shutdown_default_executor()
@@ -377,21 +382,26 @@ async def test_subagent_can_request_permission_through_parent_session(
         engine=engine,
     )
 
-    events = []
-    async for event in runtime.stream_message("Read this", "request-1"):
-        events.append(event)
+    events = runtime.event_stream.subscribe()
+    await runtime.send_message("Read this", "request-1")
+    frames = []
+    async for frame in events:
+        event = frame.event
+        frames.append(event)
         if event.type == "permission_request":
             application.client_events.waiter("permission_request").answer(
                 event.data["request_id"],
                 decision="allow",
                 scope="once",
             )
+        if event.type == "turn_finished":
+            break
 
-    assert any(event.type == "permission_request" for event in events)
+    assert any(event.type == "permission_request" for event in frames)
     assert any(
         event.type == "assistant_message"
         and event.data["content"] == "Parent received the file result"
-        for event in events
+        for event in frames
     )
     await runtime.close()
     await asyncio.get_running_loop().shutdown_default_executor()
@@ -851,6 +861,119 @@ async def test_background_subagent_stop_cancels_and_closes_child(tmp_path):
     assert result.cancelled is True
     assert job.status.value == "cancelled"
     assert child.closed is True
+
+
+@pytest.mark.asyncio
+async def test_interrupting_parent_turn_does_not_cancel_background_subagent(tmp_path):
+    """Cancelling the parent turn leaves its background subagent running."""
+    agent_registry = AgentCatalog(ownership="caller")
+    agent_registry.register(
+        AgentDefinition(name="worker", description="Do focused work")
+    )
+    release = asyncio.Event()
+    child_wait_started = asyncio.Event()
+
+    class GatedChild(_ChildSession):
+        async def wait(self) -> ChildApplicationResult:
+            child_wait_started.set()
+            return await super().wait()
+
+    child = GatedChild(wait=release)
+
+    async def factory(*_args):
+        return child
+
+    launcher = _make_session(
+        tmp_path, registry=agent_registry, factory=factory
+    )
+    job_registry = JobRegistry()
+    tools = SubagentTools(
+        registry=job_registry,
+        launcher=launcher,
+        catalog=agent_registry,
+    )
+    result = await tools.spawn_subagent("worker", "Wait")
+    assert result.status == "success"
+    jobs = [job for job in job_registry.all() if job.kind is JobKind.SUBAGENT]
+    assert len(jobs) == 1
+    job = jobs[0]
+    await asyncio.wait_for(child_wait_started.wait(), timeout=1)
+    assert job.status.value == "running"
+
+    class ParentEngine:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run_turn(self, content, **kwargs):
+            del content, kwargs
+            self.started.set()
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                yield {
+                    "type": "turn_cancelled",
+                    "data": {"turn": 1, "reason": "client_interrupt"},
+                }
+                raise
+
+        async def discard_inputs(self):
+            return None
+
+        async def close_session(self):
+            return None
+
+    class ParentApplication(RuntimeApplication):
+        async def status_slots(self):
+            return {}
+
+        async def snapshot(self):
+            return SimpleNamespace(messages=())
+
+    paths = RuntimePaths.from_data_dir(tmp_path)
+    services = Context(data_dir=tmp_path)
+    await services.start()
+    parent_engine = ParentEngine()
+    runtime = SessionRuntime(
+        session_id="parent",
+        thread_id="agent",
+        provider_name="default",
+        paths=paths,
+        workspace_root=str(tmp_path),
+        no_plugins=True,
+        application=ParentApplication(services, parent_engine),
+        engine=parent_engine,
+    )
+    events = runtime.event_stream.subscribe()
+
+    await runtime.send_message("interrupt me", "parent-request")
+    await asyncio.wait_for(parent_engine.started.wait(), timeout=1)
+    turn_task = runtime.turn_task
+    assert turn_task is not None
+    assert runtime.request_interrupt() is True
+    result = await asyncio.gather(turn_task, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert runtime.turn_task is None
+    assert runtime.turn_lock.locked() is False
+    assert job.status.value == "running"
+    assert child.closed is False
+
+    frame_types = []
+    async for frame in events:
+        frame_types.append(frame.event.type)
+        if frame.event.type == "turn_cancelled":
+            break
+    assert frame_types[-1] == "turn_cancelled"
+
+    release.set()
+    await asyncio.wait_for(job_registry.wait([job.id]), timeout=1)
+    assert job.status.value == "completed", job.error
+    assert child.closed is True
+
+    await events.aclose()
+    await runtime.close()
 
 
 def test_child_permissions_cannot_expand_parent_policy():

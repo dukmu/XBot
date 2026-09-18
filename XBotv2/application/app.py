@@ -218,6 +218,8 @@ async def start_application(
 
 async def create_agent_application(
     options: AgentApplicationOptions,
+    *,
+    model_override: BaseProvider | None = None,
 ) -> AgentApplicationPort:
     """Typed factory exported to composition roots, not session internals."""
     extra_plugins = (
@@ -236,7 +238,11 @@ async def create_agent_application(
         workspace_root=options.workspace_root,
         no_plugins=options.no_plugins,
         extra_plugins=extra_plugins,
-        llm_override=options.model_override,
+        llm_override=(
+            options.model_override
+            if options.model_override is not None
+            else model_override
+        ),
         selected_agent=options.selected_agent,
         agent_definition=options.agent_definition,
         parent_thread_id=options.parent_thread_id,

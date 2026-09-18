@@ -85,6 +85,11 @@ _SESSION_EVENT_CURSOR_RECOVERIES = 3
 # recovery point: re-open the session for a fresh cursor, history, and pending
 # interactions. Bounded, because a rebuild resets the rewind budget above.
 _SESSION_EVENT_BASELINE_REBUILDS = 2
+# Raw SSE frames are kept only while the Textual consumer catches up. Once
+# this bounded hand-off fills, backpressure reaches the cursor-based server
+# subscription; an overrun is then reported as explicit cursor expiry rather
+# than becoming an unbounded client-side backlog.
+_SESSION_EVENT_PENDING_CAPACITY = 512
 
 
 logger = logging.getLogger("xbotv2.tui")
@@ -209,6 +214,9 @@ class XBotTextualApp(App[None]):
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
         self._replay_loading = False
+        # Recovery starts the live reader before the optional trajectory
+        # lookup, so events emitted during that lookup remain queued.
+        self._restore_compactions_when_reading = False
         self._choice_results: dict[str, str] = {}
         self._choice_request_ids: dict[str, str] = {}
         self._interaction_response_pending = False
@@ -334,7 +342,13 @@ class XBotTextualApp(App[None]):
             self._reasoning_expanded = not event.collapsible.collapsed
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.disabled:
-            self.call_after_refresh(composer.focus)
+            focused = self.focused
+
+            def restore_focus() -> None:
+                if self.focused is focused or self.focused is None:
+                    composer.focus()
+
+            self.call_after_refresh(restore_focus)
 
     async def _connect(self) -> None:
         try:
@@ -397,7 +411,12 @@ class XBotTextualApp(App[None]):
             self.state.context_window = context_window
         self._refresh_all()
 
-    async def _apply_open_session(self, session: dict[str, JsonValue] | None) -> None:
+    async def _apply_open_session(
+        self,
+        session: dict[str, JsonValue] | None,
+        *,
+        restore_compactions: bool = True,
+    ) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
             self.state.session_title = str(session.get("title") or self.state.session_title)
@@ -419,7 +438,8 @@ class XBotTextualApp(App[None]):
             history = session.get("history")
             if isinstance(history, list):
                 self.state.restore_history(history)
-                await self._restore_compaction_entries()
+                if restore_compactions:
+                    await self._restore_compaction_entries()
                 await self._render_replay_window()
             if self._restore_pending_interactions(session):
                 await self._render_new_transcript_entries()
@@ -564,7 +584,7 @@ class XBotTextualApp(App[None]):
             self._pending_messages[sequence] = display_text
         self._refresh_all()
         self.run_worker(
-            self._collect_queued_message(sequence, text, images),
+            self._collect_queued_message(text, images),
             exclusive=False,
             name=f"turn-{sequence}",
         )
@@ -1310,24 +1330,10 @@ class XBotTextualApp(App[None]):
 
     async def _collect_queued_message(
         self,
-        sequence: int,
         text: str,
         images: list[dict[str, str]],
     ) -> None:
-        while True:
-            rejected = await self._collect_response(text, images=images)
-            if not rejected:
-                break
-            # The kernel was busy and no tool boundary fused the input before
-            # the turn ended. Keep the message queued and retry once the
-            # running turn finishes; this self-retry is race-free (no reliance
-            # on a cross-worker flush at turn_finished).
-            self._refresh_all()
-            while self.state.turn_active and self._session_attached:
-                await asyncio.sleep(0.1)
-            if not self._session_attached:
-                return
-        self._pending_messages.pop(sequence, None)
+        await self._collect_response(text, images=images)
         self._refresh_all()
 
     def _pop_pending_message(self, content: str) -> None:
@@ -1371,7 +1377,8 @@ class XBotTextualApp(App[None]):
             return False
         if not isinstance(session, dict):
             return False
-        await self._apply_open_session(session)
+        await self._apply_open_session(session, restore_compactions=False)
+        self._restore_compactions_when_reading = True
         logger.warning("session event cursor expired; rebuilt the client baseline")
         return True
 
@@ -1382,24 +1389,67 @@ class XBotTextualApp(App[None]):
         try:
             while self._session_attached:
                 try:
-                    async for event in self.session.session_events():
-                        reconnect_attempt = 0
-                        try:
-                            await self._consume_stream_event(event, pop_pending=True)
-                        except Exception:  # noqa: BLE001
-                            # A single malformed event must not abort the stream,
-                            # otherwise the turn state (e.g. turn_active) stays stuck.
-                            logger.exception(
-                                "tui session event failed type=%s", event.get("type")
-                            )
-                    if not self._session_attached or not self.state.turn_active:
-                        return
-                    # An SSE end sentinel without a terminal turn event is an
-                    # incomplete response too.  Re-open from the session's
-                    # cursor so the missing terminal frame can be replayed.
-                    raise RuntimeError(
-                        "session event stream ended before the turn completed"
+                    # Keep the network reader independent from Textual work.
+                    # Applying a delta can trigger layout/markdown rendering
+                    # and briefly block this worker; if that also blocks the
+                    # SSE iterator, the server-side live queue can overflow
+                    # during an otherwise healthy burst.  The reader advances
+                    # TerminalSession's cursor as soon as each frame arrives,
+                    # while this loop remains the sole state/render consumer.
+                    pending: asyncio.Queue[tuple[str, object]] = asyncio.Queue(
+                        maxsize=_SESSION_EVENT_PENDING_CAPACITY,
                     )
+
+                    async def read_events() -> None:
+                        try:
+                            async for event in self.session.session_events():
+                                await pending.put(("event", event))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:  # noqa: BLE001
+                            await pending.put(("error", exc))
+                        else:
+                            await pending.put(("end", None))
+
+                    reader = asyncio.create_task(read_events())
+                    try:
+                        if self._restore_compactions_when_reading:
+                            self._restore_compactions_when_reading = False
+                            # The reader is live while this optional lookup
+                            # runs. Frames accumulate in `pending` and are
+                            # applied below after the baseline is ready.
+                            await self._restore_compaction_entries()
+                        while True:
+                            kind, payload = await pending.get()
+                            if kind == "error":
+                                if isinstance(payload, BaseException):
+                                    raise payload
+                                raise RuntimeError("session event reader failed")
+                            if kind == "end":
+                                if not self._session_attached or not self.state.turn_active:
+                                    return
+                                # An SSE end sentinel without a terminal turn
+                                # event is incomplete; reconnect from the
+                                # cursor already advanced by the reader.
+                                raise RuntimeError(
+                                    "session event stream ended before the turn completed"
+                                )
+                            event = payload
+                            if not isinstance(event, dict):
+                                raise TypeError("session event must be an object")
+                            reconnect_attempt = 0
+                            try:
+                                await self._consume_stream_event(event, pop_pending=True)
+                            except Exception:  # noqa: BLE001
+                                # A single malformed event must not abort the
+                                # stream, otherwise turn_active stays stuck.
+                                logger.exception(
+                                    "tui session event failed type=%s", event.get("type")
+                                )
+                    finally:
+                        if not reader.done():
+                            reader.cancel()
+                        await asyncio.gather(reader, return_exceptions=True)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -1442,32 +1492,17 @@ class XBotTextualApp(App[None]):
         text: str,
         *,
         images: list[dict[str, str]] | None = None,
-    ) -> bool:
-        """Consume one stream; report inputs rejected before a fold boundary."""
-        rejected = False
+    ) -> None:
+        """Submit one message while the shared session stream consumes events."""
         try:
             logger.info("tui.collect_response start session=%s chars=%d", self.state.session_id, len(text))
-            stream = (
-                self.session.send_message(text, images=images)
-                if images
-                else self.session.send_message(text)
-            )
-            async for event in stream:
-                logger.debug("tui.collect_response event type=%s", event.get("type"))
-                try:
-                    rejected = (
-                        await self._consume_stream_event(event)
-                        or rejected
-                    )
-                except Exception:  # noqa: BLE001
-                    # Keep consuming the stream: a single bad event must not
-                    # skip turn_finished/turn_cancelled and leave turn_active
-                    # stuck in the "Running" state.
-                    logger.exception("tui.collect_response event failed type=%s", event.get("type"))
+            if images:
+                await self.session.send_message(text, images=images)
+            else:
+                await self.session.send_message(text)
         except Exception as exc:
             logger.exception("tui.collect_response failed")
-            await self._handle_stream_failure(exc, source="response stream")
-        return rejected
+            await self._handle_stream_failure(exc, source="message submission")
 
     async def _handle_stream_failure(
         self, exc: BaseException, *, source: str
@@ -1505,11 +1540,9 @@ class XBotTextualApp(App[None]):
         event: dict[str, JsonValue],
         *,
         pop_pending: bool = False,
-    ) -> bool:
-        """Apply one transport event and return whether input was rejected."""
+    ) -> None:
+        """Apply one transport event."""
         event_type = event.get("type")
-        if event_type == "input_rejected":
-            return True
         if event_type == "message":
             data = event.get("data") or {}
             if data.get("role") == "user":
@@ -1523,7 +1556,7 @@ class XBotTextualApp(App[None]):
                 await self._render_new_transcript_entries()
                 if pop_pending:
                     self._refresh_all()
-                return False
+                return
         self.state.apply_event(event)
         if self._view_active:
             if event_type in {
@@ -1545,7 +1578,6 @@ class XBotTextualApp(App[None]):
                 await self._exit_thread_view()
         await self._handle_stream_event(event)
         await self._start_interaction_response(event)
-        return False
 
     async def _submit_live_input(self, payload: dict[str, JsonValue]) -> None:
         self._set_input_placeholder("Answer the request, or choose an inline option")

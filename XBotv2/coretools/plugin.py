@@ -73,7 +73,7 @@ class CoreToolsComponent:
             ctx.tools.register(tool)
 
         ctx.on(
-            Events.AFTER_TOOLS,
+            Events.AFTER_TOOL_CALL,
             make_tool_result_cache_hook(
                 artifacts,
                 cache_threshold_chars=config.tool_results.cache_threshold_chars,

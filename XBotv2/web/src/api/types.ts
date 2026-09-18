@@ -11,6 +11,18 @@ export interface AttachmentInput extends ImageInput {
   name: string;
 }
 
+export interface MessageRequest {
+  content: string;
+  request_id: string;
+  delivery: "queue" | "steer";
+  images: ImageInput[];
+  attachments: AttachmentInput[];
+}
+
+export interface RegenerateRequest {
+  request_id: string;
+}
+
 export interface ImageReference {
   path: string;
   media_type: string;

@@ -450,6 +450,56 @@ class TestEngineBasics:
         assert len(tool_results) == 2
 
     @pytest.mark.asyncio
+    async def test_serial_batch_publishes_each_result_before_next_tool_finishes(
+        self, state_store, temp_workspace
+    ):
+        second_started = asyncio.Event()
+        release_second = asyncio.Event()
+
+        async def first() -> str:
+            return "first done"
+
+        async def second() -> str:
+            second_started.set()
+            await release_second.wait()
+            return "second done"
+
+        llm = MockLLM(responses=[
+            {
+                "tool_calls": [
+                    {"name": "first", "args": {}, "id": "call_1"},
+                    {"name": "second", "args": {}, "id": "call_2"},
+                ],
+            },
+            {"content": "done"},
+        ])
+        registry = ToolRegistry()
+        registry.register(Tool.from_function(first))
+        registry.register(Tool.from_function(second))
+        engine = make_engine(llm, registry, state_store, temp_workspace)
+        events: list[dict] = []
+
+        async def consume() -> None:
+            async for event in engine.run_turn("run both"):
+                events.append(event)
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+        await asyncio.sleep(0)
+
+        results = [event for event in events if event["type"] == "tool_result"]
+        assert [event["data"]["tool_call_id"] for event in results] == ["call_1"]
+        assert not task.done()
+
+        release_second.set()
+        await asyncio.wait_for(task, timeout=1)
+        results = [event for event in events if event["type"] == "tool_result"]
+        assert [event["data"]["tool_call_id"] for event in results] == [
+            "call_1",
+            "call_2",
+        ]
+
+    @pytest.mark.asyncio
     async def test_turn_count_increments(self, state_store, temp_workspace):
         """Turn count increases with each run_turn call."""
         llm = MockLLM(responses=[{"content": "Response 1"}, {"content": "Response 2"}])
@@ -2072,8 +2122,13 @@ async def test_interrupt_stops_foreground_tool_but_not_background_jobs(
     # The foreground tool call was terminated (not left running).
     assert tool_finished.is_set()
     assert any(event["type"] == "turn_cancelled" for event in events)
-    # The rendering stream ended with the turn: the cancelled event is
-    # terminal and no further rendering events follow it.
+    cancelled_result = next(
+        event for event in events
+        if event["type"] == "tool_result"
+        and event["data"]["tool_call_id"] == "call_block"
+    )
+    assert cancelled_result["data"]["status"] == "cancelled"
+    # Every started call reaches a terminal tool state before the turn does.
     assert events[-1]["type"] == "turn_cancelled"
 
     # Background jobs are untouched by the interrupt and stay cancellable.

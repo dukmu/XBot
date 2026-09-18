@@ -25,7 +25,7 @@ def make_tool_result_cache_hook(
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
     tail_chars: int = DEFAULT_TAIL_CHARS,
 ):
-    """Create an AFTER_TOOLS hook that caches large tool message contents.
+    """Create a tool-result hook that caches large message contents.
 
     The hook mutates ``ctx.tool_results`` in place so the engine persists and
     emits the bounded message instead of the full output.
@@ -41,10 +41,13 @@ def make_tool_result_cache_hook(
         raise ValueError("tail_chars must be between zero and preview_chars")
 
     async def cache_large_tool_results(ctx: EventContext) -> None:
-        if not ctx.tool_results:
+        messages = ctx.tool_results or (
+            [ctx.tool_result] if ctx.tool_result is not None else []
+        )
+        if not messages:
             return None
 
-        for message in ctx.tool_results:
+        for message in messages:
             candidate = _cache_candidate(message, cache_threshold_chars)
             if candidate is None:
                 continue

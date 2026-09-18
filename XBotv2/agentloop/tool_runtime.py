@@ -7,29 +7,28 @@ import inspect
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from pydantic import JsonValue
 
+from XBotv2.agentloop.contracts import ToolGuard, ToolRegistration
 from XBotv2.agentloop.events import EventContext, EventPort, Events
-from XBotv2.agentloop.contracts import ToolGuard
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core.tools import (
-    ClientEvent,
-    GuardDecision,
-    ToolCall,
-    ToolError,
-    Tool,
-    ToolResult,
-    tool_parameters_schema,
-)
 from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.core.timing import TIMING_METADATA_KEY
+from XBotv2.core.tools import (
+    ClientEvent,
+    GuardDecision,
+    Tool,
+    ToolCall,
+    ToolError,
+    ToolResult,
+    tool_parameters_schema,
+)
 
 _DEFAULT_TOOL_LOG = DEFAULT_RUNTIME_LOG.bind("tools")
 
@@ -75,7 +74,7 @@ async def execute_tools(
     context_factory: Callable[..., EventContext] | None = None,
     runtime_log: RuntimeLog = _DEFAULT_TOOL_LOG,
     approval_layer_active: bool = False,
-) -> list[Message]:
+) -> AsyncIterator[Message]:
     """Execute tool calls through the guard pipeline.
 
     Pipeline per call:
@@ -94,13 +93,14 @@ async def execute_tools(
         context_factory: callable that builds EventContext objects (optional).
         approval_layer_active: whether an approval-capable guard is mounted.
 
-    Returns:
-        List of tool messages (one per tool call).
+    Yields:
+        One completed tool message at a time, in serial execution order.
     """
     results: list[Message] = []
     observed_tool_calls: list[ToolCall] = []
 
     for call in tool_calls:
+        result_start = len(results)
         started = time.perf_counter()
         tool_name = call.name
         entry = registry.get(tool_name) if registry is not None else None
@@ -111,7 +111,6 @@ async def execute_tools(
             argument_fields=sorted(call.args),
             guard_count=len(guards),
         )
-
         if entry is None:
             _log_tool_finish(
                 runtime_log,
@@ -133,18 +132,21 @@ async def execute_tools(
                 started,
             )
             observed_tool_calls.append(call)
-            continue
-
-        await _execute_one_tool(
-            call, entry, registry,
-            events=events,
-            guards=guards,
-            context_factory=context_factory,
-            runtime_log=runtime_log,
-            approval_layer_active=approval_layer_active,
-            results=results,
-            observed_tool_calls=observed_tool_calls,
-        )
+        else:
+            await _execute_one_tool(
+                call,
+                entry,
+                registry,
+                events=events,
+                guards=guards,
+                context_factory=context_factory,
+                runtime_log=runtime_log,
+                approval_layer_active=approval_layer_active,
+                results=results,
+                observed_tool_calls=observed_tool_calls,
+            )
+        for message in results[result_start:]:
+            yield message
 
     if events is not None and context_factory is not None:
         batch_ctx = context_factory(
@@ -152,8 +154,6 @@ async def execute_tools(
             tool_results=results,
         )
         await events.emit(Events.POST_TOOL_BATCH, batch_ctx)
-
-    return results
 
 
 async def _emit_tool_denied(
@@ -546,10 +546,17 @@ async def _invoke_tool(
     timeout_seconds: float | None = None,
 ) -> Any:
     """Invoke one registered Tool without blocking the event loop."""
-    task = asyncio.create_task(tool.ainvoke(args, tool_call=tool_call))
     if timeout_seconds is None:
-        return await task
-    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+        return await tool.ainvoke(args, tool_call=tool_call)
+    task = asyncio.create_task(tool.ainvoke(args, tool_call=tool_call))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        # A turn interrupt must not leave a timed invocation running after
+        # its foreground dispatch task has gone away.
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
     if not done:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

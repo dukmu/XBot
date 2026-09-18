@@ -863,7 +863,7 @@ async def test_before_tool_call_rejects_policy_shortcuts(
 
 
 @pytest.mark.asyncio
-async def test_after_tools_cache_hook_truncates_before_history_and_events(
+async def test_after_tool_call_cache_hook_truncates_before_history_and_events(
     state_store, artifact_store, temp_workspace
 ):
     registry = ToolRegistry()
@@ -871,7 +871,7 @@ async def test_after_tools_cache_hook_truncates_before_history_and_events(
     plugin_ctx = xcore.Context()
     plugin_ctx.set("runtime_log", RuntimeLog())
     plugin_ctx.on(
-        Events.AFTER_TOOLS,
+        Events.AFTER_TOOL_CALL,
         make_tool_result_cache_hook(
             artifact_store,
             cache_threshold_chars=100,

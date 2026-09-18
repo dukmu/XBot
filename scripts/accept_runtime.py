@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import os
+from functools import partial
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,10 +20,10 @@ import yaml
 
 from XBotv2.application.logging import setup_logging
 from XBotv2.application.server import start_server_application
+from XBotv2.application.app import create_agent_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.llm.mock import MockLLM
-from XBotv2.server.http import set_llm_override
 
 
 SESSION_ID = "runtime-acceptance"
@@ -100,8 +101,14 @@ def _prepare(root: Path) -> tuple[RuntimePaths, Path]:
                     "id": "sandbox",
                     "name": "sandbox",
                     "config": {
-                        "sandbox": {"enabled": False, "resources": []}
+                        "enabled": False,
+                        "resources": [],
                     },
+                },
+                {
+                    "id": "caption",
+                    "name": "caption",
+                    "config": {"auto": False},
                 },
             ],
             sort_keys=False,
@@ -125,6 +132,47 @@ async def _request(
     return response
 
 
+async def _submit_turn_events(
+    application: Any,
+    client: httpx.AsyncClient,
+    session_id: str,
+    thread_id: str,
+    method: str,
+    path: str,
+    json: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[httpx.Response, list[Any]]:
+    runtime = await application.sessions.get(session_id, thread_id)
+    subscription = runtime.event_stream.subscribe()
+    events: list[Any] = []
+    try:
+        response = await _request(
+            client,
+            method,
+            path,
+            headers=headers,
+            json=json,
+        )
+        if response.status_code != 202:
+            raise RuntimeError(
+                f"{method} {path} returned {response.status_code}, expected 202"
+            )
+        async with asyncio.timeout(5):
+            async for frame in subscription:
+                events.append(frame.event)
+                if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                    break
+                if (
+                    frame.event.type == "error"
+                    and frame.event.data.get("code") == "turn_failed"
+                ):
+                    break
+        return response, events
+    finally:
+        await subscription.aclose()
+
+
 async def _start(
     paths: RuntimePaths,
     workspace: Path,
@@ -136,9 +184,9 @@ async def _start(
         workspace_root=str(workspace),
         no_plugins=False,
     )
-    set_llm_override(
-        application.server,
-        MockLLM(responses=responses, input_modalities=["text", "image"]),
+    application.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=responses, input_modalities=["text", "image"]),
     )
     return application
 
@@ -238,12 +286,14 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                     "mode": "new",
                 },
             )
-            first = await _request(
+            _, first_events = await _submit_turn_events(
+                application,
                 client,
+                SESSION_ID,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/messages",
-                headers={"x-request-id": "accept-http-first"},
-                json={
+                {
                     "request_id": "accept-turn-first",
                     "content": USER_MARKER,
                     "attachments": [
@@ -254,31 +304,42 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                         }
                     ],
                 },
+                headers={"x-request-id": "accept-http-first"},
             )
-            if '"type": "end"' not in first.text:
-                raise RuntimeError("first message stream has no terminal event")
-            second = await _request(
+            _, second_events = await _submit_turn_events(
+                application,
                 client,
+                SESSION_ID,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/messages",
-                json={
+                {
                     "request_id": "accept-turn-second",
                     "content": "second acceptance input",
                 },
             )
-            if '"type": "end"' not in second.text:
-                raise RuntimeError("second message stream has no terminal event")
-            child_turn = await _request(
+            _, child_events = await _submit_turn_events(
+                application,
                 client,
+                SESSION_ID,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/messages",
-                json={
+                {
                     "request_id": "accept-turn-subagent",
                     "content": "exercise the child lifecycle",
                 },
             )
-            if '"type": "end"' not in child_turn.text:
-                raise RuntimeError("subagent message stream has no terminal event")
+            for label, events in (
+                ("first", first_events),
+                ("second", second_events),
+                ("subagent", child_events),
+            ):
+                if not any(
+                    event.type in {"turn_finished", "turn_cancelled"}
+                    for event in events
+                ):
+                    raise RuntimeError(f"{label} turn has no terminal event")
             tasks: list[dict[str, Any]] = []
             for _ in range(100):
                 tasks = (
@@ -513,14 +574,20 @@ async def _second_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/history/undo",
                 json={"count": 1, "history_limit": 100},
             )
-            regenerated = await _request(
+            _, regenerated_events = await _submit_turn_events(
+                application,
                 client,
+                SESSION_ID,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/history/regenerate",
-                json={"request_id": "accept-turn-regenerate"},
+                {"request_id": "accept-turn-regenerate"},
             )
-            if '"type": "end"' not in regenerated.text:
-                raise RuntimeError("regenerate stream has no terminal event")
+            if not any(
+                event.type in {"turn_finished", "turn_cancelled"}
+                for event in regenerated_events
+            ):
+                raise RuntimeError("regenerate turn has no terminal event")
             forked = (
                 await _request(
                     client,
@@ -722,16 +789,23 @@ async def _recover_process(paths: RuntimePaths, workspace: Path) -> dict[str, An
             else:
                 raise RuntimeError("recovered turn did not return to idle")
 
-            failed = await _request(
+            _, failed_events = await _submit_turn_events(
+                application,
                 client,
+                SESSION_ID,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/messages",
-                json={
+                {
                     "request_id": "accept-turn-failure",
                     "content": ERROR_MARKER,
                 },
             )
-            if "engine_error" not in failed.text:
+            if not any(
+                event.type == "error"
+                and event.data.get("code") == "engine_error"
+                for event in failed_events
+            ):
                 raise RuntimeError("controlled provider failure was not surfaced")
             interrupted = await _request(
                 client,
@@ -810,42 +884,72 @@ async def _logging_edges_process(
                 f"/sessions/{edge_session}/policy",
                 json={"permissions": {"read": "deny", "update_goal": "allow"}},
             )
-            denied = await _request(
+            _, denied_events = await _submit_turn_events(
+                application,
                 client,
+                edge_session,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{edge_session}/threads/{THREAD_ID}/messages",
-                json={"request_id": "accept-tool-denied", "content": "deny the read tool"},
+                {"request_id": "accept-tool-denied", "content": "deny the read tool"},
             )
-            failed = await _request(
+            _, failed_events = await _submit_turn_events(
+                application,
                 client,
+                edge_session,
+                THREAD_ID,
                 "POST",
                 f"/sessions/{edge_session}/threads/{THREAD_ID}/messages",
-                json={"request_id": "accept-tool-failed", "content": "fail a valid Tool operation"},
+                {"request_id": "accept-tool-failed", "content": "fail a valid Tool operation"},
             )
-            if '"type": "end"' not in denied.text or '"type": "end"' not in failed.text:
-                raise RuntimeError("Tool edge-case turns did not reach a terminal event")
+            for label, events in (("denied", denied_events), ("failed", failed_events)):
+                if not any(
+                    event.type in {"turn_finished", "turn_cancelled"}
+                    for event in events
+                ):
+                    raise RuntimeError(f"{label} Tool turn has no terminal event")
 
             blocking = _BlockingMockLLM()
-            set_llm_override(application.server, blocking)
+            application.sessions.application_factory = partial(
+                create_agent_application,
+                model_override=blocking,
+            )
             await _request(client, "POST", "/sessions", json={
                 "session_id": interrupt_session,
                 "thread_id": THREAD_ID,
                 "workspace_root": str(workspace),
                 "mode": "new",
             })
-            turn = asyncio.create_task(client.post(
-                f"/sessions/{interrupt_session}/threads/{THREAD_ID}/messages",
-                json={"request_id": "accept-active-interrupt", "content": "wait until interrupted"},
-            ))
-            await asyncio.wait_for(blocking.started.wait(), timeout=2)
-            interrupted = await _request(
-                client,
-                "POST",
-                f"/sessions/{interrupt_session}/threads/{THREAD_ID}/interrupt",
+            interrupt_runtime = await application.sessions.get(
+                interrupt_session, THREAD_ID
             )
-            response = await asyncio.wait_for(turn, timeout=2)
-            if not interrupted.json()["cancelled"] or '"type": "turn_cancelled"' not in response.text:
-                raise RuntimeError("active interrupt did not cancel the running turn")
+            interrupt_subscription = interrupt_runtime.event_stream.subscribe()
+            try:
+                turn = asyncio.create_task(client.post(
+                    f"/sessions/{interrupt_session}/threads/{THREAD_ID}/messages",
+                    json={"request_id": "accept-active-interrupt", "content": "wait until interrupted"},
+                ))
+                await asyncio.wait_for(blocking.started.wait(), timeout=2)
+                interrupted = await _request(
+                    client,
+                    "POST",
+                    f"/sessions/{interrupt_session}/threads/{THREAD_ID}/interrupt",
+                )
+                response = await asyncio.wait_for(turn, timeout=2)
+                if response.status_code != 202:
+                    raise RuntimeError(
+                        f"active turn submission returned {response.status_code}"
+                    )
+                observed_cancelled = False
+                async with asyncio.timeout(5):
+                    async for frame in interrupt_subscription:
+                        if frame.event.type == "turn_cancelled":
+                            observed_cancelled = True
+                            break
+                if not interrupted.json()["cancelled"] or not observed_cancelled:
+                    raise RuntimeError("active interrupt did not cancel the running turn")
+            finally:
+                await interrupt_subscription.aclose()
             await _request(client, "POST", f"/sessions/{edge_session}/close")
             await _request(client, "POST", f"/sessions/{interrupt_session}/close")
             return {
@@ -873,6 +977,7 @@ async def _corruption_process(
             base_url="http://acceptance",
         ) as client:
             for session_id in (
+                "incomplete-tail",
                 "corrupt-state",
                 "corrupt-jsonl",
                 "corrupt-position",
@@ -898,7 +1003,17 @@ async def _corruption_process(
                     "status": response.status_code,
                     "error_code": error.get("code", ""),
                 }
-            if any(item["status"] < 400 for item in results.values()):
+            if results["incomplete-tail"]["status"] != 200:
+                raise RuntimeError(
+                    "incomplete trajectory tail was not recoverable: "
+                    f"{results['incomplete-tail']}"
+                )
+            corrupt = {
+                key: value
+                for key, value in results.items()
+                if key != "incomplete-tail"
+            }
+            if any(item["status"] < 400 for item in corrupt.values()):
                 raise RuntimeError(f"corrupt persistence resumed: {results}")
             return {"pid": os.getpid(), "cases": results}
     finally:
@@ -908,6 +1023,7 @@ async def _corruption_process(
 def _prepare_corruption_cases(paths: RuntimePaths) -> None:
     source = paths.session(SESSION_ID).root
     for session_id in (
+        "incomplete-tail",
         "corrupt-state",
         "corrupt-jsonl",
         "corrupt-position",
@@ -919,9 +1035,13 @@ def _prepare_corruption_cases(paths: RuntimePaths) -> None:
         "{invalid",
         encoding="utf-8",
     )
+    incomplete = paths.session("incomplete-tail").thread(THREAD_ID).messages_file
+    with incomplete.open("ab") as stream:
+        stream.write(b'{"schema_version":')
+
     jsonl = paths.session("corrupt-jsonl").thread(THREAD_ID).messages_file
     with jsonl.open("ab") as stream:
-        stream.write(b'{"schema_version":')
+        stream.write(b'{"schema_version":\n')
 
     position_file = paths.session("corrupt-position").thread(THREAD_ID).messages_file
     position_lines = position_file.read_text(encoding="utf-8").splitlines()
@@ -1000,8 +1120,12 @@ def _log_files(log_file: Path) -> list[Path]:
     return [*rotated, log_file]
 
 
-def _log_evidence(log_file: Path) -> dict[str, Any]:
-    files = _log_files(log_file)
+def _log_evidence(log_file: Path, *additional_log_files: Path) -> dict[str, Any]:
+    files: list[Path] = []
+    for candidate in (log_file, *additional_log_files):
+        for path in _log_files(candidate):
+            if path not in files:
+                files.append(path)
     text = "".join(path.read_text(encoding="utf-8") for path in files)
     forbidden = [
         USER_MARKER,
@@ -1030,8 +1154,8 @@ def _log_evidence(log_file: Path) -> dict[str, Any]:
         "tool.execute.start",
         "tool.execute.finish",
         "persistence.history.appended",
-        "persistence.history.loaded",
-        "persistence.history.replaced",
+        "persistence.hydrated",
+        "persistence.surface.replaced",
         "persistence.inbox.reconciled",
         "persistence.metadata.saved",
         "persistence.lifecycle.appended",
@@ -1195,7 +1319,7 @@ def _run(root: Path) -> dict[str, Any]:
     corruption = _execute_phase(root, "corruption")
     log_file = paths.logs_dir / "xbotv2.log"
     physical = _physical_evidence(paths, second["fork_id"])
-    logs = _log_evidence(log_file)
+    logs = _log_evidence(log_file, paths.logs_dir / "xbotv2.transport.log")
     logging_policy = _logging_policy_evidence(root)
     process_ids = {
         os.getpid(),

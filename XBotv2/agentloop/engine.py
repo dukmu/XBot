@@ -17,6 +17,7 @@ contracts. Application composition resolves all feature-plugin dependencies.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 import uuid
@@ -345,24 +346,6 @@ class Engine(AgentLoopDriverPort):
         )
         return True
 
-    async def _execute_tool_calls(
-        self,
-        tool_calls: list[ToolCall],
-    ) -> list[Message]:
-        results = await self.tools.execute_all(
-            tool_calls,
-            context_factory=self._make_event_context,
-        )
-        after_ctx = self._make_event_context(tool_results=results)
-        after_result = await self._dispatch(
-            Events.AFTER_TOOLS,
-            after_ctx,
-            short_circuit=True,
-        )
-        if isinstance(after_result, dict) and "tool_results" in after_result:
-            results = list(after_result["tool_results"])
-        return results
-
     def _tool_kind(self, name: str) -> str:
         """Read the tool owner's declared model-facing category."""
         tool = self.tools.resolve(name) if name else None
@@ -536,7 +519,15 @@ class Engine(AgentLoopDriverPort):
         except asyncio.CancelledError:
             outcome = "cancelled"
             self._log.info("turn.interrupted", turn=self.turn_count)
-            self._close_interrupted_tool_calls("client_interrupt")
+            interrupted = self._close_interrupted_tool_calls(
+                "client_interrupt",
+                status="cancelled",
+            )
+            for message, name in interrupted:
+                yield agentloop_event(
+                    "tool_result",
+                    tool_result_event_data(message, name),
+                )
             if not turn_ended:
                 turn_ctx = self._make_event_context(stop_reason="client_interrupt",
                 )
@@ -912,14 +903,36 @@ class Engine(AgentLoopDriverPort):
             call.id: call.name or "tool" for call in tool_calls
         }
 
-        tool_messages = await self._execute_tool_calls(tool_calls)
-        tool_event_payloads = [
-            tool_result_event_data(
-                message,
-                tool_names_by_id.get(str(message.tool_call_id), "tool"),
-            )
-            for message in tool_messages
-        ]
+        committed_messages: list[Message] = []
+        tool_messages: list[Message] = []
+
+        # The serial stream yields one completed result at a time; the
+        # AFTER_TOOLS boundary below remains before the next model request.
+        async for message in self.tools.execute_each(
+            tool_calls,
+            context_factory=self._make_event_context,
+        ):
+            tool_messages.append(message)
+            call_id = str(message.tool_call_id)
+            name = tool_names_by_id.get(call_id, "tool")
+            payload = tool_result_event_data(message, name)
+            persisted = copy.deepcopy(message)
+            structure_tool_message(persisted, name)
+            committed_messages.append(persisted)
+            self.messages.append(persisted)
+            await self._publish_state_change()
+            for client_event in message.client_events:
+                yield client_event.model_dump(mode="json")
+            yield agentloop_event("tool_result", payload)
+
+        after_result = await self._dispatch(
+            Events.AFTER_TOOLS,
+            self._make_event_context(tool_results=tool_messages),
+            short_circuit=True,
+        )
+        if isinstance(after_result, dict) and "tool_results" in after_result:
+            tool_messages = list(after_result["tool_results"])
+
         for message in tool_messages:
             structure_tool_message(
                 message,
@@ -937,23 +950,26 @@ class Engine(AgentLoopDriverPort):
             statuses=[message.status for message in tool_messages],
             result_chars=sum(len(str(message.content)) for message in tool_messages),
         )
-        self.messages.extend(tool_messages)
-        # Announce committed state before exposing results or requesting the
-        # next model step. Persistence, UIs, and other observers decide how
-        # to project that state.
-        await self._publish_state_change()
-
-        for message, event_payload in zip(
-            tool_messages,
-            tool_event_payloads,
-            strict=True,
-        ):
-            client_events = message.client_events
-            for client_event in client_events:
-                # Client events travel on the turn stream itself; there is no
-                # separate listener on a bus channel that nobody subscribes to.
-                yield client_event.model_dump(mode="json")
-            yield agentloop_event("tool_result", event_payload)
+        # Results were committed by the serial stream before their live
+        # events. A legacy AFTER_TOOLS hook may still rewrite the batch;
+        # replace that already-committed span only when it changed.
+        if tool_messages != committed_messages:
+            if not tool_messages:
+                raise ValueError(
+                    "AFTER_TOOLS cannot replace a tool batch with no results"
+                )
+            start = len(self.messages) - len(committed_messages)
+            replacements = []
+            for message in tool_messages:
+                replacement = copy.deepcopy(message)
+                replacements.append(replacement)
+            self.messages.replace_range(
+                start,
+                len(self.messages),
+                replacements,
+                operation="after-tools",
+            )
+            await self._publish_state_change()
 
         for message in tool_messages:
             message_ctx = self._make_event_context(tool_results=[message],
@@ -1412,7 +1428,12 @@ class Engine(AgentLoopDriverPort):
         event = self._make_event_context()
         await self._dispatch(Events.STATE_CHANGED, event, short_circuit=False)
 
-    def _close_interrupted_tool_calls(self, reason: str) -> None:
+    def _close_interrupted_tool_calls(
+        self,
+        reason: str,
+        *,
+        status: str = "error",
+    ) -> list[tuple[Message, str]]:
         """Append error results for an interrupted trailing tool batch."""
         assistant_index = next(
             (
@@ -1424,11 +1445,11 @@ class Engine(AgentLoopDriverPort):
             None,
         )
         if assistant_index is None:
-            return
+            return []
 
         tail = self.messages[assistant_index + 1:]
         if any(message.role != "tool" for message in tail):
-            return
+            return []
         answered = {
             message.tool_call_id for message in tail if message.tool_call_id
         }
@@ -1436,15 +1457,18 @@ class Engine(AgentLoopDriverPort):
             call for call in self.messages[assistant_index].tool_calls
             if call.id not in answered
         ]
+        closed: list[tuple[Message, str]] = []
         for call in missing:
             message = Message(
                 role="tool",
                 content=f"Tool call did not complete: {reason}.",
                 tool_call_id=call.id,
-                status="error",
+                status=status,
             )
             structure_tool_message(message, call.name)
             self.messages.append(message)
+            closed.append((message, call.name))
+        return closed
 
     def _default_hook_rejection_event(event: str) -> dict[str, JsonValue]:
         return agentloop_event(

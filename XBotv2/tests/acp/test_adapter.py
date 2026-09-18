@@ -21,7 +21,10 @@ from acp.schema import (
 
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
-from XBotv2.session.contracts import SessionEventFrame, conversation_replay
+from XBotv2.session.contracts import (
+    SessionEventFrame,
+    conversation_replay,
+)
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.messages import Message
@@ -100,23 +103,19 @@ class FakeSessions:
             context_window=200_000,
         )
 
-    async def stream_message(self, request):
+    async def send_message(self, request):
         assert request.content == "hello"
         assert request.request_id == "acp:session-1"
         assert not request.images
-
-        async def stream():
-            for event in self.events:
-                value = ClientEvent.model_validate(event)
-                self.event_sequence += 1
-                await self.event_queue.put(SessionEventFrame(
-                    self.event_sequence,
-                    request.request_id,
-                    value,
-                ))
-                yield value
-
-        return stream()
+        for event in self.events:
+            value = ClientEvent.model_validate(event)
+            self.event_sequence += 1
+            await self.event_queue.put(SessionEventFrame(
+                self.event_sequence,
+                request.request_id,
+                value,
+            ))
+        return None
 
     async def stream_events(
         self,
@@ -534,11 +533,110 @@ async def test_prompt_is_released_when_the_session_stream_ends() -> None:
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
 
-    async def empty_stream():
-        if False:  # pragma: no cover - an async generator with no frames
-            yield None
+    class EmptySubscription:
+        closed = False
 
-    await agent._forward_session_events("s", empty_stream())
+        def __aiter__(self):
+            return self
 
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            self.closed = True
+
+    events = EmptySubscription()
+    await agent._forward_session_events("s", events)
+
+    assert prompt.completed.is_set()
+    assert isinstance(prompt.failure, RuntimeError)
+    assert events.closed
+
+
+@pytest.mark.asyncio
+async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -> None:
+    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
+
+    class FailingConnection:
+        async def session_update(self, **_):
+            raise RuntimeError("client disconnected")
+
+    class Sessions:
+        async def thread_summary(self, session_id, thread_id):
+            del session_id, thread_id
+            return SimpleNamespace(context_window=4096)
+
+    class OneFrameSubscription:
+        def __init__(self):
+            self.closed = False
+            self._frame = SessionEventFrame(
+                1,
+                "acp:s",
+                ClientEvent(type="assistant_message", data={"content": "hi"}),
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._frame is None:
+                raise StopAsyncIteration
+            frame, self._frame = self._frame, None
+            return frame
+
+        async def aclose(self):
+            self.closed = True
+
+    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    agent.connection = FailingConnection()
+    prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
+    agent._active_prompts["s"] = prompt
+    events = OneFrameSubscription()
+
+    with pytest.raises(RuntimeError, match="client disconnected"):
+        await agent._forward_session_events("s", events)
+
+    assert events.closed
+    assert prompt.completed.is_set()
+    assert isinstance(prompt.failure, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_event_forwarding_closes_stream_and_releases_prompt() -> None:
+    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
+
+    class Sessions:
+        async def thread_summary(self, session_id, thread_id):
+            del session_id, thread_id
+            return SimpleNamespace(context_window=4096)
+
+    class BlockingSubscription:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self.started.set()
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+        async def aclose(self):
+            self.closed = True
+
+    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
+    agent._active_prompts["s"] = prompt
+    events = BlockingSubscription()
+    task = asyncio.create_task(agent._forward_session_events("s", events))
+    await events.started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events.closed
     assert prompt.completed.is_set()
     assert isinstance(prompt.failure, RuntimeError)

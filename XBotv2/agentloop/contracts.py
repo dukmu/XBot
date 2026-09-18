@@ -361,6 +361,12 @@ class ToolsPort(Protocol):
         *,
         context_factory: Callable[..., EventContext] | None = None,
     ) -> list[Message]: ...
+    def execute_each(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> AsyncIterator[Message]: ...
 
 
 class AgentLoopFactoryPort(Protocol):

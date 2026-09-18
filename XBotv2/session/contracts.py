@@ -85,6 +85,12 @@ class SessionEventFrame:
     event: ClientEvent
 
 
+class SessionEventSubscription(AsyncIterator[SessionEventFrame], Protocol):
+    """A live cursor over one session's event stream."""
+
+    async def aclose(self) -> None: ...
+
+
 class SessionHistoryItem(BaseModel):
     """Transport-neutral projection of one visible conversation record."""
 
@@ -555,7 +561,7 @@ class SessionsPort(Protocol):
         thread_id: str,
         count: int,
     ) -> HistoryMutation: ...
-    async def stream_message(self, request: SendMessage) -> AsyncIterator[ClientEvent]: ...
+    async def send_message(self, request: SendMessage) -> None: ...
     async def pending_inputs(
         self,
         session_id: str,
@@ -565,17 +571,14 @@ class SessionsPort(Protocol):
         self,
         request: PendingInputUpdate,
     ) -> tuple[PendingInputData, ...]: ...
-    async def regenerate_message(
-        self,
-        request: RegenerateMessage,
-    ) -> AsyncIterator[ClientEvent]: ...
+    async def regenerate_message(self, request: RegenerateMessage) -> None: ...
     async def stream_events(
         self,
         session_id: str,
         thread_id: str,
         *,
         after: int | None = None,
-    ) -> AsyncIterator[SessionEventFrame]: ...
+    ) -> SessionEventSubscription: ...
     async def respond_permission(
         self,
         session_id: str,
@@ -642,6 +645,7 @@ __all__ = [
     "SendMessage",
     "SessionDescriptor",
     "SessionEventFrame",
+    "SessionEventSubscription",
     "SessionEventCursorExpired",
     "SessionExists",
     "SessionInfo",

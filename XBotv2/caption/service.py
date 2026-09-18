@@ -145,7 +145,7 @@ class CaptionService:
             raise ValueError("Session title must not exceed 200 characters")
         await self.state.update(title=title)
         self._captioned = True
-        logger.info("caption.applied title=%s", title)
+        logger.info("caption.applied")
 
     async def caption_get(self) -> dict[str, str]:
         return {

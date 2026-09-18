@@ -93,7 +93,8 @@ class _ScriptedSession:
             return {"data": {"message": "turn=0 mode=composing"}}
         return {"data": {"message": f"ran {command}"}}
 
-    async def send_message(self, text):
+    async def send_message(self, text, *, images=None):
+        del images
         self.sent.append(text)
         self._message_events.put_nowait({
             "type": "message",
@@ -108,7 +109,7 @@ class _ScriptedSession:
                 {"type": "turn_finished", "data": {"turn": 1}},
             ]
         for event in events:
-            yield event
+            self._message_events.put_nowait(event)
 
     async def list_providers(self):
         return {"default": "deepseek", "providers": [
@@ -1183,17 +1184,17 @@ def test_parse_slash_command_round_trip() -> None:
 
 
 # ----------------------------------------------------------------------
-# QueueMessage: type while a turn is running, get picked up in order
+# Submit while a turn is running, render results in order
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
-    """User can submit messages while a turn is in progress.
+async def test_submit_during_running_turn_submits_and_renders_in_order() -> None:
+    """User submissions during a turn are accepted and rendered in order.
 
-    Per design doc §8.2: the composer is visible during
-    ``RUNNING`` mode and submissions are queued; the worker drains
-    them in FIFO order once the current turn finishes.
+    The composer remains visible during ``RUNNING`` mode. Requests are
+    submitted immediately and the authoritative message events populate the
+    transcript before the corresponding assistant replies arrive.
     """
 
     class SlowSession:
@@ -1202,6 +1203,7 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         def __init__(self) -> None:
             self.sent: list[str] = []
             self.release = asyncio.Event()
+            self._message_events: asyncio.Queue[dict] = asyncio.Queue()
 
         async def connect(self) -> None:
             return None
@@ -1212,17 +1214,25 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         async def list_commands(self):
             return {"commands": []}
 
-        async def send_message(self, text):
+        async def session_events(self):
+            while True:
+                event = await self._message_events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def send_message(self, text, *, images=None):
+            del images
             self.sent.append(text)
-            yield {
+            self._message_events.put_nowait({
                 "type": "message",
                 "data": {"id": f"msg-{text}", "role": "user", "content": text},
-            }
-            yield {"type": "turn_started", "data": {"turn": 1}}
+            })
+            self._message_events.put_nowait({"type": "turn_started", "data": {"turn": 1}})
             # Block the turn until the test releases it.
             await self.release.wait()
-            yield {"type": "assistant_message", "data": {"content": f"reply to {text}"}}
-            yield {"type": "turn_finished", "data": {"turn": 1}}
+            self._message_events.put_nowait({"type": "assistant_message", "data": {"content": f"reply to {text}"}})
+            self._message_events.put_nowait({"type": "turn_finished", "data": {"turn": 1}})
 
         async def submit_user_input(self, request_id, answer):
             return {}
@@ -1255,50 +1265,53 @@ async def test_submit_during_running_turn_queues_and_drains_in_order() -> None:
         await app.submit_composer()
         await pilot.pause()
 
-        # Hint should mention queueing.
-        from textual.widgets import Static as TStatic
-        hint_widget = app.query_one("#composer_hint", TStatic)
-        hint_text = (
-            hint_widget.visual.plain
-            if hint_widget.visual is not None and hasattr(hint_widget.visual, "plain")
-            else ""
-        )
-        assert "Queueing" in hint_text or "queue" in hint_text.lower(), (
-            f"hint did not mention queueing; got {hint_text!r}"
-        )
-
-        # Status bar should report the two follow-up requests.
-        status = app.query_one("#status_bar", TStatic)
-        status_text = (
-            status.visual.plain
-            if status.visual is not None and hasattr(status.visual, "plain")
-            else ""
-        )
-        assert "queued:2" in status_text, f"status: {status_text!r}"
-        queue_panel = app.query_one("#queue_panel")
-        queue_list = app.query_one("#queue_list", TStatic)
-        assert queue_panel.display is True
-        assert queue_panel.title == "Queue (2)"
-        assert "second" in queue_list.visual.plain
-        assert "third" in queue_list.visual.plain
-        assert "first" not in queue_list.visual.plain
-
         # All requests are submitted immediately. The real server owns
         # ordering through its per-session mailbox.
         for _ in range(20):
             await pilot.pause()
-            if len(session.sent) == 3:
+            user_messages = [
+                message.content
+                for message in app.state.messages
+                if message.role == "user"
+            ]
+            if (
+                len(session.sent) == 3
+                and not app._pending_messages
+                and user_messages == ["first", "second", "third"]
+            ):
                 break
         assert session.sent == ["first", "second", "third"]
+        assert app._pending_messages == {}
+        assert [
+            message.content
+            for message in app.state.messages
+            if message.role == "user"
+        ] == ["first", "second", "third"]
+        assert app.state.turn_active is True
 
-        # Release the worker; it should drain the queue in order.
+        # Release the workers; replies and terminal events arrive in order.
         session.release.set()
-        # Give the worker a few ticks to finish.
         for _ in range(20):
             await pilot.pause()
-            if not app._pending_messages:
+            assistant_messages = [
+                message.content
+                for message in app.state.messages
+                if message.role == "assistant"
+            ]
+            if not app.state.turn_active and len(assistant_messages) == 3:
                 break
 
+        assert app.state.turn_active is False
+        assert [
+            message.content
+            for message in app.state.messages
+            if message.role == "assistant"
+        ] == [
+            "reply to first",
+            "reply to second",
+            "reply to third",
+        ]
+        queue_panel = app.query_one("#queue_panel")
         assert queue_panel.display is False
 
     assert session.sent == ["first", "second", "third"]
@@ -1969,11 +1982,13 @@ async def test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript(
         await app._render_new_transcript_entries()
         await pilot.pause()
 
-        text = app.query_one(".reasoning-block", Collapsible).query_one(
-            ".reasoning", BoundedText
-        )
+        block = app.query_one(".reasoning-block", Collapsible)
+        text = block.query_one(".reasoning", BoundedText)
         transcript = app.query_one("#transcript")
         transcript.scroll_home(animate=False)
+        # A delayed focus restoration from a preceding collapse/expand must
+        # not override a newer explicit focus choice.
+        app._restore_composer_focus(Collapsible.Toggled(block))
         text.focus()
         await pilot.pause()
         assert app.focused is text

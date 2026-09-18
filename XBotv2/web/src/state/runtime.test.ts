@@ -102,19 +102,6 @@ describe("runtimeReducer", () => {
     ]);
   });
 
-  it("keeps rejected input visible in the activity timeline", () => {
-    const state = runtimeReducer(
-      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
-      { type: "event", event: event("input_rejected", { reason: "turn is busy" }) },
-    );
-
-    expect(state.entries.at(-1)).toMatchObject({
-      kind: "notice",
-      level: "error",
-      content: "turn is busy",
-    });
-  });
-
   it("keeps a newer live usage projection ahead of a stale thread refresh", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
@@ -642,6 +629,49 @@ describe("runtimeReducer", () => {
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
+  });
+
+  it.each([
+    ["turn_finished", "error"],
+    ["turn_cancelled", "cancelled"],
+  ] as const)("finalizes unanswered tools on %s and preserves terminal tools", (terminalType, expectedStatus) => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("tool_calls_started", {
+          tool_calls: [
+            { id: "pending", name: "shell", args: {} },
+            { id: "running", name: "shell", args: {} },
+          ],
+        }),
+        event("permission_request", {
+          request_id: "approval-1",
+          tool_call: { id: "approval", name: "shell", args: {} },
+        }),
+        event("tool_result", {
+          tool_call_id: "completed", name: "shell", content: "ok", status: "success",
+        }),
+        event("tool_result", {
+          tool_call_id: "cancelled", name: "shell", content: "", status: "cancelled",
+        }),
+        event(terminalType, { turn: 1, reason: terminalType === "turn_cancelled" ? "client_interrupt" : undefined }),
+      ],
+    });
+
+    const tools = Object.fromEntries(
+      state.entries
+        .filter((entry): entry is Extract<TimelineEntry, { kind: "tool" }> => entry.kind === "tool")
+        .map((entry) => [entry.toolCallId, entry]),
+    );
+    expect(Object.fromEntries(["pending", "running", "approval"].map((id) => [id, tools[id].status]))).toEqual({
+      pending: expectedStatus,
+      running: expectedStatus,
+      approval: expectedStatus,
+    });
+    expect(tools.completed.status).toBe("success");
+    expect(tools.cancelled.status).toBe("cancelled");
   });
 
   it("projects permission decisions onto the pending tool call", () => {

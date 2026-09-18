@@ -14,17 +14,23 @@ no knowledge of individual plugins.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from functools import partial
 from typing import Callable, Literal
 
+from XBotv2.agentloop.contracts import (
+    ToolGuard,
+    ToolRegistration,
+    ToolsPort,
+)
 from XBotv2.agentloop.events import EventContext, EventPort
-from XBotv2.agentloop.contracts import ToolGuard, ToolsPort
-from XBotv2.core.messages import Message
-from XBotv2.core.tools import Tool, ToolCall
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.agentloop.tool_runtime import execute_tools
+from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.tools import Tool, ToolCall
 from xcore import bound_effect, current_plugin_name
+
 
 class ToolsService(ToolsPort):
     """Plugin-facing tool registry with fiber-scoped auto-unregister.
@@ -197,9 +203,22 @@ class ToolsService(ToolsPort):
         Tool owners bind their runtime dependencies before registration; the
         agent loop only submits calls and receives their ordered results.
         """
-        from XBotv2.agentloop.tool_runtime import execute_tools
+        results: list[Message] = []
+        async for message in self.execute_each(
+            tool_calls,
+            context_factory=context_factory,
+        ):
+            results.append(message)
+        return results
 
-        return await execute_tools(
+    def execute_each(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        context_factory: Callable[..., EventContext] | None = None,
+    ) -> AsyncIterator[Message]:
+
+        return execute_tools(
             tool_calls,
             self._registry,
             events=self.events,

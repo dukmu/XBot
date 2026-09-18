@@ -101,7 +101,6 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "ThreadSummary",
     }
     assert set(server.__all__) >= {
-        "ModelOverride",
         "RouteContribution",
         "ServerOptions",
     }
@@ -484,17 +483,16 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     assert paths["/sessions"]["post"]["responses"]["422"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
     message_path = "/sessions/{session_id}/threads/{thread_id}/messages"
     event_path = "/sessions/{session_id}/threads/{thread_id}/events"
-    assert set(paths[message_path]["post"]["responses"]["200"]["content"]) == {
-        "text/event-stream"
-    }
+    regenerate_path = (
+        "/sessions/{session_id}/threads/{thread_id}/history/regenerate"
+    )
+    for command_path in (message_path, regenerate_path):
+        assert "200" not in paths[command_path]["post"]["responses"]
+        assert paths[command_path]["post"]["responses"]["202"]["description"]
     assert set(paths[event_path]["get"]["responses"]["200"]["content"]) == {
         "text/event-stream"
     }
     assert set(paths["/workspaces/events"]["get"]["responses"]["200"]["content"]) == {
-        "text/event-stream"
-    }
-    regenerate_path = "/sessions/{session_id}/threads/{thread_id}/history/regenerate"
-    assert set(paths[regenerate_path]["post"]["responses"]["200"]["content"]) == {
         "text/event-stream"
     }
     todos_path = "/sessions/{session_id}/threads/{thread_id}/todos"

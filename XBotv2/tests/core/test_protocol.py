@@ -1,10 +1,32 @@
 """Tests for protocol-adjacent provider and configuration behavior."""
 
+from collections.abc import AsyncIterator
+
 import yaml
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import ClientEvent
 from XBotv2.llm.config import ModelConfig, ProviderConfig
+from XBotv2.session.contracts import SessionEventFrame
+
+
+class _TrackingEventSubscription(AsyncIterator[SessionEventFrame]):
+    def __init__(self, *frames: SessionEventFrame) -> None:
+        self._frames = iter(frames)
+        self.closed = False
+
+    def __aiter__(self) -> "_TrackingEventSubscription":
+        return self
+
+    async def __anext__(self) -> SessionEventFrame:
+        try:
+            return next(self._frames)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 class TestProviderConfig:
@@ -299,3 +321,55 @@ class TestProviderConfigLoader:
         assert llm.config["default"] == "custom"
         assert llm.config["providers"]["custom"]["default_model"] == "custom-model"
         assert llm.config["providers"]["custom"]["models"][0]["model"] == "custom-model"
+
+
+def _event_subscription() -> _TrackingEventSubscription:
+    return _TrackingEventSubscription(
+        SessionEventFrame(
+            sequence=1,
+            request_id="request-1",
+            event=ClientEvent(type="assistant_message", data={"content": "ok"}),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_sse_closes_subscription_after_normal_iteration() -> None:
+    from XBotv2.session.protocol import _session_sse
+
+    subscription = _event_subscription()
+    frames = [
+        frame
+        async for frame in _session_sse(subscription, "session-1", "agent")
+    ]
+
+    assert len(frames) == 1
+    assert subscription.closed
+
+
+@pytest.mark.asyncio
+async def test_session_sse_closes_subscription_when_encoding_fails(monkeypatch) -> None:
+    from XBotv2.session import protocol
+
+    subscription = _event_subscription()
+
+    def fail_encoding(**_):
+        raise ValueError("invalid event")
+
+    monkeypatch.setattr(protocol, "_format_sse", fail_encoding)
+    with pytest.raises(ValueError, match="invalid event"):
+        await anext(protocol._session_sse(subscription, "session-1", "agent"))
+
+    assert subscription.closed
+
+
+@pytest.mark.asyncio
+async def test_session_sse_closes_subscription_when_generator_is_closed() -> None:
+    from XBotv2.session.protocol import _session_sse
+
+    subscription = _event_subscription()
+    stream = _session_sse(subscription, "session-1", "agent")
+    await anext(stream)
+    await stream.aclose()
+
+    assert subscription.closed

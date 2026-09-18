@@ -45,12 +45,20 @@ async def test_tool_timing_covers_success_and_dispatch_failure() -> None:
     registry = ToolRegistry()
     registry.register(Tool.from_function(ready, name="ready"))
 
-    success = (
-        await execute_tools([ToolCall(id="one", name="ready", args={})], registry)
-    )[0]
-    failure = (
-        await execute_tools([ToolCall(id="two", name="missing", args={})], registry)
-    )[0]
+    success = [
+        message
+        async for message in execute_tools(
+            [ToolCall(id="one", name="ready", args={})],
+            registry,
+        )
+    ][0]
+    failure = [
+        message
+        async for message in execute_tools(
+            [ToolCall(id="two", name="missing", args={})],
+            registry,
+        )
+    ][0]
 
     for message in (success, failure):
         assert message.response_metadata[TIMING_METADATA_KEY]["duration_ms"] >= 0

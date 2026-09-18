@@ -66,6 +66,13 @@ export class RuntimeEventController {
     this.taskTimers.clear();
   }
 
+  /** Update the refresh loop after a stream was attached before catalogs loaded. */
+  setRunning(sessionId: string, generation: number, running: boolean): void {
+    if (!this.isCurrent(generation)) return;
+    if (running) this.startLiveRefresh(sessionId, generation);
+    else this.stopLiveRefresh();
+  }
+
   handle(event: ServerEvent, generation: number): void {
     if (!this.isCurrent(generation)) return;
     if (event.type === "assistant_message_delta" || event.type === "tool_call_delta") {

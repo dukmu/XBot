@@ -10,11 +10,13 @@ import {
   type ImageInput,
   type JsonObject,
   type MessagePage,
+  type MessageRequest,
   type OpenSessionResponse,
   type PendingInput,
   type PluginConfigCatalog,
   type PluginConfigScope,
   type ProviderInfo,
+  type RegenerateRequest,
   type ServerEvent,
   type SessionListData,
   type SessionPolicy,
@@ -409,7 +411,7 @@ export class XBotApi {
     );
   }
 
-  async *sendMessage(
+  sendMessage(
     sessionId: string,
     threadId: string,
     content: string,
@@ -418,32 +420,47 @@ export class XBotApi {
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
     delivery: "queue" | "steer" = "steer",
-  ): AsyncGenerator<ServerEvent> {
-    for await (const event of this.stream("POST", `${threadPath(sessionId, threadId)}/messages`, {
+  ): Promise<void> {
+    const payload: MessageRequest = {
       content,
       images,
       attachments,
       request_id: requestId,
       delivery,
-    }, signal)) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
-    }
+    };
+    return this.requestNoContent("POST", `${threadPath(sessionId, threadId)}/messages`, payload, signal);
   }
 
-  async *regenerateMessage(
+  regenerateMessage(
     sessionId: string,
     threadId: string,
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
-  ): AsyncGenerator<ServerEvent> {
-    for await (const event of this.stream(
+  ): Promise<void> {
+    const payload: RegenerateRequest = { request_id: requestId };
+    return this.requestNoContent(
       "POST",
       `${threadPath(sessionId, threadId)}/history/regenerate`,
-      { request_id: requestId },
+      payload,
       signal,
-    )) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
-    }
+    );
+  }
+
+  private async requestNoContent(
+    method: string,
+    path: string,
+    body?: MessageRequest | RegenerateRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      signal,
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) await throwResponse(response);
   }
 
   artifactUrl(sessionId: string, threadId: string, artifactId: string): string {

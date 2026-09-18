@@ -507,7 +507,7 @@ class XBotClient:
             PendingInputUpdateRequest(action=action, content=content),
         )
 
-    def send_message(
+    async def send_message(
         self,
         session_id: str,
         thread_id: str,
@@ -515,10 +515,10 @@ class XBotClient:
         *,
         request_id: str = "",
         delivery: Literal["queue", "steer"] = "steer",
-        images: list[ImageInput | dict[str, JsonValue]] | None = None,
-        attachments: list[AttachmentInput | dict[str, JsonValue]] | None = None,
-    ) -> AsyncIterator[ServerEvent]:
-        return self._stream(
+        images: list[ImageInput] | None = None,
+        attachments: list[AttachmentInput] | None = None,
+    ) -> None:
+        await self._request_no_content(
             "POST",
             f"{thread_path(session_id, thread_id)}/messages",
             MessageRequest(
@@ -530,14 +530,14 @@ class XBotClient:
             ),
         )
 
-    def regenerate_message(
+    async def regenerate_message(
         self,
         session_id: str,
         thread_id: str,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[ServerEvent]:
-        return self._stream(
+    ) -> None:
+        await self._request_no_content(
             "POST",
             f"{thread_path(session_id, thread_id)}/history/regenerate",
             RegenerateRequest(request_id=request_id),
@@ -574,6 +574,19 @@ class XBotClient:
         await _raise_for_status(response)
         return response_model.model_validate(response.json())
 
+    async def _request_no_content(
+        self,
+        method: str,
+        path: str,
+        payload: WireModel | None = None,
+    ) -> None:
+        response = await self._http.request(
+            method,
+            path,
+            json=payload.model_dump() if payload is not None else None,
+        )
+        await _raise_for_status(response)
+
     async def _stream(
         self,
         method: str,
@@ -587,6 +600,7 @@ class XBotClient:
             path,
             json=payload.model_dump() if payload is not None else None,
             params=params,
+            headers={"Accept": "text/event-stream"},
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
             await _raise_for_status(response)

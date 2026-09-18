@@ -33,6 +33,7 @@ class _InterruptibleSession:
         self.sent: list[str] = []
         self.interrupt_calls: list[tuple[str, str]] = []
         self.release = asyncio.Event()
+        self._message_events: asyncio.Queue[dict] = asyncio.Queue()
         # Match the production ``TerminalSession`` shape: the TUI
         # addresses the transport through ``session.transport`` and
         # reads ``session.session_id`` to scope the interrupt.
@@ -51,23 +52,31 @@ class _InterruptibleSession:
     async def list_commands(self):
         return {"commands": []}
 
-    async def send_message(self, text):
+    async def session_events(self):
+        while True:
+            event = await self._message_events.get()
+            if event is None:
+                return
+            yield event
+
+    async def send_message(self, text, *, images=None):
+        del images
         self.turn_task = asyncio.current_task()
         self.sent.append(text)
-        yield {"type": "turn_started", "data": {"turn": 1}}
+        self._message_events.put_nowait({"type": "turn_started", "data": {"turn": 1}})
         try:
             await self.release.wait()
         except asyncio.CancelledError:
-            yield {
+            self._message_events.put_nowait({
                 "type": "turn_cancelled",
                 "data": {"turn": 1, "reason": "client_interrupt"},
-            }
+            })
             raise
-        yield {
+        self._message_events.put_nowait({
             "type": "assistant_message",
             "data": {"content": f"reply to {text}"},
-        }
-        yield {"type": "turn_finished", "data": {"turn": 1}}
+        })
+        self._message_events.put_nowait({"type": "turn_finished", "data": {"turn": 1}})
         self.turn_task = None
 
     async def submit_user_input(self, request_id, answer):
@@ -179,6 +188,7 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
     class UsageSession:
         def __init__(self) -> None:
             self.sent: list[str] = []
+            self._message_events: asyncio.Queue[dict] = asyncio.Queue()
 
         async def connect(self):
             return None
@@ -186,10 +196,21 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
         async def disconnect(self):
             return None
 
-        async def send_message(self, text):
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def session_events(self):
+            while True:
+                event = await self._message_events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def send_message(self, text, *, images=None):
+            del images
             self.sent.append(text)
-            yield {"type": "turn_started", "data": {"turn": 1}}
-            yield {
+            self._message_events.put_nowait({"type": "turn_started", "data": {"turn": 1}})
+            self._message_events.put_nowait({
                 "type": "usage",
                 "data": {
                     "input_tokens": 100,
@@ -197,10 +218,10 @@ async def test_usage_event_updates_status_bar_in_realtime() -> None:
                     "total_tokens": 125,
                     "requests": 1,
                 },
-            }
+            })
             # Block so we can observe the live usage.
             await asyncio.Event().wait()
-            yield {"type": "turn_finished", "data": {"turn": 1}}
+            self._message_events.put_nowait({"type": "turn_finished", "data": {"turn": 1}})
 
         async def submit_user_input(self, request_id, answer):
             return {}

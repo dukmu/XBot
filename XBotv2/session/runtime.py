@@ -34,10 +34,7 @@ from XBotv2.session.contracts import (
     SessionPort,
     conversation_replay,
 )
-from XBotv2.session.event_stream import (
-    SessionEventStream,
-    SessionEventSubscription,
-)
+from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.session.protocol import session_error_event, session_event
 from XBotv2.session.contracts import PendingInputData
 
@@ -81,49 +78,6 @@ def _runtime_message_data(
 
 
 @dataclass
-class TurnResponse:
-    """A detachable compatibility view of the authoritative event stream."""
-
-    message_id: str
-    request_id: str
-    events: asyncio.Queue[ClientEvent | None] = field(
-        default_factory=lambda: asyncio.Queue(maxsize=512),
-        init=False,
-    )
-    attached: bool = True
-
-    def emit(self, event: ClientEvent) -> None:
-        if not self.attached:
-            return
-        try:
-            self.events.put_nowait(event)
-        except asyncio.QueueFull:
-            self._overflow()
-
-    def finish(self) -> None:
-        if not self.attached:
-            return
-        try:
-            self.events.put_nowait(None)
-        except asyncio.QueueFull:
-            self._overflow()
-
-    def detach(self) -> None:
-        self.attached = False
-        while not self.events.empty():
-            self.events.get_nowait()
-
-    def _overflow(self) -> None:
-        self.detach()
-        self.events.put_nowait(session_error_event(
-            "response_stream_overflow",
-            "The POST response consumer fell behind; resume from the "
-            "Session event cursor.",
-        ))
-        self.events.put_nowait(None)
-
-
-@dataclass
 class SessionRuntime(SessionPort):
     """Protocol streams and one concrete agent-loop driver."""
 
@@ -138,10 +92,13 @@ class SessionRuntime(SessionPort):
     runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG
     interactive: bool = True
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _submission_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        init=False,
+        repr=False,
+    )
     turn_task: asyncio.Task | None = None
     wakeup_task: asyncio.Task | None = None
-    # Protocol routing only. Input content lives exclusively in engine.inbox.
-    pending_responses: dict[str, TurnResponse] = field(default_factory=dict)
     event_stream: SessionEventStream = field(default_factory=SessionEventStream)
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
@@ -244,9 +201,10 @@ class SessionRuntime(SessionPort):
                 {"message_ids": payload.message_ids},
             )
             if self._active_router is not None:
-                self._active_router.claim(payload.message_ids)
+                self._active_router.claim(payload.items)
                 self._active_router.emit(claimed)
-            self._publish_runtime_event(claimed)
+            else:
+                self._publish_runtime_event(claimed)
         if payload.operation == "consume":
             consumed = session_event(
                 "input_consumed",
@@ -254,7 +212,8 @@ class SessionRuntime(SessionPort):
             )
             if self._active_router is not None:
                 self._active_router.emit(consumed)
-            self._publish_runtime_event(consumed)
+            else:
+                self._publish_runtime_event(consumed)
         if payload.operation != "claim":
             return
         for item in payload.items:
@@ -264,13 +223,14 @@ class SessionRuntime(SessionPort):
             runtime = _runtime_message_data(source, item.metadata)
             images = list(item.images)
             artifacts = list(item.artifacts)
-            self._publish_runtime_event(self._message_event(
+            event = self._message_event(
                 item.message_id,
                 item.content,
                 images,
                 artifacts,
                 runtime=runtime,
-            ))
+            )
+            self.event_stream.publish(event, request_id=item.message_id)
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
@@ -327,9 +287,6 @@ class SessionRuntime(SessionPort):
                 await self.engine.edit_input(message_id, content)
             elif action == "remove":
                 await self.engine.remove_input(message_id)
-                response = self.pending_responses.pop(message_id, None)
-                if response is not None:
-                    response.finish()
             elif action == "steer":
                 await self.engine.retarget_input(message_id, InboxTarget.NEXT_STEP)
                 self._request_wakeup()
@@ -342,7 +299,7 @@ class SessionRuntime(SessionPort):
             ) from exc
         return self.pending_inputs()
 
-    async def stream_message(
+    async def send_message(
         self,
         content: str,
         request_id: str,
@@ -350,107 +307,49 @@ class SessionRuntime(SessionPort):
         delivery: str = "steer",
         images: list[ImageContent] | None = None,
         artifacts: list[ArtifactRef] | None = None,
-    ) -> AsyncIterator[ClientEvent]:
-        """Deliver one user input.
-
-        Idle input starts directly. Busy ``queue`` input enters ``next-turn``;
-        busy ``steer`` input enters ``next-step``. Both remain owned by the
-        same loop inbox until claimed at their respective boundary.
-        """
+    ) -> None:
+        """Submit input; output is delivered by the session event stream."""
         if delivery not in {"queue", "steer"}:
             raise ValueError(f"Unsupported input delivery mode: {delivery}")
-        if not self.turn_lock.locked():
-            try:
-                async for event in run_turn_stream(
-                    self,
-                    content=content,
-                    request_id=request_id,
-                    images=images,
-                    artifacts=artifacts,
-                    accepted_event=self._message_event(
-                        request_id,
-                        content,
-                        images,
-                        artifacts,
-                    ),
-                ):
-                    yield event
-                return
-            except SessionBusy:
-                # Another request acquired the driver; route this input to
-                # next-step through the same inbox.
-                pass
-
-        queued = delivery == "queue"
-        enqueue = self.engine.followup if queued else self.engine.steer
-        item = await enqueue(
-            content,
-            source="user",
-            message_id=request_id,
-            images=images,
-            artifacts=artifacts,
-            metadata={"defer_message_event": True} if queued else None,
-        )
-        pending = TurnResponse(
-            message_id=item.message_id,
-            request_id=request_id,
-        )
-        self.pending_responses[item.message_id] = pending
-        if not queued:
-            self._publish_message_event(
-                item.message_id, content, images, artifacts
-            )
-        completed = False
-        try:
-            while True:
-                event = await pending.events.get()
-                if event is None:
-                    completed = True
+        async with self._submission_lock:
+            if not self.turn_lock.locked():
+                try:
+                    await start_turn(
+                        self,
+                        content=content,
+                        request_id=request_id,
+                        images=images,
+                        artifacts=artifacts,
+                        accepted_event=self._message_event(
+                            request_id,
+                            content,
+                            images,
+                            artifacts,
+                        ),
+                    )
+                except SessionBusy:
+                    pass
+                else:
+                    self.touch()
                     return
-                yield event
-        finally:
-            if not completed:
-                self.pending_responses.pop(item.message_id, None)
+            queued = delivery == "queue"
+            enqueue = self.engine.followup if queued else self.engine.steer
+            await enqueue(
+                content,
+                source="user",
+                message_id=request_id,
+                images=images,
+                artifacts=artifacts,
+                metadata={"defer_message_event": True} if queued else None,
+            )
+            if not queued:
+                self._publish_message_event(
+                    request_id,
+                    content,
+                    images,
+                    artifacts,
+                )
             self.touch()
-
-    def claim_response(
-        self,
-        message_ids: list[str],
-    ) -> TurnResponse | None:
-        """Hand the reply to the final claimed input without storing content."""
-        claimed = [
-            self.pending_responses.pop(message_id)
-            for message_id in message_ids
-            if message_id in self.pending_responses
-        ]
-        if not claimed:
-            return None
-        for pending in claimed[:-1]:
-            pending.finish()
-        return claimed[-1]
-
-    def attach_event_stream(
-        self,
-        after: int | None = None,
-    ) -> SessionEventSubscription:
-        cursor = 0 if after is None else after
-        events = self.event_stream.subscribe(cursor)
-        self._log.debug(
-            "session.events.attached",
-            streams=self.event_stream.subscriber_count,
-            after=cursor,
-        )
-        return events
-
-    def detach_event_stream(
-        self,
-        events: SessionEventSubscription,
-    ) -> None:
-        events.close()
-        self._log.debug(
-            "session.events.detached",
-            streams=self.event_stream.subscriber_count,
-        )
 
     def request_interrupt(self) -> bool:
         task = self.turn_task
@@ -471,11 +370,10 @@ class SessionRuntime(SessionPort):
             if self.turn_lock.locked():
                 return
             self._wakeup_requested = False
-            async for _event in run_turn_stream(
-                self,
-                content=None,
-            ):
-                pass
+            await start_turn(self, content=None)
+            task = self.turn_task
+            if task is not None:
+                await task
         except SessionBusy:
             pass
         finally:
@@ -499,9 +397,6 @@ class SessionRuntime(SessionPort):
             continuation.cancel()
             await asyncio.gather(continuation, return_exceptions=True)
         self.wakeup_task = None
-        for item in self.pending_responses.values():
-            item.finish()
-        self.pending_responses.clear()
         await self.engine.discard_inputs()
         try:
             await self.engine.close_session()
@@ -526,30 +421,26 @@ def _event_payload(event: dict[str, JsonValue]) -> ClientEvent:
 
 
 class TurnEventRouter:
-    """Publish a turn once, with detachable transport response views."""
+    """Publish a turn once on the runtime's central event stream."""
 
-    def __init__(self, runtime: SessionRuntime, response: TurnResponse) -> None:
+    def __init__(
+        self,
+        runtime: SessionRuntime,
+        request_id: str,
+    ) -> None:
         self._runtime = runtime
-        self._response = response
-        self._responses = [response]
+        self._request_id = request_id
 
     def emit(self, event: ClientEvent) -> None:
         self._runtime.event_stream.publish(
             event,
-            request_id=self._response.request_id,
+            request_id=self._request_id,
         )
-        self._response.emit(event)
 
-    def claim(self, message_ids: list[str]) -> None:
-        response = self._runtime.claim_response(message_ids)
-        if response is None:
-            return
-        self._response = response
-        self._responses.append(response)
-
-    def finish(self) -> None:
-        for response in self._responses:
-            response.finish()
+    def claim(self, items: list[InboxInput]) -> None:
+        user_ids = [item.message_id for item in items if item.source == "user"]
+        if user_ids:
+            self._request_id = user_ids[-1]
 
     async def live_sink(
         self,
@@ -628,6 +519,7 @@ async def _execute_turn(
     images: list[ImageContent] | None,
     artifacts: list[ArtifactRef] | None,
     interactive: bool | None,
+    ready: asyncio.Event | None = None,
 ) -> None:
     """Run one turn independently of any transport response consumer."""
     turn_open = False
@@ -653,6 +545,8 @@ async def _execute_turn(
             )
             async with aclosing(turn_stream):
                 async for event in turn_stream:
+                    if ready is not None:
+                        ready.set()
                     payload = _event_payload(event)
                     if payload.type in {"turn_finished", "turn_cancelled"}:
                         slots = await runtime.application.status_slots()
@@ -682,13 +576,15 @@ async def _execute_turn(
             details={"exception_type": type(exc).__name__},
         ))
         if turn_open:
-            # Shared-stream clients do not see the POST response's end marker.
-            # Close the published lifecycle even if error hooks or projection fail.
+            # Only a turn that reached its started boundary receives a
+            # lifecycle terminal frame; pre-start failures terminate via the
+            # typed error event above.
             router.emit(_event_payload(agentloop_event(
                 "turn_finished", {"turn": runtime.engine.turn_count},
             )))
     finally:
-        router.finish()
+        if ready is not None:
+            ready.set()
         if runtime._active_router is router:
             runtime._active_router = None
         runtime.turn_task = None
@@ -698,7 +594,7 @@ async def _execute_turn(
             runtime._request_wakeup()
 
 
-async def run_turn_stream(
+async def start_turn(
     runtime: SessionRuntime,
     *,
     content: str | None,
@@ -707,14 +603,15 @@ async def run_turn_stream(
     artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
     accepted_event: ClientEvent | None = None,
-) -> AsyncIterator[ClientEvent]:
+) -> None:
+    """Start a turn whose authoritative output is the Session event stream."""
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
     await runtime.turn_lock.acquire()
     try:
-        response = TurnResponse(request_id, request_id)
-        router = TurnEventRouter(runtime, response)
+        router = TurnEventRouter(runtime, request_id)
         runtime._active_router = router
+        ready = asyncio.Event()
         if accepted_event is not None:
             runtime.event_stream.publish(accepted_event, request_id=request_id)
         task = asyncio.create_task(_execute_turn(
@@ -725,22 +622,22 @@ async def run_turn_stream(
             images=images,
             artifacts=artifacts,
             interactive=interactive,
+            ready=ready,
         ))
     except BaseException:
         runtime.turn_lock.release()
         raise
     runtime.turn_task = task
-    async for event in _response_events(response):
-        yield event
+    await ready.wait()
 
 
-async def regenerate_turn_stream(
+async def start_regenerate_turn(
     runtime: SessionRuntime,
     *,
     request_id: str,
     interactive: bool | None = None,
-) -> AsyncIterator[ClientEvent]:
-    """Atomically replace the latest human turn and run it again."""
+) -> None:
+    """Start regeneration with output published on the Session event stream."""
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
     await runtime.turn_lock.acquire()
@@ -753,8 +650,7 @@ async def regenerate_turn_stream(
         ]
         page = runtime.application.history_pages.page(limit=160)
         snapshot = await runtime.application.snapshot()
-        response = TurnResponse(request_id, request_id)
-        router = TurnEventRouter(runtime, response)
+        router = TurnEventRouter(runtime, request_id)
         runtime._active_router = router
         router.emit(session_event(
             "history_updated",
@@ -786,27 +682,9 @@ async def regenerate_turn_stream(
         interactive=interactive,
     ))
     runtime.turn_task = task
-    async for event in _response_events(response):
-        yield event
-
-
-async def _response_events(
-    response: TurnResponse,
-) -> AsyncIterator[ClientEvent]:
-    """Expose a turn response while detaching the transport view reliably."""
-    try:
-        while True:
-            event = await response.events.get()
-            if event is None:
-                return
-            yield event
-    finally:
-        response.detach()
-
-
 __all__ = [
     "SessionBusy",
     "SessionRuntime",
-    "regenerate_turn_stream",
-    "run_turn_stream",
+    "start_regenerate_turn",
+    "start_turn",
 ]

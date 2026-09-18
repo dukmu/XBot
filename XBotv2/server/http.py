@@ -11,7 +11,6 @@ import asyncio
 import logging
 import time
 import uuid
-from functools import partial
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -19,7 +18,6 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message as ASGIMessage, Receive, Scope, Send
 
 from XBotv2.core.errors import OperationError
-from XBotv2.core.providers import BaseProvider
 from XBotv2.core.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
     RuntimeLog,
@@ -29,10 +27,6 @@ from XBotv2.core.runtime_logging import (
 from XBotv2.protocol.http_util import HttpServerError, error_payload
 from XBotv2.protocol import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.server.contracts import (
-    ModelOverride,
-    current_model_override,
-)
 
 # Preserve the established helper import surface.
 from XBotv2.protocol.http_util import (  # noqa: F401
@@ -259,23 +253,6 @@ def create_app(
     return app
 
 
-def set_llm_override(app: FastAPI, llm: BaseProvider | None) -> None:
-    """Override the model provider through FastAPI's dependency mechanism."""
-    if llm is None:
-        app.dependency_overrides.pop(current_model_override, None)
-    else:
-        app.dependency_overrides[current_model_override] = partial(
-            _fixed_model, llm
-        )
-
-
-async def _fixed_model(llm: BaseProvider) -> BaseProvider:
-    return llm
-
-
 __all__ = [
-    "ModelOverride",
     "create_app",
-    "current_model_override",
-    "set_llm_override",
 ]

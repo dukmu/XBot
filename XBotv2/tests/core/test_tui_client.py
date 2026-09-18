@@ -648,7 +648,7 @@ def test_tui_state_turn_finished_clears_pending_and_denial_status():
     assert state.status == "Ready"
     assert state.pending_permission_payload is None
     assert state.tools["call_req"].permission_pending is False
-    assert state.tools["call_req"].status == "cancelled"
+    assert state.tools["call_req"].status == "error"
 
     state.apply_event(_frame("turn_started", {"turn": 2}))
     state.apply_event(
@@ -770,11 +770,57 @@ def test_terminal_events_clear_pending_interactions(
     assert state.tools["call-1"].permission_pending is False
 
 
+@pytest.mark.parametrize(
+    ("terminal_type", "terminal_data", "expected_tool_status"),
+    [
+        ("turn_finished", {"turn": 1}, "error"),
+        ("turn_cancelled", {"turn": 1, "reason": "client_interrupt"}, "cancelled"),
+    ],
+)
+def test_tui_state_terminal_events_finalize_unanswered_tool_calls(
+    terminal_type, terminal_data, expected_tool_status
+):
+    state = TuiState()
+    state.apply_event(_frame("turn_started", {"turn": 1}))
+    state.apply_event(_frame("tool_calls_started", {"tool_calls": [
+        {"id": "pending", "name": "shell", "args": {}},
+        {"id": "running", "name": "shell", "args": {}},
+    ]}))
+    state.tools["running"].status = "running"
+    state.apply_event(_frame("permission_request", {
+        "request_id": "approval-1",
+        "tool_call": {"id": "approval", "name": "shell", "args": {}},
+    }))
+    state.apply_event(_frame("tool_result", {
+        "tool_call_id": "completed", "name": "shell", "status": "success", "content": "ok",
+    }))
+    state.apply_event(_frame("tool_result", {
+        "tool_call_id": "cancelled", "name": "shell", "status": "cancelled", "content": "",
+    }))
+
+    state.apply_event(_frame(terminal_type, terminal_data))
+
+    assert {
+        tool_id: state.tools[tool_id].status
+        for tool_id in ("pending", "running", "approval")
+    } == {
+        "pending": expected_tool_status,
+        "running": expected_tool_status,
+        "approval": expected_tool_status,
+    }
+    assert state.tools["completed"].status == "success"
+    assert state.tools["cancelled"].status == "cancelled"
+    assert all(state.tools[tool_id].finished_at > 0 for tool_id in state.tools)
+
+
 @pytest.mark.asyncio
 async def test_textual_tool_refresh_treats_source_as_plain_text():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -946,8 +992,25 @@ async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypa
 
             return Resp()
 
-        def stream(self, method, path, json=None, params=None, timeout=None):
-            del params
+        async def request(self, method, path, json=None, params=None):
+            del method, path, params
+
+            class Resp:
+                is_success = True
+
+                def json(self_inner):
+                    return {
+                        "session_id": "s",
+                        "thread_id": "t",
+                        "request_id": json["request_id"],
+                        "message_id": json["request_id"],
+                        "status": "started",
+                    }
+
+            return Resp()
+
+        def stream(self, method, path, json=None, params=None, headers=None, timeout=None):
+            del params, headers
             return self._stream
 
         async def aclose(self):
@@ -967,8 +1030,7 @@ async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypa
 
     session = TerminalSession(client=client, session_id="s", thread_id="t")
     events: list[dict[str, Any]] = []
-    async for _event in session.send_message("当前磁盘用了多少"):
-        pass
+    await session.send_message("当前磁盘用了多少")
     client._http._stream = FakeStream([
         "event: assistant_message",
         "id: 1",
@@ -992,7 +1054,7 @@ async def test_terminal_session_trace_records_unicode_payload(tmp_path, monkeypa
         if r["stage"] == "tui.http" and r["payload"].get("stage") == "messages.request"
     ]
     assert request_records, f"missing messages.request trace, got: {records}"
-    assert request_records[0]["payload"]["body"]["content"] == "当前磁盘用了多少"
+    assert request_records[0]["payload"]["content"] == "当前磁盘用了多少"
 
     assistant_event = events[0]
     assert assistant_event["type"] == "assistant_message"
@@ -1070,6 +1132,10 @@ async def test_message_event_pops_queue_before_turn_end():
             return {"commands": []}
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def _submission_events(self, text):
             # Mirrors a queued/folded input: the message is published on the
             # event stream, then the stream stays quiet until turn end.
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -1114,6 +1180,9 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -1124,10 +1193,20 @@ async def test_textual_app_headless_preserves_message_order_and_chinese():
             return {"commands": []}
 
         async def send_message(self, text):
-            yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
-            yield {"type": "turn_started", "data": {"turn": 1}}
-            yield {"type": "assistant_message", "data": {"content": f"回复：{text}"}}
-            yield {"type": "turn_finished", "data": {"turn": 1}}
+            for event in (
+                {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}},
+                {"type": "turn_started", "data": {"turn": 1}},
+                {"type": "assistant_message", "data": {"content": f"回复：{text}"}},
+                {"type": "turn_finished", "data": {"turn": 1}},
+            ):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
 
     app = XBotTextualApp(
         session_id="s",
@@ -1282,6 +1361,9 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -1289,6 +1371,17 @@ async def test_textual_app_headless_shows_usage_in_status_bar():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             del text
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -1404,6 +1497,9 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -1411,6 +1507,17 @@ async def test_textual_app_headless_handles_tool_call_delta_before_body_mount():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             del text
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -1476,6 +1583,9 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -1483,6 +1593,17 @@ async def test_textual_app_streaming_deltas_do_not_schedule_empty_scrolls():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             del text
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -1533,6 +1654,9 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
     from XBotv2.tui.textual_client import XBotTextualApp
 
     class FakeSession:
+        def __init__(self):
+            self._events = asyncio.Queue()
+
         async def connect(self):
             return None
 
@@ -1540,6 +1664,17 @@ async def test_textual_app_new_entries_follow_only_when_at_bottom():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             del text
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -1604,6 +1739,7 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
 
     class FakeSession:
         def __init__(self):
+            self._events = asyncio.Queue()
             self.calls = 0
 
         async def connect(self):
@@ -1613,6 +1749,17 @@ async def test_textual_app_foldin_shows_queued_text_and_usage_once():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             self.calls += 1
             if self.calls == 1:
                 # Active turn, superseded by the fold-in: stream ends after
@@ -1693,6 +1840,7 @@ async def test_textual_app_headless_renders_inline_permission_options():
 
     class FakeSession:
         def __init__(self):
+            self._events = asyncio.Queue()
             self.permission_decision = None
             self.permission_answered = asyncio.Event()
 
@@ -1706,6 +1854,17 @@ async def test_textual_app_headless_renders_inline_permission_options():
             return {"commands": []}
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             del text
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -2041,6 +2200,7 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
 
     class FakeSession:
         def __init__(self):
+            self._events = asyncio.Queue()
             self.answer = None
             self.answer_recorded = asyncio.Event()
 
@@ -2054,6 +2214,17 @@ async def test_textual_app_headless_renders_inline_ask_user_options():
             return {"commands": []}
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             payload = {
@@ -2192,6 +2363,7 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
 
     class FakeSession:
         def __init__(self):
+            self._events = asyncio.Queue()
             self.permission_decision = None
             self.permission_answered = asyncio.Event()
 
@@ -2202,6 +2374,17 @@ async def test_textual_app_replays_tool_permission_sequence_without_swallowing_m
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": text}}
             yield {"type": "turn_started", "data": {"turn": 1}}
             yield {
@@ -2383,21 +2566,9 @@ async def test_terminal_session_uses_shared_events_for_turn_delivery():
                 "session_id": session_id, "thread_id": thread_id, "status": "ready"
             })
 
-        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
-            del session_id, thread_id, content, request_id, images
-            async def _events():
-                from XBotv2.protocol import server_event
-                yield server_event(type="turn_started", data={"turn": 1})
-                yield server_event(type="permission_request", data={
-                    "request_id": "permission:c1", "reason": "approve?"
-                })
-                yield server_event(type="user_input_required", data={
-                    "request_id": "user_input:c2", "question": "continue?"
-                })
-                yield server_event(type="turn_finished", data={"turn": 1})
-                yield server_event(type="end", data={"status": "ok"})
-
-            return _events()
+        async def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, images
+            return None
 
         async def send_permission_response(self, **kwargs):
             raise AssertionError("TerminalSession must not auto-answer")
@@ -2417,9 +2588,7 @@ async def test_terminal_session_uses_shared_events_for_turn_delivery():
     session = TerminalSession(client=FakeClient(), session_id="s", thread_id="t")
     await session.connect()
 
-    events = [event async for event in session.send_message("run")]
-
-    assert events == []
+    await session.send_message("run")
 
 
 @pytest.mark.asyncio
@@ -2502,25 +2671,17 @@ async def test_terminal_session_switch_is_transactional_and_does_not_shutdown():
 
 
 @pytest.mark.asyncio
-async def test_terminal_session_consumes_transport_end_sentinel():
+async def test_terminal_session_submission_does_not_open_response_stream():
     class FakeClient:
-        def send_message(self, session_id, thread_id, content, *, request_id, images=None):
-            del session_id, thread_id, content, request_id, images
-            async def _events():
-                from XBotv2.protocol import server_event
-                yield server_event(type="turn_started", data={"turn": 1})
-                yield server_event(type="turn_finished", data={"turn": 1})
-                yield server_event(type="end", data={"status": "ok"})
-
-            return _events()
+        async def send_message(self, session_id, thread_id, content, *, request_id, images=None):
+            del session_id, thread_id, content, images
+            return None
 
     session = TerminalSession(
         client=FakeClient(), session_id="s", thread_id="t"
     )
 
-    events = [event async for event in session.send_message("run")]
-
-    assert events == []
+    await session.send_message("run")
 
 
 def test_tui_modules_do_not_import_core():
@@ -3024,6 +3185,7 @@ async def test_tui_renders_error_entry_with_error_css_class():
 
     class _ErrorSession:
         def __init__(self):
+            self._events = asyncio.Queue()
             self.sent: list[str] = []
 
         async def connect(self):
@@ -3033,6 +3195,17 @@ async def test_tui_renders_error_entry_with_error_css_class():
             return None
 
         async def send_message(self, text):
+            async for event in self._submission_events(text):
+                self._events.put_nowait(event)
+
+        async def session_events(self):
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    return
+                yield event
+
+        async def _submission_events(self, text):
             self.sent.append(text)
             yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
             yield {"type": "turn_started", "data": {"turn": 1}}
@@ -3702,6 +3875,9 @@ class _ReplayFakeSession:
         return {"commands": []}
 
     async def send_message(self, text):
+        return [event async for event in self._submission_events(text)]
+
+    async def _submission_events(self, text):
         yield {"type": "message", "data": {"id": "msg-1", "role": "user", "content": "queued"}}
         yield {"type": "turn_started", "data": {"turn": 1}}
         yield {"type": "assistant_message", "data": {"content": "ok"}}

@@ -16,6 +16,7 @@ import {
   runtimeReducer,
   trajectoryEntries,
 } from "./runtime";
+import { ActivationEventBuffer } from "./activationBuffer";
 
 const apiBase = import.meta.env.VITE_XBOT_API_BASE || "/api";
 
@@ -47,6 +48,7 @@ export function useXBot() {
   const trajectoryEventsBuffer = useRef<ServerEvent[]>([]);
   const trajectoryRefreshInFlight = useRef(false);
   const reconcileInFlight = useRef(false);
+  const activationEventsBuffer = useRef<ActivationEventBuffer | null>(null);
   const navigationBlocked = state.loading || commandRunning;
   const navigationBlockMessage = state.loading
     ? "Wait for the active session operation before switching sessions."
@@ -67,6 +69,11 @@ export function useXBot() {
     onEvents: (events) => {
       for (const event of events) {
         latestEventSequenceRef.current = Math.max(latestEventSequenceRef.current, event.sequence);
+      }
+      const activationBuffer = activationEventsBuffer.current;
+      if (activationBuffer !== null) {
+        activationBuffer.append(events);
+        return;
       }
       if (trajectoryRefreshInFlight.current) {
         trajectoryEventsBuffer.current.push(...events);
@@ -140,6 +147,14 @@ export function useXBot() {
     trajectoryEventsBuffer.current = [];
     trajectoryRefreshPending.current = false;
     trajectoryRefreshInFlight.current = false;
+    resetStreamingState();
+    // Attach before fetching the catalogs/history. Events received during
+    // activation are held in a bounded local buffer and folded after the
+    // durable trajectory baseline is installed.
+    const activationBuffer = new ActivationEventBuffer();
+    activationEventsBuffer.current = activationBuffer;
+    dispatch({ type: "opened", session });
+    startEventStream(session, generation);
     let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
     try {
       resources = await Promise.all([
@@ -154,13 +169,33 @@ export function useXBot() {
         api.listTrajectory(session.session_id, session.thread_id, { limit: 160 }),
       ]);
     } catch (error) {
+      if (activationEventsBuffer.current === activationBuffer) {
+        activationEventsBuffer.current = null;
+        resetStreamingState();
+      }
       throw error;
     }
     const [threads, agents, tasks, availableCommands, todos, trajectory] = resources;
-    if (generation !== navigationGeneration.current) return;
-    resetStreamingState();
-    dispatch({ type: "opened", session });
-    dispatch({ type: "trajectory", items: trajectory.items, nextCursor: trajectory.next_cursor });
+    if (generation !== navigationGeneration.current) {
+      if (activationEventsBuffer.current === activationBuffer) {
+        activationEventsBuffer.current = null;
+        resetStreamingState();
+      }
+      return;
+    }
+    if (activationEventsBuffer.current !== activationBuffer) return;
+    const activation = activationBuffer.take();
+    activationEventsBuffer.current = null;
+    if (activation.overflowed) {
+      resetStreamingState();
+      throw new Error("session event activation buffer overflow; reopen the session");
+    }
+    dispatch({
+      type: "trajectory",
+      items: trajectory.items,
+      nextCursor: trajectory.next_cursor,
+      bufferedEvents: activation.events,
+    });
     dispatch({ type: "threads", threads });
     const activeThread = threads.find((thread) => thread.thread_id === session.thread_id);
     if (activeThread) dispatch({ type: "thread_synced", thread: activeThread });
@@ -169,8 +204,12 @@ export function useXBot() {
     dispatch({ type: "todos", todos });
     setCommands(availableCommands);
     setNotification("");
-    startEventStream(session, generation, activeThread?.turn_status === "running");
-  }, [api, resetStreamingState, startEventStream]);
+    runtimeEvents.setRunning(
+      session.session_id,
+      generation,
+      activeThread?.turn_status === "running",
+    );
+  }, [api, resetStreamingState, runtimeEvents, startEventStream]);
   const activateSessionRef = useRef(activate);
   activateSessionRef.current = activate;
   const refreshTrajectory = useCallback(() => {
@@ -627,7 +666,7 @@ export function useXBot() {
     const controller = new AbortController();
     messageControllers.current.set(controller, requestTarget);
     try {
-      for await (const _event of api.sendMessage(
+      await api.sendMessage(
         current.session_id,
         current.thread_id,
         content,
@@ -640,11 +679,7 @@ export function useXBot() {
         controller.signal,
         requestId,
         delivery,
-      )) {
-        // The session event connection is the authoritative, resumable
-        // delivery path. The POST stream is drained only for compatibility
-        // with older clients and to surface transport-level failures.
-      }
+      );
       return true;
     } catch (error) {
       if (generation === navigationGeneration.current && delivery === "steer") {
@@ -688,13 +723,11 @@ export function useXBot() {
     const controller = new AbortController();
     messageControllers.current.set(controller, `${current.session_id}\n${current.thread_id}`);
     try {
-      for await (const _event of api.regenerateMessage(
+      await api.regenerateMessage(
         current.session_id,
         current.thread_id,
         controller.signal,
-      )) {
-        // Runtime events arrive through the resumable session stream.
-      }
+      );
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error, true);
     } finally {

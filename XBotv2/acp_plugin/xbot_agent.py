@@ -77,6 +77,7 @@ from XBotv2.session.contracts import (
     ImageInput,
     OpenSession,
     SendMessage,
+    SessionEventSubscription,
     SessionNotFound,
     ThreadSummary,
     ThreadNotActive,
@@ -344,15 +345,13 @@ class XBotACPAgent:
         )
         self._active_prompts[session_id] = prompt
         try:
-            stream = await self.sessions.stream_message(SendMessage(
+            await self.sessions.send_message(SendMessage(
                 session_id=session_id,
                 thread_id="agent",
                 content=content,
                 request_id=request_id,
                 images=tuple(images),
             ))
-            async for _event in stream:
-                pass
             await prompt.completed.wait()
         finally:
             self._active_prompts.pop(session_id, None)
@@ -532,7 +531,7 @@ class XBotACPAgent:
     async def _forward_session_events(
         self,
         session_id: str,
-        events: AsyncIterator[SessionEventFrame],
+        events: SessionEventSubscription,
     ) -> None:
         try:
             summary = await self._thread(session_id)
@@ -579,6 +578,7 @@ class XBotACPAgent:
             )
             raise
         finally:
+            await events.aclose()
             # The session stream can end without a turn terminal frame (the
             # session closed, or the subscription stopped) and the task can be
             # cancelled. An active prompt must be released either way, or its

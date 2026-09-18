@@ -8,15 +8,16 @@ transcript/compaction path is exercised over the real HTTP transport.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 
 import uvicorn
 import yaml
 
 from XBotv2.application.server import start_server_application
+from XBotv2.application.app import create_agent_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
-from XBotv2.server.http import set_llm_override
 
 DATA = Path(__file__).resolve().parents[3] / ".verify" / "data"
 WORKSPACE = Path(__file__).resolve().parents[3] / ".verify" / "workspace"
@@ -85,9 +86,9 @@ async def main() -> None:
         workspace_root=str(WORKSPACE),
         no_plugins=False,
     )
-    set_llm_override(
-        application.server,
-        RealMainScriptedAux(MockLLM(
+    application.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=RealMainScriptedAux(MockLLM(
             responses=[
                 {"content": f"Real reply {index}.", "chunk_delay_ms": 2}
                 for index in range(1, 500)

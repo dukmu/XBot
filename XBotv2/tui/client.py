@@ -159,13 +159,15 @@ class TuiState:
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
             self.compaction_active = False
-            self._clear_pending_interactions(tool_status="cancelled")
+            self._clear_pending_interactions(tool_status="error")
+            self._finish_pending_tools("error")
             self._refresh_status()
         elif event_type == "turn_cancelled":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
             self.compaction_active = False
             self._clear_pending_interactions(tool_status="cancelled")
+            self._finish_pending_tools("cancelled")
             self.status = "Interrupted"
             self._refresh_status()
         elif event_type == "assistant_message":
@@ -498,7 +500,17 @@ class TuiState:
         for tool in self.tools.values():
             if tool.permission_pending:
                 tool.permission_pending = False
-                tool.status = tool_status
+                if tool.status in {"pending", "running", "pending approval"}:
+                    tool.status = tool_status
+                    tool.finished_at = time.monotonic()
+                    self._changed_tool_ids.add(tool.tool_call_id)
+
+    def _finish_pending_tools(self, status: str) -> None:
+        for tool in self.tools.values():
+            if tool.status in {"pending", "running", "pending approval"}:
+                tool.permission_pending = False
+                tool.status = status
+                tool.finished_at = time.monotonic()
                 self._changed_tool_ids.add(tool.tool_call_id)
 
     def _refresh_status(self, *, reset_terminal: bool = False) -> None:

@@ -24,12 +24,12 @@ class TerminalSession:
         session = TerminalSession(base_url="http://127.0.0.1:4096")
         await session.connect()
         events = asyncio.create_task(consume(session.session_events()))
-        await drain(session.send_message("hi"))
+        await session.send_message("hi")
         await session.disconnect()
 
-    ``session_events`` is the authoritative resumable event channel.
-    ``send_message`` drains the compatibility POST stream and only exposes an
-    immediate ``input_rejected`` control result to the TUI submitter.
+    ``session_events`` is the authoritative resumable event channel for the
+    built-in TUI. Commands return after the server accepts them; output is
+    delivered only through that event channel.
     """
 
     def __init__(
@@ -199,28 +199,22 @@ class TerminalSession:
         content: str,
         *,
         images: list[dict[str, str]] | None = None,
-    ) -> AsyncIterator[dict[str, JsonValue]]:
-        """Submit input while runtime events arrive through ``session_events``."""
+    ) -> None:
+        """Submit input; output is delivered by :meth:`session_events`."""
 
         request_id = f"tui-{self._session_id}-{secrets.token_hex(8)}"
-        request = {
-            "session_id": self._session_id,
-            "thread_id": self._thread_id,
-            "content": content,
+        trace_event("tui.http", {
+            "stage": "messages.request",
             "request_id": request_id,
-        }
-        if images:
-            request["images"] = images
-        stream = self._client.send_message(
+            "content": content,
+        })
+        await self._client.send_message(
             self._session_id,
             self._thread_id,
             content,
             request_id=request_id,
             images=images,
         )
-        async for event in self._events(stream, "messages", request):
-            if event.get("type") == "input_rejected":
-                yield event
 
     def rewind_event_cursor(self, sequence: int) -> None:
         """Resume the shared event stream from a server-provided recovery point."""

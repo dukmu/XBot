@@ -13,7 +13,6 @@ from XBotv2.coretools import shell as shell_module
 from XBotv2.coretools.shell import run_shell_command, shell_tools
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_runtime import execute_tools
 from XBotv2.agentloop import Events
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.permissions.approval import ApprovalService

@@ -59,10 +59,15 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
     )
 
     async def collect(content: str, request_id: str):
-        return [
-            event
-            async for event in runtime.stream_message(content, request_id)
-        ]
+        events = runtime.event_stream.subscribe()
+        await runtime.send_message(content, request_id)
+        collected = []
+        async for frame in events:
+            collected.append(frame.event)
+            if frame.event.type == "turn_finished":
+                break
+        await events.aclose()
+        return collected
 
     first = asyncio.create_task(collect("first", "first-id"))
     await started.wait()
@@ -74,9 +79,8 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
     assert [message.content for message in engine.messages] == [
         "first", "", "done", "steer", "merged reply",
     ]
-    assert not runtime.pending_responses
     assert engine.pending_input_count == 0
-    assert first_events[-1].type == "tool_result"
+    assert any(event.type == "tool_result" for event in first_events)
     assert second_events[-1].type == "turn_finished"
 
 

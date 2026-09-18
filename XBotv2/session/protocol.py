@@ -7,7 +7,6 @@ this module owns only HTTP request/response and SSE mapping.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable
@@ -32,7 +31,7 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationPage
 from XBotv2.core.tools import ClientEvent, validated_client_event
 from XBotv2.core.timing import SessionStats, conversation_stats
-from XBotv2.server import ModelOverride, ServerOptions
+from XBotv2.server import ServerOptions
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import (
     AttachmentInput,
@@ -48,7 +47,7 @@ from XBotv2.session.contracts import (
     RegenerateMessage,
     SendMessage,
     SessionExists,
-    SessionEventFrame,
+    SessionEventSubscription,
     SessionEventCursorExpired,
     SessionHistoryItem,
     SessionNotFound,
@@ -62,6 +61,7 @@ from XBotv2.session.contracts import (
 )
 
 logger = logging.getLogger("xbotv2.api")
+
 
 class OpenSessionRequest(WireModel):
     session_id: str | None = None
@@ -341,51 +341,8 @@ async def _interaction_response(
     )
 
 
-async def _message_sse(
-    events: AsyncIterator,
-    session_id: str,
-    thread_id: str,
-    request_id: str,
-) -> AsyncIterator[bytes]:
-    sequence = 0
-    try:
-        async for event in events:
-            sequence += 1
-            yield _format_sse(
-                event={"type": event.type, "data": event.data},
-                seq=sequence,
-                session_id=session_id,
-                thread_id=thread_id,
-                request_id=request_id,
-            )
-    except asyncio.CancelledError:
-        logger.info("SSE stream cancelled for session %s", session_id)
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("SSE stream errored for %s", session_id)
-        sequence += 1
-        yield _format_sse(
-            event=session_error_event(
-                "stream_failed",
-                str(exc),
-                details={"exception_type": type(exc).__name__},
-            ),
-            seq=sequence,
-            session_id=session_id,
-            thread_id=thread_id,
-            request_id=request_id,
-        )
-    yield _format_sse(
-        event={"type": "end", "data": {"status": "ok"}},
-        seq=sequence + 1,
-        session_id=session_id,
-        thread_id=thread_id,
-        request_id=request_id,
-    )
-
-
 async def _session_sse(
-    events: AsyncIterator[SessionEventFrame],
+    events: SessionEventSubscription,
     session_id: str,
     thread_id: str,
 ) -> AsyncIterator[bytes]:
@@ -398,8 +355,8 @@ async def _session_sse(
                 thread_id=thread_id,
                 request_id=frame.request_id,
             )
-    except asyncio.CancelledError:
-        return
+    finally:
+        await events.aclose()
 
 
 async def _session_not_found(
@@ -433,7 +390,6 @@ def build_session_router(
     @router.post("/sessions", operation_id="open_session")
     async def open_session(
         payload: OpenSessionRequest,
-        llm_override: ModelOverride,
     ) -> OpenSessionResponse:
         raw_session_id = (payload.session_id or "").strip() or None
         thread_id = payload.thread_id.strip() or "agent"
@@ -465,7 +421,6 @@ def build_session_router(
                 mode=payload.mode,
                 selected_agent=payload.agent,
                 no_plugins=options.no_plugins,
-                model_override=llm_override,
             ))
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
@@ -549,7 +504,6 @@ def build_session_router(
     async def open_thread_endpoint(
         session_id: str,
         payload: OpenThreadRequest,
-        llm_override: ModelOverride,
     ) -> OpenSessionResponse:
         try:
             opened = await sessions.open_thread(OpenThread(
@@ -561,7 +515,6 @@ def build_session_router(
                 mode=payload.mode,
                 selected_agent=payload.agent,
                 no_plugins=options.no_plugins,
-                model_override=llm_override,
             ))
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
@@ -693,8 +646,8 @@ def build_session_router(
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/history/regenerate",
         operation_id="regenerate_message",
-        response_class=StreamingResponse,
-        responses=_SSE_RESPONSE,
+        status_code=202,
+        responses={202: {"description": "Command accepted; events are delivered on the session stream."}},
     )
     async def regenerate_message_endpoint(
         session_id: str,
@@ -702,20 +655,18 @@ def build_session_router(
         payload: RegenerateRequest,
     ) -> Response:
         request_id = payload.request_id.strip() or f"req-{uuid.uuid4().hex}"
-        events = await sessions.regenerate_message(RegenerateMessage(
+        await sessions.regenerate_message(RegenerateMessage(
             session_id=session_id,
             thread_id=thread_id,
             request_id=request_id,
         ))
-        return _sse_response(
-            _message_sse(events, session_id, thread_id, request_id),
-        )
+        return Response(status_code=202)
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/messages",
         operation_id="send_message",
-        response_class=StreamingResponse,
-        responses=_SSE_RESPONSE,
+        status_code=202,
+        responses={202: {"description": "Command accepted; events are delivered on the session stream."}},
     )
     async def post_message(
         session_id: str,
@@ -734,17 +685,10 @@ def build_session_router(
             attachments=tuple(payload.attachments),
         )
         try:
-            events = await sessions.stream_message(message)
+            await sessions.send_message(message)
         except ValueError as exc:
-            raise HttpServerError(
-                "invalid_request",
-                str(exc),
-                status=400,
-            ) from exc
-
-        return _sse_response(
-            _message_sse(events, session_id, thread_id, client_request_id),
-        )
+            raise HttpServerError("invalid_request", str(exc), status=400) from exc
+        return Response(status_code=202)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/queue",

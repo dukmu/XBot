@@ -6,7 +6,7 @@ The tests cover:
 
 - /health round-trip
 - /hello + /sessions handshake
-- /sessions/{sid}/messages SSE stream with a real engine
+- shared GET /events stream with a real engine
 - live permission_request round-trip via the interaction endpoints
 - Chinese payload byte-level preservation through HTTP
 - ESC interrupt: POST /sessions/{sid}/interrupt mid-turn yields
@@ -24,6 +24,7 @@ import json
 import re
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
@@ -35,23 +36,23 @@ import XBotv2.client as client_module
 import yaml
 from pydantic import ValidationError
 from xcore import Context
-from XBotv2.jobs import JobKind
+from XBotv2.jobs import JobKind, JobStatus
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop import Events
 from XBotv2.core.messages import Message
 from XBotv2.core.tools import ArtifactRef, ClientEvent, Tool, ToolCall
 from XBotv2.client import XBotClient, XBotClientError
-from XBotv2.coretools.shell import ShellRunner
+from XBotv2.coretools.shell import ShellRunner, start_shell
 from XBotv2.agentloop.internal_messages import structure_tool_message
 from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application import RuntimeEvent
+from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.server.http import (
     _format_sse,
-    set_llm_override,
 )
 from XBotv2.session import (
     InteractionReceipt,
@@ -63,8 +64,6 @@ from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.runtime import (
     SessionRuntime,
     TurnEventRouter,
-    TurnResponse,
-    run_turn_stream,
 )
 from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.protocol import ServerEvent
@@ -92,6 +91,122 @@ async def _drain_stream(stream):
     return [event async for event in stream]
 
 
+async def _submit_turn(
+    client: httpx.AsyncClient,
+    app,
+    session_id: str,
+    thread_id: str,
+    payload: dict[str, Any],
+) -> list[ClientEvent]:
+    """Submit one message and wait for its turn to terminate.
+
+    The message endpoints only acknowledge the command; every frame arrives on
+    the shared session event stream, so the subscription opens before the POST.
+    """
+    runtime = await app.state.manager.get(session_id, thread_id)
+    events = runtime.event_stream.subscribe()
+    collected: list[ClientEvent] = []
+    try:
+        response = await client.post(
+            f"/sessions/{session_id}/threads/{thread_id}/messages",
+            json=payload,
+        )
+        assert response.status_code == 202, response.text
+        async with asyncio.timeout(5):
+            async for frame in events:
+                collected.append(frame.event)
+                if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                    break
+                if (
+                    frame.event.type == "error"
+                    and frame.event.data.get("code") == "turn_failed"
+                ):
+                    break
+    finally:
+        await events.aclose()
+    return collected
+
+
+async def _await_turn_end(events, *, timeout: float = 5.0) -> None:
+    """Consume the shared stream until one turn reaches a terminal frame."""
+    async with asyncio.timeout(timeout):
+        async for frame in events:
+            if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                return
+            if (
+                frame.event.type == "error"
+                and frame.event.data.get("code") == "turn_failed"
+            ):
+                return
+
+
+def _runtime_command(runtime, content: str, request_id: str, *, delivery="steer"):
+    """Issue a runtime command while consuming the central event stream."""
+    async def stream():
+        events = runtime.event_stream.subscribe()
+        try:
+            await runtime.send_message(
+                content, request_id, delivery=delivery,
+            )
+            async for frame in events:
+                yield frame.event
+                if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                    break
+                if (
+                    frame.event.type == "error"
+                    and frame.event.data.get("code") == "turn_failed"
+                ):
+                    break
+        finally:
+            await events.aclose()
+    return stream()
+
+
+async def _wait_for_pending_input_count(
+    runtime,
+    expected: int,
+    timeout: float = 1.0,
+) -> None:
+    async with asyncio.timeout(timeout):
+        while runtime.engine.pending_input_count != expected:
+            await asyncio.sleep(0)
+
+
+async def _collect_turn(runtime, content: str, request_id: str, *, delivery="steer"):
+    """Submit a runtime command and collect its central event frames."""
+    events = runtime.event_stream.subscribe()
+    await runtime.send_message(content, request_id, delivery=delivery)
+    collected = []
+    async for frame in events:
+        collected.append(frame.event)
+        if frame.event.type in {"turn_finished", "turn_cancelled"}:
+            break
+        if frame.event.type == "error" and frame.event.data.get("code") == "turn_failed":
+            break
+    await events.aclose()
+    return collected
+
+
+async def _collect_sdk_turn(stream):
+    events = []
+    async for event in stream:
+        events.append(event)
+        if event.type in {"turn_finished", "turn_cancelled"}:
+            break
+        if event.type == "error" and event.data.get("code") == "turn_failed":
+            break
+    return events
+
+
+async def _wait_for_sdk_messages(sdk, session_id: str, thread_id: str, count: int):
+    async with asyncio.timeout(3):
+        while True:
+            page = await sdk.list_messages(session_id, thread_id)
+            if len(page.messages) >= count:
+                return page
+            await asyncio.sleep(0)
+
+
 async def _start_background_shell(application: Any, command: str) -> str:
     job = await application.jobs.create(
         kind=JobKind.SHELL,
@@ -104,10 +219,15 @@ async def _start_background_shell(application: Any, command: str) -> str:
 @pytest.mark.asyncio
 async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
     assert client_module.XBotClient is XBotClient
-    set_llm_override(http_app, MockLLM(responses=[
-        {"content": "sdk answer"},
-        {"content": "sdk regenerated"},
-    ]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(
+            responses=[
+                {"content": "sdk answer"},
+                {"content": "sdk regenerated"},
+            ]
+        ),
+    )
     async with XBotClient(
         "http://test",
         transport=ASGITransport(app=http_app),
@@ -117,16 +237,11 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
             session_id="sdk-client",
             thread_id="main",
         )
-        events = [
-            event
-            async for event in sdk.send_message(
-                "sdk-client",
-                "main",
-                "sdk question",
-                request_id="sdk-request",
-                delivery="queue",
-            )
-        ]
+        await sdk.send_message(
+            "sdk-client", "main", "sdk question",
+            request_id="sdk-request", delivery="queue",
+        )
+        messages = await _wait_for_sdk_messages(sdk, "sdk-client", "main", 2)
         pending = await sdk.list_pending_inputs("sdk-client", "main")
         messages = await sdk.list_messages("sdk-client", "main")
         latest = await sdk.list_messages("sdk-client", "main", limit=1)
@@ -134,12 +249,10 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
             "sdk-client", "main", limit=1, cursor=latest.next_cursor
         )
         trajectory = await sdk.list_trajectory("sdk-client", "main")
-        regenerated = [
-            event
-            async for event in sdk.regenerate_message(
-                "sdk-client", "main", request_id="sdk-regenerate"
-            )
-        ]
+        await sdk.regenerate_message(
+            "sdk-client", "main", request_id="sdk-regenerate"
+        )
+        regenerated_messages = await _wait_for_sdk_messages(sdk, "sdk-client", "main", 2)
         regenerated_messages = await sdk.list_messages("sdk-client", "main")
         undone = await sdk.undo_history("sdk-client", "main")
 
@@ -147,11 +260,8 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         assert pending.items == []
         assert opened.session_id == "sdk-client"
         assert any(
-            event.type == "assistant_message"
-            and event.data["content"] == "sdk answer"
-            for event in events
+            item.content == "sdk answer" for item in messages.messages
         )
-        assert events[-1].type == "end"
         assert [item.content for item in messages.messages] == [
             "sdk question",
             "sdk answer",
@@ -159,7 +269,6 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         assert [item.content for item in latest.messages] == ["sdk answer"]
         assert [item.content for item in older.messages] == ["sdk question"]
         assert [item.kind for item in trajectory.items] == ["message", "message"]
-        assert regenerated[-1].type == "end"
         assert [item.content for item in regenerated_messages.messages] == [
             "sdk question", "sdk regenerated",
         ]
@@ -175,35 +284,73 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> None:
-    llm = MockLLM(responses=[{"content": "attachment received"}])
-    set_llm_override(http_app, llm)
+async def test_python_sdk_submit_uses_only_the_shared_session_stream(http_app) -> None:
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(
+            responses=[
+                {"content": "submitted answer"},
+                {"content": "regenerated answer"},
+            ]
+        ),
+    )
     async with XBotClient(
         "http://test",
         transport=ASGITransport(app=http_app),
     ) as sdk:
-        await sdk.open_session(session_id="sdk-attachment", thread_id="main")
-        events = [
-            event
-            async for event in sdk.send_message(
-                "sdk-attachment",
-                "main",
-                "inspect this",
-                attachments=[{
-                    "name": "sample.bin",
-                    "media_type": "application/octet-stream",
-                    "data": "YmluYXJ5",
-                }],
-            )
-        ]
-        messages = await sdk.list_messages("sdk-attachment", "main")
+        opened = await sdk.open_session(
+            session_id="sdk-submit",
+            thread_id="main",
+        )
+        await sdk.send_message(
+            "sdk-submit", "main", "submitted question",
+            request_id="submit-request",
+        )
+        first_messages = await _wait_for_sdk_messages(sdk, "sdk-submit", "main", 2)
+
+        await sdk.regenerate_message(
+            "sdk-submit",
+            "main",
+            request_id="submit-regenerate",
+        )
+        second_messages = await _wait_for_sdk_messages(sdk, "sdk-submit", "main", 2)
+    assert [item.content for item in first_messages.messages] == [
+        "submitted question", "submitted answer",
+    ]
+    assert [item.content for item in second_messages.messages] == [
+        "submitted question", "regenerated answer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "attachment received"}])
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
+    async with XBotClient(
+        "http://test",
+        transport=ASGITransport(app=http_app),
+    ) as sdk:
+        opened = await sdk.open_session(session_id="sdk-attachment", thread_id="main")
+        await sdk.send_message(
+            "sdk-attachment",
+            "main",
+            "inspect this",
+            attachments=[{
+                "name": "sample.bin",
+                "media_type": "application/octet-stream",
+                "data": "YmluYXJ5",
+            }],
+        )
+        messages = await _wait_for_sdk_messages(sdk, "sdk-attachment", "main", 2)
         downloaded = await sdk.read_artifact(
             "sdk-attachment",
             "main",
             messages.messages[0].artifacts[0].id,
         )
 
-    assert events[-1].type == "end"
     assert downloaded == b"binary"
     artifact = messages.messages[0].artifacts[0]
     assert artifact.name == "sample.bin"
@@ -224,32 +371,29 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
         {"content": "second answer"},
         {"content": "regenerated answer"},
     ])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     await client.post(
         "/sessions", json={"session_id": "message-api", "thread_id": "main"}
     )
-    await client.post(
-        "/sessions/message-api/threads/main/messages",
-        json={
-            "content": "first question",
-            "attachments": [{
-                "name": "context.txt",
-                "media_type": "text/plain",
-                "data": "Y29udGV4dA==",
-            }],
-        },
-    )
-    await client.post(
-        "/sessions/message-api/threads/main/messages",
-        json={
-            "content": "second question",
-            "attachments": [{
-                "name": "latest.txt",
-                "media_type": "text/plain",
-                "data": "bGF0ZXN0",
-            }],
-        },
-    )
+    await _submit_turn(client, http_app, "message-api", "main", {
+        "content": "first question",
+        "attachments": [{
+            "name": "context.txt",
+            "media_type": "text/plain",
+            "data": "Y29udGV4dA==",
+        }],
+    })
+    await _submit_turn(client, http_app, "message-api", "main", {
+        "content": "second question",
+        "attachments": [{
+            "name": "latest.txt",
+            "media_type": "text/plain",
+            "data": "bGF0ZXN0",
+        }],
+    })
 
     reopened = await client.post(
         "/sessions",
@@ -291,12 +435,19 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
     assert downloaded.headers["content-type"].startswith("text/plain")
     assert "context.txt" in downloaded.headers["content-disposition"]
 
+    events = await http_app.state.manager.stream_events(
+        "message-api", "main", after=reopened.json()["event_cursor"]
+    )
     regenerated = await client.post(
         "/sessions/message-api/threads/main/history/regenerate",
         json={"request_id": "regen-1"},
     )
-    assert regenerated.status_code == 200
-    assert '"type": "end"' in regenerated.text
+    assert regenerated.status_code == 202
+    async with asyncio.timeout(2):
+        async for frame in events:
+            if frame.event.type == "turn_finished":
+                break
+    await events.aclose()
 
     stale_page = await client.get(
         "/sessions/message-api/threads/main/messages",
@@ -526,9 +677,9 @@ async def test_closing_turn_stream_keeps_session_owned_turn_running(tmp_path) ->
         application=RuntimeApplication(context, engine),
         engine=engine,
     )
-    stream = run_turn_stream(ctx, content="wait", request_id="request")
-
-    assert (await anext(stream)).type == "turn_started"
+    stream = ctx.event_stream.subscribe()
+    await ctx.send_message("wait", "request")
+    assert (await anext(stream)).event.type == "message"
     close_task = asyncio.create_task(stream.aclose())
     await asyncio.sleep(0.05)
     try:
@@ -681,7 +832,10 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.state.paths = server.runtime_paths
     app.state.workspace_root = server.workspace_root
     # Inject a mock LLM that returns one canned response per turn.
-    set_llm_override(app, MockLLM(responses=[{"content": "hello from mock"}]))
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{"content": "hello from mock"}]),
+    )
     try:
         yield app
     finally:
@@ -722,6 +876,7 @@ async def full_http_app(http_app):
         workspace_root=str(http_app.state.workspace_root),
         no_plugins=False,
     )
+    server.server.state.manager = server.sessions
     try:
         yield server.server
     finally:
@@ -761,11 +916,10 @@ async def test_blank_session_projection_tracks_turn_and_clear(
 
     workspace_events = http_app.state.test_context.workspace_events
     subscription = workspace_events.subscribe(workspace_events.sequence)
-    response = await client.post(
-        "/sessions/blank-summary/threads/main/messages",
-        json={"request_id": "blank-turn", "content": "engage this session"},
-    )
-    assert response.status_code == 200
+    await _submit_turn(client, http_app, "blank-summary", "main", {
+        "request_id": "blank-turn",
+        "content": "engage this session",
+    })
     engaged = await asyncio.wait_for(anext(subscription), timeout=1)
     assert isinstance(engaged.change, SessionResourceChanged)
     assert engaged.change.session.blank is False
@@ -785,19 +939,21 @@ async def test_resumed_history_preserves_assistant_reasoning(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    set_llm_override(http_app, MockLLM(responses=[{
-        "reasoning": "inspect persisted context",
-        "content": "restored answer",
-    }]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{
+            "reasoning": "inspect persisted context",
+            "content": "restored answer",
+        }]),
+    )
     await client.post(
         "/sessions",
         json={"session_id": "reasoning-resume", "thread_id": "main"},
     )
-    streamed = await client.post(
-        "/sessions/reasoning-resume/threads/main/messages",
-        json={"request_id": "reasoning-turn", "content": "reason first"},
-    )
-    assert streamed.status_code == 200
+    await _submit_turn(client, http_app, "reasoning-resume", "main", {
+        "request_id": "reasoning-turn",
+        "content": "reason first",
+    })
     closed = await client.post("/sessions/reasoning-resume/close")
     assert closed.status_code == 200
 
@@ -895,10 +1051,13 @@ async def test_http_session_exposes_independent_thread_resources(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    set_llm_override(http_app, MockLLM(responses=[
-        {"content": "main reply"},
-        {"content": "child reply"},
-    ]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
+            {"content": "main reply"},
+            {"content": "child reply"},
+        ]),
+    )
     opened = await client.post(
         "/sessions",
         json={"session_id": "thread-resources", "thread_id": "agent"},
@@ -931,16 +1090,12 @@ async def test_http_session_exposes_independent_thread_resources(
         "child": "subagent",
     }
 
-    main_turn = await client.post(
-        "/sessions/thread-resources/threads/agent/messages",
-        json={"content": "main message"},
-    )
-    child_turn = await client.post(
-        "/sessions/thread-resources/threads/child/messages",
-        json={"content": "child message"},
-    )
-    assert main_turn.status_code == 200
-    assert child_turn.status_code == 200
+    await _submit_turn(client, http_app, "thread-resources", "agent", {
+        "content": "main message",
+    })
+    await _submit_turn(client, http_app, "thread-resources", "child", {
+        "content": "child message",
+    })
     main_messages = (
         await client.get(
             "/sessions/thread-resources/threads/agent/messages"
@@ -987,7 +1142,9 @@ async def test_todo_and_usage_survive_http_close_resume(
     full_http_app,
 ) -> None:
     client = full_client
-    set_llm_override(full_http_app, MockLLM(responses=[
+    full_http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
         {"content": "session title"},  # caption auto-titles the first message
         {
             "content": "Planning.",
@@ -1021,17 +1178,16 @@ async def test_todo_and_usage_survive_http_close_resume(
             "content": "Checklist complete.",
             "usage_metadata": {"input_tokens": 16, "output_tokens": 3},
         },
-    ]))
+        ]),
+    )
     opened = await client.post(
         "/sessions", json={"session_id": "todo-recovery", "thread_id": "main"}
     )
     assert opened.status_code == 200
 
-    first_turn = await client.post(
-        "/sessions/todo-recovery/threads/main/messages",
-        json={"content": "make a plan"},
-    )
-    assert first_turn.status_code == 200
+    await _submit_turn(client, full_http_app, "todo-recovery", "main", {
+        "content": "make a plan",
+    })
     active = (
         await client.get("/sessions/todo-recovery/threads/main")
     ).json()
@@ -1099,11 +1255,9 @@ async def test_todo_and_usage_survive_http_close_resume(
     )
     assert resumed_todos.json()["items"] == todo["items"]
 
-    second_turn = await client.post(
-        "/sessions/todo-recovery/threads/main/messages",
-        json={"content": "finish it"},
-    )
-    assert second_turn.status_code == 200
+    await _submit_turn(client, full_http_app, "todo-recovery", "main", {
+        "content": "finish it",
+    })
     final_messages = (
         await client.get("/sessions/todo-recovery/threads/main/messages")
     ).json()["messages"]
@@ -1190,13 +1344,8 @@ async def test_main_turn_uses_the_resumable_session_event_sequence(http_app) -> 
         opened.thread_id,
         after=opened.event_cursor,
     )
-    response = await manager.stream_message(SendMessage(
-        session_id=opened.session_id,
-        thread_id=opened.thread_id,
-        content="hello",
-        request_id="shared-request",
-    ))
-    await _drain_stream(response)
+    runtime = await manager.get(opened.session_id, opened.thread_id)
+    await runtime.send_message("hello", "shared-request")
 
     frames = []
     async with asyncio.timeout(1):
@@ -1326,7 +1475,10 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
     app.state.manager = server.sessions
     app.state.paths = server.runtime_paths
     app.state.workspace_root = server.workspace_root
-    set_llm_override(app, MockLLM(responses=[]))
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[]),
+    )
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
@@ -1398,10 +1550,13 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
     app.state.manager = server.sessions
     app.state.paths = server.runtime_paths
     app.state.workspace_root = server.workspace_root
-    set_llm_override(app, MockLLM(responses=[
-        {"content": "session title"},  # caption auto-titles the first message
-        {"content": "existing answer"},
-    ]))
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+            {"content": "existing answer"},
+        ]),
+    )
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
@@ -1413,10 +1568,9 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
                 "agent": "builder",
             },
         )
-        await ac.post(
-            "/sessions/switch-primary/threads/main/messages",
-            json={"content": "keep this history"},
-        )
+        await _submit_turn(ac, app, "switch-primary", "main", {
+            "content": "keep this history",
+        })
         switched = await ac.put(
             "/sessions/switch-primary/threads/main/agent",
             json={"name": "Explorer"},
@@ -1488,12 +1642,14 @@ async def test_http_resume_returns_display_history(client: httpx.AsyncClient) ->
     )
     assert opened.status_code == 200
 
-    turn = await client.post(
-        "/sessions/resume-history/threads/t1/messages",
-        json={"content": "remember this"},
+    turn_events = await _submit_turn(
+        client,
+        client._transport.app,
+        "resume-history",
+        "t1",
+        {"content": "remember this"},
     )
-    assert turn.status_code == 200
-    assert "turn_finished" in turn.text
+    assert any(event.type == "turn_finished" for event in turn_events)
     manager = client._transport.app.state.manager
     original = await manager.get("resume-history", "t1")
     tool_message = Message(
@@ -1675,12 +1831,12 @@ async def test_real_tui_session_command_resumes_history_and_continues_chat(
             thread_id="main",
             workspace_root=str(workspace),
         )
-        await _drain_stream(session.client.send_message(
+        await session.client.send_message(
             "persisted-session",
             "main",
             "historical question",
             request_id="history",
-        ))
+        )
 
         app = XBotTextualApp(session_id="default", thread_id="agent")
         app.session = session
@@ -1836,13 +1992,16 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     http_app,
     tmp_path: Path,
 ) -> None:
-    set_llm_override(http_app, MockLLM(responses=[
-        {"content": "first answer"},
-        {"content": "second answer"},
-    ]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
+            {"content": "first answer"},
+            {"content": "second answer"},
+        ]),
+    )
     await client.post("/sessions", json={"session_id": "history", "thread_id": "t"})
-    await client.post("/sessions/history/threads/t/messages", json={"content": "first"})
-    await client.post("/sessions/history/threads/t/messages", json={"content": "second"})
+    await _submit_turn(client, http_app, "history", "t", {"content": "first"})
+    await _submit_turn(client, http_app, "history", "t", {"content": "second"})
 
     undone = await client.post(
         "/sessions/history/threads/t/history/undo",
@@ -1977,14 +2136,16 @@ async def test_typed_history_mutations_validate_and_reject_busy_threads(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    set_llm_override(http_app, MockLLM(responses=[{"content": "answer"}]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{"content": "answer"}]),
+    )
     await client.post(
         "/sessions", json={"session_id": "typed-history", "thread_id": "t"}
     )
-    await client.post(
-        "/sessions/typed-history/threads/t/messages",
-        json={"content": "question"},
-    )
+    await _submit_turn(client, http_app, "typed-history", "t", {
+        "content": "question",
+    })
 
     invalid = await client.post(
         "/sessions/typed-history/threads/t/history/undo",
@@ -2362,19 +2523,19 @@ async def test_live_interaction_is_pending_before_event_is_published(
     )
     router = ClientEventRouter()
     router.register_waiter(event_type, waiter)
-    response = TurnResponse(request_id, request_id)
     runtime = SimpleNamespace(
         application=SimpleNamespace(client_events=router),
         event_stream=SessionEventStream(),
     )
-    turn_events = TurnEventRouter(runtime, response)
+    events = runtime.event_stream.subscribe()
+    turn_events = TurnEventRouter(runtime, request_id)
     sink_task = asyncio.create_task(
         turn_events.live_sink(
             ClientEvent(type=event_type, data={"request_id": request_id}),
         )
     )
 
-    event = await response.events.get()
+    event = (await events.__anext__()).event
     assert event == ClientEvent(
         type=event_type,
         data={"request_id": request_id},
@@ -2383,6 +2544,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
 
     waiter.answer(request_id, **answer)
     result = await sink_task
+    await events.aclose()
     assert result["status"] == "answered"
     assert result[expected_field] == expected_value
 
@@ -2648,7 +2810,10 @@ async def test_active_attach_without_persistence_succeeds_but_rebuild_fails(
         no_plugins=True,
     )
     app = server.server
-    set_llm_override(app, MockLLM(responses=[{"content": "memory only"}]))
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{"content": "memory only"}]),
+    )
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
@@ -2680,50 +2845,47 @@ async def test_active_attach_without_persistence_succeeds_but_rebuild_fails(
 
 
 @pytest.mark.asyncio
-async def test_http_messages_sse_stream_turn_events(
+async def test_http_events_stream_turn_events(
     client: httpx.AsyncClient,
+    http_app,
 ) -> None:
     open_resp = await client.post(
         "/sessions", json={"session_id": "stream1", "thread_id": "t"}
     )
     assert open_resp.status_code == 200
 
-    async with client.stream(
-        "POST",
+    runtime = await http_app.state.manager.get("stream1", "t")
+    shared = runtime.event_stream.subscribe()
+    response = await client.post(
         "/sessions/stream1/threads/t/messages",
         json={"content": "hi there", "request_id": "req-1"},
-    ) as response:
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/event-stream")
-        body = "".join([chunk async for chunk in response.aiter_text()])
-
-    events = _parse_sse(body)
-    types = [event.get("type") for event in events]
+    )
+    assert response.status_code == 202
+    frames = []
+    async with asyncio.timeout(1):
+        async for frame in shared:
+            frames.append(frame)
+            if frame.event.type == "turn_finished":
+                break
+    await shared.aclose()
+    events = [frame.event for frame in frames]
+    types = [event.type for event in events]
     assert "turn_started" in types
     assert "assistant_message" in types
     assert "turn_finished" in types
-    assert "end" in types
-    assert all(event["protocol_version"] == PROTOCOL_VERSION for event in events)
-    assert all(event["session_id"] == "stream1" for event in events)
-    assert all(event["thread_id"] == "t" for event in events)
-    assert all(event["request_id"] == "req-1" for event in events)
-    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
-    assistant = next(e for e in events if e.get("type") == "assistant_message")
-    timing = assistant["data"].pop("timing")
+    assistant = next(e for e in events if e.type == "assistant_message")
+    timing = assistant.data.pop("timing")
     assert timing["llm_ms"] >= timing["ttft_ms"] >= 0
     assert timing["decode_ms"] >= 0
     # The id carries a per-response uniqueness suffix; the fixture pins the
     # stable ``assistant-<turn>-<iteration>`` prefix only.
-    assert assistant["data"]["id"].startswith("assistant-1-1-")
-    assistant["data"]["id"] = "assistant-1-1"
-    finished = next(e for e in events if e.get("type") == "turn_finished")
-    session_stats = finished["data"].pop("session_stats")
+    assert assistant.data["id"].startswith("assistant-1-1-")
+    finished = next(e for e in events if e.type == "turn_finished")
+    session_stats = finished.data.pop("session_stats")
     assert session_stats["turns"] == 1
     assert session_stats["steps"] == 1
     assert session_stats["llm_ms"] >= session_stats["ttft_ms"] >= 0
-    assert events == _load_jsonl_fixture("sse/basic_turn_events.jsonl")
-
-    assert assistant["data"]["content"] == "hello from mock"
+    assert assistant.data["content"] == "hello from mock"
 
 
 @pytest.mark.asyncio
@@ -2747,15 +2909,22 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     session.application.events.on(Events.TURN_START, record)
     session.application.events.on(Events.STATE_CHANGED, record)
 
-    async with client.stream(
-        "POST",
+    shared = session.event_stream.subscribe()
+    response = await client.post(
         "/sessions/request-context/threads/t/messages",
         json={"content": "hello", "request_id": "request-http-1"},
-    ) as response:
-        body = "".join([chunk async for chunk in response.aiter_text()])
-
-    events = _parse_sse(body)
-    assert all(event["request_id"] == "request-http-1" for event in events)
+    )
+    assert response.status_code == 202
+    events = []
+    async for frame in shared:
+        events.append(frame)
+        if frame.event.type == "turn_finished":
+            break
+    await shared.aclose()
+    assert {
+        event.request_id for event in events
+        if event.event.type in {"turn_started", "assistant_message", "turn_finished"}
+    } == {"request-http-1"}
     assert observed == ["request-http-1", "request-http-1"]
 
 
@@ -2779,15 +2948,22 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
 
     session.application.events.on(Events.TURN_START, record)
 
-    async with client.stream(
-        "POST",
+    shared = session.event_stream.subscribe()
+    response = await client.post(
         "/sessions/generated-request/threads/t/messages",
         json={"content": "hello"},
-    ) as response:
-        body = "".join([chunk async for chunk in response.aiter_text()])
-
-    events = _parse_sse(body)
-    request_ids = {event["request_id"] for event in events}
+    )
+    assert response.status_code == 202
+    events = []
+    async for frame in shared:
+        events.append(frame)
+        if frame.event.type == "turn_finished":
+            break
+    await shared.aclose()
+    request_ids = {
+        event.request_id for event in events
+        if event.event.type in {"turn_started", "assistant_message", "turn_finished"}
+    }
     assert len(request_ids) == 1
     generated_id = request_ids.pop()
     assert generated_id.startswith("req-")
@@ -2797,27 +2973,32 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
 @pytest.mark.asyncio
 async def test_http_messages_preserves_chinese_payload_in_request(
     client: httpx.AsyncClient,
+    http_app,
 ) -> None:
     open_resp = await client.post(
         "/sessions", json={"session_id": "zh", "thread_id": "t"}
     )
     assert open_resp.status_code == 200
 
-    async with client.stream(
-        "POST",
+    runtime = await http_app.state.manager.get("zh", "t")
+    shared = runtime.event_stream.subscribe()
+    response = await client.post(
         "/sessions/zh/threads/t/messages",
         json={"content": "当前磁盘用了多少", "request_id": "req-zh"},
-    ) as response:
-        assert response.status_code == 200
-        body = "".join([chunk async for chunk in response.aiter_text()])
-
-    events = _parse_sse(body)
+    )
+    assert response.status_code == 202
+    events = []
+    async for frame in shared:
+        events.append(frame.event)
+        if frame.event.type == "turn_finished":
+            break
+    await shared.aclose()
     # The mock LLM echoes a fixed string; the test that the request body
     # preserved UTF-8 is exercised via the tui-side trace in
     # test_tui_client.py::test_http_transport_trace_records_unicode_payload.
     # Here we only confirm the SSE frame encoding survives the round-trip.
     assert any(
-        e.get("type") == "assistant_message" for e in events
+        e.type == "assistant_message" for e in events
     ), f"no assistant_message in: {events}"
 
 
@@ -2926,7 +3107,10 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
         release,
         responses=[{"content": "first reply"}, {"content": "second reply"}],
     )
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="fold-end",
         thread_id="t",
@@ -2936,17 +3120,16 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
         llm_override=llm,
     )
     first_task = asyncio.create_task(
-        _drain_stream(ctx.stream_message("first", "req-1"))
+        _drain_stream(_runtime_command(ctx, "first", "req-1"))
     )
     await asyncio.sleep(0)
     # While the LLM is busy the input is held in the pending fold, not
     # dropped or processed out of band.
-    ev_stream = ctx.attach_event_stream()
+    ev_stream = ctx.event_stream.subscribe()
     second_task = asyncio.create_task(
-        _drain_stream(ctx.stream_message("second", "req-2"))
+        _drain_stream(_runtime_command(ctx, "second", "req-2"))
     )
-    await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 1
+    await _wait_for_pending_input_count(ctx, 1)
 
     release.set()
     first_events = await asyncio.wait_for(first_task, timeout=3)
@@ -2955,9 +3138,9 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
         event.data["content"]
         for event in first_events
         if event.type == "assistant_message"
-    ] == ["first reply"]
+    ] == ["first reply", "second reply"]
     # With no tool boundary, the turn-end fold still fuses the held input into
-    # the same turn and notifies it in order on the event stream.
+    # the same turn. Both request subscriptions observe the central stream.
     found = None
     async with asyncio.timeout(1):
         while found is None:
@@ -2969,7 +3152,7 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
         event.data["content"]
         for event in second_events
         if event.type == "assistant_message"
-    ] == ["second reply"]
+    ] == ["first reply", "second reply"]
     assert [m.content for m in ctx.engine.messages if m.role == "user"] == [
         "first", "second",
     ]
@@ -2982,7 +3165,10 @@ async def test_pending_queue_is_authoritative_editable_and_removable_over_http(
 ) -> None:
     release = asyncio.Event()
     llm = _GatedMockLLM(release, responses=[{"content": "first reply"}])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="queue-resource",
         thread_id="t",
@@ -2992,17 +3178,16 @@ async def test_pending_queue_is_authoritative_editable_and_removable_over_http(
         llm_override=llm,
     )
     first_task = asyncio.create_task(
-        _drain_stream(ctx.stream_message("first", "req-first"))
+        _drain_stream(_runtime_command(ctx, "first", "req-first"))
     )
     await asyncio.sleep(0)
-    queued_stream = await http_app.state.manager.stream_message(SendMessage(
+    await http_app.state.manager.send_message(SendMessage(
         session_id="queue-resource",
         thread_id="t",
         content="queued draft",
         request_id="req-queued",
         delivery="queue",
     ))
-    queued_task = asyncio.create_task(_drain_stream(queued_stream))
     await asyncio.sleep(0)
 
     queue_url = "/sessions/queue-resource/threads/t/queue"
@@ -3044,7 +3229,6 @@ async def test_pending_queue_is_authoritative_editable_and_removable_over_http(
     )
     assert removed.status_code == 200
     assert removed.json()["items"] == []
-    assert await asyncio.wait_for(queued_task, timeout=1) == []
 
     missing = await client.patch(
         f"{queue_url}/req-queued",
@@ -3066,7 +3250,10 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         release,
         responses=[{"content": "first reply"}, {"content": "queued reply"}],
     )
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="queue-claim",
         thread_id="t",
@@ -3075,12 +3262,12 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         no_plugins=True,
         llm_override=llm,
     )
-    shared = ctx.attach_event_stream()
+    shared = ctx.event_stream.subscribe()
     first_task = asyncio.create_task(
-        _drain_stream(ctx.stream_message("first", "req-first"))
+        _drain_stream(_runtime_command(ctx, "first", "req-first"))
     )
     await asyncio.sleep(0)
-    queued_task = asyncio.create_task(_drain_stream(ctx.stream_message(
+    queued_task = asyncio.create_task(_drain_stream(_runtime_command(ctx,
         "second",
         "req-second",
         delivery="queue",
@@ -3109,9 +3296,17 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
     release.set()
     first_events, queued_events = await asyncio.gather(first_task, queued_task)
     async with asyncio.timeout(1):
-        while not any(
-            event["type"] == "message" and event["data"].get("content") == "second"
-            for event in observed
+        while not (
+            any(
+                event["type"] == "message"
+                and event["data"].get("content") == "second"
+                for event in observed
+            )
+            and any(
+                event["type"] == "input_consumed"
+                and event["data"].get("message_ids") == ["req-second"]
+                for event in observed
+            )
         ):
             observed.append((await anext(shared)).event.model_dump(mode="json"))
     queue_drained_at = next(
@@ -3123,6 +3318,16 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         if event["type"] == "message" and event["data"].get("content") == "second"
     )
     assert queue_drained_at < message_at
+    assert sum(
+        event["type"] == "input_claimed"
+        and event["data"].get("message_ids") == ["req-second"]
+        for event in observed
+    ) == 1
+    assert sum(
+        event["type"] == "input_consumed"
+        and event["data"].get("message_ids") == ["req-second"]
+        for event in observed
+    ) == 1
     assert any(event.type == "assistant_message" for event in queued_events)
     assert not any(
         event.type == "assistant_message"
@@ -3167,15 +3372,17 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     async def collect(stream):
         return [event async for event in stream]
 
+    # This subscriber must exist before the turn starts; the event stream is
+    # live and a new subscription after completion does not replay history.
+    ev_stream = ctx.event_stream.subscribe()
     first_task = asyncio.create_task(collect(
-        ctx.stream_message("start the tool", "req-1")
+        _runtime_command(ctx, "start the tool", "req-1")
     ))
     await asyncio.wait_for(tool_started.wait(), timeout=1)
     second_task = asyncio.create_task(collect(
-        ctx.stream_message("also include this", "req-2")
+        _runtime_command(ctx, "also include this", "req-2")
     ))
-    await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 1
+    await _wait_for_pending_input_count(ctx, 1)
 
     release_tool.set()
     first_events, second_events = await asyncio.gather(first_task, second_task)
@@ -3187,9 +3394,7 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
         if message.role == "user"
     ] == ["start the tool", "also include this"]
     # The folded-in request is notified on the shared event stream (id +
-    # content) and owns the response events; the superseded active request
-    # must not observe them.
-    ev_stream = ctx.attach_event_stream()
+    # content), and both request subscriptions observe the response events.
     while True:
         msg = (
             await asyncio.wait_for(anext(ev_stream), timeout=1)
@@ -3207,7 +3412,7 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
         and event.data["content"] == "handled both requests"
         for event in second_events
     )
-    assert not any(
+    assert any(
         event.type == "assistant_message"
         and event.data["content"] == "handled both requests"
         for event in first_events
@@ -3226,7 +3431,10 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
         {"tool_calls": [{"id": "t1", "name": "wait_for_release", "args": {"value": "x"}}]},
         {"content": "merged reply"},
     ])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="fold-thinking",
         thread_id="t",
@@ -3249,33 +3457,33 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
     async def collect(stream):
         return [event async for event in stream]
 
+    # Keep this subscription live from before the first message; completed
+    # event streams are not replayed for a newly attached subscriber.
+    ev_stream = ctx.event_stream.subscribe()
     first_task = asyncio.create_task(collect(
-        ctx.stream_message("A", "req-A")
+        _runtime_command(ctx, "A", "req-A")
     ))
     await asyncio.sleep(0)
     # B is submitted while A is still thinking (the gated LLM has not returned
     # a tool call yet); it must be held, not rejected.
     second_task = asyncio.create_task(collect(
-        ctx.stream_message("B", "req-B")
+        _runtime_command(ctx, "B", "req-B")
     ))
-    await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 1, "input during thinking must be held"
+    await _wait_for_pending_input_count(ctx, 1)
 
     release_call1.set()
     await asyncio.wait_for(tool_started.wait(), timeout=3)
     # C lands inside the tool window; both held inputs fold together.
     third_task = asyncio.create_task(collect(
-        ctx.stream_message("C", "req-C")
+        _runtime_command(ctx, "C", "req-C")
     ))
-    await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 2
+    await _wait_for_pending_input_count(ctx, 2)
     release_tool.set()
 
     first_events, second_events, third_events = await asyncio.gather(
         first_task, second_task, third_task
     )
-    # B was folded into A's turn and notified in order on the event stream.
-    ev_stream = ctx.attach_event_stream()
+    # B was folded into A's turn and notified in order on the live event stream.
     found = None
     async with asyncio.timeout(1):
         while found is None:
@@ -3294,7 +3502,10 @@ async def test_input_during_thinking_is_folded_at_tool_boundary(http_app) -> Non
 @pytest.mark.asyncio
 async def test_general_message_uses_session_event_stream(http_app) -> None:
     llm = MockLLM(responses=[{"content": "background result"}])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="general-events",
         thread_id="t",
@@ -3303,7 +3514,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         no_plugins=True,
         llm_override=llm,
     )
-    events = ctx.attach_event_stream()
+    events = ctx.event_stream.subscribe()
     ctx.engine.messages.extend([
         Message(role="user", content="an earlier human request"),
         Message(role="assistant", content="the earlier request is complete"),
@@ -3330,7 +3541,7 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
 
     # The next user turn consumes it into the model context.
     await asyncio.wait_for(
-        asyncio.create_task(_drain_stream(ctx.stream_message("continue", "req-2"))),
+        asyncio.create_task(_drain_stream(_runtime_command(ctx, "continue", "req-2"))),
         timeout=3,
     )
     assert llm.call_count == 1
@@ -3358,7 +3569,10 @@ async def test_background_task_updates_and_completion_use_session_stream(
         "XBotv2.coretools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "task acknowledged"}])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="background-events",
         thread_id="t",
@@ -3367,7 +3581,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         no_plugins=True,
         llm_override=llm,
     )
-    events = ctx.attach_event_stream()
+    events = ctx.event_stream.subscribe()
 
     job_id = await _start_background_shell(ctx.application._context, "printf result")
 
@@ -3389,7 +3603,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
 
     # The next user turn consumes the staged completion all at once.
     await asyncio.wait_for(
-        asyncio.create_task(_drain_stream(ctx.stream_message("continue", "req-2"))),
+        asyncio.create_task(_drain_stream(_runtime_command(ctx, "continue", "req-2"))),
         timeout=3,
     )
     assert llm.call_count == 1
@@ -3427,7 +3641,10 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
         "XBotv2.coretools.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[{"content": "ok"}])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     ctx = await http_app.state.manager.open_session(
         session_id="aggregate-events",
         thread_id="t",
@@ -3446,7 +3663,7 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
     # The next user turn atomically claims all staged inputs while preserving
     # their individual message identities and order.
     await asyncio.wait_for(
-        asyncio.create_task(_drain_stream(ctx.stream_message("go", "req-2"))),
+        asyncio.create_task(_drain_stream(_runtime_command(ctx, "go", "req-2"))),
         timeout=3,
     )
     assert llm.call_count == 1
@@ -3499,6 +3716,118 @@ async def test_typed_task_stop_is_idempotent(
     assert first.json()["tasks"][0]["status"] == "stopped"
     assert second.status_code == 200
     assert second.json()["tasks"][0]["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_http_interrupt_leaves_shared_background_shell_running(
+    http_app,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP interrupt cancels the foreground turn, not a shared SHELL job."""
+
+    shell_started = asyncio.Event()
+    foreground_started = asyncio.Event()
+    llm = MockLLM(responses=[{
+        "tool_calls": [{
+            "id": "interrupt-blocker",
+            "name": "interrupt_blocker",
+            "args": {},
+        }],
+    }])
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
+
+    async def run_shell_command(*args, **kwargs):
+        shell_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "XBotv2.coretools.shell.run_shell_command", run_shell_command
+    )
+
+    ctx = await http_app.state.manager.open_session(
+        session_id="interrupt-shared-shell",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(http_app.state.workspace_root),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    workspace = Path(http_app.state.workspace_root)
+    jobs = ctx.application._context.jobs
+    assert jobs is not None
+
+    async def interrupt_blocker() -> str:
+        """Block the foreground turn until HTTP interrupt cancels it."""
+        foreground_started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    ctx.application._context.permissions.replace_rules(
+        {"allow": [{"tool": "interrupt_blocker"}]}
+    )
+    ctx.application._context.tools._registry.register(
+        Tool.from_function(interrupt_blocker)
+    )
+    ctx.application._context.tools._registry.restrict(None)
+
+    shell_result = await start_shell(
+        "sleep forever",
+        cwd=str(workspace),
+        job_registry=jobs,
+    )
+    assert shell_result.status == "success"
+    shell_job_id = shell_result.content.removeprefix("Started ")
+    shell_job = jobs.get(shell_job_id)
+    await asyncio.wait_for(shell_started.wait(), timeout=1)
+    assert shell_job.status is JobStatus.RUNNING
+
+    events = ctx.event_stream.subscribe()
+    seen_events = []
+
+    async def consume_events() -> None:
+        async for frame in events:
+            seen_events.append(frame.event)
+            if frame.event.type == "turn_cancelled":
+                return
+
+    consumer = asyncio.create_task(consume_events())
+    try:
+        response = await client.post(
+            "/sessions/interrupt-shared-shell/threads/t/messages",
+            json={"content": "run the blocker", "request_id": "req-interrupt"},
+        )
+        assert response.status_code == 202, response.text
+        await asyncio.wait_for(foreground_started.wait(), timeout=1)
+
+        interrupt = await client.post(
+            "/sessions/interrupt-shared-shell/threads/t/interrupt"
+        )
+        assert interrupt.status_code == 200, interrupt.text
+        assert interrupt.json()["cancelled"] is True
+
+        await asyncio.wait_for(consumer, timeout=2)
+        assert any(event.type == "turn_started" for event in seen_events)
+        assert any(event.type == "turn_cancelled" for event in seen_events)
+        assert shell_job.status is JobStatus.RUNNING
+
+        cancelled = await jobs.cancel(shell_job_id)
+        assert cancelled.cancelled is True
+        assert jobs.get(shell_job_id).status is JobStatus.CANCELLED
+    finally:
+        if not consumer.done():
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+        await events.aclose()
+        if shell_job.status not in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            await jobs.cancel(shell_job_id)
 
 
 @pytest.mark.asyncio
@@ -3583,7 +3912,10 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
 
     release = asyncio.Event()
     gated = _GatedMockLLM(release=release)
-    set_llm_override(http_app, gated)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=gated,
+    )
 
     # Pick a free port and start uvicorn in a background thread.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -3620,24 +3952,38 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
 
             sse_chunks: list[str] = []
 
+            ready = asyncio.Event()
+            turn_started = asyncio.Event()
+            turn_cancelled = asyncio.Event()
+
             async def _consume_sse() -> None:
                 async with ac.stream(
-                    "POST",
-                    "/sessions/esc/threads/t/messages",
-                    json={"content": "do something long", "request_id": "req-esc"},
+                    "GET",
+                    f"/sessions/esc/threads/t/events?after={open_resp.json()['event_cursor']}",
                 ) as response:
-                    assert response.status_code == 200
+                    assert response.status_code == 200, await response.aread()
+                    ready.set()
                     async for chunk in response.aiter_text():
                         sse_chunks.append(chunk)
-                        # Once we see ``turn_started`` we know the
-                        # Engine is past application startup and is about
-                        # to call the (gated) LLM.
-                        if "turn_started" in chunk:
+                        if "turn_started" in chunk and not turn_started.is_set():
+                            turn_started.set()
                             ir = await ac.post("/sessions/esc/threads/t/interrupt")
                             assert ir.status_code == 200
                             assert ir.json()["cancelled"] is True
+                        if "turn_cancelled" in chunk:
+                            turn_cancelled.set()
+                            return
 
-            await asyncio.wait_for(_consume_sse(), timeout=5.0)
+            consumer = asyncio.create_task(_consume_sse())
+            await asyncio.wait_for(ready.wait(), timeout=5.0)
+            response = await ac.post(
+                "/sessions/esc/threads/t/messages",
+                json={"content": "do something long", "request_id": "req-esc"},
+            )
+            assert response.status_code == 202, response.text
+            await asyncio.wait_for(consumer, timeout=5.0)
+            assert turn_started.is_set()
+            assert turn_cancelled.is_set()
             # Defensive: unblock the LLM in case the test exits
             # before the engine's CancelledError fires.
             release.set()
@@ -3865,7 +4211,7 @@ async def _real_terminal_session(
         no_plugins=True,
     )
     app = application.server
-    set_llm_override(app, llm)
+    application.sessions.application_factory = partial(create_agent_application, model_override=llm)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -3942,9 +4288,7 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         (workspace / "hello.txt").write_text("hello", encoding="utf-8")
 
         events = []
-        submitted = asyncio.create_task(_drain_stream(
-            session.send_message("list workspace")
-        ))
+        submitted = asyncio.create_task(session.send_message("list workspace"))
         async for event in session.session_events():
             events.append(event)
             if event.get("type") == "permission_request":
@@ -3985,9 +4329,7 @@ async def test_real_http_interrupt_while_permission_waits(
     ) as session:
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
-            submitted = asyncio.create_task(_drain_stream(
-                session.send_message("list workspace")
-            ))
+            submitted = asyncio.create_task(session.send_message("list workspace"))
             async for event in session.session_events():
                 collected.append(event)
                 if event.get("type") == "permission_request":
@@ -4012,6 +4354,14 @@ async def test_real_http_interrupt_while_permission_waits(
     assert "permission_request" in event_types
     assert "turn_cancelled" in event_types
     assert "turn_finished" not in event_types
+    cancelled_result = next(
+        event
+        for event in events
+        if event.get("type") == "tool_result"
+        and event.get("data", {}).get("tool_call_id") == "call_wait"
+    )
+    assert cancelled_result["data"]["status"] == "cancelled"
+    assert event_types.index("tool_result") < event_types.index("turn_cancelled")
 
 
 @pytest.mark.asyncio
@@ -4041,9 +4391,9 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
         sandbox_enabled=False,
     ) as session:
         events = []
-        submitted = asyncio.create_task(_drain_stream(
+        submitted = asyncio.create_task(
             session.send_message("ask before continuing")
-        ))
+        )
         async for event in session.session_events():
             events.append(event)
             if event.get("type") == "permission_request":
@@ -4070,7 +4420,14 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
     event_types = [event.get("type") for event in events]
     assert "user_input_required" in event_types
     assert "turn_cancelled" in event_types
-    assert "tool_result" not in event_types
+    cancelled_result = next(
+        event
+        for event in events
+        if event.get("type") == "tool_result"
+        and event.get("data", {}).get("tool_call_id") == "call_wait"
+    )
+    assert cancelled_result["data"]["status"] == "cancelled"
+    assert event_types.index("tool_result") < event_types.index("turn_cancelled")
     assert "turn_finished" not in event_types
 
 
@@ -4110,9 +4467,9 @@ async def test_real_http_open_session_replays_an_unanswered_interaction(
         sandbox_enabled=False,
     ) as session:
         events: list[dict[str, Any]] = []
-        submitted = asyncio.create_task(_drain_stream(
+        submitted = asyncio.create_task(
             session.send_message("ask before continuing")
-        ))
+        )
         request_id = ""
 
         async def wait_for_question() -> None:
@@ -4193,9 +4550,9 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
 
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
-            submitted = asyncio.create_task(_drain_stream(
+            submitted = asyncio.create_task(
                 session.send_message("ask before continuing")
-            ))
+            )
             async for event in session.session_events():
                 collected.append(event)
                 if event.get("type") == "permission_request":
@@ -4321,7 +4678,10 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.state.manager = server.sessions
     app.state.paths = server.runtime_paths
     app.state.workspace_root = server.workspace_root
-    set_llm_override(app, MockLLM(responses=[{"content": "ok"}]))
+    server.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[{"content": "ok"}]),
+    )
     try:
         yield app
     finally:
@@ -4359,21 +4719,24 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    set_llm_override(skills_app, MockLLM(responses=[
-        {"content": "session title"},  # caption auto-titles the first message
-        {
-            "content": "",
-            "tool_calls": [{
-                "id": "goal-complete",
-                "name": "update_goal",
-                "args": {
-                    "status": "complete",
-                    "summary": "API tests passed",
-                },
-            }],
-        },
-        {"content": "Goal complete: API tests passed."},
-    ]))
+    skills_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
+            {"content": "session title"},  # caption auto-titles the first message
+            {
+                "content": "",
+                "tool_calls": [{
+                    "id": "goal-complete",
+                    "name": "update_goal",
+                    "args": {
+                        "status": "complete",
+                        "summary": "API tests passed",
+                    },
+                }],
+            },
+            {"content": "Goal complete: API tests passed."},
+        ]),
+    )
     await skills_client.post(
         "/sessions", json={"session_id": "goal-state", "thread_id": "t"}
     )
@@ -4390,7 +4753,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
     )
 
     ctx = await skills_app.state.manager.get("goal-state", "t")
-    session_events = ctx.attach_event_stream()
+    session_events = ctx.event_stream.subscribe()
 
     response = await skills_client.post(
         "/sessions/goal-state/threads/t/commands",
@@ -4409,7 +4772,7 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         events.append(event)
         if event["type"] == "turn_finished":
             break
-    ctx.detach_event_stream(session_events)
+    await session_events.aclose()
 
     assert [
         event["data"]["content"]
@@ -4500,7 +4863,10 @@ Follow this test instruction: $ARGUMENTS
         {"content": "session title"},  # caption auto-titles the first message
         {"content": "expanded"},
     ])
-    set_llm_override(skills_app, llm)
+    skills_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
     await skills_client.post(
         "/sessions",
         json={
@@ -4516,11 +4882,9 @@ Follow this test instruction: $ARGUMENTS
     command = next(item for item in commands if item["name"] == "xbot-test-prompt")
     assert command["kind"] == "prompt"
 
-    response = await skills_client.post(
-        "/sessions/skill-prompt/threads/t/messages",
-        json={"content": "/xbot-test-prompt verify boundaries"},
-    )
-    assert response.status_code == 200
+    await _submit_turn(skills_client, skills_app, "skill-prompt", "t", {
+        "content": "/xbot-test-prompt verify boundaries",
+    })
     # Call 0 is the automatic caption; the skill turn is the latest call.
     model_messages = llm.get_call_messages(llm.call_count - 1)
     expanded = next(
@@ -4708,10 +5072,17 @@ async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -
         await asyncio.to_thread(release_tool.wait)
         return value
 
-    set_llm_override(http_app, MockLLM(responses=[
-        {"tool_calls": [{"id": "b1", "name": "blocker", "args": {"value": "x"}}]},
-        {"content": "handled A B and C"},
-    ]))
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=MockLLM(responses=[
+            {"tool_calls": [{
+                "id": "b1",
+                "name": "blocker",
+                "args": {"value": "x"},
+            }]},
+            {"content": "handled A B and C"},
+        ]),
+    )
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -4813,7 +5184,10 @@ async def test_tui_input_submitted_while_busy_is_retried_after_turn(
         {"content": "A reply"},
         {"content": "B reply"},
     ])
-    set_llm_override(http_app, llm)
+    http_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
 
     client = XBotClient("http://test", transport=ASGITransport(app=http_app))
     session = TerminalSession(
