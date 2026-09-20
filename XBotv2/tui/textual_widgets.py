@@ -1368,8 +1368,19 @@ class TranscriptSurface:
         # positions in that same transcript, so both the window and the
         # index-keyed widget cache are shifted by the delta.
         self._seen_transcript_evictions = self.state.evicted_transcript
+        self._seen_tail_evictions = self.state.evicted_transcript_tail
+        self._seen_insertions = self.state.inserted_transcript
+        self._seen_message_insertions = self.state.inserted_messages
         self._seen_message_evictions = self.state.evicted_messages
         self._window_invalidated = False
+
+    async def settle_window(self) -> None:
+        """Bring the window back in line with the state after a mutation."""
+        self.reconcile_evictions()
+        if self._window_invalidated:
+            await self._remount_tail()
+            return
+        await self.trim_mounted_suffix()
 
     def reconcile_evictions(self) -> None:
         """Re-anchor window and caches after the state evicted old payloads.
@@ -1381,6 +1392,26 @@ class TranscriptSurface:
         from the retained tail.  Index-keyed widget caches are shifted by the
         state's own renumbering of retained payloads.
         """
+        inserted = self.state.inserted_transcript - self._seen_insertions
+        if inserted > 0:
+            # An older page was prepended: the reader's entries moved down.
+            self._seen_insertions = self.state.inserted_transcript
+            self.window_start += inserted
+            self.window_end += inserted
+        added = self.state.inserted_messages - self._seen_message_insertions
+        if added > 0:
+            # Message indices were renumbered by the same amount; the prepended
+            # indices have no widget yet and must not reuse a shifted one.
+            self._seen_message_insertions = self.state.inserted_messages
+            self.message_widgets = {
+                index + added: widget for index, widget in self.message_widgets.items()
+            }
+        tail = self.state.evicted_transcript_tail - self._seen_tail_evictions
+        if tail > 0:
+            # The newest entries were dropped while the reader was inside
+            # history: the window simply ends earlier.
+            self._seen_tail_evictions = self.state.evicted_transcript_tail
+            self.window_end = min(self.window_end, len(self.state.transcript))
         shift = self.state.evicted_transcript - self._seen_transcript_evictions
         if shift > 0:
             self._seen_transcript_evictions = self.state.evicted_transcript
@@ -1416,6 +1447,9 @@ class TranscriptSurface:
         self.message_widgets.clear()
         self.tool_widgets.clear()
         self._seen_transcript_evictions = state.evicted_transcript
+        self._seen_tail_evictions = state.evicted_transcript_tail
+        self._seen_insertions = state.inserted_transcript
+        self._seen_message_insertions = state.inserted_messages
         self._seen_message_evictions = state.evicted_messages
         self._window_invalidated = False
 
@@ -1427,6 +1461,9 @@ class TranscriptSurface:
         self.message_widgets.clear()
         self.tool_widgets.clear()
         self._seen_transcript_evictions = self.state.evicted_transcript
+        self._seen_tail_evictions = self.state.evicted_transcript_tail
+        self._seen_insertions = self.state.inserted_transcript
+        self._seen_message_insertions = self.state.inserted_messages
         self._seen_message_evictions = self.state.evicted_messages
         self._window_invalidated = False
 
@@ -1458,12 +1495,7 @@ class TranscriptSurface:
     async def sync(self, *, follow: bool | None = None) -> bool:
         """Mount new transcript entries following the live tail."""
         async with self.render_lock:
-            self.reconcile_evictions()
-            if self._window_invalidated:
-                # The reader's window pointed at content the client no longer
-                # holds; showing the retained tail is the only choice that does
-                # not render evicted positions.
-                await self._remount_tail()
+            await self.settle_window()
             end = len(self.state.transcript)
             if follow is None:
                 follow = self.container.is_vertical_scroll_end
@@ -1498,7 +1530,7 @@ class TranscriptSurface:
         *,
         prepend: bool = False,
     ) -> list[Any]:
-        self.reconcile_evictions()
+        await self.settle_window()
         if self._window_invalidated:
             await self._remount_tail()
             return list(self.mounted_entry_widgets)
@@ -1530,6 +1562,18 @@ class TranscriptSurface:
             self.mounted_entry_widgets.extend(widgets)
         return widgets
 
+    async def trim_mounted_suffix(self) -> int:
+        """Drop mounted widgets for entries the state no longer retains."""
+        excess = len(self.mounted_entry_widgets) - max(0, self.window_end - self.window_start)
+        if excess <= 0:
+            return 0
+        removed = self.mounted_entry_widgets[-excess:]
+        self.mounted_entry_widgets = self.mounted_entry_widgets[:-excess]
+        for widget in removed:
+            if widget.parent is self.container:
+                await widget.remove()
+        return excess
+
     async def trim_mounted_prefix(self) -> int:
         """Keep the mounted window at the cap, dropping the oldest widgets.
 
@@ -1549,7 +1593,7 @@ class TranscriptSurface:
     async def drop_leading_excess(self, follow: bool) -> int:
         if not follow:
             return 0
-        self.reconcile_evictions()
+        await self.settle_window()
         excess = self.window_end - self.window_start - self.max_mounted_entries
         if excess <= 0:
             return 0
@@ -1562,7 +1606,7 @@ class TranscriptSurface:
         return len(removed)
 
     async def drop_trailing_excess(self) -> int:
-        self.reconcile_evictions()
+        await self.settle_window()
         excess = self.window_end - self.window_start - self.max_mounted_entries
         if excess <= 0:
             return 0

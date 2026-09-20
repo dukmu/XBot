@@ -14,8 +14,10 @@ import XBotv2.main as xbot_main
 from XBotv2.tui.client import (
     TuiState,
     TuiJob,
+    TuiNotice,
     TuiTool,
     TuiTranscriptEntry,
+    history_items_from_trajectory,
     _MAX_STATE_MESSAGES,
     _MAX_STATE_NOTICES,
     _MAX_STATE_TOOLS,
@@ -4431,3 +4433,208 @@ def test_state_window_keeps_streaming_index_on_the_same_message():
     state.apply_event({"type": "assistant_message_delta", "data": {"content": "!"}})
     streaming = state.messages[state._streaming_assistant_index]
     assert streaming.content.endswith("!")
+
+
+def _trajectory_message(position: int, message_id: str, content: str, role: str = "assistant"):
+    return {
+        "kind": "message",
+        "position": position,
+        "message_id": message_id,
+        "message": {
+            "role": role,
+            "content": content,
+            "reasoning": "",
+            "tool_calls": [],
+            "tool_call_id": "",
+            "status": "",
+            "data": None,
+            "error": None,
+            "artifacts": [],
+            "images": [],
+        },
+    }
+
+
+def _static_text(widget: object) -> str:
+    """Rendered text of a Static, whatever renderable it holds."""
+    value = getattr(widget, "renderable", None)
+    if value is None:
+        value = getattr(widget, "content", None)
+    for attribute in ("plain", "markup"):
+        text = getattr(value, attribute, None)
+        if text is not None:
+            return str(text)
+    return "" if value is None else str(value)
+
+
+def test_history_items_from_trajectory_flattens_only_messages():
+    items = history_items_from_trajectory([
+        _trajectory_message(1, "m1", "first", role="user"),
+        {"kind": "event", "position": 2, "event": "compaction/start", "data": {}},
+        _trajectory_message(3, "m2", "second"),
+    ])
+    assert [(item["role"], item["content"], item["message_id"]) for item in items] == [
+        ("user", "first", "m1"),
+        ("assistant", "second", "m2"),
+    ]
+
+
+def test_prepend_history_keeps_the_window_bounded_and_keys_aligned():
+    """Paging back keeps the reader's position and evicts from the newest end."""
+    state = TuiState()
+    for index in range(30):
+        state.append_message("assistant", f"recent {index}", message_id=f"r{index}")
+    state.append_notice("local", "notice")
+
+    inserted = state.prepend_history([
+        {"role": "assistant", "content": f"older {index}", "message_id": f"o{index}"}
+        for index in range(30)
+    ])
+
+    assert inserted == 30
+    assert state.at_tail is False
+    assert len(state.messages) <= _MAX_STATE_MESSAGES + _TRIM_SLACK
+    # The reader's entries are still addressable: every retained key resolves to
+    # the payload it was created for, older records first.
+    for entry in state.transcript:
+        if entry.kind == "message":
+            index = int(entry.key)
+            assert 0 <= index < len(state.messages)
+    assert [message.message_id for message in state.messages[:30]] == [f"o{i}" for i in range(30)]
+
+    # A page that overlaps the window only contributes the unseen records.
+    overlap = state.prepend_history([
+        {"role": "assistant", "content": "older 29", "message_id": "o29"},
+        {"role": "assistant", "content": "older 30", "message_id": "o30"},
+        {"role": "assistant", "content": "older 31", "message_id": "o31"},
+    ])
+    assert overlap == 2
+    assert [message.message_id for message in state.messages[:2]] == ["o30", "o31"]
+
+
+def test_prepend_history_evicts_the_newest_entries_while_paging_back():
+    state = TuiState()
+    # Fill the transcript to its cap: the message and notice ceilings are both
+    # satisfied, so the transcript ceiling is what eviction has to respect.
+    for index in range(_MAX_STATE_MESSAGES):
+        state.append_message("assistant", f"recent {index}", message_id=f"r{index}")
+    for index in range(_MAX_STATE_TRANSCRIPT - _MAX_STATE_MESSAGES):
+        state.append_notice("local", f"notice {index}")
+    assert len(state.transcript) == _MAX_STATE_TRANSCRIPT
+    assert state.evicted_messages == 0
+
+    inserted = state.prepend_history([
+        {"role": "assistant", "content": f"older {index}", "message_id": f"o{index}"}
+        for index in range(50)
+    ])
+
+    assert inserted == 50
+    assert state.at_tail is False
+    # The window stayed bounded and the newest end paid for the older page.
+    assert len(state.transcript) <= _MAX_STATE_TRANSCRIPT
+    assert state.evicted_transcript_tail == 50
+    assert state.evicted_messages == 0
+    # The reader's front is intact: the older page is retained and addressable.
+    assert [message.message_id for message in state.messages[:50]] == [f"o{i}" for i in range(50)]
+    for entry in state.transcript:
+        if entry.kind == "message":
+            assert 0 <= int(entry.key) < len(state.messages)
+        elif entry.kind == "notice":
+            assert 0 <= int(entry.key) < len(state.notices)
+
+    # Live output is counted instead of appended while the reader is in history.
+    for index in range(5):
+        state.append_message("assistant", "live", message_id=f"live{index}")
+        state.append_notice("local", "live notice")
+        state.record_error("live error")
+    assert state.pending_newer == 15
+    assert "live4" not in {message.message_id for message in state.messages}
+
+    # Re-anchoring returns to the tail and restores the live path.
+    state.restore_history([{"role": "assistant", "content": "fresh", "message_id": "fresh"}])
+    assert state.at_tail is True
+    assert state.pending_newer == 0
+    assert state.inserted_messages == 0
+    state.append_message("assistant", "after", message_id="after")
+    assert state.messages[-1].message_id == "after"
+
+
+@pytest.mark.asyncio
+async def test_transcript_pages_older_history_from_the_server(monkeypatch):
+    """Scrolling past the retained front fetches the page older than it."""
+    import XBotv2.tui.client as tui_client
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    monkeypatch.setattr(tui_client, "_MAX_STATE_MESSAGES", 60)
+    monkeypatch.setattr(tui_client, "_MAX_STATE_TRANSCRIPT", 80)
+    monkeypatch.setattr(tui_client, "_TRIM_SLACK", 20)
+
+    class FakeSession:
+        def __init__(self):
+            self.calls: list[str | None] = []
+            self.baseline: dict[str, object] = {}
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def refresh_baseline(self):
+            return dict(self.baseline)
+
+        async def read_thread_history(self, thread_id, *, cursor=None, limit=200):
+            self.calls.append(cursor)
+            if cursor is None:
+                # The anchor page is the newest one: everything in it is already
+                # retained, so the client must ask again from its cursor.
+                return [_trajectory_message(index, f"r{index}", f"recent {index}")
+                        for index in range(180, 200)], "cursor-1"
+            return [_trajectory_message(index, f"o{index}", f"older {index}")
+                    for index in range(30)], None
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        for index in range(200):
+            app.state.append_message("assistant", f"recent {index}", message_id=f"r{index}")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        assert app.state.at_tail is True
+
+        await app._load_earlier_replay()
+        await pilot.pause()
+
+        # The newest page was consumed for the anchor, then the older page.
+        assert session.calls == [None, "cursor-1"]
+        assert app.state.at_tail is False
+        assert app.state.older_cursor is None
+        assert app._history_exhausted is True
+        assert app.state.messages[0].message_id == "o0"
+        assert len(app.state.transcript) <= tui_client._MAX_STATE_TRANSCRIPT + tui_client._TRIM_SLACK
+        # The fetched page is mounted and visible above the retained window.
+        assert any("older 0" in _static_text(widget) for widget in app.query(".body"))
+        # The fetched page is in front of everything the client held, so the
+        # window now starts at the oldest retained record.
+        assert app._window_start == 0
+        assert app._window_end == len(app.state.transcript)
+
+        # Scrolling back down re-anchors on the newest page instead of walking a
+        # window that no longer ends at the tail.
+        session.baseline = {
+            "history": [
+                {"role": "assistant", "content": f"fresh {index}", "message_id": f"f{index}"}
+                for index in range(10)
+            ],
+        }
+        await app._load_newer_replay()
+        await pilot.pause()
+        assert app.state.at_tail is True
+        assert app.state.pending_newer == 0
+        assert [message.message_id for message in app.state.messages] == [f"f{index}" for index in range(10)]

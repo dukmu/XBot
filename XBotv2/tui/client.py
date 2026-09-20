@@ -133,6 +133,21 @@ class TuiState:
     evicted_notices: int = 0
     evicted_errors: int = 0
     evicted_transcript: int = 0
+    # Entries removed from the newest end (the reader paged into history).
+    evicted_transcript_tail: int = 0
+    inserted_messages: int = 0
+    inserted_transcript: int = 0
+    # Direction of the window.  While following the tail, live output is
+    # appended and the oldest entries are evicted; once the reader pages into
+    # history the window keeps their position, live output is counted in
+    # ``pending_newer``, and eviction comes from the newest end instead.
+    at_tail: bool = True
+    pending_newer: int = 0
+    # Cursor for the page older than the retained window.  ``None`` while
+    # unset means "ask the server for the newest page first": the page is
+    # de-duplicated by message id, so an anchor that is newer than the retained
+    # front still reaches the records the client evicted.
+    older_cursor: str | None = None
     _tool_transcript_keys: set[str] = field(default_factory=set)
     _streaming_assistant_index: int | None = None
     _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
@@ -424,6 +439,10 @@ class TuiState:
     def _trim_state(self) -> None:
         """Bound the retained conversation after a mutation.
 
+        While the reader follows the tail the oldest payloads are evicted; while
+        they are inside history the newest are, so paging back keeps what they
+        are reading and never grows the window.
+
         Each index-keyed payload list is evicted from the front (oldest first),
         and the transcript keys of the same kind are renumbered so a retained
         key still resolves to the payload it was created for.  Tools are keyed
@@ -434,6 +453,9 @@ class TuiState:
         were removed.  A renderer holding positions in the transcript cannot
         derive that from lengths, so it re-anchors when the count moves.
         """
+        if not self.at_tail:
+            self._trim_tail()
+            return
         for container, kind, cap, counter in (
             (self.messages, "message", _MAX_STATE_MESSAGES, "evicted_messages"),
             (self.notices, "notice", _MAX_STATE_NOTICES, "evicted_notices"),
@@ -482,8 +504,92 @@ class TuiState:
             self._streaming_assistant_index = shifted if shifted >= 0 else None
         return excess
 
+    def _trim_tail(self) -> None:
+        """Drop the newest retained entries while the reader is in history.
+
+        Only the newest record of a kind is removed, so the surviving index
+        keys stay valid without renumbering.  A payload is dropped with its
+        entry; if it is not the last of its container it is left for its own
+        cap to reclaim.
+        """
+        while len(self.transcript) > _MAX_STATE_TRANSCRIPT:
+            entry = self.transcript.pop()
+            self.evicted_transcript_tail += 1
+            if entry.kind == "message":
+                index = _index_key(entry.key)
+                if (
+                    index is not None
+                    and index == len(self.messages) - 1
+                    and index != self._streaming_assistant_index
+                ):
+                    self.messages.pop()
+            elif entry.kind == "notice":
+                index = _index_key(entry.key)
+                if index is not None and index == len(self.notices) - 1:
+                    self.notices.pop()
+            elif entry.kind == "error":
+                index = _index_key(entry.key)
+                if index is not None and index == len(self.errors) - 1:
+                    self.errors.pop()
+            elif entry.kind == "tool":
+                self.tools.pop(entry.key, None)
+                self._tool_transcript_keys.discard(entry.key)
+        excess = len(self.tools) - _MAX_STATE_TOOLS
+        if excess > 0:
+            for tool_id in list(self.tools)[-excess:]:
+                tool = self.tools.get(tool_id)
+                if tool is not None and tool.status in ("pending", "running"):
+                    continue
+                self.tools.pop(tool_id, None)
+                self._tool_transcript_keys.discard(tool_id)
+
+    def prepend_history(self, messages: list[dict[str, JsonValue]]) -> int:
+        """Insert an older page in front of the retained window.
+
+        Records already retained are skipped: the cursor can be newer than the
+        window front, so a page may overlap the window, and re-adding those
+        messages would duplicate them.  The unseen ids are exactly the ones
+        older than the front, so prepending them in page order stays
+        chronological.  Returns how many were inserted.
+        """
+        known = {message.message_id for message in self.messages if message.message_id}
+        fresh = [
+            TuiMessage(
+                role=role,
+                content=str(item.get("content") or ""),
+                reasoning=str(item.get("reasoning") or ""),
+                message_id=str(item.get("message_id") or ""),
+            )
+            for item in messages
+            for role in [str(item.get("role") or "")]
+            if role in ("user", "assistant")
+            and not (str(item.get("message_id") or "") in known)
+        ]
+        if not fresh:
+            return 0
+        self.messages[0:0] = fresh
+        for entry in self.transcript:
+            if entry.kind == "message":
+                index = _index_key(entry.key)
+                if index is not None:
+                    entry.key = str(index + len(fresh))
+        self.transcript[0:0] = [
+            TuiTranscriptEntry(kind="message", key=str(index))
+            for index in range(len(fresh))
+        ]
+        if self._streaming_assistant_index is not None:
+            self._streaming_assistant_index += len(fresh)
+        self.inserted_messages += len(fresh)
+        self.inserted_transcript += len(fresh)
+        self.at_tail = False
+        self._trim_state()
+        return len(fresh)
+
     def record_error(self, message: str) -> str:
         """Append an error entry and return its transcript key."""
+        if not self.at_tail:
+            self.pending_newer += 1
+            return ""
         self.errors.append(message)
         key = str(len(self.errors) - 1)
         self.transcript.append(TuiTranscriptEntry(kind="error", key=key))
@@ -492,6 +598,9 @@ class TuiState:
 
     def record_notice(self, notice: TuiNotice) -> str:
         """Append a notice and return its transcript key."""
+        if not self.at_tail:
+            self.pending_newer += 1
+            return ""
         self.notices.append(notice)
         key = str(len(self.notices) - 1)
         self.transcript.append(TuiTranscriptEntry(kind="notice", key=key))
@@ -513,6 +622,9 @@ class TuiState:
         *,
         message_id: str = "",
     ) -> None:
+        if not self.at_tail:
+            self.pending_newer += 1
+            return
         existing = self._message_index(message_id) if message_id else None
         if existing is not None:
             self.messages[existing].content = content
@@ -544,9 +656,19 @@ class TuiState:
         ))
         return True
 
-    def restore_history(self, history: list[dict[str, JsonValue]]) -> None:
-        """Rebuild the visible transcript from a resumed session."""
+    def restore_history(
+        self,
+        history: list[dict[str, JsonValue]],
+        *,
+        older_cursor: str | None = None,
+    ) -> None:
+        """Rebuild the visible transcript from a resumed session.
+
+        This is also the re-anchor path: the window is replaced by the newest
+        page and the direction returns to the live tail.
+        """
         self.reset_history()
+        self.older_cursor = older_cursor
         for item in history:
             role = str(item.get("role") or "")
             if role == "user":
@@ -608,6 +730,11 @@ class TuiState:
         self.evicted_notices = 0
         self.evicted_errors = 0
         self.evicted_transcript = 0
+        self.evicted_transcript_tail = 0
+        self.inserted_messages = 0
+        self.inserted_transcript = 0
+        self.at_tail = True
+        self.pending_newer = 0
         self._tool_transcript_keys.clear()
         self._streaming_assistant_index = None
         self._streaming_tool_ids.clear()
@@ -801,6 +928,9 @@ class TuiState:
     def _ensure_tool_transcript(self, tool_call_id: str) -> None:
         if tool_call_id in self._tool_transcript_keys:
             return
+        if not self.at_tail:
+            self.pending_newer += 1
+            return
         self._tool_transcript_keys.add(tool_call_id)
         self.transcript.append(TuiTranscriptEntry(kind="tool", key=tool_call_id))
         self._trim_state()
@@ -856,6 +986,37 @@ _MAX_STATE_TRANSCRIPT = 600
 # Evict in batches: one renumber pass per batch keeps the amortized cost of a
 # mutation independent of both history length and window size.
 _TRIM_SLACK = 200
+
+
+def history_items_from_trajectory(
+    records: list[dict[str, JsonValue]],
+) -> list[dict[str, JsonValue]]:
+    """Flatten trajectory records into the shape :meth:`TuiState.restore_history` reads.
+
+    The transcript is seeded from a message page, but paging back reads the
+    durable trajectory so the anchor survives a client restart.  Only message
+    records carry conversation content; events and compactions are already
+    represented by the notices this client holds.
+    """
+    items: list[dict[str, JsonValue]] = []
+    for record in records:
+        if str(record.get("kind") or "") != "message":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        item = dict(message)
+        item["message_id"] = str(record.get("message_id") or message.get("message_id") or "")
+        items.append(item)
+    return items
+
+
+def _index_key(key: object) -> int | None:
+    """The payload index a transcript key names, or None if it is not one."""
+    try:
+        return int(str(key))
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_provisional_tool_id(tool_call_id: str) -> bool:

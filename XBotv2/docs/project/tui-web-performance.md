@@ -179,43 +179,52 @@ Rendering (Web vitest + Python headless Textual):
   most one window, the mounted widget count stays at the cap, and every mounted
   body shows retained content while the newest answer is present. The
   mount-width assertion is the falsifying one (fails at 150 without the bound).
+- **done** TUI paging (`test_tui_client.py` "transcript pages older history"):
+  scrolling past the retained front consumes the anchor page (all duplicate ids
+  skipped), asks again from its cursor, inserts the older page, mounts it,
+  reports `at_tail = False`, and re-anchors on a fresh snapshot when the reader
+  returns to the bottom.
+- **done** `prepend_history` unit tests: overlapping pages contribute only the
+  unseen records, the window stays bounded by evicting the newest end, retained
+  keys stay addressable, live output is counted while in history, and
+  re-anchoring restores the live path.
 - **open** up-scroll/down-scroll cycle against a live stream, asserting no
   duplicate and no missing record between the two fetches.
 
-## Next: server-backed paging for the TUI transcript
+### TUI paging: both directions, on demand
 
-The TUI window is bounded, but unlike the Web it has no way to fetch what it
-evicted, so history older than the retained 600 entries is unreachable.  The
-main transcript never had paging: the session snapshot seeds it with a
-160-message page (`session/runtime.py:137`, `history_cursor` alongside), and
-`_load_earlier_replay` only walks `state.transcript`.  Only the read-only
-subagent view pages (`_load_older_thread_history` via `_view_older_cursor`).
+The main transcript had no paging at all: the session snapshot seeds it with a
+160-message page and `_load_earlier_replay` only walked `state.transcript`.
+With the window in place, paging is what makes evicted history reachable again.
 
-The design that fits the existing code:
+- `TuiState.at_tail`/`pending_newer` give the window a direction.  While the
+  reader follows the tail, live output is appended and the oldest payloads are
+  evicted; while they are inside history, live output is **counted** in
+  `pending_newer` and eviction comes from the newest end instead.
+- `prepend_history(messages)` inserts an older page at the front, **skipping
+  messages whose `message_id` is already retained**.  This is what lets the
+  first fetch use the *newest* page as its anchor: the page overlaps the window,
+  the overlap is skipped, and only the genuinely older records are inserted —
+  so the TUI needs no positional anchor, where its payloads carry no trajectory
+  position.
+- `_trim_tail` evicts the newest entries by popping the transcript from the end
+  and dropping each entry's payload when it is the last of its container.
+  Removing the newest element of an index-keyed list never invalidates the
+  surviving keys, so a paging reader costs no renumbering.
+- `_load_earlier_replay` fetches when the front of the window is reached
+  (`_extend_history_backwards`, bounded to `_HISTORY_PAGE_ATTEMPTS` fetches per
+  scroll); `_load_newer_replay` re-anchors on a fresh snapshot when the reader
+  reaches the end of a window that is no longer at the tail.
+- The surface tracks `inserted_transcript`/`inserted_messages` (window and
+  index-keyed caches shift **up**) separately from `evicted_transcript` (front
+  eviction) and `evicted_transcript_tail` (the window simply ends earlier).  A
+  prepended index has no widget yet, which is why its cache entry must not be
+  reused.
 
-1. `TuiState` gains `at_tail`, `pending_newer`, and `older_cursor` (from the
-   snapshot's `history_cursor`, updated from each fetched page's `next_cursor`).
-2. `prepend_history(messages)` inserts an older page at the front, **skipping
-   messages whose `message_id` is already retained**: the cursor can be older
-   than the window front, so a page may overlap the window, and re-appending
-   those records would duplicate them.  The unseen ids are exactly the ones
-   older than the front, so prepending them in page order stays chronological.
-3. Prepending sets `at_tail = False` and trims from the **back**: pop entries
-   from the end of the transcript, dropping each entry's payload when it is the
-   last of its container.  Removing the newest element of an index-keyed list
-   never invalidates the surviving keys, so no renumbering is needed.  Live
-   output is then counted in `pending_newer` instead of appended.
-4. `_load_earlier_replay` fetches a page when `window_start == 0` and
-   `older_cursor` is set; `_load_newer_replay` re-anchors on the newest page
-   when the reader reaches the end of a window that is no longer at the tail.
-5. The surface needs a second counter (`evicted_transcript_tail`) distinct from
-   `evicted_transcript`: a front eviction shifts the window, a tail eviction
-   clamps `window_end` and drops the trailing widgets while the reader keeps
-   their position.
-
-The alternative — positional anchors — is what the Web uses, but the TUI's
-payloads carry no trajectory position, and id-deduped cursor paging reaches the
-same records without threading positions through every payload.
+Focus bug this surfaced: `_restore_composer_focus` pulled focus out of a
+transcript block whose body the reader had just focused (focusing a block is
+what expands it and emits `Toggled`). It now returns early when the focused
+widget is a `BoundedText`, so scrolling a block keeps focus.
 
 ## Known correctness bugs to fix alongside
 

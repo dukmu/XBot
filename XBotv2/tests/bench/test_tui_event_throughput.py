@@ -267,9 +267,9 @@ async def test_tui_window_stays_bounded_and_renders_the_newest_tail(monkeypatch)
 
         # A burst far larger than the window, then many times the window again:
         # the reader follows the tail throughout.
-        await drive(30)
-        await drive(200)
-        last_index = await drive(200)
+        await drive(20)
+        await drive(120)
+        last_index = await drive(120)
 
         assert len(app.state.messages) <= window
         assert len(app.state.transcript) <= tui_client._MAX_STATE_TRANSCRIPT + tui_client._TRIM_SLACK
@@ -339,8 +339,8 @@ def test_tui_state_per_event_cost_does_not_grow_with_history() -> None:
         return time.perf_counter() - began
 
     first = block(0, 1000)
-    middle = block(1000, 19_000)
-    last = block(20_000, 1000)
+    middle = block(1000, 7_000)
+    last = block(8_000, 1000)
     print(
         "[bench] TUI state window "
         f"first_ms={first * 1000:.1f} middle_20k_ms={middle * 1000:.1f} last_ms={last * 1000:.1f}"

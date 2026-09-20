@@ -26,6 +26,7 @@ from XBotv2.tui.client import (
     TuiTranscriptEntry,
     _effective_context_tokens,
     _parse_permission_decision,
+    history_items_from_trajectory,
 )
 from XBotv2.tui.command import (
     CommandRegistry,
@@ -39,6 +40,7 @@ from XBotv2.tui.session_config import TuiSessionConfig
 from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from XBotv2.tui.trace import trace_event
 from XBotv2.tui.textual_widgets import (
+    BoundedText,
     ComposerTextArea,
     InlineChoice,
     ThreadView,
@@ -63,6 +65,10 @@ _STATUS_REFRESH_INTERVAL = 0.2
 _REPLAY_WINDOW = 50
 # Replay lazy-load batch size: entries mounted per scroll-to-top batch.
 _REPLAY_BATCH = 50
+# A page fetched while scrolling back may consist entirely of records the
+# client already holds (the anchor is the newest page until a cursor is known).
+# Ask again from the returned cursor, but only this many times per scroll.
+_HISTORY_PAGE_ATTEMPTS = 3
 # The transcript is windowed: at most this many entry widgets stay mounted.
 # Older/newer entries are re-mounted from ``state.transcript`` as the user
 # scrolls, so a long conversation never grows the DOM unboundedly.
@@ -201,6 +207,9 @@ class XBotTextualApp(App[None]):
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
         self._replay_loading = False
+        # No page older than the retained window is known to exist.  A new
+        # snapshot re-anchors the window at the tail and clears this.
+        self._history_exhausted = False
         # Recovery starts the live reader before the optional trajectory
         # lookup, so events emitted during that lookup remain queued.
         self._restore_compactions_when_reading = False
@@ -278,7 +287,9 @@ class XBotTextualApp(App[None]):
         if self._view_active:
             self.run_worker(self._load_older_thread_history(), exclusive=False)
             return
-        if self._window_start <= 0 or self._replay_loading:
+        if self._replay_loading:
+            return
+        if self._window_start <= 0 and self._history_exhausted:
             return
         self.run_worker(self._load_earlier_replay, exclusive=False)
 
@@ -290,7 +301,9 @@ class XBotTextualApp(App[None]):
             if view is not None:
                 self.run_worker(view.catch_up(), exclusive=False)
             return
-        if self._replay_loading or self._window_end >= len(self.state.transcript):
+        if self._replay_loading:
+            return
+        if self._window_end >= len(self.state.transcript) and self.state.at_tail:
             return
         self.run_worker(self._load_newer_replay, exclusive=False)
 
@@ -337,6 +350,11 @@ class XBotTextualApp(App[None]):
             return
         if event.collapsible.has_class("reasoning-block"):
             self._reasoning_expanded = not event.collapsible.collapsed
+        if isinstance(self.focused, BoundedText):
+            # Focusing a block's body is the user choosing to scroll it, and it
+            # is what expands the block: the toggle it produces must not pull
+            # focus back out of what they are reading.
+            return
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.disabled:
             # Restore synchronously. A delayed callback raced explicit focus
@@ -2124,17 +2142,79 @@ class XBotTextualApp(App[None]):
             surface.window_end = surface.window_start
         await surface.sync()
 
+    async def _extend_history_backwards(self) -> bool:
+        """Page the transcript window back by fetching older records.
+
+        The client keeps a bounded window, so reaching its front asks the server
+        for the page older than it.  The newest page is requested first when no
+        cursor is held; pages are de-duplicated by message id, so an anchor that
+        is newer than the window front still reaches the evicted records.  One
+        scroll may therefore consume a page the client already has and ask
+        again, which is why this loops a bounded number of times.
+        """
+        reader = getattr(self.session, "read_thread_history", None)
+        if not callable(reader) or self._history_exhausted:
+            return False
+        for _ in range(_HISTORY_PAGE_ATTEMPTS):
+            try:
+                records, next_cursor = await reader(
+                    self.state.thread_id,
+                    cursor=self.state.older_cursor,
+                    limit=_REPLAY_BATCH * 2,
+                )
+            except Exception:  # noqa: BLE001 — paging back must not kill the app
+                logger.debug("older history page unavailable", exc_info=True)
+                return False
+            inserted = self.state.prepend_history(
+                history_items_from_trajectory(records)
+            )
+            self.state.older_cursor = next_cursor
+            self._history_exhausted = next_cursor is None
+            if inserted:
+                surface = self._surface()
+                if surface is not None:
+                    await surface.settle_window()
+                return True
+            if self._history_exhausted:
+                break
+        return False
+
+    async def _reanchor_to_tail(self) -> None:
+        """Replace the transcript window with the newest page.
+
+        Paging back evicted the newest entries, so returning to the tail is a
+        fetch of the current snapshot rather than a scroll inside the window.
+        """
+        refresh = getattr(self.session, "refresh_baseline", None)
+        if not callable(refresh):
+            return
+        try:
+            session = await refresh()
+        except Exception:  # noqa: BLE001 — an unreachable snapshot keeps the window
+            logger.debug("transcript tail re-anchor failed", exc_info=True)
+            return
+        if isinstance(session, dict):
+            await self._apply_open_session(session, restore_compactions=False)
+
     async def _load_earlier_replay(self) -> None:
         """Shift the bounded replay window to an earlier batch."""
-        if self._replay_loading or self._window_start <= 0:
+        if self._replay_loading:
             return
         self._replay_loading = True
         self._transcript_follow = False
         try:
+            # Reaching the front of the retained window asks the server: the
+            # client keeps a window, so what it evicted is only reachable on
+            # demand.  Scroll events can arrive faster than a page, hence the
+            # loading guard around the fetch.
+            if self._window_start <= 0 and not await self._extend_history_backwards():
+                return
             surface = self._surface()
             if surface is None:
                 return
-            surface.reconcile_evictions()
+            await surface.settle_window()
+            if surface.window_start <= 0:
+                return
             batch_start = max(0, surface.window_start - _REPLAY_BATCH)
             entries = self.state.transcript[batch_start:surface.window_start]
             if not entries:
@@ -2166,6 +2246,9 @@ class XBotTextualApp(App[None]):
             return
         surface.reconcile_evictions()
         if surface.window_end >= len(self.state.transcript):
+            if not self.state.at_tail:
+                await self._reanchor_to_tail()
+                return
             await surface.drop_leading_excess(follow=True)
             return
         end = min(len(self.state.transcript), surface.window_end + _REPLAY_BATCH)
