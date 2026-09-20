@@ -13,7 +13,7 @@ import pytest
 import XBotv2.main as xbot_main
 from XBotv2.tui.client import (
     TuiState,
-    TuiTask,
+    TuiJob,
     TuiTool,
     TuiTranscriptEntry,
     _parse_permission_decision,
@@ -79,6 +79,82 @@ async def test_remote_command_dispatch_shows_command_notice():
     handler._append_local_notice.assert_awaited_once_with(
         "/undo", "Removed 1 conversation turn."
     )
+
+
+@pytest.mark.asyncio
+async def test_thread_effect_command_refreshes_session_identity():
+    """A command that changes thread projections refreshes them immediately."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        _session_attached = True
+        session = type("Session", (), {"run_command": AsyncMock(
+            return_value={
+                "data": {
+                    "command": "goal",
+                    "status": "ok",
+                    "message": "[complete] ship the API",
+                    "effects": ["thread"],
+                }
+            }
+        )})()
+        state = TuiState()
+        _append_local_notice = AsyncMock()
+        _refresh_session_identity = AsyncMock()
+
+        def _record_error(self, error):
+            raise AssertionError(error)
+
+    handler = Handler()
+    await XBotTextualApp._dispatch_remote_command(handler, CommandSpec(
+        name="goal",
+        kind="server",
+        description="goal",
+        raw="/goal complete shipped",
+    ))
+
+    handler._refresh_session_identity.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_session_refresh_applies_status_slots_without_identity_change():
+    """Status slots refresh from the descriptor even when identity is stable."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        session = type("Session", (), {"refresh_descriptor": AsyncMock(
+            return_value={
+                "title": "session-1",
+                "agent_name": "default",
+                "provider": "minimax",
+                "model": "m3",
+                "model_mode": "",
+                "context_window": 0,
+                "status_slots": {
+                    "goal": "complete",
+                    "goal_stats": "3t 11tok 4tools",
+                },
+            }
+        )})()
+        state = TuiState(
+            session_title="session-1",
+            agent_name="default",
+            provider="minimax",
+            model="m3",
+        )
+        _apply_status_slots = XBotTextualApp._apply_status_slots
+        _refresh_all = Mock()
+        _refresh_status_now = Mock()
+
+    handler = Handler()
+    await XBotTextualApp._refresh_session_identity(handler)
+
+    assert handler.state.status_slots == {
+        "goal": "complete",
+        "goal_stats": "3t 11tok 4tools",
+    }
+    handler._refresh_status_now.assert_called_once()
+    handler._refresh_all.assert_not_called()
 
 
 def test_history_updated_event_restores_tui_history() -> None:
@@ -229,15 +305,22 @@ def test_todo_tool_details_use_current_snapshot_projection():
         "type": "tool_result",
         "data": {
             "tool_call_id": "todo-1",
-            "name": "update_todos",
+            "name": "task_update",
             "status": "success",
-            "content": "Todo list updated.",
+            "content": "Updated task #2: in_progress",
             "data": {
                 "kind": "todo_snapshot",
-                "schema_version": 1,
-                "items": [
-                    {"content": "Inspect", "status": "completed"},
-                    {"content": "Implement", "status": "in_progress"},
+                "schema_version": 2,
+                "next_id": 3,
+                "jobs": [
+                    {
+                        "id": "1", "subject": "Inspect", "status": "completed",
+                        "blocks": [], "blockedBy": [],
+                    },
+                    {
+                        "id": "2", "subject": "Implement", "status": "in_progress",
+                        "activeForm": "Implementing", "blocks": [], "blockedBy": [],
+                    },
                 ],
             },
         },
@@ -245,8 +328,8 @@ def test_todo_tool_details_use_current_snapshot_projection():
 
     detail = tool_detail(state.tools["todo-1"])
 
-    assert "[x] Inspect" in detail
-    assert "[>] Implement" in detail
+    assert "[x] #1 Inspect" in detail
+    assert "[>] #2 Implement" in detail
 
 
 def test_tui_state_ignores_blank_assistant_message_but_keeps_tool_calls():
@@ -294,7 +377,7 @@ def test_tui_state_restores_resumed_message_and_tool_history():
         {
             "role": "user",
             "content": "<runtime_event />",
-            "runtime": {"source": "tasks", "event": "completed"},
+            "runtime": {"source": "jobs", "event": "completed"},
         },
     ])
 
@@ -311,7 +394,43 @@ def test_tui_state_restores_resumed_message_and_tool_history():
     assert state.tools["call_1"].error["code"] == "warning"
     assert state.tools["call_1"].artifacts[0]["name"] == "a.txt"
     assert [(notice.kind, notice.text) for notice in state.notices] == [
-        ("tasks:completed", "tasks completed"),
+        ("jobs:completed", "jobs completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_injected_reminder_is_a_notice_not_typed_input():
+    """A persisted harness turn carries runtime provenance, never human input."""
+    from unittest.mock import patch
+
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class Handler:
+        _view_active = False
+        state = TuiState()
+        _render_new_transcript_entries = AsyncMock()
+
+    handler = Handler()
+    with patch.object(
+        XBotTextualApp, "_consume_stream_event", XBotTextualApp._consume_stream_event
+    ):
+        await XBotTextualApp._consume_stream_event(
+            handler,
+            {
+                "type": "message",
+                "data": {
+                    "id": "m1",
+                    "role": "user",
+                    "content": '<system_reminder source="todo" event="reminder">nag</system_reminder>',
+                    "runtime": {"source": "todo", "event": "reminder"},
+                },
+            },
+            pop_pending=False,
+        )
+
+    assert handler.state.messages == []
+    assert [(notice.kind, notice.text) for notice in handler.state.notices] == [
+        ("todo:reminder", "todo reminder"),
     ]
 
 
@@ -3682,7 +3801,7 @@ def test_assistant_message_with_content_does_not_insert_thinking():
 def test_task_updates_replace_one_authoritative_tui_snapshot():
     state = TuiState()
     base = {
-        "task_id": "task-1",
+        "job_id": "task-1",
         "command": "sleep 1",
         "cwd": "/workspace",
         "created_at": 1.0,
@@ -3692,9 +3811,9 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
         "error": "",
     }
 
-    state.apply_event({"type": "task_updated", "data": {**base, "status": "running"}})
+    state.apply_event({"type": "job_updated", "data": {**base, "status": "running"}})
     state.apply_event({
-        "type": "task_updated",
+        "type": "job_updated",
         "data": {
             **base,
             "status": "completed",
@@ -3708,10 +3827,10 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
     assert state.tasks["task-1"].output == "done"
 
     state.apply_event({
-        "type": "task_updated",
+        "type": "job_updated",
         "data": {
             **base,
-            "task_id": "agent-task-1",
+            "job_id": "agent-task-1",
             "kind": "agent",
             "command": "reviewer: inspect changes",
             "status": "running",
@@ -3719,19 +3838,19 @@ def test_task_updates_replace_one_authoritative_tui_snapshot():
     })
     assert state.tasks["agent-task-1"].kind == "agent"
 
-    from XBotv2.tui.textual_widgets import tasks_renderable
+    from XBotv2.tui.textual_widgets import jobs_renderable
 
-    rendered = tasks_renderable(
+    rendered = jobs_renderable(
         [state.tasks["agent-task-1"]], width=100
     ).plain
     assert "agent-task-1  agent  reviewer" in rendered
 
 
 @pytest.mark.asyncio
-async def test_textual_task_panel_updates_in_place():
+async def test_textual_job_panel_updates_in_place():
     from textual.widgets import Collapsible, Static
     from XBotv2.tui.textual_client import XBotTextualApp
-    from XBotv2.tui.textual_widgets import TaskListWidget
+    from XBotv2.tui.textual_widgets import JobListWidget
 
     class FakeSession:
         session_id = "s"
@@ -3756,9 +3875,9 @@ async def test_textual_task_panel_updates_in_place():
     app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
     app.session = FakeSession()
     event = {
-        "type": "task_updated",
+        "type": "job_updated",
         "data": {
-            "task_id": "task-1",
+            "job_id": "task-1",
             "command": "sleep 30",
             "cwd": "/workspace",
             "status": "running",
@@ -3777,9 +3896,9 @@ async def test_textual_task_panel_updates_in_place():
         await pilot.pause()
         from XBotv2.tui.textual_widgets import BoundedText
 
-        panel = app.query_one("#task_panel", Collapsible)
-        body = app.query_one("#task_list", TaskListWidget)
-        block = body.query_one(".subagent-task", Collapsible)
+        panel = app.query_one("#job_panel", Collapsible)
+        body = app.query_one("#job_list", JobListWidget)
+        block = body.query_one(".subagent-job", Collapsible)
 
         assert panel.display is True
         assert panel.title == "Tasks (1 running)"
@@ -3787,7 +3906,7 @@ async def test_textual_task_panel_updates_in_place():
         block.collapsed = False
         await pilot.pause()
         assert "command: sleep 30" in block.query_one(
-            ".task-detail", BoundedText
+            ".job-detail", BoundedText
         ).text
 
 
@@ -3803,14 +3922,14 @@ def test_tui_state_prunes_successful_tasks_but_keeps_failures():
         "error": "",
     }
     state.apply_event({
-        "type": "task_updated",
-        "data": {**base, "task_id": "done", "status": "completed"},
+        "type": "job_updated",
+        "data": {**base, "job_id": "done", "status": "completed"},
     })
     state.apply_event({
-        "type": "task_updated",
+        "type": "job_updated",
         "data": {
             **base,
-            "task_id": "failed",
+            "job_id": "failed",
             "status": "failed",
             "error": "boom",
         },
@@ -3828,8 +3947,8 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
     from XBotv2.tui.textual_client import XBotTextualApp
     from XBotv2.tui.textual_widgets import (
         BoundedText,
-        SubagentTaskWidget,
-        TaskListWidget,
+        SubagentJobWidget,
+        JobListWidget,
     )
 
     class FakeSession:
@@ -3842,8 +3961,8 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
         async def list_commands(self):
             return {"commands": []}
 
-    task = TuiTask(
-        task_id="agent-task-1",
+    task = TuiJob(
+        job_id="agent-task-1",
         kind="agent",
         command="reviewer: inspect changes",
         status="completed",
@@ -3858,15 +3977,15 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
     async with app.run_test(headless=True, size=(80, 18)) as pilot:
         from XBotv2.tui.textual_widgets import BoundedText
 
-        widget = app.query_one("#task_list", TaskListWidget)
-        widget.update_tasks([task], width=80)
+        widget = app.query_one("#job_list", JobListWidget)
+        widget.update_jobs([task], width=80)
         await pilot.pause()
-        subagent = widget.query_one(SubagentTaskWidget)
+        subagent = widget.query_one(SubagentJobWidget)
         assert subagent.collapsed is True
         assert "reviewer" in str(subagent.title or "")
         subagent.collapsed = False
         await pilot.pause()
-        detail = subagent.query_one(".task-detail", BoundedText)
+        detail = subagent.query_one(".job-detail", BoundedText)
         assert "command: reviewer: inspect changes" in detail.text
         assert "line 0" in detail.text and "line 19" in detail.text
         assert detail.line_count >= 20
@@ -3874,12 +3993,12 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
 
 
 @pytest.mark.asyncio
-async def test_task_panel_refreshes_in_place_without_collapsing_expanded_rows():
+async def test_job_panel_refreshes_in_place_without_collapsing_expanded_rows():
     from XBotv2.tui.textual_client import XBotTextualApp
     from XBotv2.tui.textual_widgets import (
         BoundedText,
-        SubagentTaskWidget,
-        TaskListWidget,
+        SubagentJobWidget,
+        JobListWidget,
     )
 
     class FakeSession:
@@ -3895,8 +4014,8 @@ async def test_task_panel_refreshes_in_place_without_collapsing_expanded_rows():
         async def list_commands(self):
             return {"commands": []}
 
-    task = TuiTask(
-        task_id="agent-task-1",
+    task = TuiJob(
+        job_id="agent-task-1",
         kind="agent",
         command="reviewer: inspect changes",
         status="running",
@@ -3908,31 +4027,31 @@ async def test_task_panel_refreshes_in_place_without_collapsing_expanded_rows():
     app.session = FakeSession()
 
     async with app.run_test(headless=True, size=(80, 18)) as pilot:
-        widget = app.query_one("#task_list", TaskListWidget)
-        widget.update_tasks([task], width=80)
+        widget = app.query_one("#job_list", JobListWidget)
+        widget.update_jobs([task], width=80)
         await pilot.pause()
-        subagent = widget.query_one(SubagentTaskWidget)
+        subagent = widget.query_one(SubagentJobWidget)
         subagent.collapsed = False
         await pilot.pause()
 
         # A same-task refresh must reuse the mounted widget and keep the
         # reader's expansion state.
-        widget.update_tasks([task], width=80)
+        widget.update_jobs([task], width=80)
         await pilot.pause()
-        assert widget.query_one(SubagentTaskWidget) is subagent
+        assert widget.query_one(SubagentJobWidget) is subagent
         assert subagent.collapsed is False
 
         # Real task changes still update the existing widget in place.
         task.output = "line 0\nline 1"
-        widget.update_tasks([task], width=80)
+        widget.update_jobs([task], width=80)
         await pilot.pause()
-        assert widget.query_one(SubagentTaskWidget) is subagent
-        detail = subagent.query_one(".task-detail", BoundedText)
+        assert widget.query_one(SubagentJobWidget) is subagent
+        detail = subagent.query_one(".job-detail", BoundedText)
         assert "line 1" in detail.text
 
 
 @pytest.mark.asyncio
-async def test_narrow_task_panel_does_not_overlap_status_or_composer():
+async def test_narrow_job_panel_does_not_overlap_status_or_composer():
     from textual.widgets import Collapsible
     from XBotv2.tui.textual_client import XBotTextualApp
 
@@ -3963,9 +4082,9 @@ async def test_narrow_task_panel_does_not_overlap_status_or_composer():
         await pilot.pause()
         for index in range(6):
             event = {
-                "type": "task_updated",
+                "type": "job_updated",
                 "data": {
-                    "task_id": f"task-{index}",
+                    "job_id": f"task-{index}",
                     "command": "long command argument " * 10,
                     "cwd": "/workspace",
                     "status": "running" if index == 0 else "completed",
@@ -3980,7 +4099,7 @@ async def test_narrow_task_panel_does_not_overlap_status_or_composer():
             await app._handle_stream_event(event)
         await pilot.pause()
 
-        tasks = app.query_one("#task_panel", Collapsible)
+        tasks = app.query_one("#job_panel", Collapsible)
         status = app.query_one("#status_bar")
         composer = app.query_one("#composer")
 
@@ -4196,8 +4315,8 @@ async def test_turn_end_refresh_applies_the_captioned_title():
     from XBotv2.tui.client import TuiState
     from XBotv2.tui.textual_client import XBotTextualApp
 
-    handler = SimpleNamespace(
-        session=SimpleNamespace(
+    class Handler:
+        session = SimpleNamespace(
             refresh_descriptor=AsyncMock(return_value={
                 "title": "Python GIL 讨论",
                 "agent_name": "default",
@@ -4206,11 +4325,13 @@ async def test_turn_end_refresh_applies_the_captioned_title():
                 "model_mode": "",
                 "context_window": 200000,
             }),
-        ),
-        state=TuiState(session_title="session-1"),
-        _refresh_all=Mock(),
-    )
+        )
+        state = TuiState(session_title="session-1")
+        _apply_status_slots = XBotTextualApp._apply_status_slots
+        _refresh_all = Mock()
+        _refresh_status_now = Mock()
 
+    handler = Handler()
     await XBotTextualApp._refresh_session_identity(handler)
 
     assert handler.state.session_title == "Python GIL 讨论"

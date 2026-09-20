@@ -1130,7 +1130,7 @@ async def test_http_session_exposes_independent_thread_resources(
         await client.get("/sessions/thread-resources/threads/agent")
     ).json()["status"] == "active"
     inactive_tasks = await client.get(
-        "/sessions/thread-resources/threads/child/tasks"
+        "/sessions/thread-resources/threads/child/jobs"
     )
     assert inactive_tasks.status_code == 409
     assert inactive_tasks.json()["code"] == "thread_not_active"
@@ -1150,11 +1150,11 @@ async def test_todo_and_usage_survive_http_close_resume(
             "content": "Planning.",
             "tool_calls": [{
                 "id": "todo-create",
-                "name": "update_todos",
-                "args": {"todos": [
-                    {"content": "implement", "status": "in_progress"},
-                    {"content": "verify", "status": "pending"},
-                ]},
+                "name": "task_create",
+                "args": {
+                    "subject": "implement",
+                    "activeForm": "Implementing",
+                },
             }],
             "usage_metadata": {"input_tokens": 10, "output_tokens": 2},
         },
@@ -1166,11 +1166,8 @@ async def test_todo_and_usage_survive_http_close_resume(
             "content": "Finishing.",
             "tool_calls": [{
                 "id": "todo-complete",
-                "name": "update_todos",
-                "args": {"todos": [
-                    {"content": "implement", "status": "completed"},
-                    {"content": "verify", "status": "completed"},
-                ]},
+                "name": "task_update",
+                "args": {"taskId": "1", "status": "completed"},
             }],
             "usage_metadata": {"input_tokens": 14, "output_tokens": 2},
         },
@@ -1212,19 +1209,17 @@ async def test_todo_and_usage_survive_http_close_resume(
         for message in messages
         if message["role"] == "tool" and message["data"]
     )
-    assert todo == {
-        "kind": "todo_snapshot",
-        "schema_version": 1,
-        "items": [
-            {"content": "implement", "status": "in_progress"},
-            {"content": "verify", "status": "pending"},
-        ],
-    }
+    assert todo["kind"] == "todo_snapshot"
+    assert todo["schema_version"] == 2
+    assert todo["next_id"] == 2
+    assert [item["subject"] for item in todo["tasks"]] == ["implement"]
+    assert todo["tasks"][0]["status"] == "pending"
+    assert todo["tasks"][0]["activeForm"] == "Implementing"
     todo_state = await client.get(
         "/sessions/todo-recovery/threads/main/todos"
     )
     assert todo_state.status_code == 200
-    assert todo_state.json()["items"] == todo["items"]
+    assert todo_state.json()["tasks"] == todo["tasks"]
 
     closed = await client.post(
         "/sessions/todo-recovery/threads/main/close"
@@ -1253,7 +1248,7 @@ async def test_todo_and_usage_survive_http_close_resume(
     resumed_todos = await client.get(
         "/sessions/todo-recovery/threads/main/todos"
     )
-    assert resumed_todos.json()["items"] == todo["items"]
+    assert resumed_todos.json()["tasks"] == todo["tasks"]
 
     await _submit_turn(client, full_http_app, "todo-recovery", "main", {
         "content": "finish it",
@@ -1268,10 +1263,10 @@ async def test_todo_and_usage_survive_http_close_resume(
         and isinstance(message["data"], dict)
         and message["data"].get("kind") == "todo_snapshot"
     ]
-    assert projections[-1]["items"] == []
+    assert projections[-1]["tasks"][0]["status"] == "completed"
     assert (
         await client.get("/sessions/todo-recovery/threads/main/todos")
-    ).json()["items"] == []
+    ).json()["tasks"][0]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -1312,7 +1307,7 @@ async def test_open_event_cursor_replays_later_shared_runtime_events(http_app) -
     runtime = await manager.get(opened.session_id, opened.thread_id)
     runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
         type="completion_notice",
-        data={"task_id": "task-1", "status": "completed"},
+        data={"job_id": "task-1", "status": "completed"},
     )))
 
     events = await manager.stream_events(
@@ -1392,7 +1387,7 @@ async def test_session_event_endpoint_rejects_expired_and_future_cursors(
     for index in range(513):
         runtime._on_runtime_event(RuntimeEvent(client_event=ClientEvent(
             type="completion_notice",
-            data={"task_id": f"task-{index}", "status": "completed"},
+            data={"job_id": f"task-{index}", "status": "completed"},
         )))
 
     expired = await client.get(
@@ -1897,7 +1892,7 @@ async def test_http_command_plane_exposes_platform_builtins(
     assert commands_response.status_code == 200
     names = {item["name"] for item in commands_response.json()["commands"]}
     assert {"status", "provider", "model", "effort",
-            "clear", "undo", "fork", "tasks", "task",
+            "clear", "undo", "fork", "jobs",
             "permission", "sandbox"} <= names
     # no_plugins excludes capability plugins: goal/skills/compact/agents
     # commands must not leak into the directory.
@@ -1954,9 +1949,9 @@ async def test_http_builtin_commands_execute_through_command_plane(
     assert effort["status"] == "ok"
     assert "no effort tiers" in effort["message"]
 
-    tasks = await run("/tasks")
+    tasks = await run("/jobs")
     assert tasks["status"] == "ok"
-    assert tasks["message"] == "No background tasks."
+    assert tasks["message"] == "No background jobs."
 
     unknown = await run("/provider use nope")
     assert unknown["status"] == "error"
@@ -3520,11 +3515,11 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
         Message(role="assistant", content="the earlier request is complete"),
     ])
 
-    task_id = await _start_background_shell(
+    job_id = await _start_background_shell(
         ctx.application._context,
         "printf done",
     )
-    await ctx.application._context.jobs.wait([task_id], timeout=1)
+    await ctx.application._context.jobs.wait([job_id], timeout=1)
 
     # The completion is broadcast as a notice and staged in the inbox; it
     # must NOT start a turn on its own.
@@ -3553,8 +3548,8 @@ async def test_general_message_uses_session_event_stream(http_app) -> None:
     assert len(runtime_msgs) == 1
     runtime_event = ET.fromstring(runtime_msgs[0].content)
     payload = json.loads(runtime_event.findtext("payload"))
-    assert payload["kind"] == "background_task"
-    assert payload["task_id"] == task_id
+    assert payload["kind"] == "background_job"
+    assert payload["job_id"] == job_id
 
 
 @pytest.mark.asyncio
@@ -3594,8 +3589,8 @@ async def test_background_task_updates_and_completion_use_session_stream(
         ).event.model_dump(mode="json")
         if event and event["type"] == "completion_notice":
             notice = event
-    assert notice["data"]["kind"] == "background_task"
-    assert notice["data"]["task_id"] == job_id
+    assert notice["data"]["kind"] == "background_job"
+    assert notice["data"]["job_id"] == job_id
     assert notice["data"]["status"] == "completed"
     await asyncio.sleep(0.05)
     assert llm.call_count == 0, "completion must not wake an LLM turn"
@@ -3618,10 +3613,10 @@ async def test_background_task_updates_and_completion_use_session_stream(
     )
     assert len(runtime_msgs) == 1
     runtime_event = ET.fromstring(runtime_msgs[0].content)
-    assert runtime_event.attrib == {"event": "completed", "source": "tasks"}
+    assert runtime_event.attrib == {"event": "completed", "source": "jobs"}
     payload = json.loads(runtime_event.findtext("payload"))
-    assert payload["kind"] == "background_task"
-    assert payload["task_id"] == job_id
+    assert payload["kind"] == "background_job"
+    assert payload["job_id"] == job_id
     assert payload["status"] == "completed"
     assert len(ctx.engine.inbox) == 0
     assert [message.role for message in ctx.engine.messages] == [
@@ -3698,24 +3693,24 @@ async def test_typed_task_stop_is_idempotent(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
     ctx = await http_app.state.manager.get("task-stop", "t")
-    task_id = await _start_background_shell(ctx.application._context, "sleep forever")
+    job_id = await _start_background_shell(ctx.application._context, "sleep forever")
     await asyncio.sleep(0)
 
     busy_fork = await client.post("/sessions/task-stop/fork")
     first = await client.post(
-        f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
+        f"/sessions/task-stop/threads/t/jobs/{job_id}/stop"
     )
     second = await client.post(
-        f"/sessions/task-stop/threads/t/tasks/{task_id}/stop"
+        f"/sessions/task-stop/threads/t/jobs/{job_id}/stop"
     )
 
     assert busy_fork.status_code == 409
     assert busy_fork.json()["code"] == "thread_busy"
     assert first.status_code == 200
     assert first.json()["matched_count"] == 1
-    assert first.json()["tasks"][0]["status"] == "stopped"
+    assert first.json()["jobs"][0]["status"] == "stopped"
     assert second.status_code == 200
-    assert second.json()["tasks"][0]["status"] == "stopped"
+    assert second.json()["jobs"][0]["status"] == "stopped"
 
 
 @pytest.mark.asyncio
@@ -4715,26 +4710,19 @@ async def test_http_server_commands_include_kind(
 
 
 @pytest.mark.asyncio
-async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
+async def test_http_goal_command_runs_the_evaluator_loop(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
+    """`/goal` sets a condition, starts a turn, and an evaluator model judges it."""
     skills_app.state.manager.application_factory = partial(
         create_agent_application,
         model_override=MockLLM(responses=[
             {"content": "session title"},  # caption auto-titles the first message
-            {
-                "content": "",
-                "tool_calls": [{
-                    "id": "goal-complete",
-                    "name": "update_goal",
-                    "args": {
-                        "status": "complete",
-                        "summary": "API tests passed",
-                    },
-                }],
-            },
-            {"content": "Goal complete: API tests passed."},
+            {"content": "Working toward shipping the API."},
+            # The evaluator is a separate auxiliary call answering the verdict
+            # contract; the working model never certifies its own completion.
+            {"content": '{"verdict": "met", "reason": "API tests pass."}'},
         ]),
     )
     await skills_client.post(
@@ -4759,30 +4747,32 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         "/sessions/goal-state/threads/t/commands",
         json={
             "command": "goal",
-            "raw": "/goal --token-budget 2000 ship the API",
+            "raw": "/goal ship the API",
         },
     )
-    assert response.json()["data"]["message"] == "[active] ship the API\nToken budget: 2000"
+    assert response.json()["data"]["message"].startswith("[active] ship the API")
+
     events = []
-    while True:
+    achieved = None
+    for _ in range(200):
         event = (
             await asyncio.wait_for(anext(session_events), timeout=2)
         ).event.model_dump(mode="json")
-        assert event is not None
         events.append(event)
-        if event["type"] == "turn_finished":
+        if event["type"] == "goal_updated" and event["data"]["status"] == "achieved":
+            achieved = event
             break
     await session_events.aclose()
 
-    assert [
-        event["data"]["content"]
+    assert achieved is not None
+    assert achieved["data"]["condition"] == "ship the API"
+    assert achieved["data"]["reason"] == "API tests pass."
+    assert achieved["data"]["turns_evaluated"] == 1
+    assert any(
+        event["type"] == "assistant_message"
+        and "Working toward shipping the API." in event["data"]["content"]
         for event in events
-        if event["type"] == "assistant_message" and event["data"]["content"]
-    ] == ["Goal complete: API tests passed."]
-    turn_finished = next(
-        event for event in events if event["type"] == "turn_finished"
     )
-    assert turn_finished["data"]["status_slots"] == {"goal": "complete"}
     for _ in range(20):
         if not ctx.turn_lock.locked():
             break
@@ -4792,11 +4782,9 @@ async def test_http_goal_tool_is_discovered_and_continues_through_mailbox(
         json={"command": "goal", "raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
-    assert get_response.json()["data"]["message"] == (
-        "[complete] ship the API\n"
-        "Token budget: 2000\n"
-        "Execution summary: API tests passed"
-    )
+    message = get_response.json()["data"]["message"]
+    assert message.startswith("[achieved] ship the API")
+    assert "Latest: API tests pass." in message
 
 
 @pytest.mark.asyncio

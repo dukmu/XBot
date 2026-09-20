@@ -1,485 +1,687 @@
-"""Behavior tests for the built-in Goal plugin."""
+"""Behavior tests for the evaluator-driven Goal plugin."""
 
-from XBotv2.tests.helpers import make_engine
-
+import asyncio
 import json
-from dataclasses import dataclass
-from pathlib import Path
+import time
 from types import SimpleNamespace
-import xml.etree.ElementTree as ET
 
 import pytest
-import yaml
 
-from XBotv2.core.usage import UsageData
-from XBotv2.goal.plugin import GoalPlugin, GoalService
 from XBotv2.application import COLLECT_STATUS_SLOTS, StatusSlots
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.context_builder import ContextComponent
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.agentloop.engine import Engine
-from XBotv2.config.contracts import RuntimeConfig
+from XBotv2.agentloop import EventContext
+from XBotv2.goal.models import GoalConfig, GoalSnapshot
+from XBotv2.goal.plugin import GoalPlugin
 from XBotv2.llm.mock import MockLLM
-from XBotv2.persistence.store import ThreadPersistence
-from plugin_harness import mount_ctx, mount_plugin
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.sandbox.policy import SandboxPolicy
+from plugin_harness import mount_ctx
 
 
 class RecordingDriver:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, object]]] = []
+        self.injected: list[tuple[str, dict[str, object]]] = []
+        self.messages: list = []
+        #: Continuation marker of the most recent queued turn, kept across
+        #: ``requests.clear()`` so turn simulation always uses what the plugin
+        #: actually sent.
+        self.last_continuation = False
 
     async def followup(self, content: str, **kwargs: object) -> None:
         self.requests.append((content, kwargs))
+        metadata = kwargs.get("metadata")
+        self.last_continuation = bool(
+            metadata.get("continuation") if isinstance(metadata, dict) else False
+        )
+
+    async def inject(self, content: str, **kwargs: object) -> None:
+        self.injected.append((content, kwargs))
 
 
-@dataclass
-class GoalHarness:
-    service: GoalService
-    ctx: object
-    driver: RecordingDriver
-    store: object
+class FailingDriver(RecordingDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail = True
+
+    async def followup(self, content: str, **kwargs: object) -> None:
+        if self.fail:
+            raise RuntimeError("inbox closed")
+        await super().followup(content, **kwargs)
 
 
-class SetupContext:
-    """Post-apply view of a plugin's registrations on a real XCore context."""
+class FakeJobs:
+    def __init__(self, statuses: list[str]) -> None:
+        self._statuses = statuses
 
-    def __init__(self, ctx) -> None:
-        self.ctx = ctx
-        self.tools: dict = {}
-        self.options: dict = {}
-        self.commands: dict = {}
-        for entry in self.ctx.tools.registrations():
-            self.tools[entry.tool.name] = entry.tool
-            self.options[entry.tool.name] = _EntryOptions(
-                namespace=entry.namespace,
-            )
-        for command in self.ctx.commands.all():
-            self.commands[command.name] = command
+    def snapshots(self):
+        return [SimpleNamespace(status=status) for status in self._statuses]
 
 
-class _EntryOptions:
-    def __init__(self, *, namespace) -> None:
-        self.namespace = namespace
+def verdict(value: str, reason: str = "") -> dict[str, object]:
+    return {"content": json.dumps({"verdict": value, "reason": reason})}
 
 
-def make_plugin(state_store) -> GoalHarness:
+FAST = GoalConfig(
+    checkin_seconds=0.01,
+    retry_seconds=0.01,
+    max_retries=2,
+    stall_turns=2,
+    max_idle_checkins=1,
+)
+
+
+def make_plugin(state_store, *, responses, config=None, jobs=None):
     ctx = mount_ctx(state_store)
     driver = RecordingDriver()
     ctx.set("engine", driver)
-    GoalPlugin().apply(ctx)
-    return GoalHarness(
-        service=ctx.goal,
+    evaluator = MockLLM(responses=responses)
+    ctx.model.replace(evaluator)
+    GoalPlugin().apply(ctx, config)
+    service = ctx.goal
+    if jobs is not None:
+        service._jobs = jobs
+    return SimpleNamespace(
+        service=service,
         ctx=ctx,
         driver=driver,
+        evaluator=evaluator,
+        model=ctx.model,
         store=ctx.state.namespace("goal"),
     )
 
 
-def setup_plugin(state_store):
-    plugin = make_plugin(state_store)
-    return plugin, SetupContext(plugin.ctx)
+async def settle(service) -> None:
+    """Wait for the evaluation task the turn-end hook scheduled."""
+    task = service._evaluation
+    if task is not None:
+        await task
 
 
-def test_goal_registers_human_command_and_agent_tools(state_store):
-    _plugin, setup = setup_plugin(state_store)
+async def end_turn(
+    harness,
+    stop_reason: str = "completed",
+    *,
+    used_tools: bool = False,
+    start: bool = True,
+):
+    """Simulate a started turn ending, then let the evaluator run.
 
-    assert setup.ctx._bus.listener_count(Events.TURN_START) > 0
-    assert setup.ctx._bus.listener_count(Events.TURN_END) > 0
-    assert list(setup.tools) == ["create_goal", "get_goal", "update_goal"]
-    assert setup.tools["update_goal"].parameters["properties"]["status"]["enum"] == [
-        "complete", "blocked",
-    ]
-    assert list(setup.commands) == ["goal"]
-    assert setup.commands["goal"].kind == "server"
+    ``start`` drives the real ``TURN_START`` listener using the continuation
+    flag the plugin itself put on the queued round, so a round that forgot to
+    mark itself automatic would latch the scheduler and fail here.
+    """
+    if start:
+        await harness.service.on_turn_start(
+            EventContext(continuation=harness.driver.last_continuation)
+        )
+    harness.service._turn_used_tools = used_tools
+    await harness.service.on_turn_end(_Stop(stop_reason))
+    await settle(harness.service)
+
+
+async def set_goal(harness, condition: str = "all tests pass"):
+    result = await harness.service.set_condition(condition)
+    assert result.status == "success"
+    return result
+
+
+def test_goal_registers_the_minimal_agent_tools(state_store):
+    harness = make_plugin(state_store, responses=[])
+    names = sorted(entry.tool.name for entry in harness.ctx.tools.registrations())
+    # The Agent may create a goal and read it; only the evaluator may end one.
+    assert names == ["create_goal", "get_goal"]
+    commands = [command.name for command in harness.ctx.commands.all()]
+    assert commands == ["goal"]
 
 
 @pytest.mark.asyncio
-async def test_goal_lifecycle_keeps_summary_until_clear(state_store):
-    plugin = make_plugin(state_store)
+async def test_agent_can_create_a_goal_and_read_its_status(state_store):
+    harness = make_plugin(state_store, responses=[verdict("not_yet_met", "half done")])
+    tool = {entry.tool.name: entry.tool for entry in harness.ctx.tools.registrations()}
+    assert tool["create_goal"].parameters["required"] == ["condition"]
 
-    empty = await plugin.service.get_goal()
-    created = await plugin.service.create_goal("stabilize the API", token_budget=8000)
-    duplicate = await plugin.service.create_goal("replace implicitly")
-    updated = await plugin.service.command("document the API")
-    missing_summary = await plugin.service.update_goal("complete", "")
-    completed = await plugin.service.update_goal("complete", "Documented and tested the API.")
-    inspected = await plugin.service.get_goal()
-    resumed = await plugin.service.command("resume")
-    blocked = await plugin.service.update_goal("blocked", "Waiting for human review.")
-    viewed_blocked = await plugin.service.get_goal()
-    cleared = await plugin.service.command("clear")
-
-    assert empty.status == "success"
+    created = await tool["create_goal"].ainvoke({"condition": "ship the API"})
     assert created.status == "success"
-    assert duplicate.error.code == "goal_exists"
-    assert updated.status == "ok"
-    assert updated.message
-    assert "document the API" in updated.message
-    assert missing_summary.error.code == "invalid_summary"
-    assert completed.status == "success"
-    assert inspected.status == "success"
-    assert resumed.status == "ok"
-    assert blocked.status == "success"
-    assert viewed_blocked.status == "success"
-    assert cleared.status == "ok"
-    assert (await plugin.service.get_goal()).status == "success"
-
-
-@pytest.mark.asyncio
-async def test_goal_rejects_invalid_transitions_without_mutating_state(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("keep this objective")
-    before = await plugin.store.all()
-
-    invalid_status = await plugin.service.update_goal("paused", "not allowed")
-    blank_create = await plugin.service.create_goal(" ")
-    missing_summary = await plugin.service.update_goal("complete", "")
-    long_summary = await plugin.service.update_goal("complete", "x" * 2_001)
-    bad_budget = await plugin.service.create_goal("another", token_budget=0)
-    bad_command_budget = await plugin.service.command(
-        "--token-budget nope another objective"
-    )
-
-    assert invalid_status.error.code == "invalid_status"
-    assert blank_create.error.code == "invalid_objective"
-    assert missing_summary.error.code == "invalid_summary"
-    assert long_summary.error.code == "summary_too_long"
-    assert bad_budget.error.code == "invalid_token_budget"
-    assert bad_command_budget.status == "error"
-    assert "positive integer" in bad_command_budget.message
-    assert await plugin.store.all() == before
-
-
-@pytest.mark.asyncio
-async def test_active_goal_schedules_one_continuation_at_a_time(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("iterate until complete")
-    turn_end = EventContext(
-        session=SimpleNamespace(),
-        stop_reason="completed",
-    )
-    await plugin.service.on_turn_end(turn_end)
-    await plugin.service.on_turn_end(turn_end)
-
-    assert len(plugin.driver.requests) == 1
-
-    # The continuation turn starting resets the pending flag; the next
-    # completed turn schedules another continuation.
-    await plugin.service.start_goal_turn(EventContext(
-        session=SimpleNamespace(),
-        user_input="[goal continuation]",
-        continuation=True,
-    ))
-    await plugin.service.on_turn_end(turn_end)
-    assert len(plugin.driver.requests) == 2
-
-
-@pytest.mark.asyncio
-async def test_runtime_notification_does_not_drive_active_goal(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("iterate until complete")
-    await plugin.service.on_turn_end(EventContext(
-        session=SimpleNamespace(),
-        stop_reason="completed",
-    ))
-
-    assert len(plugin.driver.requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_goal_exposes_compact_status_slot(state_store):
-    plugin = make_plugin(state_store)
-
-    async def status_slots() -> dict[str, str]:
-        slots = StatusSlots()
-        await plugin.ctx.emit(COLLECT_STATUS_SLOTS, slots)
-        return slots.values
-
-    assert await status_slots() == {}
-    await plugin.service.create_goal("show status")
-    assert await status_slots() == {"goal": "active"}
-    await plugin.service.update_goal("complete", "done")
-    assert await status_slots() == {"goal": "complete"}
-
-
-@pytest.mark.asyncio
-async def test_interrupt_pauses_goal_without_scheduling_continuation(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("pause on escape")
-    await plugin.service.on_turn_end(EventContext(
-        session=SimpleNamespace(),
-        stop_reason="client_interrupt",
-    ))
-
-    assert plugin.driver.requests == []
-    goal = await plugin.service.snapshot()
-    assert goal is not None
-    assert goal.status == "paused"
-
-
-@pytest.mark.asyncio
-async def test_goal_snapshot_is_added_only_to_continuation_turn(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("output two greetings")
-    active_ctx = EventContext(
-        session=SimpleNamespace(),
-        user_input="wake",
-        continuation=True,
-    )
-
-    await plugin.service.start_goal_turn(active_ctx)
-
-    assert "output two greetings" in active_ctx.user_input
-
-    await plugin.service.update_goal("complete", "Output both requested greetings.")
-    ctx = EventContext(
-        session=SimpleNamespace(),
-        user_input="wake",
-        continuation=False,
-    )
-
-    await plugin.service.start_goal_turn(ctx)
-
-    assert ctx.user_input == "wake"
-
-
-@pytest.mark.asyncio
-async def test_goal_continuation_turn_replaces_prompt_with_goal_context(
-    state_store,
-    temp_workspace,
-):
-    plugin, setup = setup_plugin(state_store)
-    await plugin.service.create_goal("finish the audit")
-    llm = MockLLM(responses=[
-        {"content": "Working on the audit."},
-        {"content": "Plain reply."},
-    ])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=ToolRegistry(),
-        plugin_ctx=setup.ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
-    )
-
-    # A continuation turn gets the active goal context as its prompt.
-    # Continuation is carried by the agent-inbox input metadata, matching the
-    # goal plugin's production ``send_input(..., metadata={"continuation": True})``.
-    await engine.inject(
-        "[goal continuation]",
-        source="goal",
-        metadata={"continuation": True},
-    )
-    _ = [
-        event
-        async for event in engine.run_pending(request_id="goal")
-    ]
-    last = llm.get_call_messages(0)[-1]
-    assert last.role == "user"
-    assert json.loads(last.content) == {
-        "objective": "finish the audit",
-        "status": "active",
-    }
-    assert all(message.role != "user" for message in llm.get_call_messages(0)[:-1])
-
-    # A normal turn keeps its own prompt. The goal plugin schedules the next
-    # active-goal continuation at TURN_END; drain it so the explicit input is
-    # the sole next-turn claim.
-    await engine.discard_inputs()
-    _ = [event async for event in engine.run_turn("plain wake", request_id="plain")]
-    assert llm.get_call_messages(1)[-1].content == "plain wake"
-
-
-@pytest.mark.asyncio
-async def test_goal_survives_state_store_recreation(state_store):
-    plugin = make_plugin(state_store)
-    await plugin.service.create_goal("survive restart")
-    await plugin.service.update_goal("complete", "Restart behavior verified.")
-
-    restored_store = ThreadPersistence.open(
-        state_store.paths,
-        thread_id=state_store.thread_id,
-        workspace_root=state_store.workspace_root,
-        provider=state_store.provider,
-    )
-    restored = make_plugin(restored_store)
-
-    goal = await restored.service.snapshot()
-    assert goal is not None
-    assert goal.model_dump(mode="json") == {
-        "schema_version": 1,
-        "objective": "survive restart",
-        "status": "complete",
-        "summary": "Restart behavior verified.",
-        "token_budget": None,
+    assert "[active] ship the API" in created.content
+    content, kwargs = harness.driver.requests[-1]
+    assert 'Objective: "ship the API"' in content
+    assert "Round: 1/20" in content
+    assert content.startswith('<system_reminder source="goal" event="round"')
+    assert kwargs["metadata"] == {
+        "kind": "round",
+        "round": 1,
+        "max_rounds": 20,
+        "continuation": True,
     }
 
+    await end_turn(harness)
+    read = await tool["get_goal"].ainvoke({})
+    assert read.status == "success"
+    assert "[active] ship the API" in read.content
+    assert "Latest: half done" in read.content
+    assert "round 2/20" in read.content
 
-@pytest.mark.asyncio
-async def test_goal_rejects_invalid_persisted_state(state_store):
-    plugin = make_plugin(state_store)
-    invalid = {
-        "schema_version": 1,
-        "objective": "broken",
-        "status": "unknown",
-        "summary": "",
-        "token_budget": None,
-    }
-    await plugin.store.set("snapshot", invalid)
-
-    with pytest.raises(ValueError, match="Input should be"):
-        await plugin.service.get_goal()
-
-    assert await plugin.store.get("snapshot") == invalid
+    assert (await tool["get_goal"].ainvoke({})).status == "success"
+    await harness.service.clear()
+    assert (await tool["get_goal"].ainvoke({})).content.startswith("[cleared]")
 
 
 @pytest.mark.asyncio
-async def test_plugin_dispose_removes_goal_resources_but_retains_state(
-    tmp_path,
-    state_store,
-):
-    plugins_root = tmp_path / "plugins"
-    plugins_root.mkdir()
-    (plugins_root / "goal").symlink_to(
-        Path(__file__).parents[2] / "goal",
-        target_is_directory=True,
-    )
-    from XBotv2.loader import PluginTree
-    from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
+async def test_goal_never_injects_a_per_request_projection(state_store):
+    from XBotv2.agentloop import EventContext
 
-    ctx = mount_ctx(state_store)
-    ctx.set("engine", object())
-    tools = ctx.tools
-    handles = mount_plugin_tree(ctx, PluginTree.parse([
-        {"id": "goal", "name": "goal"},
-    ]))
+    harness = make_plugin(state_store, responses=[])
+    await set_goal(harness, "ship the API")
+    harness.driver.injected.clear()
 
-    await ctx.start()
-    validate_mounted_tree(handles)
-    tool = tools.resolve("create_goal")
-    assert tool is not None
-    await tool.ainvoke({"objective": "retain me"})
+    # Nothing rebuilds per request: the goal travels in its round prompt, and
+    # the per-build component hook is not subscribed at all.
+    from XBotv2.context_builder import CONTEXT_COMPONENTS_BUILT
+    assert harness.ctx._bus.listener_count(CONTEXT_COMPONENTS_BUILT) == 0
 
-    await handles["goal"].dispose()
-    assert tools.registered_names() == ()
-    import json as _json
-    state_path = state_store.paths.plugin_state_dir / "state.json"
-    data = _json.loads(state_path.read_text(encoding="utf-8"))
-    assert data["goal.snapshot"]["objective"] == "retain me"
+    await harness.service.on_turn_start(EventContext(continuation=False))
+    assert harness.driver.injected == []
 
 
 @pytest.mark.asyncio
-async def test_engine_summarizes_completed_goal_without_persistent_context(
-    state_store,
-    temp_workspace,
-):
-    plugin, setup = setup_plugin(state_store)
-    await plugin.service.create_goal("finish this turn")
-    registry = ToolRegistry()
-    registry.register(
-        setup.tools["update_goal"],
-        namespace="plugin:goal",
+async def test_compaction_restates_the_active_goal_once(state_store):
+    from XBotv2.session import HistoryChanged
+
+    harness = make_plugin(state_store, responses=[verdict("not_yet_met", "half done")])
+    await set_goal(harness, "ship the API")
+    await end_turn(harness)
+    harness.driver.injected.clear()
+
+    await harness.service.on_compaction(
+        HistoryChanged(messages=(), operation="compact:auto", turns=2)
     )
-    llm = MockLLM(responses=[
-        {
-            "content": "Finished the requested work.",
-            "tool_calls": [{
-                "id": "goal-call-1",
-                "name": "update_goal",
-                "args": {"status": "complete", "summary": "All work passed."},
-            }],
-        },
-        {"content": "The goal is complete; all required work passed."},
-        {"content": "Starting the unrelated request."},
-    ])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=registry,
-        plugin_ctx=setup.ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(enabled=False, workspace_root=str(temp_workspace)),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
+
+    assert len(harness.driver.injected) == 1
+    content, kwargs = harness.driver.injected[0]
+    assert content.startswith('<system_reminder source="goal" event="compaction"')
+    assert 'Active goal: "ship the API"' in content
+    assert "Round: 2/20" in content
+    assert "Latest evaluator verdict: half done" in content
+    assert kwargs["source"] == "goal"
+    assert kwargs["metadata"]["kind"] == "compaction"
+
+    harness.driver.injected.clear()
+    await harness.service.on_compaction(
+        HistoryChanged(messages=(), operation="undo", turns=1)
     )
-    await engine.start_session()
-
-    events = [event async for event in engine.run_turn("finish the goal")]
-    second_context = llm.get_call_messages(1)
-    tool_event = next(event for event in events if event["type"] == "tool_result")
-
-    assert not any(_is_goal_runtime_event(message) for message in second_context)
-    # The tool result no longer carries a ``data`` field; the summary is in content.
-    assert "All work passed." in tool_event["data"]["content"]
-    assert llm.call_count == 2
-
-    _ = [event async for event in engine.run_turn("start an unrelated request")]
-    third_context = llm.get_call_messages(2)
-
-    assert any(
-        "start an unrelated request" in message.content
-        for message in third_context
-    )
-    assert not any(_is_goal_runtime_event(message) for message in third_context)
-
-
-def _is_goal_runtime_event(message) -> bool:
-    if message.role != "user":
-        return False
-    try:
-        event = ET.fromstring(message.content)
-    except ET.ParseError:
-        return False
-    return event.tag == "runtime_event" and event.attrib.get("source") == "goal"
+    assert harness.driver.injected == []
 
 
 @pytest.mark.asyncio
-async def test_goal_token_budget_stops_continuation_scheduling(state_store):
-    """A human-supplied total-token budget is enforced by the continuation
-    scheduler: once the thread usage reaches the budget, the next scheduled
-    continuation is suppressed and the goal is recorded as blocked."""
-    harness = make_plugin(state_store)
-    usage = FakeUsage(UsageData(total_tokens=8))
-    harness.service._usage = usage  # wire the optional usage port
+async def test_round_cap_pauses_the_goal(state_store):
+    from XBotv2.goal.models import GoalConfig
 
-    created = await harness.service.create_goal("stabilize the API", token_budget=10)
-    assert created.status == "success"
-    assert harness.driver.requests == []
+    harness = make_plugin(
+        state_store,
+        responses=[verdict("not_yet_met", "still going")] * 4,
+        config=GoalConfig(max_rounds=2),
+    )
+    await set_goal(harness)
 
-    # turn end schedules a continuation while below budget.
-    await harness.service.on_turn_end(_FakeStop("completed"))
-    assert len(harness.driver.requests) == 1
+    await end_turn(harness)
+    assert (await harness.service.snapshot()).turns_evaluated == 1
+    assert harness.driver.requests[-1][0].count("Round: 2/2") == 1
 
     harness.driver.requests.clear()
-    # The scheduled continuation ran and consumed it.
-    harness.service._continuation_pending = False
-    usage.value = UsageData(total_tokens=10)  # budget reached
-    await harness.service.on_turn_end(_FakeStop("completed"))
+    await end_turn(harness)
 
+    goal = await harness.service.snapshot()
+    assert goal.status == "paused"
+    assert "Round cap reached (2/2)" in goal.reason
     assert harness.driver.requests == []
+
+
+@pytest.mark.asyncio
+async def test_active_goal_exposes_its_round_slot(state_store):
+    harness = make_plugin(state_store, responses=[])
+    await set_goal(harness, "ship the API")
+
+    slots = StatusSlots()
+    await harness.service.contribute_status(slots)
+
+    assert slots.values["goal"] == "active"
+    assert slots.values["goal_round"] == "1/20"
+
+
+def test_goal_diagnostics_describe_the_evaluator(state_store):
+    diagnostics = GoalPlugin().diagnostics()
+    assert diagnostics["evaluator"] == "auxiliary_model_call"
+    assert diagnostics["commands"] == ["/goal", "/goal <condition>", "/goal clear"]
+
+
+@pytest.mark.asyncio
+async def test_setting_a_goal_starts_a_turn_with_the_condition(state_store):
+    harness = make_plugin(state_store, responses=[])
+
+    await set_goal(harness, "all tests in test/auth pass")
+
     goal = await harness.service.snapshot()
     assert goal is not None
-    assert goal.status == "blocked"
-    assert "budget" in goal.summary
+    assert goal.status == "active"
+    assert goal.condition == "all tests in test/auth pass"
+    assert goal.started_at > 0
+    content, kwargs = harness.driver.requests[-1]
+    assert 'Objective: "all tests in test/auth pass"' in content
+    assert "Round: 1/20" in content
+    assert kwargs == {
+        "source": "goal",
+        "metadata": {
+            "kind": "round",
+            "round": 1,
+            "max_rounds": 20,
+            "continuation": True,
+        },
+    }
 
 
-class FakeUsage:
-    def __init__(self, value: UsageData) -> None:
-        self.value = value
+@pytest.mark.asyncio
+async def test_not_yet_met_continues_with_the_evaluator_reason(state_store):
+    harness = make_plugin(state_store, responses=[
+        verdict("not_yet_met", "test/auth still fails"),
+    ])
+    await set_goal(harness)
+    harness.driver.requests.clear()
 
-    def snapshot(self) -> UsageData:
-        return self.value
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "active"
+    assert goal.turns_evaluated == 1
+    assert goal.reason == "test/auth still fails"
+    content, kwargs = harness.driver.requests[-1]
+    assert kwargs["metadata"] == {
+        "kind": "round",
+        "round": 2,
+        "max_rounds": 20,
+        "continuation": True,
+    }
+    assert 'Objective: "all tests pass"' in content
+    assert "Round: 2/20" in content
+    assert "Evaluator: test/auth still fails" in content
 
 
-class _FakeStop:
+@pytest.mark.asyncio
+async def test_loop_keeps_rounding_through_real_turn_starts(state_store):
+    """Two consecutive not-yet-met verdicts must each admit another round."""
+    harness = make_plugin(state_store, responses=[
+        verdict("not_yet_met", "first"),
+        verdict("not_yet_met", "second"),
+    ])
+    await set_goal(harness)
+
+    await end_turn(harness)
+    assert "Round: 2/20" in harness.driver.requests[-1][0]
+
+    await end_turn(harness)
+
+    assert "Round: 3/20" in harness.driver.requests[-1][0]
+    assert (await harness.service.snapshot()).turns_evaluated == 2
+
+
+@pytest.mark.asyncio
+async def test_met_achieves_the_goal_and_stops(state_store):
+    harness = make_plugin(state_store, responses=[
+        verdict("met", "npm test exits 0"),
+    ])
+    await set_goal(harness)
+    harness.driver.requests.clear()
+
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "achieved"
+    assert goal.reason == "npm test exits 0"
+    assert goal.turns_evaluated == 1
+    assert goal.finished_at >= goal.started_at
+    assert harness.driver.requests == []
+
+
+@pytest.mark.asyncio
+async def test_impossible_fails_the_goal(state_store):
+    harness = make_plugin(state_store, responses=[
+        verdict("impossible", "the branch was deleted"),
+    ])
+    await set_goal(harness)
+
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "failed"
+    assert goal.reason == "the branch was deleted"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_receives_the_conversation_and_a_strict_contract(state_store):
+    harness = make_plugin(state_store, responses=[verdict("not_yet_met", "keep going")])
+    await set_goal(harness, "ship the API")
+    harness.service._engine.messages = [
+        SimpleNamespace(role="user", content="please ship", tool_calls=()),
+        SimpleNamespace(role="assistant", content="working", tool_calls=()),
+    ]
+
+    await end_turn(harness)
+
+    request = harness.evaluator.get_call_messages(0)
+    assert request[0].role == "system"
+    assert "single JSON object" in request[0].content
+    payload = request[-1].content
+    assert "ship the API" in payload
+    assert "please ship" in payload
+
+
+@pytest.mark.asyncio
+async def test_malformed_verdict_follows_the_retry_policy(state_store):
+    harness = make_plugin(state_store, responses=[{"content": "not json at all"}], config=FAST)
+    await set_goal(harness)
+
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "active"
+    assert goal.retries == 1
+    assert "Evaluation failed" in goal.reason
+
+
+@pytest.mark.asyncio
+async def test_status_reports_condition_turns_tokens_and_reason(state_store):
+    harness = make_plugin(state_store, responses=[verdict("not_yet_met", "half done")])
+    await set_goal(harness, "ship the API")
+    await end_turn(harness)
+
+    result = await harness.service.command("")
+    assert result.status == "ok"
+    assert "[active] ship the API" in result.message
+    assert "round 2/20" in result.message
+    assert "Latest: half done" in result.message
+
+
+@pytest.mark.asyncio
+async def test_clear_aliases_stop_the_goal(state_store):
+    harness = make_plugin(state_store, responses=[])
+    await set_goal(harness)
+
+    for alias in ("clear", "stop", "off", "reset", "none", "cancel"):
+        result = await harness.service.command(alias)
+        assert result.status == "ok"
+        assert "Goal cleared" in result.message
+        assert (await harness.service.snapshot()).status == "cleared"
+        await set_goal(harness)
+
+    assert (await harness.service.command("clear")).status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_status_without_a_goal(state_store):
+    harness = make_plugin(state_store, responses=[])
+    assert (await harness.service.command("")).message == "No goal set."
+    await set_goal(harness)
+    await harness.store.delete("snapshot")
+    assert (await harness.service.command("")).message == "No goal set."
+
+
+@pytest.mark.asyncio
+async def test_interrupt_pauses_the_goal(state_store):
+    harness = make_plugin(state_store, responses=[])
+    await set_goal(harness)
+    harness.driver.requests.clear()
+
+    await harness.service.on_turn_end(_Stop("client_interrupt"))
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "paused"
+    assert goal.reason == "Interrupted."
+    assert harness.driver.requests == []
+
+
+@pytest.mark.asyncio
+async def test_recoverable_error_retries_then_pauses(state_store):
+    harness = make_plugin(state_store, responses=[], config=FAST)
+    await set_goal(harness)
+    harness.driver.requests.clear()
+    harness.service._continuation_pending = False
+
+    for _ in range(2):
+        await harness.service.on_error(
+            EventContext(error=RuntimeError("connection reset"))
+        )
+    retried = await harness.service.snapshot()
+    assert retried.status == "active"
+    assert retried.retries == 2
+
+    # The retry timer asks for the next turn after the configured delay.
+    await asyncio.sleep(0.05)
+    assert harness.driver.requests
+    assert "Note: Retry after the previous error." in harness.driver.requests[-1][0]
+
+    await harness.service.on_error(
+        EventContext(error=RuntimeError("connection reset"))
+    )
+    goal = await harness.service.snapshot()
+    assert goal.status == "paused"
+    assert "Paused after" in goal.reason
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_error_clears_the_goal(state_store):
+    harness = make_plugin(state_store, responses=[], config=FAST)
+    await set_goal(harness)
+
+    await harness.service.on_error(EventContext(error=RuntimeError("invalid api key")))
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "cleared"
+    assert "unrecoverable error" in goal.reason
+    assert "Run /goal again" in goal.reason
+
+
+@pytest.mark.asyncio
+async def test_tool_less_turns_stall_the_loop_and_a_human_prompt_resumes_it(state_store):
+    harness = make_plugin(state_store, responses=[
+        verdict("not_yet_met", "no progress"),
+        verdict("not_yet_met", "no progress"),
+    ], config=FAST)
+    await set_goal(harness)
+    harness.service._turn_used_tools = False
+
+    await end_turn(harness)
+    assert (await harness.service.snapshot()).tool_less_turns == 1
+
+    harness.driver.requests.clear()
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.stalled is True
+    assert harness.driver.requests == []
+
+    # The next human prompt restarts evaluation.
+    await harness.service.on_turn_start(EventContext(continuation=False))
+    assert (await harness.service.snapshot()).stalled is False
+
+
+@pytest.mark.asyncio
+async def test_tool_use_resets_the_stall_counter(state_store):
+    harness = make_plugin(
+        state_store, responses=[verdict("not_yet_met", "keep going")], config=FAST
+    )
+    await set_goal(harness)
+    harness.service._turn_used_tools = False
+    await end_turn(harness)
+
+    await end_turn(harness, used_tools=True)
+
+    assert (await harness.service.snapshot()).tool_less_turns == 0
+
+
+@pytest.mark.asyncio
+async def test_background_work_defers_evaluation_and_checks_in(state_store):
+    harness = make_plugin(
+        state_store, responses=[], config=FAST, jobs=FakeJobs(["running"])
+    )
+    await set_goal(harness)
+    harness.driver.requests.clear()
+    harness.service._continuation_pending = False
+
+    await harness.service.on_turn_end(_Stop("completed"))
+
+    # Evaluation is deferred: the evaluator model was never called.
+    assert harness.evaluator.call_count == 0
+    await asyncio.sleep(0.05)
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "active"
+    assert goal.idle_checkins == 1
+    assert goal.checkin_seconds > 0
+    assert harness.driver.requests
+    assert "Note: Check-in:" in harness.driver.requests[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_background_finish_evaluates_instead_of_checking_in(state_store):
+    jobs = FakeJobs(["running"])
+    harness = make_plugin(
+        state_store, responses=[verdict("met", "done")], config=FAST, jobs=jobs
+    )
+    await set_goal(harness)
+
+    await harness.service.on_turn_end(_Stop("completed"))
+    jobs._statuses = ["completed"]
+    await asyncio.sleep(0.05)
+    await settle(harness.service)
+
+    assert (await harness.service.snapshot()).status == "achieved"
+
+
+@pytest.mark.asyncio
+async def test_resume_resets_counters_and_continues(state_store):
+    harness = make_plugin(state_store, responses=[verdict("not_yet_met", "keep going")])
+    await set_goal(harness)
+    await end_turn(harness)
+    assert (await harness.service.snapshot()).turns_evaluated == 1
+
+    harness.driver.requests.clear()
+    harness.service._continuation_pending = False
+    await harness.service.on_session_resume(EventContext())
+
+    goal = await harness.service.snapshot()
+    assert goal.status == "active"
+    assert goal.turns_evaluated == 0
+    assert goal.reason == ""
+    assert "Round: 1/20" in harness.driver.requests[-1][0]
+    assert goal.condition in harness.driver.requests[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_status_slots_and_client_events_report_the_goal(state_store):
+    from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+
+    harness = make_plugin(state_store, responses=[verdict("met", "verified")])
+    published: list[RuntimeEvent] = []
+    harness.ctx.on(RUNTIME_EVENT, published.append)
+    await set_goal(harness)
+    harness.service._pending_tool_calls = 2
+    await end_turn(harness, used_tools=True)
+
+    slots = StatusSlots()
+    await harness.ctx.emit(COLLECT_STATUS_SLOTS, slots)
+    assert slots.values["goal"] == "achieved"
+    assert slots.values["goal_reason"] == "verified"
+    assert "goal_stats" in slots.values
+
+    assert published[-1].client_event.type == "goal_updated"
+    assert published[-1].client_event.data["status"] == "achieved"
+    assert published[-1].client_event.data["reason"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_v2_snapshot_is_migrated_to_the_evaluator_model(state_store):
+    harness = make_plugin(state_store, responses=[])
+    await harness.store.set("snapshot", {
+        "schema_version": 2,
+        "objective": "finish the audit",
+        "status": "complete",
+        "summary": "Audit finished.",
+        "stats": {"turns": 2, "tool_calls": 3, "total_tokens": 40,
+                  "todo_items": 1, "todo_completed": 1},
+    })
+
+    goal = await harness.service.snapshot()
+
+    assert goal.condition == "finish the audit"
+    assert goal.status == "achieved"
+    assert goal.reason == "Audit finished."
+    assert goal.stats.total_tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_condition_bounds_are_enforced(state_store):
+    harness = make_plugin(state_store, responses=[])
+
+    empty = await harness.service.set_condition(" ")
+    long = await harness.service.set_condition("x" * 4_001)
+
+    assert empty.error.code == "invalid_condition"
+    assert long.error.code == "condition_too_long"
+    assert await harness.service.snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_replacing_an_active_goal_reports_the_previous_condition(state_store):
+    harness = make_plugin(state_store, responses=[])
+    await set_goal(harness, "first condition")
+
+    result = await harness.service.set_condition("second condition")
+
+    assert "Replaced active goal: first condition" in result.content
+
+
+@pytest.mark.asyncio
+async def test_failed_continuation_enqueue_does_not_latch_the_scheduler(state_store):
+    harness = make_plugin(state_store, responses=[])
+    failing = FailingDriver()
+    harness.service._engine = failing
+
+    with pytest.raises(RuntimeError):
+        await harness.service.set_condition("keep going")
+
+    assert harness.service._continuation_pending is False
+    failing.fail = False
+    await harness.service._start_round(await harness.service.snapshot())
+    assert failing.requests
+
+
+@pytest.mark.asyncio
+async def test_dispose_cancels_pending_timers(state_store):
+    harness = make_plugin(state_store, responses=[], config=FAST)
+    await set_goal(harness)
+    await harness.service.on_error(EventContext(error=RuntimeError("reset")))
+    assert harness.service._timer is not None
+
+    harness.service.dispose()
+
+    assert harness.service._timer is None
+    await asyncio.sleep(0.03)
+    assert harness.service._evaluation is None
+
+
+@pytest.mark.asyncio
+async def test_completed_goal_keeps_stats_for_the_status_view(state_store):
+    harness = make_plugin(state_store, responses=[verdict("met", "done")])
+    await set_goal(harness)
+    harness.service._pending_tool_calls = 3
+    await end_turn(harness)
+
+    goal = await harness.service.snapshot()
+    assert goal.stats.tool_calls == 3
+    assert goal.finished_at > 0
+    assert goal.duration_seconds(now=time.time()) >= 0
+
+
+class _Stop:
     def __init__(self, stop_reason: str) -> None:
         self.stop_reason = stop_reason
+
+
+_ = (GoalConfig, GoalSnapshot)

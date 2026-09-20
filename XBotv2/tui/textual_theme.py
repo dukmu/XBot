@@ -29,12 +29,12 @@ Screen {
     max-height: 4;
 }
 
-#runtime_panels.compact > #task_panel,
+#runtime_panels.compact > #job_panel,
 #runtime_panels.compact > #queue_panel {
     max-height: 4;
 }
 
-#task_panel, #queue_panel {
+#job_panel, #queue_panel {
     display: none;
     width: 1fr;
     height: auto;
@@ -44,13 +44,13 @@ Screen {
     background: #171a21;
 }
 
-#task_panel CollapsibleTitle, #queue_panel CollapsibleTitle {
+#job_panel CollapsibleTitle, #queue_panel CollapsibleTitle {
     height: 1;
     padding: 0;
     color: #8b95a7;
 }
 
-#task_list {
+#job_list {
     height: auto;
     max-height: 12;
     padding: 0 1;
@@ -58,24 +58,24 @@ Screen {
     scrollbar-background: #171a21;
 }
 
-.task-row {
+.job-row {
     height: auto;
 }
 
-.subagent-task {
+.subagent-job {
     height: auto;
     padding: 0;
     border: none;
     background: transparent;
 }
 
-.subagent-task CollapsibleTitle {
+.subagent-job CollapsibleTitle {
     height: 1;
     padding: 0;
     color: #bb9af7;
 }
 
-.subagent-task .task-detail {
+.subagent-job .job-detail {
     width: 1fr;
     height: auto;
     max-height: 8;  /* one expanded task window plus its footer */
@@ -83,11 +83,11 @@ Screen {
     color: #8b95a7;
 }
 
-.subagent-task .task-detail .block-window {
+.subagent-job .job-detail .block-window {
     max-height: 7;
 }
 
-.subagent-task .task-detail .block-foot {
+.subagent-job .job-detail .block-foot {
     color: #6b7484;
 }
 

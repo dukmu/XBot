@@ -95,9 +95,9 @@ test("renders an active workbench without overflow", async ({ page }, testInfo) 
   await argumentsDisclosure.getByText("Arguments", { exact: true }).click();
   await expect(argumentsDisclosure.getByText("path", { exact: true })).toBeVisible();
   await expect(argumentsDisclosure.getByText("docs/sdk.md", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Background tasks" }).click();
+  await page.getByRole("button", { name: "Background jobs" }).click();
   await expect(page.getByText("Explorer", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Background tasks" }).click();
+  await page.getByRole("button", { name: "Background jobs" }).click();
   await page.getByRole("button", { name: /Context \d+% used/ }).click();
   await expect(page.getByRole("dialog", { name: "Context usage" })).toContainText("1.2k / 32k");
   await page.keyboard.press("Escape");
@@ -137,18 +137,19 @@ test("rebuilds an unanswered approval after a reload", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "Approval required" }).locator(".permission-tool strong")).toHaveText("filesystem_write");
 });
 
-test("renders Todo state as a checklist", async ({ page }) => {
+test("renders task state as a checklist", async ({ page }) => {
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
   await composer.fill("Plan the fix");
   await composer.press("Enter");
 
-  await expect(page.getByText("update_todos", { exact: true })).toBeVisible();
-  await expect(page.getByText("1/2 done · Verify the fix", { exact: true })).toBeVisible();
-  await page.getByText("update_todos", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Inspect the bug");
-  await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("In progress");
-  await expect(page.getByRole("region", { name: "Todo checklist" })).toContainText("Done");
+  await expect(page.getByText("task_update", { exact: true })).toBeVisible();
+  await expect(page.getByText("1/2 done · Verifying the fix", { exact: true })).toBeVisible();
+  await page.getByText("task_update", { exact: true }).click();
+  await expect(page.getByRole("region", { name: "Task list" })).toContainText("Inspect the bug");
+  await expect(page.getByRole("region", { name: "Task list" })).toContainText("Verifying the fix");
+  await expect(page.getByRole("region", { name: "Task list" })).toContainText("In progress");
+  await expect(page.getByRole("region", { name: "Task list" })).toContainText("Done");
 });
 
 test("renders an applied file edit as a bounded DSh diff", async ({ page }) => {
@@ -1096,11 +1097,11 @@ async function mockProtocol(page: Page) {
       schema_version: 1,
       items: [],
     });
-    if (path.endsWith("/tasks") && method === "GET") return json(route, {
+    if (path.endsWith("/jobs") && method === "GET") return json(route, {
       session_id: "demo-session",
       thread_id: "agent",
-      tasks: [{
-        task_id: "agent-1",
+      jobs: [{
+        job_id: "agent-1",
         kind: "agent",
         command: "Explorer: inspect protocol boundaries",
         cwd: "/workspace",
@@ -1181,22 +1182,22 @@ async function mockProtocol(page: Page) {
       }
       if (content.startsWith("Plan")) {
         const todos = [
-          { content: "Inspect the bug", status: "in_progress" },
-          { content: "Verify the fix", status: "pending" },
+          { id: "1", subject: "Inspect the bug", status: "in_progress", blocks: [], blockedBy: [] },
+          { id: "2", subject: "Verify the fix", status: "pending", blocks: [], blockedBy: [] },
         ];
         const current = [
-          { content: "Inspect the bug", status: "completed" },
-          { content: "Verify the fix", status: "in_progress" },
+          { id: "1", subject: "Inspect the bug", status: "completed", blocks: [], blockedBy: [] },
+          { id: "2", subject: "Verify the fix", status: "in_progress", activeForm: "Verifying the fix", blocks: [], blockedBy: [] },
         ];
         const events = [
           { type: "turn_started", data: { turn: 2 } },
-          { type: "tool_calls_started", data: { tool_calls: [{ id: "todo-1", name: "update_todos", args: { todos } }] } },
+          { type: "tool_calls_started", data: { tool_calls: [{ id: "todo-1", name: "task_update", args: { taskId: "2", status: "in_progress" } }] } },
           { type: "tool_result", data: {
             tool_call_id: "todo-1",
-            name: "update_todos",
-            content: "Todo list updated.",
+            name: "task_update",
+            content: "Updated task #2: in_progress",
             status: "success",
-            data: { kind: "todo_snapshot", schema_version: 1, items: current },
+            data: { kind: "todo_snapshot", schema_version: 2, next_id: 3, tasks: current },
           } },
           { type: "assistant_message", data: { content: "I will work through the checklist.", tool_calls: [] } },
           { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },

@@ -287,7 +287,7 @@ export interface CommandInfo {
   parameters: Record<string, unknown>;
 }
 
-export type CommandEffect = "history" | "thread" | "agents" | "tasks" | "commands" | "sessions";
+export type CommandEffect = "history" | "thread" | "agents" | "jobs" | "commands" | "sessions";
 
 export interface CommandResultData {
   command: string;
@@ -301,8 +301,8 @@ export interface CommandResult {
   data: CommandResultData;
 }
 
-export interface TaskData {
-  task_id: string;
+export interface JobData {
+  job_id: string;
   kind: "shell" | "agent";
   command: string;
   cwd: string;
@@ -318,8 +318,14 @@ export interface TaskData {
 }
 
 export interface TodoItemData {
-  content: string;
+  id: string;
+  subject: string;
+  description?: string;
   status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+  owner?: string;
+  blocks: string[];
+  blockedBy: string[];
 }
 
 export interface ToolCall {

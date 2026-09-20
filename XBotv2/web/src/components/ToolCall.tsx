@@ -1,6 +1,7 @@
 /* Presentation adapted from DeepSeek Harness ui-tool (MIT). */
 import { Check, ChevronRight, Circle, CircleDot, LoaderCircle, X } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
+import type { TodoItemData } from "../api/types";
 import type { ToolEntry } from "../state/runtime";
 import { DiffBlock, type DiffHunk } from "./DiffBlock";
 import { ToolArtifacts } from "./ToolArtifacts";
@@ -31,7 +32,7 @@ export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
   );
 });
 
-function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItem[] | null }) {
+function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItemData[] | null }) {
   const args = recordOf(tool.args);
   const command = stringOf(args.command);
   const path = stringOf(args.path);
@@ -142,45 +143,59 @@ function CommandArgument({ value }: { value: string }) {
   );
 }
 
-function toolSummary(tool: ToolEntry, todos: TodoItem[] | null): string {
+function toolSummary(tool: ToolEntry, todos: TodoItemData[] | null): string {
   if (tool.status === "denied") return "denied";
   if (tool.status === "approved") return "approved";
   if (tool.status === "error") return "failed";
   if (todos) {
     const completed = todos.filter((item) => item.status === "completed").length;
     const active = todos.find((item) => item.status === "in_progress");
-    return active ? `${completed}/${todos.length} done · ${active.content}` : `${completed}/${todos.length} done`;
+    return active
+      ? `${completed}/${todos.length} done · ${active.activeForm || active.subject}`
+      : `${completed}/${todos.length} done`;
   }
   const args = recordOf(tool.args);
-  return stringOf(args.path) || stringOf(args.command) || stringOf(args.query) || stringOf(args.objective) || tool.status;
+  return stringOf(args.path) || stringOf(args.command) || stringOf(args.query) || stringOf(args.subject) || stringOf(args.objective) || tool.status;
 }
 
-interface TodoItem { content: string; status: "pending" | "in_progress" | "completed" }
-
-function todoItems(tool: ToolEntry): TodoItem[] | null {
-  if (tool.name !== "update_todos") return null;
+function todoItems(tool: ToolEntry): TodoItemData[] | null {
   const projection = recordOf(tool.data);
-  const raw = projection.kind === "todo_snapshot" ? projection.items : null;
+  if (projection.kind !== "todo_snapshot") return null;
+  const raw = projection.tasks;
   if (!Array.isArray(raw)) return null;
-  const items: TodoItem[] = [];
+  const items: TodoItemData[] = [];
   for (const value of raw) {
     const item = recordOf(value);
-    if (typeof item.content !== "string" || !["pending", "in_progress", "completed"].includes(String(item.status))) return null;
-    items.push({ content: item.content, status: item.status as TodoItem["status"] });
+    if (typeof item.subject !== "string" || !["pending", "in_progress", "completed"].includes(String(item.status))) return null;
+    const activeForm = stringOf(item.activeForm);
+    const owner = stringOf(item.owner);
+    items.push({
+      id: stringOf(item.id),
+      subject: item.subject,
+      status: item.status as TodoItemData["status"],
+      blocks: arrayOfStrings(item.blocks),
+      blockedBy: arrayOfStrings(item.blockedBy),
+      ...(activeForm ? { activeForm } : {}),
+      ...(owner ? { owner } : {}),
+    });
   }
   return items;
 }
 
-function TodoChecklist({ items }: { items: TodoItem[] }) {
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function TodoChecklist({ items }: { items: TodoItemData[] }) {
   return (
-    <section className="todo-checklist" aria-label="Todo checklist">
-      <span className="todo-checklist-label">Plan</span>
-      {items.length === 0 && <div className="todo-empty">Checklist cleared</div>}
-      {items.map((item, index) => (
-        <div className={`todo-item todo-${item.status}`} key={`${index}-${item.content}`}>
+    <section className="todo-checklist" aria-label="Task list">
+      <span className="todo-checklist-label">Tasks</span>
+      {items.length === 0 && <div className="todo-empty">No tasks</div>}
+      {items.map((item) => (
+        <div className={`todo-item todo-${item.status}`} key={item.id || item.subject}>
           {item.status === "completed" ? <Check size={14} /> : item.status === "in_progress" ? <CircleDot size={14} /> : <Circle size={14} />}
-          <span>{item.content}</span>
-          <small>{item.status === "completed" ? "Done" : item.status === "in_progress" ? "In progress" : "Pending"}</small>
+          <span>#{item.id} {item.subject}</span>
+          <small>{item.status === "completed" ? "Done" : item.status === "in_progress" ? (item.activeForm || "In progress") : "Pending"}</small>
         </div>
       ))}
     </section>

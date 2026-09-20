@@ -22,7 +22,7 @@ import {
   type SessionPolicy,
   type SessionPolicyPatch,
   type SessionSummary,
-  type TaskData,
+  type JobData,
   type TrajectoryPage,
   type TodoItemData,
   type ThreadSummary,
@@ -295,20 +295,20 @@ export class XBotApi {
     };
   }
 
-  async listTasks(sessionId: string, threadId: string): Promise<TaskData[]> {
-    const result = await this.request<{ tasks: TaskData[] }>(
+  async listJobs(sessionId: string, threadId: string): Promise<JobData[]> {
+    const result = await this.request<{ jobs: JobData[] }>(
       "GET",
-      `${threadPath(sessionId, threadId)}/tasks`,
+      `${threadPath(sessionId, threadId)}/jobs`,
     );
-    return result.tasks;
+    return result.jobs;
   }
 
   async listTodos(sessionId: string, threadId: string): Promise<TodoItemData[]> {
-    const result = await this.request<{ items: TodoItemData[] }>(
+    const result = await this.request<{ tasks: TodoItemData[] }>(
       "GET",
       `${threadPath(sessionId, threadId)}/todos`,
     );
-    return result.items;
+    return result.tasks;
   }
 
   async listCommands(sessionId: string, threadId: string): Promise<CommandInfo[]> {
@@ -363,17 +363,17 @@ export class XBotApi {
     );
   }
 
-  stopTask(sessionId: string, threadId: string, taskId: string) {
-    return this.request<{ tasks: TaskData[] }>(
+  stopJob(sessionId: string, threadId: string, jobId: string) {
+    return this.request<{ jobs: JobData[] }>(
       "POST",
-      `${threadPath(sessionId, threadId)}/tasks/${segment(taskId)}/stop`,
+      `${threadPath(sessionId, threadId)}/jobs/${segment(jobId)}/stop`,
     );
   }
 
-  stopAllTasks(sessionId: string, threadId: string) {
-    return this.request<{ tasks: TaskData[] }>(
+  stopAllJobs(sessionId: string, threadId: string) {
+    return this.request<{ jobs: JobData[] }>(
       "POST",
-      `${threadPath(sessionId, threadId)}/tasks/stop`,
+      `${threadPath(sessionId, threadId)}/jobs/stop`,
     );
   }
 

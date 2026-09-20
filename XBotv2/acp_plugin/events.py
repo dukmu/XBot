@@ -28,7 +28,7 @@ class ACPEventMapper:
         self.usage: dict[str, int] | None = None
         self._streamed_message = False
         self._context_size = context_size
-        self._tasks: set[str] = set()
+        self._jobs: set[str] = set()
 
 
     def updates(
@@ -92,23 +92,23 @@ class ACPEventMapper:
                 )
             ]
             return updates
-        if event_type == "task_updated":
-            task_id = str(data.get("task_id") or "")
+        if event_type == "job_updated":
+            job_id = str(data.get("job_id") or "")
             status = str(data.get("status") or "")
             title = str(
                 data.get("command")
                 or data.get("agent")
-                or "Background task"
+                or "Background job"
             )
             output = data.get("output") or data.get("error")
             content = (
                 [tool_content(text_block(str(output)))]
                 if output else None
             )
-            if task_id not in self._tasks:
-                self._tasks.add(task_id)
+            if job_id not in self._jobs:
+                self._jobs.add(job_id)
                 return [start_tool_call(
-                    task_id,
+                    job_id,
                     title,
                     kind="execute" if data.get("kind") == "shell" else "other",
                     status=_task_status(status),
@@ -119,7 +119,7 @@ class ACPEventMapper:
                     ),
                 )]
             return [update_tool_call(
-                task_id,
+                job_id,
                 status=_task_status(status),
                 content=content,
                 raw_output=data,

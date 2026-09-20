@@ -44,7 +44,7 @@ from XBotv2.tui.textual_widgets import (
     ThreadView,
     TranscriptScroll,
     TranscriptSurface,
-    TaskListWidget,
+    JobListWidget,
     _build_title,
     _markdown_plain_text,
     entry_widget,
@@ -243,10 +243,10 @@ class XBotTextualApp(App[None]):
         yield CompletionPopup(id="completion_popup", registry=self.commands)
         with Horizontal(id="runtime_panels"):
             yield Collapsible(
-                TaskListWidget(id="task_list"),
+                JobListWidget(id="job_list"),
                 title="Tasks",
                 collapsed=False,
-                id="task_panel",
+                id="job_panel",
             )
             yield Collapsible(
                 Static(id="queue_list"),
@@ -365,12 +365,13 @@ class XBotTextualApp(App[None]):
             self._record_error(exc)
 
     async def _refresh_session_identity(self) -> None:
-        """Re-read the session descriptor's identity fields at turn end.
+        """Re-read the open session descriptor's identity and status slots.
 
         The descriptor is the single source of the session title: a caption
         written during the turn becomes visible here without a client-only
-        event. Only identity fields are applied; transcript/queue state is
-        owned by the event stream.
+        event. Status slots come from the same descriptor, so a command that
+        changes them (``/goal``) can refresh immediately. Transcript and queue
+        state stay owned by the event stream.
         """
         try:
             session = await self.session.refresh_descriptor()
@@ -388,6 +389,7 @@ class XBotTextualApp(App[None]):
             and hasattr(self.session, "stream_catalog_events")
         ):
             await self._start_catalog_events()
+        slots_changed = self._apply_status_slots(session.get("status_slots"))
         title = str(session.get("title", self.state.session_title))
         agent_name = str(session.get("agent_name") or "")
         provider = str(session.get("provider") or "")
@@ -403,6 +405,8 @@ class XBotTextualApp(App[None]):
             or context_window != self.state.context_window
         )
         if not changed:
+            if slots_changed:
+                self._refresh_status_now()
             return
         self.state.session_title = title
         self.state.agent_name = agent_name or self.state.agent_name
@@ -412,6 +416,20 @@ class XBotTextualApp(App[None]):
         if context_window:
             self.state.context_window = context_window
         self._refresh_all()
+
+    def _apply_status_slots(self, slots: JsonValue) -> bool:
+        """Apply descriptor status slots; report whether they changed."""
+        if not isinstance(slots, dict):
+            return False
+        applied = {
+            str(name): str(value)
+            for name, value in slots.items()
+            if str(name).strip() and str(value).strip()
+        }
+        if applied == self.state.status_slots:
+            return False
+        self.state.status_slots = applied
+        return True
 
     async def _apply_open_session(
         self,
@@ -1276,6 +1294,7 @@ class XBotTextualApp(App[None]):
             )
             data = result.get("data") if isinstance(result, dict) else {}
             message = str(data.get("message") or result)
+            effects = data.get("effects") if isinstance(data, dict) else None
         except ValueError as exc:
             await self._append_local_notice(f"/{spec.name}", str(exc))
             return
@@ -1283,6 +1302,11 @@ class XBotTextualApp(App[None]):
             self._record_error(exc)
             return
         await self._append_local_notice(f"/{spec.name}", message)
+        # The server reports which projections a command changed; without this
+        # a /goal transition would not refresh the status slots until the next
+        # turn ended or the session was re-attached.
+        if isinstance(effects, list) and "thread" in effects:
+            await self._refresh_session_identity()
 
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
@@ -1641,6 +1665,10 @@ class XBotTextualApp(App[None]):
         if event_type == "message":
             data = event.get("data") or {}
             if data.get("role") == "user":
+                if self.state.append_runtime_message(data):
+                    # An injected reminder or goal round, not typed input.
+                    await self._render_new_transcript_entries()
+                    return
                 # The session event stream is authoritative for accepted
                 # queued inputs; the message stream is authoritative for the
                 # request currently being consumed.
@@ -1892,9 +1920,9 @@ class XBotTextualApp(App[None]):
             )
         )
 
-    def _refresh_task_panel(self) -> None:
-        panel = self._safe_query_one("#task_panel", Collapsible)
-        body = self._safe_query_one("#task_list", TaskListWidget)
+    def _refresh_job_panel(self) -> None:
+        panel = self._safe_query_one("#job_panel", Collapsible)
+        body = self._safe_query_one("#job_list", JobListWidget)
         if panel is None or body is None:
             return
         tasks = list(self.state.tasks.values())
@@ -1916,7 +1944,7 @@ class XBotTextualApp(App[None]):
         visible = active[:5]
         if len(visible) < 5:
             visible += terminal[-(5 - len(visible)):]
-        body.update_tasks(
+        body.update_jobs(
             visible,
             width=body.size.width or self.size.width,
         )
@@ -1941,7 +1969,7 @@ class XBotTextualApp(App[None]):
 
     def _refresh_runtime_panels(self) -> None:
         container = self._safe_query_one("#runtime_panels", Horizontal)
-        task_panel = self._safe_query_one("#task_panel", Collapsible)
+        task_panel = self._safe_query_one("#job_panel", Collapsible)
         queue_panel = self._safe_query_one("#queue_panel", Collapsible)
         if container is not None and task_panel is not None and queue_panel is not None:
             container.display = task_panel.display or queue_panel.display
@@ -1994,8 +2022,8 @@ class XBotTextualApp(App[None]):
         elif event_type == "tool_result":
             await self._flush_tool_refresh()
             await self._refresh_changed_tool_widgets()
-        elif event_type == "task_updated":
-            self._refresh_task_panel()
+        elif event_type == "job_updated":
+            self._refresh_job_panel()
         elif event_type == "history_updated":
             await self._clear_rendered_transcript()
         elif event_type == "permission_request":
@@ -2438,7 +2466,7 @@ class XBotTextualApp(App[None]):
         # still pending" without watching the activity spinner.
         self._update_pending_tool_elapsed()
         self.state.prune_finished_tasks()
-        self._refresh_task_panel()
+        self._refresh_job_panel()
         self._refresh_status()
 
     def _update_pending_tool_elapsed(self) -> None:

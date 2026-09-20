@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from XBotv2.jobs.contracts import JobsCommandPort, TaskSnapshot
+from XBotv2.jobs.contracts import JobsCommandPort, JobSnapshot
 
 from XBotv2.commands import (
     Command,
@@ -14,47 +14,38 @@ from XBotv2.commands import (
 
 
 def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
-    async def tasks_command(raw_args: str) -> CommandResult:
+    async def jobs_command(raw_args: str) -> CommandResult:
         parts = split_command_args(raw_args)
-        if parts not in ([], ["ps"]):
-            return command_usage("/tasks [ps]")
-        tasks = jobs.snapshots()
-        message = "No background tasks." if not tasks else "\n".join(
-            f"{task.kind}  {task.task_id}  {task.status}  {task.command}"
-            for task in tasks
-        )
-        return CommandResult(message)
-
-    async def task_command(raw_args: str) -> CommandResult:
-        parts = split_command_args(raw_args)
+        if parts in ([], ["ps"]):
+            jobs_snapshot = jobs.snapshots()
+            message = "No background jobs." if not jobs_snapshot else "\n".join(
+                f"{job.kind}  {job.job_id}  {job.status}  {job.command}"
+                for job in jobs_snapshot
+            )
+            return CommandResult(message)
         if len(parts) == 2 and parts[0] == "stop":
             if jobs.get_or_none(parts[1]) is None:
-                return CommandResult(f"Unknown task: {parts[1]}", status="error")
+                return CommandResult(f"Unknown job: {parts[1]}", status="error")
             await jobs.cancel(parts[1])
             return CommandResult(
-                f"Stopped background task {parts[1]}.",
-                effects=("tasks",),
+                f"Stopped background job {parts[1]}.",
+                effects=("jobs",),
             )
         if parts == ["stopall"]:
-            tasks = await jobs.stop_all()
+            stopped = await jobs.stop_all()
             return CommandResult(
-                f"Stopped {len(tasks)} background task(s).",
-                effects=("tasks",),
+                f"Stopped {len(stopped)} background job(s).",
+                effects=("jobs",),
             )
-        return command_usage("/task stop <id> | /task stopall")
+        return command_usage("/jobs [ps] | /jobs stop <id> | /jobs stopall")
 
     return (
         Command(
-            name="tasks",
-            description="List background tasks",
-            handler=guard_command(tasks_command),
-            usage="/tasks [ps]",
-        ),
-        Command(
-            name="task",
-            description="Stop background tasks",
-            handler=guard_command(task_command),
-            usage="/task stop <id> | /task stopall",
+            name="jobs",
+            description="List or stop background jobs",
+            handler=guard_command(jobs_command),
+            usage="/jobs [ps] | /jobs stop <id> | /jobs stopall",
+            examples=("/jobs", "/jobs stop job-3", "/jobs stopall"),
         ),
     )
 

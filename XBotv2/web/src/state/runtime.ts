@@ -10,7 +10,7 @@ import {
   type PendingInput,
   type ProviderInfo,
   type ServerEvent,
-  type TaskData,
+  type JobData,
   type TodoItemData,
   type ThreadSummary,
   type ToolCall,
@@ -90,7 +90,7 @@ export interface RuntimeState {
   historyLoading: boolean;
   trajectory: TrajectoryItem[];
   trajectoryLoaded: boolean;
-  tasks: Record<string, TaskData>;
+  jobs: Record<string, JobData>;
   todos: TodoItemData[];
   interactions: InteractionRequest[];
   usage: UsageData;
@@ -126,7 +126,7 @@ export type RuntimeAction =
   | { type: "history_loading"; value: boolean }
   | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ServerEvent[] }
   | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedCursor: string }
-  | { type: "tasks"; tasks: TaskData[] }
+  | { type: "jobs"; jobs: JobData[] }
   | { type: "todos"; todos: TodoItemData[] }
   | { type: "pending_inputs"; items: PendingInput[] }
   | { type: "pending_input_failed"; messageId: string }
@@ -136,7 +136,7 @@ export type RuntimeAction =
   | { type: "events"; events: ServerEvent[] }
   | { type: "turn_error"; message: string }
   | { type: "interaction_resolved"; requestId: string }
-  | { type: "remove_task"; taskId: string }
+  | { type: "remove_job"; jobId: string }
   | { type: "agent_selected"; agent: string; provider: string; model: string; modelMode: string; contextWindow: number }
   | { type: "provider_selected"; provider: string; model: string; modelMode: string }
   | { type: "effort_selected"; modelMode: string }
@@ -159,7 +159,7 @@ export const initialRuntimeState: RuntimeState = {
   historyLoading: false,
   trajectory: [],
   trajectoryLoaded: false,
-  tasks: {},
+  jobs: {},
   todos: [],
   interactions: [],
   usage: { ...EMPTY_USAGE },
@@ -203,7 +203,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         usage: normalizeUsage(action.session.usage),
         sessionStats: normalizeSessionStats(action.session.session_stats),
         interactions: pendingInteractions(action.session.pending_interactions),
-        tasks: {},
+        jobs: {},
         todos: [],
         turnRunning: false,
         pendingInputs: action.session.pending_inputs || [],
@@ -227,7 +227,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         historyLoading: false,
         trajectory: [],
         trajectoryLoaded: false,
-        tasks: {},
+        jobs: {},
         todos: [],
         interactions: [],
         usage: { ...EMPTY_USAGE },
@@ -312,13 +312,13 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         historyLoading: false,
       };
     }
-    case "tasks":
+    case "jobs":
       return {
         ...state,
-        tasks: Object.fromEntries(
-          action.tasks
-            .filter((task) => task.status !== "completed" && task.status !== "stopped")
-            .map((task) => [task.task_id, task]),
+        jobs: Object.fromEntries(
+          action.jobs
+            .filter((job) => job.status !== "completed" && job.status !== "stopped")
+            .map((job) => [job.job_id, job]),
         ),
       };
     case "todos":
@@ -375,10 +375,10 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         ...state,
         interactions: state.interactions.filter((item) => item.request_id !== action.requestId),
       };
-    case "remove_task": {
-      const tasks = { ...state.tasks };
-      delete tasks[action.taskId];
-      return { ...state, tasks };
+    case "remove_job": {
+      const jobs = { ...state.jobs };
+      delete jobs[action.jobId];
+      return { ...state, jobs };
     }
     case "agent_selected":
       return state.current ? {
@@ -557,12 +557,28 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         )),
       };
     }
-    case "task_updated": {
-      const task = data as unknown as TaskData;
-      return { ...state, tasks: { ...state.tasks, [task.task_id]: task } };
+    case "job_updated": {
+      const job = data as unknown as JobData;
+      return { ...state, jobs: { ...state.jobs, [job.job_id]: job } };
     }
     case "todo_updated":
       return { ...state, todos: todoProjection(data) };
+    case "goal_updated": {
+      // Terminal Goal transitions carry the consumption recorded while the
+      // goal was active. Intermediate transitions only update the status slot.
+      const status = stringValue(data.status);
+      if (status !== "complete" && status !== "blocked") return state;
+      const objective = stringValue(data.objective);
+      const consumption = goalConsumption(data.stats);
+      const detail = [objective, consumption].filter(Boolean).join(" · ");
+      return {
+        ...state,
+        entries: [...state.entries, noticeEntry(
+          `Goal ${status}${detail ? ` · ${detail}` : ""}`,
+          status === "complete" ? "info" : "error",
+        )],
+      };
+    }
     case "client_message":
       return {
         ...state,
@@ -1528,12 +1544,36 @@ function pendingInputs(value: unknown): PendingInput[] {
 
 function todoProjection(data: JsonObject): TodoItemData[] {
   if (data.kind !== "todo_snapshot") return [];
-  return arrayValue(data.items).flatMap((value) => {
+  return arrayValue(data.tasks).flatMap((value) => {
     const item = objectValue(value);
-    const content = stringValue(item.content);
+    const id = stringValue(item.id);
+    const subject = stringValue(item.subject);
     const status = stringValue(item.status);
-    return content && ["pending", "in_progress", "completed"].includes(status)
-      ? [{ content, status: status as TodoItemData["status"] }]
-      : [];
+    if (!subject || !["pending", "in_progress", "completed"].includes(status)) return [];
+    const activeForm = stringValue(item.activeForm);
+    const description = stringValue(item.description);
+    const owner = stringValue(item.owner);
+    return [{
+      id,
+      subject,
+      status: status as TodoItemData["status"],
+      blocks: arrayValue(item.blocks).map(stringValue).filter(Boolean),
+      blockedBy: arrayValue(item.blockedBy).map(stringValue).filter(Boolean),
+      ...(description ? { description } : {}),
+      ...(activeForm ? { activeForm } : {}),
+      ...(owner ? { owner } : {}),
+    }];
   });
+}
+
+function goalConsumption(value: unknown): string {
+  const stats = objectValue(value);
+  const parts = [
+    `${numberValue(stats.turns)} turns`,
+    `${numberValue(stats.tool_calls)} tool calls`,
+    `${numberValue(stats.total_tokens)} tokens`,
+  ];
+  const todoItems = numberValue(stats.todo_items);
+  if (todoItems) parts.push(`${numberValue(stats.todo_completed)}/${todoItems} todos`);
+  return parts.join(", ");
 }

@@ -68,8 +68,8 @@ class TuiTool:
 
 
 @dataclass(slots=True)
-class TuiTask:
-    task_id: str
+class TuiJob:
+    job_id: str
     command: str
     kind: str = "shell"
     cwd: str = ""
@@ -117,7 +117,7 @@ class TuiState:
     turn_usage: dict[str, int] = field(default_factory=_empty_usage_counters)
     messages: list[TuiMessage] = field(default_factory=list)
     tools: dict[str, TuiTool] = field(default_factory=dict)
-    tasks: dict[str, TuiTask] = field(default_factory=dict)
+    tasks: dict[str, TuiJob] = field(default_factory=dict)
     notices: list[TuiNotice] = field(default_factory=list)
     transcript: list[TuiTranscriptEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -256,18 +256,18 @@ class TuiState:
             tool.finished_at = time.monotonic()
             self._ensure_tool_transcript(tool.tool_call_id)
             self._changed_tool_ids.add(tool.tool_call_id)
-        elif event_type == "task_updated":
-            task_id = str(data.get("task_id") or "")
-            if task_id:
-                previous = self.tasks.get(task_id)
+        elif event_type == "job_updated":
+            job_id = str(data.get("job_id") or "")
+            if job_id:
+                previous = self.tasks.get(job_id)
                 status = str(data.get("status") or "pending")
                 raw_usage = data.get("usage")
                 usage = raw_usage if isinstance(raw_usage, dict) else {}
                 terminal_since = previous.terminal_since if previous else 0.0
                 if status in {"completed", "stopped"} and terminal_since <= 0:
                     terminal_since = time.monotonic()
-                self.tasks[task_id] = TuiTask(
-                    task_id=task_id,
+                self.tasks[job_id] = TuiJob(
+                    job_id=job_id,
                     command=str(data.get("command") or ""),
                     kind=str(data.get("kind") or "shell"),
                     cwd=str(data.get("cwd") or ""),
@@ -440,6 +440,30 @@ class TuiState:
         )
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
+    def append_runtime_message(self, data: dict[str, JsonValue]) -> bool:
+        """Record one injected harness turn as a notice, not human input.
+
+        Injected reminders and goal rounds are user-role messages carrying
+        ``runtime`` provenance; rendering them as typed input would invent a
+        human message. Returns False when the event has no provenance so
+        callers keep the ordinary human-message path.
+        """
+        runtime = data.get("runtime")
+        if not isinstance(runtime, dict):
+            return False
+        source = str(runtime.get("source") or "runtime")
+        event = str(runtime.get("event") or "message")
+        self.notices.append(TuiNotice(
+            kind=f"{source}:{event}",
+            text=f"{source} {event}",
+            payload=runtime,
+        ))
+        self.transcript.append(TuiTranscriptEntry(
+            kind="notice",
+            key=str(len(self.notices) - 1),
+        ))
+        return True
+
     def restore_history(self, history: list[dict[str, JsonValue]]) -> None:
         """Rebuild the visible transcript from a resumed session."""
         self.reset_history()
@@ -447,19 +471,7 @@ class TuiState:
             role = str(item.get("role") or "")
             if role == "user":
                 content = str(item.get("content") or "")
-                runtime = item.get("runtime")
-                if isinstance(runtime, dict):
-                    source = str(runtime.get("source") or "runtime")
-                    event = str(runtime.get("event") or "message")
-                    self.notices.append(TuiNotice(
-                        kind=f"{source}:{event}",
-                        text=f"{source} {event}",
-                        payload=runtime,
-                    ))
-                    self.transcript.append(TuiTranscriptEntry(
-                        kind="notice",
-                        key=str(len(self.notices) - 1),
-                    ))
+                if self.append_runtime_message(item):
                     continue
                 images = item.get("images") or []
                 if images:
@@ -596,14 +608,14 @@ class TuiState:
         """Remove successful/stopped tasks after a short visible grace period."""
         current = time.monotonic() if now is None else now
         expired = [
-            task_id
-            for task_id, task in self.tasks.items()
+            job_id
+            for job_id, task in self.tasks.items()
             if task.status in {"completed", "stopped"}
             and task.terminal_since > 0
             and current - task.terminal_since >= retention_seconds
         ]
-        for task_id in expired:
-            self.tasks.pop(task_id, None)
+        for job_id in expired:
+            self.tasks.pop(job_id, None)
         return bool(expired)
 
     def _apply_tool_calls(self, tool_calls: JsonValue) -> None:

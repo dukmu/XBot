@@ -288,7 +288,7 @@ class TestConfigLoading:
             variables=RuntimeVariables({"workspace": workspace}),
         )
 
-        for tool_name in ("shell", "update_todos"):
+        for tool_name in ("shell", "task_create", "task_update"):
             assert permissions.check(tool_name, {}) == "allow"
 
         from XBotv2.core.filesystem.operations import resolve_operation

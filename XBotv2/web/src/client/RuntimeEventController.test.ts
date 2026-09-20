@@ -50,7 +50,7 @@ describe("RuntimeEventController", () => {
     vi.useRealTimers();
   });
 
-  it("refreshes thread summaries when a subagent task changes", async () => {
+  it("refreshes thread summaries when a subagent job changes", async () => {
     vi.useFakeTimers();
     const listThreads = vi.fn(async () => []);
     const api = { async *streamEvents() { await new Promise(() => undefined); }, listThreads };
@@ -58,7 +58,7 @@ describe("RuntimeEventController", () => {
 
     controller.start({ session_id: "s", thread_id: "t", event_cursor: 0 } as OpenSessionResponse, 1);
     controller.handle({
-      ...event("task_updated"),
+      ...event("job_updated"),
       session_id: "s",
       data: { kind: "subagent", thread_id: "child-1" },
     }, 1);
@@ -77,7 +77,7 @@ function listener(overrides: Partial<RuntimeEventListener>): RuntimeEventListene
   return {
     onEvents: () => undefined,
     onThreads: () => undefined,
-    onTaskExpired: () => undefined,
+    onJobExpired: () => undefined,
     onConnection: () => undefined,
     onError: () => undefined,
     onResetRequired: () => undefined,

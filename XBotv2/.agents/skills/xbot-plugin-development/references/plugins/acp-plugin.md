@@ -172,7 +172,7 @@ Event type mappings:
 | `client_message` | `update_agent_message_text()` |
 | `tool_calls_started` | `start_tool_call()` for each |
 | `tool_result` | `update_tool_call()` |
-| `task_updated` | `start_tool_call()` or `update_tool_call()` |
+| `job_updated` | `start_tool_call()` or `update_tool_call()` |
 | `usage` | `UsageUpdate()` |
 | `turn_cancelled` | set `stop_reason = "cancelled"` |
 | `error` | set `error` field |

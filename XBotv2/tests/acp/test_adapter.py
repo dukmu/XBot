@@ -225,9 +225,9 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
             },
         },
         {
-            "type": "task_updated",
+            "type": "job_updated",
             "data": {
-                "task_id": "task-1",
+                "job_id": "task-1",
                 "kind": "shell",
                 "command": "pytest",
                 "status": "completed",

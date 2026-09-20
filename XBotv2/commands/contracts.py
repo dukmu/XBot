@@ -12,7 +12,7 @@ from XBotv2.core.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field
 
 CommandHandler = Callable[[str], Awaitable["CommandResult"]]
-CommandEffect = Literal["history", "thread", "agents", "tasks", "commands", "sessions"]
+CommandEffect = Literal["history", "thread", "agents", "jobs", "commands", "sessions"]
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 

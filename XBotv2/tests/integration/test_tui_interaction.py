@@ -81,7 +81,7 @@ class _ScriptedSession:
             }
             for name in (
                 "status", "provider", "model", "effort", "agent",
-                "clear", "undo", "fork", "tasks", "task", "permission",
+                "clear", "undo", "fork", "jobs", "jobs", "permission",
                 "sandbox",
             )
         ]}
@@ -861,15 +861,19 @@ async def test_thread_view_scrolls_and_follows_live_output(scripted_session) -> 
 
         # Returning to the tail re-enables follow.
         body.scroll_end(animate=False)
-        await pilot.pause()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if body.is_vertical_scroll_end:
+                break
         assert body.is_vertical_scroll_end
         await view.apply_event({
             "type": "assistant_message_delta",
             "data": {"content": " follows to the bottom"},
         })
-        await pilot.pause()
-        await pilot.pause()
+        for _ in range(10):
+            await pilot.pause()
+            if body.is_vertical_scroll_end:
+                break
         assert body.is_vertical_scroll_end
 
 
@@ -998,9 +1002,9 @@ async def test_long_task_command_is_truncated_in_title_but_full_behind_the_windo
         command = "python -m tools.run --flag " + "param_" * 40
         output = "\n".join(f"log line {i}" for i in range(80))
         app.state.apply_event({
-            "type": "task_updated",
+            "type": "job_updated",
             "data": {
-                "task_id": "long-task",
+                "job_id": "long-task",
                 "command": command,
                 "kind": "shell",
                 "cwd": "/workspace",
@@ -1013,17 +1017,17 @@ async def test_long_task_command_is_truncated_in_title_but_full_behind_the_windo
                 "thread_id": "",
             },
         })
-        await app._handle_stream_event({"type": "task_updated", "data": {"task_id": "long-task"}})
-        app._refresh_task_panel()
+        await app._handle_stream_event({"type": "job_updated", "data": {"job_id": "long-task"}})
+        app._refresh_job_panel()
         await pilot.pause()
 
-        block = app.query_one(".subagent-task")
+        block = app.query_one(".subagent-job")
         title = block.title or ""
         assert "..." in title, "the collapsed title must be truncated, not the data"
 
         block.collapsed = False
         await pilot.pause()
-        detail = block.query_one(".task-detail", BoundedText)
+        detail = block.query_one(".job-detail", BoundedText)
         assert "command: " + command in detail.text
         assert "param_" * 40 in detail.text
         assert "log line 79" in detail.text
@@ -1044,9 +1048,9 @@ async def test_narrow_completion_tasks_status_and_composer_do_not_overlap(
     async with app.run_test(headless=True, size=(40, 18)) as pilot:
         await pilot.pause()
         event = {
-            "type": "task_updated",
+            "type": "job_updated",
             "data": {
-                "task_id": "task-1",
+                "job_id": "task-1",
                 "command": "sleep 30",
                 "cwd": "/workspace",
                 "status": "running",
@@ -1071,7 +1075,7 @@ async def test_narrow_completion_tasks_status_and_composer_do_not_overlap(
 
         popup = app.query_one(CompletionPopup)
         runtime_panels = app.query_one("#runtime_panels")
-        tasks = app.query_one("#task_panel")
+        tasks = app.query_one("#job_panel")
         queue = app.query_one("#queue_panel")
         queue_list = app.query_one("#queue_list")
         status = app.query_one("#status_bar")
@@ -1585,7 +1589,7 @@ async def test_ctrl_p_opens_palette_with_full_command_list(
         assert {"help", "clear-screen", "exit"} <= names
         assert {
             "status", "provider", "model", "effort", "agent",
-            "clear", "undo", "fork", "tasks", "task", "permission", "sandbox",
+            "clear", "undo", "fork", "jobs", "jobs", "permission", "sandbox",
         } <= names
 
         await pilot.press("escape")

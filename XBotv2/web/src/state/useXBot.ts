@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { clearOpenSession, readOpenSession, writeOpenSession } from "./openSession";
 import { XBotApi, XBotApiError } from "../api/client";
-import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, TaskData, ThreadSummary } from "../api/types";
+import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, JobData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { WorkspaceManager } from "../client/WorkspaceManager";
 import { SessionCatalog } from "../client/SessionCatalog";
@@ -105,7 +105,7 @@ export function useXBot() {
       }
     },
     onThreads: (threads) => dispatch({ type: "threads", threads }),
-    onTaskExpired: (taskId) => dispatch({ type: "remove_task", taskId }),
+    onJobExpired: (jobId) => dispatch({ type: "remove_job", jobId }),
     onConnection: (connected) => dispatch({ type: "event_stream", value: connected }),
     onError: reportError,
     onResetRequired: () => {
@@ -155,12 +155,12 @@ export function useXBot() {
     activationEventsBuffer.current = activationBuffer;
     dispatch({ type: "opened", session });
     startEventStream(session, generation);
-    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, TaskData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
+    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, JobData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
     try {
       resources = await Promise.all([
         api.listThreads(session.session_id),
         api.listAgents(session.session_id, session.thread_id),
-        api.listTasks(session.session_id, session.thread_id),
+        api.listJobs(session.session_id, session.thread_id),
         api.listCommands(session.session_id, session.thread_id),
         api.listTodos(session.session_id, session.thread_id).catch((error) => {
           if (error instanceof XBotApiError && error.code === "capability_unavailable") return [];
@@ -175,7 +175,7 @@ export function useXBot() {
       }
       throw error;
     }
-    const [threads, agents, tasks, availableCommands, todos, trajectory] = resources;
+    const [threads, agents, jobs, availableCommands, todos, trajectory] = resources;
     if (generation !== navigationGeneration.current) {
       if (activationEventsBuffer.current === activationBuffer) {
         activationEventsBuffer.current = null;
@@ -200,7 +200,7 @@ export function useXBot() {
     const activeThread = threads.find((thread) => thread.thread_id === session.thread_id);
     if (activeThread) dispatch({ type: "thread_synced", thread: activeThread });
     dispatch({ type: "agents", agents });
-    dispatch({ type: "tasks", tasks });
+    dispatch({ type: "jobs", jobs });
     dispatch({ type: "todos", todos });
     setCommands(availableCommands);
     setNotification("");
@@ -1017,7 +1017,7 @@ export function useXBot() {
       if (result.data.status === "error") return result.data;
       const effects = new Set(result.data.effects);
       try {
-        const [trajectory, thread, agents, tasks, availableCommands] = await Promise.all([
+        const [trajectory, thread, agents, jobs, availableCommands] = await Promise.all([
           effects.has("history") ? api.listTrajectory(
             current.session_id,
             current.thread_id,
@@ -1025,7 +1025,7 @@ export function useXBot() {
           ) : null,
           effects.has("thread") ? api.getThread(current.session_id, current.thread_id) : null,
           effects.has("agents") ? api.listAgents(current.session_id, current.thread_id) : null,
-          effects.has("tasks") ? api.listTasks(current.session_id, current.thread_id) : null,
+          effects.has("jobs") ? api.listJobs(current.session_id, current.thread_id) : null,
           effects.has("commands") ? api.listCommands(current.session_id, current.thread_id) : null,
           effects.has("sessions") ? sessionCatalog.refresh() : null,
         ]);
@@ -1043,7 +1043,7 @@ export function useXBot() {
           dispatch({ type: "thread_synced", thread });
         }
         if (agents) dispatch({ type: "agents", agents });
-        if (tasks) dispatch({ type: "tasks", tasks });
+        if (jobs) dispatch({ type: "jobs", jobs });
         if (availableCommands) setCommands(availableCommands);
       } catch (error) {
         if (generation === navigationGeneration.current) {
@@ -1061,25 +1061,25 @@ export function useXBot() {
     }
   }, [api, notify, reportError, sendMessage, sessionCatalog, state.current, state.threads, state.turnRunning]);
 
-  const stopTask = useCallback(async (taskId: string) => {
+  const stopJob = useCallback(async (jobId: string) => {
     if (!state.current) return;
     const generation = navigationGeneration.current;
     try {
-      const result = await api.stopTask(state.current.session_id, state.current.thread_id, taskId);
+      const result = await api.stopJob(state.current.session_id, state.current.thread_id, jobId);
       if (generation !== navigationGeneration.current) return;
-      dispatch({ type: "tasks", tasks: result.tasks });
+      dispatch({ type: "jobs", jobs: result.jobs });
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error);
     }
   }, [api, reportError, state.current]);
 
-  const stopAllTasks = useCallback(async () => {
+  const stopAllJobs = useCallback(async () => {
     if (!state.current) return;
     const generation = navigationGeneration.current;
     try {
-      const result = await api.stopAllTasks(state.current.session_id, state.current.thread_id);
+      const result = await api.stopAllJobs(state.current.session_id, state.current.thread_id);
       if (generation !== navigationGeneration.current) return;
-      dispatch({ type: "tasks", tasks: result.tasks });
+      dispatch({ type: "jobs", jobs: result.jobs });
     } catch (error) {
       if (generation === navigationGeneration.current) reportError(error);
     }
@@ -1121,8 +1121,8 @@ export function useXBot() {
     moveSession,
     setSessionArchived,
     runServerCommand,
-    stopTask,
-    stopAllTasks,
+    stopJob,
+    stopAllJobs,
     refreshSessions,
     listDirectories,
     loadPluginConfig,

@@ -145,7 +145,7 @@ describe("runtimeReducer", () => {
         error: null,
         artifacts: [],
         images: [],
-        runtime: { source: "task-1", event: "notification" },
+        runtime: { source: "job-1", event: "notification" },
       }],
       nextCursor: null,
     });
@@ -153,7 +153,7 @@ describe("runtimeReducer", () => {
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({
       kind: "runtime",
-      source: "task-1",
+      source: "job-1",
       event: "notification",
       content: "job finished with result 42",
     });
@@ -298,22 +298,57 @@ describe("runtimeReducer", () => {
     ]);
   });
 
-  it("projects Todo state from its authoritative client event", () => {
+  it("projects task state from its authoritative client event", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "event",
       event: event("todo_updated", {
         kind: "todo_snapshot",
-        schema_version: 1,
-        items: [
-          { content: "implement", status: "in_progress" },
-          { content: "verify", status: "pending" },
+        schema_version: 2,
+        next_id: 3,
+        tasks: [
+          { id: "1", subject: "implement", status: "in_progress", activeForm: "Implementing", owner: "default", blocks: ["2"], blockedBy: [] },
+          { id: "2", subject: "verify", status: "pending", blocks: [], blockedBy: ["1"] },
         ],
       }),
     });
     expect(state.todos).toEqual([
-      { content: "implement", status: "in_progress" },
-      { content: "verify", status: "pending" },
+      {
+        id: "1",
+        subject: "implement",
+        status: "in_progress",
+        activeForm: "Implementing",
+        owner: "default",
+        blocks: ["2"],
+        blockedBy: [],
+      },
+      { id: "2", subject: "verify", status: "pending", blocks: [], blockedBy: ["1"] },
     ]);
+  });
+
+  it("announces terminal Goal consumption and ignores active transitions", () => {
+    const active = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("goal_updated", {
+        objective: "ship the API",
+        status: "active",
+        stats: { turns: 1, tool_calls: 0, total_tokens: 10, todo_items: 0, todo_completed: 0 },
+      }),
+    });
+    expect(active.entries).toEqual(initialRuntimeState.entries);
+
+    const complete = runtimeReducer(active, {
+      type: "event",
+      event: event("goal_updated", {
+        objective: "ship the API",
+        status: "complete",
+        stats: { turns: 3, tool_calls: 4, total_tokens: 1200, todo_items: 2, todo_completed: 2 },
+      }),
+    });
+    expect(complete.entries.at(-1)).toMatchObject({
+      kind: "notice",
+      level: "info",
+      content: "Goal complete · ship the API · 3 turns, 4 tool calls, 1200 tokens, 2/2 todos",
+    });
   });
 
   it("keeps pending input authoritative across queue events and turn failure", () => {

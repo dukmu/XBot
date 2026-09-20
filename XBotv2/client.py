@@ -29,7 +29,7 @@ from XBotv2.interactions import (
     InteractionResponse,
     UserInputResponseRequest,
 )
-from XBotv2.jobs import TaskListResponse, TaskStopResponse
+from XBotv2.jobs import JobListResponse, JobStopResponse
 from XBotv2.llm import (
     EffortSelectionRequest,
     EffortSelectionResponse,
@@ -413,29 +413,29 @@ class XBotClient:
             UndoRequest(count=count),
         )
 
-    async def list_tasks(
+    async def list_jobs(
         self, session_id: str, thread_id: str
-    ) -> TaskListResponse:
+    ) -> JobListResponse:
         return await self._request(
-            "GET", f"{thread_path(session_id, thread_id)}/tasks", TaskListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/jobs", JobListResponse
         )
 
-    async def stop_task(
-        self, session_id: str, thread_id: str, task_id: str
-    ) -> TaskStopResponse:
+    async def stop_job(
+        self, session_id: str, thread_id: str, job_id: str
+    ) -> JobStopResponse:
         return await self._request(
             "POST",
-            f"{thread_path(session_id, thread_id)}/tasks/{_segment(task_id)}/stop",
-            TaskStopResponse,
+            f"{thread_path(session_id, thread_id)}/jobs/{_segment(job_id)}/stop",
+            JobStopResponse,
         )
 
-    async def stop_all_tasks(
+    async def stop_all_jobs(
         self, session_id: str, thread_id: str
-    ) -> TaskStopResponse:
+    ) -> JobStopResponse:
         return await self._request(
             "POST",
-            f"{thread_path(session_id, thread_id)}/tasks/stop",
-            TaskStopResponse,
+            f"{thread_path(session_id, thread_id)}/jobs/stop",
+            JobStopResponse,
         )
 
     async def interrupt(

@@ -57,27 +57,30 @@ Clients(TUI/Web/ACP/terminal) → Protocol(HTTP/SSE/UDS · API v3)
 
 **职责解耦**：`LoopState` 由 session 插件创建，persistence 只 hydrate/observe；usage 自持 `usage.yaml`，不依赖 state_store；工作区一切扩展归 `workspace_instructions`；agent 定义里的 `permission` 值原始透传，由 permissions 插件在应用时归一化/校验。
 
-## Goal 与 TodoList 插件实现
+## Goal 与 TaskList 插件实现
 
-两者是"目标 vs 步骤"的分层：Goal 持有持久目标，TodoList 跟踪具体工作项，互不代庖。
+两者是"目标 vs 步骤"的分层：Goal 持有会话级的完成条件，TaskList 跟踪可寻址的具体任务；Goal 只读任务进度，TaskList 不依赖 Goal。
 
-**GoalPlugin（`XBotv2/goal`）——外置状态机 + 自动延续**
+**GoalPlugin（`XBotv2/goal`）——评估器驱动的自动循环**
 
-- 数据模型：session 状态命名空间（`state.namespace("goal")`）中至多一条 Goal 记录 `{objective, status(active/paused/complete/blocked), summary, token_budget}`，转移即时持久化，resume 把 terminal/paused 转回 active。
-- 模型面三个工具：`create_goal` / `get_goal` / `update_goal`（`Literal + Tool.from_function`，无手写 schema）。
-- 人机面 `/goal` 命令：复用同一私有状态转移，不构造 ToolCall、不进权限、不追加模型历史。
-- **自动延续机制（核心）**：每次成功转移（set/resume）后置 `_continuation_pending` 标记并预约一次新 turn；`TURN_START` 发现 `ctx.continuation` 时清标记并为该 turn 构建一份非持久化 Goal 快照；`TURN_END` 在 Goal 仍 active 时最多再预约一次。运行时通知（后台任务/子代理完成）不驱动该状态机。
-- 权限：工具注册时由权限 guard 统一把关，不写硬编码绕过。
-- 完成/阻塞保留 Goal 与 summary 供人工审查，`clear` 才删除；不允许模型仅凭"过程复杂/用了 Todo"就创建 Goal，`complete` 要求逐项结果与验证。
+- 对齐 Claude Code 的 `/goal`：它是 session 级 prompt-based Stop hook，不是模型自证的记录。Agent 工具只保留最小集合 —— `create_goal`（自己创建/替换目标）与 `get_goal`（读取条件、状态、已评估轮数、token、最近判定），**没有任何工具能结束 goal**：完成/不可能由 evaluator 判定；人机面是 `/goal [<condition>|clear]`。
+- **上下文只走持久化通道，没有 per-request 投影**：每个 round 是一条自包含的持久化 `<system_reminder source="goal" event="round" round=n/max>`（Objective + Round + Evaluator reason + 固定指令），由 `engine.followup` 唤醒；压缩提交后经 `HISTORY_CHANGED(compact:*)` 注入一条 `event="compaction"` 状态块（active goal + round + 最近判定），由 `engine.inject` 送达、不唤醒 turn。`max_rounds`（默认 20，对齐 DSH `maxGoalRounds`）到顶即 pause；active 时状态槽带 `goal_round: n/max`。
+- 数据模型：`state.namespace("goal")` 中一条记录 `{condition, status(active/achieved/failed/paused/cleared), reason, turns_evaluated, started_at, finished_at, retries, tool_less_turns, idle_checkins, checkin_seconds, stalled, stats}`；v1/v2 快照在读取时迁移到 v3。
+- **评估回路**：`/goal <condition>` 立即用 condition 作为指令开一轮；每轮结束后由一个**独立的小模型一次性调用**（`invoke_llm`，不进对话、不调工具）拿到 `met`/`not_yet_met`/`impossible` + reason；`met` → achieved 停止，`impossible` → failed 停止，`not_yet_met` → 带 reason 继续下一轮。评估在 turn 结束后以异步任务运行，不阻塞 `turn_finished`。
+- **容错策略**：不可恢复错误（认证/额度/上下文溢出/模型不可用）直接 clear 并提示 `/goal again`；其他错误按 `retry_seconds × 2^n` 重试，超过 `max_retries` 后 pause；连续 `stall_turns` 轮无工具调用则停止循环（goal 保留，下一次人类输入恢复评估）。
+- **后台与恢复**：jobs 仍在 running 时推迟评估并按 `checkin_seconds` 退避 check-in（上限 `checkin_max_factor`，人类输入间最多 `max_idle_checkins` 次）；`session/resume` 恢复 active goal 并重置轮数/计时/重试/token baseline，然后继续循环。
+- 观测：`goal`、`goal_reason`、终态 `goal_stats` 状态槽 + `goal_updated` 客户端事件。
 
-**TodolistPlugin（`XBotv2/todolist`）——单工具原子替换**
+**TodolistPlugin（`XBotv2/todolist`）——四个细粒度任务工具**
 
-- 模型面只有 `update_todos`：整体替换完整清单 `[{content, status}]`，**不做 per-item 的增删改查工具**（避免状态碎片化）。
-- 校验：每项恰好 `content`+一个合法状态；非空未完成清单必须恰好一个 `in_progress`；`todos: []` 清空。整单先验证再一次持久化，非法输入不可能部分生效。
-- 幂等：重复当前清单是 no-op，结果明确提示"先干活再调用"；全部完成后结果带 `todos`+`cleared` 结构化数据，并清空 active 清单。
-- 结果留在正常对话路径（下个模型调用可见），不注入 system 消息、不改写 provider 上下文；变更时一次状态命名空间写，resume 看到同一清单；unload 移除工具但保留会话数据。
+- 模型面四个工具：`task_create` / `task_get` / `task_update` / `task_list`（对应 Claude Code 默认的 `TaskCreate`/`TaskGet`/`TaskUpdate`/`TaskList`，命名随本仓 snake_case 约定），**不再有整体替换的 `update_todos`**。
+- 实体：`{id, subject, description, activeForm, owner, status, blocks, blockedBy, metadata}`；id 由单调水位分配，删除不复用；`blocks`/`blockedBy` 双向维护并在删除时清理；删除用 `task_update(status="deleted")`；`blockedBy` 未完成时不允许 `in_progress`；`in_progress` 且无 owner 时由认领者自动填写。
+- 校验：subject 必填、长度上限、任务数上限、依赖 id 必须存在、非法状态；任一失败不部分生效。边界（任务数、各文本长度、reminder 轮数、验证推动开关与匹配正则）是 `TaskConfig`，按 tree 层可覆盖，并写进工具 JSON schema 的 `maxLength`；插件**不提供任何人工命令**。
+- 验证推动：整张清单完成且 ≥3 项、无一项匹配 `verif` 时，在 tool 结果里催独立验证。
+- **没有 per-request 投影**：任务清单本身就在 `task_*` 的 arguments/results 里。插件只写两处持久化提醒——连续 `reminder_after_turns`（默认 3，可配置）轮无变更时注入一条纯文本 `<system_reminder source="todo" event="reminder">`（不重述清单、发后计数归零、`inject` 不唤醒 turn），以及压缩提交后注入一条 `event="compaction"` 块重述未完成任务（唯一重述处）。归属走 `source` + `metadata.kind` → `runtime_input`，XML 属性同名。
+- 结果留在正常对话路径；HTTP `GET /todos` 返回 `TaskList`（`tasks` 字段），客户端 `todo_updated` 事件带同名字段；unload 移除工具但保留会话数据。
 
-**验证**：Goal/Todo 语义重写为可观察行为断言（`test_goal.py`、`test_todolist.py`），配合 `/goal` 命令实测（create→auto continuation→pause→resume→complete 全链路）；Goal 延续在评估任务中验证不会因后台通知反复唤醒。
+**验证**：`test_goal.py`（评估回路、三态判定、重试/暂停/清理、停滞、check-in、resume、迁移）与 `test_todolist.py`（四工具、id 水位、依赖双向、删除清理、验证推动、投影与前缀稳定）为可观察行为断言；HTTP 集成测试覆盖 `/goal` 端到端评估与 `/todos` 恢复。
 
 ## 关键技术决策与演进
 
@@ -99,12 +102,12 @@ Clients(TUI/Web/ACP/terminal) → Protocol(HTTP/SSE/UDS · API v3)
 **应对**：把输入边界收敛为三条简单通道，不做来源判断状态机——`pending-fold` 在下一个工具批边界整体折入（按序发布 `message` 事件、末位流独占合并回复、无工具边界的残留以 `input_rejected` 拒绝并让客户端重试）；`AgentInbox` 只入队，在下个 turn 的上下文组装时一次性以运行时事件注入，**从不唤醒 turn**；goal 延续走显式 continuation，成为唯一主动唤醒。
 **结果**：排队输入稳定进入 transcript、合并回复单次投递；通知不产生新 turn，goal 延续与通知互不竞争；排队→折入→合并链路有集成测试覆盖、TUI 实测通过，Long-running Autonomy 评估任务表现稳定。
 
-### 2. Agent 注意力管理：细粒度工具返回导致模型涣散
+### 2. Agent 注意力管理：任务工具面的取舍（已修订）
 
-**问题**：细粒度的工具返回——例如让模型逐项增删改查 todo——会诱导模型沉浸在条目维护中，反复调整状态而偏离真实任务。
+**问题**：细粒度的工具返回——例如让模型逐项增删改查 todo——可能诱导模型沉浸在条目维护中，反复调整状态而偏离真实任务。
 **分析**：模型会把"工具调用成功"误当成"任务推进"，工具面越碎，注意力越分散。
-**应对**：工具面提供整单原子的操作（`update_todos` 一次整体替换并校验），工具描述明确"何时不该用"，重复当前清单为 no-op 并提示先干活再调用。
-**结果**：todo 状态始终一致、不再分散注意力，模型把精力留在实际工作上；这一约束也成为通用 Agent 设计准则（见收获）。
+**当时的应对**：工具面收敛为整单原子的 `update_todos`（一次整体替换并校验），描述明确"何时不该用"，重复当前清单为 no-op。
+**修订（对齐 Claude Code）**：成熟实现（Claude Code 默认的 `TaskCreate`/`TaskGet`/`TaskUpdate`/`TaskList`）选择可寻址的任务实体 + 细粒度工具，靠 id、依赖、owner 与验证推动约束模型，而不是靠"只给一个替换工具"。因此本仓改为四个任务工具 + `Task` 实体（`blocks`/`blockedBy`/`owner`/`metadata`/删除语义），并把"何时该用、完成必须有证据、关闭计划须验证"写进工具描述与 tool 结果提示，用约束而不是削减工具面来控制注意力。
 
 ### 3. 上下文利用率低
 

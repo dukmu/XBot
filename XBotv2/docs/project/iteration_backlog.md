@@ -404,7 +404,7 @@ limits are described in the sections above.
    refreshes the thread list indirectly after an `agent` task event. There is
    no cross-thread live event aggregation, subagent-specific title/status
    surface, or independent open/close/resume view while the parent remains
-   visible. A missed `task_updated`/cursor recovery leaves a newly spawned
+   visible. A missed `job_updated`/cursor recovery leaves a newly spawned
    thread absent until refresh or re-open. The implementation should align
    with DSH’s explicit subagent/session navigation rather than inventing a
    second session store.
@@ -621,33 +621,54 @@ Implement these as public-API consumers and reference plugins, in this order:
   token-budget trigger remains; do not duplicate provider tokenizers inside
   the plugin or add another Hook stage.
 
-### Todo List
+### Task List
 
-- The plugin provides one atomic `update_todos` Tool; every call supplies the
-  complete ordered checklist instead of per-item CRUD operations.
-- A versioned `TodoSnapshot` in the plugin's shared `StateService` namespace
-  makes each changed list one immediate persisted replacement. Resume retains
-  the current active items.
-- Todo calls and results remain on the normal conversation path so the next
-  model call sees the update confirmation. The plugin does not repeatedly
-  inject the active list. ToolResult carries a typed current-snapshot
-  projection used consistently by persisted history, WebUI, and TUI; HTTP
-  close/resume and completion clearing are covered with MockLLM.
+- The plugin provides the four fine-grained task tools (`task_create`,
+  `task_get`, `task_update`, `task_list`) instead of one full-replace tool,
+  matching Claude Code's default `TaskCreate`/`TaskGet`/`TaskUpdate`/`TaskList`
+  set.
+- A versioned `TaskList` in the plugin's shared `StateService` namespace holds
+  id-addressable `Task` entities (`subject`, `description`, `activeForm`,
+  `owner`, `status`, `blocks`, `blockedBy`, `metadata`) with a monotonic id
+  watermark, bidirectional dependency maintenance, deletion through
+  `status="deleted"`, and a verification nudge when a plan closes without a
+  verification step.
+- Guardrails (list size, text limits, reminder cadence, verification nudge)
+  are a validated `TaskConfig` mounted per tree layer and advertised in the
+  tool JSON schema, and the plugin exposes no human command.
+- Task calls and results remain on the normal conversation path and are the
+  list state; nothing is projected into the system prompt or rebuilt per
+  request. The plugin authors only two persisted reminders: a stale-task nudge
+  after `reminder_after_turns` unchanged turns, and a post-compaction block
+  that restates the outstanding work after the summary shadowed its tool
+  calls. Both carry `source`/`event` provenance so clients render them as
+  runtime entries. ToolResult carries a typed projection used consistently by
+  persisted history, WebUI, and TUI; HTTP close/resume and deletion are covered
+  with MockLLM.
 
 ### Goal
 
-- `/goal` owns human lifecycle control. Agent-facing `create_goal`, `get_goal`,
-  and `update_goal` use structured schemas and the normal Tool runtime.
-- A versioned `GoalSnapshot` in the Goal namespace retains objective, status,
-  summary, and optional token budget. Only continuation turns replace their
-  accepted input with the active Goal context; terminal state does not inject
-  context into unrelated turns.
-- Todo items remain concrete work tracking. Active Goal continuation uses the
-  runtime-only continuation; ESC pauses it and resume does not restore it. Real-provider tool selection, internal permission baseline,
-  restart recovery, context injection, and terminal retention are verified.
-- Connect an explicitly requested Goal `token_budget` to provider-reported
-  usage. `/goal` must distinguish declared, used, and remaining tokens before
-  any automatic pause or budget-exhaustion behavior is claimed.
+- The goal is set and judged, never self-certified: the human `/goal
+  <condition>` path and the Agent-facing `create_goal` start one, `get_goal`
+  reads it, and an independent evaluator model call returns `met` /
+  `not_yet_met` / `impossible` with a reason after every turn. No Agent tool
+  can end a goal.
+- A versioned `GoalSnapshot` in the Goal namespace retains the condition,
+  status (`active`/`achieved`/`failed`/`paused`/`cleared`), the latest reason,
+  turns evaluated, duration, retries, stall and check-in counters, and derived
+  consumption statistics. Setting a condition starts a turn with the condition
+  as the directive; `not_yet_met` starts the next turn with the reason as
+  guidance.
+- The loop follows Claude Code's failure policy: unrecoverable errors clear the
+  goal, other errors retry with backoff and then pause, a hard `max_rounds` cap
+  pauses at the limit, several tool-less turns stall the loop, background work
+  defers evaluation with backoff check-ins, and resume restores an active goal
+  with its counters reset. The goal reaches the model only through its
+  persisted, self-contained round prompts (objective, round number, evaluator
+  reason) and one post-compaction state block; there is no per-request
+  projection. Goal reads task progress for its statistics without making tasks
+  depend on it, and terminal transitions publish `goal_updated` plus status
+  slots for TUI/WebUI.
 
 Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
 structured tool-result tests, public API boundary tests, and current
@@ -681,7 +702,7 @@ documentation before it becomes a shipped default.
   only on wide terminals. Plan progress still requires authoritative runtime
   data.
 - Background shell and subagent tasks expose stable IDs and authoritative
-  lifecycle snapshots through `task_updated`; the TUI updates one collapsible
+  lifecycle snapshots through `job_updated`; the TUI updates one collapsible
   Tasks control in place and distinguishes their `kind` without parsing text.
 - Queued follow-ups now render ordered summaries beside Tasks in one runtime
   band. Their display lifecycle reuses the existing client request map while

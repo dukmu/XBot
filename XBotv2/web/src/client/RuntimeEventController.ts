@@ -7,7 +7,7 @@ type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "ev
 export interface RuntimeEventListener {
   onEvents(events: ServerEvent[]): void;
   onThreads(threads: ThreadSummary[]): void;
-  onTaskExpired(taskId: string): void;
+  onJobExpired(jobId: string): void;
   onConnection(connected: boolean): void;
   onError(error: unknown): void;
   onResetRequired(): void;
@@ -20,7 +20,7 @@ export class RuntimeEventController {
   private threadRefreshTimer: number | null = null;
   private liveRefreshTimer: number | null = null;
   private liveRefreshGeneration: number | null = null;
-  private readonly taskTimers = new Map<string, number>();
+  private readonly jobTimers = new Map<string, number>();
   private generation: number | null = null;
 
   constructor(
@@ -57,13 +57,13 @@ export class RuntimeEventController {
     if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
     if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
     if (this.liveRefreshTimer !== null) window.clearTimeout(this.liveRefreshTimer);
-    for (const timer of this.taskTimers.values()) window.clearTimeout(timer);
+    for (const timer of this.jobTimers.values()) window.clearTimeout(timer);
     this.events = [];
     this.flushTimer = null;
     this.threadRefreshTimer = null;
     this.liveRefreshTimer = null;
     this.liveRefreshGeneration = null;
-    this.taskTimers.clear();
+    this.jobTimers.clear();
   }
 
   /** Update the refresh loop after a stream was attached before catalogs loaded. */
@@ -89,7 +89,7 @@ export class RuntimeEventController {
       this.stopLiveRefresh();
       this.refreshThreads(event.session_id, generation);
     }
-    if (event.type === "task_updated") this.handleTask(event, generation);
+    if (event.type === "job_updated") this.handleJob(event, generation);
   }
 
   private startLiveRefresh(sessionId: string, generation: number): void {
@@ -130,15 +130,15 @@ export class RuntimeEventController {
     if (this.isCurrent(generation)) this.listener.onEvents(events);
   }
 
-  private handleTask(event: ServerEvent, generation: number): void {
-    const taskId = String(event.data.task_id || "");
+  private handleJob(event: ServerEvent, generation: number): void {
+    const jobId = String(event.data.job_id || "");
     const status = String(event.data.status || "");
-    const existing = this.taskTimers.get(taskId);
+    const existing = this.jobTimers.get(jobId);
     if (existing !== undefined) window.clearTimeout(existing);
-    if (taskId && (status === "completed" || status === "stopped")) {
-      this.taskTimers.set(taskId, window.setTimeout(() => {
-        if (this.isCurrent(generation)) this.listener.onTaskExpired(taskId);
-        this.taskTimers.delete(taskId);
+    if (jobId && (status === "completed" || status === "stopped")) {
+      this.jobTimers.set(jobId, window.setTimeout(() => {
+        if (this.isCurrent(generation)) this.listener.onJobExpired(jobId);
+        this.jobTimers.delete(jobId);
       }, 4000));
     }
     if (!event.session_id || (event.data.kind !== "agent" && !event.data.thread_id)) return;

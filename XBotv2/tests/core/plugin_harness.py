@@ -27,6 +27,12 @@ def mount_ctx(state_store):
             self.records = []
             self.context_updates = []
 
+        def snapshot(self):
+            """Satisfy the ``UsagePort`` contract read by the goal plugin."""
+            from XBotv2.core.usage import UsageData
+
+            return UsageData()
+
         async def add(self, usage, *, update_context=True):
             self.records.append((dict(usage), update_context))
             if not usage:

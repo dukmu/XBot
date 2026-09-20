@@ -31,11 +31,11 @@ class _RecordingPublisher:
         self._completions = completions
 
     async def emit(self, event, *args) -> None:
-        from XBotv2.jobs.contracts import TASK_COMPLETED
+        from XBotv2.jobs.contracts import JOB_COMPLETED
 
-        if event == TASK_COMPLETED and args:
+        if event == JOB_COMPLETED and args:
             snapshot = args[0]
-            self._completions.append(snapshot.task_id)
+            self._completions.append(snapshot.job_id)
 
 
 def make_tools(temp_workspace, *, sandbox=None, approval_layer=None, publisher=None):
@@ -80,10 +80,10 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
 
     ctx.on(RUNTIME_EVENT, record)
     JobsRuntimeComponent().apply(ctx, JobsConfig())
-    from XBotv2.jobs import TaskSnapshot
+    from XBotv2.jobs import JobSnapshot
 
-    snapshot = TaskSnapshot(
-        task_id="sh_1",
+    snapshot = JobSnapshot(
+        job_id="sh_1",
         kind="shell",
         command="printf x",
         cwd="/workspace",
@@ -95,19 +95,19 @@ async def test_jobs_plugin_owns_updates_and_completion_delivery():
     )
 
     assert ctx.jobs is not None
-    from XBotv2.jobs.contracts import TASK_COMPLETED, TASK_UPDATED
+    from XBotv2.jobs.contracts import JOB_COMPLETED, JOB_UPDATED
 
-    await ctx.emit(TASK_UPDATED, snapshot)
-    await ctx.emit(TASK_COMPLETED, snapshot)
+    await ctx.emit(JOB_UPDATED, snapshot)
+    await ctx.emit(JOB_COMPLETED, snapshot)
 
     assert [event.type for event in runtime_events] == [
-        "task_updated",
+        "job_updated",
         "completion_notice",
     ]
-    assert runtime_events[1].data["kind"] == "background_task"
+    assert runtime_events[1].data["kind"] == "background_job"
     assert len(engine.injected) == 1
     assert engine.injected[0][1]["source"] == "sh_1"
-    assert "background_task" in engine.injected[0][0]
+    assert "background_job" in engine.injected[0][0]
 
 
 @pytest.mark.asyncio

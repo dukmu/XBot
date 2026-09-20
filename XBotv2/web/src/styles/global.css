@@ -751,7 +751,7 @@ summary:focus-visible {
 
 .markdown-body code,
 .tool-details pre,
-.task-output pre,
+.job-output pre,
 .permission-tool pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -804,7 +804,7 @@ summary:focus-visible {
 }
 
 .tool-block summary,
-.task-item summary {
+.job-item summary {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -814,7 +814,7 @@ summary:focus-visible {
 }
 
 .tool-block summary::-webkit-details-marker,
-.task-item summary::-webkit-details-marker {
+.job-item summary::-webkit-details-marker {
   display: none;
 }
 
@@ -1097,23 +1097,23 @@ details[open] > summary .summary-chevron {
   overflow-y: auto;
 }
 
-.task-item + .task-item {
+.job-item + .job-item {
   border-top: 1px solid var(--line-soft);
 }
 
-.task-item summary {
+.job-item summary {
   gap: 8px;
   height: 34px;
   padding: 0 8px 0 10px;
   color: #9fa69d;
 }
 
-.task-item summary > svg:first-child {
+.job-item summary > svg:first-child {
   flex: none;
   color: var(--purple);
 }
 
-.task-label {
+.job-label {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -1122,29 +1122,29 @@ details[open] > summary .summary-chevron {
   white-space: nowrap;
 }
 
-.task-state {
+.job-state {
   flex: none;
   color: var(--amber);
   font-size: 10px;
 }
 
-.task-completed .task-state { color: var(--green); }
-.task-failed .task-state { color: var(--red); }
+.task-completed .job-state { color: var(--green); }
+.task-failed .job-state { color: var(--red); }
 
-.task-output {
+.job-output {
   height: 104px;
   padding: 7px 12px 10px 32px;
   border-top: 1px solid var(--line-soft);
   overflow: auto;
 }
 
-.task-meta {
+.job-meta {
   margin-bottom: 5px;
   color: var(--faint);
   font-size: 10px;
 }
 
-.task-output pre {
+.job-output pre {
   margin: 0;
   color: #969d94;
   font-size: 10px;

@@ -15,23 +15,23 @@ from XBotv2.agentloop import AgentLoopDriverPort, EventContext, EventPort, Event
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
-from XBotv2.jobs.contracts import TASK_COMPLETED, TASK_UPDATED
+from XBotv2.jobs.contracts import JOB_COMPLETED, JOB_UPDATED
 from XBotv2.jobs.protocol import (
-    build_tasks_router,
-    task_completion_event,
-    task_updated_event,
+    build_jobs_router,
+    job_completion_event,
+    job_updated_event,
 )
 from XBotv2.jobs.registry import JobRegistry
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
     JobsConfig,
-    LIST_TASKS,
-    STOP_ALL_TASKS,
-    STOP_TASK,
-    StopTask,
-    StoppedTasks,
-    TaskCatalog,
-    TaskSnapshot,
+    LIST_JOBS,
+    STOP_ALL_JOBS,
+    STOP_JOB,
+    StopJob,
+    StoppedJobs,
+    JobCatalog,
+    JobSnapshot,
 )
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
 from XBotv2.server import contribute_router
@@ -41,7 +41,7 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.jobs.http",
-        router=build_tasks_router(sessions=ctx.sessions),
+        router=build_jobs_router(sessions=ctx.sessions),
     )
 
 
@@ -68,11 +68,11 @@ class JobsRuntimeComponent:
         for command in build_jobs_commands(registry):
             ctx.commands.register(command)
         handlers = JobHandlers(registry, ctx.engine, ctx)
-        ctx.on(TASK_UPDATED, handlers.publish_update)
-        ctx.on(TASK_COMPLETED, handlers.publish_completion)
-        ctx.on(LIST_TASKS.name, handlers.list_tasks)
-        ctx.on(STOP_TASK.name, handlers.stop_task)
-        ctx.on(STOP_ALL_TASKS.name, handlers.stop_all)
+        ctx.on(JOB_UPDATED, handlers.publish_update)
+        ctx.on(JOB_COMPLETED, handlers.publish_completion)
+        ctx.on(LIST_JOBS.name, handlers.list_jobs)
+        ctx.on(STOP_JOB.name, handlers.stop_job)
+        ctx.on(STOP_ALL_JOBS.name, handlers.stop_all)
         ctx.on(PREPARE_FORK, handlers.prepare_fork)
         ctx.on(Events.SESSION_CLOSE, handlers.close)
 
@@ -88,14 +88,14 @@ class JobHandlers:
         self._engine = engine
         self._events = events
 
-    async def publish_update(self, snapshot: TaskSnapshot) -> None:
+    async def publish_update(self, snapshot: JobSnapshot) -> None:
         await self._events.emit(
             RUNTIME_EVENT,
-            RuntimeEvent(client_event=task_updated_event(snapshot)),
+            RuntimeEvent(client_event=job_updated_event(snapshot)),
         )
 
-    async def publish_completion(self, snapshot: TaskSnapshot) -> None:
-        event = task_completion_event(snapshot)
+    async def publish_completion(self, snapshot: JobSnapshot) -> None:
+        event = job_completion_event(snapshot)
         payload = event.data
         await self._engine.inject(
             prompt_container(
@@ -105,9 +105,9 @@ class JobHandlers:
                     json.dumps(payload, ensure_ascii=False, sort_keys=True),
                     attributes={"encoding": "json"},
                 )],
-                attributes={"source": "tasks", "event": "completed"},
+                attributes={"source": "jobs", "event": "completed"},
             ),
-            source=snapshot.task_id,
+            source=snapshot.job_id,
             metadata={"kind": "notification", "payload": payload},
         )
         await self._events.emit(
@@ -115,18 +115,18 @@ class JobHandlers:
             RuntimeEvent(client_event=event),
         )
 
-    def list_tasks(self, _request: EmptyRequest) -> TaskCatalog:
-        return TaskCatalog(tuple(self._registry.snapshots()))
+    def list_jobs(self, _request: EmptyRequest) -> JobCatalog:
+        return JobCatalog(tuple(self._registry.snapshots()))
 
-    async def stop_task(self, request: StopTask) -> StoppedTasks:
-        job = self._registry.get_or_none(request.task_id)
+    async def stop_job(self, request: StopJob) -> StoppedJobs:
+        job = self._registry.get_or_none(request.job_id)
         if job is None:
-            raise OperationError("task_not_found", f"Unknown task: {request.task_id}")
-        await self._registry.cancel(request.task_id)
-        return StoppedTasks((self._registry.snapshot(job),))
+            raise OperationError("job_not_found", f"Unknown job: {request.job_id}")
+        await self._registry.cancel(request.job_id)
+        return StoppedJobs((self._registry.snapshot(job),))
 
-    async def stop_all(self, _request: EmptyRequest) -> StoppedTasks:
-        return StoppedTasks(tuple(await self._registry.stop_all()))
+    async def stop_all(self, _request: EmptyRequest) -> StoppedJobs:
+        return StoppedJobs(tuple(await self._registry.stop_all()))
 
     def prepare_fork(self, _request: PrepareFork) -> None:
         if self._registry.is_busy():

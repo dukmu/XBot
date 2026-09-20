@@ -16,10 +16,10 @@ model-facing tools; they never hold job state themselves.
   `XBotv2/jobs/protocol.py`,
   `XBotv2/jobs/contracts.py`.
 - **Injects/provides:** `commands`, `engine` → `jobs` (`JobRegistry`).
-- **Subscribes to events:** `list/tasks` (`LIST_TASKS`),
-  `stop/task` (`STOP_TASK`), `stop/all-tasks` (`STOP_ALL_TASKS`),
+- **Subscribes to events:** `jobs/list` (`LIST_JOBS`),
+  `jobs/stop` (`STOP_JOB`), `jobs/stop-all` (`STOP_ALL_JOBS`),
   `session/close`, `prepare/fork`.
-- **Commands:** `/tasks` (list), `/task` (stop/stopall).
+- **Commands:** `/jobs [ps]` (list), `/jobs stop <id>`, `/jobs stopall`.
 
 The root export is `plugin = JobsPlugin()` in `XBotv2/jobs/plugin.py`.
 `JobsPlugin` composes `JobsRuntimeComponent` and its HTTP contribution; the
@@ -54,8 +54,8 @@ class JobRegistry:
             for kind, limit in (limits or {}).items()
         }
         self._closing = False
-        self.on_update: TaskCallback | None = None
-        self.on_complete: TaskCallback | None = None
+        self.on_update: JobCallback | None = None
+        self.on_complete: JobCallback | None = None
 
     @property
     def closing(self) -> bool: ...
@@ -98,12 +98,12 @@ class JobRegistry:
     async def cancel(self, job_id: JobId) -> CancelResult: ...
     def remove(self, job_id: JobId) -> None: ...
 
-    async def stop_all(self) -> list[TaskSnapshot]: ...
-    async def shutdown(self) -> list[TaskSnapshot]: ...
+    async def stop_all(self) -> list[JobSnapshot]: ...
+    async def shutdown(self) -> list[JobSnapshot]: ...
     def remove_all(self) -> None: ...
 
-    def snapshot(self, job: Job, *, full_output: bool = False) -> TaskSnapshot: ...
-    def snapshots(self) -> list[TaskSnapshot]: ...
+    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot: ...
+    def snapshots(self) -> list[JobSnapshot]: ...
 
     # Internal execution
     async def _execute(self, job: Job, runner: JobRunner) -> None: ...
@@ -250,14 +250,14 @@ class TextOutputStorePort(OutputStore, Protocol):
     def all(self) -> str: ...
 ```
 
-### `TaskCallback` / `TaskSnapshot` / `TaskCatalog`
+### `JobCallback` / `JobSnapshot` / `JobCatalog`
 
 ```python
-TaskCallback = Callable[[TaskSnapshot], Awaitable[None]]
+JobCallback = Callable[[JobSnapshot], Awaitable[None]]
 
-class TaskSnapshot(BaseModel):
+class JobSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    task_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
     kind: Literal["shell", "agent"] = "shell"
     command: str = ""
     cwd: str
@@ -272,8 +272,8 @@ class TaskSnapshot(BaseModel):
     usage: dict[str, JsonValue] = Field(default_factory=dict)
 
 @dataclass(frozen=True, slots=True)
-class TaskCatalog:
-    tasks: tuple[TaskSnapshot, ...]
+class JobCatalog:
+    tasks: tuple[JobSnapshot, ...]
 ```
 
 Protocol kind mapping: `SUBAGENT → "agent"`, `SHELL → "shell"`.
@@ -308,9 +308,9 @@ class JobsRuntimeComponent:
         handlers = JobHandlers(registry, ctx.engine, ctx)
         registry.on_update = handlers.publish_update
         registry.on_complete = handlers.publish_completion
-        ctx.on(LIST_TASKS.name, handlers.list_tasks)
-        ctx.on(STOP_TASK.name, handlers.stop_task)
-        ctx.on(STOP_ALL_TASKS.name, handlers.stop_all)
+        ctx.on(LIST_JOBS.name, handlers.list_jobs)
+        ctx.on(STOP_JOB.name, handlers.stop_job)
+        ctx.on(STOP_ALL_JOBS.name, handlers.stop_all)
         ctx.on(PREPARE_FORK, handlers.prepare_fork)
         ctx.on(Events.SESSION_CLOSE, handlers.close)
 ```
@@ -323,24 +323,24 @@ plugins.
 
 ```python
 def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
-    # /tasks [ps] → list background tasks
-    # /task stop <id> → stop one task
-    # /task stopall → stop all tasks
+    # /jobs [ps] → list background jobs
+    # /jobs stop <id> → stop one task
+    # /jobs stopall → stop all tasks
 ```
 
 ### Events / Operations
 
 ```python
-LIST_TASKS = Operation("jobs/list", EmptyRequest, TaskCatalog)
-STOP_TASK = Operation("jobs/stop", StopTask, StoppedTasks)
-STOP_ALL_TASKS = Operation("jobs/stop-all", EmptyRequest, StoppedTasks)
+LIST_JOBS = Operation("jobs/list", EmptyRequest, JobCatalog)
+STOP_JOB = Operation("jobs/stop", StopJob, StoppedJobs)
+STOP_ALL_JOBS = Operation("jobs/stop-all", EmptyRequest, StoppedJobs)
 
-class StopTask:
-    task_id: str
+class StopJob:
+    job_id: str
 
 @dataclass(frozen=True, slots=True)
-class StoppedTasks:
-    tasks: tuple[TaskSnapshot, ...]
+class StoppedJobs:
+    tasks: tuple[JobSnapshot, ...]
 ```
 
 ## Execution flow
@@ -373,7 +373,7 @@ def apply(self, ctx, config=None):
 ```
 
 The registry is configured with a semaphore for `SUBAGENT` jobs
-(default 4 concurrent). `on_update` publishes `TaskSnapshot` to
+(default 4 concurrent). `on_update` publishes `JobSnapshot` to
 `RUNTIME_EVENT` (SSE). `on_complete` injects a prompt payload to
 the engine and publishes `completion_notice` to the client.
 
@@ -394,12 +394,12 @@ the engine and publishes `completion_notice` to the client.
   cancellation only affects non-terminal jobs. Terminal jobs are
   left untouched.
 - **`is_busy()` returns True if ANY job is pending/running**:
-  used by `prepare_fork` to block forking while background tasks
+  used by `prepare_fork` to block forking while background jobs
   are active. `is_busy()` checks all jobs, not just SUBAGENT.
 - **`JobKind.SHELL` has no concurrency limit**: only `SUBAGENT`
   is limited by the semaphore. SHELL jobs run unbounded.
 - **`stop_all()` cancels and returns snapshots**: it cancels all
-  non-terminal jobs, then returns `TaskSnapshot` for each. The
+  non-terminal jobs, then returns `JobSnapshot` for each. The
   snapshots reflect the cancelled status ("stopped").
 - **`shutdown()` also drops all outputs**: after `stop_all()`,
   it calls `remove_all()` which clears job results. This is why
@@ -411,5 +411,5 @@ the engine and publishes `completion_notice` to the client.
 - **`list(recursive=True)` is not a recursive descendant walk**: the current
   registry selects jobs with any non-null `parent_job_id`; it does not compute
   the transitive child closure. Do not describe this flag as a tree traversal.
-- **`TaskSnapshot.kind` maps SUBAGENT → "agent"**: the protocol
+- **`JobSnapshot.kind` maps SUBAGENT → "agent"**: the protocol
   layer uses different kind names than the internal `JobKind`.

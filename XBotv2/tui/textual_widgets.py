@@ -24,7 +24,7 @@ from XBotv2.tui.client import (
     TuiMessage,
     TuiNotice,
     TuiState,
-    TuiTask,
+    TuiJob,
     TuiTool,
     TuiTranscriptEntry,
     format_value,
@@ -240,7 +240,7 @@ def _compact_count(value: int) -> str:
     return f"{value / 1_000_000:.1f}M"
 
 
-def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
+def jobs_renderable(tasks: list[TuiJob], *, width: int) -> Text:
     """Render compact task rows from authoritative task snapshots."""
     text = Text()
     show_details = len(tasks) <= 3
@@ -254,13 +254,13 @@ def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
         }.get(task.status, (task.status, "white"))
         kind = "agent" if task.kind == "agent" else "shell"
         summary_width = max(
-            12, width - len(task.task_id) - len(marker) - len(kind) - 15
+            12, width - len(task.job_id) - len(marker) - len(kind) - 15
         )
         command = shorten(task.command, width=summary_width, placeholder="...")
         if text.plain:
             text.append("\n")
         text.append(f"{marker:>7}  ", style=style)
-        text.append(f"{task.task_id}  ", style="cyan")
+        text.append(f"{task.job_id}  ", style="cyan")
         text.append(f"{kind}  ", style="magenta" if kind == "agent" else "blue")
         text.append(command)
         text.append(f"  {task.elapsed():.1f}s", style="dim")
@@ -278,31 +278,31 @@ def tasks_renderable(tasks: list[TuiTask], *, width: int) -> Text:
     return text
 
 
-class SubagentTaskWidget(Collapsible):
+class SubagentJobWidget(Collapsible):
     """One expandable task with the full command/details behind a bounded window."""
 
     def __init__(
         self,
-        task: TuiTask,
+        task: TuiJob,
         *,
         width: int,
         collapsed: bool = True,
     ) -> None:
-        self.task_id = task.task_id
+        self.job_id = task.job_id
         self._latest_task = task
         self._width = width
         super().__init__(
-            BoundedText(task_detail_text(task), classes="task-detail"),
-            title=_task_title(task, width=width),
+            BoundedText(job_detail_text(task), classes="job-detail"),
+            title=_job_title(task, width=width),
             collapsed=collapsed,
-            classes="subagent-task",
+            classes="subagent-job",
         )
 
-    def update_task(self, task: TuiTask, *, width: int) -> None:
+    def update_job(self, task: TuiJob, *, width: int) -> None:
         """Update one existing task row in place, preserving expansion."""
         self._latest_task = task
         self._width = width
-        self.title = _task_title(task, width=width)
+        self.title = _job_title(task, width=width)
         if not self._update_detail():
             # The row may have been mounted on this tick but not composed
             # yet; apply the latest task after the refresh pass.
@@ -310,14 +310,14 @@ class SubagentTaskWidget(Collapsible):
 
     def _update_detail(self) -> bool:
         try:
-            detail = self.query_one(".task-detail", BoundedText)
+            detail = self.query_one(".job-detail", BoundedText)
         except Exception:  # noqa: BLE001 — child composition may lag mount
             return False
-        detail.update(task_detail_text(self._latest_task))
+        detail.update(job_detail_text(self._latest_task))
         return True
 
 
-def task_detail_text(task: TuiTask) -> str:
+def job_detail_text(task: TuiJob) -> str:
     """The full task record, unwrapped: the compact row never truncates it."""
     parts: list[str] = []
     if task.command:
@@ -345,38 +345,38 @@ def task_detail_text(task: TuiTask) -> str:
     return "\n".join(parts)
 
 
-class TaskListWidget(VerticalScroll):
+class JobListWidget(VerticalScroll):
     """Scrollable task list with nested subagent details."""
 
     can_focus = False
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._widgets: dict[str, SubagentTaskWidget] = {}
+        self._widgets: dict[str, SubagentJobWidget] = {}
 
-    def update_tasks(self, tasks: list[TuiTask], *, width: int) -> None:
+    def update_jobs(self, tasks: list[TuiJob], *, width: int) -> None:
         """Reconcile task widgets in place instead of rebuilding the list.
 
         Rebuilding on every tick made expanded task details flicker and
         collapse. Existing widgets keep their identity and expansion state;
         running titles/details are refreshed in place.
         """
-        desired = {task.task_id: task for task in tasks}
-        for task_id, widget in list(self._widgets.items()):
-            if task_id in desired:
+        desired = {task.job_id: task for task in tasks}
+        for job_id, widget in list(self._widgets.items()):
+            if job_id in desired:
                 continue
-            self._widgets.pop(task_id, None)
+            self._widgets.pop(job_id, None)
             widget.remove()
 
-        ordered: list[SubagentTaskWidget] = []
+        ordered: list[SubagentJobWidget] = []
         for task in tasks:
-            widget = self._widgets.get(task.task_id)
+            widget = self._widgets.get(task.job_id)
             if widget is None:
-                widget = SubagentTaskWidget(task, width=width)
-                self._widgets[task.task_id] = widget
+                widget = SubagentJobWidget(task, width=width)
+                self._widgets[task.job_id] = widget
                 self.mount(widget)
             else:
-                widget.update_task(task, width=width)
+                widget.update_job(task, width=width)
             ordered.append(widget)
 
         for index, widget in enumerate(ordered):
@@ -385,7 +385,7 @@ class TaskListWidget(VerticalScroll):
             self.move_child(widget, before=index)
 
 
-def _task_title(task: TuiTask, *, width: int) -> str:
+def _job_title(task: TuiJob, *, width: int) -> str:
     marker = {
         "pending": "-",
         "running": "running",
@@ -394,10 +394,10 @@ def _task_title(task: TuiTask, *, width: int) -> str:
         "stopped": "stopped",
     }.get(task.status, task.status)
     agent = task.agent or task.command.partition(":")[0] or "subagent"
-    available = max(12, width - len(task.task_id) - len(marker) - len(agent) - 8)
+    available = max(12, width - len(task.job_id) - len(marker) - len(agent) - 8)
     prompt = task.command.partition(":")[2].strip() or task.command
     return (
-        f"{marker}  {task.task_id}  {agent}  "
+        f"{marker}  {task.job_id}  {agent}  "
         f"{shorten(prompt, width=available, placeholder='...')}"
     )
 
@@ -1224,9 +1224,9 @@ def tool_detail(tool: TuiTool) -> str:
     parts: list[str] = []
     todo = _todo_projection(tool)
     if todo is not None:
-        parts.append("plan:\n" + "\n".join(
+        parts.append("tasks:\n" + "\n".join(
             f"  {_todo_marker(str(item.get('status') or ''))} "
-            f"{str(item.get('content') or '')}"
+            f"#{str(item.get('id') or '')} {str(item.get('subject') or '')}"
             for item in todo
         ))
     if tool.args_finalized and tool.args:
@@ -1254,7 +1254,7 @@ def _todo_projection(tool: TuiTool) -> list[dict[str, JsonValue]] | None:
     data = tool.data
     if not isinstance(data, dict) or data.get("kind") != "todo_snapshot":
         return None
-    items = data.get("items")
+    items = data.get("jobs")
     if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
         return None
     return items

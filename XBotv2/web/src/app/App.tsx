@@ -12,7 +12,7 @@ import { SessionSidebar } from "../components/SessionSidebar";
 import { StatusBar } from "../components/StatusBar";
 import { UsageStatsLine } from "../components/UsageStatsLine";
 import { DirectoryBrowser } from "../components/DirectoryBrowser";
-import { TaskDock } from "../components/TaskDock";
+import { JobDock } from "../components/JobDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
 import { ThreadActivityPanel } from "../components/ThreadActivityPanel";
@@ -219,10 +219,10 @@ export function App() {
           onFork={runtime.fork}
           onClear={async () => setClearConfirmOpen(true)}
           utilities={(
-            <TaskDock
-              tasks={Object.values(state.tasks)}
-              onStop={runtime.stopTask}
-              onStopAll={runtime.stopAllTasks}
+            <JobDock
+              jobs={Object.values(state.jobs)}
+              onStop={runtime.stopJob}
+              onStopAll={runtime.stopAllJobs}
             />
           )}
         />

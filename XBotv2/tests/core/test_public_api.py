@@ -61,8 +61,8 @@ def test_plugin_package_roots_export_declarations_not_implementations():
         "JobRunner",
         "JobsPort",
         "JobsCommandPort",
-        "LIST_TASKS",
-        "TaskSnapshot",
+        "LIST_JOBS",
+        "JobSnapshot",
     }
     assert set(commands.__all__) >= {
         "Command",
@@ -452,9 +452,9 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}/queue",
         "/sessions/{session_id}/threads/{thread_id}/queue/{message_id}",
         "/sessions/{session_id}/threads/{thread_id}/provider",
-        "/sessions/{session_id}/threads/{thread_id}/tasks",
-        "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
-        "/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop",
+        "/sessions/{session_id}/threads/{thread_id}/jobs",
+        "/sessions/{session_id}/threads/{thread_id}/jobs/stop",
+        "/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop",
         "/sessions/{session_id}/threads/{thread_id}/tools",
         "/sessions/{session_id}/threads/{thread_id}/todos",
     }
@@ -496,7 +496,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "text/event-stream"
     }
     todos_path = "/sessions/{session_id}/threads/{thread_id}/todos"
-    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TodoSnapshot")
+    assert paths[todos_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/TaskList")
 
     operation_ids = [
         operation["operationId"]

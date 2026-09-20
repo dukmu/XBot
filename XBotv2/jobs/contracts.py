@@ -203,17 +203,17 @@ class JobsPort(Protocol):
 
 
 class JobsCommandPort(Protocol):
-    def snapshots(self) -> list[TaskSnapshot]: ...
+    def snapshots(self) -> list[JobSnapshot]: ...
 
     def get_or_none(self, job_id: str) -> Job | None: ...
 
     async def cancel(self, job_id: str) -> CancelResult: ...
 
-    async def stop_all(self) -> list[TaskSnapshot]: ...
+    async def stop_all(self) -> list[JobSnapshot]: ...
 
 
-class TaskSnapshot(BaseModel):
-    task_id: str = Field(min_length=1)
+class JobSnapshot(BaseModel):
+    job_id: str = Field(min_length=1)
     kind: Literal["shell", "agent"] = "shell"
     command: str = ""
     cwd: str
@@ -230,32 +230,32 @@ class TaskSnapshot(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
-class TaskCatalog:
-    tasks: tuple[TaskSnapshot, ...]
+class JobCatalog:
+    jobs: tuple[JobSnapshot, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class StopTask:
-    task_id: str
+class StopJob:
+    job_id: str
 
 
 @dataclass(frozen=True, slots=True)
-class StoppedTasks:
-    tasks: tuple[TaskSnapshot, ...]
+class StoppedJobs:
+    jobs: tuple[JobSnapshot, ...]
 
 
-LIST_TASKS = Operation("jobs/list", EmptyRequest, TaskCatalog)
-STOP_TASK = Operation("jobs/stop", StopTask, StoppedTasks)
-STOP_ALL_TASKS = Operation("jobs/stop-all", EmptyRequest, StoppedTasks)
+LIST_JOBS = Operation("jobs/list", EmptyRequest, JobCatalog)
+STOP_JOB = Operation("jobs/stop", StopJob, StoppedJobs)
+STOP_ALL_JOBS = Operation("jobs/stop-all", EmptyRequest, StoppedJobs)
 
 #: Bus events published by the registry for each lifecycle transition; the
 #: jobs plugin subscribes with fiber-owned listeners, so notification
 #: delivery never depends on assignment order inside apply.
-TASK_UPDATED = "task/updated"
-TASK_COMPLETED = "task/completed"
+JOB_UPDATED = "job/updated"
+JOB_COMPLETED = "job/completed"
 
 
-class TaskEventPort(Protocol):
+class JobEventPort(Protocol):
     """Narrow bus surface the registry publishes lifecycle events on."""
 
     async def emit(self, event: str, *args: object) -> None: ...
@@ -278,19 +278,19 @@ __all__ = [
     "JobsCommandPort",
     "JobStatus",
     "JobSummary",
-    "LIST_TASKS",
+    "LIST_JOBS",
     "MAX_SUMMARY_CHARS",
     "OutputChunk",
     "OutputStore",
-    "STOP_ALL_TASKS",
-    "STOP_TASK",
-    "StopTask",
-    "StoppedTasks",
-    "TASK_COMPLETED",
-    "TASK_UPDATED",
-    "TaskCatalog",
-    "TaskEventPort",
-    "TaskSnapshot",
+    "STOP_ALL_JOBS",
+    "STOP_JOB",
+    "StopJob",
+    "StoppedJobs",
+    "JOB_COMPLETED",
+    "JOB_UPDATED",
+    "JobCatalog",
+    "JobEventPort",
+    "JobSnapshot",
     "TERMINAL_STATES",
     "TextOutputStorePort",
     "WaitMode",

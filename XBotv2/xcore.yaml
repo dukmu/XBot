@@ -170,14 +170,14 @@
   name: permissions
   config:
     allow:
-      - tool: (?:create_goal|get_goal|update_goal)
+      - tool: (?:create_goal|get_goal)
       - tool: compact
       - tool: (?:list_shells|wait_shell|read_shell|cancel_shell)
       - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
       - tool: (?:send_message|ask_user|request_permission)
       - tool: search
       - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
-      - tool: update_todos
+      - tool: (?:task_create|task_get|task_update|task_list)
       - tool: read
       - tool: edit
         paths: ${workspace}
@@ -216,6 +216,15 @@
 - id: todolist
   name: todolist
   profiles: [agent, server]
+  config:
+    # Guardrails owned by the plugin; override per workspace/session.
+    max_tasks: 50
+    max_subject_chars: 500
+    max_description_chars: 2000
+    max_active_form_chars: 200
+    reminder_after_turns: 3
+    verification_nudge: true
+    verification_hint: verif
 
 - id: skills
   name: skills

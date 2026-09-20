@@ -361,12 +361,12 @@ async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> None:
-    """A completed background job must publish a terminal ``task_updated`` so
+async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> None:
+    """A completed background job must publish a terminal ``job_updated`` so
     the TUI task panel stops showing it as running.
 
     Regression: ``JobRegistry._finish`` only fired ``on_complete`` (a
-    completion notice the TUI never applies); no terminal ``task_updated``
+    completion notice the TUI never applies); no terminal ``job_updated``
     reached live clients, so tasks stayed "running" forever."""
 
     from XBotv2.jobs import JobKind
@@ -404,7 +404,7 @@ async def test_background_task_completion_reaches_tui_task_panel(foldin_app) -> 
     async with asyncio.timeout(1):
         while True:
             event = (await anext(events)).event.model_dump(mode="json")
-            if event.get("type") == "task_updated":
+            if event.get("type") == "job_updated":
                 task_updates.append(event["data"].get("status"))
             if "completed" in task_updates:
                 break

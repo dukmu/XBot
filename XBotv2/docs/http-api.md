@@ -139,9 +139,9 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 | GET | `/sessions/{session_id}/policy` | `get_session_policy` | `SessionPolicyResponse` |
 | PATCH | `/sessions/{session_id}/policy` | `update_session_policy` | `SessionPolicyResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/todos` | `get_todos` | Todo response |
-| GET | `/sessions/{session_id}/threads/{thread_id}/tasks` | `list_tasks` | `TaskListResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop` | `stop_task` | `TaskStopResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/tasks/stop` | `stop_all_tasks` | `TaskStopResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/jobs` | `list_jobs` | `JobListResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_tasks` | `JobStopResponse` |
 
 ## Plugin configuration
 

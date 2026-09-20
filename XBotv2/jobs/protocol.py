@@ -9,38 +9,38 @@ from pydantic import Field
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.core.tools import ClientEvent
 from XBotv2.jobs.contracts import (
-    LIST_TASKS,
-    STOP_ALL_TASKS,
-    STOP_TASK,
-    StopTask,
-    TaskSnapshot,
+    LIST_JOBS,
+    STOP_ALL_JOBS,
+    STOP_JOB,
+    StopJob,
+    JobSnapshot,
 )
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
 
 
-class TaskCompletionData(WireModel):
-    type: Literal["background_task", "subagent"]
-    kind: Literal["background_task", "subagent"]
-    task_id: str = Field(min_length=1)
+class JobCompletionData(WireModel):
+    type: Literal["background_job", "subagent"]
+    kind: Literal["background_job", "subagent"]
+    job_id: str = Field(min_length=1)
     status: str = Field(min_length=1)
     command: str = ""
     agent: str = ""
 
 
-def task_updated_event(task: TaskSnapshot) -> ClientEvent:
-    return ClientEvent(type="task_updated", data=task.model_dump(mode="json"))
+def job_updated_event(snapshot: JobSnapshot) -> ClientEvent:
+    return ClientEvent(type="job_updated", data=snapshot.model_dump(mode="json"))
 
 
-def task_completion_event(task: TaskSnapshot) -> ClientEvent:
-    kind = "background_task" if task.kind == "shell" else "subagent"
-    payload = TaskCompletionData(
+def job_completion_event(snapshot: JobSnapshot) -> ClientEvent:
+    kind = "background_job" if snapshot.kind == "shell" else "subagent"
+    payload = JobCompletionData(
         type=kind,
         kind=kind,
-        task_id=task.task_id,
-        status=task.status,
-        command=task.command,
-        agent=task.agent,
+        job_id=snapshot.job_id,
+        status=snapshot.status,
+        command=snapshot.command,
+        agent=snapshot.agent,
     )
     return ClientEvent(
         type="completion_notice",
@@ -48,83 +48,83 @@ def task_completion_event(task: TaskSnapshot) -> ClientEvent:
     )
 
 
-class TaskListResponse(WireModel):
+class JobListResponse(WireModel):
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
-    tasks: list[TaskSnapshot] = Field(default_factory=list)
+    jobs: list[JobSnapshot] = Field(default_factory=list)
 
 
-class TaskStopResponse(TaskListResponse):
+class JobStopResponse(JobListResponse):
     matched_count: int = Field(ge=0)
 
 
-def build_tasks_router(*, sessions: SessionsPort) -> APIRouter:
-    """Background task control routes backed by the session jobs registry."""
+def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
+    """Background job control routes backed by the session jobs registry."""
 
     router = APIRouter()
 
     @router.get(
-        "/sessions/{session_id}/threads/{thread_id}/tasks",
-        operation_id="list_tasks",
+        "/sessions/{session_id}/threads/{thread_id}/jobs",
+        operation_id="list_jobs",
     )
-    async def list_tasks_endpoint(
+    async def list_jobs_endpoint(
         session_id: str,
         thread_id: str,
-    ) -> TaskListResponse:
+    ) -> JobListResponse:
         result = await sessions.dispatch(
-            session_id, thread_id, LIST_TASKS, EmptyRequest()
+            session_id, thread_id, LIST_JOBS, EmptyRequest()
         )
-        return TaskListResponse(
+        return JobListResponse(
             session_id=session_id,
             thread_id=thread_id,
-            tasks=list(result.tasks),
+            jobs=list(result.jobs),
         )
 
     @router.post(
-        "/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop",
-        operation_id="stop_task",
+        "/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop",
+        operation_id="stop_job",
     )
-    async def stop_task_endpoint(
+    async def stop_job_endpoint(
         session_id: str,
         thread_id: str,
-        task_id: str,
-    ) -> TaskStopResponse:
+        job_id: str,
+    ) -> JobStopResponse:
         result = await sessions.dispatch(
-            session_id, thread_id, STOP_TASK, StopTask(task_id)
+            session_id, thread_id, STOP_JOB, StopJob(job_id)
         )
-        return TaskStopResponse(
+        return JobStopResponse(
             session_id=session_id,
             thread_id=thread_id,
             matched_count=1,
-            tasks=list(result.tasks),
+            jobs=list(result.jobs),
         )
 
     @router.post(
-        "/sessions/{session_id}/threads/{thread_id}/tasks/stop",
-        operation_id="stop_all_tasks",
+        "/sessions/{session_id}/threads/{thread_id}/jobs/stop",
+        operation_id="stop_all_jobs",
     )
-    async def stop_all_tasks_endpoint(
+    async def stop_all_jobs_endpoint(
         session_id: str,
         thread_id: str,
-    ) -> TaskStopResponse:
+    ) -> JobStopResponse:
         result = await sessions.dispatch(
-            session_id, thread_id, STOP_ALL_TASKS, EmptyRequest()
+            session_id, thread_id, STOP_ALL_JOBS, EmptyRequest()
         )
-        return TaskStopResponse(
+        return JobStopResponse(
             session_id=session_id,
             thread_id=thread_id,
-            matched_count=len(result.tasks),
-            tasks=list(result.tasks),
+            matched_count=len(result.jobs),
+            jobs=list(result.jobs),
         )
 
     return router
 
 
 __all__ = [
-    "TaskCompletionData",
-    "TaskListResponse",
-    "TaskStopResponse",
-    "build_tasks_router",
-    "task_completion_event",
-    "task_updated_event",
+    "JobCompletionData",
+    "JobListResponse",
+    "JobStopResponse",
+    "build_jobs_router",
+    "job_completion_event",
+    "job_updated_event",
 ]

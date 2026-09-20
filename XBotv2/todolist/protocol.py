@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.todolist.contracts import GET_TODOS
-from XBotv2.todolist.contracts import TodoSnapshot
+from XBotv2.todolist.contracts import TaskList
 
 
 def build_router(*, sessions: SessionsPort) -> APIRouter:
@@ -17,7 +17,7 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         "/sessions/{session_id}/threads/{thread_id}/todos",
         operation_id="get_todos",
     )
-    async def get_todos(session_id: str, thread_id: str) -> TodoSnapshot:
+    async def get_todos(session_id: str, thread_id: str) -> TaskList:
         return await sessions.dispatch(
             session_id, thread_id, GET_TODOS, EmptyRequest()
         )

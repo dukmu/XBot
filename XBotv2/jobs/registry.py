@@ -16,8 +16,8 @@ from typing import Any
 
 from XBotv2.jobs.contracts import (
     TERMINAL_STATES,
-    TASK_COMPLETED,
-    TASK_UPDATED,
+    JOB_COMPLETED,
+    JOB_UPDATED,
     CancelResult,
     Job,
     JobError,
@@ -29,12 +29,12 @@ from XBotv2.jobs.contracts import (
     JobStatus,
     JobSummary,
     MAX_SUMMARY_CHARS,
-    TaskEventPort,
+    JobEventPort,
     WaitResult,
     WaitMode,
     JobRunner,
     JobsPort,
-    TaskSnapshot,
+    JobSnapshot,
 )
 from XBotv2.jobs.runner import JobContext
 from pydantic import JsonValue
@@ -66,7 +66,7 @@ class JobRegistry(JobsPort):
         *,
         limits: dict[JobKind, int] | None = None,
         prefix: str = "job",
-        publisher: TaskEventPort | None = None,
+        publisher: JobEventPort | None = None,
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
         self._completion_events: dict[JobId, asyncio.Event] = {}
@@ -299,7 +299,7 @@ class JobRegistry(JobsPort):
         job.result = None
         job.metadata.clear()
 
-    async def stop_all(self) -> list[TaskSnapshot]:
+    async def stop_all(self) -> list[JobSnapshot]:
         """Cancel every non-terminal job and return their final snapshots."""
         active = [job for job in self._jobs.values() if not job.terminal]
         # Gracefully stop runners first, concurrently, so live children begin
@@ -342,7 +342,7 @@ class JobRegistry(JobsPort):
         except BaseException:  # noqa: BLE001 - cancellation must proceed
             logger.exception("runner.cancel failed for job %s", job.id)
 
-    async def shutdown(self) -> list[TaskSnapshot]:
+    async def shutdown(self) -> list[JobSnapshot]:
         """Cancel all non-terminal jobs; drop terminal jobs' outputs."""
         self._closing = True
         # Suppress completion notices: shutdown is not an ordinary completion.
@@ -415,7 +415,7 @@ class JobRegistry(JobsPort):
         if self._publisher is None or self._closing:
             return
         try:
-            await self._publisher.emit(TASK_UPDATED, self.snapshot(job))
+            await self._publisher.emit(JOB_UPDATED, self.snapshot(job))
         except BaseException:  # noqa: BLE001 - notify must not break jobs
             logger.exception("job update publish failed for %s", job.id)
 
@@ -424,7 +424,7 @@ class JobRegistry(JobsPort):
             return
         try:
             await self._publisher.emit(
-                TASK_COMPLETED,
+                JOB_COMPLETED,
                 self.snapshot(job, full_output=(job.kind is JobKind.SUBAGENT)),
             )
         except BaseException:  # noqa: BLE001 - notify must not break cleanup
@@ -434,7 +434,7 @@ class JobRegistry(JobsPort):
     # Snapshot / rendering
     # ------------------------------------------------------------------
 
-    def snapshot(self, job: Job, *, full_output: bool = False) -> TaskSnapshot:
+    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot:
         """Build one bounded client-facing task snapshot."""
         metadata = job.metadata
         if job.kind is JobKind.SHELL:
@@ -448,8 +448,8 @@ class JobRegistry(JobsPort):
         command = str(metadata.get("command") or "")
         output = self._snapshot_output(job, full_output=full_output)
         error = str(job.error.message if job.error is not None else "")
-        return TaskSnapshot(
-            task_id=job.id,
+        return JobSnapshot(
+            job_id=job.id,
             kind=_PROTOCOL_KIND[job.kind],
             command=command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
             cwd=cwd,
@@ -466,7 +466,7 @@ class JobRegistry(JobsPort):
             ),
         )
 
-    def snapshots(self) -> list[TaskSnapshot]:
+    def snapshots(self) -> list[JobSnapshot]:
         """Snapshot every live job in registration order."""
         return [self.snapshot(job) for job in self.all()]
 

@@ -200,14 +200,10 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                 "tool_calls": [
                     {
                         "id": "todo-call",
-                        "name": "update_todos",
+                        "name": "task_create",
                         "args": {
-                            "todos": [
-                                {
-                                    "content": "Inspect persisted state",
-                                    "status": "in_progress",
-                                }
-                            ]
+                            "subject": "Inspect persisted state",
+                            "activeForm": "Inspecting persisted state",
                         },
                     }
                 ],
@@ -248,17 +244,14 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
             },
             {"content": "Subagent acceptance completed."},
             {"content": "Subagent acceptance completed."},
+            {"content": "Working toward the goal condition."},
             {
-                "tool_calls": [
-                    {
-                        "id": "goal-complete-call",
-                        "name": "update_goal",
-                        "args": {
-                            "status": "complete",
-                            "summary": "Runtime acceptance evidence retained.",
-                        },
-                    }
-                ]
+                # The Goal evaluator is a separate auxiliary model call; it
+                # answers with the verdict contract, never with tool calls.
+                "content": (
+                    '{"verdict": "met", "reason": '
+                    '"Runtime acceptance evidence retained."}'
+                ),
             },
             {"content": "Goal acceptance completed."},
         ],
@@ -340,30 +333,30 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                     for event in events
                 ):
                     raise RuntimeError(f"{label} turn has no terminal event")
-            tasks: list[dict[str, Any]] = []
+            jobs: list[dict[str, Any]] = []
             for _ in range(100):
-                tasks = (
+                jobs = (
                     await _request(
                         client,
                         "GET",
-                        f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/tasks",
+                        f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/jobs",
                     )
-                ).json()["tasks"]
-                if tasks and all(
-                    task["status"] in {"completed", "failed", "stopped"}
-                    for task in tasks
+                ).json()["jobs"]
+                if jobs and all(
+                    job["status"] in {"completed", "failed", "stopped"}
+                    for job in jobs
                 ):
                     break
                 await asyncio.sleep(0.01)
-            if not tasks or any(task["status"] != "completed" for task in tasks):
-                raise RuntimeError(f"subagent lifecycle did not complete: {tasks}")
+            if not jobs or any(job["status"] != "completed" for job in jobs):
+                raise RuntimeError(f"subagent lifecycle did not complete: {jobs}")
             goal_created = await _request(
                 client,
                 "POST",
                 f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/commands",
                 json={
                     "command": "goal",
-                    "raw": "/goal --token-budget 1000 Retain runtime acceptance evidence",
+                    "raw": "/goal Retain runtime acceptance evidence",
                 },
             )
             if goal_created.json()["data"]["status"] != "ok":
@@ -377,7 +370,7 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                     json={"command": "goal", "raw": "/goal"},
                 )
                 goal_message = goal.json()["data"]["message"]
-                if goal_message.startswith("[complete]"):
+                if goal_message.startswith("[achieved]"):
                     break
                 await asyncio.sleep(0.01)
             else:
@@ -413,12 +406,12 @@ async def _first_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any]
                     "GET",
                     f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/todos",
                 )
-            ).json()["items"]
+            ).json()["tasks"]
             return {
                 "pid": os.getpid(),
                 "messages": len(messages),
                 "todos": todos,
-                "tasks": tasks,
+                "jobs": jobs,
                 "goal": goal_message,
                 "workspace": workspace_data,
             }
@@ -520,7 +513,7 @@ async def _second_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any
                     "GET",
                     f"/sessions/{SESSION_ID}/threads/{THREAD_ID}/todos",
                 )
-            ).json()["items"]
+            ).json()["tasks"]
             messages = (
                 await _request(
                     client,
@@ -543,7 +536,7 @@ async def _second_process(paths: RuntimePaths, workspace: Path) -> dict[str, Any
                 json={"command": "goal", "raw": "/goal"},
             )
             goal_message = goal.json()["data"]["message"]
-            if not goal_message.startswith("[complete]"):
+            if not goal_message.startswith("[achieved]"):
                 raise RuntimeError(f"goal did not survive restart: {goal_message}")
             before_compact = len(messages)
             compacted = await _request(
@@ -854,12 +847,9 @@ async def _logging_edges_process(
             {"content": "Denied Tool acceptance response."},
             {
                 "tool_calls": [{
-                    "id": "failed-goal-update",
-                    "name": "update_goal",
-                    "args": {
-                        "status": "complete",
-                        "summary": "There is no active Goal in this session.",
-                    },
+                    "id": "failed-task-update",
+                    "name": "task_update",
+                    "args": {"taskId": "99", "status": "completed"},
                 }]
             },
             {"content": "Failed Tool acceptance response."},
@@ -882,7 +872,7 @@ async def _logging_edges_process(
                 client,
                 "PATCH",
                 f"/sessions/{edge_session}/policy",
-                json={"permissions": {"read": "deny", "update_goal": "allow"}},
+                json={"permissions": {"read": "deny", "task_update": "allow"}},
             )
             _, denied_events = await _submit_turn_events(
                 application,
