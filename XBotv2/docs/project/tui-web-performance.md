@@ -13,25 +13,51 @@ not.
 | Web | `RuntimeState.trajectory: TrajectoryItem[]` | whole conversation | **fixed** — capped at `MAX_TRAJECTORY_WINDOW = 240` |
 | Web | subagent mirror `ThreadViewState.entries` | whole conversation | **fixed** — `boundTranscriptEntries(..., keepTail)` on every append and prepend |
 | Web | `deliveryStates`, `jobs`, `tasks` | per id | bounded by live objects, not history |
-| TUI | `TuiState.transcript: list[TuiTranscriptEntry]` | whole conversation | **open** — see the index-key blocker below |
-| TUI | `TuiState.messages`, `tools`, `notices`, `errors` | whole conversation | **open** — widget caches (`_MAX_MESSAGE_WIDGETS`, `_MAX_TOOL_WIDGETS`, `_MAX_MOUNTED_ENTRIES`) are bounded; the backing lists are not |
+| TUI | `TuiState.transcript: list[TuiTranscriptEntry]` | whole conversation | **fixed** — capped at `_MAX_STATE_TRANSCRIPT` (600) + slack 200 |
+| TUI | `TuiState.messages`, `notices`, `errors` | whole conversation | **fixed** — front-evicted at `_MAX_STATE_MESSAGES` (400) / `_MAX_STATE_NOTICES` (200) / `_MAX_STATE_ERRORS` (100) |
+| TUI | `TuiState.tools` | per live tool call | already bounded by `_MAX_STATE_TOOLS` (300) after this change; terminal tools are dropped oldest-first and running ones are never evicted |
+| TUI | `TuiState.tasks` (jobs) | per live job | already bounded by `prune_finished_tasks` (3 s grace) |
+| TUI | `TuiState._tool_transcript_keys` | per tool call | bounded by the tool cap |
+| Web | `RuntimeState.deliveryStates` | per pending input | bounded by live inputs |
 
 The *rendering* was already windowed in both clients; the gap was that the
 *data* stayed full-fidelity, and reducer paths copied the whole array per event
 (`[...state.entries, entry]`, `.map()` over entries for tool updates).
 
-### TUI blocker (must be resolved before mirroring the Web model)
+### TUI: how the index keys were made safe
 
-`TuiTranscriptEntry.key` is **not** a stable id: it is the decimal index into
-the backing list (`client.py:416/441/564/722`, e.g. `str(len(self.messages) - 1)`),
-and `TranscriptSurface` resolves an entry by that index. Trimming
-`messages`/`tools`/`notices`/`errors` from the front would therefore silently
-re-point every retained transcript entry at different content, and
-`surface.window_start`/`window_end` are absolute indices into the same list.
+`TuiTranscriptEntry.key` is not a stable id: it is the decimal index into the
+backing list (`client.py`, e.g. `str(len(self.messages) - 1)`), and
+`TranscriptSurface` resolves an entry by that index. Trimming the backing lists
+therefore has to keep three things aligned:
 
-Window the TUI state only after the transcript entries own their payload (or
-after trim remaps every surviving index and shifts both window bounds). Doing it
-in the other order corrupts the visible transcript.
+1. **Keys.** `_trim_payloads` drops the front `excess` payloads and renumbers
+   the transcript keys of that kind by `-excess`, dropping the entries whose
+   index went negative. Any surviving key still resolves to the payload it was
+   created for. Trimming runs in batches (`_TRIM_SLACK`), so the renumber pass
+   is amortized O(1) per event.
+2. **The mounted window.** The surface holds `window_start`/`window_end` as
+   absolute positions in the same transcript. The state publishes monotonic
+   `evicted_transcript`/`evicted_messages` counters; the surface subtracts the
+   deltas, dropping index-keyed widget caches for evicted payloads. A window
+   that *overlapped* the evicted region (the reader had scrolled back into it)
+   holds content the client no longer has, so it is re-mounted from the tail.
+3. **The streaming index.** `_streaming_assistant_index` is shifted by the same
+   delta, so a live stream keeps addressing its own message.
+
+Tool eviction is the exception: tools are keyed by `tool_call_id`, so dropping
+the oldest terminal tools leaves their transcript entries in place. Those
+entries render nothing once the payload is gone (`widget_for_entry` returns
+`None`), and the transcript's own cap reclaims them.
+
+### Bounded work per update
+
+`TranscriptSurface.sync` mounts `max(window_end, end - max_mounted_entries) ..
+end`, i.e. at most one window, so a burst of events costs one window instead of
+one widget per event. Entries skipped this way remain in the state window and
+are mounted on demand if the reader scrolls back. Measured by a test that
+records every mount width: a 150-entry backlog with no render in between mounts
+100 widgets, and the assertion fails (150) when the bound is removed.
 
 ## Protocol capability (as built)
 
@@ -143,9 +169,16 @@ Rendering (Web vitest + Python headless Textual):
 - **done** `Timeline.test.tsx` "rendering window": 10 000 retained entries mount
   a bounded number of DOM nodes with the newest content present, and mounting
   again does not grow the document.
-- **open** TUI equivalent: headless Textual run asserting
-  `len(state.transcript)` is capped and the mounted-widget count stays bounded
-  (blocked on the index-key refactor above);
+- **done** TUI state window (`test_tui_client.py`): evicting 3 000 messages
+  keeps the retained lists at the cap, the newest payload retained, and every
+  retained transcript key resolving to its own payload; notices/errors capped;
+  pending tools never evicted; the streaming index still addresses the
+  streaming message after eviction.
+- **done** TUI rendering window (headless Textual, `bench/test_tui_event_throughput.py`):
+  a burst of 200 events and a 150-event no-render backlog each materialize at
+  most one window, the mounted widget count stays at the cap, and every mounted
+  body shows retained content while the newest answer is present. The
+  mount-width assertion is the falsifying one (fails at 150 without the bound).
 - **open** up-scroll/down-scroll cycle against a live stream, asserting no
   duplicate and no missing record between the two fetches.
 
@@ -159,8 +192,5 @@ Rendering (Web vitest + Python headless Textual):
    parse.
 2. TUI live `message` path treated injected (runtime-attributed) turns as typed
    human input — fixed; keep it covered by a test.
-3. ~~Web `entries` is never trimmed~~ — fixed by the window above. The TUI
-   `transcript` still has this defect (see the index-key blocker).
-4. Web `deliveryStates` and TUI `notices`/`errors` still grow per id/message;
-   they are bounded by live traffic rather than history, so they are lower
-   priority, but they are not yet bounded.
+3. ~~Web `entries` and TUI `transcript` are never trimmed~~ — both fixed.
+4. ~~TUI `notices`/`errors` grow per message~~ — both capped.

@@ -1363,6 +1363,50 @@ class TranscriptSurface:
         self.message_widgets: dict[int, Vertical] = {}
         self.tool_widgets: dict[str, Vertical] = {}
         self.render_lock = asyncio.Lock()
+        # Evictions observed from the state so far.  The state trims its
+        # retained window from the front while this surface holds absolute
+        # positions in that same transcript, so both the window and the
+        # index-keyed widget cache are shifted by the delta.
+        self._seen_transcript_evictions = self.state.evicted_transcript
+        self._seen_message_evictions = self.state.evicted_messages
+        self._window_invalidated = False
+
+    def reconcile_evictions(self) -> None:
+        """Re-anchor window and caches after the state evicted old payloads.
+
+        Evictions only ever remove the oldest entries, so a window that starts
+        at or past the number removed still points at the entries it was
+        mounted for and is shifted in place.  A window that overlapped the
+        removed region holds content the client no longer has and is re-mounted
+        from the retained tail.  Index-keyed widget caches are shifted by the
+        state's own renumbering of retained payloads.
+        """
+        shift = self.state.evicted_transcript - self._seen_transcript_evictions
+        if shift > 0:
+            self._seen_transcript_evictions = self.state.evicted_transcript
+            if self.window_start >= shift:
+                self.window_start -= shift
+                self.window_end -= shift
+            else:
+                self._window_invalidated = True
+        message_shift = self.state.evicted_messages - self._seen_message_evictions
+        if message_shift > 0:
+            self._seen_message_evictions = self.state.evicted_messages
+            self.message_widgets = {
+                index - message_shift: widget
+                for index, widget in self.message_widgets.items()
+                if index >= message_shift
+            }
+
+    async def _remount_tail(self) -> None:
+        """Re-mount the retained tail after the window's entries were evicted."""
+        self._window_invalidated = False
+        await self.clear()
+        total = len(self.state.transcript)
+        self.window_start = max(0, total - self.max_mounted_entries)
+        self.window_end = self.window_start
+        await self.mount_entries(self.window_start, total)
+        self.window_end = total
 
     def set_state(self, state: TuiState) -> None:
         self.state = state
@@ -1371,6 +1415,9 @@ class TranscriptSurface:
         self.mounted_entry_widgets = []
         self.message_widgets.clear()
         self.tool_widgets.clear()
+        self._seen_transcript_evictions = state.evicted_transcript
+        self._seen_message_evictions = state.evicted_messages
+        self._window_invalidated = False
 
     async def clear(self) -> None:
         await self.container.remove_children()
@@ -1379,6 +1426,9 @@ class TranscriptSurface:
         self.mounted_entry_widgets = []
         self.message_widgets.clear()
         self.tool_widgets.clear()
+        self._seen_transcript_evictions = self.state.evicted_transcript
+        self._seen_message_evictions = self.state.evicted_messages
+        self._window_invalidated = False
 
     async def rebuild_from_state(self) -> None:
         await self.clear()
@@ -1408,6 +1458,12 @@ class TranscriptSurface:
     async def sync(self, *, follow: bool | None = None) -> bool:
         """Mount new transcript entries following the live tail."""
         async with self.render_lock:
+            self.reconcile_evictions()
+            if self._window_invalidated:
+                # The reader's window pointed at content the client no longer
+                # holds; showing the retained tail is the only choice that does
+                # not render evicted positions.
+                await self._remount_tail()
             end = len(self.state.transcript)
             if follow is None:
                 follow = self.container.is_vertical_scroll_end
@@ -1416,9 +1472,15 @@ class TranscriptSurface:
                 return False
             if not follow:
                 return False
-            await self.mount_entries(self.window_end, end)
+            # Mount at most one window's worth per sync.  Entries between the
+            # mounted window and the tail are skipped rather than materialized
+            # and immediately trimmed; they stay in the state window and are
+            # mounted on demand if the reader scrolls back.  A burst of events
+            # therefore costs one window, not one widget per event.
+            start = max(self.window_end, end - self.max_mounted_entries)
+            await self.mount_entries(start, end)
             self.window_end = end
-            await self.drop_leading_excess(follow)
+            await self.trim_mounted_prefix()
             if follow:
                 self._schedule_refresh(
                     lambda: self.container.scroll_end(animate=False)
@@ -1436,6 +1498,10 @@ class TranscriptSurface:
         *,
         prepend: bool = False,
     ) -> list[Any]:
+        self.reconcile_evictions()
+        if self._window_invalidated:
+            await self._remount_tail()
+            return list(self.mounted_entry_widgets)
         widgets: list[Any] = []
         reference = (
             self.container.children[0]
@@ -1464,9 +1530,26 @@ class TranscriptSurface:
             self.mounted_entry_widgets.extend(widgets)
         return widgets
 
+    async def trim_mounted_prefix(self) -> int:
+        """Keep the mounted window at the cap, dropping the oldest widgets.
+
+        The window is the contiguous range the surviving widgets cover, so it
+        is derived from the widget count rather than adjusted by a delta.
+        """
+        excess = len(self.mounted_entry_widgets) - self.max_mounted_entries
+        if excess > 0:
+            removed = self.mounted_entry_widgets[:excess]
+            self.mounted_entry_widgets = self.mounted_entry_widgets[excess:]
+            for widget in removed:
+                if widget.parent is self.container:
+                    await widget.remove()
+        self.window_start = max(0, self.window_end - len(self.mounted_entry_widgets))
+        return max(0, excess)
+
     async def drop_leading_excess(self, follow: bool) -> int:
         if not follow:
             return 0
+        self.reconcile_evictions()
         excess = self.window_end - self.window_start - self.max_mounted_entries
         if excess <= 0:
             return 0
@@ -1479,6 +1562,7 @@ class TranscriptSurface:
         return len(removed)
 
     async def drop_trailing_excess(self) -> int:
+        self.reconcile_evictions()
         excess = self.window_end - self.window_start - self.max_mounted_entries
         if excess <= 0:
             return 0

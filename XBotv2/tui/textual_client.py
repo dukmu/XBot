@@ -1847,10 +1847,7 @@ class XBotTextualApp(App[None]):
         if not self.is_mounted:
             return
         self.state.status = "Error"
-        self.state.errors.append(str(exc))
-        self.state.transcript.append(
-            TuiTranscriptEntry(kind="error", key=str(len(self.state.errors) - 1))
-        )
+        self.state.record_error(str(exc))
         self.run_worker(
             self._render_new_transcript_entries,
             exclusive=False,
@@ -1863,10 +1860,7 @@ class XBotTextualApp(App[None]):
         self._refresh_input_mode()
 
     async def _append_local_notice(self, kind: str, text: str) -> None:
-        self.state.notices.append(TuiNotice(kind=kind, text=text))
-        self.state.transcript.append(
-            TuiTranscriptEntry(kind="notice", key=str(len(self.state.notices) - 1))
-        )
+        self.state.record_notice(TuiNotice(kind=kind, text=text))
         await self._render_new_transcript_entries()
 
     def _refresh_all(self) -> None:
@@ -2140,6 +2134,7 @@ class XBotTextualApp(App[None]):
             surface = self._surface()
             if surface is None:
                 return
+            surface.reconcile_evictions()
             batch_start = max(0, surface.window_start - _REPLAY_BATCH)
             entries = self.state.transcript[batch_start:surface.window_start]
             if not entries:
@@ -2169,6 +2164,7 @@ class XBotTextualApp(App[None]):
         surface = self._surface()
         if surface is None:
             return
+        surface.reconcile_evictions()
         if surface.window_end >= len(self.state.transcript):
             await surface.drop_leading_excess(follow=True)
             return

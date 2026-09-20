@@ -126,6 +126,13 @@ class TuiState:
     compaction_active: bool = False
     pending_user_input_payload: dict[str, JsonValue] | None = None
     pending_permission_payload: dict[str, JsonValue] | None = None
+    # Monotonic counters of what has been evicted.  Consumers (the transcript
+    # surface) shift their window and caches by the delta instead of
+    # re-deriving positions from list lengths.
+    evicted_messages: int = 0
+    evicted_notices: int = 0
+    evicted_errors: int = 0
+    evicted_transcript: int = 0
     _tool_transcript_keys: set[str] = field(default_factory=set)
     _streaming_assistant_index: int | None = None
     _streaming_tool_ids: dict[int, str] = field(default_factory=dict)
@@ -412,8 +419,84 @@ class TuiState:
                     pass
             self._streaming_assistant_index = None
             self.status = "Error"
-            self.errors.append(str(data.get("message") or data))
-            self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
+            self.record_error(str(data.get("message") or data))
+
+    def _trim_state(self) -> None:
+        """Bound the retained conversation after a mutation.
+
+        Each index-keyed payload list is evicted from the front (oldest first),
+        and the transcript keys of the same kind are renumbered so a retained
+        key still resolves to the payload it was created for.  Tools are keyed
+        by id, so their cache is dropped from the front of the terminal ones and
+        the surviving transcript entry renders nothing once its payload is gone.
+
+        ``evicted_transcript`` is a monotonic count of transcript entries that
+        were removed.  A renderer holding positions in the transcript cannot
+        derive that from lengths, so it re-anchors when the count moves.
+        """
+        for container, kind, cap, counter in (
+            (self.messages, "message", _MAX_STATE_MESSAGES, "evicted_messages"),
+            (self.notices, "notice", _MAX_STATE_NOTICES, "evicted_notices"),
+            (self.errors, "error", _MAX_STATE_ERRORS, "evicted_errors"),
+        ):
+            dropped = self._trim_payloads(container, kind, cap)
+            if dropped:
+                setattr(self, counter, getattr(self, counter) + dropped)
+        excess = len(self.tools) - _MAX_STATE_TOOLS
+        if excess > _TRIM_SLACK:
+            for tool_id in [
+                tool_id
+                for tool_id, tool in self.tools.items()
+                if tool.status not in ("pending", "running") and not tool.permission_pending
+            ][:excess]:
+                self.tools.pop(tool_id, None)
+                self._tool_transcript_keys.discard(tool_id)
+        excess = len(self.transcript) - _MAX_STATE_TRANSCRIPT
+        if excess > _TRIM_SLACK:
+            del self.transcript[:excess]
+            self.evicted_transcript += excess
+
+    def _trim_payloads(self, container: list[object], kind: str, cap: int) -> int:
+        excess = len(container) - cap
+        if excess <= _TRIM_SLACK:
+            return 0
+        del container[:excess]
+        kept: list[TuiTranscriptEntry] = []
+        for entry in self.transcript:
+            if entry.kind != kind:
+                kept.append(entry)
+                continue
+            try:
+                index = int(entry.key) - excess
+            except ValueError:  # pragma: no cover - keys of this kind are indices
+                kept.append(entry)
+                continue
+            if index < 0:
+                continue
+            entry.key = str(index)
+            kept.append(entry)
+        self.evicted_transcript += len(self.transcript) - len(kept)
+        self.transcript[:] = kept
+        if kind == "message" and self._streaming_assistant_index is not None:
+            shifted = self._streaming_assistant_index - excess
+            self._streaming_assistant_index = shifted if shifted >= 0 else None
+        return excess
+
+    def record_error(self, message: str) -> str:
+        """Append an error entry and return its transcript key."""
+        self.errors.append(message)
+        key = str(len(self.errors) - 1)
+        self.transcript.append(TuiTranscriptEntry(kind="error", key=key))
+        self._trim_state()
+        return key
+
+    def record_notice(self, notice: TuiNotice) -> str:
+        """Append a notice and return its transcript key."""
+        self.notices.append(notice)
+        key = str(len(self.notices) - 1)
+        self.transcript.append(TuiTranscriptEntry(kind="notice", key=key))
+        self._trim_state()
+        return key
 
     def _message_index(self, message_id: str) -> int | None:
         if not message_id:
@@ -439,6 +522,7 @@ class TuiState:
             TuiMessage(role=role, content=content, message_id=message_id)
         )
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
+        self._trim_state()
 
     def append_runtime_message(self, data: dict[str, JsonValue]) -> bool:
         """Record one injected harness turn as a notice, not human input.
@@ -453,14 +537,10 @@ class TuiState:
             return False
         source = str(runtime.get("source") or "runtime")
         event = str(runtime.get("event") or "message")
-        self.notices.append(TuiNotice(
+        self.record_notice(TuiNotice(
             kind=f"{source}:{event}",
             text=f"{source} {event}",
             payload=runtime,
-        ))
-        self.transcript.append(TuiTranscriptEntry(
-            kind="notice",
-            key=str(len(self.notices) - 1),
         ))
         return True
 
@@ -524,6 +604,10 @@ class TuiState:
         self.notices.clear()
         self.errors.clear()
         self.transcript.clear()
+        self.evicted_messages = 0
+        self.evicted_notices = 0
+        self.evicted_errors = 0
+        self.evicted_transcript = 0
         self._tool_transcript_keys.clear()
         self._streaming_assistant_index = None
         self._streaming_tool_ids.clear()
@@ -560,8 +644,7 @@ class TuiState:
         *,
         payload: dict[str, JsonValue] | None = None,
     ) -> None:
-        self.notices.append(TuiNotice(kind=kind, text=text, payload=payload or {}))
-        self.transcript.append(TuiTranscriptEntry(kind="notice", key=str(len(self.notices) - 1)))
+        self.record_notice(TuiNotice(kind=kind, text=text, payload=payload or {}))
 
     def _clear_pending_interactions(self, *, tool_status: str) -> None:
         self.pending_user_input_payload = None
@@ -720,6 +803,7 @@ class TuiState:
             return
         self._tool_transcript_keys.add(tool_call_id)
         self.transcript.append(TuiTranscriptEntry(kind="tool", key=tool_call_id))
+        self._trim_state()
 
     def _rename_tool(self, old_id: str, new_id: str) -> None:
         if old_id == new_id or old_id not in self.tools:
@@ -757,6 +841,21 @@ class TuiState:
                 self._tool_transcript_keys.add(new_id)
         self._tool_id_renames[old_id] = new_id
         self._changed_tool_ids.update({old_id, new_id})
+
+
+# State-side ceilings.  The client keeps a bounded window of the conversation
+# rather than a copy of it: the oldest payloads are evicted from the front and
+# the transcript entries that referenced them go with them.  The rendered
+# window (``TranscriptSurface``) is smaller still, so scrolling back stays
+# inside retained state and only reaching further needs a server page.
+_MAX_STATE_MESSAGES = 400
+_MAX_STATE_NOTICES = 200
+_MAX_STATE_ERRORS = 100
+_MAX_STATE_TOOLS = 300
+_MAX_STATE_TRANSCRIPT = 600
+# Evict in batches: one renumber pass per batch keeps the amortized cost of a
+# mutation independent of both history length and window size.
+_TRIM_SLACK = 200
 
 
 def _is_provisional_tool_id(tool_call_id: str) -> bool:

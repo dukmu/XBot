@@ -16,6 +16,11 @@ from XBotv2.tui.client import (
     TuiJob,
     TuiTool,
     TuiTranscriptEntry,
+    _MAX_STATE_MESSAGES,
+    _MAX_STATE_NOTICES,
+    _MAX_STATE_TOOLS,
+    _MAX_STATE_TRANSCRIPT,
+    _TRIM_SLACK,
     _parse_permission_decision,
 )
 from XBotv2.tui.terminal import TerminalSession
@@ -4339,3 +4344,90 @@ async def test_turn_end_refresh_applies_the_captioned_title():
     assert handler.state.model == "MiniMax-M2"
     assert handler.state.context_window == 200000
     handler._refresh_all.assert_called_once()
+
+
+def _assistant_message(state: TuiState, message_id: str, content: str) -> None:
+    state.apply_event({
+        "type": "assistant_message",
+        "data": {"id": message_id, "content": content, "tool_calls": []},
+    })
+
+
+def test_state_window_evicts_oldest_payloads_and_keeps_keys_aligned():
+    """The retained conversation is a window, not a copy of the session."""
+    state = TuiState()
+    total = _MAX_STATE_MESSAGES + _TRIM_SLACK + 50
+    for index in range(total):
+        _assistant_message(state, f"m{index}", f"answer {index}")
+
+    assert len(state.messages) <= _MAX_STATE_MESSAGES + _TRIM_SLACK
+    assert len(state.transcript) <= _MAX_STATE_TRANSCRIPT + _TRIM_SLACK
+    assert state.evicted_messages > 0
+    # The newest output is always retained, and the oldest retained payload is
+    # the one the front of the window points at: no gap, no duplicate.
+    assert state.messages[-1].message_id == f"m{total - 1}"
+    assert state.messages[0].message_id == f"m{total - len(state.messages)}"
+
+    # Every retained transcript key still resolves to the payload it was
+    # created for; a shifted key that resolved to a neighbour would render one
+    # message's text under another's identity.
+    for entry in state.transcript:
+        if entry.kind != "message":
+            continue
+        message = state.messages[int(entry.key)]
+        assert message.content == f"answer {message.message_id[1:]}"
+
+
+def test_state_window_bounds_notices_and_errors():
+    state = TuiState()
+    for index in range(_MAX_STATE_NOTICES + _TRIM_SLACK + 20):
+        state.append_notice("local", f"notice {index}")
+    assert len(state.notices) <= _MAX_STATE_NOTICES + _TRIM_SLACK
+    assert state.notices[-1].text == f"notice {_MAX_STATE_NOTICES + _TRIM_SLACK + 19}"
+    for entry in state.transcript:
+        if entry.kind == "notice":
+            assert state.notices[int(entry.key)].text.startswith("notice ")
+
+
+def test_state_window_keeps_pending_tools_and_drops_terminal_ones():
+    state = TuiState()
+    for index in range(_MAX_STATE_TOOLS + _TRIM_SLACK + 20):
+        state.apply_event({
+            "type": "tool_calls_started",
+            "data": {"tool_calls": [{"id": f"call_{index}", "name": "shell", "args": {}}]},
+        })
+        state.apply_event({
+            "type": "tool_result",
+            "data": {"tool_call_id": f"call_{index}", "name": "shell", "content": "ok", "status": "success"},
+        })
+    assert len(state.tools) <= _MAX_STATE_TOOLS + _TRIM_SLACK
+    assert f"call_{_MAX_STATE_TOOLS + _TRIM_SLACK + 19}" in state.tools
+
+    # A tool that is still running is never evicted, however old it is.
+    state.apply_event({
+        "type": "tool_calls_started",
+        "data": {"tool_calls": [{"id": "call_pending", "name": "shell", "args": {}}]},
+    })
+    for index in range(_TRIM_SLACK + 10):
+        _assistant_message(state, f"later{index}", "text")
+    assert state.tools["call_pending"].status == "pending"
+
+
+def test_state_window_keeps_streaming_index_on_the_same_message():
+    """Evicting old messages must not re-point the streaming message."""
+    state = TuiState()
+    for index in range(_MAX_STATE_MESSAGES + _TRIM_SLACK + 5):
+        _assistant_message(state, f"m{index}", f"answer {index}")
+    state.apply_event({"type": "assistant_message_delta", "data": {"content": "more"}})
+    assert state._streaming_assistant_index is not None
+    streaming = state.messages[state._streaming_assistant_index]
+    assert streaming.streaming is True
+    assert streaming.content.endswith("more")
+
+    # Drive far past the cap again with a live stream open, then assert the
+    # index still addresses the streaming message.
+    for index in range(_TRIM_SLACK + 60):
+        _assistant_message(state, f"n{index}", f"later {index}")
+    state.apply_event({"type": "assistant_message_delta", "data": {"content": "!"}})
+    streaming = state.messages[state._streaming_assistant_index]
+    assert streaming.content.endswith("!")
