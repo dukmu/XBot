@@ -1360,6 +1360,12 @@ class TranscriptSurface:
         self.window_start = 0
         self.window_end = 0
         self.mounted_entry_widgets: list[Any] = []
+        # Transcript index of each mounted widget, in the same order.  The
+        # window bounds are derived from these: deriving them from the widget
+        # *count* assumed every entry renders a widget, which is false for
+        # entries whose payload is gone, and the resulting drift re-mounted
+        # widgets the reader could already see.
+        self._mounted_entry_indices: list[int] = []
         self.message_widgets: dict[int, Vertical] = {}
         self.tool_widgets: dict[str, Vertical] = {}
         self.render_lock = asyncio.Lock()
@@ -1444,6 +1450,7 @@ class TranscriptSurface:
         self.window_start = 0
         self.window_end = 0
         self.mounted_entry_widgets = []
+        self._mounted_entry_indices = []
         self.message_widgets.clear()
         self.tool_widgets.clear()
         self._seen_transcript_evictions = state.evicted_transcript
@@ -1458,6 +1465,7 @@ class TranscriptSurface:
         self.window_start = 0
         self.window_end = 0
         self.mounted_entry_widgets = []
+        self._mounted_entry_indices = []
         self.message_widgets.clear()
         self.tool_widgets.clear()
         self._seen_transcript_evictions = self.state.evicted_transcript
@@ -1534,18 +1542,20 @@ class TranscriptSurface:
         if self._window_invalidated:
             await self._remount_tail()
             return list(self.mounted_entry_widgets)
-        widgets: list[Any] = []
+        # Only widgets this call actually mounts are reported and tracked.  A
+        # cached widget whose entry is still on screen is already accounted for,
+        # and counting it as inserted made the caller compensate the reader's
+        # scroll position for height that never appeared.
+        mounted: list[Any] = []
+        indices: list[int] = []
         reference = (
             self.container.children[0]
             if prepend and self.container.children
             else None
         )
-        for entry in self.state.transcript[start:end]:
+        for index, entry in enumerate(self.state.transcript[start:end], start=start):
             widget = self.widget_for_entry(entry)
-            if widget is None:
-                continue
-            widgets.append(widget)
-            if widget.parent is self.container:
+            if widget is None or widget.parent is self.container:
                 continue
             if widget.parent is not None:
                 try:
@@ -1556,22 +1566,42 @@ class TranscriptSurface:
                 await self.container.mount(widget, before=reference)
             else:
                 await self.container.mount(widget)
+            mounted.append(widget)
+            indices.append(index)
         if prepend:
-            self.mounted_entry_widgets[0:0] = widgets
+            self.mounted_entry_widgets[0:0] = mounted
+            self._mounted_entry_indices[0:0] = indices
         else:
-            self.mounted_entry_widgets.extend(widgets)
-        return widgets
+            self.mounted_entry_widgets.extend(mounted)
+            self._mounted_entry_indices.extend(indices)
+        if indices:
+            # The window starts at the oldest entry that is actually mounted.
+            self.window_start = self._mounted_entry_indices[0]
+            if not prepend:
+                self.window_end = max(self.window_end, self._mounted_entry_indices[-1] + 1)
+        return mounted
 
     async def trim_mounted_suffix(self) -> int:
         """Drop mounted widgets for entries the state no longer retains."""
-        excess = len(self.mounted_entry_widgets) - max(0, self.window_end - self.window_start)
+        total = len(self.state.transcript)
+        keep = len(self._mounted_entry_indices)
+        for position, index in enumerate(self._mounted_entry_indices):
+            if index >= total:
+                keep = position
+                break
+        excess = len(self.mounted_entry_widgets) - keep
         if excess <= 0:
             return 0
-        removed = self.mounted_entry_widgets[-excess:]
-        self.mounted_entry_widgets = self.mounted_entry_widgets[:-excess]
+        removed = self.mounted_entry_widgets[keep:]
+        self.mounted_entry_widgets = self.mounted_entry_widgets[:keep]
+        self._mounted_entry_indices = self._mounted_entry_indices[:keep]
         for widget in removed:
             if widget.parent is self.container:
                 await widget.remove()
+        if self._mounted_entry_indices:
+            self.window_end = min(self.window_end, self._mounted_entry_indices[-1] + 1)
+        else:
+            self.window_end = self.window_start
         return excess
 
     async def trim_mounted_prefix(self) -> int:
@@ -1584,10 +1614,12 @@ class TranscriptSurface:
         if excess > 0:
             removed = self.mounted_entry_widgets[:excess]
             self.mounted_entry_widgets = self.mounted_entry_widgets[excess:]
+            self._mounted_entry_indices = self._mounted_entry_indices[excess:]
             for widget in removed:
                 if widget.parent is self.container:
                     await widget.remove()
-        self.window_start = max(0, self.window_end - len(self.mounted_entry_widgets))
+        if self._mounted_entry_indices:
+            self.window_start = self._mounted_entry_indices[0]
         return max(0, excess)
 
     async def drop_leading_excess(self, follow: bool) -> int:
@@ -1599,10 +1631,15 @@ class TranscriptSurface:
             return 0
         removed = self.mounted_entry_widgets[:excess]
         self.mounted_entry_widgets = self.mounted_entry_widgets[excess:]
+        self._mounted_entry_indices = self._mounted_entry_indices[excess:]
         for widget in removed:
             if widget.parent is self.container:
                 await widget.remove()
-        self.window_start += len(removed)
+        self.window_start = (
+            self._mounted_entry_indices[0]
+            if self._mounted_entry_indices
+            else self.window_end
+        )
         return len(removed)
 
     async def drop_trailing_excess(self) -> int:
@@ -1612,10 +1649,15 @@ class TranscriptSurface:
             return 0
         removed = self.mounted_entry_widgets[-excess:]
         self.mounted_entry_widgets = self.mounted_entry_widgets[:-excess]
+        self._mounted_entry_indices = self._mounted_entry_indices[:-excess]
         for widget in removed:
             if widget.parent is self.container:
                 await widget.remove()
-        self.window_end -= len(removed)
+        self.window_end = (
+            self._mounted_entry_indices[-1] + 1
+            if self._mounted_entry_indices
+            else self.window_start
+        )
         return len(removed)
 
     def widget_for_entry(self, entry: TuiTranscriptEntry) -> Vertical | Static | None:

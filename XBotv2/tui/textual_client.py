@@ -2231,11 +2231,16 @@ class XBotTextualApp(App[None]):
             inserted_height = self._widgets_height(widgets)
             surface.window_start = batch_start
             await surface.drop_trailing_excess()
-            self.call_after_refresh(
-                lambda h=inserted_height: surface.container.scroll_to(
-                    y=max(0, surface.container.scroll_y + h), animate=False
+            # Keep the reader's position while older entries are mounted above
+            # it -- except at the very top, where those entries *are* what the
+            # reader scrolled back for and compensating would push them off
+            # screen again.
+            if surface.container.scroll_y > 0:
+                self.call_after_refresh(
+                    lambda h=inserted_height: surface.container.scroll_to(
+                        y=max(0, surface.container.scroll_y + h), animate=False
+                    )
                 )
-            )
         finally:
             self._replay_loading = False
 

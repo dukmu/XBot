@@ -240,17 +240,37 @@ transcript block whose body the reader had just focused (focusing a block is
 what expands it and emits `Toggled`). It now returns early when the focused
 widget is a `BoundedText`, so scrolling a block keeps focus.
 
-## Known issues not addressed here
+## Surface bookkeeping (fixed)
 
-- `test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript` is
-  **flaky before this work**: it fails roughly one run in six on unmodified
-  `main` (`git stash` + 6 runs reproduced it), on `scroll_y == 0` after
-  `scroll_home` in a two-row viewport. The transcript's live refresh tick
-  re-pins a follower, which races the test's programmatic scroll. Both the
-  assertion and the tick are about the setup, not about the keyboard handoff
-  the test exercises, so the product fix belongs with whoever owns that tick.
-  The reordering this work introduced made the flake visible once in a full-suite
-  run; it was not introduced by it.
+`test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript` was
+flaky (about 1 run in 6, reproduced on unmodified `main`), failing on
+`scroll_y == 0` after `scroll_home`. Tracing the transcript's scroll calls
+showed the viewport being moved by the compensation lambda in
+`_load_earlier_replay`. Two product defects behind it:
+
+1. `TranscriptSurface.mount_entries` appended every widget it *resolved* to its
+   return value and to `mounted_entry_widgets`, including widgets already on
+   screen. The caller therefore measured an "inserted height" for rows that
+   never appeared, and the mounted list gained duplicates. It now reports and
+   tracks only the widgets it actually mounts.
+2. Window bounds were derived from the widget *count*
+   (`window_start = window_end - len(mounted_entry_widgets)`), which assumes
+   every entry renders a widget. Entries whose payload is gone render nothing,
+   so the count drifted and the window claimed ranges it already showed -- and
+   `_load_earlier_replay` kept re-mounting them. The surface now keeps
+   `_mounted_entry_indices` beside the widget list and derives
+   `window_start`/`window_end` from the entry indices that are really mounted.
+
+With those exact, the remaining defect was the compensation itself: at the very
+top of the transcript (`scroll_y == 0`) the entries just mounted *are* what the
+reader scrolled back for, and shifting the viewport by their height pushed them
+off screen again. Compensation is now skipped at the top.
+
+Regression tests: `test_mount_entries_reports_only_newly_mounted_widgets` (fails
+with the old return value and duplicate bookkeeping) and
+`test_loading_earlier_entries_at_the_top_keeps_the_reader_at_the_top` (fails at
+`scroll_y == 95` without the compensation guard). The previously flaky test ran
+20/20 green after the fix (4/12 before).
 
 ## Known correctness bugs to fix alongside
 

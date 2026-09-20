@@ -4886,3 +4886,96 @@ async def test_scroll_home_reports_the_new_position_to_the_app():
         await pilot.pause()
         assert transcript.scroll_y == 0
         assert app._transcript_follow is False
+
+
+@pytest.mark.asyncio
+async def test_mount_entries_reports_only_newly_mounted_widgets():
+    """Re-mounting a range must not claim widgets that are already on screen.
+
+    Counting cached widgets as inserted made two things wrong at once: the
+    caller compensated the reader's scroll position for height that never
+    appeared, and the mounted list gained duplicates that desynchronized the
+    window bounds.
+    """
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        for index in range(60):
+            app.state.append_message("assistant", f"message {index}", message_id=f"m{index}")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        surface = app._surface()
+        assert surface is not None
+        mounted = len(surface.mounted_entry_widgets)
+        assert mounted > 0
+        assert len(set(map(id, surface.mounted_entry_widgets))) == mounted, "duplicate widgets"
+        assert surface.window_start == surface._mounted_entry_indices[0]
+
+        # Mounting a range that is already on screen inserts nothing, twice.
+        assert await surface.mount_entries(0, 10) == []
+        assert await surface.mount_entries(0, 10) == []
+        assert len(surface.mounted_entry_widgets) == mounted
+        assert len(set(map(id, surface.mounted_entry_widgets))) == mounted
+        assert surface.window_start == surface._mounted_entry_indices[0]
+
+
+@pytest.mark.asyncio
+async def test_loading_earlier_entries_at_the_top_keeps_the_reader_at_the_top():
+    """The records just loaded are what the reader scrolled back to see."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(80, 24)) as pilot:
+        await pilot.pause()
+        for index in range(120):
+            app.state.append_message("assistant", f"message {index}", message_id=f"m{index}")
+        await app._render_replay_window()
+        await pilot.pause()
+
+        surface = app._surface()
+        assert surface is not None
+        assert surface.window_start > 0, "the replay window should start above the tail"
+        transcript = app.query_one("#transcript")
+        # State the reader's position rather than racing for it: a queued
+        # height-change re-pin is a background timer, not the behaviour here.
+        app._transcript_follow = False
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        assert transcript.scroll_y == 0
+
+        await app._load_earlier_replay()
+        await pilot.pause()
+
+        # Older entries were mounted above the reader...
+        assert surface.window_start < 120 - 50
+        assert any(
+            "message 0" in _static_text(widget)
+            for widget in app.query(".assistant .body")
+        )
+        # ...and the position did not move under them.
+        assert transcript.scroll_y == 0
