@@ -195,9 +195,15 @@ Rendering (Web vitest + Python headless Textual):
 - **done** TUI runtime attribution: an injected turn renders as a provenance
   notice (never as typed input) both from a resumed snapshot and from the live
   `message` frame.
-- **open** up-scroll/down-scroll cycle against a live stream, asserting no
-  duplicate and no missing record between the two fetches.  The Web-side
-  equivalent exists (anchor walk vs cursor walk in the paging stress test).
+- **done** TUI full cycle (`test_tui_client.py` "cycle neither duplicates nor
+  loses records"): with contiguous server pages, a fully retained page
+  contributes nothing and the client asks again from its cursor; the older page
+  is prepended and the window stays contiguous and duplicate-free; live output
+  arriving while the reader is inside history is counted, not appended; and the
+  snapshot re-anchor brings that output back.  The newest entries are paid for
+  by the prepend (`evicted_transcript_tail > 0`).
+- **open** the same cycle against a *live* event stream (the test drives state
+  events directly rather than through the transport).
 
 ### TUI paging: both directions, on demand
 
@@ -233,6 +239,18 @@ Focus bug this surfaced: `_restore_composer_focus` pulled focus out of a
 transcript block whose body the reader had just focused (focusing a block is
 what expands it and emits `Toggled`). It now returns early when the focused
 widget is a `BoundedText`, so scrolling a block keeps focus.
+
+## Known issues not addressed here
+
+- `test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript` is
+  **flaky before this work**: it fails roughly one run in six on unmodified
+  `main` (`git stash` + 6 runs reproduced it), on `scroll_y == 0` after
+  `scroll_home` in a two-row viewport. The transcript's live refresh tick
+  re-pins a follower, which races the test's programmatic scroll. Both the
+  assertion and the tick are about the setup, not about the keyboard handoff
+  the test exercises, so the product fix belongs with whoever owns that tick.
+  The reordering this work introduced made the flake visible once in a full-suite
+  run; it was not introduced by it.
 
 ## Known correctness bugs to fix alongside
 

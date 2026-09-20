@@ -4727,3 +4727,162 @@ def test_tui_state_memory_is_bounded_by_the_window():
     # Ten times the session retains a bounded window: the same state, not ten
     # times the payloads.  The factor absorbs allocator noise, not growth.
     assert large < small * 3 + 2_000_000, (small, large)
+
+
+@pytest.mark.asyncio
+async def test_transcript_window_cycle_neither_duplicates_nor_loses_records(monkeypatch):
+    """Page back, take live output while away, then return: nothing is lost.
+
+    The whole cycle in one test: eviction, de-duplicated older pages, live
+    output arriving while the reader is inside history, and the snapshot
+    re-anchor that brings the tail back.  Pages are contiguous, as the server
+    serves them, so the retained window must stay contiguous too.
+    """
+    import XBotv2.tui.client as tui_client
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    monkeypatch.setattr(tui_client, "_MAX_STATE_MESSAGES", 60)
+    monkeypatch.setattr(tui_client, "_MAX_STATE_TRANSCRIPT", 80)
+    monkeypatch.setattr(tui_client, "_TRIM_SLACK", 20)
+
+    class FakeSession:
+        def __init__(self):
+            self.baseline: dict[str, object] = {}
+            self.pages: list[tuple[list[dict], str | None]] = []
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+        async def refresh_baseline(self):
+            return dict(self.baseline)
+
+        async def read_thread_history(self, thread_id, *, cursor=None, limit=200):
+            if not self.pages:
+                return [], None
+            records, next_cursor = self.pages.pop(0)
+            return records, next_cursor
+
+    def page(start: int, end: int, *, cursor: str | None):
+        return (
+            [_trajectory_message(index, f"r{index}", f"recent {index}") for index in range(start, end + 1)],
+            cursor,
+        )
+
+    def numbers(state) -> list[int]:
+        return [int(message.message_id[1:]) for message in state.messages]
+
+    def contiguous(ids: list[int]) -> bool:
+        return all(right - left == 1 for left, right in zip(ids, ids[1:]))
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    session = FakeSession()
+    app.session = session
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        for index in range(200):
+            app.state.append_message("assistant", f"recent {index}", message_id=f"r{index}")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        front = numbers(app.state)[0]
+        assert front > 0, "the window should have evicted the oldest messages"
+
+        session.pages = [
+            page(190, 199, cursor="c1"),          # entirely retained
+            page(front - 10, front - 1, cursor="c2"),
+            page(front - 20, front - 11, cursor=None),
+        ]
+
+        await app._load_earlier_replay()
+        await pilot.pause()
+        # The fully retained page contributed nothing, so the client asked
+        # again; the next page is immediately older than the window front.
+        assert app.state.older_cursor == "c2"
+        assert numbers(app.state)[0] == front - 10
+        assert contiguous(numbers(app.state))
+        assert len(set(numbers(app.state))) == len(numbers(app.state))
+        # Older records are paid for from the newest end of the window, which
+        # is exactly what the re-anchor below fetches back.
+        assert app.state.evicted_transcript_tail > 0
+        assert numbers(app.state)[-1] <= 199
+
+        await app._load_earlier_replay()
+        await pilot.pause()
+        assert app._history_exhausted is True
+        assert numbers(app.state)[0] == front - 20
+        assert contiguous(numbers(app.state))
+        assert len(set(numbers(app.state))) == len(numbers(app.state))
+        assert numbers(app.state)[-1] <= 199
+        retained_after_paging = set(numbers(app.state))
+
+        # Live output while the reader is inside history is counted, not lost
+        # and not appended over what they are reading.
+        for index in range(5):
+            app.state.append_message("assistant", f"live {index}", message_id=f"live{index}")
+        assert app.state.pending_newer == 5
+        assert set(numbers(app.state)) == retained_after_paging
+        assert app.state.at_tail is False
+
+        # Returning to the tail re-anchors on the newest page: the live output
+        # that arrived meanwhile is present in the new window.
+        session.baseline = {
+            "history": [
+                {"role": "assistant", "content": f"live {index}", "message_id": f"live{index}"}
+                for index in range(5)
+            ],
+        }
+        await app._load_newer_replay()
+        await pilot.pause()
+        assert app.state.at_tail is True
+        assert app.state.pending_newer == 0
+        assert [message.message_id for message in app.state.messages] == [
+            f"live{index}" for index in range(5)
+        ]
+        assert len(app.state.transcript) <= tui_client._MAX_STATE_TRANSCRIPT + tui_client._TRIM_SLACK
+
+
+@pytest.mark.asyncio
+async def test_scroll_home_reports_the_new_position_to_the_app():
+    """A page/home jump must clear the follower state.
+
+    ``scroll_home`` used to notify only the replay-window messages, so the app
+    went on believing it was following the tail and a later height change
+    pinned the reader back to the end they had just left.
+    """
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(60, 20)) as pilot:
+        await pilot.pause()
+        for index in range(60):
+            app.state.append_message("assistant", f"message {index}", message_id=f"m{index}")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        transcript = app.query_one("#transcript")
+
+        transcript.scroll_end(animate=False)
+        await pilot.pause()
+        assert transcript.max_scroll_y > 0
+        assert app._transcript_follow is True
+
+        transcript.scroll_home(animate=False)
+        await pilot.pause()
+        assert transcript.scroll_y == 0
+        assert app._transcript_follow is False
