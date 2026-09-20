@@ -182,6 +182,41 @@ Rendering (Web vitest + Python headless Textual):
 - **open** up-scroll/down-scroll cycle against a live stream, asserting no
   duplicate and no missing record between the two fetches.
 
+## Next: server-backed paging for the TUI transcript
+
+The TUI window is bounded, but unlike the Web it has no way to fetch what it
+evicted, so history older than the retained 600 entries is unreachable.  The
+main transcript never had paging: the session snapshot seeds it with a
+160-message page (`session/runtime.py:137`, `history_cursor` alongside), and
+`_load_earlier_replay` only walks `state.transcript`.  Only the read-only
+subagent view pages (`_load_older_thread_history` via `_view_older_cursor`).
+
+The design that fits the existing code:
+
+1. `TuiState` gains `at_tail`, `pending_newer`, and `older_cursor` (from the
+   snapshot's `history_cursor`, updated from each fetched page's `next_cursor`).
+2. `prepend_history(messages)` inserts an older page at the front, **skipping
+   messages whose `message_id` is already retained**: the cursor can be older
+   than the window front, so a page may overlap the window, and re-appending
+   those records would duplicate them.  The unseen ids are exactly the ones
+   older than the front, so prepending them in page order stays chronological.
+3. Prepending sets `at_tail = False` and trims from the **back**: pop entries
+   from the end of the transcript, dropping each entry's payload when it is the
+   last of its container.  Removing the newest element of an index-keyed list
+   never invalidates the surviving keys, so no renumbering is needed.  Live
+   output is then counted in `pending_newer` instead of appended.
+4. `_load_earlier_replay` fetches a page when `window_start == 0` and
+   `older_cursor` is set; `_load_newer_replay` re-anchors on the newest page
+   when the reader reaches the end of a window that is no longer at the tail.
+5. The surface needs a second counter (`evicted_transcript_tail`) distinct from
+   `evicted_transcript`: a front eviction shifts the window, a tail eviction
+   clamps `window_end` and drops the trailing widgets while the reader keeps
+   their position.
+
+The alternative — positional anchors — is what the Web uses, but the TUI's
+payloads carry no trajectory position, and id-deduped cursor paging reaches the
+same records without threading positions through every payload.
+
 ## Known correctness bugs to fix alongside
 
 1. ~~Web memo chain is broken~~ — fixed in three layers, each with a test:
