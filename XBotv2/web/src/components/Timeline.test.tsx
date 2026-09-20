@@ -1,5 +1,15 @@
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Count how far a render reaches: the mocked child only runs when the memo
+// chain lets a render through to the entries.
+const nodeRenders = { count: 0 };
+vi.mock("./ConversationNode", () => ({
+  ConversationNode: ({ entry }: { entry: { content?: string } }) => {
+    nodeRenders.count += 1;
+    return <div data-testid="node">{entry.content ?? ""}</div>;
+  },
+}));
 import { initialRuntimeState, runtimeReducer, type TimelineEntry } from "../state/runtime";
 import { Timeline } from "./Timeline";
 
@@ -254,5 +264,62 @@ describe("Timeline render cost", () => {
     // about the machine.  Without the window this block would scan ~21k entries
     // per event and the factor would be far above the bound.
     expect(last).toBeLessThan(Math.max(first, 20) * 4);
+  });
+});
+
+describe("Timeline memo chain", () => {
+  beforeEach(() => {
+    TestResizeObserver.instances = [];
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    Element.prototype.scrollTo = function scrollTo(this: HTMLElement, options?: ScrollToOptions | number) {
+      const top = typeof options === "number" ? options : Number(options?.top || 0);
+      Object.defineProperty(this, "scrollTop", { configurable: true, writable: true, value: top });
+    };
+  });
+
+  it("does not re-render entries when unrelated runtime state changes", () => {
+    // The runtime rebuilds its returned object on every usage/status-slot
+    // event.  As long as the props App passes down keep their identity, the
+    // memo chain must stop the render before it reaches the entries: that is
+    // what makes a volatile session field cheap.
+    const entries = [message("# heading\n\nbody")];
+    const onRetry = async () => {};
+    const onBranch = async () => {};
+    // App passes the runtime's own callbacks here, so the fixture must too:
+    // a fresh arrow per render is what defeats the memo.
+    const onLoadOlder = async () => {};
+    const onLoadLatest = async () => {};
+    const view = (tick: number, branch = onBranch) => (
+      <div className="conversation-scroll" data-conversation-scroll>
+        <Timeline
+          entries={entries}
+          turnRunning={false}
+          onRetry={onRetry}
+          onBranch={branch}
+          hasOlder={false}
+          hasNewer={false}
+          loadingOlder={false}
+          onLoadOlder={onLoadOlder}
+          onLoadLatest={onLoadLatest}
+        />
+        <span data-tick={tick} />
+      </div>
+    );
+
+    nodeRenders.count = 0;
+    const { rerender } = render(view(1));
+    // Mount renders the entries once and once more when the window range lands.
+    const afterMount = nodeRenders.count;
+    expect(afterMount).toBeGreaterThan(0);
+
+    rerender(view(2));
+    rerender(view(3));
+    expect(nodeRenders.count).toBe(afterMount);
+
+    // A handler identity that changes every render is exactly the defect the
+    // runtime had: it reaches the entries because the memo compares identity.
+    // `useXBot` therefore resolves the session from a ref instead.
+    rerender(view(4, async () => {}));
+    expect(nodeRenders.count).toBeGreaterThan(afterMount);
   });
 });

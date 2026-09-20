@@ -51,6 +51,13 @@ export function useXBot() {
   // reading; the records are picked up when they return to the tail.
   const atTailRef = useRef(true);
   atTailRef.current = state.atTail;
+  // The callbacks that reach every visible message (`onRetry`/`onBranch`) and
+  // the window controls are read through this ref: `state.current` is replaced
+  // on every usage or status-slot event, so closing over it made those
+  // callbacks change identity constantly and re-rendered the whole timeline
+  // each time.  Actions resolve the current session when invoked instead.
+  const liveStateRef = useRef(state);
+  liveStateRef.current = state;
   const trajectoryEventsBuffer = useRef<ServerEvent[]>([]);
   const trajectoryRefreshInFlight = useRef(false);
   const reconcileInFlight = useRef(false);
@@ -739,8 +746,9 @@ export function useXBot() {
   }, [api, reportError, state.current]);
 
   const retryLast = useCallback(async () => {
-    if (state.turnRunning || !state.current) return;
-    const current = state.current;
+    const live = liveStateRef.current;
+    if (live.turnRunning || !live.current) return;
+    const current = live.current;
     const generation = navigationGeneration.current;
     const controller = new AbortController();
     messageControllers.current.set(controller, `${current.session_id}\n${current.thread_id}`);
@@ -755,7 +763,7 @@ export function useXBot() {
     } finally {
       messageControllers.current.delete(controller);
     }
-  }, [api, reportError, runtimeEvents, state.current, state.turnRunning]);
+  }, [api, reportError, runtimeEvents, messageControllers]);
 
   /**
    * Return the window to the newest records after the reader moved back into
@@ -764,8 +772,9 @@ export function useXBot() {
    * have, and the reader asked for the tail, not for the region they skipped.
    */
   const loadLatest = useCallback(async () => {
-    const current = state.current;
-    if (!current || state.historyLoading) return;
+    const live = liveStateRef.current;
+    const current = live.current;
+    if (!current || live.historyLoading) return;
     const generation = navigationGeneration.current;
     dispatch({ type: "history_loading", value: true });
     try {
@@ -783,14 +792,15 @@ export function useXBot() {
         dispatch({ type: "history_loading", value: false });
       }
     }
-  }, [api, reportError, state.current, state.historyLoading]);
+  }, [api, reportError]);
 
   const loadEarlier = useCallback(async () => {
-    const current = state.current;
-    const anchor = state.windowAnchor;
-    const cursor = state.historyCursor;
-    if (!current || state.historyLoading) return;
-    if (state.trajectoryLoaded && anchor === null) {
+    const live = liveStateRef.current;
+    const current = live.current;
+    const anchor = live.windowAnchor;
+    const cursor = live.historyCursor;
+    if (!current || live.historyLoading) return;
+    if (live.trajectoryLoaded && anchor === null) {
       // The retained window is live output with no durable position, so there
       // is nothing to page back from yet.  Re-anchor on the newest page; the
       // records the reader wanted are behind it and the next request reaches
@@ -829,16 +839,7 @@ export function useXBot() {
         dispatch({ type: "history_loading", value: false });
       }
     }
-  }, [
-    api,
-    loadLatest,
-    reportError,
-    state.current,
-    state.windowAnchor,
-    state.historyCursor,
-    state.historyLoading,
-    state.trajectoryLoaded,
-  ]);
+  }, [api, loadLatest, reportError]);
 
   const interrupt = useCallback(async () => {
     if (!state.current) return;
@@ -1010,8 +1011,9 @@ export function useXBot() {
   }, [api, commandRunning, navigationBlocked, notify, reportError, resumeSession, state.loading]);
 
   const fork = useCallback(async () => {
-    if (state.current) await forkSession(state.current.session_id);
-  }, [forkSession, state.current]);
+    const current = liveStateRef.current.current;
+    if (current) await forkSession(current.session_id);
+  }, [forkSession]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     const deletingCurrent = state.current?.session_id === sessionId;

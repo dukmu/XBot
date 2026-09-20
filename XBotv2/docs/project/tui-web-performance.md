@@ -184,12 +184,15 @@ Rendering (Web vitest + Python headless Textual):
 
 ## Known correctness bugs to fix alongside
 
-1. Web memo chain is broken: `runtime.fork` is
-   `useCallback([forkSession, state.current])` (`state/useXBot.ts:940`), and
-   `state.current` is replaced on every usage/status-slot event. `onBranch` is
-   passed to every assistant entry, so each such event re-renders every visible
-   `MessageItem`; `MessageItem` renders `ReactMarkdown` without memoizing the
-   parse.
+1. ~~Web memo chain is broken~~ — fixed in three layers, each with a test:
+   `MessageItem` memoizes the parsed Markdown element and compares handler
+   *presence* rather than identity; `useXBot` resolves the session for
+   `onRetry`/`onBranch`/`onLoadOlder`/`onLoadLatest` through `liveStateRef`
+   instead of closing over `state.current` (which is replaced on every usage or
+   status-slot event), so those callbacks are stable; and `Timeline`'s memo
+   then stops the render before it reaches the entries. The Timeline test is
+   falsifiable in both directions: stable props do not re-render the entries,
+   and an unstable handler identity does.
 2. TUI live `message` path treated injected (runtime-attributed) turns as typed
    human input — fixed; keep it covered by a test.
 3. ~~Web `entries` and TUI `transcript` are never trimmed~~ — both fixed.
