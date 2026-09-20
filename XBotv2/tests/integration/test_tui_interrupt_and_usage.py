@@ -134,6 +134,40 @@ async def test_esc_during_running_turn_calls_transport_interrupt() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_esc_interrupts_even_when_transcript_has_focus() -> None:
+    """ESC is a global interrupt, not a focus-restoration key."""
+
+    session = _InterruptibleSession()
+    app = XBotTextualApp(
+        session_id="s",
+        thread_id="t",
+    )
+    app.session = session
+
+    async with app.run_test(headless=True, size=(120, 36)) as pilot:
+        await pilot.pause()
+        composer = app.query_one("#input")
+        composer.load_text("hi")
+        await app.submit_composer()
+        await pilot.pause()
+        assert app.state.turn_active
+
+        transcript = app.query_one("#transcript")
+        transcript.focus()
+        await pilot.pause()
+        assert not composer.has_focus
+
+        await pilot.press("escape")
+        for _ in range(10):
+            await pilot.pause()
+            if session.interrupt_calls:
+                break
+
+    assert session.interrupt_calls == [("s", "t")]
+
+
+@pytest.mark.asyncio
 async def test_turn_cancelled_event_drives_status_to_interrupted() -> None:
     """A ``turn_cancelled`` event from the engine flips status to
     'Interrupted' so the user has visual confirmation that the

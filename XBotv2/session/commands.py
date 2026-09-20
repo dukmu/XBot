@@ -27,6 +27,7 @@ def build_session_commands(
         status = session.status(pending_input_count=pending_input_count())
         return CommandResult("\n".join((
             "Session",
+            f"  Title: {status.title}",
             f"  ID: {status.session_id}",
             f"  Thread: {status.thread_id}",
             f"  Workspace: {status.workspace_root}",

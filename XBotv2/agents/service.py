@@ -114,6 +114,15 @@ class AgentsService(AgentRuntimePort):
         )
         config.max_output_tokens = model_config.max_output_tokens
         state.set_provider(provider_name)
+        title = stored_metadata.title
+        if (
+            options.is_subagent
+            and definition is not None
+            and title == state.session.session_id
+        ):
+            # A subagent's startup default is the parent session id; once the
+            # agent definition is known, prefer its readable agent name.
+            title = definition.name
         await state.metadata.replace(ThreadMetadata(
             agent=definition.name if definition is not None else "",
             agent_definition=(
@@ -127,7 +136,7 @@ class AgentsService(AgentRuntimePort):
             model=model_config.model,
             model_mode=model_config.model_mode,
             context_window=config.max_context_tokens,
-            title=stored_metadata.title,
+            title=title,
         ))
 
         model = (

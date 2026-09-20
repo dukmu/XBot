@@ -30,6 +30,7 @@ class TuiMessage:
     ts: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     reasoning: str = ""
     streaming: bool = False
+    message_id: str = ""
 
 
 @dataclass
@@ -131,6 +132,10 @@ class TuiState:
     _changed_tool_ids: set[str] = field(default_factory=set)
     _tool_id_renames: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not self.session_title:
+            self.session_title = self.session_id
+
     def apply_event(self, event: dict[str, JsonValue]) -> None:
         self._changed_tool_ids.clear()
         self._tool_id_renames.clear()
@@ -173,6 +178,7 @@ class TuiState:
         elif event_type == "assistant_message":
             content = str(data.get("content") or "")
             reasoning = str(data.get("reasoning") or "")
+            message_id = str(data.get("id") or "")
             tool_calls = data.get("tool_calls")
             if content.strip() or reasoning:
                 if self._streaming_assistant_index is not None:
@@ -185,10 +191,28 @@ class TuiState:
                         if reasoning:
                             message.reasoning = reasoning
                         message.streaming = False
+                        if message_id:
+                            message.message_id = message_id
                     except IndexError:
                         pass
+                elif message_id and (
+                    existing_index := self._message_index(message_id)
+                ) is not None:
+                    # A durable page or a replayed thread stream already has
+                    # this assistant message. Update in place; never append a
+                    # second copy for the same server message id.
+                    message = self.messages[existing_index]
+                    if content:
+                        message.content = content
+                    if reasoning:
+                        message.reasoning = reasoning
+                    message.streaming = False
                 else:
-                    self.append_message("assistant", content)
+                    self.append_message(
+                        "assistant",
+                        content,
+                        message_id=message_id,
+                    )
                     self.messages[-1].reasoning = reasoning
             elif tool_calls:
                 self._streaming_assistant_index = None
@@ -391,8 +415,29 @@ class TuiState:
             self.errors.append(str(data.get("message") or data))
             self.transcript.append(TuiTranscriptEntry(kind="error", key=str(len(self.errors) - 1)))
 
-    def append_message(self, role: str, content: str) -> None:
-        self.messages.append(TuiMessage(role=role, content=content))
+    def _message_index(self, message_id: str) -> int | None:
+        if not message_id:
+            return None
+        for index, message in enumerate(self.messages):
+            if message.message_id == message_id:
+                return index
+        return None
+
+    def append_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        message_id: str = "",
+    ) -> None:
+        existing = self._message_index(message_id) if message_id else None
+        if existing is not None:
+            self.messages[existing].content = content
+            self.messages[existing].streaming = False
+            return
+        self.messages.append(
+            TuiMessage(role=role, content=content, message_id=message_id)
+        )
         self.transcript.append(TuiTranscriptEntry(kind="message", key=str(len(self.messages) - 1)))
 
     def restore_history(self, history: list[dict[str, JsonValue]]) -> None:
@@ -423,12 +468,24 @@ class TuiState:
                         for image in images if isinstance(image, dict)
                     ]
                     content = f"{content}\n\nAttachments: {', '.join(labels)}".strip()
-                self.append_message("user", content)
+                self.append_message(
+                    "user",
+                    content,
+                    message_id=str(
+                        item.get("message_id")
+                        or item.get("id")
+                        or item.get("input_id")
+                        or ""
+                    ),
+                )
                 self.turn += 1
             elif role == "assistant":
                 self.apply_event({
                     "type": "assistant_message",
                     "data": {
+                        "id": str(
+                            item.get("message_id") or item.get("id") or ""
+                        ),
                         "content": str(item.get("content") or ""),
                         "reasoning": str(item.get("reasoning") or ""),
                         "tool_calls": item.get("tool_calls") or [],
@@ -669,12 +726,23 @@ class TuiState:
                 existing.args_streaming = old_tool.args_streaming
             if existing.started_at <= 0:
                 existing.started_at = old_tool.started_at
-        for entry in self.transcript:
-            if entry.kind == "tool" and entry.key == old_id:
-                entry.key = new_id
-        if old_id in self._tool_transcript_keys:
-            self._tool_transcript_keys.remove(old_id)
-            self._tool_transcript_keys.add(new_id)
+        if existing is not None and old_id in self._tool_transcript_keys:
+            # Replay/stream reconciliation: the final tool call already has
+            # a durable transcript entry, so the provisional entry must be
+            # folded away instead of renamed into a second identical key.
+            self.transcript[:] = [
+                entry
+                for entry in self.transcript
+                if not (entry.kind == "tool" and entry.key == old_id)
+            ]
+            self._tool_transcript_keys.discard(old_id)
+        else:
+            for entry in self.transcript:
+                if entry.kind == "tool" and entry.key == old_id:
+                    entry.key = new_id
+            if old_id in self._tool_transcript_keys:
+                self._tool_transcript_keys.remove(old_id)
+                self._tool_transcript_keys.add(new_id)
         self._tool_id_renames[old_id] = new_id
         self._changed_tool_ids.update({old_id, new_id})
 

@@ -248,7 +248,7 @@ class XBotACPAgent:
             sessions.append(SessionInfo(
                 session_id=snapshot.session_id,
                 cwd=workspace,
-                title=snapshot.title or snapshot.session_id,
+                title=snapshot.title,
             ))
         self._log.debug("acp.sessions.listed", sessions=len(sessions))
         return ListSessionsResponse(sessions=sessions)

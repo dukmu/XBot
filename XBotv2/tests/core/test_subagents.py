@@ -24,6 +24,7 @@ from XBotv2.commands.plugin import CommandsService
 from XBotv2.core.messages import ModelChunk
 from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.application.app import start_application
+from XBotv2.application.child import ChildApplicationSession
 from XBotv2.application.host import mounted_application
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.llm.mock import MockLLM
@@ -992,3 +993,50 @@ def test_child_permissions_can_restrict_parent_policy():
     )
 
     assert permissions.check("shell", {"command": "pwd"}) == "deny"
+
+
+@pytest.mark.asyncio
+async def test_child_wait_closes_application_when_turn_raises():
+    """A child turn failure must release its mounted application and lock."""
+    from XBotv2.application import ChildApplicationError
+
+    closed = False
+    records = []
+
+    class Driver:
+        async def start_session(self):
+            return None
+
+        async def run_turn(self, prompt):
+            yield {"type": "turn_started", "data": {"turn": 1}}
+            raise RuntimeError(f"provider failed: {prompt}")
+
+        async def close_session(self):
+            return None
+
+    class Usage:
+        def snapshot(self):
+            return UsageData()
+
+    class Application:
+        driver = Driver()
+        usage = Usage()
+
+        async def close(self):
+            nonlocal closed
+            closed = True
+
+    child = ChildApplicationSession(
+        application=Application(),
+        prompt="do work",
+        agent="worker",
+        thread_id="worker-1",
+        parent_thread_id="agent",
+        lifecycle=SimpleNamespace(append=records.append),
+    )
+
+    with pytest.raises(ChildApplicationError, match="provider failed"):
+        await child.wait()
+
+    assert closed is True
+    assert [record.event for record in records] == ["failed"]

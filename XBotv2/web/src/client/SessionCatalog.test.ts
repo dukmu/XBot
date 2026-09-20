@@ -8,6 +8,7 @@ const session: SessionSummary = {
   active_threads: 0,
   thread_count: 1,
   blank: false,
+  title: "Session title",
 };
 
 describe("SessionCatalog", () => {
@@ -81,6 +82,6 @@ describe("SessionCatalog", () => {
     resolveList([{ ...session, title: "Stale baseline" }, other]);
     await refresh;
 
-    expect(catalog.getSnapshot().items.map((item) => item.title)).toEqual(["From frame", undefined]);
+    expect(catalog.getSnapshot().items.map((item) => item.title)).toEqual(["From frame", "Session title"]);
   });
 });

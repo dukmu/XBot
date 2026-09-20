@@ -43,23 +43,16 @@ from XBotv2.tui.textual_widgets import (
     InlineChoice,
     ThreadView,
     TranscriptScroll,
+    TranscriptSurface,
     TaskListWidget,
     _build_title,
     _markdown_plain_text,
     entry_widget,
-    message_widget,
     compact_widget,
     notice_title,
     queue_renderable,
-    render_message,
-    render_reasoning,
-    render_text,
-    reasoning_widget,
     spinner,
     status_renderable,
-    tool_detail,
-    tool_detail_widget,
-    tool_widget,
 )
 
 # Status bar refresh throttle: streaming deltas can arrive many times per
@@ -191,17 +184,11 @@ class XBotTextualApp(App[None]):
         self._event_stream_connected = False
         self._request_sequence = 0
         self._pending_messages: dict[int, str] = {}
-        # Windowed transcript: ``state.transcript[_window_start:_window_end]``
-        # is what is mounted in the DOM (bounded by ``_MAX_MOUNTED_ENTRIES``).
-        # ``_mounted_entry_widgets`` runs in parallel to that slice so the
-        # DOM can be trimmed from either end without touching activity widgets.
-        self._window_start = 0
-        self._window_end = 0
-        self._mounted_entry_widgets: list[Any] = []
-        self._render_lock = asyncio.Lock()
+        # The event-driven transcript surface owns the mounted-window and
+        # widget caches. It is created lazily against #transcript and shared
+        # with the read-only thread view implementation.
+        self._transcript_surface: TranscriptSurface | None = None
         self._activity_widgets: dict[int, Static] = {}
-        self._tool_widgets: dict[str, Vertical] = {}
-        self._message_widgets: dict[int, Vertical] = {}
         self._choice_widgets: dict[str, Static] = {}
         self._choice_payloads: dict[str, list[InlineChoice]] = {}
         self._resolved_choice_keys: set[str] = set()
@@ -232,6 +219,8 @@ class XBotTextualApp(App[None]):
         self._spinner_index = 0
         self._activity_timer = None
         self._session_events_worker = None
+        self._catalog_events_task: asyncio.Task[None] | None = None
+        self._catalog_cursor = 0
         self._reasoning_expanded = False
         self._tool_details_expanded = False
         self._pending_images: list[tuple[str, dict[str, str]]] = []
@@ -242,8 +231,9 @@ class XBotTextualApp(App[None]):
         self._view_thread_id = ""
         self._view_task: asyncio.Task | None = None
         self._view_main_busy = False
-        self._view_rolling: list[str] = ["", ""]
         self._view_catalog: list[dict[str, str]] = []
+        self._view_items: list[dict[str, JsonValue]] = []
+        self._view_agent: str = ""
         self._view_older_cursor: str | None = None
         self._view_loading_older = False
 
@@ -282,27 +272,33 @@ class XBotTextualApp(App[None]):
         self._activity_timer = self.set_interval(0.5, self._tick_activity)
         self.run_worker(self._connect, exclusive=True, name="connect")
 
-    @on(ThreadView.OlderRequested)
-    def _on_view_older_requested(self) -> None:
-        self.run_worker(self._load_older_thread_history(), exclusive=False)
-
     @on(TranscriptScroll.ReplayTopReached)
     def _handle_replay_top(self) -> None:
-        """Lazy-load earlier replayed history when scrolled to the top."""
+        """Lazy-load earlier history; the active read-only view wins."""
+        if self._view_active:
+            self.run_worker(self._load_older_thread_history(), exclusive=False)
+            return
         if self._window_start <= 0 or self._replay_loading:
             return
         self.run_worker(self._load_earlier_replay, exclusive=False)
 
     @on(TranscriptScroll.ReplayBottomReached)
     def _handle_replay_bottom(self) -> None:
-        """Re-mount the newest entries dropped while the user scrolled up."""
+        """Re-mount newer entries; the active read-only view wins."""
+        if self._view_active:
+            view = self._safe_query_one("#thread_view", ThreadView)
+            if view is not None:
+                self.run_worker(view.catch_up(), exclusive=False)
+            return
         if self._replay_loading or self._window_end >= len(self.state.transcript):
             return
         self.run_worker(self._load_newer_replay, exclusive=False)
 
     @on(TranscriptScroll.Scrolled)
     def _handle_transcript_scrolled(self, event: TranscriptScroll.Scrolled) -> None:
-        """Track whether the user is following the live tail."""
+        """Track whether the main transcript is following the live tail."""
+        if self._view_active:
+            return
         self._transcript_follow = event.at_end
 
     @on(TranscriptScroll.HeightChanged)
@@ -315,7 +311,7 @@ class XBotTextualApp(App[None]):
         goes stale, silently breaking auto-scroll until the next render. If
         the user was following, scroll back to the end after the reflow.
         """
-        if not self._transcript_follow:
+        if self._view_active or not self._transcript_follow:
             return
         stream = self._safe_query_one("#transcript", TranscriptScroll)
         if stream is not None:
@@ -331,6 +327,7 @@ class XBotTextualApp(App[None]):
         await self._exit_thread_view()
         self._deferred_tool_ids.clear()
         self._stop_session_events()
+        await self._stop_catalog_events()
         if self._server_reachable:
             await self.session.disconnect()
 
@@ -342,13 +339,9 @@ class XBotTextualApp(App[None]):
             self._reasoning_expanded = not event.collapsible.collapsed
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.disabled:
-            focused = self.focused
-
-            def restore_focus() -> None:
-                if self.focused is focused or self.focused is None:
-                    composer.focus()
-
-            self.call_after_refresh(restore_focus)
+            # Restore synchronously. A delayed callback raced explicit focus
+            # choices made after the toggle; the user's later focus must win.
+            composer.focus()
 
     async def _connect(self) -> None:
         try:
@@ -386,7 +379,16 @@ class XBotTextualApp(App[None]):
             return
         if not isinstance(session, dict):
             return
-        title = str(session.get("title") or "")
+        # The catalog stream is advisory and only needed after the first
+        # terminal turn has produced a live session identity. Starting it
+        # here keeps the initial focus/layout path identical for every client.
+        catalog_task = getattr(self, "_catalog_events_task", None)
+        if (
+            (catalog_task is None or catalog_task.done())
+            and hasattr(self.session, "stream_catalog_events")
+        ):
+            await self._start_catalog_events()
+        title = str(session.get("title", self.state.session_title))
         agent_name = str(session.get("agent_name") or "")
         provider = str(session.get("provider") or "")
         model = str(session.get("model") or "")
@@ -402,7 +404,7 @@ class XBotTextualApp(App[None]):
         )
         if not changed:
             return
-        self.state.session_title = title or self.state.session_title
+        self.state.session_title = title
         self.state.agent_name = agent_name or self.state.agent_name
         self.state.provider = provider or self.state.provider
         self.state.model = model or self.state.model
@@ -419,7 +421,7 @@ class XBotTextualApp(App[None]):
     ) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
-            self.state.session_title = str(session.get("title") or self.state.session_title)
+            self.state.session_title = str(session.get("title", self.state.session_title))
             self.state.thread_id = str(session.get("thread_id") or self.state.thread_id)
             self.state.agent_name = str(session.get("agent_name") or self.state.agent_name)
             self.state.workspace_root = str(session.get("workspace_root") or "")
@@ -519,6 +521,102 @@ class XBotTextualApp(App[None]):
             if callable(cancel):
                 cancel()
 
+    async def _start_catalog_events(self) -> None:
+        """Follow the process catalog so a mid-session caption rename lands."""
+        await self._stop_catalog_events()
+        if not self._server_reachable:
+            return
+        if not hasattr(self.session, "stream_catalog_events"):
+            return
+        self._catalog_events_task = asyncio.create_task(
+            self._collect_catalog_events(),
+            name="xbotv2-tui-catalog-events",
+        )
+
+    async def _stop_catalog_events(self) -> None:
+        task = getattr(self, "_catalog_events_task", None)
+        self._catalog_events_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _collect_catalog_events(self) -> None:
+        """Consume ``catalog/session-*`` frames without blocking the transcript."""
+        while self._server_reachable:
+            try:
+                if self._catalog_cursor <= 0:
+                    try:
+                        payload = await self.session.list_sessions()
+                        self._catalog_cursor = int(
+                            payload.get("event_cursor") or 0
+                        )
+                    except Exception:
+                        logger.debug(
+                            "catalog cursor seed failed; replaying from start",
+                            exc_info=True,
+                        )
+                async for event in self.session.stream_catalog_events(
+                    after=self._catalog_cursor
+                ):
+                    if not self._server_reachable:
+                        return
+                    self._catalog_cursor = max(
+                        self._catalog_cursor,
+                        int(event.get("sequence") or 0),
+                    )
+                    await self._apply_catalog_event(event)
+                return
+            except asyncio.CancelledError:
+                raise
+            except XBotClientError as exc:
+                if exc.code == "workspace_event_cursor_expired":
+                    # The cursor fell out of the bounded catalog replay window;
+                    # resubscribe from the current process cursor.
+                    self._catalog_cursor = 0
+                    continue
+                logger.warning(
+                    "catalog event stream failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                await asyncio.sleep(0.25)
+            except Exception as exc:  # noqa: BLE001 — catalog is advisory
+                logger.warning(
+                    "catalog event stream failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                await asyncio.sleep(0.25)
+
+    async def _apply_catalog_event(self, event: dict[str, JsonValue]) -> None:
+        """Apply process catalog identity fields for the attached session."""
+        event_type = str(event.get("type") or "")
+        if event_type not in {
+            "catalog/session-added",
+            "catalog/session-changed",
+        }:
+            return
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        session = data.get("session") if isinstance(data, dict) else None
+        if not isinstance(session, dict):
+            return
+        if str(session.get("session_id") or "") != self.state.session_id:
+            return
+        if "title" not in session:
+            return
+        title = str(session["title"])
+        if title != self.state.session_title:
+            self.state.session_title = title
+            self._log_trace_title(title)
+            self._refresh_all()
+
+    def _log_trace_title(self, title: str) -> None:
+        logger.debug(
+            "tui.session_title.updated session=%s title=%s",
+            self.state.session_id,
+            title,
+        )
+
     async def submit_composer(self) -> None:
         composer = self.query_one("#input", ComposerTextArea)
         if self._choice_mode_active():
@@ -590,17 +688,22 @@ class XBotTextualApp(App[None]):
         )
 
     def action_clear_input(self) -> None:
-        """Return to the composer, or interrupt a turn / clear the input."""
+        """Interrupt a running turn first; otherwise return to the composer."""
 
+        # ESC is the global interrupt affordance. It must not be swallowed by
+        # focus restoration while a main turn is active: the user expects the
+        # foreground tool/model work to stop even when the transcript has focus.
+        if self.state.turn_active or self._pending_messages:
+            if self._view_active:
+                self.run_worker(self._exit_thread_view(), exclusive=True)
+            self.action_interrupt_turn()
+            return
         if self._view_active:
             self.run_worker(self._exit_thread_view(), exclusive=True)
             return
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.has_focus and composer.display:
             composer.focus()
-            return
-        if self.state.turn_active or self._pending_messages:
-            self.action_interrupt_turn()
             return
         self.query_one("#input", ComposerTextArea).load_text("")
         self._pending_images.clear()
@@ -683,7 +786,7 @@ class XBotTextualApp(App[None]):
             (t for t in threads if t["thread_id"] != self.state.thread_id),
             threads[0],
         )
-        await self._enter_thread_view(candidate["thread_id"], candidate.get("title") or "")
+        await self._enter_thread_view(candidate["thread_id"])
 
     async def _pick_provider(self, on_choice) -> None:
         """Choose a provider from the server catalog instead of typing its id."""
@@ -731,8 +834,9 @@ class XBotTextualApp(App[None]):
                 "thread_id": str(row.get("thread_id") or ""),
                 "kind": str(row.get("kind") or "subagent"),
                 "status": str(row.get("status") or ""),
+                "agent": str(row.get("agent") or ""),
                 "message_count": str(row.get("message_count") or ""),
-                "title": str(row.get("title") or ""),
+                "title": str(row.get("title", row.get("thread_id") or "")),
             })
         self._view_catalog = [row for row in catalog if row["thread_id"]]
         return self._view_catalog
@@ -761,46 +865,60 @@ class XBotTextualApp(App[None]):
             return
         if value == "main":
             return
-        await self._enter_thread_view(value, "")
+        await self._enter_thread_view(value)
 
     def _pick_thread(self, threads: list[dict[str, str]]) -> None:
         options = []
         for thread in threads:
-            label = f"{thread['thread_id']}  {thread['kind']} {thread['status']}"
+            display = thread["title"]
+            label = f"{display}"
+            if thread["thread_id"] and thread["thread_id"] != display:
+                label += f"  {thread['thread_id']}"
+            label += f"  {thread['kind']} {thread['status']}"
             if thread["message_count"]:
                 label += f"  {thread['message_count']} msg"
-            if thread["title"]:
-                label += f"  {thread['title']}"
             options.append((thread["thread_id"], label))
         if len(options) == 1:
-            self.run_worker(self._enter_thread_view(options[0][0], options[0][1]))
+            self.run_worker(self._enter_thread_view(options[0][0]))
             return
         self.push_screen(SelectionScreen("Threads", options), callback=lambda choice: (
-            self.run_worker(self._enter_thread_view(choice, "")) if choice else None
+            self.run_worker(self._enter_thread_view(choice)) if choice else None
         ))
 
-    async def _enter_thread_view(self, thread_id: str, title: str) -> None:
+    async def _read_view_trajectory(
+        self,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, JsonValue]], str | None]:
+        """Read a thread trajectory, tolerating older/simpler session fakes."""
+        reader = getattr(self.session, "read_thread_trajectory", None)
+        if reader is None:
+            reader = self.session.read_thread_history
+        return await reader(thread_id, cursor=cursor)
+
+    async def _enter_thread_view(self, thread_id: str) -> None:
         if self._view_active:
             await self._exit_thread_view()
         self._view_active = True
         self._view_thread_id = thread_id
         self._view_main_busy = False
-        self._view_rolling = ["", ""]
         view = self._safe_query_one("#thread_view", ThreadView)
         transcript = self._safe_query_one("#transcript")
         if view is None or transcript is None:
             self._view_active = False
             return
-        history, older_cursor = await self.session.read_thread_history(thread_id)
+        if not any(
+            thread["thread_id"] == thread_id for thread in self._view_catalog
+        ):
+            await self._thread_catalog()
+        items, older_cursor = await self._read_view_trajectory(thread_id)
+        self._view_items = list(items)
+        self._view_agent = self._thread_agent(thread_id)
         self._view_older_cursor = older_cursor
-        summary = title or self._thread_summary(thread_id)
+        summary = self._thread_summary(thread_id)
         view.show(thread_id, summary)
-        lines = [
-            self._history_line(item)
-            for item in history
-            if isinstance(item, dict)
-        ]
-        view.body.update("\n".join(line for line in lines if line) + ("\n" if lines else ""))
+        await view.load(self._view_items, agent_name=self._view_agent)
         view.display = True
         transcript.display = False
 
@@ -808,11 +926,17 @@ class XBotTextualApp(App[None]):
         self._refresh_input_mode()
         self._refresh_status()
 
+    def _thread_agent(self, thread_id: str) -> str:
+        for thread in self._view_catalog:
+            if thread["thread_id"] == thread_id:
+                return str(thread.get("agent") or "")
+        return ""
+
     def _thread_summary(self, thread_id: str) -> str:
         for thread in self._view_catalog:
             if thread["thread_id"] == thread_id:
-                return f"{thread['kind']} {thread['status']}"
-        return "subagent"
+                return f"{thread['title']} · {thread['kind']} {thread['status']}"
+        return thread_id or "subagent"
 
     async def _exit_thread_view(self) -> None:
         if not self._view_active:
@@ -829,88 +953,64 @@ class XBotTextualApp(App[None]):
             transcript.display = True
         self._view_thread_id = ""
         self._view_main_busy = False
+        self._view_items = []
+        self._view_agent = ""
         self._view_older_cursor = None
         self._view_loading_older = False
         self._refresh_input_mode()
         self._refresh_status()
 
     async def _pump_thread_view(self, thread_id: str) -> None:
+        """Render live frames for a viewed thread.
+
+        Runtime-managed threads publish a live stream. Persisted or
+        independently-mounted child threads may not be registered with the
+        session manager, so their stream is unavailable; fall back to polling
+        the durable trajectory instead of showing a premature error/end.
+        """
         try:
             async for event in self.session.stream_thread_events(thread_id):
                 if not self._view_active or self._view_thread_id != thread_id:
                     return
-                line = self._view_event_line(event)
-                if line:
-                    view = self._safe_query_one("#thread_view", ThreadView)
-                    if view is not None:
-                        view.body.append(line + "\n")
+                view = self._safe_query_one("#thread_view", ThreadView)
+                if view is not None:
+                    await view.apply_event(event)
+            return
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — a read-only view must not kill the app
-            if self._view_active:
-                await self._append_local_notice("thread", f"thread view error: {exc}")
-
-    def _history_line(self, item: dict[str, JsonValue]) -> str:
-        role = str(item.get("message", item).get("role") or "")
-        content = str(item.get("message", item).get("content") or "")
-        if role == "assistant":
-            reasoning = str(item.get("message", item).get("reasoning") or "")
-            return f"[assistant] {content}" + (
-                f"\n  > {reasoning}" if reasoning else ""
+            logger.debug(
+                "live thread event stream unavailable for %s (%s); polling history",
+                thread_id,
+                exc,
             )
-        if role == "user":
-            return f"[user] {content}"
-        if role == "tool":
-            return f"[tool] {content}"
-        kind = str(item.get("kind") or "")
-        if kind == "surface_replace":
-            summary = str(item.get("summary") or "")
-            if summary:
-                return f"[compact] {summary}"
-        return f"[{kind}]" if kind else ""
+        await self._poll_thread_view(thread_id)
 
-    def _view_event_line(self, event: dict[str, JsonValue]) -> str | None:
-        """One frame of a viewed thread as a display line, merging deltas."""
-        type_ = str(event.get("type") or "")
-        data = event.get("data")
-        data = data if isinstance(data, dict) else {}
-        if type_ == "assistant_message_delta":
-            self._view_rolling[0] += str(data.get("reasoning") or "")
-            self._view_rolling[1] += str(data.get("content") or "")
-            return None
-        flush = ""
-        if self._view_rolling[0] or self._view_rolling[1]:
-            if self._view_rolling[0]:
-                flush += f"  > {self._view_rolling[0]}"
-            if self._view_rolling[1]:
-                flush = (flush + "\n" if flush else "") + f"\u25b8 {self._view_rolling[1]}"
-            self._view_rolling = ["", ""]
-        own = ""
-        if type_ == "assistant_message":
-            own = f"[assistant] {data.get('content') or ''}"
-        elif type_ == "tool_calls_started":
-            own = "\n".join(
-                f"[tool] {str(call.get('name') or 'tool')}"
-                for call in data.get("tool_calls") or []
-            )
-        elif type_ == "tool_result":
-            content = str(data.get("content") or "")
-            own = f"[tool] {data.get('name') or 'tool'} {data.get('status') or ''}:\n{content.strip()}"
-        elif type_ == "message":
-            own = f"[user] {data.get('content') or ''}"
-        elif type_ == "turn_started":
-            own = f"— turn {data.get('turn') or ''} started"
-        elif type_ == "turn_finished":
-            own = f"— turn {data.get('turn') or ''} finished"
-        elif type_ == "usage":
-            return flush or None
-        elif type_ == "end":
-            return (flush + "\n" if flush else "") + "— stream ended"
-        combined = (flush + "\n" if flush else "") + own
-        return combined if combined.strip() else None
+    async def _poll_thread_view(self, thread_id: str) -> None:
+        """Poll durable trajectory for a thread without a live runtime."""
+        while self._view_active and self._view_thread_id == thread_id:
+            await asyncio.sleep(0.75)
+            if not self._view_active or self._view_thread_id != thread_id:
+                return
+            try:
+                items, older_cursor = await self._read_view_trajectory(thread_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — polling is best effort
+                logger.debug("thread view poll failed", exc_info=True)
+                continue
+            if not self._view_active or self._view_thread_id != thread_id:
+                return
+            # Reload only while the reader has not paged into older history;
+            # once paging starts, a full reload would drop the reader's window.
+            if self._view_older_cursor is None:
+                self._view_items = list(items)
+                view = self._safe_query_one("#thread_view", ThreadView)
+                if view is not None:
+                    await view.load(self._view_items, agent_name=self._view_agent)
 
     async def _load_older_thread_history(self) -> None:
-        """Scroll-up at the top pulls the previous page of the viewed thread."""
+        """Scroll-up at the top pulls the previous trajectory page."""
         if (
             not self._view_active
             or self._view_loading_older
@@ -920,7 +1020,7 @@ class XBotTextualApp(App[None]):
         thread_id = self._view_thread_id
         self._view_loading_older = True
         try:
-            records, older_cursor = await self.session.read_thread_history(
+            records, older_cursor = await self._read_view_trajectory(
                 thread_id,
                 cursor=self._view_older_cursor,
             )
@@ -933,16 +1033,13 @@ class XBotTextualApp(App[None]):
         if not self._view_active or self._view_thread_id != thread_id:
             return
         self._view_older_cursor = older_cursor
-        lines = [
-            self._history_line(item)
-            for item in records
-            if isinstance(item, dict)
-        ]
-        text = "\n".join(line for line in lines if line)
-        if text:
-            view = self._safe_query_one("#thread_view", ThreadView)
-            if view is not None:
-                view.body.prepend(text + "\n")
+        self._view_items = [*records, *self._view_items]
+        view = self._safe_query_one("#thread_view", ThreadView)
+        if view is not None:
+            await view.prepend_items(
+                records,
+                agent_name=self._view_agent,
+            )
 
     # Command execution table: name -> bound handler.  Only TUI-local commands
     # and interactive overrides are registered here; every server command from
@@ -1073,12 +1170,14 @@ class XBotTextualApp(App[None]):
             options = []
             for item in sessions:
                 sid = str(item.get("session_id") or "")
-                title = str(item.get("title") or "")
+                title = str(item.get("title", sid))
                 workspace = str(item.get("workspace_root") or "")
-                label = f"{sid}"
-                # The title falls back to the session id: show it only once.
-                if title and title != sid:
-                    label += f"  {title}"
+                # Session titles are always populated at startup. The stable
+                # id remains the secondary identifier (mirrors the Web rail).
+                if title != sid:
+                    label = f"{title}  {sid}"
+                else:
+                    label = sid
                 if workspace:
                     label += f"  {workspace}"
                 options.append((sid, label))
@@ -1148,6 +1247,7 @@ class XBotTextualApp(App[None]):
             self.state.status = "Ready"
             self._refresh_all()
             self._start_session_events()
+            await self._start_catalog_events()
             await self._append_local_notice(
                 "/session",
                 f"Switched to {self.state.session_id} ({self.state.workspace_root or 'workspace unavailable'})",
@@ -1196,15 +1296,10 @@ class XBotTextualApp(App[None]):
         """Remove mounted transcript widgets without mutating protocol state."""
         await self._cancel_tool_refresh_timer()
         self._deferred_tool_ids.clear()
-        stream = self._safe_query_one("#transcript", VerticalScroll)
-        if stream is not None:
-            await stream.remove_children()
-        self._window_start = 0
-        self._window_end = 0
-        self._mounted_entry_widgets.clear()
+        surface = self._surface()
+        if surface is not None:
+            await surface.clear()
         self._activity_widgets.clear()
-        self._tool_widgets.clear()
-        self._message_widgets.clear()
         self._choice_widgets.clear()
         self._choice_payloads.clear()
         self._choice_results.clear()
@@ -1552,7 +1647,11 @@ class XBotTextualApp(App[None]):
                 content = str(data.get("content") or "")
                 if pop_pending:
                     self._pop_pending_message(content)
-                self.state.append_message("user", content)
+                self.state.append_message(
+                    "user",
+                    content,
+                    message_id=str(data.get("id") or ""),
+                )
                 await self._render_new_transcript_entries()
                 if pop_pending:
                     self._refresh_all()
@@ -1667,6 +1766,46 @@ class XBotTextualApp(App[None]):
             return self.query_one(selector)
         except Exception:  # noqa: BLE001 — NoMatches typically
             return None
+
+    def _surface(self) -> TranscriptSurface | None:
+        """Return the shared transcript surface for the main container."""
+        stream = self._safe_query_one("#transcript", VerticalScroll)
+        if stream is None:
+            return None
+        surface = self._transcript_surface
+        if (
+            surface is None
+            or surface.container is not stream
+            or surface.state is not self.state
+        ):
+            surface = TranscriptSurface(
+                self.state,
+                stream,
+                notice_widget_factory=self._notice_widget,
+                tool_extra=self._sync_tool_permission_choices,
+                reasoning_expanded=lambda: self._reasoning_expanded,
+                details_expanded=lambda: self._tool_details_expanded,
+                max_mounted_entries=_MAX_MOUNTED_ENTRIES,
+                max_message_widgets=_MAX_MESSAGE_WIDGETS,
+                max_tool_widgets=_MAX_TOOL_WIDGETS,
+            )
+            self._transcript_surface = surface
+        return surface
+
+    @property
+    def _window_start(self) -> int:
+        surface = self._transcript_surface
+        return surface.window_start if surface is not None else 0
+
+    @property
+    def _window_end(self) -> int:
+        surface = self._transcript_surface
+        return surface.window_end if surface is not None else 0
+
+    @property
+    def _mounted_entry_widgets(self) -> list[Any]:
+        surface = self._transcript_surface
+        return surface.mounted_entry_widgets if surface is not None else []
 
     def _record_error(self, exc: BaseException) -> None:
         logger.error(
@@ -1950,15 +2089,18 @@ class XBotTextualApp(App[None]):
 
     async def _render_replay_window(self) -> None:
         """Mount a bounded tail of resumed history."""
+        surface = self._surface()
+        if surface is None:
+            return
+        await surface.clear()
         total = len(self.state.transcript)
         if total <= _REPLAY_WINDOW:
-            self._window_start = 0
-            self._window_end = 0
-            await self._render_new_transcript_entries()
-            return
-        self._window_start = total - _REPLAY_WINDOW
-        self._window_end = self._window_start
-        await self._render_new_transcript_entries()
+            surface.window_start = 0
+            surface.window_end = 0
+        else:
+            surface.window_start = total - _REPLAY_WINDOW
+            surface.window_end = surface.window_start
+        await surface.sync()
 
     async def _load_earlier_replay(self) -> None:
         """Shift the bounded replay window to an earlier batch."""
@@ -1967,80 +2109,56 @@ class XBotTextualApp(App[None]):
         self._replay_loading = True
         self._transcript_follow = False
         try:
-            async with self._render_lock:
-                stream = self._safe_query_one("#transcript", VerticalScroll)
-                if stream is None:
-                    return
-                batch_start = max(0, self._window_start - _REPLAY_BATCH)
-                entries = self.state.transcript[batch_start:self._window_start]
-                if not entries:
-                    self._window_start = 0
-                    return
-                widgets = await self._mount_entries(
-                    stream, batch_start, self._window_start, prepend=True
+            surface = self._surface()
+            if surface is None:
+                return
+            batch_start = max(0, surface.window_start - _REPLAY_BATCH)
+            entries = self.state.transcript[batch_start:surface.window_start]
+            if not entries:
+                surface.window_start = 0
+                return
+            widgets = await surface.mount_entries(
+                batch_start,
+                surface.window_start,
+                prepend=True,
+            )
+            if not widgets:
+                surface.window_start = batch_start
+                return
+            inserted_height = self._widgets_height(widgets)
+            surface.window_start = batch_start
+            await surface.drop_trailing_excess()
+            self.call_after_refresh(
+                lambda h=inserted_height: surface.container.scroll_to(
+                    y=max(0, surface.container.scroll_y + h), animate=False
                 )
-                if not widgets:
-                    self._window_start = batch_start
-                    return
-                inserted_height = self._widgets_height(widgets)
-                self._window_start = batch_start
-                await self._drop_trailing_excess(stream)
-                # The inserted batch shifts content down; keep the viewport
-                # pinned where it was by scrolling down by the inserted size.
-                self.call_after_refresh(
-                    lambda h=inserted_height: stream.scroll_to(
-                        y=max(0, stream.scroll_y + h), animate=False
-                    )
-                )
+            )
         finally:
             self._replay_loading = False
 
     async def _load_newer_replay(self) -> None:
         """Shift the bounded replay window toward the live tail."""
-        async with self._render_lock:
-            stream = self._safe_query_one("#transcript", VerticalScroll)
-            if stream is None:
-                return
-            if self._window_end >= len(self.state.transcript):
-                await self._drop_leading_excess(stream, follow=True)
-                return
-            end = min(len(self.state.transcript), self._window_end + _REPLAY_BATCH)
-            await self._mount_entries(stream, self._window_end, end)
-            self._window_end = end
-            await self._drop_leading_excess(stream, follow=True)
-            self._transcript_follow = True
-            self.call_after_refresh(lambda: stream.scroll_end(animate=False))
+        surface = self._surface()
+        if surface is None:
+            return
+        if surface.window_end >= len(self.state.transcript):
+            await surface.drop_leading_excess(follow=True)
+            return
+        end = min(len(self.state.transcript), surface.window_end + _REPLAY_BATCH)
+        await surface.mount_entries(surface.window_end, end)
+        surface.window_end = end
+        await surface.drop_leading_excess(follow=True)
+        self._transcript_follow = True
+        self.call_after_refresh(
+            lambda: surface.container.scroll_end(animate=False)
+        )
 
     async def _render_new_transcript_entries(self) -> bool:
-        async with self._render_lock:
-            stream = self._safe_query_one("#transcript", VerticalScroll)
-            if stream is None:
-                return False
-            end = len(self.state.transcript)
-            if end <= self._window_end:
-                # Follow the live tail only when the user is already at the
-                # bottom; never yank the viewport while reading older entries.
-                follow = stream.is_vertical_scroll_end
-                await self._drop_leading_excess(stream, follow)
-                return False
-            # Follow the live tail only when the user is already at the
-            # bottom; never yank the viewport while reading older entries.
-            follow = stream.is_vertical_scroll_end
-            self._transcript_follow = follow
-            # Keep live updates in state while the user is reading older
-            # content. They are mounted in bounded batches when the user
-            # returns to the bottom, so a long-running turn cannot grow the
-            # Textual DOM behind the user's back.
-            if not follow:
-                return False
-            await self._mount_entries(stream, self._window_end, end)
-            self._window_end = end
-            await self._drop_leading_excess(stream, follow)
-            if follow:
-                self.call_after_refresh(
-                    lambda: stream.scroll_end(animate=False)
-                )
-            return True
+        surface = self._surface()
+        if surface is None:
+            return False
+        self._transcript_follow = surface.container.is_vertical_scroll_end
+        return await surface.sync()
 
     async def _mount_entries(
         self,
@@ -2050,32 +2168,11 @@ class XBotTextualApp(App[None]):
         *,
         prepend: bool = False,
     ) -> list[Any]:
-        """Mount and track one transcript slice in entry order."""
-        widgets: list[Any] = []
-        reference = stream.children[0] if prepend and stream.children else None
-        for entry in self.state.transcript[start:end]:
-            widget = self._widget_for_entry(entry)
-            if widget is None:
-                continue
-            widgets.append(widget)
-            # Textual's ``parent`` attribute is updated synchronously by
-            # ``mount()``, so mounting the same widget twice raises.
-            if widget.parent is stream:
-                continue
-            if widget.parent is not None:
-                try:
-                    await widget.remove()
-                except Exception:  # noqa: BLE001
-                    pass
-            if reference is not None:
-                await stream.mount(widget, before=reference)
-            else:
-                await stream.mount(widget)
-        if prepend:
-            self._mounted_entry_widgets[0:0] = widgets
-        else:
-            self._mounted_entry_widgets.extend(widgets)
-        return widgets
+        """Compatibility wrapper around the shared transcript surface."""
+        surface = self._surface()
+        if surface is None:
+            return []
+        return await surface.mount_entries(start, end, prepend=prepend)
 
     @staticmethod
     def _widgets_height(widgets: list[Any]) -> int:
@@ -2085,32 +2182,16 @@ class XBotTextualApp(App[None]):
         )
 
     async def _drop_leading_excess(self, stream: VerticalScroll, follow: bool) -> int:
-        """Bound the mounted tail without moving a historical viewport."""
-        if not follow:
+        surface = self._surface()
+        if surface is None:
             return 0
-        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
-        if excess <= 0:
-            return 0
-        removed = self._mounted_entry_widgets[:excess]
-        self._mounted_entry_widgets = self._mounted_entry_widgets[excess:]
-        for widget in removed:
-            if widget.parent is stream:
-                await widget.remove()
-        self._window_start += len(removed)
-        return len(removed)
+        return await surface.drop_leading_excess(follow)
 
     async def _drop_trailing_excess(self, stream: VerticalScroll) -> int:
-        """Drop the newest mounted entries when the window exceeds the cap."""
-        excess = self._window_end - self._window_start - _MAX_MOUNTED_ENTRIES
-        if excess <= 0:
+        surface = self._surface()
+        if surface is None:
             return 0
-        removed = self._mounted_entry_widgets[-excess:]
-        self._mounted_entry_widgets = self._mounted_entry_widgets[:-excess]
-        for widget in removed:
-            if widget.parent is stream:
-                await widget.remove()
-        self._window_end -= len(removed)
-        return len(removed)
+        return await surface.drop_trailing_excess()
 
     def _refresh_input_mode(self) -> None:
         if not self.is_mounted:
@@ -2361,7 +2442,10 @@ class XBotTextualApp(App[None]):
         self._refresh_status()
 
     def _update_pending_tool_elapsed(self) -> None:
-        for tool_call_id, widget in list(self._tool_widgets.items()):
+        surface = self._transcript_surface
+        if surface is None:
+            return
+        for tool_call_id, widget in list(surface.tool_widgets.items()):
             tool = self.state.tools.get(tool_call_id)
             if tool is None or tool.finished_at > 0:
                 continue
@@ -2413,178 +2497,55 @@ class XBotTextualApp(App[None]):
         return max(0.0, time.monotonic() - started)
 
     def _widget_for_entry(self, entry: object) -> Vertical | Static | None:
-        kind = str(getattr(entry, "kind", ""))
-        key = str(getattr(entry, "key", ""))
-        if kind == "message":
-            try:
-                message = self.state.messages[int(key)]
-            except (ValueError, IndexError):
-                return None
-            existing = self._message_widgets.get(int(key))
-            if existing is not None:
-                return existing
-            widget = message_widget(
-                self.state,
-                message,
-                reasoning_expanded=self._reasoning_expanded,
-            )
-            self._message_widgets[int(key)] = widget
-            self._trim_message_widgets()
-            return widget
-        if kind == "tool":
-            tool = self.state.tools.get(key)
-            if tool is None:
-                return None
-            widget_id = tool.tool_call_id
-            existing = self._tool_widgets.get(widget_id)
-            if existing is not None:
-                # Make sure the cached widget still reflects the
-                # current tool state.  If the previous render used
-                # a DIFFERENT tool object (e.g. after a resume that
-                # rebuilt state.tools) the widget body is stale and
-                # must be refreshed.
-                try:
-                    self._refresh_tool_widget_sync(widget_id)
-                except Exception:  # noqa: BLE001
-                    pass
-                return existing
-            widget = tool_widget(tool, details_expanded=self._tool_details_expanded)
-            self._tool_widgets[widget_id] = widget
-            self._trim_tool_widgets()
-            return widget
-        if kind == "notice":
-            try:
-                notice = self.state.notices[int(key)]
-            except (ValueError, IndexError):
-                return None
-            return self._notice_widget(notice, key)
-        if kind == "error":
-            try:
-                error = self.state.errors[int(key)]
-            except (ValueError, IndexError):
-                return None
-            return entry_widget("error", "Error", error)
-        return None
+        surface = self._surface()
+        if surface is None:
+            return None
+        return surface.widget_for_entry(entry)  # type: ignore[arg-type]
 
     def _trim_message_widgets(self) -> None:
-        """Bound the widget cache without removing mounted entries."""
-        while len(self._message_widgets) > _MAX_MESSAGE_WIDGETS:
-            oldest = next(iter(self._message_widgets))
-            self._message_widgets.pop(oldest, None)
+        """Kept for compatibility; caches live on the shared surface."""
+        surface = self._transcript_surface
+        if surface is not None:
+            surface.trim_message_widgets()
 
     def _trim_tool_widgets(self) -> None:
-        while len(self._tool_widgets) > _MAX_TOOL_WIDGETS:
-            oldest = next(iter(self._tool_widgets))
-            self._tool_widgets.pop(oldest, None)
+        surface = self._transcript_surface
+        if surface is not None:
+            surface.trim_tool_widgets()
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
-        """Refresh cached tool content; the async path owns choices."""
-        tool = self.state.tools.get(tool_call_id)
-        widget = self._tool_widgets.get(tool_call_id)
-        if tool is None or widget is None:
-            return
-        elapsed = tool.elapsed(time.monotonic())
-        title = _build_title(tool, elapsed)
-        meta = self._query_child_first(widget, ".meta")
-        if meta is not None:
-            meta.update(title)
-        detail = tool_detail(tool)
-        body = self._query_child_first(widget, ".body")
-        if body is not None:
-            body.update(render_text(detail))
-        elif detail:
-            widget.mount(
-                tool_detail_widget(
-                    detail, expanded=self._tool_details_expanded
-                )
-            )
+        surface = self._transcript_surface
+        if surface is not None:
+            surface.refresh_tool_widget_sync(tool_call_id)
 
     async def _refresh_changed_tool_widgets(
         self, tool_ids: set[str] | None = None
     ) -> None:
-        for old_id, new_id in self.state._tool_id_renames.items():
-            widget = self._tool_widgets.pop(old_id, None)
-            if widget is not None:
-                self._tool_widgets[new_id] = widget
-        changed_ids = tool_ids if tool_ids is not None else self.state._changed_tool_ids
-        for tool_call_id in list(changed_ids):
-            await self._refresh_tool_widget(tool_call_id)
+        surface = self._surface()
+        if surface is None:
+            return
+        await surface.refresh_changed_tool_widgets(tool_ids)
 
     async def _refresh_streaming_assistant_widget(self) -> None:
-        index = self.state._streaming_assistant_index
-        if index is None and self.state.messages:
-            index = len(self.state.messages) - 1
-        if index is None:
+        surface = self._surface()
+        if surface is None:
             return
-        try:
-            message = self.state.messages[index]
-        except IndexError:
-            return
-        widget = self._message_widgets.get(index)
-        if widget is None:
-            await self._render_new_transcript_entries()
-            widget = self._message_widgets.get(index)
-        if widget is None:
-            return
-        stream = self._safe_query_one("#transcript", VerticalScroll)
-        follow_output = stream is not None and stream.is_vertical_scroll_end
-        await self._apply_streaming_message_widget(widget, message)
-        if stream is not None and follow_output:
-            stream.scroll_end(animate=False)
+        await surface.refresh_streaming_assistant_widget()
 
     async def _apply_streaming_message_widget(
         self, widget: Any, message: TuiMessage
     ) -> None:
         """Render separate reasoning and visible-content blocks."""
-        reasoning = self._query_child_first(widget, ".reasoning")
-        if message.reasoning:
-            if reasoning is not None:
-                reasoning.update(render_reasoning(message.reasoning))
-            else:
-                block = reasoning_widget(
-                    render_reasoning(message.reasoning),
-                    expanded=self._reasoning_expanded,
-                )
-                body = self._query_child_first(widget, ".body")
-                await widget.mount(block, before=body)
-        body = self._query_child_first(widget, ".body")
-        if body is not None:
-            body.update(render_message(message.content, role=message.role))
-        elif message.content:
-            await widget.mount(
-                Static(
-                    render_message(message.content, role=message.role),
-                    classes="body",
-                )
-            )
+        surface = self._surface()
+        if surface is None:
+            return
+        await surface.apply_streaming_message_widget(widget, message)
 
     async def _refresh_tool_widget(self, tool_call_id: str) -> None:
-        if not tool_call_id:
+        surface = self._surface()
+        if surface is None:
             return
-        tool = self.state.tools.get(tool_call_id)
-        widget = self._tool_widgets.get(tool_call_id)
-        if tool is None or widget is None:
-            return
-        elapsed = tool.elapsed(time.monotonic())
-        title = _build_title(tool, elapsed)
-        meta = self._query_child_first(widget, ".meta")
-        if meta is None:
-            return
-        meta.update(title)
-        detail = tool_detail(tool)
-        body = self._query_child_first(widget, ".body")
-        if body is not None:
-            body.update(render_text(detail))
-        elif detail:
-            await widget.mount(
-                tool_detail_widget(
-                    detail, expanded=self._tool_details_expanded
-                )
-            )
-        # Permission choices are mounted / removed inside the tool
-        # widget so the user can approve / deny a tool call inline
-        # without a separate notice entry in the transcript.
-        await self._sync_tool_permission_choices(widget, tool)
+        await surface.refresh_tool_widget(tool_call_id)
 
     async def _sync_tool_permission_choices(
         self, widget: Vertical, tool: TuiTool

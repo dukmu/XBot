@@ -556,6 +556,18 @@ class XBotClient:
             params={"after": after} if after is not None else None,
         )
 
+    def stream_workspace_events(
+        self,
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[ServerEvent]:
+        """Stream the process session/workspace catalog used by Web clients."""
+        return self._stream(
+            "GET",
+            "/workspaces/events",
+            params={"after": after} if after is not None else None,
+        )
+
     async def _request(
         self,
         method: str,

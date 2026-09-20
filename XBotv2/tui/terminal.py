@@ -130,6 +130,16 @@ class TerminalSession:
     async def list_sessions(self) -> dict[str, JsonValue]:
         return _dump(await self._client.list_sessions())
 
+    async def stream_catalog_events(
+        self,
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[dict[str, JsonValue]]:
+        """Yield process catalog changes (session title/workspace updates)."""
+        stream = self._client.stream_workspace_events(after=after)
+        async for event in self._events(stream, "catalog_events"):
+            yield event
+
     async def switch(
         self,
         *,
@@ -319,17 +329,18 @@ class TerminalSession:
             })
         return compactions
 
-    async def read_thread_history(
+    async def read_thread_trajectory(
         self,
         thread_id: str,
         *,
         cursor: str | None = None,
         limit: int = 200,
     ) -> tuple[list[dict[str, JsonValue]], str | None]:
-        """Persisted conversation records of a thread (read-only, lock-free).
+        """Durable trajectory records for a read-only transcript view.
 
-        Returns the message records and the cursor for older pages, so a long
-        subagent thread can be paged back lazily.
+        Unlike :meth:`read_thread_history`, this preserves compaction and
+        event records so the viewed thread renders the same transcript shape
+        as the main client surface. The cursor still pages older records.
         """
         response = await self._client.list_trajectory(
             self._session_id,
@@ -340,12 +351,32 @@ class TerminalSession:
         payload = _dump(response)
         items = payload.get("items")
         records = [
-            item
-            for item in items
-            if isinstance(item, dict) and item.get("kind") == "message"
+            dict(item) for item in items if isinstance(item, dict)
         ] if isinstance(items, list) else []
         next_cursor = payload.get("next_cursor")
         return records, str(next_cursor) if next_cursor else None
+
+    async def read_thread_history(
+        self,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, JsonValue]], str | None]:
+        """Persisted message records of a thread (read-only, lock-free).
+
+        Returns the message records and the cursor for older pages, so a long
+        subagent thread can be paged back lazily.
+        """
+        records, next_cursor = await self.read_thread_trajectory(
+            thread_id,
+            cursor=cursor,
+            limit=limit,
+        )
+        return (
+            [item for item in records if item.get("kind") == "message"],
+            next_cursor,
+        )
 
     async def submit_user_input(self, request_id: str, answer: JsonValue) -> dict[str, JsonValue]:
         return _dump(

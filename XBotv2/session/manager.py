@@ -1282,7 +1282,7 @@ async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
     return OpenedSession(
         session_id=runtime.session_id,
         thread_id=runtime.thread_id,
-        title=snapshot.metadata.title or runtime.session_id,
+        title=snapshot.metadata.title,
         agent_name=snapshot.agent,
         workspace_root=runtime.workspace_root,
         provider=runtime.provider_name,
@@ -1371,7 +1371,7 @@ async def _thread_summary(
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
-            title=metadata.title or session_id,
+            title=metadata.title,
         )
 
     persistence = await manager._persisted_thread(session_id, thread_id)
@@ -1394,7 +1394,7 @@ async def _thread_summary(
         usage=await _read_usage(persistence),
         session_stats=conversation_stats(messages),
         workspace_root=metadata.workspace_root,
-        title=metadata.title or session_id,
+        title=metadata.title,
     )
 
 

@@ -80,10 +80,10 @@ class ChildApplicationSession:
 
     async def wait(self) -> ChildApplicationResult:
         engine = self.application.driver
-        await engine.start_session()
         output = ""
         error = ""
         try:
+            await engine.start_session()
             async for event in engine.run_turn(self.prompt):
                 event_type = event.get("type")
                 data = event.get("data") or {}
@@ -100,9 +100,25 @@ class ChildApplicationSession:
                 await asyncio.shield(self._close())
             self._record("cancelled", error=error)
             raise
+        except BaseException as exc:
+            # A failed child turn still owns a mounted application and the
+            # session lock. Close it before reporting the failure so a
+            # provider/tool exception cannot leave a zombie subagent behind.
+            failure = str(exc) or type(exc).__name__
+            try:
+                close_error = await self._close()
+            except BaseException as close_exc:  # noqa: BLE001 — close is best effort
+                close_error = f"Subagent close failed: {close_exc}"
+            if close_error:
+                failure = f"{failure}; {close_error}"
+            self._record("failed", error=failure)
+            raise ChildApplicationError(failure) from exc
 
         usage = self.application.usage.snapshot()
-        close_error = await self._close()
+        try:
+            close_error = await self._close()
+        except BaseException as close_exc:  # noqa: BLE001 — close is best effort
+            close_error = f"Subagent close failed: {close_exc}"
         if close_error and not error:
             error = close_error
         if error:

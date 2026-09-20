@@ -32,6 +32,21 @@ class ThreadMetadata(BaseModel):
     def from_state(cls, value: Mapping[str, JsonValue]) -> "ThreadMetadata":
         return cls.model_validate({"schema_version": 1, **value})
 
+    def with_default_title(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+    ) -> "ThreadMetadata":
+        """Return metadata with the startup title when none was stored."""
+        if self.title:
+            return self
+        if self.parent_thread_id:
+            title = self.agent or thread_id or session_id
+        else:
+            title = session_id or thread_id
+        return self.model_copy(update={"title": title})
+
 
 THREAD_METADATA_CHANGED = "metadata/changed"
 
@@ -74,13 +89,21 @@ class ThreadMetadataState(Service):
         super().__init__(ctx, name=self.name)
         self._session_id = session_id
         self._thread_id = thread_id
-        self._value = value or ThreadMetadata()
+        initial = value or ThreadMetadata()
+        self._value = initial.with_default_title(
+            session_id=session_id,
+            thread_id=thread_id,
+        )
 
     @property
     def value(self) -> ThreadMetadata:
         return self._value
 
     async def replace(self, value: ThreadMetadata) -> None:
+        value = value.with_default_title(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
         if value == self._value:
             return
         previous = self._value

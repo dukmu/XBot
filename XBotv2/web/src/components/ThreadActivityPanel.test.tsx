@@ -6,6 +6,7 @@ import { ThreadActivityPanel } from "./ThreadActivityPanel";
 function thread(overrides: Partial<ThreadSummary>): ThreadSummary {
   return {
     session_id: "session-1",
+    title: "Session title",
     thread_id: "agent",
     status: "active",
     kind: "main",

@@ -287,7 +287,7 @@ function SessionItem({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [title, setTitle] = useState(session.title || session.session_id);
+  const [title, setTitle] = useState(session.title);
   const active = session.session_id === sidebar.current?.session_id;
   return (
             <div className="session-group" onBlur={(event) => {
@@ -301,7 +301,7 @@ function SessionItem({
                 >
                   <Circle size={7} fill={session.status === "active" ? "currentColor" : "none"} />
                   <span className="session-label">
-                    <b>{session.title || shortId(session.session_id)}</b>
+                    <b>{session.title}</b>
                     {session.workspace_root && <small>{session.workspace_root}</small>}
                   </span>
                   <small>{session.thread_count}</small>
@@ -311,7 +311,7 @@ function SessionItem({
                   <button
                     type="button"
                     className="icon-button small session-more"
-                    aria-label={`More actions for ${session.title || session.session_id}`}
+                    aria-label={`More actions for ${session.title}`}
                     aria-expanded={menuOpen}
                     onClick={() => setMenuOpen((open) => !open)}
                   >
@@ -335,7 +335,7 @@ function SessionItem({
                   )}
                   <button type="button" role="menuitem" onClick={() => {
                     setMenuOpen(false);
-                    setTitle(session.title || session.session_id);
+                    setTitle(session.title);
                     setEditing(true);
                   }}><Pencil size={13} /> Rename</button>
                   <button type="button" role="menuitem" onClick={() => {

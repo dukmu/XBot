@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -19,7 +20,15 @@ from textual.message import Message
 from textual.events import Key
 from textual.widgets import Collapsible, Static, TextArea
 
-from XBotv2.tui.client import TuiMessage, TuiState, TuiTask, TuiTool, format_value
+from XBotv2.tui.client import (
+    TuiMessage,
+    TuiNotice,
+    TuiState,
+    TuiTask,
+    TuiTool,
+    TuiTranscriptEntry,
+    format_value,
+)
 
 # Bound Markdown render cache: streaming assistant deltas re-render the same
 # growing content many times per second; memoizing the parsed render avoids
@@ -135,7 +144,17 @@ def status_renderable(
     if _segments_width(with_activity) <= width:
         segments.insert(activity_index, (activity, ""))
 
-    if width >= 80:
+    # Detailed token I/O stays on wide lines, but yields to a readable
+    # session title plus agent/model identity on ordinary terminals.
+    detailed_tokens_allowed = width >= 96
+    if (
+        detailed_tokens_allowed
+        and width < 160
+        and session_title
+        and session_title != session_id
+    ):
+        detailed_tokens_allowed = False
+    if detailed_tokens_allowed:
         # "in" is the full prompt sent to the provider, including cache I/O;
         # deepseek reports uncached input as 0 when everything is cached.
         full_input = (
@@ -159,6 +178,16 @@ def status_renderable(
             segments[token_index] = (detailed_tokens, "")
 
     optional: list[tuple[str, str]] = []
+    # The readable session title is the primary human identity on the Web
+    # header, so surface it before secondary runtime details on narrow but
+    # usable terminals. Wide lines keep the existing combined session row.
+    if (
+        width < 160
+        and width >= 60
+        and session_title
+        and session_title != session_id
+    ):
+        optional.append((f"title:{session_title[:32]}", "dim"))
     if agent_name:
         optional.append((f"agent:{agent_name[:20]}", "blue"))
     model_identity = "/".join(part for part in (provider, model) if part)
@@ -170,12 +199,13 @@ def status_renderable(
         optional.append((f"{name}:{value}"[:30], "magenta"))
     if workspace:
         optional.append((f"cwd:{workspace[:20]}", "cyan"))
-    if width >= 120:
-        label = session_title or session_id
-        session = label if thread_id == "agent" else f"{label}/{thread_id}"
+    if width >= 160:
+        session = (
+            session_title
+            if thread_id == "agent"
+            else f"{session_title}/{thread_id}"
+        )
         optional.append((f"session:{session[:44]}", "dim"))
-    elif session_title and session_title != session_id and width >= 96:
-        optional.append((f"title:{session_title[:24]}", "dim"))
     for candidate in optional:
         if _segments_width([*segments, candidate]) <= width:
             segments.append(candidate)
@@ -259,12 +289,32 @@ class SubagentTaskWidget(Collapsible):
         collapsed: bool = True,
     ) -> None:
         self.task_id = task.task_id
+        self._latest_task = task
+        self._width = width
         super().__init__(
             BoundedText(task_detail_text(task), classes="task-detail"),
             title=_task_title(task, width=width),
             collapsed=collapsed,
             classes="subagent-task",
         )
+
+    def update_task(self, task: TuiTask, *, width: int) -> None:
+        """Update one existing task row in place, preserving expansion."""
+        self._latest_task = task
+        self._width = width
+        self.title = _task_title(task, width=width)
+        if not self._update_detail():
+            # The row may have been mounted on this tick but not composed
+            # yet; apply the latest task after the refresh pass.
+            self.call_after_refresh(self._update_detail)
+
+    def _update_detail(self) -> bool:
+        try:
+            detail = self.query_one(".task-detail", BoundedText)
+        except Exception:  # noqa: BLE001 — child composition may lag mount
+            return False
+        detail.update(task_detail_text(self._latest_task))
+        return True
 
 
 def task_detail_text(task: TuiTask) -> str:
@@ -302,42 +352,37 @@ class TaskListWidget(VerticalScroll):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._signature: tuple[Any, ...] = ()
+        self._widgets: dict[str, SubagentTaskWidget] = {}
 
     def update_tasks(self, tasks: list[TuiTask], *, width: int) -> None:
-        signature = tuple(
-            (
-                task.task_id,
-                task.status,
-                task.output,
-                task.error,
-                task.thread_id,
-                tuple(sorted(task.usage.items())),
-                int(time.monotonic() * 2)
-                if task.status in {"pending", "running"}
-                else 0,
-            )
-            for task in tasks
-        )
-        if signature == self._signature:
-            return
-        expanded = {
-            widget.task_id
-            for widget in self.query(SubagentTaskWidget)
-            if not widget.collapsed
-        }
-        self._signature = signature
-        self.remove_children()
-        widgets: list[SubagentTaskWidget] = [
-            SubagentTaskWidget(
-                task,
-                width=width,
-                collapsed=task.task_id not in expanded,
-            )
-            for task in tasks
-        ]
-        if widgets:
-            self.mount(*widgets)
+        """Reconcile task widgets in place instead of rebuilding the list.
+
+        Rebuilding on every tick made expanded task details flicker and
+        collapse. Existing widgets keep their identity and expansion state;
+        running titles/details are refreshed in place.
+        """
+        desired = {task.task_id: task for task in tasks}
+        for task_id, widget in list(self._widgets.items()):
+            if task_id in desired:
+                continue
+            self._widgets.pop(task_id, None)
+            widget.remove()
+
+        ordered: list[SubagentTaskWidget] = []
+        for task in tasks:
+            widget = self._widgets.get(task.task_id)
+            if widget is None:
+                widget = SubagentTaskWidget(task, width=width)
+                self._widgets[task.task_id] = widget
+                self.mount(widget)
+            else:
+                widget.update_task(task, width=width)
+            ordered.append(widget)
+
+        for index, widget in enumerate(ordered):
+            if index < len(self.children) and self.children[index] is widget:
+                continue
+            self.move_child(widget, before=index)
 
 
 def _task_title(task: TuiTask, *, width: int) -> str:
@@ -894,39 +939,154 @@ class BoundedText(Vertical):
         self._render_window()
 
 class ThreadView(Vertical):
-    """A read-only pane over one session thread: history plus live frames.
+    """A read-only transcript over one session thread.
 
-    The body is a pane-sized :class:`BoundedText`, so a long subagent thread
-    stays bounded and scrollable by the wheel, tap marks, or the arrow keys
-    the same way every other block behaves. The header always shows the
-    return affordance and whether the attached (main) thread produced new
-    output while this one is being read.
+    It reuses the same event-driven :class:`TranscriptSurface` and
+    :class:`TranscriptScroll` contract as the main transcript. The only
+    difference is the container id and the caller-provided event source.
     """
-
-    class OlderRequested(Message):
-        """The reader reached the top; the app may lazy-load older history."""
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__(id=id)
         self._header = Static("", classes="thread-view-header")
-        self._body = BoundedText("", classes="thread-view-body", max_rows=0)
+        self._body = TranscriptScroll(
+            id="thread_transcript",
+            classes="thread-view-body",
+        )
         self.thread = ""
-
-    def on_bounded_text_top_reached(self, _event: "BoundedText.TopReached") -> None:
-        self.post_message(self.OlderRequested())
+        self._surface: TranscriptSurface | None = None
+        self._items: list[dict[str, Any]] = []
+        self._agent_name = ""
+        self._follow = True
 
     def compose(self):
+        # The transcript body is mounted only when the read-only view opens;
+        # keeping the hidden widget out of the initial DOM avoids competing
+        # with the main transcript's focus lifecycle on startup.
         yield self._header
-        yield self._body
+
+    async def _mount_body(self) -> None:
+        if self._body.parent is None:
+            await self.mount(self._body)
 
     @property
-    def body(self) -> BoundedText:
+    def body(self) -> TranscriptScroll:
         return self._body
 
     def show(self, thread_id: str, summary: str) -> None:
         self.thread = thread_id
-        self._body.update("")
+        self.reset()
         self._refresh_header(summary, main_busy=False)
+
+    def reset(self) -> None:
+        self._items = []
+        self._follow = True
+        if self._surface is not None:
+            self._surface.set_state(TuiState())
+
+    @staticmethod
+    def _build_state(
+        items: list[dict[str, Any]],
+        agent_name: str,
+    ) -> TuiState:
+        state = TuiState(agent_name=agent_name or "subagent")
+        history: list[dict[str, Any]] = []
+        compactions: list[tuple[str, str]] = []
+        for item in items:
+            kind = str(item.get("kind") or "")
+            if kind == "message" and isinstance(item.get("message"), dict):
+                message = dict(item["message"])
+                message["message_id"] = str(
+                    item.get("message_id") or message.get("message_id") or ""
+                )
+                history.append(message)
+            elif kind == "surface_replace":
+                summary = str(item.get("summary") or "")
+                if summary:
+                    compactions.append((str(item.get("operation") or ""), summary))
+        if history:
+            state.restore_history(history)
+        for operation, summary in compactions:
+            label = "Conversation compacted"
+            if operation.startswith("compact:"):
+                label = f"Conversation compacted ({operation[8:]})"
+            state.append_notice(
+                "compact",
+                label,
+                payload={"summary": summary},
+            )
+        return state
+
+    async def load(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        agent_name: str = "",
+    ) -> None:
+        await self._mount_body()
+        self._items = list(items)
+        self._agent_name = agent_name
+        state = self._build_state(self._items, agent_name)
+        self._surface = TranscriptSurface(
+            state,
+            self._body,
+            max_mounted_entries=200,
+        )
+        await self._surface.replace(state, mount_all=True)
+        self._follow = True
+        self._body.call_after_refresh(self._body.scroll_end, animate=False)
+
+    async def prepend_items(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        agent_name: str = "",
+    ) -> None:
+        """Prepend one older trajectory page while keeping the old top item."""
+        if not records:
+            return
+        old_items = self._items
+        older_state = self._build_state(records, agent_name)
+        self._items = [*records, *old_items]
+        self._agent_name = agent_name or self._agent_name
+        state = self._build_state(self._items, self._agent_name)
+        anchor_index = len(older_state.transcript)
+        anchor_entry = (
+            state.transcript[anchor_index]
+            if anchor_index < len(state.transcript)
+            else (state.transcript[0] if state.transcript else None)
+        )
+        self._surface = TranscriptSurface(
+            state,
+            self._body,
+            max_mounted_entries=200,
+        )
+        await self._surface.replace(state, mount_all=True)
+        self._follow = False
+        if anchor_entry is not None:
+            anchor_widget = self._surface.widget_for_entry(anchor_entry)
+            if anchor_widget is not None:
+                self._body.call_after_refresh(
+                    lambda w=anchor_widget: self._body.scroll_to_widget(
+                        w,
+                        top=True,
+                        animate=False,
+                    )
+                )
+
+    async def catch_up(self) -> None:
+        if self._surface is None:
+            return
+        self._follow = True
+        await self._surface.catch_up()
+
+    async def apply_event(self, event: dict[str, Any]) -> None:
+        if self._surface is None:
+            return
+        if str(event.get("type") or "") == "end":
+            return
+        self._follow = self._body.is_vertical_scroll_end
+        await self._surface.apply_event(event, follow=self._follow)
 
     def set_main_busy(self, busy: bool, summary: str = "") -> None:
         self._refresh_header(summary, main_busy=busy)
@@ -1163,6 +1323,412 @@ def notice_title(kind: str) -> str:
         "permission_response_recorded": "approval",
         "Not connected": "not connected",
     }.get(kind, kind)
+
+
+class TranscriptSurface:
+    """Event-driven transcript renderer shared by the main and thread views.
+
+    The surface owns only presentation state: the :class:`TuiState` is fed by
+    the caller, while this class materializes transcript entries with the same
+    semantic widgets and keeps the mounted window bounded. Both the main
+    client surface and the read-only thread view use this class, so message,
+    reasoning, tool, and notice rendering has one implementation.
+    """
+
+    def __init__(
+        self,
+        state: TuiState,
+        container: VerticalScroll,
+        *,
+        notice_widget_factory: Any | None = None,
+        tool_extra: Any | None = None,
+        reasoning_expanded: Any | None = None,
+        details_expanded: Any | None = None,
+        max_mounted_entries: int = 100,
+        max_message_widgets: int = 200,
+        max_tool_widgets: int = 100,
+    ) -> None:
+        self.state = state
+        self.container = container
+        self.notice_widget_factory = notice_widget_factory
+        self.tool_extra = tool_extra
+        self.reasoning_expanded = reasoning_expanded or (lambda: False)
+        self.details_expanded = details_expanded or (lambda: False)
+        self.max_mounted_entries = max_mounted_entries
+        self.max_message_widgets = max_message_widgets
+        self.max_tool_widgets = max_tool_widgets
+        self.window_start = 0
+        self.window_end = 0
+        self.mounted_entry_widgets: list[Any] = []
+        self.message_widgets: dict[int, Vertical] = {}
+        self.tool_widgets: dict[str, Vertical] = {}
+        self.render_lock = asyncio.Lock()
+
+    def set_state(self, state: TuiState) -> None:
+        self.state = state
+        self.window_start = 0
+        self.window_end = 0
+        self.mounted_entry_widgets = []
+        self.message_widgets.clear()
+        self.tool_widgets.clear()
+
+    async def clear(self) -> None:
+        await self.container.remove_children()
+        self.window_start = 0
+        self.window_end = 0
+        self.mounted_entry_widgets = []
+        self.message_widgets.clear()
+        self.tool_widgets.clear()
+
+    async def rebuild_from_state(self) -> None:
+        await self.clear()
+        await self.mount_entries(0, len(self.state.transcript))
+        self.window_end = len(self.state.transcript)
+
+    async def replace(
+        self,
+        state: TuiState,
+        *,
+        mount_all: bool = False,
+    ) -> None:
+        self.set_state(state)
+        await self.clear()
+        if mount_all and state.transcript:
+            await self.mount_entries(0, len(state.transcript))
+            self.window_end = len(state.transcript)
+
+    def _schedule_refresh(self, callback: Any) -> None:
+        app = getattr(self.container, "app", None)
+        schedule = getattr(app, "call_after_refresh", None)
+        if callable(schedule):
+            schedule(callback)
+        else:
+            self.container.call_after_refresh(callback)
+
+    async def sync(self, *, follow: bool | None = None) -> bool:
+        """Mount new transcript entries following the live tail."""
+        async with self.render_lock:
+            end = len(self.state.transcript)
+            if follow is None:
+                follow = self.container.is_vertical_scroll_end
+            if end <= self.window_end:
+                await self.drop_leading_excess(follow)
+                return False
+            if not follow:
+                return False
+            await self.mount_entries(self.window_end, end)
+            self.window_end = end
+            await self.drop_leading_excess(follow)
+            if follow:
+                self._schedule_refresh(
+                    lambda: self.container.scroll_end(animate=False)
+                )
+            return True
+
+    async def catch_up(self) -> bool:
+        """Mount entries that accumulated while the reader was scrolled up."""
+        return await self.sync(follow=True)
+
+    async def mount_entries(
+        self,
+        start: int,
+        end: int,
+        *,
+        prepend: bool = False,
+    ) -> list[Any]:
+        widgets: list[Any] = []
+        reference = (
+            self.container.children[0]
+            if prepend and self.container.children
+            else None
+        )
+        for entry in self.state.transcript[start:end]:
+            widget = self.widget_for_entry(entry)
+            if widget is None:
+                continue
+            widgets.append(widget)
+            if widget.parent is self.container:
+                continue
+            if widget.parent is not None:
+                try:
+                    await widget.remove()
+                except Exception:  # noqa: BLE001
+                    pass
+            if reference is not None:
+                await self.container.mount(widget, before=reference)
+            else:
+                await self.container.mount(widget)
+        if prepend:
+            self.mounted_entry_widgets[0:0] = widgets
+        else:
+            self.mounted_entry_widgets.extend(widgets)
+        return widgets
+
+    async def drop_leading_excess(self, follow: bool) -> int:
+        if not follow:
+            return 0
+        excess = self.window_end - self.window_start - self.max_mounted_entries
+        if excess <= 0:
+            return 0
+        removed = self.mounted_entry_widgets[:excess]
+        self.mounted_entry_widgets = self.mounted_entry_widgets[excess:]
+        for widget in removed:
+            if widget.parent is self.container:
+                await widget.remove()
+        self.window_start += len(removed)
+        return len(removed)
+
+    async def drop_trailing_excess(self) -> int:
+        excess = self.window_end - self.window_start - self.max_mounted_entries
+        if excess <= 0:
+            return 0
+        removed = self.mounted_entry_widgets[-excess:]
+        self.mounted_entry_widgets = self.mounted_entry_widgets[:-excess]
+        for widget in removed:
+            if widget.parent is self.container:
+                await widget.remove()
+        self.window_end -= len(removed)
+        return len(removed)
+
+    def widget_for_entry(self, entry: TuiTranscriptEntry) -> Vertical | Static | None:
+        kind = str(getattr(entry, "kind", ""))
+        key = str(getattr(entry, "key", ""))
+        if kind == "message":
+            try:
+                index = int(key)
+                message = self.state.messages[index]
+            except (ValueError, IndexError):
+                return None
+            existing = self.message_widgets.get(index)
+            if existing is not None:
+                return existing
+            widget = message_widget(
+                self.state,
+                message,
+                reasoning_expanded=bool(self.reasoning_expanded()),
+            )
+            self.message_widgets[index] = widget
+            self.trim_message_widgets()
+            return widget
+        if kind == "tool":
+            tool = self.state.tools.get(key)
+            if tool is None:
+                return None
+            widget_id = tool.tool_call_id
+            existing = self.tool_widgets.get(widget_id)
+            if existing is not None:
+                try:
+                    self.refresh_tool_widget_sync(widget_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                return existing
+            widget = tool_widget(
+                tool,
+                details_expanded=bool(self.details_expanded()),
+            )
+            self.tool_widgets[widget_id] = widget
+            self.trim_tool_widgets()
+            return widget
+        if kind == "notice":
+            try:
+                notice = self.state.notices[int(key)]
+            except (ValueError, IndexError):
+                return None
+            if self.notice_widget_factory is not None:
+                return self.notice_widget_factory(notice, key)
+            return self._default_notice_widget(notice)
+        if kind == "error":
+            try:
+                error = self.state.errors[int(key)]
+            except (ValueError, IndexError):
+                return None
+            return entry_widget("error", "Error", error)
+        return None
+
+    @staticmethod
+    def _default_notice_widget(notice: TuiNotice) -> Vertical:
+        if notice.kind == "compact":
+            summary = str(notice.payload.get("summary") or "")
+            if summary:
+                return compact_widget(
+                    title=f"{notice.ts}  {notice.text}",
+                    summary=summary,
+                )
+        return entry_widget(
+            "notice",
+            f"{notice.ts}  {notice_title(notice.kind)}",
+            notice.text,
+        )
+
+    def trim_message_widgets(self) -> None:
+        while len(self.message_widgets) > self.max_message_widgets:
+            oldest = next(iter(self.message_widgets))
+            self.message_widgets.pop(oldest, None)
+
+    def trim_tool_widgets(self) -> None:
+        while len(self.tool_widgets) > self.max_tool_widgets:
+            oldest = next(iter(self.tool_widgets))
+            self.tool_widgets.pop(oldest, None)
+
+    def refresh_tool_widget_sync(self, tool_call_id: str) -> None:
+        tool = self.state.tools.get(tool_call_id)
+        widget = self.tool_widgets.get(tool_call_id)
+        if tool is None or widget is None:
+            return
+        title = _build_title(tool, tool.elapsed(time.monotonic()))
+        meta = _query_child(widget, ".meta")
+        if meta is not None:
+            meta.update(title)
+        detail = tool_detail(tool)
+        body = _query_child(widget, ".body")
+        if body is not None:
+            body.update(render_text(detail))
+        elif detail:
+            widget.mount(
+                tool_detail_widget(
+                    detail,
+                    expanded=bool(self.details_expanded()),
+                )
+            )
+
+    async def refresh_changed_tool_widgets(
+        self,
+        tool_ids: set[str] | None = None,
+    ) -> None:
+        for old_id, new_id in self.state._tool_id_renames.items():
+            widget = self.tool_widgets.pop(old_id, None)
+            if widget is None:
+                continue
+            existing = self.tool_widgets.get(new_id)
+            if existing is not None and existing is not widget:
+                # The final tool widget was already mounted from history or
+                # a previous frame. Drop the provisional duplicate instead of
+                # replacing the durable widget with the streaming one.
+                if widget.parent is self.container:
+                    await widget.remove()
+                self.mounted_entry_widgets = [
+                    item for item in self.mounted_entry_widgets if item is not widget
+                ]
+                continue
+            self.tool_widgets[new_id] = widget
+        changed_ids = (
+            tool_ids if tool_ids is not None else self.state._changed_tool_ids
+        )
+        for tool_call_id in list(changed_ids):
+            await self.refresh_tool_widget(tool_call_id)
+
+    async def refresh_streaming_assistant_widget(
+        self,
+        *,
+        follow: bool | None = None,
+    ) -> None:
+        index = self.state._streaming_assistant_index
+        if index is None and self.state.messages:
+            index = len(self.state.messages) - 1
+        if index is None:
+            return
+        try:
+            message = self.state.messages[index]
+        except IndexError:
+            return
+        widget = self.message_widgets.get(index)
+        if widget is None:
+            await self.sync(follow=follow)
+            widget = self.message_widgets.get(index)
+        if widget is None:
+            return
+        follow_output = (
+            self.container.is_vertical_scroll_end if follow is None else follow
+        )
+        await self.apply_streaming_message_widget(widget, message)
+        if follow_output:
+            self.container.scroll_end(animate=False)
+
+    async def apply_streaming_message_widget(
+        self,
+        widget: Any,
+        message: TuiMessage,
+    ) -> None:
+        reasoning = _query_child(widget, ".reasoning")
+        if message.reasoning:
+            if reasoning is not None:
+                reasoning.update(render_reasoning(message.reasoning))
+            else:
+                block = reasoning_widget(
+                    render_reasoning(message.reasoning),
+                    expanded=bool(self.reasoning_expanded()),
+                )
+                body = _query_child(widget, ".body")
+                await widget.mount(block, before=body)
+        body = _query_child(widget, ".body")
+        if body is not None:
+            body.update(render_message(message.content, role=message.role))
+        elif message.content:
+            await widget.mount(
+                Static(
+                    render_message(message.content, role=message.role),
+                    classes="body",
+                )
+            )
+
+    async def refresh_tool_widget(self, tool_call_id: str) -> None:
+        if not tool_call_id:
+            return
+        tool = self.state.tools.get(tool_call_id)
+        widget = self.tool_widgets.get(tool_call_id)
+        if tool is None or widget is None:
+            return
+        title = _build_title(tool, tool.elapsed(time.monotonic()))
+        meta = _query_child(widget, ".meta")
+        if meta is None:
+            return
+        meta.update(title)
+        detail = tool_detail(tool)
+        body = _query_child(widget, ".body")
+        if body is not None:
+            body.update(render_text(detail))
+        elif detail:
+            await widget.mount(
+                tool_detail_widget(
+                    detail,
+                    expanded=bool(self.details_expanded()),
+                )
+            )
+        if self.tool_extra is not None:
+            await self.tool_extra(widget, tool)
+
+    async def apply_event(
+        self,
+        event: dict[str, Any],
+        *,
+        follow: bool | None = None,
+    ) -> None:
+        """Apply one normalized event to this surface's state and sync."""
+        event_type = str(event.get("type") or "")
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        if event_type == "message" and str(data.get("role") or "user") == "user":
+            self.state.append_message(
+                "user",
+                str(data.get("content") or ""),
+                message_id=str(data.get("id") or ""),
+            )
+        else:
+            self.state.apply_event(event)
+        if event_type == "history_updated":
+            await self.rebuild_from_state()
+            return
+        await self.sync(follow=follow)
+        if event_type in {"assistant_message", "assistant_message_delta"}:
+            await self.refresh_streaming_assistant_widget(follow=follow)
+        if self.state._changed_tool_ids:
+            await self.refresh_changed_tool_widgets()
+
+
+def _query_child(widget: Any, selector: str) -> Any | None:
+    try:
+        return widget.query(selector).first()
+    except Exception:  # noqa: BLE001 — child may not exist yet
+        return None
 
 
 def spinner(index: int) -> str:

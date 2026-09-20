@@ -696,6 +696,17 @@ async def test_compaction_appears_as_an_expandable_transcript_entry(
         assert len(detail.window_text.splitlines()) <= detail.max_rows
 
 
+def _thread_view_text(view) -> str:
+    parts: list[str] = []
+    for widget in view.query(".body, .reasoning, .meta"):
+        content = getattr(widget, "content", None)
+        if content is not None:
+            parts.append(getattr(content, "plain", str(content)))
+        else:
+            parts.append(getattr(widget, "text", ""))
+    return "\n".join(part for part in parts if part)
+
+
 @pytest.mark.asyncio
 async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> None:
     """/thread enters a read-only view: history rendered, live frames appended,
@@ -716,19 +727,26 @@ async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> N
         assert view.display is True
         assert transcript.display is False
         assert app._view_active is True
-        assert "review the diff" in view.body.text
-        assert "I reviewed it." in view.body.text
-        assert "thinking hard" in view.body.text
+        rendered = _thread_view_text(view)
+        assert "review the diff" in rendered
+        assert "I reviewed it." in rendered
+        assert "thinking hard" in rendered
         assert "agent-reviewer-1" in str(view.query_one(".thread-view-header").content)
+        assert view.query(".entry.user")
+        assert view.query(".entry.assistant")
 
         composer = app.query_one("#input")
         assert composer.disabled is True
 
         # Live frames of the viewed thread arrive through its own stream and
-        # extend the pane even though the fake session has no events queued.
-        view.body.append("~ subagent says something\n")
+        # extend the rendered transcript even though the fake session has no
+        # events queued.
+        await view.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"content": "~ subagent says something"},
+        })
         await pilot.pause()
-        assert "subagent says something" in view.body.text
+        assert "subagent says something" in _thread_view_text(view)
 
         # Esc leaves the view and restores the main transcript + composer.
         await pilot.press("escape")
@@ -738,6 +756,121 @@ async def test_thread_view_shows_history_and_is_read_only(scripted_session) -> N
         assert view.display is False
         assert transcript.display is True
         assert composer.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_thread_view_renders_semantic_tool_entries(scripted_session) -> None:
+    """A viewed thread uses the same tool widgets as the main transcript."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    class ToolHistorySession(_ScriptedSession):
+        async def read_thread_history(self, thread_id, *, cursor=None, limit=200):
+            del thread_id, cursor, limit
+            return (
+                [
+                    {
+                        "kind": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": "Running it.",
+                            "reasoning": "",
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "name": "shell",
+                                "args": {"command": "ls"},
+                            }],
+                        },
+                    },
+                    {
+                        "kind": "message",
+                        "message": {
+                            "role": "tool",
+                            "content": "file.py",
+                            "tool_call_id": "call_1",
+                            "status": "success",
+                        },
+                    },
+                ],
+                None,
+            )
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = ToolHistorySession()
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        await pilot.pause()
+
+        view = app.query_one("#thread_view", ThreadView)
+        tool_entries = list(view.query(".entry.tool"))
+        assert tool_entries
+        rendered = _thread_view_text(view)
+        assert "shell" in rendered
+        assert "file.py" in rendered
+
+
+@pytest.mark.asyncio
+async def test_thread_view_scrolls_and_follows_live_output(scripted_session) -> None:
+    """A long viewed thread scrolls, releases follow on scroll-up, and
+    resumes following after scrolling back to the tail."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    class LongThreadSession(_ScriptedSession):
+        async def read_thread_history(self, thread_id, *, cursor=None, limit=200):
+            del thread_id, cursor, limit
+            return (
+                [
+                    {
+                        "kind": "message",
+                        "message": {
+                            "role": "user",
+                            "content": f"history line {index:02d}",
+                            "reasoning": "",
+                            "tool_calls": [],
+                        },
+                    }
+                    for index in range(80)
+                ],
+                None,
+            )
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = LongThreadSession()
+    async with app.run_test(headless=True, size=(90, 24)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        await pilot.pause()
+
+        view = app.query_one("#thread_view", ThreadView)
+        body = view.body
+        assert body.max_scroll_y > 0, "long thread must be scrollable"
+
+        body.scroll_home(animate=False)
+        await pilot.pause()
+        assert body.scroll_y == 0
+
+        # While reading older content, live output must not yank the viewport.
+        await view.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"content": "live while reading"},
+        })
+        await pilot.pause()
+        assert body.scroll_y == 0
+
+        # Returning to the tail re-enables follow.
+        body.scroll_end(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert body.is_vertical_scroll_end
+        await view.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"content": " follows to the bottom"},
+        })
+        await pilot.pause()
+        await pilot.pause()
+        assert body.is_vertical_scroll_end
 
 
 @pytest.mark.asyncio
@@ -755,22 +888,21 @@ async def test_thread_view_lazy_loads_older_history_on_scroll_top(
         await pilot.pause()
         view = app.query_one("#thread_view", ThreadView)
         assert scripted_session.thread_history_reads == [("agent-reviewer-1", None)]
-        assert view.body.text.startswith("[user] review the diff")
+        assert "review the diff" in _thread_view_text(view)
         assert app._view_older_cursor == "older"
 
-        # The reader reaches the very top: the older page is prepended and the
-        # view stays anchored instead of jumping.
-        while view.body.window_range[0] > 1:
-            view.body.scroll_rows(-1)
-        view.body.post_message(view.body.TopReached())
+        # The reader reaches the very top: the older page is prepended as
+        # transcript entries and the view stays readable.
+        view.body.post_message(view.body.ReplayTopReached())
         await pilot.pause()
         await pilot.pause()
         assert scripted_session.thread_history_reads == [
             ("agent-reviewer-1", None),
             ("agent-reviewer-1", "older"),
         ]
-        assert view.body.text.startswith("[user] earlier question")
-        assert "review the diff" in view.body.text
+        rendered = _thread_view_text(view)
+        assert "earlier question" in rendered
+        assert "review the diff" in rendered
         assert app._view_older_cursor is None
 
 
@@ -1394,6 +1526,7 @@ async def test_session_command_lists_and_switches_workspace() -> None:
         assert isinstance(picker, SelectionScreen)
         rows = list(picker.query(".selection-row"))
         assert any("old-session" in str(row.content) for row in rows)
+        assert any("Old work  old-session" in str(row.content) for row in rows)
         assert any("/work/old" in str(row.content) for row in rows)
         assert session.switches == []
 

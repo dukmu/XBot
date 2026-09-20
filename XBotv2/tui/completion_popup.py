@@ -110,7 +110,8 @@ class CompletionPopup(Vertical):
         if not self._matches:
             return
         self._selected = (self._selected + delta) % len(self._matches)
-        self._rebuild_rows()
+        for index, row in enumerate(self._row_widgets):
+            row.set_classes("active" if index == self._selected else "")
 
     def current_match(self) -> CommandSpec | None:
         if not self._matches:

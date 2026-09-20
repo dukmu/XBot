@@ -91,7 +91,7 @@ async def test_auto_caption_skips_subagent_threads():
         messages=list(original),
     )
     await plugin._events.serial(Events.BEFORE_CONTEXT, sub)
-    assert plugin.title == ""
+    assert plugin.title == "s"
     assert plugin.model.call_count == 0
 
 
@@ -124,7 +124,7 @@ async def test_auto_caption_disabled_never_calls_the_model():
         ],
     )
     await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    assert plugin.title == ""
+    assert plugin.title == "s"
     assert plugin.model.call_count == 0
 
 
@@ -190,7 +190,7 @@ async def test_caption_failure_is_silent():
         ],
     )
     await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)  # must not raise
-    assert plugin.title == ""
+    assert plugin.title == "s"
     assert plugin.model.call_count == 1
 
 
@@ -348,7 +348,7 @@ async def test_metadata_change_stays_off_the_runtime_event_stream(tmp_path):
         assert [
             (change.previous.title, change.current.title)
             for change in bus_changes
-        ] == [("", "Stream check")]
+        ] == [("boundary-check", "Stream check")]
         # The process-level catalog owner turned that into the catalog event
         # clients consume.
         assert [name for name, _ in events.seen] == [SESSION_RESOURCE_CHANGED]
@@ -389,7 +389,7 @@ async def test_transient_provider_failure_retries_caption_on_next_turn():
     finally:
         caption_service.invoke_llm = failing
 
-    assert plugin.title == ""
+    assert plugin.title == "s"
     assert plugin.model.call_count == 0
 
     # Second turn: the retry succeeds and captions the session.

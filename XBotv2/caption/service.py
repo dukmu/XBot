@@ -107,7 +107,9 @@ class CaptionService:
     def _is_first_turn(self, ctx: EventContext) -> bool:
         if self._captioned or self._is_subagent:
             return False
-        if self.state.value.title:
+        # A session starts with its id as the provisional title; captions are
+        # only for the first human turn that has not replaced it yet.
+        if self.state.value.title != self._session_id:
             return False
         # turn_count is owned by the loop state and mirrored onto the session
         # identity; no capability probing is needed here.

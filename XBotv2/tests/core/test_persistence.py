@@ -680,8 +680,9 @@ class TestThreadMetadataStore:
 
         asyncio.run(state.replace(selected))
 
-        assert state.value == selected
-        assert persistence.metadata.load() == selected
+        expected = selected.model_copy(update={"title": "s"})
+        assert state.value == expected
+        assert persistence.metadata.load() == expected
 
     def test_metadata_state_announces_every_change_generically(self):
         """Subscribers see whole values; field semantics belong to them."""
@@ -703,7 +704,7 @@ class TestThreadMetadataStore:
         asyncio.run(_drive())
 
         assert [(p.title, c.title) for p, c in seen] == [
-            ("", "first"),
+            ("s", "first"),
             ("first", "first"),
         ]
         assert seen[1][1].provider == "mock"
@@ -818,11 +819,11 @@ class TestLazyPersist:
 
     def test_deferred_metadata_stays_buffered_until_materialize(self, tmp_path):
         persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
-        assert persistence.metadata.load().title == ""
+        assert persistence.metadata.load().title == "s1"
         # Buffering: saving does not touch the metadata file yet.
         persistence.metadata.save(ThreadMetadata(title="late title"))
         assert not persistence.paths.metadata_file.exists()
-        assert persistence.metadata.load().title == ""
+        assert persistence.metadata.load().title == "s1"
 
         # materialize() is the persistence component's transition: the first
         # committed turn makes the thread durable, then flushes what was

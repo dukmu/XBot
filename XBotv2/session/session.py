@@ -103,6 +103,7 @@ class Session:
             model=self.state.metadata.value.model,
             model_mode=self.state.metadata.value.model_mode,
             context_window=self.state.metadata.value.context_window,
+            title=self.state.metadata.value.title,
             status=self.info.status,
             resumed=self.state.resumed,
             turn_count=self.state.turn_count,

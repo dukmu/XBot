@@ -472,6 +472,7 @@ class SessionStatus:
     turn_count: int
     message_count: int
     pending_inputs: int
+    title: str = ""
 
 
 @dataclass(frozen=True, slots=True)

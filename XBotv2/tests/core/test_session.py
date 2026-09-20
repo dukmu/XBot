@@ -677,3 +677,58 @@ async def test_status_command_asks_the_engine_for_pending_count(tmp_path):
     )
     status = next(command for command in commands if command.name == "status")
     assert "Queued inputs: 0" in (await status.handler("")).message
+
+
+@pytest.mark.asyncio
+async def test_status_command_reports_the_readable_title(tmp_path):
+    from XBotv2.session.commands import build_session_commands
+    from XBotv2.session.contracts import SessionStatus
+
+    class StubSession:
+        session_id = "raw-session-id"
+        thread_id = "agent"
+        workspace_root = str(tmp_path)
+        provider = "default"
+
+        def new_thread_id(self, owner):
+            del owner
+            return "child"
+
+        def status(self, *, pending_input_count):
+            return SessionStatus(
+                session_id=self.session_id,
+                thread_id=self.thread_id,
+                workspace_root=self.workspace_root,
+                agent="",
+                provider="default",
+                model="",
+                model_mode="",
+                context_window=0,
+                status="idle",
+                resumed=False,
+                turn_count=1,
+                message_count=2,
+                pending_inputs=pending_input_count,
+                title="Readable session name",
+            )
+
+        async def fork(self):
+            return "forked"
+
+        async def clear_history(self):
+            return 1
+
+        async def undo_history(self, count):
+            del count
+            return []
+
+        async def regenerate_history(self):
+            from XBotv2.core.messages import Message
+            return Message(role="assistant", content="ok")
+
+    commands = build_session_commands(StubSession(), pending_input_count=lambda: 0)
+    status = next(command for command in commands if command.name == "status")
+    result = await status.handler("")
+
+    assert "Title: Readable session name" in result.message
+    assert "ID: raw-session-id" in result.message

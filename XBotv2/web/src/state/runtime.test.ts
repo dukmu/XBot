@@ -111,6 +111,7 @@ describe("runtimeReducer", () => {
     });
     state = runtimeReducer(state, { type: "threads", threads: [{
       session_id: opened.session_id,
+      title: opened.title,
       thread_id: opened.thread_id,
       status: "active",
       kind: "main",
@@ -399,6 +400,7 @@ describe("runtimeReducer", () => {
   it("synchronizes thread metadata without replacing the attached workspace", () => {
     const thread: ThreadSummary = {
       session_id: "session-1",
+      title: "Session title",
       thread_id: "agent",
       status: "active",
       kind: "main",
@@ -430,7 +432,7 @@ describe("runtimeReducer", () => {
   it("adopts the running state of a session selected mid-turn", () => {
     const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const thread = {
-      session_id: "session-1", thread_id: "agent", status: "active" as const,
+      session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
       kind: "main" as const, turn_status: "running" as const, parent_thread_id: "",
       agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
       context_window: 1000, message_count: 2, usage: opened.usage,
@@ -443,7 +445,7 @@ describe("runtimeReducer", () => {
   it("marks a subagent thread view as read-only", () => {
     const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const subagent = {
-      session_id: "session-1", thread_id: "agent-reviewer-1", status: "active" as const,
+      session_id: "session-1", title: "Reviewer", thread_id: "agent-reviewer-1", status: "active" as const,
       kind: "subagent" as const, turn_status: "idle" as const, parent_thread_id: "agent",
       agent: "reviewer", provider: "minimax", model: "MiniMax-M2", model_mode: "",
       context_window: 1000, message_count: 2, usage: opened.usage,

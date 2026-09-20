@@ -611,13 +611,21 @@ class ThreadMetadataStore(MetadataPort):
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._path = paths.metadata_file
+        self._session_id = paths.session_id
+        self._thread_id = paths.thread_id
         self._log = runtime_log
 
     def load(self) -> ThreadMetadata:
         raw = _read_json(self._path, "thread metadata")
-        if raw is None:
-            return ThreadMetadata()
-        return ThreadMetadata.model_validate(raw)
+        metadata = (
+            ThreadMetadata()
+            if raw is None
+            else ThreadMetadata.model_validate(raw)
+        )
+        return metadata.with_default_title(
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+        )
 
     def save(self, metadata: ThreadMetadata) -> None:
         write_text_atomic(

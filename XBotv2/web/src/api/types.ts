@@ -59,7 +59,7 @@ export interface SessionSummary {
   thread_count: number;
   blank: boolean;
   workspace_root?: string;
-  title?: string;
+  title: string;
 }
 
 export interface SessionListData {
@@ -115,7 +115,7 @@ export interface ThreadSummary {
   pending_interactions: string[];
   status_slots: Record<string, string>;
   workspace_root?: string;
-  title?: string;
+  title: string;
 }
 
 export interface HistoryItem {

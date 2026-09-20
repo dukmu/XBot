@@ -559,6 +559,76 @@ def test_tui_state_keeps_minimax_parallel_ids_with_shared_stream_index():
     assert state.tools["call_pwd"].permission_pending is False
 
 
+def test_tui_state_replay_folds_duplicate_assistant_message_by_id():
+    """A replayed thread stream must not append the same assistant message
+    again when the loaded trajectory already contains its message id."""
+    state = TuiState()
+    state.restore_history([
+        {
+            "role": "assistant",
+            "message_id": "assistant-1",
+            "content": "durable answer",
+            "reasoning": "",
+            "tool_calls": [],
+        }
+    ])
+
+    state.apply_event(_frame("assistant_message", {
+        "id": "assistant-1",
+        "content": "durable answer",
+        "reasoning": "",
+        "tool_calls": [],
+    }))
+
+    assert [message.content for message in state.messages] == ["durable answer"]
+    assert [(entry.kind, entry.key) for entry in state.transcript] == [
+        ("message", "0")
+    ]
+
+
+def test_tui_state_replay_folds_provisional_tool_into_existing_history_tool():
+    """Replayed tool-call deltas must not create a second transcript entry
+    when the final tool call already exists in loaded history."""
+    state = TuiState()
+    state.restore_history([
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "",
+            "tool_calls": [
+                {"id": "call_1", "name": "shell", "args": {"command": "ls"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "a.py",
+            "tool_call_id": "call_1",
+            "status": "success",
+        },
+    ])
+
+    state.apply_event(_frame("tool_call_delta", {"tool_calls": [{
+        "tool_call_id": "tool_0",
+        "index": 0,
+        "name": "shell",
+        "args_delta": '{"command": "ls"}',
+    }]}))
+    state.apply_event(_frame("assistant_message", {
+        "content": "",
+        "tool_calls": [
+            {"id": "call_1", "name": "shell", "args": {"command": "ls"}}
+        ],
+    }))
+    state.apply_event(_frame("tool_calls_started", {"tool_calls": [
+        {"id": "call_1", "name": "shell", "args": {"command": "ls"}}
+    ]}))
+
+    assert list(state.tools) == ["call_1"]
+    assert [(entry.kind, entry.key) for entry in state.transcript] == [
+        ("tool", "call_1")
+    ]
+
+
 def test_tui_state_keeps_sequential_tool_batches_distinct():
     state = TuiState()
     first_call = {
@@ -3757,6 +3827,7 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
     from textual.containers import VerticalScroll
     from XBotv2.tui.textual_client import XBotTextualApp
     from XBotv2.tui.textual_widgets import (
+        BoundedText,
         SubagentTaskWidget,
         TaskListWidget,
     )
@@ -3800,6 +3871,64 @@ async def test_subagent_task_is_expandable_with_scrollable_fixed_body():
         assert "line 0" in detail.text and "line 19" in detail.text
         assert detail.line_count >= 20
         assert detail.size.height <= 8
+
+
+@pytest.mark.asyncio
+async def test_task_panel_refreshes_in_place_without_collapsing_expanded_rows():
+    from XBotv2.tui.textual_client import XBotTextualApp
+    from XBotv2.tui.textual_widgets import (
+        BoundedText,
+        SubagentTaskWidget,
+        TaskListWidget,
+    )
+
+    class FakeSession:
+        session_id = "s"
+        thread_id = "t"
+
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    task = TuiTask(
+        task_id="agent-task-1",
+        kind="agent",
+        command="reviewer: inspect changes",
+        status="running",
+        agent="reviewer",
+        thread_id="agent-reviewer-1",
+        output="line 0",
+    )
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+
+    async with app.run_test(headless=True, size=(80, 18)) as pilot:
+        widget = app.query_one("#task_list", TaskListWidget)
+        widget.update_tasks([task], width=80)
+        await pilot.pause()
+        subagent = widget.query_one(SubagentTaskWidget)
+        subagent.collapsed = False
+        await pilot.pause()
+
+        # A same-task refresh must reuse the mounted widget and keep the
+        # reader's expansion state.
+        widget.update_tasks([task], width=80)
+        await pilot.pause()
+        assert widget.query_one(SubagentTaskWidget) is subagent
+        assert subagent.collapsed is False
+
+        # Real task changes still update the existing widget in place.
+        task.output = "line 0\nline 1"
+        widget.update_tasks([task], width=80)
+        await pilot.pause()
+        assert widget.query_one(SubagentTaskWidget) is subagent
+        detail = subagent.query_one(".task-detail", BoundedText)
+        assert "line 1" in detail.text
 
 
 @pytest.mark.asyncio
@@ -4028,6 +4157,33 @@ async def test_provider_command_keeps_local_picker_and_remote_view():
         raw="/provider ls", args="ls",
     ))
     handler._dispatch_remote_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_catalog_session_change_applies_the_readable_title():
+    """The Web-style catalog channel updates the attached session identity."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from XBotv2.tui.client import TuiState
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    handler = SimpleNamespace(
+        state=TuiState(session_id="session-1", session_title="session-1"),
+        _refresh_all=Mock(),
+        _log_trace_title=Mock(),
+    )
+
+    await XBotTextualApp._apply_catalog_event(handler, {
+        "type": "catalog/session-changed",
+        "data": {"session": {
+            "session_id": "session-1",
+            "title": "Python GIL 讨论",
+        }},
+    })
+
+    assert handler.state.session_title == "Python GIL 讨论"
+    handler._refresh_all.assert_called_once()
 
 
 @pytest.mark.asyncio

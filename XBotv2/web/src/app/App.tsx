@@ -457,7 +457,7 @@ export function App() {
                 <X size={17} />
               </button>
             </div>
-            <p><strong>{deleteCandidate.title || deleteCandidate.session_id}</strong> and its persisted history, artifacts, and plugin state will be permanently deleted.</p>
+            <p><strong>{deleteCandidate.title}</strong> and its persisted history, artifacts, and plugin state will be permanently deleted.</p>
             <code>{deleteCandidate.session_id}</code>
             <div className="dialog-actions">
               <button type="button" className="secondary-button" autoFocus onClick={() => setDeleteCandidate(null)}>Cancel</button>
