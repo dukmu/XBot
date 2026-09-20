@@ -4638,3 +4638,92 @@ async def test_transcript_pages_older_history_from_the_server(monkeypatch):
         assert app.state.at_tail is True
         assert app.state.pending_newer == 0
         assert [message.message_id for message in app.state.messages] == [f"f{index}" for index in range(10)]
+
+
+def test_runtime_attributed_message_is_a_notice_not_typed_input():
+    """An injected reminder must not be rendered as a human message."""
+    state = TuiState()
+    handled = state.append_runtime_message({
+        "role": "user",
+        "content": "<system_reminder source=\"goal\" event=\"round\">Objective...</system_reminder>",
+        "runtime": {"source": "goal", "event": "round"},
+    })
+
+    assert handled is True
+    assert state.messages == []
+    assert state.notices[-1].kind == "goal:round"
+    assert state.notices[-1].payload == {"source": "goal", "event": "round"}
+    assert state.transcript[-1].kind == "notice"
+
+    # A message without provenance keeps the ordinary human path.
+    assert state.append_runtime_message({"role": "user", "content": "hello"}) is False
+    assert state.messages == []
+
+
+@pytest.mark.asyncio
+async def test_live_runtime_message_is_not_rendered_as_typed_input():
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        await app._consume_stream_event({
+            "type": "message",
+            "data": {
+                "role": "user",
+                "content": "<system_reminder source=\"todo\" event=\"reminder\">3 tasks</system_reminder>",
+                "runtime": {"source": "todo", "event": "reminder"},
+            },
+        })
+        await pilot.pause()
+
+        assert app.state.messages == []
+        assert app.state.notices[-1].kind == "todo:reminder"
+        # The transcript shows a provenance notice, never the raw reminder the
+        # model received.
+        rendered = [
+            _static_text(widget)
+            for widget in app.query(".notice .body, .notice .meta")
+        ]
+        assert any("todo" in text for text in rendered), rendered
+        assert not any("3 tasks" in text for text in rendered), rendered
+
+
+def test_tui_state_memory_is_bounded_by_the_window():
+    """Retained memory must not grow with how long the session has run."""
+    import tracemalloc
+
+    def retained(events: int) -> int:
+        state = TuiState()
+        tracemalloc.start()
+        try:
+            for index in range(events):
+                state.apply_event({
+                    "type": "assistant_message",
+                    "data": {"id": f"m{index}", "content": "answer " * 8, "tool_calls": []},
+                })
+                if index % 25 == 0:
+                    state.append_notice("local", f"notice {index}")
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert state.evicted_messages > 0
+        return peak
+
+    small = retained(2_000)
+    large = retained(20_000)
+
+    # Ten times the session retains a bounded window: the same state, not ten
+    # times the payloads.  The factor absorbs allocator noise, not growth.
+    assert large < small * 3 + 2_000_000, (small, large)

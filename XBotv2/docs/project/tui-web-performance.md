@@ -188,8 +188,16 @@ Rendering (Web vitest + Python headless Textual):
   unseen records, the window stays bounded by evicting the newest end, retained
   keys stay addressable, live output is counted while in history, and
   re-anchoring restores the live path.
+- **done** TUI memory ceiling (`test_tui_client.py` "memory is bounded by the
+  window"): `tracemalloc` peak for a 20 000-message session is within a bounded
+  factor of a 2 000-message one, i.e. retained memory does not track session
+  length.
+- **done** TUI runtime attribution: an injected turn renders as a provenance
+  notice (never as typed input) both from a resumed snapshot and from the live
+  `message` frame.
 - **open** up-scroll/down-scroll cycle against a live stream, asserting no
-  duplicate and no missing record between the two fetches.
+  duplicate and no missing record between the two fetches.  The Web-side
+  equivalent exists (anchor walk vs cursor walk in the paging stress test).
 
 ### TUI paging: both directions, on demand
 
@@ -237,7 +245,8 @@ widget is a `BoundedText`, so scrolling a block keeps focus.
    then stops the render before it reaches the entries. The Timeline test is
    falsifiable in both directions: stable props do not re-render the entries,
    and an unstable handler identity does.
-2. TUI live `message` path treated injected (runtime-attributed) turns as typed
-   human input — fixed; keep it covered by a test.
+2. ~~TUI live `message` path treated injected (runtime-attributed) turns as
+   typed human input~~ — fixed, and now covered by two tests (snapshot replay and
+   live frame).
 3. ~~Web `entries` and TUI `transcript` are never trimmed~~ — both fixed.
 4. ~~TUI `notices`/`errors` grow per message~~ — both capped.
