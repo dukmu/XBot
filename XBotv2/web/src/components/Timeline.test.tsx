@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TimelineEntry } from "../state/runtime";
+import { initialRuntimeState, runtimeReducer, type TimelineEntry } from "../state/runtime";
 import { Timeline } from "./Timeline";
 
 class TestResizeObserver {
@@ -57,8 +57,10 @@ function renderTimeline(entries: TimelineEntry[]) {
         onRetry={async () => {}}
         onBranch={async () => {}}
         hasOlder={false}
+        hasNewer={false}
         loadingOlder={false}
         onLoadOlder={async () => {}}
+        onLoadLatest={async () => {}}
       />
     </div>,
   );
@@ -96,8 +98,10 @@ describe("Timeline follow-latest", () => {
           onRetry={async () => {}}
           onBranch={async () => {}}
           hasOlder={false}
+          hasNewer={false}
           loadingOlder={false}
           onLoadOlder={async () => {}}
+        onLoadLatest={async () => {}}
         />
       </div>,
     );
@@ -128,8 +132,10 @@ describe("Timeline follow-latest", () => {
           onRetry={async () => {}}
           onBranch={async () => {}}
           hasOlder={false}
+          hasNewer={false}
           loadingOlder={false}
           onLoadOlder={async () => {}}
+        onLoadLatest={async () => {}}
         />
       </div>,
     );
@@ -146,5 +152,107 @@ describe("Timeline follow-latest", () => {
     )));
 
     expect(scroller.scrollTop).toBe(1000);
+  });
+});
+
+describe("Timeline rendering window", () => {
+  beforeEach(() => {
+    TestResizeObserver.instances = [];
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    Element.prototype.scrollTo = function scrollTo(this: HTMLElement, options?: ScrollToOptions | number) {
+      const top = typeof options === "number" ? options : Number(options?.top || 0);
+      Object.defineProperty(this, "scrollTop", { configurable: true, writable: true, value: top });
+    };
+  });
+
+  it("mounts a bounded window however long the retained transcript is", () => {
+    // The reducer caps the retained window at 240 entries; the rendered DOM
+    // must stay bounded independently of that, so a long session cannot turn
+    // into a long document.
+    const entries = Array.from({ length: 10_000 }, (_, index) => message(`entry ${index}`, `entry-${index}`));
+    const { container } = renderTimeline(entries);
+    const mounted = container.querySelectorAll(".timeline-node").length;
+    expect(mounted).toBeGreaterThan(0);
+    expect(mounted).toBeLessThanOrEqual(160);
+    expect(container.textContent).toContain("entry 9999");
+
+    // Mounting the same content again must not grow the document: the window
+    // is a position, not an accumulation.
+    renderTimeline(entries);
+    expect(container.querySelectorAll(".timeline-node").length).toBe(mounted);
+  });
+});
+
+describe("Timeline render cost", () => {
+  beforeEach(() => {
+    TestResizeObserver.instances = [];
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    Element.prototype.scrollTo = function scrollTo(this: HTMLElement, options?: ScrollToOptions | number) {
+      const top = typeof options === "number" ? options : Number(options?.top || 0);
+      Object.defineProperty(this, "scrollTop", { configurable: true, writable: true, value: top });
+    };
+  });
+
+  it("does not cost more per event as the conversation grows", { timeout: 30_000 }, () => {
+    const baseline = Array.from({ length: 160 }, (_, index) => ({
+      position: index + 1,
+      kind: "message" as const,
+      message_id: `m-${index + 1}`,
+      message: {
+        role: "user" as const,
+        content: `baseline ${index}`,
+        tool_calls: [], tool_call_id: "", status: "", data: null,
+        error: null, artifacts: [], images: [],
+      },
+    }));
+    let state = runtimeReducer(initialRuntimeState, { type: "trajectory", items: baseline, nextCursor: null });
+    const { container, rerender } = renderTimeline(state.entries);
+    const draw = () => rerender(
+      <div className="conversation-scroll" data-conversation-scroll>
+        <Timeline
+          entries={state.entries}
+          turnRunning={false}
+          onRetry={async () => {}}
+          onBranch={async () => {}}
+          hasOlder={false}
+          hasNewer={false}
+          loadingOlder={false}
+          onLoadOlder={async () => {}}
+          onLoadLatest={async () => {}}
+        />
+      </div>,
+    );
+
+    // Stream events into the reducer and redraw the timeline every 100 events,
+    // timing each block.  A window that is a position rather than an
+    // accumulation makes the last block cost what the first one did.
+    let next = 0;
+    const block = (events: number) => {
+      const started = performance.now();
+      for (let index = 0; index < events; index += 1) {
+        next += 1;
+        state = runtimeReducer(state, {
+          type: "user_message",
+          id: `live-${next}`,
+          content: `live ${next}`,
+          images: [],
+        });
+        if (index % 500 === 499) act(() => { draw(); });
+      }
+      return performance.now() - started;
+    };
+
+    const first = block(1000);
+    block(4_000);
+    const last = block(1000);
+    act(() => { draw(); });
+
+    expect(container.querySelectorAll(".timeline-node").length).toBeLessThanOrEqual(160);
+    expect(state.entries.length).toBeLessThanOrEqual(240);
+    expect(container.textContent).toContain(`live ${next}`);
+    // Generous factor: the assertion is about growth with history length, not
+    // about the machine.  Without the window this block would scan ~21k entries
+    // per event and the factor would be far above the bound.
+    expect(last).toBeLessThan(Math.max(first, 20) * 4);
   });
 });

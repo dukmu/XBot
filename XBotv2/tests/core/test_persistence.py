@@ -9,7 +9,11 @@ import xcore
 
 from XBotv2.core.artifacts import ArtifactKind
 from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.history import ConversationHistory, TrajectoryTransaction
+from XBotv2.core.history import (
+    ConversationHistory,
+    HistoryCursorInvalid,
+    TrajectoryTransaction,
+)
 from XBotv2.core.messages import ImageContent, Message
 from XBotv2.core.metadata import (
     THREAD_METADATA_CHANGED,
@@ -354,6 +358,62 @@ class TestMessageHistoryStore:
         assert [(item.position, item.kind) for item in latest.items] == [(2, "event")]
         assert [(item.position, item.kind) for item in older.items] == [(1, "message")]
         assert older.next_cursor is None
+
+    def test_trajectory_positional_anchor_supports_a_windowed_client(self, tmp_path):
+        """A client that dropped its oldest entries can page from where it starts.
+
+        The opaque cursor chain only walks backwards from the newest page, so
+        without an explicit position anchor an evicted front would be
+        unreachable without replaying the whole trajectory.
+        """
+        persistence = thread_persistence(tmp_path)
+        for index in range(6):
+            persistence.history.append([Message(role="user", content=f"m{index}")])
+
+        newest = persistence.history.page_trajectory(limit=2)
+        assert [item.position for item in newest.items] == [5, 6]
+        assert newest.newest_position == 6
+        assert newest.next_cursor is not None
+
+        # Anchor exactly where the retained window starts.
+        older = persistence.history.page_trajectory(
+            limit=2, before=newest.items[0].position
+        )
+        assert [item.position for item in older.items] == [3, 4]
+
+        # And again from the new front, so paging can continue arbitrarily far.
+        older_still = persistence.history.page_trajectory(
+            limit=2, before=older.items[0].position
+        )
+        assert [item.position for item in older_still.items] == [1, 2]
+        assert older_still.next_cursor is None
+        assert older_still.newest_position == 6
+
+    def test_trajectory_positional_anchor_edges(self, tmp_path):
+        persistence = thread_persistence(tmp_path)
+        persistence.history.append([Message(role="user", content="only")])
+
+        empty = persistence.history.page_trajectory(limit=5, before=1)
+        assert empty.items == ()
+        assert empty.next_cursor is None
+        assert empty.newest_position == 1
+
+        beyond = persistence.history.page_trajectory(limit=5, before=2)
+        assert [item.position for item in beyond.items] == [1]
+
+        with pytest.raises(HistoryCursorInvalid):
+            persistence.history.page_trajectory(limit=5, before=3)
+        assert persistence.history.page_trajectory(limit=5).newest_position == 1
+
+        # A cursor and a position anchor are mutually exclusive.
+        persistence.history.append([
+            Message(role="user", content="two"),
+            Message(role="user", content="three"),
+        ])
+        cursor = persistence.history.page_trajectory(limit=1, before=3).next_cursor
+        assert cursor is not None
+        with pytest.raises(ValueError):
+            persistence.history.page_trajectory(limit=1, before=2, cursor=cursor)
 
     def test_unmatched_compaction_start_is_detectable_after_restart(self, tmp_path):
         persistence = thread_persistence(tmp_path)

@@ -22,9 +22,38 @@ import {
 export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry | RuntimeEntry;
 type TimelineOrigin = "trajectory" | "live";
 
+// Bounds for the retained window.  They are deliberately larger than the
+// rendered window (Timeline keeps its own 160-entry slice) so that scrolling
+// inside the retained window never needs a round trip, while still being a
+// constant: 240 rendered entries and 240 raw records are what the client holds
+// regardless of session length.
+export const MAX_TIMELINE_ENTRIES = 240;
+export const MAX_TRAJECTORY_WINDOW = 240;
+
+/**
+ * Bound a rendered transcript at `MAX_TIMELINE_ENTRIES`.
+ *
+ * `keepTail` decides which end survives: a reader following the newest output
+ * keeps it, and a reader who paged back keeps the window they are reading.
+ * The subagent mirror uses this too, so no surface can accumulate a whole
+ * thread's transcript in memory.
+ */
+export function boundTranscriptEntries(
+  entries: TimelineEntry[],
+  keepTail: boolean,
+): TimelineEntry[] {
+  if (entries.length <= MAX_TIMELINE_ENTRIES) return entries;
+  return keepTail
+    ? entries.slice(entries.length - MAX_TIMELINE_ENTRIES)
+    : entries.slice(0, MAX_TIMELINE_ENTRIES);
+}
+
 export interface MessageEntry {
   id: string;
   origin?: TimelineOrigin;
+  // Absolute trajectory record position; only durable entries have one, and it
+  // is what the paging anchor is computed from.
+  position?: number;
   deliveryState?: "accepted" | "claimed" | "consumed";
   kind: "message";
   role: "user" | "assistant";
@@ -44,6 +73,7 @@ export interface MessageImage {
 export interface RuntimeEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "runtime";
   source: string;
   event: string;
@@ -54,6 +84,7 @@ export interface RuntimeEntry {
 export interface ToolEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "tool";
   toolCallId: string;
   name: string;
@@ -70,6 +101,7 @@ export interface ToolEntry {
 export interface NoticeEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "notice";
   level: "info" | "error";
   content: string;
@@ -85,7 +117,21 @@ export interface RuntimeState {
   providers: ProviderInfo[];
   agents: AgentInfo[];
   current: RuntimeSession | null;
+  // The transcript is a bounded window around the reader's cursor, never a
+  // copy of the conversation: both the durable baseline (``trajectory``) and
+  // its rendered projection (``entries``) are capped, so memory and per-event
+  // work stay independent of how long the session has been running.
   entries: TimelineEntry[];
+  // Position of the oldest retained trajectory record, used as the exclusive
+  // ``before`` anchor for the next older page.  It is authoritative where
+  // ``historyCursor`` is not: trimming the window invalidates the cursor's
+  // offset, so paging from it would silently skip the trimmed records.
+  windowAnchor: number | null;
+  // True while the window ends at the newest record, so live output is
+  // materialized.  Once the reader moves back, live output is counted in
+  // ``pendingNewer`` instead of evicting what they are reading.
+  atTail: boolean;
+  pendingNewer: number;
   historyCursor: string | null;
   historyLoading: boolean;
   trajectory: TrajectoryItem[];
@@ -110,8 +156,7 @@ export type RuntimeSession = Omit<
 >;
 
 export type RuntimeAction =
-  | { type: "loading"; value: boolean }
-  | { type: "server_reachable"; value: boolean }
+  | { type: "loading"; value: boolean }  | { type: "server_reachable"; value: boolean }
   | { type: "session_attached"; value: boolean }
   | { type: "event_stream"; value: boolean }
   | { type: "catalog_event_stream"; value: boolean }
@@ -125,7 +170,7 @@ export type RuntimeAction =
   | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
   | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ServerEvent[] }
-  | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedCursor: string }
+  | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedAnchor: number | null }
   | { type: "jobs"; jobs: JobData[] }
   | { type: "todos"; todos: TodoItemData[] }
   | { type: "pending_inputs"; items: PendingInput[] }
@@ -155,6 +200,9 @@ export const initialRuntimeState: RuntimeState = {
   current: null,
   viewingSubagent: false,
   entries: [],
+  windowAnchor: null,
+  atTail: true,
+  pendingNewer: 0,
   historyCursor: null,
   historyLoading: false,
   trajectory: [],
@@ -171,6 +219,82 @@ export const initialRuntimeState: RuntimeState = {
 };
 
 export function runtimeReducer(state: RuntimeState, action: RuntimeAction): RuntimeState {
+  return boundTranscriptWindow(applyRuntimeAction(state, action), action, state);
+}
+
+/**
+ * The single place that enforces "the client holds a window, not a history".
+ *
+ * Two invariants hold after every action: `entries` and `trajectory` are at
+ * most `MAX_*` long, and `windowAnchor` is the position of the oldest record
+ * the client can still page back from.  Keeping it here rather than at each
+ * append site means no future action can reintroduce unbounded growth.
+ */
+function boundTranscriptWindow(
+  next: RuntimeState,
+  action: RuntimeAction,
+  previous: RuntimeState,
+): RuntimeState {
+  if (next === previous) return next;
+  if (action.type === "event" || action.type === "events" || action.type === "user_message") {
+    // Away from the tail the transcript is frozen: a live frame that would
+    // append or rewrite entries is counted instead, so the history the reader
+    // scrolled back to is not evicted underneath them.  Frames that only
+    // change non-transcript state (usage, jobs, todos, turn status) still
+    // apply, and the counter only moves when rendered content would have.
+    if (!previous.atTail && next.entries !== previous.entries) {
+      return boundArrays({
+        ...next,
+        entries: previous.entries,
+        pendingNewer: previous.pendingNewer + 1,
+      });
+    }
+  }
+  return boundArrays(next);
+}
+
+function boundArrays(state: RuntimeState): RuntimeState {
+  let next = state;
+  if (next.trajectory.length > MAX_TRAJECTORY_WINDOW) {
+    // At the tail the newest records matter; once the reader is inside history
+    // the retained front is what they are reading.
+    const trajectory = next.atTail
+      ? next.trajectory.slice(next.trajectory.length - MAX_TRAJECTORY_WINDOW)
+      : next.trajectory.slice(0, MAX_TRAJECTORY_WINDOW);
+    next = { ...next, trajectory, windowAnchor: oldestPosition(trajectory) };
+  }
+  const entries = boundTranscriptEntries(next.entries, next.atTail);
+  if (entries !== next.entries) next = { ...next, entries };
+  // Dropping front entries also drops the records they rendered, so the anchor
+  // has to advance with them; otherwise the next older page would start before
+  // the dropped records and leave a gap in the transcript.
+  const retained = oldestRetainedPosition(next.entries);
+  if (retained !== null) {
+    if (next.windowAnchor === null || retained > next.windowAnchor) {
+      next = { ...next, windowAnchor: retained };
+    }
+  } else if (next.windowAnchor !== null && next.entries.length) {
+    // Every retained entry is live output, so the window front has no durable
+    // position to page from.  Recording that as "no anchor" makes the next
+    // older request re-anchor on a fresh page instead of paging from a
+    // position the client no longer displays.
+    next = { ...next, windowAnchor: null };
+  }
+  return next;
+}
+
+function oldestPosition(items: TrajectoryItem[]): number | null {
+  return items.length ? items[0].position : null;
+}
+
+function oldestRetainedPosition(entries: TimelineEntry[]): number | null {
+  for (const entry of entries) {
+    if (entry.position !== undefined) return entry.position;
+  }
+  return null;
+}
+
+function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): RuntimeState {
   switch (action.type) {
     case "loading":
       return { ...state, loading: action.value };
@@ -195,6 +319,9 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         loading: false,
         current: runtimeSession(action.session),
         entries: historyEntries(action.session.history),
+        windowAnchor: null,
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
         trajectory: [],
@@ -223,6 +350,9 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         agents: [],
         current: null,
         entries: [],
+        windowAnchor: null,
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: null,
         historyLoading: false,
         trajectory: [],
@@ -292,6 +422,9 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         trajectory: action.items,
         trajectoryLoaded: true,
         entries: mergeTrajectoryWithLive(baselineEntries, live),
+        windowAnchor: oldestPosition(action.items),
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: action.nextCursor,
       };
       return action.bufferedEvents?.length
@@ -299,15 +432,24 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         : baseline;
       }
     case "trajectory_prepend": {
-      if (action.expectedCursor !== state.historyCursor) {
+      // The page is only valid for the window it was requested for: a refresh
+      // or a session switch moves the anchor, and applying a stale page would
+      // splice unrelated records into the transcript.
+      if (state.windowAnchor !== action.expectedAnchor) {
         return { ...state, historyLoading: false };
       }
       const trajectory = [...action.items, ...state.trajectory];
-      const live = state.entries.filter((entry) => entry.origin !== "trajectory");
+      // Loading older records means the reader left the tail: the window now
+      // follows the anchor instead of the newest record, and live output is
+      // counted rather than materialized into a transcript they are not
+      // looking at.  The frozen live entries of the newer region are dropped
+      // here; returning to the tail re-fetches that region.
       return {
         ...state,
         trajectory,
-        entries: mergeTrajectoryWithLive(trajectoryEntries(trajectory), live),
+        entries: trajectoryEntries(trajectory),
+        windowAnchor: oldestPosition(trajectory),
+        atTail: false,
         historyCursor: action.nextCursor,
         historyLoading: false,
       };
@@ -706,6 +848,9 @@ export interface ThreadViewState {
   mainBusy: boolean;
   olderCursor: string | null;
   loadingOlder: boolean;
+  // False once the reader paged into the thread's history: the mirror then
+  // keeps the window being read instead of the newest output.
+  atTail: boolean;
 }
 
 export interface ThreadViewRolling {
@@ -843,6 +988,16 @@ interface TrajectoryGroup {
   entries: TimelineEntry[];
 }
 
+/**
+ * Trajectory entry ids are built here as `trajectory:<position>:...`, so the
+ * position of a rendered entry is recoverable without threading it through
+ * every group builder.
+ */
+function trajectoryPositionOf(id: string): number | undefined {
+  const match = /^trajectory:(\d+):/.exec(id);
+  return match ? Number(match[1]) : undefined;
+}
+
 export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
   const groups: TrajectoryGroup[] = [];
   const lineage = new Map<string, string[]>();
@@ -894,6 +1049,7 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
   return reconcileTrajectoryTools(groups).flatMap((group) => group.entries).map((entry) => ({
     ...entry,
     origin: "trajectory" as const,
+    position: trajectoryPositionOf(entry.id),
   }));
 }
 

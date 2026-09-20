@@ -299,9 +299,11 @@ export function App() {
                 turnRunning={state.turnRunning}
                 onRetry={runtime.retryLast}
                 onBranch={runtime.fork}
-                hasOlder={Boolean(state.historyCursor)}
+                hasOlder={Boolean(runtime.olderCursor)}
+                hasNewer={runtime.hasNewer}
                 loadingOlder={state.historyLoading}
                 onLoadOlder={runtime.loadEarlier}
+                onLoadLatest={runtime.loadLatest}
               />
             )}
             <div className="runtime-controls">

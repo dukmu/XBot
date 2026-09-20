@@ -11,6 +11,7 @@ import {
   type ThreadViewRolling,
   type ThreadViewState,
   applyViewEvent,
+  boundTranscriptEntries,
   initialRuntimeState,
   runtimeEntry,
   runtimeReducer,
@@ -45,6 +46,11 @@ export function useXBot() {
   const reconcileSessionRef = useRef<(() => void) | null>(null);
   const refreshTrajectoryRef = useRef<(() => void) | null>(null);
   const trajectoryRefreshPending = useRef(false);
+  // The newest-page refresh reconciles durable records, but it also *replaces*
+  // the window.  A reader who scrolled into history keeps what they are
+  // reading; the records are picked up when they return to the tail.
+  const atTailRef = useRef(true);
+  atTailRef.current = state.atTail;
   const trajectoryEventsBuffer = useRef<ServerEvent[]>([]);
   const trajectoryRefreshInFlight = useRef(false);
   const reconcileInFlight = useRef(false);
@@ -215,6 +221,10 @@ export function useXBot() {
   const refreshTrajectory = useCallback(() => {
     const current = currentSessionRef.current;
     if (!current) return;
+    if (!atTailRef.current) {
+      trajectoryRefreshPending.current = true;
+      return;
+    }
     if (trajectoryRefreshInFlight.current) {
       trajectoryRefreshPending.current = true;
       return;
@@ -526,12 +536,13 @@ export function useXBot() {
       if (step !== viewStepRef.current) return;
       viewRef.current = {
         ...viewRef.current!,
-        entries: [
-          ...trajectoryEntries(trajectory.items),
-          ...viewRef.current!.entries,
-        ],
+        entries: boundTranscriptEntries(
+          [...trajectoryEntries(trajectory.items), ...viewRef.current!.entries],
+          false,
+        ),
         olderCursor: trajectory.next_cursor,
         loadingOlder: false,
+        atTail: false,
       };
       setView({ ...viewRef.current });
     } catch (error) {
@@ -557,6 +568,7 @@ export function useXBot() {
       mainBusy: false,
       olderCursor: null,
       loadingOlder: false,
+      atTail: true,
     };
     setView({ ...viewRef.current });
     const reconcile = async (cursorAfter: number) => {
@@ -566,17 +578,21 @@ export function useXBot() {
         viewRollingRef.current = { reasoning: "", content: "" };
         viewRef.current = {
           ...viewRef.current!,
-          entries: trajectoryEntries(trajectory.items),
+          entries: boundTranscriptEntries(trajectoryEntries(trajectory.items), true),
           cursor: cursorAfter,
           olderCursor: trajectory.next_cursor,
           loadingOlder: false,
+          atTail: true,
         };
         setView({ ...viewRef.current });
       } catch (error) {
         if (step === viewStepRef.current) {
           viewRef.current = {
             ...viewRef.current!,
-            entries: [...viewRef.current!.entries, runtimeEntry("view", "error", `history reload failed: ${error instanceof Error ? error.message : String(error)}`, `view:error:${step}`)],
+            entries: boundTranscriptEntries(
+              [...viewRef.current!.entries, runtimeEntry("view", "error", `history reload failed: ${error instanceof Error ? error.message : String(error)}`, `view:error:${step}`)],
+              viewRef.current!.atTail,
+            ),
           };
           setView({ ...viewRef.current });
         }
@@ -601,7 +617,10 @@ export function useXBot() {
         viewRef.current = {
           ...viewRef.current!,
           cursor,
-          entries: applyViewEvent(viewRef.current!.entries, event, viewRollingRef.current),
+          entries: boundTranscriptEntries(
+            applyViewEvent(viewRef.current!.entries, event, viewRollingRef.current),
+            viewRef.current!.atTail,
+          ),
         };
         setView({ ...viewRef.current });
       }
@@ -609,10 +628,13 @@ export function useXBot() {
       if (step === viewStepRef.current) {
         viewRef.current = {
           ...viewRef.current!,
-          entries: [
-            ...viewRef.current!.entries,
-            runtimeEntry("view", "stream", `thread stream ended: ${error instanceof Error ? error.message : String(error)}`, `view:stream:${step}`),
-          ],
+          entries: boundTranscriptEntries(
+            [
+              ...viewRef.current!.entries,
+              runtimeEntry("view", "stream", `thread stream ended: ${error instanceof Error ? error.message : String(error)}`, `view:stream:${step}`),
+            ],
+            viewRef.current!.atTail,
+          ),
         };
         setView({ ...viewRef.current });
       }
@@ -735,15 +757,56 @@ export function useXBot() {
     }
   }, [api, reportError, runtimeEvents, state.current, state.turnRunning]);
 
-  const loadEarlier = useCallback(async () => {
+  /**
+   * Return the window to the newest records after the reader moved back into
+   * history.  Everything newer than the retained window is re-fetched as one
+   * page: forward paging would need an `after` anchor the protocol does not
+   * have, and the reader asked for the tail, not for the region they skipped.
+   */
+  const loadLatest = useCallback(async () => {
     const current = state.current;
-    const cursor = state.historyCursor;
-    if (!current || !cursor || state.historyLoading) return;
+    if (!current || state.historyLoading) return;
     const generation = navigationGeneration.current;
     dispatch({ type: "history_loading", value: true });
     try {
+      const page = await api.listTrajectory(current.session_id, current.thread_id, { limit: 160 });
+      if (generation !== navigationGeneration.current) return;
+      dispatch({
+        type: "trajectory",
+        items: page.items,
+        nextCursor: page.next_cursor,
+      });
+    } catch (error) {
+      if (generation === navigationGeneration.current) reportError(error);
+    } finally {
+      if (generation === navigationGeneration.current) {
+        dispatch({ type: "history_loading", value: false });
+      }
+    }
+  }, [api, reportError, state.current, state.historyLoading]);
+
+  const loadEarlier = useCallback(async () => {
+    const current = state.current;
+    const anchor = state.windowAnchor;
+    const cursor = state.historyCursor;
+    if (!current || state.historyLoading) return;
+    if (state.trajectoryLoaded && anchor === null) {
+      // The retained window is live output with no durable position, so there
+      // is nothing to page back from yet.  Re-anchor on the newest page; the
+      // records the reader wanted are behind it and the next request reaches
+      // them from a known position.
+      await loadLatest();
+      return;
+    }
+    if (anchor === null && !cursor) return;
+    const generation = navigationGeneration.current;
+    dispatch({ type: "history_loading", value: true });
+    try {
+      // The window's own anchor is authoritative: trimming invalidates the
+      // cursor offset, and paging from a stale offset would skip records.
       const page = await api.listTrajectory(current.session_id, current.thread_id, {
-        cursor,
+        before: anchor ?? undefined,
+        cursor: anchor === null ? cursor ?? undefined : undefined,
         limit: 80,
       });
       if (generation !== navigationGeneration.current) return;
@@ -751,7 +814,7 @@ export function useXBot() {
         type: "trajectory_prepend",
         items: page.items,
         nextCursor: page.next_cursor,
-        expectedCursor: cursor,
+        expectedAnchor: anchor,
       });
     } catch (error) {
       if (generation === navigationGeneration.current) {
@@ -766,7 +829,16 @@ export function useXBot() {
         dispatch({ type: "history_loading", value: false });
       }
     }
-  }, [api, reportError, state.current, state.historyCursor, state.historyLoading]);
+  }, [
+    api,
+    loadLatest,
+    reportError,
+    state.current,
+    state.windowAnchor,
+    state.historyCursor,
+    state.historyLoading,
+    state.trajectoryLoaded,
+  ]);
 
   const interrupt = useCallback(async () => {
     if (!state.current) return;
@@ -1085,8 +1157,18 @@ export function useXBot() {
     }
   }, [api, reportError, state.current]);
 
+  // Whether records exist beyond the retained window: either the reader moved
+  // back into history (`!atTail`) or live output arrived while they were there
+  // (`pendingNewer`).  Both mean "jump to latest" has something to fetch.
+  const olderCursor = state.windowAnchor === null
+    ? state.historyCursor
+    : state.windowAnchor > 1 ? String(state.windowAnchor) : null;
+  const hasNewer = !state.atTail || state.pendingNewer > 0;
+
   return {
     state,
+    olderCursor,
+    hasNewer,
     sessions: sessions.items,
     workspaces: workspaces.items,
     archivedSessionIds: workspaces.archivedSessionIds,
@@ -1104,6 +1186,7 @@ export function useXBot() {
     updatePendingInput,
     retryLast,
     loadEarlier,
+    loadLatest,
     interrupt,
     resolveInteraction,
     selectAgent,

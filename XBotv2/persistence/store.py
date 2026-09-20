@@ -483,20 +483,38 @@ class MessageHistoryStore(HistoryPort):
         *,
         limit: int,
         cursor: str | None = None,
+        before: int | None = None,
     ) -> TrajectoryPage:
+        """Return one page ending before ``before`` (exclusive 1-based position).
+
+        ``before`` anchors a window that already dropped its oldest entries:
+        the opaque cursor chain only walks backwards from the newest page, so a
+        client that evicted its front could not otherwise re-fetch from where it
+        now starts. ``before`` is validated against the current record count, and
+        the page reports ``newest_position`` so the client knows the tail.
+        """
+        if cursor is not None and before is not None:
+            raise ValueError("pass either cursor or before, not both")
         with _trajectory_use(self._path) as state:
             records = state.recorded()
             revision = f"{self._cursor_scope}:trajectory"
-            end = len(records) if cursor is None else decode_history_cursor(cursor, revision)
+            if cursor is None:
+                end = len(records) if before is None else before - 1
+            else:
+                end = decode_history_cursor(cursor, revision)
             if end < 0 or end > len(records):
-                raise HistoryCursorInvalid("Trajectory cursor is outside the current history")
+                raise HistoryCursorInvalid(
+                    "Trajectory anchor is outside the current history"
+                )
             start = max(0, end - limit)
             items = tuple(
                 _trajectory_item(record) for record in records[start:end]
             )
+            newest = len(records)
         return TrajectoryPage(
             items=items,
             next_cursor=encode_history_cursor(revision, start) if start else None,
+            newest_position=newest,
         )
 
     def _revision(self, generation: int, projection: str) -> str:

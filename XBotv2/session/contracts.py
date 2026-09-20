@@ -152,6 +152,8 @@ SessionTrajectoryItem = Annotated[
 class SessionTrajectoryPage(BaseModel):
     items: tuple[SessionTrajectoryItem, ...]
     next_cursor: str | None = None
+    #: Highest position on the append-only trajectory; 0 for an empty one.
+    newest_position: int = 0
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -219,7 +221,11 @@ def trajectory_replay(page: TrajectoryPage) -> SessionTrajectoryPage:
                 data=item.data,
                 timestamp=item.timestamp,
             ))
-    return SessionTrajectoryPage(items=tuple(items), next_cursor=page.next_cursor)
+    return SessionTrajectoryPage(
+        items=tuple(items),
+        next_cursor=page.next_cursor,
+        newest_position=page.newest_position,
+    )
 
 
 def compaction_summary_text(messages: Iterable[Message]) -> str:
@@ -548,6 +554,7 @@ class SessionsPort(Protocol):
         *,
         cursor: str | None,
         limit: int,
+        before: int | None = None,
     ) -> SessionTrajectoryPage: ...
     async def artifact(
         self,

@@ -1,5 +1,5 @@
 /* Message chrome adapted from DeepSeek Harness MessageItem/IconActions (MIT). */
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TimelineEntry } from "../state/runtime";
@@ -9,6 +9,10 @@ import { ReasoningRow } from "./ReasoningRow";
 import styles from "./MessageItem.module.css";
 
 type MessageEntry = Extract<TimelineEntry, { kind: "message" }>;
+
+// Stable plugin array: a fresh array on every render makes react-markdown
+// treat the processor as changed and re-parse the message.
+const REMARK_PLUGINS = [remarkGfm];
 
 export const MessageItem = memo(function MessageItem({
   entry,
@@ -24,6 +28,14 @@ export const MessageItem = memo(function MessageItem({
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null);
   const closePreview = useCallback(() => setPreview(null), []);
   const user = entry.role === "user";
+  // Parsing markdown is the most expensive work in one message; re-parse only
+  // when the text actually changes, not on every parent render.
+  const markdown = useMemo(
+    () => (entry.streaming || !entry.content
+      ? null
+      : <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{entry.content}</ReactMarkdown>),
+    [entry.content, entry.streaming],
+  );
   return (
     <article
       className={`${styles.message} ${user ? styles.user : styles.assistant} message-block ${entry.role}`}
@@ -34,7 +46,7 @@ export const MessageItem = memo(function MessageItem({
       {entry.content && (
         entry.streaming
           ? <div className={`${styles.content} ${styles.streaming}`}>{entry.content}</div>
-          : <div className={`${styles.content} markdown-body`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown></div>
+          : <div className={`${styles.content} markdown-body`}>{markdown}</div>
       )}
       {user && entry.deliveryState && (
         <small className={styles.deliveryState} aria-label={`Input ${entry.deliveryState}`}>
@@ -58,9 +70,14 @@ export const MessageItem = memo(function MessageItem({
     </article>
   );
 }, (previous, next) => (
+  // Handler identity is not a render input: the runtime rebuilds these
+  // callbacks whenever session state changes (usage, status slots), which used
+  // to re-render every visible message — and re-parse its Markdown — on each
+  // such event. What matters is whether the action exists, and the callbacks
+  // resolve the current session when invoked.
   previous.entry === next.entry
-  && previous.onRegenerate === next.onRegenerate
-  && previous.onBranch === next.onBranch
+  && Boolean(previous.onRegenerate) === Boolean(next.onRegenerate)
+  && Boolean(previous.onBranch) === Boolean(next.onBranch)
   && previous.branchUnavailable === next.branchUnavailable
 ));
 

@@ -13,8 +13,13 @@ interface TimelineProps {
   onRetry: () => Promise<void>;
   onBranch: () => Promise<void>;
   hasOlder: boolean;
+  // Records exist beyond the retained window: either the reader is inside
+  // history, or live output arrived while they were there.  A surface that
+  // never freezes its transcript (the subagent mirror) leaves them unset.
+  hasNewer?: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => Promise<void>;
+  onLoadLatest?: () => Promise<void>;
 }
 
 export const Timeline = memo(function Timeline({
@@ -23,8 +28,10 @@ export const Timeline = memo(function Timeline({
   onRetry,
   onBranch,
   hasOlder,
+  hasNewer = false,
   loadingOlder,
   onLoadOlder,
+  onLoadLatest,
 }: TimelineProps) {
   const list = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -108,6 +115,9 @@ export const Timeline = memo(function Timeline({
     });
     const element = scrollerOf(list.current);
     element?.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+    // Leaving the tail froze live materialization; the newest records have to
+    // be fetched back before the view is actually at the end again.
+    if (hasNewer) void onLoadLatest?.();
   };
 
   useLayoutEffect(() => {
@@ -132,7 +142,7 @@ export const Timeline = memo(function Timeline({
         // viewport keeps ``scrollTop`` unchanged and must not stop following.
         following.current = false;
       }
-      setShowLatest(!following.current || range.end < entries.length);
+      setShowLatest(!following.current || range.end < entries.length || hasNewer);
     };
     const onWheel = (event: WheelEvent) => {
       if (!(event.target instanceof Node) || !list.current?.contains(event.target)) return;
@@ -149,7 +159,7 @@ export const Timeline = memo(function Timeline({
       element.removeEventListener("scroll", onScroll);
       element.removeEventListener("wheel", onWheel);
     };
-  }, [entries.length, range.end]);
+  }, [entries.length, range.end, hasNewer]);
 
   useEffect(() => {
     const element = scrollerOf(list.current);
@@ -203,10 +213,12 @@ export const Timeline = memo(function Timeline({
   previous.entries === next.entries
   && previous.turnRunning === next.turnRunning
   && previous.hasOlder === next.hasOlder
+  && previous.hasNewer === next.hasNewer
   && previous.loadingOlder === next.loadingOlder
   && previous.onRetry === next.onRetry
   && previous.onBranch === next.onBranch
   && previous.onLoadOlder === next.onLoadOlder
+  && previous.onLoadLatest === next.onLoadLatest
 ));
 
 function scrollerOf(list: HTMLDivElement | null): HTMLElement | null {

@@ -74,6 +74,9 @@ TrajectoryItem: TypeAlias = TrajectoryMessage | TrajectorySurfaceReplace | Traje
 class TrajectoryPage:
     items: tuple[TrajectoryItem, ...]
     next_cursor: str | None = None
+    #: Highest position on the append-only trajectory, so a windowed client can
+    #: tell whether it holds the tail and re-anchor without walking cursors.
+    newest_position: int = 0
 
 
 class ConversationPageReader(Protocol):

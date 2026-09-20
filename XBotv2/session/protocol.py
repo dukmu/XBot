@@ -120,6 +120,9 @@ class ThreadTrajectoryResponse(WireModel):
     thread_id: str = Field(min_length=1)
     items: list[SessionTrajectoryItem] = Field(default_factory=list)
     next_cursor: str | None = None
+    #: Highest trajectory position; a windowed client compares it with the last
+    #: item it holds to know whether it is at the tail.
+    newest_position: int = 0
 
 
 class UndoRequest(WireModel):
@@ -569,6 +572,7 @@ def build_session_router(
         session_id: str,
         thread_id: str,
         cursor: str | None = None,
+        before: int | None = Query(default=None, ge=1),
         limit: int = Query(default=160, ge=1, le=500),
     ) -> ThreadTrajectoryResponse:
         page = await sessions.trajectory_page(
@@ -576,12 +580,14 @@ def build_session_router(
             thread_id,
             cursor=cursor,
             limit=limit,
+            before=before,
         )
         return ThreadTrajectoryResponse(
             session_id=session_id,
             thread_id=thread_id,
             items=list(page.items),
             next_cursor=page.next_cursor,
+            newest_position=page.newest_position,
         )
 
     @router.get(

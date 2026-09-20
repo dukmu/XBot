@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
-import { applyViewEvent, historyEntries, initialRuntimeState, runtimeReducer, type TimelineEntry } from "./runtime";
+import {
+  MAX_TIMELINE_ENTRIES,
+  MAX_TRAJECTORY_WINDOW,
+  applyViewEvent,
+  historyEntries,
+  initialRuntimeState,
+  runtimeReducer,
+  type TimelineEntry,
+} from "./runtime";
 
 const opened: OpenSessionResponse = {
   session_id: "session-1",
@@ -1289,3 +1297,153 @@ function visibleProjection(entries: ReturnType<typeof historyEntries>): string[]
       ? `message:${entry.role}:${entry.content}`
       : `tool:${entry.toolCallId}`));
 }
+
+describe("transcript window", () => {
+  const messageItem = (position: number) => ({
+    position,
+    kind: "message" as const,
+    message_id: `message-${position}`,
+    message: {
+      role: "user" as const,
+      content: `message ${position}`,
+      tool_calls: [], tool_call_id: "", status: "", data: null,
+      error: null, artifacts: [], images: [],
+    },
+  });
+  const page = (from: number, to: number) => (
+    Array.from({ length: to - from + 1 }, (_, index) => messageItem(from + index))
+  );
+  const displayedPositions = (entries: TimelineEntry[]) => entries
+    .map((entry) => entry.position)
+    .filter((position): position is number => position !== undefined);
+  const windowed = (from: number, count: number, nextCursor: string | null = null) => (
+    runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      items: page(from, from + count - 1),
+      nextCursor,
+    })
+  );
+  const anchored = (count: number, nextCursor: string | null = null) => windowed(1, count, nextCursor);
+
+  it("keeps the retained window bounded however long the session streams", () => {
+    let state = anchored(160);
+    for (let index = 0; index < 4000; index += 1) {
+      state = runtimeReducer(state, {
+        type: "user_message",
+        id: `live-${index}`,
+        content: `live ${index}`,
+        images: [],
+      });
+    }
+
+    expect(state.entries.length).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    // The window follows the tail: the newest output is always retained.
+    expect(state.entries.at(-1)).toMatchObject({ content: "live 3999" });
+    expect(state.atTail).toBe(true);
+    // The retained front is live output with no durable position yet, so the
+    // client reports that it cannot page back from it rather than guessing.
+    expect(state.windowAnchor).toBeNull();
+  });
+
+  it("drops the oldest records once the reader pages back", () => {
+    let state = windowed(801, 160, "cursor-960");
+    for (let index = 0; index < 8; index += 1) {
+      const anchor = state.windowAnchor as number;
+      state = runtimeReducer(state, {
+        type: "trajectory_prepend",
+        items: page(anchor - 80, anchor - 1),
+        nextCursor: `cursor-${anchor - 80}`,
+        expectedAnchor: anchor,
+      });
+    }
+
+    expect(state.trajectory.length).toBeLessThanOrEqual(MAX_TRAJECTORY_WINDOW);
+    expect(state.entries.length).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    expect(state.atTail).toBe(false);
+    // The retained records stay contiguous: paging back never leaves a hole
+    // that the reader could not reach again.
+    const positions = displayedPositions(state.entries);
+    expect(positions.length).toBeGreaterThan(0);
+    for (let index = 1; index < positions.length; index += 1) {
+      expect(positions[index] - positions[index - 1]).toBe(1);
+    }
+  });
+
+  it("counts newer output instead of evicting what the reader is reading", () => {
+    let state = windowed(801, 40, "cursor-840");
+    const anchor = state.windowAnchor as number;
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, anchor - 1),
+      nextCursor: null,
+      expectedAnchor: anchor,
+    });
+    const reading = state.entries;
+
+    state = runtimeReducer(state, { type: "user_message", id: "live", content: "while away", images: [] });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "tick" }) });
+    expect(state.entries).toBe(reading);
+    expect(state.pendingNewer).toBe(2);
+
+    // Non-transcript state still applies while the transcript is frozen.
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    });
+    expect(state.usage.total_tokens).toBe(7);
+    expect(state.pendingNewer).toBe(2);
+  });
+
+  it("returns to the tail by replacing the window with the newest page", () => {
+    let state = windowed(801, 40, "cursor-840");
+    const anchor = state.windowAnchor as number;
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, anchor - 1),
+      nextCursor: null,
+      expectedAnchor: anchor,
+    });
+    state = runtimeReducer(state, { type: "user_message", id: "live", content: "missed", images: [] });
+
+    state = runtimeReducer(state, { type: "trajectory", items: page(900, 960), nextCursor: null });
+    expect(state.atTail).toBe(true);
+    expect(state.pendingNewer).toBe(0);
+    expect(state.windowAnchor).toBe(900);
+    expect(state.entries.map((entry) => entry.position)).toEqual(page(900, 960).map((item) => item.position));
+  });
+
+  it("drops a page that was requested for a window that has moved", () => {
+    const state = anchored(160, "cursor-160");
+    const next = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, 80),
+      nextCursor: "stale",
+      expectedAnchor: 999,
+    });
+    expect(next).toMatchObject({ entries: state.entries, historyLoading: false });
+  });
+
+  it("holds per-event work flat as the session grows", () => {
+    const batch = (from: number, count: number) => {
+      let state = anchored(160);
+      const started = performance.now();
+      for (let index = from; index < from + count; index += 1) {
+        state = runtimeReducer(state, {
+          type: "user_message",
+          id: `live-${index}`,
+          content: `live ${index}`,
+          images: [],
+        });
+      }
+      return { elapsed: performance.now() - started, size: state.entries.length };
+    };
+
+    const first = batch(0, 1000);
+    const last = batch(20_000, 1000);
+    expect(last.size).toBe(first.size);
+    expect(last.size).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    // The window makes the thousandth event cost what the first one did; a
+    // generous factor keeps the assertion about growth, not about the machine.
+    expect(last.elapsed).toBeLessThan(Math.max(first.elapsed, 1) * 5);
+  });
+});

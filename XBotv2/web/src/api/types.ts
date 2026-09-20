@@ -249,6 +249,9 @@ export type TrajectoryItem =
 export interface TrajectoryPage {
   items: TrajectoryItem[];
   next_cursor: string | null;
+  // Absolute position of the newest record at the time of the request; the
+  // client anchors its window on positions rather than on cursor offsets.
+  newest_position: number;
 }
 
 export interface ProviderInfo {

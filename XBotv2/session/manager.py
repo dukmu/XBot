@@ -913,10 +913,13 @@ class SessionManager(SessionsPort):
         *,
         cursor: str | None,
         limit: int,
+        before: int | None = None,
     ) -> SessionTrajectoryPage:
         persistence = await self._persisted_thread(session_id, thread_id)
         try:
-            page = persistence.history.page_trajectory(limit=limit, cursor=cursor)
+            page = persistence.history.page_trajectory(
+                limit=limit, cursor=cursor, before=before
+            )
         except HistoryCursorInvalid as exc:
             raise OperationError("invalid_cursor", str(exc)) from exc
         return trajectory_replay(page)

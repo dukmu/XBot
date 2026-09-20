@@ -121,6 +121,7 @@ class HistoryPort(Protocol):
         *,
         limit: int,
         cursor: str | None = None,
+        before: int | None = None,
     ) -> TrajectoryPage: ...
 
 

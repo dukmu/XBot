@@ -368,6 +368,7 @@ class XBotClient:
         thread_id: str,
         *,
         cursor: str | None = None,
+        before: int | None = None,
         limit: int = 160,
     ) -> ThreadTrajectoryResponse:
         return await self._request(
@@ -376,7 +377,11 @@ class XBotClient:
             ThreadTrajectoryResponse,
             params={
                 key: value
-                for key, value in {"cursor": cursor, "limit": limit}.items()
+                for key, value in {
+                    "cursor": cursor,
+                    "before": before,
+                    "limit": limit,
+                }.items()
                 if value is not None
             },
         )

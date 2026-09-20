@@ -266,10 +266,11 @@ export class XBotApi {
   async listTrajectory(
     sessionId: string,
     threadId: string,
-    options: { cursor?: string; limit?: number } = {},
+    options: { cursor?: string; before?: number; limit?: number } = {},
   ): Promise<TrajectoryPage> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
+    if (options.before) query.set("before", String(options.before));
     if (options.limit) query.set("limit", String(options.limit));
     const result = await this.request<TrajectoryPage>(
       "GET",

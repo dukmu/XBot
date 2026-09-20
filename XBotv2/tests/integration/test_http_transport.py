@@ -249,6 +249,14 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
             "sdk-client", "main", limit=1, cursor=latest.next_cursor
         )
         trajectory = await sdk.list_trajectory("sdk-client", "main")
+        # A windowed client anchors its next page on the oldest position it
+        # still holds, and reads the tail from the same response.
+        anchored = await sdk.list_trajectory(
+            "sdk-client",
+            "main",
+            limit=1,
+            before=trajectory.newest_position,
+        )
         await sdk.regenerate_message(
             "sdk-client", "main", request_id="sdk-regenerate"
         )
@@ -258,6 +266,10 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
 
         assert health.status == "ok"
         assert pending.items == []
+        assert trajectory.newest_position >= 1
+        assert anchored.items
+        assert anchored.newest_position == trajectory.newest_position
+        assert anchored.items[-1].position <= trajectory.newest_position - 1
         assert opened.session_id == "sdk-client"
         assert any(
             item.content == "sdk answer" for item in messages.messages
