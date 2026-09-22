@@ -789,10 +789,23 @@ def test_interrupt_request_is_visible_until_the_turn_ends() -> None:
 
 
 def test_settled_interrupt_that_never_landed_does_not_claim_success() -> None:
+    """Nothing was cancelled, so nothing may be reported as cancelled -- and the
+    server's "idle" is adopted rather than contradicted by a stale local flag.
+
+    This test used to assert the contradiction (``turn_open is True`` next to
+    ``server_turn is IDLE``): it kept the status on "Running" and the turn's
+    tools open for good. Ported from the runtime-compat work on
+    ``fix-runtime-stream-context-compat``.
+    """
     state = session(connected(), turn_started(), InterruptAsked(), InterruptSettled(cancelled=False))
     assert state.facts.interrupt is Interrupt.NONE
-    assert state.facts.turn_open is True
-    assert derive(state.facts) is Status.RUNNING
+    assert state.facts.server_turn is ServerTurn.IDLE
+    assert state.facts.turn_open is False
+    assert derive(state.facts) is Status.READY
+    assert not [
+        entry for entry in state.timeline if isinstance(entry, NoticeEntry)
+        and "interrupted" in entry.text.lower()
+    ], "no success is claimed for an interrupt that landed on nothing"
 
 
 def test_settled_interrupt_ends_the_turn() -> None:
@@ -1068,3 +1081,50 @@ def test_the_main_thread_read_stays_writable() -> None:
     )
     assert state.thread_kind == "main"
     assert state.read_only is False
+
+
+# --- settling what a lost terminal frame leaves behind --------------------
+#
+# Ported from the in-flight runtime-compat work on fix-runtime-stream-context-compat
+# (see the merge that landed it): the old client confirmed the interrupt against
+# the thread list and cancelled whatever was left running. The rewrite kept the
+# local turn flag open after the server had already answered "idle", so the
+# status stayed Running and tools stayed running with it.
+
+
+def test_an_interrupt_that_found_nothing_running_settles_the_turn() -> None:
+    state = session(
+        connected(),
+        turn_started(),
+        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        InterruptAsked(),
+        InterruptSettled(cancelled=False),
+    )
+    assert state.facts.server_turn is ServerTurn.IDLE, "the server's answer is adopted"
+    assert state.facts.turn_open is False, "a local flag must not outlive it"
+    assert derive(state.facts) is Status.READY
+    assert state.timeline.get("c1").status == "cancelled", "no tool stays running forever"
+
+
+def test_a_thread_read_that_says_idle_cancels_what_is_still_open() -> None:
+    """The watchdog is the authority when the terminal frame never arrives."""
+    state = session(
+        connected(),
+        turn_started(),
+        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        ThreadRead(payload=thread(turn_status="idle")),
+    )
+    assert state.facts.turn_open is False
+    assert derive(state.facts) is Status.READY
+    assert state.timeline.get("c1").status == "cancelled"
+
+
+def test_a_thread_read_that_says_running_leaves_open_work_alone() -> None:
+    state = session(
+        connected(),
+        turn_started(),
+        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        ThreadRead(payload=thread(turn_status="running")),
+    )
+    assert state.facts.turn_open is True
+    assert state.timeline.get("c1").status == "running"

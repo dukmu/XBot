@@ -200,6 +200,12 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             server_turn=turn_status,
             turn_open=turn_status is ServerTurn.RUNNING,
         )
+        if turn_status is not ServerTurn.RUNNING:
+            # The server says this thread is not running, so anything still open
+            # belongs to a turn that ended -- most likely a terminal frame that
+            # was lost. Leaving it running would show a tool that never finishes.
+            _close_stream(state)
+            _finalize_open_tools(state, "cancelled", clock)
         state.submission_in_flight = False
 
     elif isinstance(event, UsageUpdated):
@@ -340,14 +346,18 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
                 turn_open=False,
             )
         else:
-            # The server answered "idle": nothing was running. The turn flag is
-            # what was wrong here, not the interrupt request, so the request is
-            # cleared and the flag is confirmed rather than invented.
+            # The server answered "idle": nothing was running, so the local turn
+            # flag is stale. Confirming it instead of adopting the answer kept
+            # the status on "Running" (derive() trusts turn_open) and left the
+            # turn's tools running for good -- ported from the runtime-compat
+            # work on fix-runtime-stream-context-compat.
+            _close_stream(state)
+            _finalize_open_tools(state, "cancelled", clock)
             state.facts = replace(
                 state.facts,
                 interrupt=Interrupt.NONE,
                 server_turn=ServerTurn.IDLE,
-                turn_open=True,
+                turn_open=False,
             )
 
     elif isinstance(event, AssistantDelta):
