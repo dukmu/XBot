@@ -359,6 +359,43 @@ describe("runtimeReducer", () => {
     });
   });
 
+  it("keeps a settled job in the background list", () => {
+    // The ported list shows settled rows beside live ones, so the snapshot must
+    // not be the path that silently drops them.
+    const settled = {
+      job_id: "job-1", kind: "shell" as const, command: "sleep 45", cwd: "/workspace",
+      status: "stopped" as const, created_at: 0, started_at: 0, finished_at: 45_000,
+      output: "", error: "", agent: "", thread_id: "", usage: {},
+    };
+    const state = runtimeReducer(initialRuntimeState, { type: "jobs", jobs: [settled] });
+    expect(state.jobs["job-1"]?.status).toBe("stopped");
+  });
+
+  it("shows a slash-invoked skill as an injected context row, live and replayed", () => {
+    // The skills plugin replaces the accepted input with its prompt container,
+    // so the skill's name only exists inside the content.
+    const content = [
+      '<skill_invocation name="user-invoke-demo" scope="workspace" source="/skills/user-invoke-demo/SKILL.md">',
+      "<skill_instructions>Follow the demo.</skill_instructions>",
+      "<user_arguments></user_arguments>",
+      "</skill_invocation>",
+    ].join("\n");
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("message", { id: "u-1", role: "user", content }),
+    });
+    const [entry] = state.entries;
+    expect(entry).toMatchObject({
+      kind: "runtime",
+      source: "user-invoke-demo",
+      event: "skill_invocation",
+    });
+    expect(entry.id).toBe("runtime:u-1");
+
+    const history = historyEntries([{ id: "u-1", role: "user", content } as never]);
+    expect(history[0]).toMatchObject({ kind: "runtime", source: "user-invoke-demo" });
+  });
+
   it("keeps pending input authoritative across queue events and turn failure", () => {
     let state = runtimeReducer(initialRuntimeState, {
       type: "event",
@@ -385,12 +422,21 @@ describe("runtimeReducer", () => {
       message_id: "queued-1", content: "continue later", target: "next-turn" as const,
       source: "user", image_count: 0, artifact_count: 0,
     };
-    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [item] });
-    expect(state.deliveryStates["queued-1"]).toBe("accepted");
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "user_message",
+      id: "queued-1",
+      content: "continue later",
+      images: [],
+    });
+    const phase = (): string | undefined => state.entries
+      .filter((entry) => entry.id === "queued-1")
+      .map((entry) => entry.kind === "message" ? entry.deliveryState : undefined)[0];
+    expect(phase()).toBe("accepted");
+    state = runtimeReducer(state, { type: "pending_inputs", items: [item] });
     state = runtimeReducer(state, { type: "event", event: event("input_claimed", { message_ids: ["queued-1"] }) });
-    expect(state.deliveryStates["queued-1"]).toBe("claimed");
+    expect(phase()).toBe("claimed");
     state = runtimeReducer(state, { type: "event", event: event("input_consumed", { message_ids: ["queued-1"] }) });
-    expect(state.deliveryStates["queued-1"]).toBe("consumed");
+    expect(phase()).toBe("consumed");
     expect(state.pendingInputs).toEqual([]);
   });
 
@@ -1438,12 +1484,55 @@ describe("transcript window", () => {
       return { elapsed: performance.now() - started, size: state.entries.length };
     };
 
-    const first = batch(0, 1000);
-    const last = batch(20_000, 1000);
+    // A cold first batch measures JIT, not the window.
+    batch(0, 1000);
+    // The fastest of three runs is the least noise-contaminated estimator: one
+    // scheduler or GC stall inflates a single run, and a parallel suite run can
+    // stall any one of them.
+    const measure = (from: number) => {
+      let elapsed = Number.POSITIVE_INFINITY;
+      let size = 0;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const run = batch(from, 1000);
+        elapsed = Math.min(elapsed, run.elapsed);
+        size = run.size;
+      }
+      return { elapsed, size };
+    };
+    const first = measure(0);
+    const last = measure(20_000);
     expect(last.size).toBe(first.size);
     expect(last.size).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
     // The window makes the thousandth event cost what the first one did; a
     // generous factor keeps the assertion about growth, not about the machine.
     expect(last.elapsed).toBeLessThan(Math.max(first.elapsed, 1) * 5);
+  });
+});
+
+describe("turn status reconciliation", () => {
+  const thread = (turn_status: "running" | "idle") => ({
+    session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
+    kind: "main" as const, turn_status, parent_thread_id: "",
+    agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+    context_window: 1000, message_count: 2, usage: opened.usage,
+    session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+  });
+
+  it("clears the running turn when a thread sync reports it finished", () => {
+    // The spinner used to stay up when the terminal frame was lost while the
+    // event stream reconnected; the turn watchdog adopts the server's answer
+    // through this action, so it has to clear the flag.
+    let state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("turn_started", { turn: 1 }) },
+    );
+    expect(state.turnRunning).toBe(true);
+
+    state = runtimeReducer(state, { type: "thread_synced", thread: thread("idle") });
+    expect(state.turnRunning).toBe(false);
+
+    // And a thread that really is running keeps the spinner up.
+    state = runtimeReducer(state, { type: "thread_synced", thread: thread("running") });
+    expect(state.turnRunning).toBe(true);
   });
 });

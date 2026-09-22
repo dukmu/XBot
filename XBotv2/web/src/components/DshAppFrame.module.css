@@ -49,13 +49,15 @@
   transition: none;
 }
 
-.handle::after {
+/* The details column adds a visible pill at vertical center; the sidebar keeps
+   only the hit strip, exactly as the ported frame does. */
+.handle[data-side="details"]::after {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 3px;
+  width: 12px;
   height: 32px;
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--dsw-alias-border-l3);
   content: "";
   opacity: 0;
@@ -63,8 +65,8 @@
   transition: opacity var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
-.handle:hover::after,
-.handle[data-dragging]::after {
+.handle[data-side="details"]:hover::after,
+.handle[data-side="details"][data-dragging]::after {
   opacity: 1;
 }
 

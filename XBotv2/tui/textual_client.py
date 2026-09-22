@@ -40,6 +40,7 @@ from XBotv2.tui.session_config import TuiSessionConfig
 from XBotv2.tui.textual_theme import TEXTUAL_TUI_CSS
 from XBotv2.tui.trace import trace_event
 from XBotv2.tui.textual_widgets import (
+    AgentTranscriptPane,
     BoundedText,
     ComposerTextArea,
     InlineChoice,
@@ -69,6 +70,9 @@ _REPLAY_BATCH = 50
 # client already holds (the anchor is the newest page until a cursor is known).
 # Ask again from the returned cursor, but only this many times per scroll.
 _HISTORY_PAGE_ATTEMPTS = 3
+# How long an accepted interrupt waits for its terminal frame before the client
+# asks the server whether the thread is still running.
+_INTERRUPT_CONFIRM_SECONDS = 15.0
 # The transcript is windowed: at most this many entry widgets stay mounted.
 # Older/newer entries are re-mounted from ``state.transcript`` as the user
 # scrolls, so a long conversation never grows the DOM unboundedly.
@@ -92,6 +96,64 @@ _SESSION_EVENT_PENDING_CAPACITY = 512
 
 
 logger = logging.getLogger("xbotv2.tui")
+
+
+def _record_position(record: dict[str, JsonValue]) -> int | None:
+    """Absolute trajectory position of a record, when it has one."""
+    try:
+        return int(record.get("position"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_identity(record: dict[str, JsonValue]) -> tuple[str, str, str]:
+    return (
+        str(record.get("kind") or ""),
+        str(record.get("message_id") or ""),
+        str(record.get("event") or ""),
+    )
+
+
+def _appended_thread_records(
+    held: list[dict[str, JsonValue]],
+    page: list[dict[str, JsonValue]],
+) -> list[dict[str, JsonValue]] | None:
+    """Records ``page`` adds after ``held``, or None when it cannot be trusted.
+
+    None means "rebuild": the page rewrote a record this client already holds
+    (compaction replaces records) or the records carry no position to order them
+    by.  An empty list means the page carried nothing new.
+    """
+    known = {
+        position: _record_identity(record)
+        for record in held
+        for position in [_record_position(record)]
+        if position is not None
+    }
+    if not known:
+        return None
+    for record in page:
+        position = _record_position(record)
+        if position is None:
+            return None
+        held_identity = known.get(position)
+        if held_identity is not None and held_identity != _record_identity(record):
+            return None
+    last = max(known)
+    appended = [
+        record for record in page if (_record_position(record) or 0) > last
+    ]
+    appended.sort(key=lambda record: _record_position(record) or 0)
+    return appended
+
+
+def _workspace_label(workspace: dict[str, JsonValue]) -> str:
+    """``Title  path  (N sessions)`` for the workspace picker."""
+    title = str(workspace.get("title") or workspace.get("path") or "workspace")
+    path = str(workspace.get("path") or "")
+    count = len(workspace.get("session_ids") or [])
+    label = title if title == path else f"{title}  {path}"
+    return f"{label}  ({count} session{'s' if count != 1 else ''})"
 
 
 def _kind_tag(kind: str) -> str:
@@ -193,7 +255,9 @@ class XBotTextualApp(App[None]):
         # The event-driven transcript surface owns the mounted-window and
         # widget caches. It is created lazily against #transcript and shared
         # with the read-only thread view implementation.
-        self._transcript_surface: TranscriptSurface | None = None
+        # One pane owns the transcript window, its scrolling, and its paging --
+        # the same class the read-only thread view uses.
+        self._transcript_pane: AgentTranscriptPane | None = None
         self._activity_widgets: dict[int, Static] = {}
         self._choice_widgets: dict[str, Static] = {}
         self._choice_payloads: dict[str, list[InlineChoice]] = {}
@@ -206,10 +270,8 @@ class XBotTextualApp(App[None]):
         self._deferred_tool_ids: set[str] = set()
         self._last_status_refresh = 0.0
         self._status_refresh_pending = False
-        self._replay_loading = False
-        # No page older than the retained window is known to exist.  A new
-        # snapshot re-anchors the window at the tail and clears this.
-        self._history_exhausted = False
+        # Paging cursors, window bounds, and in-flight state live on the
+        # transcript pane; the client only owns the transport underneath it.
         # Recovery starts the live reader before the optional trajectory
         # lookup, so events emitted during that lookup remain queued.
         self._restore_compactions_when_reading = False
@@ -243,8 +305,8 @@ class XBotTextualApp(App[None]):
         self._view_catalog: list[dict[str, str]] = []
         self._view_items: list[dict[str, JsonValue]] = []
         self._view_agent: str = ""
-        self._view_older_cursor: str | None = None
-        self._view_loading_older = False
+        # The pane owns the paging cursor and window; the client reads whether
+        # the reader is still at the tail from it.
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
@@ -285,11 +347,7 @@ class XBotTextualApp(App[None]):
     def _handle_replay_top(self) -> None:
         """Lazy-load earlier history; the active read-only view wins."""
         if self._view_active:
-            self.run_worker(self._load_older_thread_history(), exclusive=False)
-            return
-        if self._replay_loading:
-            return
-        if self._window_start <= 0 and self._history_exhausted:
+            self.run_worker(self._load_older_thread_view(), exclusive=False)
             return
         self.run_worker(self._load_earlier_replay, exclusive=False)
 
@@ -300,10 +358,6 @@ class XBotTextualApp(App[None]):
             view = self._safe_query_one("#thread_view", ThreadView)
             if view is not None:
                 self.run_worker(view.catch_up(), exclusive=False)
-            return
-        if self._replay_loading:
-            return
-        if self._window_end >= len(self.state.transcript) and self.state.at_tail:
             return
         self.run_worker(self._load_newer_replay, exclusive=False)
 
@@ -454,6 +508,7 @@ class XBotTextualApp(App[None]):
         session: dict[str, JsonValue] | None,
         *,
         restore_compactions: bool = True,
+        transcript: bool = True,
     ) -> None:
         if isinstance(session, dict):
             self.state.session_id = str(session.get("session_id") or self.state.session_id)
@@ -474,7 +529,7 @@ class XBotTextualApp(App[None]):
                     self.state.usage[key] = int(usage.get(key) or 0)
                 self.state.context_input_tokens = _effective_context_tokens(usage)
             history = session.get("history")
-            if isinstance(history, list):
+            if transcript and isinstance(history, list):
                 self.state.restore_history(history)
                 if restore_compactions:
                     await self._restore_compaction_entries()
@@ -724,18 +779,20 @@ class XBotTextualApp(App[None]):
         )
 
     def action_clear_input(self) -> None:
-        """Interrupt a running turn first; otherwise return to the composer."""
+        """Leave the thread view, else interrupt a running turn, else focus."""
 
-        # ESC is the global interrupt affordance. It must not be swallowed by
-        # focus restoration while a main turn is active: the user expects the
-        # foreground tool/model work to stop even when the transcript has focus.
-        if self.state.turn_active or self._pending_messages:
-            if self._view_active:
-                self.run_worker(self._exit_thread_view(), exclusive=True)
-            self.action_interrupt_turn()
-            return
         if self._view_active:
+            # The view is read-only over another thread, so Escape only leaves
+            # it. Interrupting the main turn from here would act on work the
+            # reader is not even looking at.
             self.run_worker(self._exit_thread_view(), exclusive=True)
+            return
+        # In the main transcript Escape is the interrupt affordance. It must
+        # not be swallowed by focus restoration while a turn is active: the
+        # user expects the foreground tool/model work to stop even when the
+        # transcript has focus.
+        if self.state.turn_active or self._pending_messages:
+            self.action_interrupt_turn()
             return
         composer = self._safe_query_one("#input", ComposerTextArea)
         if composer is not None and not composer.has_focus and composer.display:
@@ -759,8 +816,15 @@ class XBotTextualApp(App[None]):
         self.exit()
 
     def action_interrupt_turn(self) -> None:
-        """Schedule one non-exclusive interrupt request."""
-
+        """Ask the running turn to stop; a repeat press changes nothing."""
+        if self.state.interrupt_requested:
+            # The request is in flight or accepted and waiting for the turn to
+            # end.  Sending it again cannot stop anything sooner, and it used to
+            # flip the status back to "Running" on the server's idle answer.
+            return
+        self.state.interrupt_requested = True
+        self.state.status = "Interrupting..."
+        self._refresh_status_now()
         self.run_worker(
             self._interrupt_turn(),
             exclusive=False,
@@ -772,16 +836,73 @@ class XBotTextualApp(App[None]):
         try:
             result = await self.session.interrupt()
         except Exception:  # noqa: BLE001 — worker must not raise
+            self.state.interrupt_requested = False
+            self.state._refresh_status()
+            self._refresh_status()
             return
         if not self.is_mounted:
             return
         if result.get("cancelled"):
+            # Accepted.  The turn ends when its terminal frame arrives, and
+            # until then the status stays "Interrupting...".
             self.state.status = "Interrupting..."
-        elif self.state.turn_active:
-            self.state.status = "Running"
-        else:
+            self._refresh_status_now()
+            self.run_worker(
+                self._confirm_interrupt_landed(),
+                exclusive=False,
+                name="tui_interrupt_confirm",
+            )
             return
-        self._refresh_status()
+        # The server answered "idle": no turn is running.  That answer is
+        # authoritative and the local turn flag is stale (its terminal frame
+        # was lost or late), so adopt it rather than showing a running turn.
+        self._settle_interrupted()
+
+    def _settle_interrupted(self) -> None:
+        """Adopt the server's answer that nothing is running any more."""
+        self.state.interrupt_requested = False
+        self.state.turn_active = False
+        self.state.compaction_active = False
+        self.state._clear_pending_interactions(tool_status="cancelled")
+        self.state._finish_pending_tools("cancelled")
+        self.state.status = "Ready"
+        self.state._refresh_status(reset_terminal=True)
+        self._refresh_status_now()
+
+    async def _confirm_interrupt_landed(self) -> None:
+        """Settle the waiting state if the terminal frame never arrives.
+
+        An interrupt is acknowledged before the turn actually ends, and the
+        frame that ends it can be lost across a reconnect.  The thread list is
+        the authoritative answer for "is this thread still running".
+        """
+        await asyncio.sleep(_INTERRUPT_CONFIRM_SECONDS)
+        if not self._session_attached or not self.state.interrupt_requested:
+            return
+        lister = getattr(self.session, "list_threads", None)
+        if not callable(lister):
+            return
+        try:
+            payload = await lister(self.state.session_id)
+        except Exception:  # noqa: BLE001 — confirmation is best effort
+            return
+        threads = payload.get("threads") if isinstance(payload, dict) else None
+        if not isinstance(threads, list):
+            return
+        current = next(
+            (
+                thread
+                for thread in threads
+                if isinstance(thread, dict)
+                and str(thread.get("thread_id") or "") == self.state.thread_id
+            ),
+            None,
+        )
+        if current is None:
+            return
+        if str(current.get("turn_status") or "running") == "running":
+            return
+        self._settle_interrupted()
 
     def action_copy_last(self) -> None:
         """Copy the latest assistant reply as plain text."""
@@ -951,10 +1072,14 @@ class XBotTextualApp(App[None]):
         items, older_cursor = await self._read_view_trajectory(thread_id)
         self._view_items = list(items)
         self._view_agent = self._thread_agent(thread_id)
-        self._view_older_cursor = older_cursor
         summary = self._thread_summary(thread_id)
         view.show(thread_id, summary)
-        await view.load(self._view_items, agent_name=self._view_agent)
+        await view.open_thread(
+            self._view_items,
+            agent_name=self._view_agent,
+            fetch_older=self._thread_page_source(),
+            older_cursor=older_cursor,
+        )
         view.display = True
         transcript.display = False
 
@@ -991,8 +1116,6 @@ class XBotTextualApp(App[None]):
         self._view_main_busy = False
         self._view_items = []
         self._view_agent = ""
-        self._view_older_cursor = None
-        self._view_loading_older = False
         self._refresh_input_mode()
         self._refresh_status()
 
@@ -1037,45 +1160,59 @@ class XBotTextualApp(App[None]):
                 continue
             if not self._view_active or self._view_thread_id != thread_id:
                 return
-            # Reload only while the reader has not paged into older history;
-            # once paging starts, a full reload would drop the reader's window.
-            if self._view_older_cursor is None:
-                self._view_items = list(items)
-                view = self._safe_query_one("#thread_view", ThreadView)
-                if view is not None:
-                    await view.load(self._view_items, agent_name=self._view_agent)
+            # Adopt the page only while the reader is still at the tail; once
+            # they paged back, reloading would drop the window they are reading.
+            view = self._safe_query_one("#thread_view", ThreadView)
+            if view is not None and view.pane is not None and view.pane.state.at_tail:
+                await self._adopt_thread_page(items)
 
-    async def _load_older_thread_history(self) -> None:
-        """Scroll-up at the top pulls the previous trajectory page."""
-        if (
-            not self._view_active
-            or self._view_loading_older
-            or not self._view_older_cursor
-        ):
-            return
+    def _thread_page_source(self) -> Any:
+        """The older-page reader a thread view should keep using."""
         thread_id = self._view_thread_id
-        self._view_loading_older = True
-        try:
-            records, older_cursor = await self._read_view_trajectory(
-                thread_id,
-                cursor=self._view_older_cursor,
-            )
-        except Exception as exc:  # noqa: BLE001 — a read-only pane must not crash
-            self._view_older_cursor = None
-            await self._append_local_notice("thread", f"older history failed: {exc}")
-            return
-        finally:
-            self._view_loading_older = False
-        if not self._view_active or self._view_thread_id != thread_id:
-            return
-        self._view_older_cursor = older_cursor
-        self._view_items = [*records, *self._view_items]
+        return lambda cursor: self._read_view_trajectory(thread_id, cursor=cursor)
+
+    async def _open_thread_view_page(self, items: list[dict[str, JsonValue]]) -> None:
         view = self._safe_query_one("#thread_view", ThreadView)
-        if view is not None:
-            await view.prepend_items(
-                records,
-                agent_name=self._view_agent,
-            )
+        if view is None:
+            return
+        self._view_items = list(items)
+        await view.open_thread(
+            self._view_items,
+            agent_name=self._view_agent,
+            fetch_older=self._thread_page_source(),
+            older_cursor=None,
+        )
+
+    async def _adopt_thread_page(self, items: list[dict[str, JsonValue]]) -> None:
+        """Adopt a polled page, appending only what is genuinely new.
+
+        Rebuilding the view on every poll re-created every widget, which is what
+        made a viewed thread flicker.  A page that carries nothing new therefore
+        leaves the DOM alone.
+        """
+        view = self._safe_query_one("#thread_view", ThreadView)
+        if view is None or view.pane is None:
+            return
+        if not self._view_items:
+            await self._open_thread_view_page(items)
+            return
+        appended = _appended_thread_records(self._view_items, items)
+        if appended is not None and not appended:
+            return
+        if appended is None:
+            # The page was rewritten (compaction) or slid past what this client
+            # holds.  Rebuilding is the only consistent choice.
+            await self._open_thread_view_page(items)
+            return
+        self._view_items = [*self._view_items, *appended]
+        await view.append_items(appended, agent_name=self._view_agent)
+
+    async def _load_older_thread_view(self) -> None:
+        """Fill the view upwards; the pane decides window versus server page."""
+        view = self._safe_query_one("#thread_view", ThreadView)
+        if view is None:
+            return
+        await view.load_older()
 
     # Command execution table: name -> bound handler.  Only TUI-local commands
     # and interactive overrides are registered here; every server command from
@@ -1200,26 +1337,29 @@ class XBotTextualApp(App[None]):
                 self._record_error(exc)
                 return
             sessions = payload.get("sessions") if isinstance(payload, dict) else []
+            sessions = [item for item in sessions if isinstance(item, dict)]
             if not sessions:
                 await self._append_local_notice("Sessions", "No persisted sessions")
                 return
-            options = []
-            for item in sessions:
-                sid = str(item.get("session_id") or "")
-                title = str(item.get("title", sid))
-                workspace = str(item.get("workspace_root") or "")
-                # Session titles are always populated at startup. The stable
-                # id remains the secondary identifier (mirrors the Web rail).
-                if title != sid:
-                    label = f"{title}  {sid}"
-                else:
-                    label = sid
-                if workspace:
-                    label += f"  {workspace}"
-                options.append((sid, label))
-            self.push_screen(SelectionScreen("Sessions", options), callback=lambda choice: (
-                self.run_worker(self._cmd_session(choice)) if choice else None
-            ))
+            workspaces = await self._session_workspaces()
+            if len(workspaces) > 1:
+                # More than one workspace: browse it the way the Web rail is
+                # organised (workspace first, its sessions second) instead of a
+                # flat list that repeats the path on every row.
+                options = [
+                    (str(item.get("workspace_id") or ""), _workspace_label(item))
+                    for item in workspaces
+                ]
+                self.push_screen(
+                    SelectionScreen("Workspaces", options),
+                    callback=lambda choice: (
+                        self.run_worker(self._cmd_session_workspace(choice, workspaces))
+                        if choice
+                        else None
+                    ),
+                )
+                return
+            self._pick_session(sessions, title="Sessions")
             return
         if values[0].lower() == "new":
             if len(values) > 2:
@@ -1325,6 +1465,80 @@ class XBotTextualApp(App[None]):
         # turn ended or the session was re-attached.
         if isinstance(effects, list) and "thread" in effects:
             await self._refresh_session_identity()
+
+    async def _session_workspaces(self) -> list[dict[str, JsonValue]]:
+        """Workspace catalogue for grouping; absent on older servers."""
+        reader = getattr(self.session, "list_workspaces", None)
+        if not callable(reader):
+            return []
+        try:
+            payload = await reader()
+        except Exception:  # noqa: BLE001 — grouping is additive, never fatal
+            return []
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    async def _cmd_session_workspace(
+        self,
+        workspace_id: str,
+        workspaces: list[dict[str, JsonValue]],
+    ) -> None:
+        """Second step of the workspace-first browser: that workspace's sessions."""
+        workspace = next(
+            (
+                item
+                for item in workspaces
+                if str(item.get("workspace_id") or "") == workspace_id
+            ),
+            None,
+        )
+        if workspace is None:
+            return
+        try:
+            payload = await self.session.list_sessions()
+        except Exception as exc:
+            self._record_error(exc)
+            return
+        sessions = payload.get("sessions") if isinstance(payload, dict) else []
+        members = {str(session_id) for session_id in workspace.get("session_ids") or []}
+        selected = [
+            item
+            for item in sessions
+            if isinstance(item, dict) and str(item.get("session_id") or "") in members
+        ]
+        if not selected:
+            await self._append_local_notice("Sessions", "No sessions in this workspace")
+            return
+        self._pick_session(selected, title=str(workspace.get("title") or "Sessions"))
+
+    def _pick_session(
+        self,
+        sessions: list[dict[str, JsonValue]],
+        *,
+        title: str,
+    ) -> None:
+        """Offer sessions for switching; the stable id is the value."""
+        options = []
+        for item in sessions:
+            sid = str(item.get("session_id") or "")
+            if not sid:
+                continue
+            label = str(item.get("title", sid))
+            # Session titles are always populated at startup. The stable id
+            # remains the secondary identifier (mirrors the Web rail).
+            if label != sid:
+                label = f"{label}  {sid}"
+            workspace = str(item.get("workspace_root") or "")
+            if workspace:
+                label += f"  {workspace}"
+            options.append((sid, label))
+        if not options:
+            return
+        self.push_screen(SelectionScreen(title, options), callback=lambda choice: (
+            self.run_worker(self._cmd_session(choice)) if choice else None
+        ))
 
     async def _cmd_clear(self) -> None:
         """Reset the visible render log; session/thread/usage are untouched."""
@@ -1813,20 +2027,20 @@ class XBotTextualApp(App[None]):
         except Exception:  # noqa: BLE001 — NoMatches typically
             return None
 
-    def _surface(self) -> TranscriptSurface | None:
-        """Return the shared transcript surface for the main container."""
+    def _pane(self) -> AgentTranscriptPane | None:
+        """Return the main transcript pane, creating it against #transcript."""
         stream = self._safe_query_one("#transcript", VerticalScroll)
         if stream is None:
             return None
-        surface = self._transcript_surface
-        if (
-            surface is None
-            or surface.container is not stream
-            or surface.state is not self.state
-        ):
-            surface = TranscriptSurface(
+        pane = self._transcript_pane
+        if pane is None or pane.container is not stream or pane.state is not self.state:
+            pane = AgentTranscriptPane(
                 self.state,
                 stream,
+                fetch_older=self._fetch_older_page,
+                reanchor=self._reanchor_to_tail,
+                page_size=_REPLAY_BATCH,
+                page_attempts=_HISTORY_PAGE_ATTEMPTS,
                 notice_widget_factory=self._notice_widget,
                 tool_extra=self._sync_tool_permission_choices,
                 reasoning_expanded=lambda: self._reasoning_expanded,
@@ -1835,22 +2049,27 @@ class XBotTextualApp(App[None]):
                 max_message_widgets=_MAX_MESSAGE_WIDGETS,
                 max_tool_widgets=_MAX_TOOL_WIDGETS,
             )
-            self._transcript_surface = surface
-        return surface
+            self._transcript_pane = pane
+        return pane
+
+    def _surface(self) -> TranscriptSurface | None:
+        """Return the shared transcript surface for the main container."""
+        pane = self._pane()
+        return pane.surface if pane is not None else None
 
     @property
     def _window_start(self) -> int:
-        surface = self._transcript_surface
+        surface = self._surface()
         return surface.window_start if surface is not None else 0
 
     @property
     def _window_end(self) -> int:
-        surface = self._transcript_surface
+        surface = self._surface()
         return surface.window_end if surface is not None else 0
 
     @property
     def _mounted_entry_widgets(self) -> list[Any]:
-        surface = self._transcript_surface
+        surface = self._surface()
         return surface.mounted_entry_widgets if surface is not None else []
 
     def _record_error(self, exc: BaseException) -> None:
@@ -2129,141 +2348,64 @@ class XBotTextualApp(App[None]):
 
     async def _render_replay_window(self) -> None:
         """Mount a bounded tail of resumed history."""
-        surface = self._surface()
-        if surface is None:
+        pane = self._pane()
+        if pane is None:
             return
-        await surface.clear()
-        total = len(self.state.transcript)
-        if total <= _REPLAY_WINDOW:
-            surface.window_start = 0
-            surface.window_end = 0
-        else:
-            surface.window_start = total - _REPLAY_WINDOW
-            surface.window_end = surface.window_start
-        await surface.sync()
+        await pane.restart_window()
 
-    async def _extend_history_backwards(self) -> bool:
-        """Page the transcript window back by fetching older records.
+    async def _load_earlier_replay(self) -> None:
+        """Reach one window further back: the pane decides window or page."""
+        pane = self._pane()
+        if pane is None:
+            return
+        self._transcript_follow = False
+        await pane.load_older()
 
-        The client keeps a bounded window, so reaching its front asks the server
-        for the page older than it.  The newest page is requested first when no
-        cursor is held; pages are de-duplicated by message id, so an anchor that
-        is newer than the window front still reaches the evicted records.  One
-        scroll may therefore consume a page the client already has and ask
-        again, which is why this loops a bounded number of times.
-        """
+    async def _load_newer_replay(self) -> None:
+        """Reach one window further down: the pane decides window or page."""
+        pane = self._pane()
+        if pane is None:
+            return
+        await pane.load_newer()
+
+    async def _fetch_older_page(
+        self,
+        cursor: str | None,
+    ) -> tuple[list[dict[str, JsonValue]], str | None] | None:
+        """Read the trajectory page older than what this client holds."""
         reader = getattr(self.session, "read_thread_history", None)
-        if not callable(reader) or self._history_exhausted:
-            return False
-        for _ in range(_HISTORY_PAGE_ATTEMPTS):
-            try:
-                records, next_cursor = await reader(
-                    self.state.thread_id,
-                    cursor=self.state.older_cursor,
-                    limit=_REPLAY_BATCH * 2,
-                )
-            except Exception:  # noqa: BLE001 — paging back must not kill the app
-                logger.debug("older history page unavailable", exc_info=True)
-                return False
-            inserted = self.state.prepend_history(
-                history_items_from_trajectory(records)
+        if not callable(reader):
+            return None
+        try:
+            return await reader(
+                self.state.thread_id,
+                cursor=cursor,
+                limit=_REPLAY_BATCH * 2,
             )
-            self.state.older_cursor = next_cursor
-            self._history_exhausted = next_cursor is None
-            if inserted:
-                surface = self._surface()
-                if surface is not None:
-                    await surface.settle_window()
-                return True
-            if self._history_exhausted:
-                break
-        return False
+        except Exception:  # noqa: BLE001 — paging back must not kill the app
+            logger.debug("older history page unavailable", exc_info=True)
+            return None
 
-    async def _reanchor_to_tail(self) -> None:
-        """Replace the transcript window with the newest page.
+    async def _reanchor_to_tail(self) -> bool:
+        """Return the window to the newest records from a fresh snapshot.
 
-        Paging back evicted the newest entries, so returning to the tail is a
-        fetch of the current snapshot rather than a scroll inside the window.
+        Paging back evicted the newest entries, so the window no longer ends at
+        the tail; the snapshot is what rebuilds it.  Walking a page from the
+        history endpoint instead would replace the transcript with that page and
+        drop everything the client already had.
         """
         refresh = getattr(self.session, "refresh_baseline", None)
         if not callable(refresh):
-            return
+            return False
         try:
             session = await refresh()
         except Exception:  # noqa: BLE001 — an unreachable snapshot keeps the window
             logger.debug("transcript tail re-anchor failed", exc_info=True)
-            return
-        if isinstance(session, dict):
-            await self._apply_open_session(session, restore_compactions=False)
-
-    async def _load_earlier_replay(self) -> None:
-        """Shift the bounded replay window to an earlier batch."""
-        if self._replay_loading:
-            return
-        self._replay_loading = True
-        self._transcript_follow = False
-        try:
-            # Reaching the front of the retained window asks the server: the
-            # client keeps a window, so what it evicted is only reachable on
-            # demand.  Scroll events can arrive faster than a page, hence the
-            # loading guard around the fetch.
-            if self._window_start <= 0 and not await self._extend_history_backwards():
-                return
-            surface = self._surface()
-            if surface is None:
-                return
-            await surface.settle_window()
-            if surface.window_start <= 0:
-                return
-            batch_start = max(0, surface.window_start - _REPLAY_BATCH)
-            entries = self.state.transcript[batch_start:surface.window_start]
-            if not entries:
-                surface.window_start = 0
-                return
-            widgets = await surface.mount_entries(
-                batch_start,
-                surface.window_start,
-                prepend=True,
-            )
-            if not widgets:
-                surface.window_start = batch_start
-                return
-            inserted_height = self._widgets_height(widgets)
-            surface.window_start = batch_start
-            await surface.drop_trailing_excess()
-            # Keep the reader's position while older entries are mounted above
-            # it -- except at the very top, where those entries *are* what the
-            # reader scrolled back for and compensating would push them off
-            # screen again.
-            if surface.container.scroll_y > 0:
-                self.call_after_refresh(
-                    lambda h=inserted_height: surface.container.scroll_to(
-                        y=max(0, surface.container.scroll_y + h), animate=False
-                    )
-                )
-        finally:
-            self._replay_loading = False
-
-    async def _load_newer_replay(self) -> None:
-        """Shift the bounded replay window toward the live tail."""
-        surface = self._surface()
-        if surface is None:
-            return
-        surface.reconcile_evictions()
-        if surface.window_end >= len(self.state.transcript):
-            if not self.state.at_tail:
-                await self._reanchor_to_tail()
-                return
-            await surface.drop_leading_excess(follow=True)
-            return
-        end = min(len(self.state.transcript), surface.window_end + _REPLAY_BATCH)
-        await surface.mount_entries(surface.window_end, end)
-        surface.window_end = end
-        await surface.drop_leading_excess(follow=True)
-        self._transcript_follow = True
-        self.call_after_refresh(
-            lambda: surface.container.scroll_end(animate=False)
-        )
+            return False
+        if not isinstance(session, dict):
+            return False
+        await self._apply_open_session(session, restore_compactions=False)
+        return True
 
     async def _render_new_transcript_entries(self) -> bool:
         surface = self._surface()
@@ -2554,7 +2696,7 @@ class XBotTextualApp(App[None]):
         self._refresh_status()
 
     def _update_pending_tool_elapsed(self) -> None:
-        surface = self._transcript_surface
+        surface = self._surface()
         if surface is None:
             return
         for tool_call_id, widget in list(surface.tool_widgets.items()):
@@ -2616,17 +2758,17 @@ class XBotTextualApp(App[None]):
 
     def _trim_message_widgets(self) -> None:
         """Kept for compatibility; caches live on the shared surface."""
-        surface = self._transcript_surface
+        surface = self._surface()
         if surface is not None:
             surface.trim_message_widgets()
 
     def _trim_tool_widgets(self) -> None:
-        surface = self._transcript_surface
+        surface = self._surface()
         if surface is not None:
             surface.trim_tool_widgets()
 
     def _refresh_tool_widget_sync(self, tool_call_id: str) -> None:
-        surface = self._transcript_surface
+        surface = self._surface()
         if surface is not None:
             surface.refresh_tool_widget_sync(tool_call_id)
 

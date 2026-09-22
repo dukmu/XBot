@@ -206,6 +206,8 @@ summary:focus-visible {
   min-height: 0;
   padding: 0 8px 16px;
   overflow-y: auto;
+  /* The ported reservation: revealing the thumb must not reflow a row. */
+  scrollbar-gutter: stable;
 }
 
 .workspace-group {
@@ -498,6 +500,123 @@ summary:focus-visible {
   min-width: 0;
   height: 100%;
 }
+
+/* Ported banner tabs: Chat or the durable trajectory. */
+.runtime-tabs {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-left: 12px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.runtime-tabs [role="tab"] {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.runtime-tabs [role="tab"][aria-selected="true"] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+}
+
+/* Trajectory pane: ported toolbar over one record table. */
+.trajectory-pane { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+
+.trajectory-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.trajectory-toggle {
+  padding: 3px 9px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.trajectory-toggle[aria-pressed="true"] {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary);
+}
+
+.trajectory-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.trajectory-search input {
+  width: 200px;
+  border: 0;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  outline: 0;
+}
+
+.trajectory-scroll { min-height: 0; flex: 1; overflow: auto; padding: 6px 14px 20px; }
+
+.trajectory-older {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0 8px;
+  padding: 3px 9px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.trajectory-older-icon { transform: rotate(-90deg); }
+
+.trajectory-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.trajectory-table tr[aria-selected="true"] { background: var(--dsw-alias-interactive-bg-hover-solid); }
+.trajectory-table tr[data-tool] { cursor: pointer; }
+
+.trajectory-table th,
+.trajectory-table td {
+  padding: 5px 8px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  font-weight: 400;
+  text-align: left;
+  vertical-align: top;
+}
+
+.trajectory-table th { width: 160px; color: var(--dsw-alias-label-tertiary); }
+.trajectory-group { display: block; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.trajectory-role { color: var(--dsw-alias-label-secondary); font-size: 11px; letter-spacing: 0.04em; }
+.trajectory-detail { color: var(--dsw-alias-label-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.trajectory-timing { display: block; color: var(--dsw-alias-label-tertiary); font-size: 10px; }
+.trajectory-empty { padding: 20px 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 
 .runtime-header {
   display: flex;
@@ -803,8 +922,7 @@ summary:focus-visible {
   text-align: left;
 }
 
-.tool-block summary,
-.job-item summary {
+.tool-block summary {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -813,9 +931,42 @@ summary:focus-visible {
   user-select: none;
 }
 
-.tool-block summary::-webkit-details-marker,
-.job-item summary::-webkit-details-marker {
+.tool-block summary::-webkit-details-marker {
   display: none;
+}
+
+/* Ported job row: kind, label, status, duration — a flat list item. */
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  color: #9fa69d;
+}
+
+.job-dot {
+  flex: none;
+}
+
+.job-dot-running,
+.job-dot-pending { color: var(--dsw-alias-state-business-primary); }
+.job-dot-completed { color: var(--green); }
+.job-dot-failed { color: var(--red); }
+.job-dot-stopped { color: var(--amber); }
+
+.job-kind {
+  flex: none;
+  color: var(--faint);
+  font-size: 10px;
+  text-transform: lowercase;
+}
+
+.job-duration {
+  flex: none;
+  color: var(--faint);
+  font-size: 10px;
 }
 
 .summary-chevron {
@@ -825,6 +976,161 @@ summary:focus-visible {
 
 details[open] > summary .summary-chevron {
   transform: rotate(90deg);
+}
+
+/*
+ * Skill instructions disclosure, ported from dsh ui-skill/SkillRow.module.css:
+ * a bounded card under the row, revealed by the row's own toggle.
+ */
+.skill-details {
+  gap: 0;
+}
+
+.skill-instructions {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  margin: 4px 0 4px 4px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+.skill-instructions-title {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-markdown-code-block-banner);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--dsw-alias-label-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skill-instructions-body {
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--dsw-font-markdown-code-block-small);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.skill-inspect {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 2px 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.skill-inspect:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Ported search card: banner summary, per-file groups, head/tail cap. */
+.search-card {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 4px 4px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+.search-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-markdown-code-block-banner);
+}
+
+.search-summary {
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.search-copy {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.search-body { display: flex; flex-direction: column; max-height: 260px; overflow: auto; }
+
+.search-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 0;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.search-file:hover { background: var(--dsw-alias-interactive-bg-hover-solid); }
+.search-file > svg { flex: none; transition: transform 130ms ease; }
+.search-file > svg.open { transform: rotate(90deg); }
+.search-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-count { flex: none; color: var(--dsw-alias-label-tertiary); font-weight: 400; }
+
+.search-line {
+  padding: 1px 10px 1px 26px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-markdown-code-block-small);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.search-line-number { color: var(--dsw-alias-label-tertiary); }
+
+.search-expand {
+  padding: 5px 10px;
+  border: 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.search-expand:hover { background: var(--dsw-alias-interactive-bg-hover-solid); }
+.search-empty { padding: 10px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.search-capped {
+  padding: 5px 10px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-state-warn-primary);
+  font-size: 11px;
 }
 
 .tool-block {
@@ -1101,18 +1407,6 @@ details[open] > summary .summary-chevron {
   border-top: 1px solid var(--line-soft);
 }
 
-.job-item summary {
-  gap: 8px;
-  height: 34px;
-  padding: 0 8px 0 10px;
-  color: #9fa69d;
-}
-
-.job-item summary > svg:first-child {
-  flex: none;
-  color: var(--purple);
-}
-
 .job-label {
   min-width: 0;
   flex: 1;
@@ -1171,18 +1465,46 @@ details[open] > summary .summary-chevron {
   box-shadow: 0 0 0 1px rgba(101, 193, 140, 0.1), 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
-.composer textarea {
-  display: block;
-  width: 100%;
+/* Ported draft geometry: one scrollport, a hidden mirror that sets the full
+   draft height in normal flow, and a textarea that rides it absolutely. The
+   textarea is therefore never a scroller of its own, so its glyphs and the
+   caret share the scrollport's single offset; the 14-line cap lives on the
+   scrollport, which is the box the cap describes. */
+.composer-draft-scroll {
+  max-height: calc(14 * 1.5 * 13px);
+  overflow-y: auto;
+}
+
+.composer-draft-grow { position: relative; }
+
+.composer-draft-mirror {
   min-height: 46px;
-  max-height: 180px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.composer textarea,
+.composer-draft-mirror {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
   padding: 13px 14px 4px;
   border: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.composer textarea {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  overflow: hidden;
   outline: 0;
   color: var(--text);
   background: transparent;
-  font-size: 13px;
-  line-height: 1.5;
   resize: none;
 }
 
@@ -1329,6 +1651,561 @@ details[open] > summary .summary-chevron {
 .status-model { color: var(--green); }
 .status-slot { color: var(--purple); }
 .status-spacer { flex: 1; }
+
+/* The tool row the details column is showing. */
+.tool-block-selected {
+  border-color: var(--dsw-alias-border-l2, var(--line));
+  background: var(--dsw-alias-interactive-bg-hover, var(--panel-raised));
+}
+
+/* Output-limit notice under a reply that was cut off (ported wording). */
+/* Ported turn footer: the timing a settled reply ran with. */
+.message-turn-footer {
+  margin-top: 2px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.message-truncation {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-static-amber-400, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsw-static-amber-400, #f7ad31) 10%, transparent);
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.message-truncation strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.message-truncation small {
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+/* To-do row tally line (ported from the to-do row panel). */
+.todo-tally {
+  display: block;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  padding: 2px 0 6px;
+}
+
+.todo-item-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Goal bar: the active goal as a banner line above the transcript. */
+.goal-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-module-platform, var(--panel-raised));
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.goal-bar-icon {
+  display: inline-flex;
+  color: var(--dsw-static-blue-500, var(--text));
+}
+
+.goal-bar-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.goal-bar-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.goal-bar-objective {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-bar-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  white-space: nowrap;
+}
+
+.goal-bar-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* Session hierarchy (breadcrumb) and the subagent tree, ported layout. */
+.thread-hierarchy {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  overflow: hidden;
+}
+
+.thread-hierarchy-parent,
+.thread-hierarchy-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-hierarchy-parent:hover {
+  background: var(--dsw-alias-interactive-bg-hover, var(--panel));
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.thread-hierarchy-current[disabled] {
+  color: var(--dsw-alias-label-primary, var(--text));
+  cursor: default;
+}
+
+.thread-hierarchy-note {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.subagent-sessions {
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 8px 10px 10px;
+}
+
+.subagent-sessions.is-collapsed {
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  padding: 6px 10px;
+}
+
+.subagent-sessions-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2, var(--line));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.subagent-sessions-toggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover, var(--panel));
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.subagent-sessions-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.subagent-sessions-head small {
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.subagent-tree,
+.subagent-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.subagent-row[data-depth="1"] { padding-left: 14px; }
+.subagent-row[data-depth="2"] { padding-left: 28px; }
+.subagent-row[data-depth="3"] { padding-left: 42px; }
+
+.subagent-twisty,
+.subagent-twisty-spacer {
+  width: 20px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  cursor: pointer;
+}
+
+.subagent-node {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, var(--text));
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-node:hover {
+  background: var(--dsw-alias-interactive-bg-hover, var(--panel));
+}
+
+.subagent-node.selected {
+  background: var(--dsw-alias-bg-module-platform, var(--panel-raised));
+}
+
+.subagent-node-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.subagent-node-copy b {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-node-copy small {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.subagent-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.subagent-state.running {
+  color: var(--dsw-static-blue-500, var(--text));
+}
+
+/* Mode / model row above the composer input (ported placement). */
+.composer-runtime-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 6px;
+  flex-wrap: wrap;
+}
+
+/* Ported preset menu: the trigger keeps the select chrome; the menu lists the
+   definitions with their descriptions. */
+.composer-preset { position: relative; display: inline-flex; }
+
+.composer-preset-menu {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  width: min(360px, 80vw);
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 32%);
+}
+
+.composer-preset-menu [role="menuitem"] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.composer-preset-menu [role="menuitem"]:hover,
+.composer-preset-menu [role="menuitem"]:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  outline: 0;
+}
+
+.composer-preset-name { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.composer-preset-menu small { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.4; }
+
+.composer-select {
+  max-width: 240px;
+  padding: 3px 6px;
+  border: 1px solid var(--dsw-alias-border-l2, var(--line));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Access-mode control in the composer's bottom row (preset menu + risk gate). */
+.access-mode {
+  position: relative;
+  display: inline-flex;
+}
+
+.access-mode-button {
+  gap: 6px;
+  padding: 0 8px;
+  width: auto;
+}
+
+.access-mode-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Ported risk confirmation: a dialog whose primary action waits for the
+   acknowledgement checkbox. */
+.access-confirm-dialog {
+  display: flex;
+  width: min(100%, 480px);
+  flex-direction: column;
+  gap: 14px;
+}
+
+.access-confirm-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.access-confirm-head h2 { margin: 0; font-size: 16px; line-height: 24px; }
+
+.access-confirm-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.access-confirm-warning > svg { flex: none; margin-top: 2px; color: var(--dsw-alias-state-warn-primary); }
+.access-confirm-warning p { margin: 0; font-size: 12px; line-height: 1.55; }
+
+.access-confirm-acknowledge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.access-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.access-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, var(--line));
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-module-platform, var(--panel-raised));
+  box-shadow: 0 12px 28px rgb(0 0 0 / 18%);
+}
+
+.access-mode-option {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, var(--text));
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.access-mode-option:hover {
+  background: var(--dsw-alias-interactive-bg-hover, var(--panel));
+}
+
+.access-mode-option.is-current {
+  color: var(--dsw-static-blue-500, var(--text));
+}
+
+.access-mode-confirm-title {
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.access-mode-confirm-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.access-mode-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Details column: ported layout (heads the right column, explains itself when
+   nothing is selected). */
+.details-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.details-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.details-panel-empty {
+  margin: 0;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.details-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 16px;
+  overflow: auto;
+}
+
+.details-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.details-panel-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+/* Cold start: the draft session puts the composer on screen immediately, with
+   the workspace picker above it (ported layout: hero + locked composer). */
+.draft-session {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+}
+
+.draft-session-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 20px 12px;
+  box-sizing: border-box;
+}
+
+.draft-session-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  color: var(--dsw-alias-label-primary, var(--text));
+}
+
+.draft-session-hero h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.draft-session-hero p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-secondary, var(--muted));
+}
+
+.draft-session-choose {
+  margin-top: 4px;
+}
 
 .empty-workbench {
   display: flex;

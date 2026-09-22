@@ -34,6 +34,9 @@ class AssistantMessageData(WireModel):
     content: str
     tool_calls: list[dict[str, JsonValue]] = Field(default_factory=list)
     timing: "ModelTimingData | None" = None
+    # Why the provider stopped generating ("length", "max_tokens", "end_turn",
+    # ...).  Clients use it to flag a reply that was cut off mid-answer.
+    stop_reason: str = ""
 
 
 class ModelTimingData(WireModel):

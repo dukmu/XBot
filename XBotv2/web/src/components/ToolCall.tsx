@@ -1,36 +1,94 @@
 /* Presentation adapted from DeepSeek Harness ui-tool (MIT). */
-import { Check, ChevronRight, Circle, CircleDot, LoaderCircle, X } from "lucide-react";
+import { Check, ChevronRight, Circle, CircleDot, LoaderCircle, ScanSearch, Sparkles, X } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import type { TodoItemData } from "../api/types";
 import type { ToolEntry } from "../state/runtime";
 import { DiffBlock, type DiffHunk } from "./DiffBlock";
 import { ToolArtifacts } from "./ToolArtifacts";
+import { SearchCard, searchCard } from "./SearchCard";
 import { ToolOutput } from "./ToolOutput";
 
-export const ToolCall = memo(function ToolCall({ tool }: { tool: ToolEntry }) {
+/** Row title dsh gives a to-do update, whatever the tool is called. */
+const TODO_ROW_TITLE = "Update to-do list";
+/** Ported skill row: `Skill <name>` with an instructions disclosure. */
+const SKILL_ROW_TITLE = "Skill";
+const SKILL_INSTRUCTIONS = "Instructions";
+const SKILL_INSPECT = "Inspect";
+
+export const ToolCall = memo(function ToolCall({
+  tool,
+  selected = false,
+  onSelect,
+  skill = false,
+}: {
+  tool: ToolEntry;
+  selected?: boolean;
+  onSelect?: (tool: ToolEntry) => void;
+  /** The catalog registers this tool under the skills namespace. */
+  skill?: boolean;
+}) {
   const running = tool.status === "running" || tool.status === "pending";
   const todos = todoItems(tool);
-  const [open, setOpen] = useState(false);
+  // The ported skill row opens on arrival: loaded instructions are the point of
+  // the call.
+  const [open, setOpen] = useState(skill);
   return (
     <details
-      className={`tool-block status-${tool.status}`}
+      className={`tool-block status-${tool.status}${selected ? " tool-block-selected" : ""}`}
       data-state={running ? "running" : tool.status}
       data-tool={tool.name}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary>
+      <summary
+        onClick={() => onSelect?.(tool)}
+        data-testid={`tool-row-${tool.toolCallId}`}
+      >
         <span className="tool-status-icon">
-          {running ? <LoaderCircle size={14} className="spin" /> : tool.status === "success" || tool.status === "approved" ? <Check size={14} /> : <X size={14} />}
+          {running
+            ? <LoaderCircle size={14} className="spin" />
+            : skill
+              ? <Sparkles size={14} />
+              : tool.status === "success" || tool.status === "approved" ? <Check size={14} /> : <X size={14} />}
         </span>
-        <span className="tool-name">{tool.name}</span>
+        <span className="tool-name">{todos ? TODO_ROW_TITLE : skill ? SKILL_ROW_TITLE : tool.name}</span>
         <i className="tool-separator" aria-hidden />
-        <span className="tool-summary">{toolSummary(tool, todos)}</span>
+        <span className="tool-summary">{skill ? tool.name : toolSummary(tool, todos)}</span>
         <ChevronRight size={13} className="summary-chevron" />
       </summary>
-      {open && <ToolBody tool={tool} todos={todos} />}
+      {open && (skill
+        ? <SkillBody tool={tool} onInspect={onSelect ? () => onSelect(tool) : undefined} />
+        : <ToolBody tool={tool} todos={todos} />)}
     </details>
   );
 });
+
+/**
+ * Ported skill body: the loaded instructions in a labelled region, with the
+ * way into the full call record (`Inspect`) beside them.
+ */
+function SkillBody({ tool, onInspect }: { tool: ToolEntry; onInspect?: () => void }) {
+  const instructions = typeof tool.result === "string"
+    ? tool.result
+    : tool.result === null || tool.result === ""
+      ? tool.status === "running" || tool.status === "pending" ? "Loading the skill…" : "No instructions"
+      : JSON.stringify(tool.result, null, 2);
+  return (
+    <div className="tool-details skill-details">
+      <section className="skill-instructions" aria-label={SKILL_INSTRUCTIONS}>
+        <div className="skill-instructions-title">{SKILL_INSTRUCTIONS}</div>
+        <pre className="skill-instructions-body">{instructions}</pre>
+      </section>
+      {tool.error && <Detail label="Error" value={tool.error} />}
+      {onInspect && (
+        <button type="button" className="skill-inspect" onClick={onInspect}>
+          <ScanSearch size={12} />
+          {SKILL_INSPECT}
+        </button>
+      )}
+      <ToolArtifacts artifacts={tool.artifacts} />
+    </div>
+  );
+}
 
 function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItemData[] | null }) {
   const args = recordOf(tool.args);
@@ -40,6 +98,10 @@ function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItemData[] | nu
   const terminalTool = Boolean(command && /(?:shell|bash|exec|terminal|command)/i.test(tool.name));
   const argumentsBlock = <ToolArguments value={tool.args} terminal={terminalTool} />;
   if (todos) return <ToolDetails tool={tool}>{argumentsBlock}<TodoChecklist items={todos} /></ToolDetails>;
+  // A search keeps its structured result until now: the ported card groups the
+  // matches per file instead of dumping the tool's JSON into the row.
+  const search = searchCard(tool);
+  if (search) return <ToolDetails tool={tool}>{argumentsBlock}<SearchCard {...search} /></ToolDetails>;
   const diff = appliedDiff(tool);
   if (diff) return <ToolDetails tool={tool}>{argumentsBlock}<DiffBlock diffs={[diff]} maxLines={8} /></ToolDetails>;
   if (command && /(?:shell|bash|exec|terminal|command)/i.test(tool.name)) {
@@ -149,10 +211,15 @@ function toolSummary(tool: ToolEntry, todos: TodoItemData[] | null): string {
   if (tool.status === "error") return "failed";
   if (todos) {
     const completed = todos.filter((item) => item.status === "completed").length;
-    const active = todos.find((item) => item.status === "in_progress");
+    const activeItems = todos.filter((item) => item.status === "in_progress");
+    const active = activeItems[0];
+    // The summary names one active item; the rest are counted, exactly as the
+    // ported row does ("+1" when a second item is in progress).
+    const rest = Math.max(0, activeItems.length - 1);
+    const suffix = rest > 0 ? ` +${rest}` : "";
     return active
-      ? `${completed}/${todos.length} done · ${active.activeForm || active.subject}`
-      : `${completed}/${todos.length} done`;
+      ? `${completed}/${todos.length} completed · ${active.activeForm || active.subject}${suffix}`
+      : `${completed}/${todos.length} completed${suffix}`;
   }
   const args = recordOf(tool.args);
   return stringOf(args.path) || stringOf(args.command) || stringOf(args.query) || stringOf(args.subject) || stringOf(args.objective) || tool.status;
@@ -186,16 +253,38 @@ function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+function todoTally(items: TodoItemData[]): string {
+  const counts: [TodoItemData["status"], string][] = [
+    ["completed", "completed"],
+    ["in_progress", "in progress"],
+    ["pending", "pending"],
+  ];
+  return counts
+    .map(([status, label]) => [items.filter((item) => item.status === status).length, label] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${count} ${label}`)
+    .join(" · ");
+}
+
 function TodoChecklist({ items }: { items: TodoItemData[] }) {
   return (
     <section className="todo-checklist" aria-label="Task list">
-      <span className="todo-checklist-label">Tasks</span>
+      {items.length > 0 && (
+        <span className="todo-tally" data-testid="todo-tally">{todoTally(items)}</span>
+      )}
       {items.length === 0 && <div className="todo-empty">No tasks</div>}
       {items.map((item) => (
-        <div className={`todo-item todo-${item.status}`} key={item.id || item.subject}>
+        <div
+          className={`todo-item todo-${item.status}`}
+          key={item.id || item.subject}
+          title={item.id ? `#${item.id}` : undefined}
+        >
           {item.status === "completed" ? <Check size={14} /> : item.status === "in_progress" ? <CircleDot size={14} /> : <Circle size={14} />}
-          <span>#{item.id} {item.subject}</span>
-          <small>{item.status === "completed" ? "Done" : item.status === "in_progress" ? (item.activeForm || "In progress") : "Pending"}</small>
+          {/* dsh's item line is "<status> <subject>". */}
+          <span className="todo-item-text">{item.status} {item.subject}</span>
+          {item.status === "in_progress" && item.activeForm && (
+            <small>{item.activeForm}</small>
+          )}
         </div>
       ))}
     </section>

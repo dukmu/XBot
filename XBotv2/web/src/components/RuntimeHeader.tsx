@@ -13,14 +13,16 @@ interface RuntimeHeaderProps {
   onFork: () => Promise<void>;
   onClear: () => Promise<void>;
   utilities?: ReactNode;
+  /** Which conversation surface is on screen, as the ported banner's tabs. */
+  surface?: "chat" | "trajectory";
+  onSurface?: (surface: "chat" | "trajectory") => void;
 }
 
-export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffort, onUndo, onFork, onClear, utilities }: RuntimeHeaderProps) {
+export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffort, onUndo, onFork, onClear, utilities, surface = "chat", onSurface }: RuntimeHeaderProps) {
   const current = state.current;
   const [mobileSettings, setMobileSettings] = useState(false);
-  const selectedModel = state.providers
-    .find((provider) => provider.name === current?.provider)
-    ?.models.find((model) => model.model === current?.model);
+  // Agent/model/effort live in the composer now (ported placement); the
+  // mobile menu below keeps its own compact copies for narrow screens.
   const providerValue = current
     ? JSON.stringify([current.provider, current.model])
     : "";
@@ -33,49 +35,29 @@ export function RuntimeHeader({ state, busy, onMenu, onAgent, onProvider, onEffo
         <strong>{current ? current.title : "XBot"}</strong>
         {current && <span title={current.workspace_root}>{current.workspace_root}</span>}
       </div>
-      {current && utilities && <div className="header-utilities">{utilities}</div>}
-      {current && (
-        <div className="runtime-selectors">
-          <select
-            aria-label="Agent"
-            title="Agent"
-            value={current.agent_name}
-            disabled={state.turnRunning || state.loading || busy}
-            onChange={(event) => void onAgent(event.target.value)}
+      {current && onSurface && (
+        <div className="runtime-tabs" role="tablist" aria-label="Conversation surface">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={surface === "chat"}
+            className={surface === "chat" ? "active" : ""}
+            onClick={() => onSurface("chat")}
           >
-            {state.agents.filter((agent) => agent.mode !== "subagent").map((agent) => (
-              <option key={agent.name} value={agent.name}>{agent.name}</option>
-            ))}
-          </select>
-          <select
-            aria-label="Provider"
-            title="Provider"
-            value={providerValue}
-            disabled={state.turnRunning || state.loading || busy}
-            onChange={(event) => {
-              const [provider, model] = JSON.parse(event.target.value) as [string, string];
-              void onProvider(provider, model);
-            }}
+            Chat
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={surface === "trajectory"}
+            className={surface === "trajectory" ? "active" : ""}
+            onClick={() => onSurface("trajectory")}
           >
-            {state.providers.flatMap((provider) => provider.models.map((model) => (
-              <option key={`${provider.name}/${model.model}`} value={JSON.stringify([provider.name, model.model])}>
-                {provider.name} / {model.model}
-              </option>
-            )))}
-          </select>
-          {selectedModel && selectedModel.effort.length > 0 && (
-            <select
-              aria-label="Reasoning effort"
-              title="Reasoning effort"
-              value={current.model_mode || selectedModel.reasoning_effort}
-              disabled={state.turnRunning || state.loading || busy}
-              onChange={(event) => void onEffort(event.target.value)}
-            >
-              {selectedModel.effort.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-            </select>
-          )}
+            Trajectory
+          </button>
         </div>
       )}
+      {current && utilities && <div className="header-utilities">{utilities}</div>}
       {current && (
         <button
           className="icon-button mobile-runtime-button"

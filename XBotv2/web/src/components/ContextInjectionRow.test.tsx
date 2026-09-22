@@ -17,7 +17,7 @@ describe("ContextInjectionRow", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent("Turn 2 started");
-    expect(screen.queryByText("Injected context")).not.toBeInTheDocument();
+    expect(screen.queryByText("Context injection")).not.toBeInTheDocument();
   });
 
   it("keeps injected context expandable with its provenance", () => {
@@ -33,7 +33,9 @@ describe("ContextInjectionRow", () => {
       />,
     );
 
-    expect(screen.getByText("Injected context")).toBeVisible();
-    expect(screen.getByText("workspace · instructions")).toBeVisible();
+    // The accessible name is dsh's: title, producer, detail.
+    expect(screen.getByText("Context injection")).toBeVisible();
+    const summary = screen.getByText("Context injection").closest("summary");
+    expect(summary?.textContent).toBe("Context injectionworkspaceinstructions");
   });
 });

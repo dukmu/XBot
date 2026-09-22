@@ -893,7 +893,7 @@ async def test_thread_view_lazy_loads_older_history_on_scroll_top(
         view = app.query_one("#thread_view", ThreadView)
         assert scripted_session.thread_history_reads == [("agent-reviewer-1", None)]
         assert "review the diff" in _thread_view_text(view)
-        assert app._view_older_cursor == "older"
+        assert view.pane is not None and view.pane.older_cursor == "older"
 
         # The reader reaches the very top: the older page is prepended as
         # transcript entries and the view stays readable.
@@ -907,7 +907,7 @@ async def test_thread_view_lazy_loads_older_history_on_scroll_top(
         rendered = _thread_view_text(view)
         assert "earlier question" in rendered
         assert "review the diff" in rendered
-        assert app._view_older_cursor is None
+        assert view.pane is not None and view.pane.exhausted is True
 
 
 @pytest.mark.asyncio
@@ -2639,3 +2639,514 @@ async def test_provider_command_picks_or_lists(scripted_session) -> None:
         ]
         await pilot.press("escape")
         await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_escape_in_a_thread_view_does_not_interrupt_the_main_turn(
+    scripted_session,
+) -> None:
+    """The read-only view belongs to another thread; Escape only leaves it."""
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    interrupts: list[str] = []
+    app.action_interrupt_turn = lambda: interrupts.append("interrupt")  # type: ignore[method-assign]
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        # A running main turn is exactly when the old binding interrupted it.
+        app.state.turn_active = True
+
+        await app._enter_thread_view("agent-reviewer-1")
+        await pilot.pause()
+        assert app._view_active is True
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert interrupts == [], "Escape in a thread view must not interrupt the main turn"
+        assert app._view_active is False
+        assert app.state.turn_active is True
+
+        # In the main transcript the same key still interrupts.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert interrupts == ["interrupt"]
+
+
+@pytest.mark.asyncio
+async def test_polling_a_thread_view_does_not_rebuild_it(scripted_session) -> None:
+    """A poll that carries nothing new must leave the view completely alone.
+
+    Rebuilding on every poll is what made a viewed thread flicker: every widget
+    was re-created on a 0.75s timer.
+    """
+    from XBotv2.tui.textual_widgets import AgentTranscriptPane, ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        view = app.query_one("#thread_view", ThreadView)
+        pane = view.pane
+        assert isinstance(pane, AgentTranscriptPane)
+        surface = pane.surface
+        mounted = list(surface.mounted_entry_widgets)
+        reads = len(scripted_session.thread_history_reads)
+
+        # The poll returns exactly what the view already holds.
+        await app._adopt_thread_page(list(app._view_items))
+        await pilot.pause()
+
+        assert view.pane is pane, "the poll rebuilt the pane"
+        assert pane.surface is surface, "the poll rebuilt the surface"
+        assert surface.mounted_entry_widgets == mounted, "the poll re-mounted widgets"
+        assert len(scripted_session.thread_history_reads) == reads
+
+
+@pytest.mark.asyncio
+async def test_thread_view_poll_appends_only_new_records(scripted_session) -> None:
+    """A poll that carries a newer record appends just that record."""
+    from XBotv2.tui.textual_widgets import ThreadView
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    async with app.run_test(headless=True, size=(90, 30)) as pilot:
+        await pilot.pause()
+        await app._cmd_thread("agent-reviewer-1")
+        await pilot.pause()
+        view = app.query_one("#thread_view", ThreadView)
+        pane = view.pane
+        assert pane is not None
+        surface = pane.surface
+        mounted = len(surface.mounted_entry_widgets)
+
+        page = [
+            *app._view_items,
+            {
+                "kind": "message",
+                "position": 99,
+                "message": {
+                    "role": "assistant",
+                    "content": "a newer thought",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            },
+        ]
+        await app._adopt_thread_page(page)
+        await pilot.pause()
+
+        assert view.pane is pane, "appending a record rebuilt the pane"
+        assert pane.surface is surface, "appending a record rebuilt the surface"
+        assert len(surface.mounted_entry_widgets) == mounted + 1
+        assert "a newer thought" in _thread_view_text(view)
+
+
+def _interrupt_session(scripted_session, *, cancelled: bool = True):
+    """Give the scripted session an interrupt endpoint that records calls."""
+    calls: list[bool] = []
+
+    async def interrupt():
+        calls.append(cancelled)
+        return {"cancelled": cancelled, "status": "interrupting" if cancelled else "idle"}
+
+    scripted_session.interrupt = interrupt
+    return calls
+
+
+def _delta(app, content: str = "still working") -> dict:
+    return {"type": "assistant_message_delta", "data": {"content": content}}
+
+
+@pytest.mark.asyncio
+async def test_escape_keeps_interrupting_until_the_turn_ends(scripted_session) -> None:
+    """A live frame arriving after the interrupt must not report "Running".
+
+    That is what made a finished turn look like it had resumed.
+    """
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    calls = _interrupt_session(scripted_session)
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.turn_active = True
+        app.state.status = "Running"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert calls == [True]
+        assert app.state.status == "Interrupting..."
+        assert app.state.interrupt_requested is True
+
+        # Deltas and tool frames keep arriving while the turn winds down.
+        await app._consume_stream_event(_delta(app))
+        await pilot.pause()
+        assert app.state.status == "Interrupting...", "a delta claimed the turn resumed"
+
+        # The terminal frame is what ends the wait.
+        await app._consume_stream_event({"type": "turn_cancelled", "data": {"turn": 1}})
+        await pilot.pause()
+        assert app.state.interrupt_requested is False
+        assert app.state.turn_active is False
+        assert app.state.status == "Interrupted"
+
+
+@pytest.mark.asyncio
+async def test_repeated_escape_neither_resends_nor_reports_running(
+    scripted_session,
+) -> None:
+    """Pressing Escape again must not turn "Interrupting" back into "Running"."""
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    calls = _interrupt_session(scripted_session)
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.turn_active = True
+
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert calls == [True], "a repeat press sent another interrupt request"
+        assert app.state.status == "Interrupting..."
+        assert app.state.interrupt_requested is True
+
+
+@pytest.mark.asyncio
+async def test_interrupt_idle_answer_adopts_the_finished_turn(scripted_session) -> None:
+    """When the server says nothing is running, stop showing a running turn.
+
+    The server answers ``cancelled: false`` when there is no turn to cancel.
+    Trusting the stale local flag instead reported "Running" for work that had
+    already finished.
+    """
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    calls = _interrupt_session(scripted_session, cancelled=False)
+
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.state.turn_active = True
+        app.state.status = "Running"
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert calls == [False]
+        assert app.state.turn_active is False, "the stale turn flag was kept"
+        assert app.state.interrupt_requested is False
+        assert app.state.status not in {"Running", "Interrupting..."}
+        assert app.state.status == "Ready"
+
+
+@pytest.mark.asyncio
+async def test_expanded_block_keeps_one_height_while_scrolling(scripted_session) -> None:
+    """A block must not shrink to the last row of its text.
+
+    The window rendered only the rows left at the end of the text, so the block
+    collapsed to a single row exactly when the reader scrolled to the bottom.
+    """
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"reasoning": "\n".join(f"thought {index:02d}" for index in range(40))},
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        detail = block.query_one(".reasoning", BoundedText)
+        assert detail.line_count == 40
+        # Let the first layout settle: the window sizes itself from the screen,
+        # and the block is mounted before that size is known.
+        for _ in range(3):
+            await pilot.pause()
+        expanded_height = detail.size.height
+        assert expanded_height > 1
+
+        heights: list[int] = []
+        for _ in range(detail.line_count + detail.max_rows):
+            heights.append(detail.size.height)
+            detail.scroll_rows(1)
+            await pilot.pause()
+        assert len(set(heights)) == 1, f"height changed while scrolling: {heights}"
+
+        # At the very last row the block is still exactly as tall.
+        assert detail.at_end
+        assert detail.window_text.splitlines()[-1] == "thought 39"
+        assert detail.size.height == expanded_height
+
+        # And scrolling back up does not resize it either.
+        detail.scroll_rows(-(detail.line_count + detail.max_rows))
+        await pilot.pause()
+        assert detail.window_text.splitlines()[0] == "thought 00"
+        assert detail.size.height == expanded_height
+
+
+def _block_counter(block) -> str:
+    """Text of a block's line counter (a Static keeps its value in ``content``)."""
+    widget = block.query_one(".block-counter")
+    value = getattr(widget, "content", None)
+    if value is None:
+        value = getattr(widget, "renderable", None)
+    for attribute in ("plain", "markup"):
+        text = getattr(value, attribute, None)
+        if text is not None:
+            return str(text)
+    return "" if value is None else str(value)
+
+
+@pytest.mark.asyncio
+async def test_scrolling_to_the_bottom_shows_the_last_full_page(scripted_session) -> None:
+    """The window fills itself at the end instead of showing one line.
+
+    The last page is moved up so the final row sits at the bottom: reaching the
+    end used to leave the last line floating above blank space, reported as
+    "8–8 of 8 lines".
+    """
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"reasoning": "\n".join(f"thought {index:02d}" for index in range(40))},
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        detail = block.query_one(".reasoning", BoundedText)
+        for _ in range(3):
+            await pilot.pause()
+        window_rows = detail.max_rows
+        height = detail.size.height
+
+        detail.scroll_rows(detail.line_count + window_rows)
+        await pilot.pause()
+
+        rows = detail.window_text.splitlines()
+        assert len(rows) == window_rows, f"the window is not full: {rows}"
+        assert rows[-1] == "thought 39"
+        assert rows[0] == f"thought {40 - window_rows:02d}"
+        assert detail.window_range == (40 - window_rows + 1, 40)
+        assert _block_counter(block) == f"{40 - window_rows + 1}–40 of 40 lines"
+        assert detail.size.height == height
+
+
+@pytest.mark.asyncio
+async def test_a_short_block_shows_every_line_and_does_not_scroll(
+    scripted_session,
+) -> None:
+    """A block that fits keeps its lines and never reports a scroll position."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    async with app.run_test(headless=True, size=(90, 32)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"reasoning": "thought one\nthought two\nthought three"},
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        detail = block.query_one(".reasoning", BoundedText)
+        for _ in range(3):
+            await pilot.pause()
+
+        assert detail.window_text.splitlines() == [
+            "thought one",
+            "thought two",
+            "thought three",
+        ]
+        assert detail.window_range == (1, 3)
+        assert _block_counter(block) == ""
+        assert detail.scroll_rows(5) is False
+
+
+@pytest.mark.asyncio
+async def test_block_with_one_extra_line_scrolls_to_a_full_last_page(
+    scripted_session,
+) -> None:
+    """Eight lines in a seven-row window end at "2–8 of 8 lines", not "8–8"."""
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    # 30 rows -> the block may use 30 // 4 = 7 rows.
+    async with app.run_test(headless=True, size=(60, 30)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"reasoning": "\n".join(f"line {index}" for index in range(1, 9))},
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        detail = block.query_one(".reasoning", BoundedText)
+        for _ in range(3):
+            await pilot.pause()
+        window_rows = detail.max_rows
+        assert window_rows < 8, "this test needs a window shorter than the text"
+        height = detail.size.height
+
+        assert detail.scroll_rows(1) is True
+        await pilot.pause()
+
+        rows = detail.window_text.splitlines()
+        assert len(rows) == window_rows
+        assert rows[-1] == "line 8"
+        assert rows[0] == f"line {8 - window_rows + 1}"
+        assert detail.window_range == (8 - window_rows + 1, 8)
+        assert _block_counter(block) == f"{8 - window_rows + 1}–8 of 8 lines"
+        assert detail.size.height == height
+        # One more press changes nothing: the last page is the end.
+        assert detail.scroll_rows(1) is False
+
+
+@pytest.mark.asyncio
+async def test_a_wrapped_final_line_never_renders_an_empty_window(
+    scripted_session,
+) -> None:
+    """A long final line wraps; the cursor must not land past the text.
+
+    The tail position is computed from the wrapped rows of the last line, so a
+    cursor found before the width was known pointed past the end once the block
+    was laid out -- which rendered an empty window inside a full-height block.
+    """
+    from textual.widgets import Collapsible
+
+    from XBotv2.tui.textual_widgets import BoundedText
+
+    app = XBotTextualApp(session_id="s", thread_id="t")
+    app.session = scripted_session
+    app._reasoning_expanded = True
+    long_line = "row 000 " + "y" * 400
+    content = "\n".join(["first thought", "second thought", "third thought", long_line])
+    async with app.run_test(headless=True, size=(60, 30)) as pilot:
+        await pilot.pause()
+        app.state.apply_event({
+            "type": "assistant_message_delta",
+            "data": {"reasoning": content},
+        })
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+
+        block = app.query_one(".reasoning-block", Collapsible)
+        detail = block.query_one(".reasoning", BoundedText)
+        for _ in range(3):
+            await pilot.pause()
+
+        # Content arrived whole: it is read from the top, and never blank.
+        assert detail.window_text.strip(), "the window rendered empty"
+        assert detail.window_range[0] == 1
+        assert detail.window_text.splitlines()[0] == "first thought"
+
+        # Reaching the end still fills the window with the last full page.
+        detail.scroll_rows(detail.line_count * 4 + detail.max_rows)
+        await pilot.pause()
+        rows = detail.window_text.splitlines()
+        assert len(rows) == detail.max_rows
+        assert all(row.strip() for row in rows), rows
+        assert rows[-1].endswith("y" * 20)
+        assert detail.at_end
+
+
+@pytest.mark.asyncio
+async def test_session_command_browses_workspaces_before_sessions() -> None:
+    """With more than one workspace, /session asks for the workspace first.
+
+    The flat list repeated the path on every row; the Web rail groups sessions
+    under their workspace, and the terminal should browse the same shape.
+    """
+    session = _SwitchableSession()
+
+    async def list_workspaces():
+        return {
+            "items": [
+                {
+                    "workspace_id": "ws-old",
+                    "path": "/work/old",
+                    "title": "Old work",
+                    "session_ids": ["old-session"],
+                },
+                {
+                    "workspace_id": "ws-other",
+                    "path": "/work/other",
+                    "title": "Other work",
+                    "session_ids": ["other-session"],
+                },
+            ]
+        }
+
+    session.list_workspaces = list_workspaces
+    app = XBotTextualApp(session_id="current", thread_id="agent")
+    app.session = session
+    async with app.run_test(headless=True, size=(100, 32)) as pilot:
+        for _ in range(5):
+            await pilot.pause()
+            if app._session_attached:
+                break
+
+        from XBotv2.tui.selection import SelectionScreen
+
+        composer = app.query_one("#input")
+        composer.load_text("/session")
+        await app.submit_composer()
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, SelectionScreen)
+        rows = [str(row.content) for row in picker.query(".selection-row")]
+        assert any("Old work" in row and "(1 session)" in row for row in rows), rows
+        assert any("Other work" in row for row in rows), rows
+        # The workspace step lists workspaces, not sessions.
+        assert not any("old-session" in row for row in rows), rows
+
+        # Choosing a workspace opens that workspace's sessions only.
+        await pilot.press("enter")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, SelectionScreen)
+        rows = [str(row.content) for row in picker.query(".selection-row")]
+        assert any("old-session" in row for row in rows), rows
+        assert not any("other-session" in row for row in rows), rows
+        assert session.switches == []
+
+        # And the session picked from it still switches, as before.
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause()
+            if session.switches:
+                break
+        assert [switch["session_id"] for switch in session.switches] == ["old-session"]

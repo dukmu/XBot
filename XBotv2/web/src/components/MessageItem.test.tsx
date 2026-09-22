@@ -12,7 +12,7 @@ vi.mock("react-markdown", () => ({
   },
 }));
 
-import { MessageItem } from "./MessageItem";
+import { MessageItem, OUTPUT_LIMIT_HINT, OUTPUT_LIMIT_TITLE, formatTurnDuration } from "./MessageItem";
 import type { TimelineEntry } from "../state/runtime";
 
 type MessageEntry = Extract<TimelineEntry, { kind: "message" }>;
@@ -69,5 +69,60 @@ describe("MessageItem render cost", () => {
       <MessageItem entry={message} onBranch={() => Promise.resolve()} />,
     );
     expect(markdownRenders.count).toBe(1);
+  });
+});
+
+describe("output limit notice", () => {
+  it("flags a reply the provider cut off, and only those", () => {
+    // Ported wording from the max-tokens notice.
+    const cut = { ...entry("half an answer"), stopReason: "length" };
+    const cutRender = render(<MessageItem entry={cut} />);
+    expect(cutRender.getByTestId("output-limit-notice")).toBeTruthy();
+    expect(cutRender.getByText(OUTPUT_LIMIT_TITLE)).toBeTruthy();
+    expect(cutRender.getByText(OUTPUT_LIMIT_HINT)).toBeTruthy();
+    cutRender.unmount();
+
+    const finished = { ...entry("a full answer"), stopReason: "end_turn" };
+    const finishedRender = render(<MessageItem entry={finished} />);
+    expect(finishedRender.queryByTestId("output-limit-notice")).toBeNull();
+  });
+
+  it("never shows it on a user message", () => {
+    const message = { ...entry("typed by me"), role: "user" as const, stopReason: "length" };
+    const { queryByTestId } = render(<MessageItem entry={message} />);
+    expect(queryByTestId("output-limit-notice")).toBeNull();
+  });
+});
+
+/**
+ * The ported turn footer: what a settled reply ran for, from the timing the
+ * durable record carries.  dsh's footer also carries the clock and throughput;
+ * XBot messages have no timestamp and usage is per session, so those are absent
+ * rather than invented.
+ */
+describe("turn footer", () => {
+  it("shows the reply's own durations", () => {
+    const { container } = render(
+      <MessageItem entry={{ ...entry("done"), timing: { llm_ms: 1542, ttft_ms: 368, decode_ms: 1174 } } as never} />,
+    );
+    expect(container.querySelector("[data-testid='turn-footer']")?.textContent)
+      .toBe("Ran for 1.5 s · TTFT 368 ms");
+  });
+
+  it("stays off a reply with no timing and off a user message", () => {
+    const idle = render(<MessageItem entry={entry("done")} />);
+    expect(idle.container.querySelector("[data-testid='turn-footer']")).toBeNull();
+    idle.unmount();
+    const user = render(
+      <MessageItem entry={{ ...entry("done"), role: "user", timing: { llm_ms: 900 } } as never} />,
+    );
+    expect(user.container.querySelector("[data-testid='turn-footer']")).toBeNull();
+  });
+
+  it("formats sub-second and second durations the way the ported footer does", () => {
+    expect(formatTurnDuration(850)).toBe("850 ms");
+    expect(formatTurnDuration(1_542)).toBe("1.5 s");
+    expect(formatTurnDuration(0)).toBe("");
+    expect(formatTurnDuration(Number.NaN)).toBe("");
   });
 });

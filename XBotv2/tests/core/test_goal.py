@@ -243,6 +243,7 @@ async def test_active_goal_exposes_its_round_slot(state_store):
     await harness.service.contribute_status(slots)
 
     assert slots.values["goal"] == "active"
+    assert slots.values["goal_objective"] == "ship the API"
     assert slots.values["goal_round"] == "1/20"
 
 

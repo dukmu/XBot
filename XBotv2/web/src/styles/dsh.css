@@ -271,18 +271,21 @@ body {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.session-list {
-  scrollbar-color: transparent transparent;
-  scrollbar-width: thin;
+/* Sidebar scrollbar skin, ported: the vendored sheet draws the bar (8px,
+   token thumb, hover token) and an elevated surface picks the l2 pair by
+   rebinding the indirection.  The pointer-outside state that dsh's shell
+   applies as a class is the same rebind under `:hover` here, and because the
+   reservation is `scrollbar-gutter: stable` the reveal never reflows a row.
+   Setting `scrollbar-width`/`scrollbar-color` here would silence the
+   pseudo-element path in Chromium, which is why they are absent. */
+.session-sidebar {
+  --dsh-scrollbar-thumb: transparent;
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
-.session-sidebar:hover .session-list {
-  scrollbar-color: var(--dsw-static-neutral-bluish-400) transparent;
+.session-sidebar:hover {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
 }
-
-.session-list::-webkit-scrollbar { width: 8px; }
-.session-list::-webkit-scrollbar-thumb { border-radius: 8px; background: transparent; }
-.session-sidebar:hover .session-list::-webkit-scrollbar-thumb { background: var(--dsw-static-neutral-bluish-400); }
 
 .sidebar-section-label {
   padding: 8px 16px 6px;
@@ -1018,20 +1021,51 @@ body {
 .command-help-list small { grid-column: 2; grid-row: 3; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.4; }
 .command-help-empty { padding: 30px; color: var(--dsw-alias-label-tertiary); text-align: center; font-size: 11px; }
 
-.interaction-backdrop { place-items: end center; padding-bottom: 56px; background: rgb(15 17 21 / 24%); }
-.interaction-dialog { width: min(100%, 620px); }
-.interaction-title-row { display: flex; align-items: flex-start; gap: 10px; }
-.interaction-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  place-items: center;
-  border: 1px solid rgb(245 158 11 / 28%);
-  border-radius: 10px;
-  color: var(--dsw-alias-state-warn-primary);
-  background: rgb(245 158 11 / 10%);
+/* Inline pending interaction: the approval group and the question card. */
+.pending-interaction {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 12px 22px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
 }
+
+.pending-question > h2 { margin: 0; font-size: 14px; color: var(--dsw-alias-label-primary); }
+
+.question-options { display: grid; gap: 7px; }
+
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.question-option:has(input:checked) { border-color: var(--dsw-alias-state-business-primary); }
+.question-option > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.question-option strong { font-size: 12px; }
+.question-option small { color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 1.4; }
+.question-option input { margin-top: 2px; }
+
+.question-answer {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  font: inherit;
+  resize: vertical;
+}
+
+.interaction-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .permission-tool {
   padding: 11px 12px;
@@ -1053,34 +1087,8 @@ body {
 }
 .interaction-reason { margin: 12px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5; }
 
-.choice-list { display: grid; gap: 7px; }
-.choice-list button {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-  padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-1);
-  cursor: pointer;
-  text-align: left;
-}
-
-.choice-list button:hover,
-.choice-list button:focus-visible {
-  border-color: var(--dsw-alias-state-business-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
-  outline: 0;
-}
-
-.choice-list strong { font-size: 12px; }
-.choice-list span,
 .clear-history-dialog p,
 .delete-session-dialog p { color: var(--dsw-alias-label-secondary); }
-.choice-list span { font-size: 11px; line-height: 1.4; }
 .clear-history-dialog p,
 .delete-session-dialog p { margin: 0; font-size: 12px; line-height: 1.55; }
 
@@ -1226,7 +1234,6 @@ body {
 .command-output header,
 .todo-dock > div { border-color: var(--dsw-alias-border-l1); }
 .dialog-backdrop,
-.interaction-backdrop { background: var(--dsw-alias-bg-mask-1); }
 .timeline { scrollbar-color: var(--dsw-static-neutral-bluish-400) transparent; }
 .timeline-older:hover,
 .timeline-latest:hover { border-color: var(--dsw-alias-border-l3); background: var(--dsw-alias-button-floating-hover); }
@@ -1482,7 +1489,10 @@ body {
   .command-output,
   .command-progress { width: calc(100% - 12px); }
   .composer { gap: 6px; padding: 7px 8px 6px; border-radius: 16px; }
-  .composer textarea { min-height: 40px; max-height: 220px; padding: 3px 3px 0; line-height: 21px; }
+  .composer-draft-scroll { max-height: calc(14 * 21px); }
+  .composer-draft-mirror { min-height: 40px; }
+  .composer textarea,
+  .composer-draft-mirror { padding: 3px 3px 0; line-height: 21px; }
   .composer-images { gap: 6px; padding: 7px 8px 0; }
   .composer-image { flex-basis: 48px; width: 48px; height: 48px; }
   .composer-footer { height: 30px; padding-inline: 3px; }
@@ -1495,8 +1505,6 @@ body {
   .dialog { padding: 14px; border-radius: 12px; max-height: calc(100svh - 24px); }
   .dialog h2 { font-size: 16px; }
   .dialog-actions { margin-top: 12px; }
-  .choice-list button { padding: 8px 10px; }
-  .interaction-backdrop { padding: 8px; }
   .settings-backdrop { padding: 8px; }
   .settings-dialog { grid-template-columns: 132px minmax(0, 1fr); width: calc(100vw - 16px); height: min(700px, calc(100svh - 16px)); max-height: calc(100svh - 16px); border-radius: 14px; }
   .settings-nav { gap: 10px; padding: 16px 8px; }

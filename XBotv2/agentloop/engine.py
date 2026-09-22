@@ -792,6 +792,10 @@ class Engine(AgentLoopDriverPort):
                         call.model_dump(mode="json") for call in response.tool_calls
                     ],
                     "timing": response_metadata.get(TIMING_METADATA_KEY),
+                    # Providers report why generation stopped ("length",
+                    # "max_tokens", ...); clients show a truncation notice for
+                    # the cases where the reply was cut off mid-answer.
+                    "stop_reason": response_metadata.get("stop_reason", ""),
                 },
             )
             if response_msg.usage_metadata:

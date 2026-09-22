@@ -130,6 +130,9 @@ class TerminalSession:
     async def list_sessions(self) -> dict[str, JsonValue]:
         return _dump(await self._client.list_sessions())
 
+    async def list_workspaces(self) -> dict[str, JsonValue]:
+        return _dump(await self._client.list_workspaces())
+
     async def stream_catalog_events(
         self,
         *,

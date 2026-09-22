@@ -1,7 +1,9 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, ChevronUp, LoaderCircle } from "lucide-react";
+import type { PendingInput } from "../api/types";
 import type { TimelineEntry } from "../state/runtime";
 import { ConversationNode } from "./ConversationNode";
+import { MessageItem } from "./MessageItem";
 
 const TIMELINE_WINDOW = 160;
 const TIMELINE_BATCH = 80;
@@ -13,6 +15,8 @@ interface TimelineProps {
   onRetry: () => Promise<void>;
   onBranch: () => Promise<void>;
   hasOlder: boolean;
+  selectedToolId?: string;
+  onSelectTool?: (tool: TimelineEntry) => void;
   // Records exist beyond the retained window: either the reader is inside
   // history, or live output arrived while they were there.  A surface that
   // never freezes its transcript (the subagent mirror) leaves them unset.
@@ -20,6 +24,19 @@ interface TimelineProps {
   loadingOlder: boolean;
   onLoadOlder: () => Promise<void>;
   onLoadLatest?: () => Promise<void>;
+  /**
+   * Host-authoritative pending steering: messages the running turn has taken
+   * for its next step. They render as the user rows they will become, after
+   * the transcript.
+   */
+  steering?: PendingInput[];
+  /** Skill tool names from the catalog, passed through to the tool rows. */
+  skillTools?: readonly string[];
+  /**
+   * The pending interaction card, rendered where dsh keeps it: in the flow,
+   * below the transcript, rather than over it.
+   */
+  interaction?: ReactNode;
 }
 
 export const Timeline = memo(function Timeline({
@@ -28,10 +45,15 @@ export const Timeline = memo(function Timeline({
   onRetry,
   onBranch,
   hasOlder,
+  selectedToolId,
+  onSelectTool,
   hasNewer = false,
   loadingOlder,
   onLoadOlder,
   onLoadLatest,
+  steering = [],
+  skillTools,
+  interaction,
 }: TimelineProps) {
   const list = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -53,6 +75,9 @@ export const Timeline = memo(function Timeline({
       start: Math.min(windowRange.start, entries.length),
       end: Math.min(windowRange.end, entries.length),
     };
+  // Stable row identity: a fresh entry object per render would defeat the
+  // message memo and re-parse its Markdown on every transcript update.
+  const steeringRows = useMemo(() => steering.map(steeringEntry), [steering]);
   const visibleEntries = useMemo(
     () => entries.slice(range.start, range.end),
     [entries, range.start, range.end],
@@ -124,7 +149,7 @@ export const Timeline = memo(function Timeline({
     const element = scrollerOf(list.current);
     if (!element || !following.current) return;
     element.scrollTo({ top: element.scrollHeight });
-  }, [entries]);
+  }, [entries, steering]);
 
   useEffect(() => {
     const element = scrollerOf(list.current);
@@ -195,7 +220,16 @@ export const Timeline = memo(function Timeline({
               turnRunning={turnRunning}
               onRegenerate={onRetry}
               onBranch={onBranch}
+              selectedToolId={selectedToolId}
+              onSelectTool={onSelectTool}
+              skillTools={skillTools}
             />
+          </div>
+        ))}
+        {interaction}
+        {steeringRows.map((entry) => (
+          <div className="timeline-node timeline-node-steering" key={entry.id}>
+            <MessageItem entry={entry} pendingSteering />
           </div>
         ))}
         {turnRunning && !streaming && (
@@ -212,6 +246,8 @@ export const Timeline = memo(function Timeline({
 }, (previous, next) => (
   previous.entries === next.entries
   && previous.turnRunning === next.turnRunning
+  && previous.selectedToolId === next.selectedToolId
+  && previous.onSelectTool === next.onSelectTool
   && previous.hasOlder === next.hasOlder
   && previous.hasNewer === next.hasNewer
   && previous.loadingOlder === next.loadingOlder
@@ -219,7 +255,23 @@ export const Timeline = memo(function Timeline({
   && previous.onBranch === next.onBranch
   && previous.onLoadOlder === next.onLoadOlder
   && previous.onLoadLatest === next.onLoadLatest
+  && previous.steering === next.steering
+  && previous.skillTools === next.skillTools
 ));
+
+/** Project one pending steering item onto the user row it will become. */
+function steeringEntry(item: PendingInput): Extract<TimelineEntry, { kind: "message" }> {
+  return {
+    kind: "message",
+    id: `steering:${item.message_id}`,
+    messageId: item.message_id,
+    role: "user",
+    content: item.content,
+    reasoning: "",
+    streaming: false,
+    images: [],
+  };
+}
 
 function scrollerOf(list: HTMLDivElement | null): HTMLElement | null {
   return list?.closest<HTMLElement>("[data-conversation-scroll]") ?? list;

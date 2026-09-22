@@ -240,6 +240,118 @@ transcript block whose body the reader had just focused (focusing a block is
 what expands it and emits `Toggled`). It now returns early when the focused
 widget is a `BoundedText`, so scrolling a block keeps focus.
 
+## Collapsible blocks (reasoning, tool details)
+
+A block window (`BoundedText`) is a fixed-height view over wrapped rows.  Rules,
+each of them a bug that was visible in use:
+
+- **Constant height while scrolling.**  The window rendered only the rows left
+  below the cursor, so a block shrank to its last row as the reader reached the
+  end.  A scrolling block now pads its page to `max_rows`; a block that fits
+  stays compact, because it cannot scroll.
+- **The end is a full page, not the last line.**  Scrolling stops at the cursor
+  whose page ends with the final row (`_tail_cursor`), so the bottom shows the
+  same number of rows as anywhere else and reports e.g. `2–8 of 8 lines`
+  instead of `8–8 of 8 lines`.
+- **The last page is computed from wrapped rows.**  `_tail_cursor` starts at the
+  last *rendered* row of the final logical line: starting at the line's first
+  wrapped row left the window short of the end (`at_end` false) for long lines.
+- **A cursor found before the width was known is clamped.**  The tail position
+  depends on how the last line wraps, so a cursor computed at the default width
+  pointed past the end once the block was laid out, rendering an *empty* window
+  inside a full-height block.  `_clamp_cursor` runs on every render, and a
+  reflow re-establishes the intent below.
+- **Whole content is read from the top; only growth pins to the end.**  A
+  finished tool result is shown from its first row (`_top_anchored`), while a
+  streamed block keeps following its last rows (`_follow`).  A reflow keeps
+  whichever intent the block had, and scrolling by the reader clears the top
+  anchor.
+
+Covered by `test_expanded_block_keeps_one_height_while_scrolling`,
+`test_scrolling_to_the_bottom_shows_the_last_full_page`,
+`test_block_with_one_extra_line_scrolls_to_a_full_last_page`,
+`test_a_short_block_shows_every_line_and_does_not_scroll`,
+`test_a_wrapped_final_line_never_renders_an_empty_window`, and
+`test_textual_app_replays_tool_permission_sequence_without_swallowing_messages`
+(the last one fails when the clamp is removed).
+
+## One transcript implementation for both views
+
+The main transcript and the read-only subagent view used to be two programs:
+`TranscriptSurface` plus an app-side paging implementation for the main view,
+and a second implementation inside `ThreadView` (`load`/`prepend_items`/
+`catch_up`/`load_older_window`) with its own state building.  They drifted, and
+the subagent view rebuilt its whole surface on every 0.75 s poll, which is why
+it flickered.
+
+`AgentTranscriptPane` is now the single implementation: one surface, one window,
+one paging path (held window first, then the source), one position-keeping rule,
+one record-to-state conversion.  The two views differ only in what they inject:
+
+| | main transcript | subagent view |
+|---|---|---|
+| container | `#transcript` | `#thread_transcript` |
+| records | live events + session snapshot | polled/streamed trajectory |
+| `fetch_older` | `read_thread_history(cursor=...)` | `read_thread_trajectory(cursor=...)` |
+| `reanchor` | session snapshot (`refresh_baseline`) | its own newest page |
+
+Rules the shared pane enforces:
+
+- **Reading up exhausts the held window first**, then asks the source; the
+  position is held either way, so a page-up stays a scroll instead of jumping to
+  the top.  The compensation is measured after layout, because widgets mounted
+  above the viewport have no height yet at mount time.
+- **Reading down steps one window**, then follows the tail, and only re-anchors
+  when the window reaches the end of what the client holds.  The main
+  transcript's re-anchor is a *snapshot*: walking a history page instead (as an
+  earlier revision did) replaced the transcript with that one page and dropped
+  everything else the client had.
+- **The window is bounded in both directions**: entries mounted above are paid
+  for by the newest end (`trim_mounted_to_cap`), so long scrolls cannot grow the
+  mounted set.
+- **A page fetched before the window was replaced is dropped** (`state.revision`
+  check), so a session switch or re-snapshot cannot splice rows from two windows
+  together.
+
+## Subagent view refresh
+
+`_poll_thread_view` used to call `ThreadView.load` every 0.75 s, which built a
+new `TuiState` and a new surface and re-mounted every widget.  A poll now
+compares the page with what the client holds by trajectory position:
+
+- nothing newer -> the DOM is not touched at all;
+- newer records only -> appended one by one through the same per-record path a
+  restore uses (`TuiState.apply_history_item`), so a polled page and a restored
+  page produce identical state;
+- a rewritten page (compaction, or a window that slid past what the client
+  holds) -> rebuild, because splicing it would mix two windows.
+
+Polling is also skipped entirely while the reader is inside history, so a
+refresh cannot move the window under them.
+
+## Escape in the read-only view
+
+`action_clear_input` interrupted the main turn whenever one was running -- even
+while the subagent view was on screen, where the reader is looking at another
+thread entirely and the pane is read-only.  Escape now leaves the view and does
+nothing else; in the main transcript it still interrupts.
+
+## WebUI: missing sessions and stuck spinners
+
+- **404 banner over a working chat.**  Activation fetched six resources in one
+  `Promise.all`, so any of them returning 404 (a session deleted elsewhere, a
+  server restart) rejected the whole activation and reported a banner even
+  though the session was already open and its event stream attached.  Only the
+  thread list and the trajectory baseline are essential now; the optional panels
+  degrade to empty.  A 404 from a background request is treated as "this session
+  is gone" and recovered by re-opening it (`isMissingSessionError`), never as a
+  banner: the user did not make that request.
+- **Spinner that never stopped.**  `turnRunning` is cleared by `turn_finished`,
+  so a terminal frame lost across a reconnect left the spinner up over a
+  finished reply.  While a turn is running the client now asks the server what
+  the thread is actually doing every 5 s and adopts that (`thread_synced`), which
+  clears the spinner from the authoritative state.
+
 ## Surface bookkeeping (fixed)
 
 `test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript` was

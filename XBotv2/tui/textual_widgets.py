@@ -627,7 +627,12 @@ class BoundedText(Vertical):
         self._plain = ""
         self._lines: list[str] = [""]
         self._cursor = (0, 0)  # first visible (logical line, wrapped row)
+        # ``_follow`` keeps a *growing* block pinned to its last rows.
+        # ``_top_anchored`` marks content that arrived whole, which is read from
+        # the top until the reader scrolls: a finished tool result must not be
+        # shown from its end.
         self._follow = True
+        self._top_anchored = False
         self._style = "default"
         self._window = Static(Text(""), classes="block-window")
         self._up = BlockStep("▲", self, -1, classes="block-step up")
@@ -711,11 +716,13 @@ class BoundedText(Vertical):
             self._row_cache.clear()
         self._plain = text
         if growing:
+            self._top_anchored = False
             if self._follow:
                 self._cursor = self._tail_cursor()
         else:
             self._cursor = (0, 0)
             self._follow = True
+            self._top_anchored = True
         self._render_window()
 
     class TopReached(Message):
@@ -766,16 +773,29 @@ class BoundedText(Vertical):
         return self.scroll_rows(direction * max(1, self._max_rows - 1))
 
     def scroll_rows(self, rows: int) -> bool:
-        """Scroll the window by ``rows`` rendered rows; whether it moved."""
+        """Scroll the window by ``rows`` rendered rows; whether it moved.
+
+        The window never scrolls past the point where its last page would leave
+        blank space below the text: the top stops at the cursor whose page ends
+        with the final row.  Scrolling to the bottom therefore shows the *last
+        page*, not the last line alone.
+        """
         cursor = self._cursor
         step = 1 if rows > 0 else -1
+        limit = self._tail_cursor() if step > 0 else (0, 0)
         for _ in range(abs(rows)):
+            if self._cursor == limit:
+                break
             moved = self._step(step)
             if not moved:
+                break
+            if step > 0 and self._cursor > limit:
+                self._cursor = limit
                 break
         if self._cursor == cursor:
             return False
         self._follow = self.at_end
+        self._top_anchored = False
         self._render_window()
         return True
 
@@ -819,9 +839,18 @@ class BoundedText(Vertical):
         return True
 
     def _tail_cursor(self) -> tuple[int, int]:
-        """Cursor that shows the newest rows of the block."""
+        """Cursor whose window ends with the last *rendered* row.
+
+        The last logical line can wrap to several rows, so the search has to
+        start at its last row: starting at its first one left the window short
+        of the end (``at_end`` false) for long wrapped lines.
+        """
         cursor = self._cursor
-        self._cursor = (max(0, len(self._lines) - 1), 0)
+        last_line = max(0, len(self._lines) - 1)
+        self._cursor = (
+            last_line,
+            max(0, len(self._rows(last_line, self._width())) - 1),
+        )
         for _ in range(self._max_rows - 1):
             if not self._step(-1):
                 break
@@ -854,11 +883,37 @@ class BoundedText(Vertical):
             row = 0
         return rows
 
+    def _clamp_cursor(self) -> None:
+        """Keep the cursor inside the text at the current width.
+
+        The tail position depends on how the last line wraps, so a cursor
+        computed before the width was known can point past the end -- which
+        rendered an empty window inside a full-height block.
+        """
+        line, row = self._cursor
+        if line < 0:
+            self._cursor = (0, 0)
+            return
+        if line >= len(self._lines):
+            self._cursor = (max(0, len(self._lines) - 1), 0)
+            return
+        rows = len(self._rows(line, self._width()))
+        if row >= rows:
+            self._cursor = (line, max(0, rows - 1))
+
     def _render_window(self) -> None:
         self._max_rows = self._budget()
+        self._clamp_cursor()
         rows = self._visible_rows()
+        if not self._whole_block_visible():
+            # A scrolling block keeps one height.  The last screen of text has
+            # fewer rows left than the window holds, and rendering just those
+            # made the block collapse to a single row as the reader reached the
+            # end of it; the page is padded instead.
+            blank = Text("", style=self._style)
+            rows = [*rows, *([blank] * max(0, self._max_rows - len(rows)))]
         self._window.update(Text("\n").join(rows) if rows else Text(""))
-        # The row count changes as the window moves; ask for a layout pass.
+        # Ask for a layout pass: the padding and the visible rows changed.
         self.refresh(layout=True)
         first, last = self.window_range
         total = len(self._lines)
@@ -894,8 +949,15 @@ class BoundedText(Vertical):
     def on_resize(self, event: events.Resize) -> None:
         changed = event.size.width != self._width_cache or self._budget() != self._max_rows
         self._width_cache = event.size.width
-        if changed:
-            self._render_window()
+        if not changed:
+            return
+        self._clamp_cursor()
+        if self._top_anchored:
+            self._cursor = (0, 0)
+        elif self._follow and self.at_end:
+            # Pinned to the end: re-find the last page for the new width.
+            self._cursor = self._tail_cursor()
+        self._render_window()
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         if self.scroll_rows(3):
@@ -929,6 +991,7 @@ class BoundedText(Vertical):
             return  # the transcript takes Home from here
         self._cursor = (0, 0)
         self._follow = False
+        self._top_anchored = False
         self._render_window()
 
     def key_end(self) -> None:
@@ -936,14 +999,295 @@ class BoundedText(Vertical):
             return  # the transcript takes End from here
         self._cursor = self._tail_cursor()
         self._follow = True
+        self._top_anchored = False
         self._render_window()
+
+class AgentTranscriptPane:
+    """One agent transcript: window, scrolling, paging, position keeping.
+
+    The main transcript and a read-only subagent view are *this* class with a
+    different container and record source.  Mounting, window stepping, paging
+    in both directions, eviction bookkeeping, and keeping the reader's position
+    therefore exist in exactly one place -- the two views used to grow separate
+    copies that drifted apart.
+
+    The pane owns no transport: ``fetch_older``/``fetch_latest`` are injected,
+    and a source that is absent simply means "no such direction" (a read-only
+    thread with a complete page, or a main thread with local history only).
+    """
+
+    def __init__(
+        self,
+        state: TuiState,
+        container: TranscriptScroll,
+        *,
+        fetch_older: Any | None = None,
+        reanchor: Any | None = None,
+        record_to_item: Any = None,
+        older_cursor: str | None = None,
+        exhausted: bool = False,
+        page_size: int = 80,
+        page_attempts: int = 3,
+        **surface_options: Any,
+    ) -> None:
+        self.state = state
+        self.container = container
+        self.fetch_older = fetch_older
+        # How this view returns to the tail when the window no longer ends
+        # there.  The main transcript re-anchors on a session snapshot; a
+        # read-only thread simply reads its newest page.
+        self.reanchor = reanchor
+        self.record_to_item = record_to_item or history_item_from_record
+        self.page_size = page_size
+        self.page_attempts = page_attempts
+        self.surface = TranscriptSurface(state, container, **surface_options)
+        # The cursor the page already on screen returned: the first scroll up
+        # continues from it instead of refetching the newest page.  ``exhausted``
+        # is stated by the caller that knows (a first page whose cursor is None);
+        # "no cursor yet" must not mean "nothing older", or the very first
+        # scroll up would never ask the server.
+        self._older_cursor: str | None = older_cursor
+        self._exhausted = exhausted
+        self._busy = False
+        self._reader_was_at_top = False
+        self._reader_scroll_y = 0
+        self._positioned_widgets: list[Any] = []
+
+    @property
+    def older_cursor(self) -> str | None:
+        return self._older_cursor
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether the source has said there is nothing older."""
+        return self._exhausted
+
+    # -- records ---------------------------------------------------------
+    def split_records(
+        self,
+        records: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+        """Flatten records into history items and compaction summaries."""
+        items: list[dict[str, Any]] = []
+        compactions: list[tuple[str, str]] = []
+        for record in records:
+            item = self.record_to_item(record)
+            if item is not None:
+                items.append(item)
+            elif str(record.get("kind") or "") == "surface_replace":
+                summary = str(record.get("summary") or "")
+                if summary:
+                    compactions.append((str(record.get("operation") or ""), summary))
+        return items, compactions
+
+    def _restore(self, records: list[dict[str, Any]]) -> None:
+        items, compactions = self.split_records(records)
+        self.state.restore_history(items)
+        for operation, summary in compactions:
+            label = "Conversation compacted"
+            if operation.startswith("compact:"):
+                label = f"Conversation compacted ({operation[8:]})"
+            self.state.append_notice("compact", label, payload={"summary": summary})
+
+    async def adopt_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        anchor: int | None = None,
+    ) -> None:
+        """Replace the window with these records (tail, or from ``anchor``)."""
+        self._restore(records)
+        await self.surface.replace(self.state, anchor=anchor)
+
+    async def adopt_items(self, items: list[dict[str, Any]]) -> None:
+        """Replace the window with already-flattened history items."""
+        self.state.restore_history(items)
+        await self.surface.replace(self.state)
+
+    async def append_records(self, records: list[dict[str, Any]]) -> bool:
+        """Append newer records incrementally; False when a rebuild is needed."""
+        items: list[dict[str, Any]] = []
+        for record in records:
+            item = self.record_to_item(record)
+            if item is None:
+                return False
+            items.append(item)
+        for item in items:
+            self.state.apply_history_item(item)
+        await self.surface.catch_up()
+        return True
+
+    async def apply_event(self, event: dict[str, Any]) -> None:
+        """Apply one live frame and mount what it produced."""
+        follow = self.container.is_vertical_scroll_end
+        await self.surface.apply_event(event, follow=follow)
+
+    # -- paging ----------------------------------------------------------
+    async def load_older(self) -> bool:
+        """Reach further back: the held window first, then one server page."""
+        if self._busy:
+            return False
+        self._busy = True
+        try:
+            # Reading up always walks the window the client already holds first;
+            # the position is held either way, so a plain page-up scroll stays a
+            # scroll and does not jump to the top of the transcript.
+            height = await self._extend_above(self.page_size)
+            if height:
+                self._keep_position(height)
+                return True
+            if self.fetch_older is None or self._exhausted:
+                return False
+            for _ in range(self.page_attempts):
+                revision = self.state.revision
+                page = await self.fetch_older(self._older_cursor)
+                if page is None:
+                    return False
+                records, next_cursor = page
+                if self.state.revision != revision:
+                    # The window was replaced while this page was in flight;
+                    # splicing it in would mix rows from two windows.
+                    return False
+                items, _compactions = self.split_records(records)
+                inserted = self.state.prepend_history(items)
+                self._older_cursor = next_cursor
+                self._exhausted = next_cursor is None
+                if inserted:
+                    await self.surface.settle_window()
+                    height = await self._extend_above(max(inserted, self.page_size))
+                    self._keep_position(height)
+                    return True
+                if self._exhausted:
+                    return False
+            return False
+        finally:
+            self._busy = False
+
+    async def _extend_above(self, batch: int) -> float:
+        """Mount one window above the reader and report the height it added."""
+        before = self.surface.window_start
+        # Sample the position *before* mounting: re-mounting entries above the
+        # viewport resets the scroll offset, so reading it afterwards would say
+        # "the reader is at the top" and skip the compensation that keeps their
+        # place.
+        self._reader_was_at_top = self.container.scroll_y <= 0
+        self._reader_scroll_y = self.container.scroll_y
+        if not await self.surface.mount_previous_window(batch=batch):
+            return 0.0
+        widgets = [
+            widget
+            for index, widget in zip(
+                self.surface._mounted_entry_indices, self.surface.mounted_entry_widgets
+            )
+            if index < before
+        ]
+        self._positioned_widgets = widgets
+        return float(len(widgets))
+
+    def _widgets_height(self, widgets: list[Any]) -> float:
+        try:
+            return float(sum(widget.outer_size.height for widget in widgets))
+        except Exception:  # noqa: BLE001 — geometry is best effort
+            return 0.0
+
+    def _keep_position(self, inserted: float) -> None:
+        """Hold the reader's place after older entries appear above it.
+
+        At the very top there is nothing to hold: those entries are exactly what
+        the reader scrolled back for, so compensating would push them away.  The
+        shift is measured after the refresh, once the newly mounted widgets have
+        a laid-out height -- reading it at mount time reports zero.
+        """
+        if inserted <= 0 or self._reader_was_at_top:
+            return
+        self.surface._schedule_refresh(
+            lambda: self.container.scroll_to(
+                y=max(0, self._reader_scroll_y + self._mounted_height_above()),
+                animate=False,
+            )
+        )
+
+    def _mounted_height_above(self) -> float:
+        """Height of the widgets mounted above the reader's former position."""
+        return self._widgets_height(self._positioned_widgets)
+
+    async def load_newer(self) -> bool:
+        """Reach further down: the held window, the tail, then the server."""
+        if self._busy:
+            return False
+        self._busy = True
+        try:
+            await self.surface.settle_window()
+            if await self.surface.mount_next_window():
+                self.surface._schedule_refresh(
+                    lambda: self.container.scroll_end(animate=False)
+                )
+                return True
+            if self.state.at_tail:
+                await self.surface.catch_up()
+                return True
+            return await self._reanchor()
+        finally:
+            self._busy = False
+
+    async def _reanchor(self) -> bool:
+        """Replace the window with the newest records this view can get.
+
+        The injected re-anchor wins because only the caller knows what "newest"
+        means for it (a session snapshot for the main transcript).  Otherwise the
+        view's own older-page source is asked for its first page, which is
+        exactly what a cursor-less fetch returns.
+        """
+        if self.reanchor is not None:
+            return bool(await self.reanchor())
+        if self.fetch_older is None:
+            return False
+        page = await self.fetch_older(None)
+        if page is None:
+            return False
+        records, cursor = page
+        await self.adopt_records(records)
+        self._older_cursor = cursor
+        self._exhausted = cursor is None
+        return True
+
+    async def follow_tail(self) -> None:
+        await self.surface.catch_up()
+
+    async def restart_window(self) -> None:
+        """Re-mount the retained tail of the current state.
+
+        Used after a snapshot replaced the state: the transcript keeps its
+        content and the window starts again at the newest entries.
+        """
+        await self.surface.replace(self.state)
+
+
+def history_item_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Flatten one trajectory record into the shape ``TuiState`` restores.
+
+    Shared by the full rebuild and the incremental append, so a polled page and
+    a restored page produce identical state.
+    """
+    if str(record.get("kind") or "") != "message":
+        return None
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return None
+    item = dict(message)
+    item["message_id"] = str(
+        record.get("message_id") or message.get("message_id") or ""
+    )
+    return item
+
 
 class ThreadView(Vertical):
     """A read-only transcript over one session thread.
 
-    It reuses the same event-driven :class:`TranscriptSurface` and
-    :class:`TranscriptScroll` contract as the main transcript. The only
-    difference is the container id and the caller-provided event source.
+    Layout only: the header, the scroll body, and one
+    :class:`AgentTranscriptPane`.  Scrolling, paging in both directions, and
+    position keeping are the pane's, so the subagent view and the main
+    transcript cannot drift apart.
     """
 
     def __init__(self, id: str | None = None) -> None:
@@ -954,7 +1298,7 @@ class ThreadView(Vertical):
             classes="thread-view-body",
         )
         self.thread = ""
-        self._surface: TranscriptSurface | None = None
+        self._pane: AgentTranscriptPane | None = None
         self._items: list[dict[str, Any]] = []
         self._agent_name = ""
         self._follow = True
@@ -973,6 +1317,10 @@ class ThreadView(Vertical):
     def body(self) -> TranscriptScroll:
         return self._body
 
+    @property
+    def pane(self) -> AgentTranscriptPane | None:
+        return self._pane
+
     def show(self, thread_id: str, summary: str) -> None:
         self.thread = thread_id
         self.reset()
@@ -981,112 +1329,66 @@ class ThreadView(Vertical):
     def reset(self) -> None:
         self._items = []
         self._follow = True
-        if self._surface is not None:
-            self._surface.set_state(TuiState())
+        self._pane = None
 
-    @staticmethod
-    def _build_state(
-        items: list[dict[str, Any]],
-        agent_name: str,
-    ) -> TuiState:
-        state = TuiState(agent_name=agent_name or "subagent")
-        history: list[dict[str, Any]] = []
-        compactions: list[tuple[str, str]] = []
-        for item in items:
-            kind = str(item.get("kind") or "")
-            if kind == "message" and isinstance(item.get("message"), dict):
-                message = dict(item["message"])
-                message["message_id"] = str(
-                    item.get("message_id") or message.get("message_id") or ""
-                )
-                history.append(message)
-            elif kind == "surface_replace":
-                summary = str(item.get("summary") or "")
-                if summary:
-                    compactions.append((str(item.get("operation") or ""), summary))
-        if history:
-            state.restore_history(history)
-        for operation, summary in compactions:
-            label = "Conversation compacted"
-            if operation.startswith("compact:"):
-                label = f"Conversation compacted ({operation[8:]})"
-            state.append_notice(
-                "compact",
-                label,
-                payload={"summary": summary},
-            )
-        return state
-
-    async def load(
+    async def open_thread(
         self,
         items: list[dict[str, Any]],
         *,
         agent_name: str = "",
+        fetch_older: Any | None = None,
+        older_cursor: str | None = None,
     ) -> None:
+        """Adopt the first page of a thread and how to page further back."""
         await self._mount_body()
         self._items = list(items)
         self._agent_name = agent_name
-        state = self._build_state(self._items, agent_name)
-        self._surface = TranscriptSurface(
-            state,
+        self._pane = AgentTranscriptPane(
+            TuiState(agent_name=agent_name or "subagent"),
             self._body,
+            fetch_older=fetch_older,
+            older_cursor=older_cursor,
+            exhausted=older_cursor is None,
             max_mounted_entries=200,
         )
-        await self._surface.replace(state, mount_all=True)
+        await self._pane.adopt_records(self._items)
         self._follow = True
-        self._body.call_after_refresh(self._body.scroll_end, animate=False)
 
-    async def prepend_items(
+    async def append_items(
         self,
         records: list[dict[str, Any]],
         *,
         agent_name: str = "",
     ) -> None:
-        """Prepend one older trajectory page while keeping the old top item."""
-        if not records:
+        """Append records a poll returned without rebuilding the view."""
+        if self._pane is None or not records:
             return
-        old_items = self._items
-        older_state = self._build_state(records, agent_name)
-        self._items = [*records, *old_items]
+        self._items = [*self._items, *records]
         self._agent_name = agent_name or self._agent_name
-        state = self._build_state(self._items, self._agent_name)
-        anchor_index = len(older_state.transcript)
-        anchor_entry = (
-            state.transcript[anchor_index]
-            if anchor_index < len(state.transcript)
-            else (state.transcript[0] if state.transcript else None)
-        )
-        self._surface = TranscriptSurface(
-            state,
-            self._body,
-            max_mounted_entries=200,
-        )
-        await self._surface.replace(state, mount_all=True)
-        self._follow = False
-        if anchor_entry is not None:
-            anchor_widget = self._surface.widget_for_entry(anchor_entry)
-            if anchor_widget is not None:
-                self._body.call_after_refresh(
-                    lambda w=anchor_widget: self._body.scroll_to_widget(
-                        w,
-                        top=True,
-                        animate=False,
-                    )
-                )
+        if not await self._pane.append_records(records):
+            await self._pane.adopt_records(self._items)
 
     async def catch_up(self) -> None:
-        if self._surface is None:
+        """Step one window down, or follow the tail once it is reached."""
+        if self._pane is None:
             return
         self._follow = True
-        await self._surface.catch_up()
+        await self._pane.load_newer()
+
+    async def load_older(self) -> bool:
+        """Step one window up, then page the server when it runs out."""
+        if self._pane is None:
+            return False
+        self._follow = False
+        return await self._pane.load_older()
 
     async def apply_event(self, event: dict[str, Any]) -> None:
-        if self._surface is None:
+        if self._pane is None:
             return
         if str(event.get("type") or "") == "end":
             return
         self._follow = self._body.is_vertical_scroll_end
-        await self._surface.apply_event(event, follow=self._follow)
+        await self._pane.apply_event(event)
 
     def set_main_busy(self, busy: bool, summary: str = "") -> None:
         self._refresh_header(summary, main_busy=busy)
@@ -1476,21 +1778,45 @@ class TranscriptSurface:
         self._window_invalidated = False
 
     async def rebuild_from_state(self) -> None:
+        """Re-mount the retained tail of this state's transcript."""
         await self.clear()
-        await self.mount_entries(0, len(self.state.transcript))
-        self.window_end = len(self.state.transcript)
+        await self.catch_up()
 
     async def replace(
         self,
         state: TuiState,
         *,
-        mount_all: bool = False,
+        anchor: int | None = None,
     ) -> None:
+        """Adopt ``state`` and mount a bounded window of its transcript.
+
+        ``anchor`` mounts the window starting at that transcript index (the
+        caller then restores the reading position); otherwise the tail window is
+        mounted.  The whole transcript is never materialized, however long the
+        thread is -- mounting every entry was what made a read-only view of a
+        long subagent thread stall.
+        """
         self.set_state(state)
         await self.clear()
-        if mount_all and state.transcript:
-            await self.mount_entries(0, len(state.transcript))
-            self.window_end = len(state.transcript)
+        total = len(state.transcript)
+        if not total:
+            return
+        if anchor is None:
+            await self.catch_up()
+            return
+        start = max(0, min(anchor, total - 1))
+        end = min(total, start + self.max_mounted_entries)
+        self.window_start = start
+        self.window_end = start
+        await self.mount_entries(start, end)
+        self.window_end = end
+        first = self.mounted_entry_widgets[0] if self.mounted_entry_widgets else None
+        if first is not None:
+            self._schedule_refresh(
+                lambda widget=first: self.container.scroll_to_widget(
+                    widget, top=True, animate=False
+                )
+            )
 
     def _schedule_refresh(self, callback: Any) -> None:
         app = getattr(self.container, "app", None)
@@ -1530,6 +1856,56 @@ class TranscriptSurface:
     async def catch_up(self) -> bool:
         """Mount entries that accumulated while the reader was scrolled up."""
         return await self.sync(follow=True)
+
+    async def mount_next_window(self, *, batch: int | None = None) -> bool:
+        """Mount the window just below the mounted one.
+
+        Stepping one window at a time -- rather than jumping to the tail -- is
+        what keeps a scroll down the transcript continuous: the entries in
+        between are mounted on the way instead of being skipped.
+        """
+        total = len(self.state.transcript)
+        if self.window_end >= total:
+            return False
+        start = self.window_end
+        end = min(total, start + (batch or self.max_mounted_entries))
+        await self.mount_entries(start, end)
+        self.window_end = end
+        await self.trim_mounted_prefix()
+        return True
+
+    async def mount_previous_window(self, *, batch: int | None = None) -> bool:
+        """Mount the window just above the mounted one, keeping the position.
+
+        The window is bounded in both directions: entries arriving above are
+        paid for by the newest end, so reading up can never grow the mounted
+        set (which is what made long scrolls stutter).
+        """
+        if self.window_start <= 0:
+            return False
+        start = max(0, self.window_start - (batch or self.max_mounted_entries))
+        end = self.window_start
+        mounted = await self.mount_entries(start, end, prepend=True)
+        await self.trim_mounted_suffix()
+        await self.trim_mounted_to_cap()
+        return bool(mounted)
+
+    async def trim_mounted_to_cap(self) -> int:
+        """Drop the newest widgets until the mounted set fits the cap."""
+        excess = len(self.mounted_entry_widgets) - self.max_mounted_entries
+        if excess <= 0:
+            return 0
+        removed = self.mounted_entry_widgets[-excess:]
+        self.mounted_entry_widgets = self.mounted_entry_widgets[:-excess]
+        self._mounted_entry_indices = self._mounted_entry_indices[:-excess]
+        for widget in removed:
+            if widget.parent is self.container:
+                await widget.remove()
+        if self._mounted_entry_indices:
+            self.window_end = self._mounted_entry_indices[-1] + 1
+        else:
+            self.window_end = self.window_start
+        return len(removed)
 
     async def mount_entries(
         self,

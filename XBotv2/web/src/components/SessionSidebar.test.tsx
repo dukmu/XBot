@@ -64,3 +64,50 @@ describe("SessionSidebar", () => {
     expect(screen.queryByText("Session 6")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * The ported rail keeps sessions outside every workspace under a named
+ * `Ungrouped` node (message-actions/fork), not under a bare label.
+ */
+describe("ungrouped sessions", () => {
+  it("groups sessions with no workspace under the Ungrouped node", () => {
+    const [first, second] = [session(1), session(2)];
+    const noop = vi.fn();
+    render(
+      <SessionSidebar
+        open
+        collapsed={false}
+        width={280}
+        sessions={[first, second]}
+        workspaces={[]}
+        archivedSessionIds={[]}
+        threads={[]}
+        current={null}
+        onClose={noop}
+        onToggle={noop}
+        onSettings={noop}
+        onNew={noop}
+        onRefresh={async () => undefined}
+        refreshing={false}
+        onSession={noop}
+        onThread={noop}
+        onFork={noop}
+        onDelete={noop}
+        onRenameSession={noop}
+        onArchiveSession={noop}
+        onRenameWorkspace={noop}
+        onDeleteWorkspace={noop}
+        onMoveWorkspace={noop}
+        onMoveSession={noop}
+      />,
+    );
+    const group = screen.getByRole("button", { name: /Ungrouped/ });
+    expect(group.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Session 1")).toBeTruthy();
+    expect(screen.queryByText("Other sessions")).toBeNull();
+
+    fireEvent.click(group);
+    expect(group.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Session 1")).toBeNull();
+  });
+});

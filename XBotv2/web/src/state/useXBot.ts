@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { clearOpenSession, readOpenSession, writeOpenSession } from "./openSession";
-import { XBotApi, XBotApiError } from "../api/client";
+import { XBotApi, XBotApiError, isMissingSessionError } from "../api/client";
+import type { SessionPolicy, SessionPolicyPatch } from "../api/types";
 import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, JobData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { WorkspaceManager } from "../client/WorkspaceManager";
@@ -18,6 +19,7 @@ import {
   trajectoryEntries,
 } from "./runtime";
 import { ActivationEventBuffer } from "./activationBuffer";
+import { skillToolNames } from "./skillTools";
 
 const apiBase = import.meta.env.VITE_XBOT_API_BASE || "/api";
 
@@ -77,6 +79,21 @@ export function useXBot() {
       : error instanceof Error ? error.message : String(error);
     dispatch({ type: turnFailed ? "turn_error" : "error", message });
   }, []);
+
+  // A background request can find that this session or thread no longer exists
+  // (the server restarted, or another client deleted it).  The session the user
+  // is in is already open, so the recovery is to re-open it -- showing a banner
+  // for a request the user did not make only reports noise over a working chat.
+  const recoverMissingSession = useCallback((error: unknown): boolean => {
+    if (!isMissingSessionError(error)) return false;
+    reconcileSessionRef.current?.();
+    return true;
+  }, []);
+
+  const reportOrRecover = useCallback((error: unknown, turnFailed = false) => {
+    if (recoverMissingSession(error)) return;
+    reportError(error, turnFailed);
+  }, [recoverMissingSession, reportError]);
 
   const runtimeEvents = useMemo(() => new RuntimeEventController(api, {
     onEvents: (events) => {
@@ -172,13 +189,12 @@ export function useXBot() {
     try {
       resources = await Promise.all([
         api.listThreads(session.session_id),
-        api.listAgents(session.session_id, session.thread_id),
-        api.listJobs(session.session_id, session.thread_id),
-        api.listCommands(session.session_id, session.thread_id),
-        api.listTodos(session.session_id, session.thread_id).catch((error) => {
-          if (error instanceof XBotApiError && error.code === "capability_unavailable") return [];
-          throw error;
-        }),
+        // Optional panels: a thread that cannot list them must not abort the
+        // activation (and must not report a banner over a usable session).
+        api.listAgents(session.session_id, session.thread_id).catch(() => []),
+        api.listJobs(session.session_id, session.thread_id).catch(() => []),
+        api.listCommands(session.session_id, session.thread_id).catch(() => []),
+        api.listTodos(session.session_id, session.thread_id).catch(() => []),
         api.listTrajectory(session.session_id, session.thread_id, { limit: 160 }),
       ]);
     } catch (error) {
@@ -259,7 +275,7 @@ export function useXBot() {
         if (generation === navigationGeneration.current) {
           const bufferedEvents = trajectoryEventsBuffer.current.splice(0);
           if (bufferedEvents.length) dispatch({ type: "events", events: bufferedEvents });
-          reportError(error);
+          reportOrRecover(error);
         }
       })
       .finally(() => {
@@ -280,7 +296,7 @@ export function useXBot() {
       workspaceRoot: current.workspace_root,
       mode: "resume",
     }).then((session) => activateSessionRef.current?.(session, generation))
-      .catch((error) => reportError(error))
+      .catch((error) => reportOrRecover(error))
       .finally(() => {
         reconcileInFlight.current = false;
       });
@@ -745,6 +761,31 @@ export function useXBot() {
     }
   }, [api, reportError, state.current]);
 
+  // Ported whole-queue gesture (dsh `steerQueue`): steer every still-queued
+  // message into the running turn in FIFO order. A row the host already steered
+  // or claimed converges silently, so repeated chords are a no-op; only a
+  // genuine failure surfaces as one notice.
+  const steerAllPending = useCallback(async (): Promise<void> => {
+    const live = liveStateRef.current;
+    const current = live.current;
+    if (!current) return;
+    const queued = live.pendingInputs.filter((item) => item.target === "next-turn");
+    for (const item of queued) {
+      try {
+        const result = await api.updatePendingInput(
+          current.session_id,
+          current.thread_id,
+          item.message_id,
+          { action: "steer" },
+        );
+        dispatch({ type: "pending_inputs", items: result.items });
+      } catch (error) {
+        if (!isMissingSessionError(error)) reportError(error);
+        return;
+      }
+    }
+  }, [api, reportError]);
+
   const retryLast = useCallback(async () => {
     const live = liveStateRef.current;
     if (live.turnRunning || !live.current) return;
@@ -786,13 +827,13 @@ export function useXBot() {
         nextCursor: page.next_cursor,
       });
     } catch (error) {
-      if (generation === navigationGeneration.current) reportError(error);
+      if (generation === navigationGeneration.current) reportOrRecover(error);
     } finally {
       if (generation === navigationGeneration.current) {
         dispatch({ type: "history_loading", value: false });
       }
     }
-  }, [api, reportError]);
+  }, [api, reportOrRecover]);
 
   const loadEarlier = useCallback(async () => {
     const live = liveStateRef.current;
@@ -831,7 +872,7 @@ export function useXBot() {
         if (error instanceof XBotApiError && error.code === "invalid_cursor") {
           reconcileSessionRef.current?.();
         } else {
-          reportError(error);
+          reportOrRecover(error);
         }
       }
     } finally {
@@ -840,6 +881,28 @@ export function useXBot() {
       }
     }
   }, [api, loadLatest, reportError]);
+
+  // How often a running turn is checked against the server while it is not
+  // reporting progress.  A terminal frame can be lost while the event stream is
+  // reconnecting, and the spinner would then stay up over a finished reply.
+  const TURN_WATCHDOG_MS = 5000;
+
+  useEffect(() => {
+    const current = state.current;
+    if (!state.turnRunning || !current) return;
+    const generation = navigationGeneration.current;
+    const timer = window.setInterval(() => {
+      void api.getThread(current.session_id, current.thread_id)
+        .then((thread) => {
+          if (generation !== navigationGeneration.current) return;
+          if (thread.turn_status !== "running") dispatch({ type: "thread_synced", thread });
+        })
+        .catch((error) => {
+          if (generation === navigationGeneration.current) recoverMissingSession(error);
+        });
+    }, TURN_WATCHDOG_MS);
+    return () => window.clearInterval(timer);
+  }, [api, recoverMissingSession, state.current, state.turnRunning]);
 
   const interrupt = useCallback(async () => {
     if (!state.current) return;
@@ -1167,8 +1230,65 @@ export function useXBot() {
     : state.windowAnchor > 1 ? String(state.windowAnchor) : null;
   const hasNewer = !state.atTail || state.pendingNewer > 0;
 
+  // Session policy (sandbox + permissions).  The WebUI had no surface for it at
+  // all; the composer's access-mode control is the first one.
+  const [sessionPolicy, setSessionPolicy] = useState<SessionPolicy | null>(null);
+  const loadSessionPolicy = useCallback(async () => {
+    const current = liveStateRef.current.current;
+    if (!current) return;
+    try {
+      setSessionPolicy(await api.getSessionPolicy(current.session_id));
+    } catch (error) {
+      recoverMissingSession(error);
+    }
+  }, [api, recoverMissingSession]);
+  const updateSessionPolicy = useCallback(async (patch: SessionPolicyPatch) => {
+    const current = liveStateRef.current.current;
+    if (!current) return;
+    try {
+      setSessionPolicy(
+        await api.updateSessionPolicy(current.session_id, patch),
+      );
+    } catch (error) {
+      reportOrRecover(error);
+    }
+  }, [api, reportOrRecover]);
+
+  useEffect(() => {
+    if (!state.current) {
+      setSessionPolicy(null);
+      return;
+    }
+    void loadSessionPolicy();
+  }, [loadSessionPolicy, state.current?.session_id]);
+
+  // Skill tool names: the transcript renders a skill call with the ported row,
+  // and the tool catalog's namespace is the only thing that identifies one.
+  const [skillTools, setSkillTools] = useState<string[]>([]);
+  const loadSkillTools = useCallback(async () => {
+    const current = liveStateRef.current.current;
+    if (!current) return;
+    try {
+      setSkillTools(skillToolNames((await api.listTools(current.session_id, current.thread_id)).tools));
+    } catch (error) {
+      recoverMissingSession(error);
+    }
+  }, [api, recoverMissingSession]);
+
+  useEffect(() => {
+    if (!state.current) {
+      setSkillTools([]);
+      return;
+    }
+    void loadSkillTools();
+  }, [loadSkillTools, state.current?.session_id, state.current?.thread_id]);
+
   return {
     state,
+    sessionPolicy,
+    skillTools,
+    loadSessionPolicy,
+    updateSessionPolicy,
     olderCursor,
     hasNewer,
     sessions: sessions.items,
@@ -1186,6 +1306,7 @@ export function useXBot() {
     view,
     sendMessage,
     updatePendingInput,
+    steerAllPending,
     retryLast,
     loadEarlier,
     loadLatest,

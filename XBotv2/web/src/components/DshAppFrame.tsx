@@ -19,8 +19,16 @@ const SIDEBAR_STORAGE_KEY = "xbot.sidebar.width";
 interface DshAppFrameProps {
   mobileSidebarOpen: boolean;
   sidebar: (layout: { collapsed: boolean; width: number; toggle: () => void }) => ReactNode;
+  /** Right column (tool details); absent means the column is not reserved. */
+  detail?: ReactNode;
   children: ReactNode;
 }
+
+/** Details column: its own default, bounds and remembered width. */
+const DETAIL_WIDTH = 360;
+const DETAIL_MIN = 280;
+const DETAIL_MAX = 560;
+const DETAIL_STORAGE_KEY = "xbot.details.width";
 
 function initialSidebarWidth(): number {
   const raw = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
@@ -35,14 +43,30 @@ function clampSidebar(width: number): number {
   return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(width)));
 }
 
-export function DshAppFrame({ mobileSidebarOpen, sidebar, children }: DshAppFrameProps) {
+function initialDetailWidth(): number {
+  const raw = window.localStorage.getItem(DETAIL_STORAGE_KEY);
+  if (raw === null) return DETAIL_WIDTH;
+  const stored = Number(raw);
+  if (Number.isFinite(stored) && stored >= DETAIL_MIN && stored <= DETAIL_MAX) return stored;
+  return DETAIL_WIDTH;
+}
+
+function clampDetail(width: number): number {
+  return Math.min(DETAIL_MAX, Math.max(DETAIL_MIN, Math.round(width)));
+}
+
+export function DshAppFrame({ mobileSidebarOpen, sidebar, detail, children }: DshAppFrameProps) {
   const frame = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState(() => window.innerWidth);
   const [preference, setPreference] = useState(initialSidebarWidth);
+  const [detailWidth, setDetailWidth] = useState(initialDetailWidth);
   const [narrowExpanded, setNarrowExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [draggingDetail, setDraggingDetail] = useState(false);
   const dragOrigin = useRef(0);
   const dragWidth = useRef(0);
+  const detailOrigin = useRef(0);
+  const detailStart = useRef(0);
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
   const mobile = viewport <= 760;
   const collapsed = !mobile && (narrow ? !narrowExpanded : preference === 0);
@@ -86,13 +110,20 @@ export function DshAppFrame({ mobileSidebarOpen, sidebar, children }: DshAppFram
     <div
       ref={frame}
       className={css.frame}
-      data-dragging={dragging || undefined}
+      data-dragging={dragging || draggingDetail || undefined}
       data-sidebar-collapsed={collapsed || undefined}
       data-sidebar-open={mobileSidebarOpen || undefined}
-      style={{ gridTemplateColumns: `${width}px minmax(0, 1fr)` }}
+      style={{
+        gridTemplateColumns: mobile && detail
+          ? `${width}px minmax(0, 1fr)`
+          : detail
+            ? `${width}px minmax(0, 1fr) ${detailWidth}px`
+            : `${width}px minmax(0, 1fr)`,
+      }}
     >
       <div className={css.sidebar}>{sidebar({ collapsed, width, toggle })}</div>
       <div className={css.center}>{children}</div>
+      {detail ? <div className={css.detail}>{detail}</div> : null}
       {!collapsed && (
         <div
           className={css.handle}
@@ -116,6 +147,34 @@ export function DshAppFrame({ mobileSidebarOpen, sidebar, children }: DshAppFram
             setPreference(next);
             window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
             setDragging(false);
+          }}
+        />
+      )}
+      {detail && !mobile && (
+        <div
+          className={css.handle}
+          data-side="details"
+          data-dragging={draggingDetail || undefined}
+          style={{ right: detailWidth }}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            detailOrigin.current = event.clientX;
+            detailStart.current = detailWidth;
+            setDraggingDetail(true);
+          }}
+          onPointerMove={(event) => {
+            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+            // The details column grows as the pointer moves left.
+            setDetailWidth(clampDetail(detailStart.current - (event.clientX - detailOrigin.current)));
+          }}
+          onPointerUp={(event) => {
+            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+            const next = clampDetail(detailStart.current - (event.clientX - detailOrigin.current));
+            setDetailWidth(next);
+            window.localStorage.setItem(DETAIL_STORAGE_KEY, String(next));
+            setDraggingDetail(false);
           }}
         />
       )}

@@ -143,6 +143,14 @@ class TuiState:
     # ``pending_newer``, and eviction comes from the newest end instead.
     at_tail: bool = True
     pending_newer: int = 0
+    # An interrupt has been accepted and the turn has not ended yet.  While it
+    # holds, live progress frames must not report the turn as merely running:
+    # that is how a finished turn looked like it had resumed.
+    interrupt_requested: bool = False
+    # Bumped whenever the window is replaced (a resnapshot or a session
+    # switch).  A page fetched before the reset must not be spliced into the
+    # new window, which is how fast scrolling used to duplicate and lose rows.
+    revision: int = 0
     # Cursor for the page older than the retained window.  ``None`` while
     # unset means "ask the server for the newest page first": the page is
     # de-duplicated by message id, so an anchor that is newer than the retained
@@ -177,6 +185,7 @@ class TuiState:
         if event_type == "turn_started":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = True
+            self.interrupt_requested = False
             self._clear_pending_interactions(tool_status="cancelled")
             self.turn_usage = _empty_usage_counters()
             self._streaming_assistant_index = None
@@ -185,6 +194,7 @@ class TuiState:
         elif event_type == "turn_finished":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self.interrupt_requested = False
             self.compaction_active = False
             self._clear_pending_interactions(tool_status="error")
             self._finish_pending_tools("error")
@@ -192,6 +202,7 @@ class TuiState:
         elif event_type == "turn_cancelled":
             self.turn = int(data.get("turn") or self.turn or 0)
             self.turn_active = False
+            self.interrupt_requested = False
             self.compaction_active = False
             self._clear_pending_interactions(tool_status="cancelled")
             self._finish_pending_tools("cancelled")
@@ -244,15 +255,17 @@ class TuiState:
             content = str(data.get("content") or "")
             reasoning = str(data.get("reasoning") or "")
             if self.turn_active:
-                self.status = "Thinking" if reasoning and not content else "Running"
+                self._set_live_status(
+                    "Thinking" if reasoning and not content else "Running"
+                )
             self.append_assistant_delta(content, reasoning)
         elif event_type == "tool_call_delta":
             if self.turn_active:
-                self.status = "Running"
+                self._set_live_status("Running")
             self._apply_tool_call_delta(data.get("tool_calls"))
         elif event_type == "tool_calls_started":
             if self.turn_active:
-                self.status = "Running"
+                self._set_live_status("Running")
             self._apply_tool_calls(data.get("tool_calls"))
             self._streaming_tool_ids.clear()
         elif event_type == "tool_result":
@@ -427,6 +440,7 @@ class TuiState:
             self._clear_pending_interactions(tool_status="failed")
             self.turn_active = False
             self.compaction_active = False
+            self.interrupt_requested = False
             if self._streaming_assistant_index is not None:
                 try:
                     self.messages[self._streaming_assistant_index].streaming = False
@@ -435,6 +449,12 @@ class TuiState:
             self._streaming_assistant_index = None
             self.status = "Error"
             self.record_error(str(data.get("message") or data))
+
+    def _set_live_status(self, status: str) -> None:
+        """Show live progress, unless an interrupt is waiting to land."""
+        if self.interrupt_requested:
+            return
+        self.status = status
 
     def _trim_state(self) -> None:
         """Bound the retained conversation after a mutation.
@@ -668,56 +688,65 @@ class TuiState:
         page and the direction returns to the live tail.
         """
         self.reset_history()
+        self.revision += 1
         self.older_cursor = older_cursor
         for item in history:
-            role = str(item.get("role") or "")
-            if role == "user":
-                content = str(item.get("content") or "")
-                if self.append_runtime_message(item):
-                    continue
-                images = item.get("images") or []
-                if images:
-                    labels = [
-                        str(image.get("media_type") or "image")
-                        for image in images if isinstance(image, dict)
-                    ]
-                    content = f"{content}\n\nAttachments: {', '.join(labels)}".strip()
-                self.append_message(
-                    "user",
-                    content,
-                    message_id=str(
-                        item.get("message_id")
-                        or item.get("id")
-                        or item.get("input_id")
-                        or ""
+            self.apply_history_item(item)
+
+    def apply_history_item(self, item: dict[str, JsonValue]) -> None:
+        """Append one persisted history record.
+
+        Restoring a page and appending the newest records of a read-only view
+        must agree, so both go through this one place.
+        """
+        role = str(item.get("role") or "")
+        if role == "user":
+            content = str(item.get("content") or "")
+            if self.append_runtime_message(item):
+                return
+            images = item.get("images") or []
+            if images:
+                labels = [
+                    str(image.get("media_type") or "image")
+                    for image in images if isinstance(image, dict)
+                ]
+                content = f"{content}\n\nAttachments: {', '.join(labels)}".strip()
+            self.append_message(
+                "user",
+                content,
+                message_id=str(
+                    item.get("message_id")
+                    or item.get("id")
+                    or item.get("input_id")
+                    or ""
+                ),
+            )
+            self.turn += 1
+        elif role == "assistant":
+            self.apply_event({
+                "type": "assistant_message",
+                "data": {
+                    "id": str(
+                        item.get("message_id") or item.get("id") or ""
                     ),
-                )
-                self.turn += 1
-            elif role == "assistant":
-                self.apply_event({
-                    "type": "assistant_message",
-                    "data": {
-                        "id": str(
-                            item.get("message_id") or item.get("id") or ""
-                        ),
-                        "content": str(item.get("content") or ""),
-                        "reasoning": str(item.get("reasoning") or ""),
-                        "tool_calls": item.get("tool_calls") or [],
-                    },
-                })
-            elif role == "tool":
-                self.apply_event({
-                    "type": "tool_result",
-                    "data": {
-                        "tool_call_id": str(item.get("tool_call_id") or "tool"),
-                        "content": str(item.get("content") or ""),
-                        "status": str(item.get("status") or "completed"),
-                        "data": item.get("data"),
-                        "error": item.get("error"),
-                        "artifacts": item.get("artifacts") or [],
-                        "images": item.get("images") or [],
-                    },
-                })
+                    "content": str(item.get("content") or ""),
+                    "reasoning": str(item.get("reasoning") or ""),
+                    "tool_calls": item.get("tool_calls") or [],
+                },
+            })
+        elif role == "tool":
+            self.apply_event({
+                "type": "tool_result",
+                "data": {
+                    "tool_call_id": str(item.get("tool_call_id") or "tool"),
+                    "content": str(item.get("content") or ""),
+                    "status": str(item.get("status") or "completed"),
+                    "data": item.get("data"),
+                    "error": item.get("error"),
+                    "artifacts": item.get("artifacts") or [],
+                    "images": item.get("images") or [],
+                },
+            })
 
     def reset_history(self) -> None:
         """Clear conversation-derived state before a new history snapshot."""
@@ -735,6 +764,7 @@ class TuiState:
         self.inserted_transcript = 0
         self.at_tail = True
         self.pending_newer = 0
+        self.interrupt_requested = False
         self._tool_transcript_keys.clear()
         self._streaming_assistant_index = None
         self._streaming_tool_ids.clear()
@@ -797,6 +827,11 @@ class TuiState:
             self.status in {"Error", "Interrupted", "Permission denied"}
             and not reset_terminal
         ):
+            return
+        if self.interrupt_requested and not reset_terminal:
+            # The request is accepted but the turn has not ended; whatever
+            # arrives meanwhile must not claim it is running again.
+            self.status = "Interrupting..."
             return
         if self.pending_permission_payload is not None:
             self.status = "Approval required"

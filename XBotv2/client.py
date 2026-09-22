@@ -70,6 +70,7 @@ from XBotv2.session import (
     ThreadSummary,
     UndoRequest,
 )
+from XBotv2.workspaces import WorkspaceSnapshot
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
@@ -149,6 +150,10 @@ class XBotClient:
 
     async def list_sessions(self) -> SessionListResponse:
         return await self._request("GET", "/sessions", SessionListResponse)
+
+    async def list_workspaces(self) -> WorkspaceSnapshot:
+        """The workspace catalogue the Web rail groups sessions by."""
+        return await self._request("GET", "/workspaces", WorkspaceSnapshot)
 
     async def open_session(
         self,

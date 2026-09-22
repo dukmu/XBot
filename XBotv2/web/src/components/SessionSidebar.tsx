@@ -31,10 +31,16 @@ interface SessionSidebarProps {
 
 const COLLAPSED_SESSION_LIMIT = 5;
 
+/** Ported name for the group that holds sessions outside every workspace. */
+export const UNGROUPED_LABEL = "Ungrouped";
+
 export function SessionSidebar(props: SessionSidebarProps) {
   const [wideMounted, setWideMounted] = useState(!props.collapsed);
   const [query, setQuery] = useState("");
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(new Set());
+  // Sessions with no workspace group.  The ported rail keeps them under a named
+  // `Ungrouped` node rather than a bare label.
+  const [ungroupedCollapsed, setUngroupedCollapsed] = useState(false);
   const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(new Set());
   const [editingWorkspace, setEditingWorkspace] = useState("");
   const [workspaceTitle, setWorkspaceTitle] = useState("");
@@ -258,8 +264,26 @@ export function SessionSidebar(props: SessionSidebarProps) {
             </section>
           );
         })}
-        {visible.ungrouped.length > 0 && props.workspaces.length > 0 && <div className="ungrouped-label">Other sessions</div>}
-        {visible.ungrouped.map((session) => <SessionItem key={session.session_id} session={session} sidebar={props} archived={false} />)}
+        {visible.ungrouped.length > 0 && (
+          <section className="workspace-group">
+            <div className="workspace-row">
+              <button
+                className="workspace-toggle"
+                type="button"
+                aria-expanded={!ungroupedCollapsed}
+                onClick={() => setUngroupedCollapsed((value) => !value)}
+              >
+                {ungroupedCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                <Folder size={14} />
+                <span><b>{UNGROUPED_LABEL}</b></span>
+                <small>{visible.ungrouped.length}</small>
+              </button>
+            </div>
+            {!ungroupedCollapsed && visible.ungrouped.map((session) => (
+              <SessionItem key={session.session_id} session={session} sidebar={props} archived={false} />
+            ))}
+          </section>
+        )}
         {visible.archived.length > 0 && (
           <details className="archived-sessions" open={Boolean(query)}>
             <summary><ChevronRight size={13} /> Archived <small>{visible.archived.length}</small></summary>

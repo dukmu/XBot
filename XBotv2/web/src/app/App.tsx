@@ -2,10 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, FolderSearch, GitBranch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
+import { DraftSession } from "../components/DraftSession";
+import { DetailsPanel } from "../components/DetailsPanel";
+import { AccessModeButton, patchForPreset } from "../components/AccessModeButton";
+import { ComposerRuntimeControls } from "../components/ComposerRuntimeControls";
 import { CommandHelpDialog } from "../components/CommandHelpDialog";
 import { CommandOutput } from "../components/CommandOutput";
 import { DshAppFrame } from "../components/DshAppFrame";
-import { InteractionDialog } from "../components/InteractionDialog";
+import { PendingInteraction } from "../components/PendingInteraction";
 import { RuntimeHeader } from "../components/RuntimeHeader";
 import { QueueDock } from "../components/QueueDock";
 import { SessionSidebar } from "../components/SessionSidebar";
@@ -15,7 +19,10 @@ import { DirectoryBrowser } from "../components/DirectoryBrowser";
 import { JobDock } from "../components/JobDock";
 import { TodoDock } from "../components/TodoDock";
 import { Timeline } from "../components/Timeline";
-import { ThreadActivityPanel } from "../components/ThreadActivityPanel";
+import { TrajectoryPane, type TrajectoryRow } from "../components/TrajectoryPane";
+import type { TimelineEntry } from "../state/runtime";
+import { SubagentSessions } from "../components/SubagentSessions";
+import { GoalBar } from "../components/GoalBar";
 import { SettingsDialog, type ThemePreference } from "../components/SettingsDialog";
 import { commandCatalog, parseCommand } from "../commands";
 import type { CommandInfo, CommandResultData, DirectoryListingData, SessionSummary } from "../api/types";
@@ -25,6 +32,14 @@ export function App() {
   const { state } = runtime;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  // The details column follows the tool row the reader picked (ported
+  // behaviour: picking a row in the message flow fills the column, closing it
+  // empties the column but keeps the row reachable).
+  const [detailsOpen, setDetailsOpen] = useState(true);
+  const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
+  // The ported banner's two tabs: the message flow, or the durable records.
+  const [surface, setSurface] = useState<"chat" | "trajectory">("chat");
+  const [selectedRecord, setSelectedRecord] = useState<number | null>(null);
   const [commandOutput, setCommandOutput] = useState<CommandResultData | null>(null);
   const [helpQuery, setHelpQuery] = useState<string | null>(null);
   const [pendingCommand, setPendingCommand] = useState("");
@@ -163,9 +178,82 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [clearConfirmOpen, deleteCandidate, helpQuery, runtime, state.interactions.length, state.turnRunning]);
 
+  const visibleEntries = runtime.view ? runtime.view.entries : state.entries;
+  const selectedTool = useMemo(
+    () => visibleEntries.find(
+      (entry): entry is Extract<typeof entry, { kind: "tool" }> =>
+        entry.kind === "tool" && entry.toolCallId === selectedToolId,
+    ) ?? null,
+    [selectedToolId, visibleEntries],
+  );
+  const runtimeControlsDisabled = state.loading || runtime.commandRunning || state.turnRunning;
+  const runtimeControls = (
+    <ComposerRuntimeControls
+      current={state.current}
+      agents={state.agents}
+      providers={state.providers}
+      disabled={runtimeControlsDisabled}
+      onAgent={runtime.selectAgent}
+      onProvider={runtime.selectProvider}
+      onEffort={runtime.selectEffort}
+    />
+  );
+  const accessMode = (
+    <AccessModeButton
+      policy={runtime.sessionPolicy}
+      disabled={state.loading || runtime.commandRunning || !state.current}
+      onSelect={(preset) => runtime.updateSessionPolicy(patchForPreset(preset))}
+    />
+  );
+  // Pending steering renders in the transcript, so its identity is memoized:
+  // a fresh array per render would re-render the whole timeline.
+  const pendingSteering = useMemo(
+    () => state.pendingInputs.filter((item) => item.target === "next-step"),
+    [state.pendingInputs],
+  );
+  const queuedCount = useMemo(
+    () => state.pendingInputs.filter((item) => item.target === "next-turn").length,
+    [state.pendingInputs],
+  );
+
+  // The pending interaction rides whichever flow is on screen: while a subagent
+  // thread is being read, a reply waiting for an approval must stay reachable.
+  const pendingInteraction = state.interactions[0] && state.current
+    ? (
+      <div className="timeline-node timeline-node-interaction">
+        <PendingInteraction
+          request={state.interactions[0]}
+          onResolve={runtime.resolveInteraction}
+        />
+      </div>
+    )
+    : undefined;
+
+  const selectRecord = useCallback((row: TrajectoryRow) => {
+    setSelectedRecord(row.position);
+    if (!row.toolCallId) return;
+    setSelectedToolId(row.toolCallId);
+    setDetailsOpen(true);
+  }, []);
+
+  const selectTool = useCallback((tool: TimelineEntry) => {
+    if (tool.kind !== "tool") return;
+    setSelectedToolId(tool.toolCallId);
+    setDetailsOpen(true);
+  }, []);
+
   return (
     <DshAppFrame
       mobileSidebarOpen={sidebarOpen}
+      detail={detailsOpen ? (
+        <DetailsPanel
+          tool={selectedTool}
+          onClose={() => {
+            setDetailsOpen(false);
+            setSelectedToolId(null);
+          }}
+        />
+      ) : null}
       sidebar={({ collapsed, width, toggle }) => <SessionSidebar
         open={sidebarOpen}
         collapsed={collapsed}
@@ -218,6 +306,8 @@ export function App() {
           onUndo={runtime.undo}
           onFork={runtime.fork}
           onClear={async () => setClearConfirmOpen(true)}
+          surface={surface}
+          onSurface={setSurface}
           utilities={(
             <JobDock
               jobs={Object.values(state.jobs)}
@@ -252,11 +342,24 @@ export function App() {
           </div>
         )}
 
+        {state.current && (
+          <GoalBar
+            current={state.current}
+            busy={runtime.commandRunning || state.loading}
+            onPause={() => void runtime.interrupt()}
+            onEdit={() => setComposerDraft({ id: Date.now(), value: "/goal " })}
+            onClear={() => void sendComposerInput("/goal clear", [])}
+          />
+        )}
+
         {state.current ? (
           <div className="conversation-scroll" data-conversation-scroll>
-            <ThreadActivityPanel
+            {/* Ported placement: the transcript shows a count button; the tree
+                opens when the reader asks for it. */}
+            <SubagentSessions
               threads={state.threads}
               currentThreadId={runtime.view?.threadId ?? state.current.thread_id}
+              defaultOpen={false}
               onSelect={(thread) => {
                 if (thread.thread_id === state.current?.thread_id) {
                   runtime.closeThreadView();
@@ -267,20 +370,33 @@ export function App() {
             />
             {runtime.view ? (
               <div className="thread-view">
-                <header className="thread-view-header" role="status">
-                  <GitBranch size={14} />
-                  <strong>{runtime.view.title}</strong>
-                  <code>{runtime.view.threadId}</code>
-                  <span>read-only · main thread keeps running</span>
-                  {runtime.view.mainBusy && <em className="thread-view-busy">main: new output</em>}
+                {/* Session hierarchy, ported: parent link / current child. */}
+                <nav className="thread-hierarchy" aria-label="Session hierarchy">
                   <button
                     type="button"
-                    className="secondary-button"
+                    className="thread-hierarchy-parent"
                     onClick={() => runtime.closeThreadView()}
                   >
-                    Back to main
+                    <GitBranch size={14} />
+                    {state.current.title}
                   </button>
-                </header>
+                  <span className="thread-hierarchy-separator" aria-hidden>/</span>
+                  <button
+                    type="button"
+                    className="thread-hierarchy-current"
+                    aria-current="page"
+                    disabled
+                  >
+                    {runtime.view.title || runtime.view.threadId}
+                  </button>
+                  <span className="thread-hierarchy-note">read-only · main thread keeps running</span>
+                  {runtime.view.mainBusy && <em className="thread-view-busy">main: new output</em>}
+                </nav>
+                <SubagentSessions
+                  threads={state.threads}
+                  currentThreadId={runtime.view.threadId}
+                  onSelect={(thread) => void runtime.openThreadView(thread)}
+                />
                 <Timeline
                   key={`view/${runtime.view.threadId}`}
                   entries={runtime.view.entries}
@@ -290,12 +406,27 @@ export function App() {
                   hasOlder={Boolean(runtime.view.olderCursor)}
                   loadingOlder={runtime.view.loadingOlder}
                   onLoadOlder={runtime.loadViewEarlier}
+                  selectedToolId={selectedToolId ?? undefined}
+                  onSelectTool={selectTool}
+                  interaction={pendingInteraction}
                 />
               </div>
+            ) : surface === "trajectory" ? (
+              <TrajectoryPane
+                items={state.trajectory}
+                selectedPosition={selectedRecord ?? undefined}
+                onSelect={selectRecord}
+                hasOlder={Boolean(runtime.olderCursor)}
+                loadingOlder={state.historyLoading}
+                onLoadOlder={runtime.loadEarlier}
+              />
             ) : (
               <Timeline
                 key={`${state.current.session_id}/${state.current.thread_id}`}
                 entries={state.entries}
+                steering={pendingSteering}
+                skillTools={runtime.skillTools}
+                interaction={pendingInteraction}
                 turnRunning={state.turnRunning}
                 onRetry={runtime.retryLast}
                 onBranch={runtime.fork}
@@ -304,6 +435,8 @@ export function App() {
                 loadingOlder={state.historyLoading}
                 onLoadOlder={runtime.loadEarlier}
                 onLoadLatest={runtime.loadLatest}
+                selectedToolId={selectedToolId ?? undefined}
+                onSelectTool={selectTool}
               />
             )}
             <div className="runtime-controls">
@@ -323,7 +456,6 @@ export function App() {
               <QueueDock
                 items={state.pendingInputs}
                 running={state.turnRunning}
-                deliveryStates={state.deliveryStates}
                 onUpdate={runtime.updatePendingInput}
               />
               <UsageStatsLine usage={state.usage} stats={state.sessionStats} />
@@ -348,33 +480,29 @@ export function App() {
                 inputHistory={inputHistory}
                 onSubmitted={recordSubmittedInput}
                 onInterrupt={runtime.interrupt}
+                onOpenCommands={() => setHelpQuery("")}
+                accessMode={accessMode}
+                runtimeControls={runtimeControls}
+                pendingCount={queuedCount}
+                onSteerAll={() => void runtime.steerAllPending()}
               />
             </div>
           </div>
         ) : (
-          <section className="empty-workbench">
-            <TerminalSquare size={42} strokeWidth={1.5} />
-            <h1>XBot</h1>
-            <p>No session selected</p>
-            <button className="primary-button" onClick={() => setNewSessionOpen(true)}>
-              <Plus size={16} /> New session
-            </button>
-            <button className="mobile-session-button" onClick={() => setSidebarOpen(true)}>
-              <Menu size={16} /> Sessions
-            </button>
-          </section>
+          <DraftSession
+            accessMode={accessMode}
+            runtimeControls={runtimeControls}
+            onOpenCommands={() => setHelpQuery("")}
+            commands={commands}
+            usage={state.usage}
+            inputHistory={inputHistory}
+            onChooseWorkspace={() => setNewSessionOpen(true)}
+            onOpenSessions={() => setSidebarOpen(true)}
+          />
         )}
 
         <StatusBar state={state} />
       </main>
-
-      {state.interactions[0] && state.current && (
-        <InteractionDialog
-          request={state.interactions[0]}
-          pendingCount={state.interactions.length}
-          onResolve={runtime.resolveInteraction}
-        />
-      )}
 
       {newSessionOpen && (
         <NewSessionDialog

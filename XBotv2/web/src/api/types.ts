@@ -280,6 +280,16 @@ export interface AgentInfo {
   context_window: number;
 }
 
+/** One entry of the agent-loop tool catalog (`GET .../tools`). */
+export interface ToolInfo {
+  name: string;
+  registered_name: string;
+  namespace: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  timeout_seconds: number | null;
+}
+
 export interface CommandInfo {
   name: string;
   slash: string;

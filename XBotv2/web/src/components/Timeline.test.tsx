@@ -323,3 +323,70 @@ describe("Timeline memo chain", () => {
     expect(nodeRenders.count).toBeGreaterThan(afterMount);
   });
 });
+
+/**
+ * Pending steering (the ported `steering` scenario) renders inside the chat
+ * column, after the transcript, as the user row it will become — not in the
+ * queue dock.
+ */
+describe("pending steering rows", () => {
+  it("renders each pending steering item as a marked user row after the transcript", () => {
+    const { container } = render(
+      <div className="conversation-scroll" data-conversation-scroll>
+        <Timeline
+          entries={[message("partial")]}
+          steering={[{
+            message_id: "steer-1",
+            content: "Interjection: include the word BANANA in your final reply.",
+            target: "next-step",
+            source: "user",
+            image_count: 0,
+            artifact_count: 0,
+          }]}
+          turnRunning
+          onRetry={async () => {}}
+          onBranch={async () => {}}
+          hasOlder={false}
+          loadingOlder={false}
+          onLoadOlder={async () => {}}
+        />
+      </div>,
+    );
+    const rows = container.querySelectorAll("[data-pending-steering]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("BANANA");
+    expect(rows[0].className).toContain("user");
+    // After the transcript row, before the running indicator.
+    const nodes = [...container.querySelectorAll(".timeline-inner > *")];
+    expect(nodes.findIndex((node) => node.className.includes("timeline-node-steering")))
+      .toBeGreaterThan(nodes.findIndex((node) => node.className.includes("timeline-node-message")));
+  });
+});
+
+/**
+ * The pending interaction renders in the flow, below the transcript, where dsh
+ * keeps it — not as a modal over it.
+ */
+describe("pending interaction", () => {
+  it("places the interaction card after the transcript rows", () => {
+    const { container } = render(
+      <div className="conversation-scroll" data-conversation-scroll>
+        <Timeline
+          entries={[message("partial")]}
+          interaction={<div className="timeline-node timeline-node-interaction" data-testid="interaction" />}
+          turnRunning
+          onRetry={async () => {}}
+          onBranch={async () => {}}
+          hasOlder={false}
+          loadingOlder={false}
+          onLoadOlder={async () => {}}
+        />
+      </div>,
+    );
+    expect(container.querySelector("[data-testid='interaction']")).not.toBeNull();
+    const nodes = [...container.querySelectorAll(".timeline-inner > *")];
+    const interaction = nodes.findIndex((node) => node.className.includes("timeline-node-interaction"));
+    const transcript = nodes.findIndex((node) => node.className.includes("timeline-node-message"));
+    expect(interaction).toBeGreaterThan(transcript);
+  });
+});

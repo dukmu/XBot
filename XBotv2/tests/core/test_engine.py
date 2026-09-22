@@ -347,6 +347,26 @@ class TestEngineBasics:
         assert len(assistant_events) == 2
 
     @pytest.mark.asyncio
+    async def test_assistant_message_reports_the_provider_stop_reason(
+        self,
+        state_store,
+        temp_workspace,
+    ):
+        """A truncated reply says why it stopped, so clients can flag it."""
+        llm = MockLLM(responses=[
+            {
+                "content": "half an answer",
+                "response_metadata": {"stop_reason": "length"},
+            },
+        ])
+        engine = make_engine(llm, ToolRegistry(), state_store, temp_workspace)
+
+        events = [event async for event in engine.run_turn("go")]
+
+        assistant = next(event for event in events if event["type"] == "assistant_message")
+        assert assistant["data"]["stop_reason"] == "length"
+
+    @pytest.mark.asyncio
     async def test_empty_response_after_tool_result_is_an_error(
         self,
         state_store,

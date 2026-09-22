@@ -60,6 +60,10 @@ export interface MessageEntry {
   content: string;
   reasoning: string;
   streaming: boolean;
+  /** Why the provider stopped; a cut-off reply sets "length"/"max_tokens". */
+  stopReason?: string;
+  /** Model timing for a settled reply (`llm_ms`, `ttft_ms`, `decode_ms`). */
+  timing?: Record<string, number>;
   images: MessageImage[];
   messageId: string;
 }
@@ -146,7 +150,6 @@ export interface RuntimeState {
   // history and events, but the client never sends into it.
   viewingSubagent: boolean;
   pendingInputs: PendingInput[];
-  deliveryStates: Record<string, MessageEntry["deliveryState"]>;
   error: string;
 }
 
@@ -214,7 +217,6 @@ export const initialRuntimeState: RuntimeState = {
   sessionStats: { ...EMPTY_SESSION_STATS },
   turnRunning: false,
   pendingInputs: [],
-  deliveryStates: {},
   error: "",
 };
 
@@ -334,7 +336,6 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         todos: [],
         turnRunning: false,
         pendingInputs: action.session.pending_inputs || [],
-        deliveryStates: Object.fromEntries((action.session.pending_inputs || []).map((item) => [item.message_id, "accepted"])),
         error: "",
       };
     case "session_deleted":
@@ -364,7 +365,6 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         sessionStats: { ...EMPTY_SESSION_STATS },
         turnRunning: false,
         pendingInputs: [],
-        deliveryStates: {},
         error: "",
       };
     case "thread_synced":
@@ -455,30 +455,21 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
       };
     }
     case "jobs":
+      // Settled jobs stay: the ported list shows them newest-first beside the
+      // live ones, so whether a row survives must not depend on which path
+      // (this snapshot or a `job_updated` event) last reported it.
       return {
         ...state,
-        jobs: Object.fromEntries(
-          action.jobs
-            .filter((job) => job.status !== "completed" && job.status !== "stopped")
-            .map((job) => [job.job_id, job]),
-        ),
+        jobs: Object.fromEntries(action.jobs.map((job) => [job.job_id, job])),
       };
     case "todos":
       return { ...state, todos: action.todos };
     case "pending_inputs":
-      return {
-        ...state,
-        pendingInputs: action.items,
-        deliveryStates: {
-          ...state.deliveryStates,
-          ...Object.fromEntries(action.items.map((item) => [item.message_id, state.deliveryStates[item.message_id] || "accepted"])),
-        },
-      };
+      return { ...state, pendingInputs: action.items };
     case "pending_input_failed":
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== action.messageId),
-        deliveryStates: Object.fromEntries(Object.entries(state.deliveryStates).filter(([id]) => id !== action.messageId)),
       };
     case "user_message":
       return {
@@ -611,6 +602,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           stringValue(data.reasoning),
           arrayValue(data.tool_calls),
           stringValue(data.id),
+          stringValue(data.stop_reason),
         ),
         sessionStats: addAssistantTiming(state.sessionStats, data.timing),
         current: updateSlots(state.current, data.status_slots),
@@ -685,10 +677,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       const ids = new Set(arrayValue(data.message_ids).map(stringValue));
       return {
         ...state,
-        deliveryStates: {
-          ...state.deliveryStates,
-          ...Object.fromEntries([...ids].map((id) => [id, deliveryState])),
-        },
         pendingInputs: event.type === "input_consumed"
           ? state.pendingInputs.filter((item) => !ids.has(item.message_id))
           : state.pendingInputs,
@@ -731,8 +719,9 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       const id = stringValue(data.id);
       if (!id || stringValue(data.role) !== "user") return state;
       const runtime = objectValue(data.runtime);
-      const runtimeSource = stringValue(runtime.source);
-      const runtimeEvent = stringValue(runtime.event);
+      const skill = runtime.source ? null : skillInvocationSource(stringValue(data.content));
+      const runtimeSource = stringValue(runtime.source) || skill || "";
+      const runtimeEvent = stringValue(runtime.event) || (skill ? "skill_invocation" : "");
       const runtimeId = runtimeSource ? `runtime:${id}` : "";
       const index = state.entries.findIndex((entry) => (
         entry.id === id
@@ -754,7 +743,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== id),
-        deliveryStates: { ...state.deliveryStates, ...(id ? { [id]: "consumed" } : {}) },
         entries: [
           ...state.entries,
           runtimeSource
@@ -897,6 +885,7 @@ export function applyViewEvent(
         stringValue(data.reasoning),
         arrayValue(data.tool_calls),
         stringValue(data.id),
+        stringValue(data.stop_reason),
       );
     case "turn_started":
     case "turn_finished":
@@ -941,12 +930,13 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
     if (item.role === "user") {
-      if (item.runtime) {
+      const skill = item.runtime ? null : skillInvocationSource(item.content);
+      if (item.runtime || skill) {
         entries.push({
           id: nextId("runtime"),
           kind: "runtime",
-          source: item.runtime.source ?? "runtime",
-          event: item.runtime.event ?? "message",
+          source: item.runtime?.source ?? skill ?? "runtime",
+          event: item.runtime?.event ?? "skill_invocation",
           content: item.content,
           messageId: item.id || "",
         });
@@ -965,6 +955,7 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
           ...messageEntry("assistant", item.content),
           messageId: item.id || "",
           reasoning: item.reasoning || "",
+          ...(item.timing ? { timing: item.timing } : {}),
         });
       }
       entries = upsertToolCalls(entries, item.tool_calls);
@@ -1227,6 +1218,7 @@ function applyAssistantMessage(
   reasoning: string,
   calls: unknown[],
   messageId: string,
+  stopReason = "",
 ): TimelineEntry[] {
   const streamingIndex = streamingAssistantIndex(entries);
   if (streamingIndex >= 0) {
@@ -1238,6 +1230,7 @@ function applyAssistantMessage(
           reasoning: reasoning || entry.reasoning,
           streaming: false,
           messageId: messageId || entry.messageId,
+          ...(stopReason ? { stopReason } : {}),
         }
         : entry
     ));
@@ -1264,7 +1257,12 @@ function applyAssistantMessage(
   if (!content && !reasoning) return upsertToolCalls(entries, calls);
   return upsertToolCalls([
     ...entries,
-    { ...messageEntry("assistant", content), reasoning, messageId },
+    {
+      ...messageEntry("assistant", content),
+      reasoning,
+      messageId,
+      ...(stopReason ? { stopReason } : {}),
+    },
   ], calls);
 }
 
@@ -1429,6 +1427,19 @@ function updatePermissionTool(entries: TimelineEntry[], data: JsonObject, status
   return entries.map((entry) => entry.kind === "tool" && entry.permissionRequestId === requestId
     ? { ...entry, status }
     : entry);
+}
+
+/**
+ * A slash-invoked skill replaces the accepted input with the skills plugin's
+ * prompt container.  Its provenance lives inside that container, so the parser
+ * here is what lets the transcript show `Context injection <skill>` instead of
+ * the raw envelope.
+ */
+const SKILL_INVOCATION = /^<skill_invocation\b[^>]*\bname="([^"]+)"/;
+
+export function skillInvocationSource(content: string): string | null {
+  const match = SKILL_INVOCATION.exec(content.trimStart());
+  return match ? match[1] : null;
 }
 
 export function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {

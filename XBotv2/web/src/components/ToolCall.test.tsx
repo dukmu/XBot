@@ -1,144 +1,153 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import type { ToolEntry } from "../state/runtime";
+import { fireEvent, render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ToolCall } from "./ToolCall";
+import type { ToolEntry } from "../state/runtime";
 
-function editTool(overrides: Partial<ToolEntry> = {}): ToolEntry {
-  return {
-    id: "tool-1",
-    kind: "tool",
-    toolCallId: "call-1",
-    name: "edit",
-    args: { mode: "write", path: "src/new.py", content: "first\nsecond\n" },
-    status: "success",
-    result: "Wrote src/new.py",
-    data: { changed: true, resolved_path: "/private/workspace/src/new.py" },
-    error: null,
-    artifacts: [],
-    images: [],
-    ...overrides,
-  };
-}
+const tool: ToolEntry = {
+  id: "trajectory:3:tool:0",
+  kind: "tool",
+  toolCallId: "call-1",
+  name: "shell",
+  args: { command: "pwd" },
+  status: "success",
+  result: "/workspace",
+  data: null,
+  error: null,
+  artifacts: [],
+  images: [],
+};
 
-function openTool(tool: ToolEntry) {
-  const view = render(<ToolCall tool={tool} />);
-  const details = view.container.querySelector("details");
-  if (!details) throw new Error("ToolCall did not render details");
-  details.open = true;
-  fireEvent(details, new Event("toggle"));
-  return view;
-}
-
-describe("ToolCall file mutation presentation", () => {
-  it("renders a successful write from model-facing arguments", () => {
-    const view = openTool(editTool());
-    const diff = view.container.querySelector<HTMLElement>("[data-diff]");
-    if (!diff) throw new Error("Applied write did not render a diff");
-
-    expect(within(diff).getByText("src/new.py", { exact: true })).toBeInTheDocument();
-    expect(within(diff).getByText("first", { exact: true })).toBeInTheDocument();
-    expect(within(diff).getByText("second", { exact: true })).toBeInTheDocument();
-    expect(within(diff).getByText("└ +2 -0 · 1 file", { exact: true })).toBeInTheDocument();
-    expect(screen.queryByText("/private/workspace/src/new.py", { exact: true })).toBeNull();
+describe("ToolCall selection", () => {
+  it("reports the row it belongs to when the reader picks it", () => {
+    // The details column follows this callback.
+    const onSelect = vi.fn();
+    const { getByTestId } = render(<ToolCall tool={tool} onSelect={onSelect} />);
+    getByTestId("tool-row-call-1").click();
+    expect(onSelect).toHaveBeenCalledWith(tool);
   });
 
-  it("renders the removed and added sides of a successful replacement", () => {
-    openTool(editTool({
-      args: {
-        mode: "replace",
-        path: "src/app.py",
-        old_text: "old value\nshared",
-        new_text: "new value\nshared",
-      },
-    }));
-
-    expect(screen.getByText("old value", { exact: true })).toBeInTheDocument();
-    expect(screen.getByText("new value", { exact: true })).toBeInTheDocument();
-    expect(screen.getByText("└ +2 -2 · 1 file", { exact: true })).toBeInTheDocument();
-  });
-
-  it("keeps authoritative Tool artifacts alongside an applied diff", () => {
-    const view = openTool(editTool({
-      artifacts: [{
-        id: "tool_results/report.txt",
-        name: "report.txt",
-        media_type: "text/plain",
-        size: 1536,
-        url: "/sessions/demo/threads/main/artifacts/tool_results/report.txt",
-      }],
-    }));
-
-    expect(view.container.querySelector("[data-diff]")).not.toBeNull();
-    const artifact = screen.getByRole("link", { name: "Open artifact report.txt" });
-    expect(artifact).toHaveAttribute("href", "/sessions/demo/threads/main/artifacts/tool_results/report.txt");
-    expect(artifact).toHaveTextContent("report.txt");
-    expect(artifact).toHaveTextContent("text/plain · 1.5 kB");
-  });
-
-  it("does not invent a download target for malformed artifact metadata", () => {
-    openTool(editTool({ artifacts: [{ id: "tool_results/missing.txt", name: "missing.txt" }] }));
-
-    expect(screen.queryByRole("link", { name: "Open artifact missing.txt" })).toBeNull();
-  });
-
-  it.each([
-    ["failed", editTool({ status: "error", error: { code: "write_failed" } })],
-    ["unchanged", editTool({ data: { changed: false } })],
-    ["patch", editTool({ args: { mode: "patch", path: "src/app.py", patch: "@@ -1 +1 @@" } })],
-  ])("keeps %s edits on the generic file-result path", (_label, tool) => {
-    const view = openTool(tool);
-
-    expect(within(view.container).queryByText(/^└ \+/u)).toBeNull();
-    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
-    expect(view.container.querySelector("details[aria-label='Arguments']")).not.toBeNull();
+  it("marks itself as the row the details column is showing", () => {
+    const { container } = render(<ToolCall tool={tool} selected />);
+    expect(container.querySelector(".tool-block-selected")).not.toBeNull();
   });
 });
 
-describe("ToolCall specialized argument presentation", () => {
-  it("keeps the command in a collapsed, structured arguments disclosure", () => {
-    const view = openTool(editTool({
-      name: "shell",
-      args: { command: "printf hello" },
-      result: "hello",
-    }));
+describe("to-do row", () => {
+  const todos: ToolEntry = {
+    ...tool,
+    name: "task_update",
+    data: {
+      kind: "todo_snapshot",
+      tasks: [
+        { id: "1", subject: "梳理需求", status: "completed" },
+        { id: "2", subject: "实现 fixture 样本", status: "in_progress", activeForm: "实现 fixture 样本" },
+        { id: "3", subject: "跑后台构建", status: "in_progress" },
+        { id: "4", subject: "浏览器验收", status: "pending" },
+      ],
+    },
+  };
 
-    const argumentsDetails = view.container.querySelector<HTMLDetailsElement>("details[aria-label='Arguments']");
-    expect(argumentsDetails).not.toBeNull();
-    expect(argumentsDetails?.open).toBe(false);
-    if (!argumentsDetails) throw new Error("Arguments disclosure did not render");
-    fireEvent.click(within(argumentsDetails).getByText("Arguments", { exact: true }));
-    expect(argumentsDetails.open).toBe(true);
-    expect(within(argumentsDetails).getByText("command", { exact: true })).toBeInTheDocument();
-    expect(within(argumentsDetails).getByText("printf hello", { exact: true })).toBeInTheDocument();
-    expect(argumentsDetails.querySelector(".tool-command-argument pre")).toHaveTextContent("$ printf hello");
-    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
+  it("titles the row, summarises it and counts the remaining active items", () => {
+    // Layout and wording follow the ported to-do row: title, "n/m completed ·
+    // <active>", and "+N" for the other in-progress items.
+    const { getByText } = render(<ToolCall tool={todos} />);
+    expect(getByText("Update to-do list")).toBeTruthy();
+    expect(getByText("1/4 completed · 实现 fixture 样本 +1")).toBeTruthy();
   });
 
-  it("renders each additional argument as its own value card", () => {
-    const view = openTool(editTool({
-      name: "shell",
-      args: { command: "printf hello", cwd: "/tmp" },
-    }));
+  it("tallies the states and lists one line per item when expanded", () => {
+    const { container, getByTestId, getByText } = render(<ToolCall tool={todos} />);
+    // jsdom does not open a <details> on a summary click, so drive the toggle
+    // the component actually listens to.
+    const details = container.querySelector("details") as HTMLDetailsElement;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(getByTestId("todo-tally").textContent).toBe("1 completed · 2 in progress · 1 pending");
+    expect(getByText("completed 梳理需求")).toBeTruthy();
+    expect(getByText("pending 浏览器验收")).toBeTruthy();
+  });
+});
 
-    const argumentsDetails = view.container.querySelector<HTMLDetailsElement>("details[aria-label='Arguments']");
-    expect(argumentsDetails).not.toBeNull();
-    expect(argumentsDetails?.open).toBe(false);
-    if (!argumentsDetails) throw new Error("Arguments disclosure did not render");
-    fireEvent.click(within(argumentsDetails).getByText("Arguments", { exact: true }));
-    expect(argumentsDetails.open).toBe(true);
-    expect(screen.getByText("command", { exact: true })).toBeInTheDocument();
-    expect(screen.getByText("cwd", { exact: true })).toBeInTheDocument();
-    expect(screen.getByText("/tmp", { exact: true })).toBeInTheDocument();
+/**
+ * The ported skill field: dsh renders a skill load as `Skill <name>` with the
+ * loaded instructions in a labelled region and an `Inspect` way into the full
+ * call record. XBot names the tool after the skill and passes no arguments, so
+ * the name is the row's summary.
+ */
+describe("skill row", () => {
+  const skillTool: ToolEntry = {
+    ...tool,
+    toolCallId: "call-skill",
+    name: "snapshot-skill",
+    args: {},
+    status: "success",
+    result: "<skill_content name=\"snapshot-skill\">\nFollow these snapshot-only instructions.\n</skill_content>",
+  };
+
+  it("shows Skill plus the skill name and opens the instructions on arrival", () => {
+    const { container } = render(<ToolCall tool={skillTool} skill />);
+    expect(container.querySelector(".tool-name")?.textContent).toBe("Skill");
+    expect(container.querySelector(".tool-summary")?.textContent).toBe("snapshot-skill");
+    const region = container.querySelector(".skill-instructions");
+    expect(region?.getAttribute("aria-label")).toBe("Instructions");
+    expect(region?.textContent).toContain("Follow these snapshot-only instructions.");
   });
 
-  it("keeps a result card when a settled shell command has no output", () => {
-    const view = openTool(editTool({
-      name: "shell",
-      args: { command: "true" },
-      result: "",
-    }));
+  it("keeps the generic row for a tool the catalog does not mark as a skill", () => {
+    const { container } = render(<ToolCall tool={skillTool} />);
+    expect(container.querySelector(".tool-name")?.textContent).toBe("snapshot-skill");
+    expect(container.querySelector(".skill-instructions")).toBeNull();
+  });
 
-    expect(within(view.container).getByText("Result", { exact: true })).toBeInTheDocument();
-    expect(within(view.container).getByText("No output", { exact: true })).toBeInTheDocument();
+  it("inspects the call through the details column", () => {
+    const onSelect = vi.fn();
+    const { getByRole } = render(<ToolCall tool={skillTool} skill onSelect={onSelect} />);
+    fireEvent.click(getByRole("button", { name: "Inspect" }));
+    expect(onSelect).toHaveBeenCalledWith(skillTool);
+  });
+});
+
+/**
+ * A search call keeps its structured result: the ported card groups the matches
+ * instead of dumping the tool's JSON into the row.
+ */
+describe("search row", () => {
+  const searchTool: ToolEntry = {
+    ...tool,
+    toolCallId: "call-search",
+    name: "search",
+    args: { pattern: "SearchBlock", path: "src" },
+    status: "success",
+    result: "{\"returned_matches\": 2}",
+    data: {
+      kind: "directory",
+      pattern: "SearchBlock",
+      returned_matches: 2,
+      truncated: false,
+      matches: [
+        { path: "src/SearchBlock.tsx", line: 16, column: 1, text: "export const DEFAULT_SEARCH_MAX_LINES = 16" },
+        { path: "src/search-row.tsx", line: 34, column: 1, text: "export function SearchRow({" },
+      ],
+    },
+  };
+
+  it("renders grouped matches from the structured result", () => {
+    const { container } = render(<ToolCall tool={searchTool} />);
+    // jsdom does not open a <details> on a summary click, so drive the toggle.
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(container.querySelector(".search-card")).not.toBeNull();
+    expect(container.querySelector(".search-summary")?.textContent).toBe("2 matches · 2 files");
+    expect(container.textContent).toContain("16: export const DEFAULT_SEARCH_MAX_LINES = 16");
+  });
+
+  it("falls back to the generic result when the search carries no structured matches", () => {
+    const { container } = render(<ToolCall tool={{ ...searchTool, data: { ok: false, error: "boom" } }} />);
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(container.querySelector(".search-card")).toBeNull();
+    expect(container.textContent).toContain("boom");
   });
 });

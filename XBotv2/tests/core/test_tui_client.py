@@ -4174,8 +4174,8 @@ async def test_replay_window_mounts_only_tail_then_lazy_loads():
         # not be empty), bounded to the replay window.
         stream = app.query_one("#transcript", VerticalScroll)
         mounted = len(list(stream.children))
-        assert mounted == _REPLAY_WINDOW, f"expected {_REPLAY_WINDOW}, got {mounted}"
-        assert app._window_start == 120 - _REPLAY_WINDOW
+        assert mounted == _MAX_MOUNTED_ENTRIES, f"expected {_MAX_MOUNTED_ENTRIES}, got {mounted}"
+        assert app._window_start == 120 - _MAX_MOUNTED_ENTRIES
         assert app._window_end == 120
         # Lazy load: simulate scroll-to-top (shifts the window earlier)
         await app._load_earlier_replay()
@@ -4220,7 +4220,7 @@ async def test_replay_window_scrolls_all_the_way_to_the_beginning():
         await pilot.pause()
         assert len(app.state.transcript) == 300
         stream = app.query_one("#transcript", VerticalScroll)
-        assert app._window_start == 300 - _REPLAY_WINDOW
+        assert app._window_start == 300 - _MAX_MOUNTED_ENTRIES
         # Scroll up in batches until the beginning is reached.
         guard = 0
         while app._window_start > 0:
@@ -4608,22 +4608,36 @@ async def test_transcript_pages_older_history_from_the_server(monkeypatch):
         await pilot.pause()
         assert app.state.at_tail is True
 
-        await app._load_earlier_replay()
-        await pilot.pause()
+        # Reading up exhausts the held window first; the server is asked only
+        # once there is nothing older left to mount locally.
+        pane = app._pane()
+        assert pane is not None
+        for _ in range(8):
+            await app._load_earlier_replay()
+            await pilot.pause()
+            if session.calls:
+                break
+        assert session.calls, "reaching the front must ask the server"
 
-        # The newest page was consumed for the anchor, then the older page.
+        # The newest page is consumed for the anchor, then the older page.
         assert session.calls == [None, "cursor-1"]
         assert app.state.at_tail is False
-        assert app.state.older_cursor is None
-        assert app._history_exhausted is True
+        assert pane.older_cursor is None
+        assert pane.exhausted is True
         assert app.state.messages[0].message_id == "o0"
         assert len(app.state.transcript) <= tui_client._MAX_STATE_TRANSCRIPT + tui_client._TRIM_SLACK
         # The fetched page is mounted and visible above the retained window.
         assert any("older 0" in _static_text(widget) for widget in app.query(".body"))
         # The fetched page is in front of everything the client held, so the
-        # window now starts at the oldest retained record.
+        # window starts at the oldest retained record.  It stays bounded:
+        # mounting the older page is paid for by the newest end, and the tail is
+        # reachable again by scrolling down.
         assert app._window_start == 0
-        assert app._window_end == len(app.state.transcript)
+        assert app._window_end <= len(app.state.transcript)
+        assert (
+            app._window_end - app._window_start
+            <= tui_client._MAX_STATE_TRANSCRIPT + tui_client._TRIM_SLACK
+        )
 
         # Scrolling back down re-anchors on the newest page instead of walking a
         # window that no longer ends at the tail.
@@ -4633,8 +4647,13 @@ async def test_transcript_pages_older_history_from_the_server(monkeypatch):
                 for index in range(10)
             ],
         }
-        await app._load_newer_replay()
-        await pilot.pause()
+        # Reading down walks the held windows first; the snapshot re-anchor
+        # happens once the window reaches the end of what the client holds.
+        for _ in range(20):
+            await app._load_newer_replay()
+            await pilot.pause()
+            if app.state.at_tail:
+                break
         assert app.state.at_tail is True
         assert app.state.pending_newer == 0
         assert [message.message_id for message in app.state.messages] == [f"f{index}" for index in range(10)]
@@ -4803,7 +4822,9 @@ async def test_transcript_window_cycle_neither_duplicates_nor_loses_records(monk
         await pilot.pause()
         # The fully retained page contributed nothing, so the client asked
         # again; the next page is immediately older than the window front.
-        assert app.state.older_cursor == "c2"
+        pane = app._pane()
+        assert pane is not None
+        assert pane.older_cursor == "c2"
         assert numbers(app.state)[0] == front - 10
         assert contiguous(numbers(app.state))
         assert len(set(numbers(app.state))) == len(numbers(app.state))
@@ -4814,7 +4835,7 @@ async def test_transcript_window_cycle_neither_duplicates_nor_loses_records(monk
 
         await app._load_earlier_replay()
         await pilot.pause()
-        assert app._history_exhausted is True
+        assert pane.exhausted is True
         assert numbers(app.state)[0] == front - 20
         assert contiguous(numbers(app.state))
         assert len(set(numbers(app.state))) == len(numbers(app.state))
@@ -4979,3 +5000,69 @@ async def test_loading_earlier_entries_at_the_top_keeps_the_reader_at_the_top():
         )
         # ...and the position did not move under them.
         assert transcript.scroll_y == 0
+
+
+@pytest.mark.asyncio
+async def test_fast_scrolling_keeps_the_replay_window_consistent():
+    """Scrolling quickly in both directions must not lose, duplicate, or
+    leave blank entries: the window is one coherent range at every step."""
+    from XBotv2.tui.textual_client import XBotTextualApp
+
+    class FakeSession:
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def list_commands(self):
+            return {"commands": []}
+
+    app = XBotTextualApp(session_id="s", thread_id="t", workspace_root=".")
+    app.session = FakeSession()
+    async with app.run_test(headless=True, size=(90, 28)) as pilot:
+        await pilot.pause()
+        # Well past the retained-state ceilings, so eviction runs while the
+        # reader scrolls: the window slides inside a state window that is
+        # itself being trimmed.
+        for index in range(1200):
+            app.state.append_message("assistant", f"message {index}", message_id=f"m{index}")
+        await app._render_replay_window()
+        await pilot.pause()
+        surface = app._surface()
+        assert surface is not None
+
+        def check(label: str) -> None:
+            indices = list(surface._mounted_entry_indices)
+            widgets = list(surface.mounted_entry_widgets)
+            assert len(indices) == len(widgets), f"{label}: index/widget count differs"
+            assert len(set(indices)) == len(indices), f"{label}: duplicate entries mounted"
+            assert len(set(map(id, widgets))) == len(widgets), f"{label}: duplicate widgets"
+            assert indices == sorted(indices), f"{label}: mounted order is not ascending"
+            assert len(widgets) <= surface.max_mounted_entries, f"{label}: window exceeded"
+            assert max(indices) < len(app.state.transcript), f"{label}: stale index mounted"
+            assert surface.window_start == indices[0], f"{label}: window_start is not the first entry"
+            for index in indices:
+                assert surface.widget_for_entry(app.state.transcript[index]) is not None, (
+                    f"{label}: entry {index} renders nothing"
+                )
+
+        check("initial")
+        for _round in range(3):
+            for _ in range(40):
+                await app._load_earlier_replay()
+                await pilot.pause()
+            check("after scrolling up")
+            for _ in range(40):
+                await app._load_newer_replay()
+                await pilot.pause()
+            check("after scrolling down")
+
+        # The window still follows new output after all that scrolling.
+        app.state.append_message("assistant", "newest", message_id="newest")
+        await app._render_new_transcript_entries()
+        await pilot.pause()
+        assert any(
+            "newest" in _static_text(widget)
+            for widget in app.query(".assistant .body")
+        )

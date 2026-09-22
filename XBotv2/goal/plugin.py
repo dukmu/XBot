@@ -382,6 +382,10 @@ class GoalService:
             return
         goal = await self._refresh_stats(goal)
         slots.add("goal", goal.status)
+        # Clients show the objective next to the state (the WebUI goal bar does),
+        # and a slot is the only place they can read it without a command round
+        # trip.  Kept short for a status bar.
+        slots.add("goal_objective", _short(goal.condition, 120))
         if goal.status == "active":
             slots.add("goal_round", _current_round_label(goal, self._config))
         if goal.reason:

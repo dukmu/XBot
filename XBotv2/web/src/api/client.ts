@@ -26,6 +26,7 @@ import {
   type TrajectoryPage,
   type TodoItemData,
   type ThreadSummary,
+  type ToolInfo,
   type WorkspaceData,
   type WorkspaceListData,
   type XBotErrorBody,
@@ -41,6 +42,16 @@ export class XBotApiError extends Error {
     super(message);
     this.name = "XBotApiError";
   }
+}
+
+/**
+ * Whether an error means the session or thread this client is attached to no
+ * longer exists.  Callers recover by re-opening the session: the request was a
+ * background refresh the user never asked for, so a banner over a working chat
+ * would only report noise.
+ */
+export function isMissingSessionError(error: unknown): boolean {
+  return error instanceof XBotApiError && (error.status === 404 || error.code === "not_found");
 }
 
 export class XBotApi {
@@ -397,6 +408,14 @@ export class XBotApi {
       request_id: requestId,
       answer,
     });
+  }
+
+  /** Tool catalog for the active thread: namespace tells a skill tool apart. */
+  listTools(sessionId: string, threadId: string) {
+    return this.request<{ tools: ToolInfo[] }>(
+      "GET",
+      `${threadPath(sessionId, threadId)}/tools`,
+    );
   }
 
   updatePendingInput(
