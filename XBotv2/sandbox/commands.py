@@ -121,6 +121,7 @@ def build_sandbox_commands(settings: SettingsPort) -> tuple[Command, ...]:
     return (
         Command(
             name="sandbox",
+            effects=('policy', 'commands'),
             description="Inspect or update the session sandbox",
             handler=guard_command(sandbox_command),
             usage=(

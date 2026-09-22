@@ -5,6 +5,19 @@ means O(1) **with respect to conversation length** — work proportional to a fi
 window (a few hundred entries) is fine, work proportional to the whole history is
 not.
 
+> **The TUI half of this document is historical.** The TUI client was rewritten
+> from scratch (`XBotv2/tui/`; contract and decisions in `tui-rewrite-spec.md`),
+> and every module named in the TUI sections below — `tui/client.py`, `TuiState`,
+> `TranscriptSurface`, `_MAX_STATE_*`, `tests/core/test_tui_client.py`,
+> `tests/bench/test_tui_event_throughput.py` — was deleted with it. What is written
+> about that implementation is kept as the record of what it did, not as a
+> description of the current client. The current TUI's numbers, and the one TUI
+> goal it does **not** meet, are in `tui-rewrite-spec.md` §5.16: the new client
+> renders through a bounded window (`tui/view/plan.py` + `tui/view/transcript.py`)
+> but **retains the whole history in memory** and has no eviction path, so the
+> "bounded data" half of this goal is met on the Web and not on the TUI. The Web
+> and protocol sections below are current.
+
 ## What was unbounded, and where it stands
 
 | Client | State | Grows with | Status |
@@ -13,18 +26,15 @@ not.
 | Web | `RuntimeState.trajectory: TrajectoryItem[]` | whole conversation | **fixed** — capped at `MAX_TRAJECTORY_WINDOW = 240` |
 | Web | subagent mirror `ThreadViewState.entries` | whole conversation | **fixed** — `boundTranscriptEntries(..., keepTail)` on every append and prepend |
 | Web | `deliveryStates`, `jobs`, `tasks` | per id | bounded by live objects, not history |
-| TUI | `TuiState.transcript: list[TuiTranscriptEntry]` | whole conversation | **fixed** — capped at `_MAX_STATE_TRANSCRIPT` (600) + slack 200 |
-| TUI | `TuiState.messages`, `notices`, `errors` | whole conversation | **fixed** — front-evicted at `_MAX_STATE_MESSAGES` (400) / `_MAX_STATE_NOTICES` (200) / `_MAX_STATE_ERRORS` (100) |
-| TUI | `TuiState.tools` | per live tool call | already bounded by `_MAX_STATE_TOOLS` (300) after this change; terminal tools are dropped oldest-first and running ones are never evicted |
-| TUI | `TuiState.tasks` (jobs) | per live job | already bounded by `prune_finished_tasks` (3 s grace) |
-| TUI | `TuiState._tool_transcript_keys` | per tool call | bounded by the tool cap |
-| Web | `RuntimeState.deliveryStates` | per pending input | bounded by live inputs |
+| TUI (old client, deleted) | `TuiState.transcript` / `messages` / `notices` / `errors` / `tools` / `tasks` | whole conversation, except live-object-keyed ones | this was fixed in the old client by `_MAX_STATE_*` caps plus server-backed paging; the modules are gone |
+| TUI (current) | `Timeline` entries (`tui/timeline.py`) | whole conversation | **open** — the snapshot is the full server history and nothing evicts; see `tui-rewrite-spec.md` §5.16 |
+| TUI (current) | rendered widgets | whole window | **fixed** — the view mounts one planned window (`timeline.window(size=...)`), never one widget per event |
 
 The *rendering* was already windowed in both clients; the gap was that the
 *data* stayed full-fidelity, and reducer paths copied the whole array per event
 (`[...state.entries, entry]`, `.map()` over entries for tool updates).
 
-### TUI: how the index keys were made safe
+### TUI (old client, deleted): how the index keys were made safe
 
 `TuiTranscriptEntry.key` is not a stable id: it is the decimal index into the
 backing list (`client.py`, e.g. `str(len(self.messages) - 1)`), and
@@ -145,6 +155,12 @@ anchor** and reports the tail.
 
 ## Stress coverage required
 
+> The TUI bullets in this section name tests and modules that were deleted with
+> the old client (`test_tui_client.py`, `bench/test_tui_event_throughput.py`).
+> They are kept as the record of what that implementation was verified against.
+> The current TUI suite is `XBotv2/tests/tui/`; which parts of this list it does
+> and does not yet carry is recorded in `tui-rewrite-spec.md` §5.16.
+
 Protocol (Python):
 
 - large history: page a 10k-node conversation backwards and confirm bounded
@@ -205,7 +221,7 @@ Rendering (Web vitest + Python headless Textual):
 - **open** the same cycle against a *live* event stream (the test drives state
   events directly rather than through the transport).
 
-### TUI paging: both directions, on demand
+### TUI (old client, deleted) paging: both directions, on demand
 
 The main transcript had no paging at all: the session snapshot seeds it with a
 160-message page and `_load_earlier_replay` only walked `state.transcript`.
@@ -239,6 +255,15 @@ Focus bug this surfaced: `_restore_composer_focus` pulled focus out of a
 transcript block whose body the reader had just focused (focusing a block is
 what expands it and emits `Toggled`). It now returns early when the focused
 widget is a `BoundedText`, so scrolling a block keeps focus.
+
+## Collapsible blocks (old client, deleted)
+
+> Kept as the record of the paged block window that existed then, because its
+> rules came from bugs that were visible in use. The rewritten client renders
+> the same idea differently (`tui/view/blocks.py`): a Textual window capped at
+> `BLOCK_MAX_LINES` with a preview line, per-block `ctrl+e` expansion, and
+> native scrolling -- so the padding rule below belongs to that implementation,
+> not to this one.
 
 ## Collapsible blocks (reasoning, tool details)
 
@@ -354,6 +379,13 @@ nothing else; in the main transcript it still interrupts.
 
 ## Surface bookkeeping (fixed)
 
+## Surface bookkeeping (fixed in the old client, deleted with it)
+
+> The two defects below were in `TranscriptSurface`, which no longer exists. The
+> current client anchors the reader by entry id instead of compensating for
+> measured heights (`tui/view/plan.py`, `tui/view/transcript.py`), which is the
+> structural fix for the same class of drift.
+
 `test_focused_block_scrolls_with_keys_then_hands_off_to_the_transcript` was
 flaky (about 1 run in 6, reproduced on unmodified `main`), failing on
 `scroll_y == 0` after `scroll_home`. Tracing the transcript's scroll calls
@@ -396,7 +428,11 @@ with the old return value and duplicate bookkeeping) and
    falsifiable in both directions: stable props do not re-render the entries,
    and an unstable handler identity does.
 2. ~~TUI live `message` path treated injected (runtime-attributed) turns as
-   typed human input~~ — fixed, and now covered by two tests (snapshot replay and
-   live frame).
-3. ~~Web `entries` and TUI `transcript` are never trimmed~~ — both fixed.
-4. ~~TUI `notices`/`errors` grow per message~~ — both capped.
+   typed human input~~ — fixed in the old client, and still an invariant of the
+   current one: `tests/tui/test_state.py::test_injected_history_turn_is_a_notice_not_typed_input`.
+3. ~~Web `entries` and TUI `transcript` are never trimmed~~ — fixed on the Web;
+   **open on the TUI**: the new client renders a bounded window but retains the
+   whole history (`tui-rewrite-spec.md` §5.16).
+4. ~~TUI `notices`/`errors` grow per message~~ — the old client capped them; the
+   new client has a single `Timeline` for every entry kind and no cap (same §5.16
+   item).

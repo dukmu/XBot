@@ -271,19 +271,21 @@ def _run_tui(args) -> None:
 
     server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
 
-    from XBotv2.tui.textual_client import TextualTuiClient
+    from XBotv2.tui.app import run_tui
 
-    client = TextualTuiClient(
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        agent=getattr(args, "agent", None),
-        workspace_root=str(_workspace_root(args)),
-        session_mode="resume" if getattr(args, "session", None) else "new",
-        base_url=server_url,
-        uds_path=uds_path,
-    )
+    session_id = getattr(args, "session", None)
     try:
-        asyncio.run(client.run())
+        asyncio.run(
+            run_tui(
+                base_url=server_url,
+                uds_path=uds_path,
+                session_id=session_id,
+                thread_id=getattr(args, "thread", "agent"),
+                agent=getattr(args, "agent", None),
+                workspace_root=str(_workspace_root(args)),
+                mode="resume" if session_id else "new",
+            )
+        )
     finally:
         _cleanup_spawned_server(spawned_server, uds_path)
 

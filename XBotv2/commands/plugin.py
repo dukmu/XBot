@@ -91,6 +91,7 @@ class CommandOperations:
                 usage=command.usage or f"/{command.name}",
                 examples=command.examples,
                 parameters=command.parameters,
+                effects=command.effects,
                 exclusive=command.exclusive,
             )
             for command in self._commands.all()

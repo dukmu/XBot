@@ -44,6 +44,7 @@ def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
             name="jobs",
             description="List or stop background jobs",
             handler=guard_command(jobs_command),
+            effects=("jobs",),
             usage="/jobs [ps] | /jobs stop <id> | /jobs stopall",
             examples=("/jobs", "/jobs stop job-3", "/jobs stopall"),
         ),

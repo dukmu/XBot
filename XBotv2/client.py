@@ -70,11 +70,37 @@ from XBotv2.session import (
     ThreadSummary,
     UndoRequest,
 )
+from XBotv2.commands import (
+    CommandListResponse,
+    CommandRequest,
+    CommandResponse,
+)
 from XBotv2.workspaces import WorkspaceSnapshot
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
 ResponseModel = TypeVar("ResponseModel", bound=WireModel)
+
+# Hosts that name this machine. A request to one of them cannot need a proxy, and
+# consulting the proxy settings for it is not merely useless: ``httpx`` parses
+# every ``NO_PROXY`` entry as a URL at client construction, so an entry such as
+# ``[::1]`` (its port parses as ``":1]"``) makes the client impossible to build.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def uses_proxy_environment(base_url: str, *, uds_path: str | None = None) -> bool:
+    """Whether the process proxy settings may apply to this target.
+
+    Local targets -- loopback and Unix sockets -- opt out; anything else keeps
+    httpx's default, so a client behind a corporate proxy still works.
+    """
+    if uds_path is not None:
+        return False
+    try:
+        host = httpx.URL(base_url).host
+    except (httpx.InvalidURL, ValueError):
+        return True
+    return str(host).lower() not in _LOOPBACK_HOSTS
 
 
 class XBotClientError(RuntimeError):
@@ -100,6 +126,7 @@ class XBotClient:
         uds_path: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         headers: Mapping[str, str] | None = None,
+        trust_env: bool | None = None,
     ) -> None:
         if uds_path is not None and transport is not None:
             raise ValueError("uds_path and transport are mutually exclusive")
@@ -112,6 +139,11 @@ class XBotClient:
             headers=request_headers,
             timeout=timeout,
             transport=transport,
+            trust_env=(
+                uses_proxy_environment(base_url, uds_path=uds_path)
+                if trust_env is None
+                else trust_env
+            ),
         )
 
     async def __aenter__(self) -> "XBotClient":
@@ -298,6 +330,31 @@ class XBotClient:
     ) -> CloseResponse:
         return await self._request(
             "POST", f"{thread_path(session_id, thread_id)}/close", CloseResponse
+        )
+
+    async def list_commands(
+        self, session_id: str, thread_id: str
+    ) -> CommandListResponse:
+        """What this thread can run, and what each command touches."""
+        return await self._request(
+            "GET",
+            f"{thread_path(session_id, thread_id)}/commands",
+            CommandListResponse,
+        )
+
+    async def run_command(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        raw: str,
+    ) -> CommandResponse:
+        """Run one server command, given the line exactly as the user typed it."""
+        return await self._request(
+            "POST",
+            f"{thread_path(session_id, thread_id)}/commands",
+            CommandResponse,
+            CommandRequest(raw=raw),
         )
 
     async def list_agents(

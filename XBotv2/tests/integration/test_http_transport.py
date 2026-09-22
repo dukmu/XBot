@@ -67,7 +67,6 @@ from XBotv2.session.runtime import (
 )
 from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.protocol import ServerEvent
-from XBotv2.tui.terminal import TerminalSession
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -286,7 +285,9 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         ]
         assert undone.removed_turns == 1
         assert undone.messages == []
-        assert not hasattr(sdk, "run_command")
+        # The command plane is part of the SDK now: one client procedure for
+        # every client, instead of each re-implementing the HTTP call.
+        assert hasattr(sdk, "list_commands") and hasattr(sdk, "run_command")
 
         with pytest.raises(XBotClientError) as raised:
             await sdk.get_thread("sdk-client", "missing")
@@ -852,22 +853,6 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield app
     finally:
         await server.stop()
-
-
-@pytest.fixture(autouse=True)
-def _reset_tui_command_registry():
-    """Restore the TUI command module after tests that connect a real TUI.
-
-    A connected TUI merges the server command catalog into the module-level
-    ``tui.command`` registry; reset it so later suites (e.g. test_command)
-    see only the local client commands.
-    """
-    yield
-    from XBotv2.tui import command
-
-    command._ALIASES = dict(command._CLIENT_ALIASES)
-    command._COMMANDS = dict(command._CLIENT_COMMANDS)
-    command._SEARCH_ORDER = list(command._CLIENT_SEARCH_ORDER)
 
 
 @pytest_asyncio.fixture
@@ -1816,76 +1801,6 @@ async def test_http_session_listing_and_resume_preserve_main_thread_workspace(
 
 
 @pytest.mark.asyncio
-async def test_real_tui_session_command_resumes_history_and_continues_chat(
-    tmp_path: Path,
-) -> None:
-    """The TUI switch and shared event stream work over a real socket."""
-    from XBotv2.tui.textual_client import XBotTextualApp
-
-    workspace = tmp_path / "persisted-workspace"
-    workspace.mkdir()
-    llm = MockLLM(responses=[
-        {"content": "historical reply"},
-        {"content": "continued reply"},
-    ])
-    async with _real_terminal_session(
-        tmp_path,
-        llm=llm,
-        sandbox_enabled=False,
-    ) as session:
-        await session.client.open_session(
-            session_id="persisted-session",
-            thread_id="main",
-            workspace_root=str(workspace),
-        )
-        await session.client.send_message(
-            "persisted-session",
-            "main",
-            "historical question",
-            request_id="history",
-        )
-
-        app = XBotTextualApp(session_id="default", thread_id="agent")
-        app.session = session
-        async with app.run_test(headless=True, size=(120, 40)) as pilot:
-            for _ in range(60):
-                await pilot.pause()
-                if app._session_attached:
-                    break
-            assert app._session_attached
-            composer = app.query_one("#input")
-            composer.load_text("/session persisted-session")
-            await app.submit_composer()
-            for _ in range(100):
-                await pilot.pause()
-                if (
-                    app.state.session_id == "persisted-session"
-                    and app.state.status == "Ready"
-                ):
-                    break
-            assert app.state.session_id == "persisted-session"
-            assert app.state.thread_id == "main"
-            assert app.state.workspace_root == str(workspace.resolve())
-            assert [message.content for message in app.state.messages] == [
-                "historical question", "historical reply"
-            ]
-
-            composer.load_text("continue")
-            await app.submit_composer()
-            for _ in range(160):
-                await pilot.pause()
-                if any(
-                    message.content == "continued reply"
-                    for message in app.state.messages
-                ):
-                    break
-            assert any(
-                message.content == "continued reply"
-                for message in app.state.messages
-            )
-
-
-@pytest.mark.asyncio
 async def test_http_command_plane_exposes_platform_builtins(
     client: httpx.AsyncClient,
     http_app,
@@ -1902,7 +1817,13 @@ async def test_http_command_plane_exposes_platform_builtins(
         "/sessions/cmds/threads/t/commands"
     )
     assert commands_response.status_code == 200
-    names = {item["name"] for item in commands_response.json()["commands"]}
+    entries = {item["name"]: item for item in commands_response.json()["commands"]}
+    names = set(entries)
+    assert entries["clear"]["effects"] == ["history", "thread", "sessions"], (
+        "a client can tell what a command touches before running it"
+    )
+    assert entries["status"]["effects"] == []
+    assert entries["permission"]["effects"] == ["policy", "commands"]
     assert {"status", "provider", "model", "effort",
             "clear", "undo", "fork", "jobs",
             "permission", "sandbox"} <= names
@@ -1912,7 +1833,7 @@ async def test_http_command_plane_exposes_platform_builtins(
 
     result_response = await client.post(
         "/sessions/cmds/threads/t/commands",
-        json={"command": "status", "args": []},
+        json={"raw": "/status"},
     )
     assert result_response.status_code == 200
     body = result_response.json()
@@ -3903,7 +3824,7 @@ async def test_http_interrupt_emits_turn_cancelled_on_sse(
     must close the SSE stream with a ``turn_cancelled`` event.
 
     This exercises the full production path:
-    TUI ESC → ``TerminalSession.interrupt`` → ``POST /interrupt`` →
+    TUI ESC → ``POST /interrupt`` →
     session ``turn_task.cancel`` → ``Engine.run_turn`` catch
     ``CancelledError`` → yield ``turn_cancelled`` → SSE → client.
 
@@ -4129,18 +4050,18 @@ async def test_http_interrupt_when_idle_returns_no_op(
 
 
 @asynccontextmanager
-async def _real_terminal_session(
+async def _real_client(
     tmp_path: Path,
     *,
     llm: MockLLM,
     sandbox_enabled: bool,
     timeout: float = 30.0,
-) -> AsyncIterator[TerminalSession]:
-    """Run one connected TerminalSession against a real local HTTP server.
+) -> AsyncIterator[tuple[XBotClient, str, str]]:
+    """A real local HTTP server and a connected ``XBotClient``.
 
-    The default request timeout is generous: ``open_session`` cold-starts a
-    full XBot application, which can exceed a 100 ms client budget under
-    load. The 30 s default matches the production client.
+    Yields ``(client, session_id, thread_id)``. The default request timeout is
+    generous: ``open_session`` cold-starts a full XBot application, which can
+    exceed a 100 ms client budget under load; 30 s matches the production client.
     """
     import socket
     import threading
@@ -4235,7 +4156,7 @@ async def _real_terminal_session(
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
     base_url = f"http://127.0.0.1:{port}"
-    session: TerminalSession | None = None
+    client: XBotClient | None = None
     try:
         async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
             for _ in range(50):
@@ -4248,17 +4169,17 @@ async def _real_terminal_session(
             else:
                 raise RuntimeError("uvicorn server failed to start")
 
-        session = TerminalSession(
+        client = XBotClient(base_url, timeout=timeout)
+        await client.open_session(
             session_id="default",
             thread_id="agent",
-            workspace_root=workspace,
-            client=XBotClient(base_url, timeout=timeout),
+            workspace_root=str(workspace),
+            mode="new",
         )
-        await session.connect()
-        yield session
+        yield client, "default", "agent"
     finally:
-        if session is not None:
-            await session.disconnect()
+        if client is not None:
+            await client.close()
         server.should_exit = True
         server_thread.join(timeout=3.0)
         await application.stop()
@@ -4287,24 +4208,28 @@ async def test_real_http_filesystem_permission_wait_does_not_read_timeout(
         },
         {"content": "done"},
     ])
-    async with _real_terminal_session(
+    async with _real_client(
         tmp_path,
         llm=llm,
         sandbox_enabled=True,
-    ) as session:
+    ) as (client, session_id, thread_id):
         (workspace / "hello.txt").write_text("hello", encoding="utf-8")
 
         events = []
-        submitted = asyncio.create_task(session.send_message("list workspace"))
-        async for event in session.session_events():
-            events.append(event)
-            if event.get("type") == "permission_request":
+        submitted = asyncio.create_task(
+            client.send_message(session_id, thread_id, "list workspace", request_id="perm")
+        )
+        async for frame in client.stream_events(session_id, thread_id):
+            events.append({"type": frame.type, "data": frame.data})
+            if frame.type == "permission_request":
                 await asyncio.sleep(0.2)
-                await session.respond_permission(
-                    event["data"]["request_id"],
-                    "allow",
+                await client.respond_permission(
+                    session_id,
+                    thread_id,
+                    request_id=frame.data["request_id"],
+                    decision="allow",
                 )
-            if event.get("type") in {"turn_finished", "turn_cancelled"}:
+            if frame.type in {"turn_finished", "turn_cancelled"}:
                 break
         await submitted
 
@@ -4329,20 +4254,22 @@ async def test_real_http_interrupt_while_permission_waits(
             ],
         },
     ])
-    async with _real_terminal_session(
+    async with _real_client(
         tmp_path,
         llm=llm,
         sandbox_enabled=True,
-    ) as session:
+    ) as (client, session_id, thread_id):
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
-            submitted = asyncio.create_task(session.send_message("list workspace"))
-            async for event in session.session_events():
-                collected.append(event)
-                if event.get("type") == "permission_request":
-                    response = await session.interrupt()
-                    assert response["cancelled"] is True
-                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+            submitted = asyncio.create_task(
+                client.send_message(session_id, thread_id, "list workspace", request_id="wait")
+            )
+            async for frame in client.stream_events(session_id, thread_id):
+                collected.append({"type": frame.type, "data": frame.data})
+                if frame.type == "permission_request":
+                    response = await client.interrupt(session_id, thread_id)
+                    assert response.cancelled is True
+                if frame.type in {"turn_finished", "turn_cancelled"}:
                     break
             await submitted
             return collected
@@ -4352,9 +4279,11 @@ async def test_real_http_interrupt_while_permission_waits(
             event for event in events if event.get("type") == "permission_request"
         )
         with pytest.raises(RuntimeError, match="interaction_no_longer_pending"):
-            await session.respond_permission(
-                request["data"]["request_id"],
-                "allow",
+            await client.respond_permission(
+                session_id,
+                thread_id,
+                request_id=request["data"]["request_id"],
+                decision="allow",
             )
 
     event_types = [event.get("type") for event in events]
@@ -4392,26 +4321,28 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
         },
     ])
 
-    async with _real_terminal_session(
+    async with _real_client(
         tmp_path,
         llm=llm,
         sandbox_enabled=False,
-    ) as session:
+    ) as (client, session_id, thread_id):
         events = []
         submitted = asyncio.create_task(
-            session.send_message("ask before continuing")
+            client.send_message(session_id, thread_id, "ask before continuing", request_id="ask")
         )
-        async for event in session.session_events():
-            events.append(event)
-            if event.get("type") == "permission_request":
-                await session.respond_permission(
-                    event["data"]["request_id"],
-                    "allow",
+        async for frame in client.stream_events(session_id, thread_id):
+            events.append({"type": frame.type, "data": frame.data})
+            if frame.type == "permission_request":
+                await client.respond_permission(
+                    session_id,
+                    thread_id,
+                    request_id=frame.data["request_id"],
+                    decision="allow",
                 )
-            elif event.get("type") == "user_input_required":
-                response = await session.interrupt()
-                assert response["cancelled"] is True
-            if event.get("type") in {"turn_finished", "turn_cancelled"}:
+            elif frame.type == "user_input_required":
+                response = await client.interrupt(session_id, thread_id)
+                assert response.cancelled is True
+            if frame.type in {"turn_finished", "turn_cancelled"}:
                 break
         await submitted
 
@@ -4419,9 +4350,11 @@ async def test_real_http_interrupt_while_ask_user_waits(tmp_path: Path) -> None:
             event for event in events if event.get("type") == "user_input_required"
         )
         with pytest.raises(RuntimeError, match="interaction_no_longer_pending"):
-            await session.submit_user_input(
-                request["data"]["request_id"],
-                "yes",
+            await client.respond_user_input(
+                session_id,
+                thread_id,
+                request_id=request["data"]["request_id"],
+                answer="yes",
             )
 
     event_types = [event.get("type") for event in events]
@@ -4468,29 +4401,31 @@ async def test_real_http_open_session_replays_an_unanswered_interaction(
         {"content": "continued"},
     ])
 
-    async with _real_terminal_session(
+    async with _real_client(
         tmp_path,
         llm=llm,
         sandbox_enabled=False,
-    ) as session:
+    ) as (client, session_id, thread_id):
         events: list[dict[str, Any]] = []
         submitted = asyncio.create_task(
-            session.send_message("ask before continuing")
+            client.send_message(session_id, thread_id, "ask before continuing", request_id="ask")
         )
         request_id = ""
 
         async def wait_for_question() -> None:
             nonlocal request_id
-            async for event in session.session_events():
-                events.append(event)
-                if event.get("type") == "permission_request":
+            async for frame in client.stream_events(session_id, thread_id):
+                events.append({"type": frame.type, "data": frame.data})
+                if frame.type == "permission_request":
                     # The configured policy asks before `ask_user` runs.
-                    await session.respond_permission(
-                        event["data"]["request_id"],
-                        "allow",
+                    await client.respond_permission(
+                        session_id,
+                        thread_id,
+                        request_id=frame.data["request_id"],
+                        decision="allow",
                     )
-                elif event.get("type") == "user_input_required":
-                    request_id = str(event["data"]["request_id"])
+                elif frame.type == "user_input_required":
+                    request_id = str(frame.data["request_id"])
                     return
 
         try:
@@ -4499,20 +4434,30 @@ async def test_real_http_open_session_replays_an_unanswered_interaction(
             pytest.fail(f"wait_for_question timed out; events={events!r}")
 
         assert request_id
-        snapshot = await asyncio.wait_for(session.refresh_baseline(), timeout=20.0)
-        assert snapshot is not None
-        pending = snapshot["pending_interactions"]
-        assert [item["type"] for item in pending] == ["user_input_required"]
-        assert pending[0]["data"]["request_id"] == request_id
-        assert pending[0]["data"]["question"] == "Continue?"
-        assert pending[0]["data"]["resume_supported"] is True
+        snapshot = await asyncio.wait_for(
+            client.open_session(
+                session_id=session_id,
+                thread_id=thread_id,
+                mode="resume",
+            ),
+            timeout=20.0,
+        )
+        pending = snapshot.pending_interactions
+        assert [item.type for item in pending] == ["user_input_required"]
+        assert pending[0].data["request_id"] == request_id
+        assert pending[0].data["question"] == "Continue?"
+        assert pending[0].data["resume_supported"] is True
 
-        await session.submit_user_input(request_id, "continue")
+        await client.respond_user_input(
+            session_id, thread_id, request_id=request_id, answer="continue"
+        )
 
         async def wait_for_turn_end() -> None:
-            async for event in session.session_events():
-                events.append(event)
-                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+            async for frame in client.stream_events(
+                session_id, thread_id, after=snapshot.event_cursor
+            ):
+                events.append({"type": frame.type, "data": frame.data})
+                if frame.type in {"turn_finished", "turn_cancelled"}:
                     return
 
         try:
@@ -4549,33 +4494,37 @@ async def test_real_http_ask_user_round_trip(tmp_path: Path) -> None:
     seen_payloads: list[dict[str, Any]] = []
     seen_permissions: list[dict[str, Any]] = []
 
-    async with _real_terminal_session(
+    async with _real_client(
         tmp_path,
         llm=llm,
         sandbox_enabled=False,
-    ) as session:
+    ) as (client, session_id, thread_id):
 
         async def collect_events() -> list[dict[str, Any]]:
             collected = []
             submitted = asyncio.create_task(
-                session.send_message("ask before continuing")
+                client.send_message(session_id, thread_id, "ask before continuing", request_id="ask")
             )
-            async for event in session.session_events():
-                collected.append(event)
-                if event.get("type") == "permission_request":
-                    seen_permissions.append(event["data"])
-                    await session.respond_permission(
-                        event["data"]["request_id"],
-                        "allow",
+            async for frame in client.stream_events(session_id, thread_id):
+                collected.append({"type": frame.type, "data": frame.data})
+                if frame.type == "permission_request":
+                    seen_permissions.append(frame.data)
+                    await client.respond_permission(
+                        session_id,
+                        thread_id,
+                        request_id=frame.data["request_id"],
+                        decision="allow",
                     )
-                elif event.get("type") == "user_input_required":
-                    seen_payloads.append(event["data"])
+                elif frame.type == "user_input_required":
+                    seen_payloads.append(frame.data)
                     await asyncio.sleep(0.2)
-                    await session.submit_user_input(
-                        event["data"]["request_id"],
-                        "continue",
+                    await client.respond_user_input(
+                        session_id,
+                        thread_id,
+                        request_id=frame.data["request_id"],
+                        answer="continue",
                     )
-                if event.get("type") in {"turn_finished", "turn_cancelled"}:
+                if frame.type in {"turn_finished", "turn_cancelled"}:
                     break
             await submitted
             return collected
@@ -4757,10 +4706,7 @@ async def test_http_goal_command_runs_the_evaluator_loop(
 
     response = await skills_client.post(
         "/sessions/goal-state/threads/t/commands",
-        json={
-            "command": "goal",
-            "raw": "/goal ship the API",
-        },
+        json={"raw": "/goal ship the API"},
     )
     assert response.json()["data"]["message"].startswith("[active] ship the API")
 
@@ -4791,7 +4737,7 @@ async def test_http_goal_command_runs_the_evaluator_loop(
         await asyncio.sleep(0)
     get_response = await skills_client.post(
         "/sessions/goal-state/threads/t/commands",
-        json={"command": "goal", "raw": "/goal"},
+        json={"raw": "/goal"},
     )
     assert get_response.json()["data"]["status"] == "ok"
     message = get_response.json()["data"]["message"]
@@ -4812,7 +4758,7 @@ async def test_http_goal_command_remains_available_during_active_turn(
     try:
         response = await skills_client.post(
             "/sessions/busy-command/threads/t/commands",
-            json={"command": "goal", "raw": "/goal"},
+            json={"raw": "/goal"},
         )
     finally:
         ctx.turn_lock.release()
@@ -4822,20 +4768,28 @@ async def test_http_goal_command_remains_available_during_active_turn(
 
 
 @pytest.mark.asyncio
-async def test_http_command_rejects_invalid_quoting(
+async def test_http_command_reports_its_own_usage_error(
     skills_client: httpx.AsyncClient,
 ) -> None:
+    """A line the command cannot parse is the command's answer, not a crash.
+
+    The route resolves the *name* and hands the rest over untouched; parsing the
+    arguments belongs to the command that understands them, and its failure is
+    reported as a result the client can show (``guard_command``).
+    """
     await skills_client.post(
         "/sessions", json={"session_id": "invalid-command", "thread_id": "t"}
     )
 
     response = await skills_client.post(
         "/sessions/invalid-command/threads/t/commands",
-        json={"raw": "/goal 'unterminated"},
+        json={"raw": "/permission set \"unterminated"},
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "invalid_request"
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["status"] == "error"
+    assert "syntax" in body["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -5046,185 +5000,3 @@ async def test_http_policy_patch_rejects_invalid_sandbox_values(
     assert bad_network.json()["code"] == "invalid_request"
 
 
-@pytest.mark.asyncio
-async def test_tui_queued_messages_all_appear_and_complete(http_app, tmp_path) -> None:
-    """The TUI over the real HTTP transport must inject every queued message.
-
-    While the first turn blocks on a tool, two more messages are submitted;
-    after the tool releases, all three user messages and their replies must
-    appear in the TUI transcript (regression: the fold-in hand-off starved
-    the active stream and leaked its events into the queued stream, so the
-    second queued message never drained and the transcript did not update).
-    """
-
-    import socket
-    import threading
-
-    import uvicorn
-
-    from XBotv2.tui.textual_client import XBotTextualApp
-
-    tool_started = threading.Event()
-    release_tool = threading.Event()
-
-    async def blocker(value: str) -> str:
-        tool_started.set()
-        await asyncio.to_thread(release_tool.wait)
-        return value
-
-    http_app.state.manager.application_factory = partial(
-        create_agent_application,
-        model_override=MockLLM(responses=[
-            {"tool_calls": [{
-                "id": "b1",
-                "name": "blocker",
-                "args": {"value": "x"},
-            }]},
-            {"content": "handled A B and C"},
-        ]),
-    )
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(
-        http_app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-        ws="none",
-    ))
-    server_thread = threading.Thread(target=server.run, daemon=True)
-    server_thread.start()
-    base_url = f"http://127.0.0.1:{port}"
-    async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
-        for _ in range(50):
-            try:
-                if (await probe.get("/health")).status_code == 200:
-                    break
-            except httpx.RequestError:
-                await asyncio.sleep(0.1)
-        else:
-            raise RuntimeError("uvicorn server failed to start")
-
-    client = XBotClient(base_url)
-    session = TerminalSession(
-        session_id="tui-q",
-        thread_id="t",
-        workspace_root=str(tmp_path),
-        client=client,
-    )
-    app = XBotTextualApp(session_id="tui-q", thread_id="t", workspace_root=str(tmp_path))
-    app.session = session
-
-    try:
-        async with app.run_test(headless=True, size=(120, 40)) as pilot:
-            await pilot.pause()
-            for _ in range(60):
-                await pilot.pause()
-                if app._session_attached:
-                    break
-            assert app._session_attached, "TUI did not connect to the server"
-
-            ctx = await http_app.state.manager.get("tui-q", "t")
-            ctx.application._context.permissions.replace_rules(
-                {"allow": [{"tool": ".*"}]}
-            )
-            ctx.application._context.tools._registry.register(
-                Tool.from_function(blocker)
-            )
-            ctx.application._context.tools._registry.restrict(None)
-
-            composer = app.query_one("#input")
-            composer.load_text("A")
-            await app.submit_composer()
-            assert await asyncio.to_thread(tool_started.wait, 5)
-
-            composer.load_text("B")
-            await app.submit_composer()
-            await pilot.pause()
-            composer.load_text("C")
-            await app.submit_composer()
-            await pilot.pause()
-
-            # B and C remain in the Agent inbox until the tool boundary, while
-            # their accepted-input events render immediately and exactly once.
-            assert ctx.engine.pending_input_count == 2, "B and C must be queued"
-            contents = [message.content for message in app.state.messages]
-            assert contents.count("B") == 1
-            assert contents.count("C") == 1
-
-            release_tool.set()
-            for _ in range(200):
-                await pilot.pause()
-                if not app.state.turn_active and not app._pending_messages:
-                    break
-
-            text = "\n".join(message.content for message in app.state.messages)
-            assert "handled A B and C" in text, text
-            assert not app._pending_messages
-    finally:
-        await client.close()
-        server.should_exit = True
-        server_thread.join(timeout=3.0)
-
-
-@pytest.mark.asyncio
-async def test_tui_input_submitted_while_busy_is_retried_after_turn(
-    http_app, tmp_path
-) -> None:
-    """A message submitted while a turn is busy and never folded (no tool
-    boundary) is rejected at turn end and the TUI retries it as its own turn,
-    so it still reaches the transcript."""
-
-    from XBotv2.tui.textual_client import XBotTextualApp
-
-    release_a = asyncio.Event()
-    llm = _GatedMockLLM(release_a, responses=[
-        {"content": "A reply"},
-        {"content": "B reply"},
-    ])
-    http_app.state.manager.application_factory = partial(
-        create_agent_application,
-        model_override=llm,
-    )
-
-    client = XBotClient("http://test", transport=ASGITransport(app=http_app))
-    session = TerminalSession(
-        session_id="tui-retry",
-        thread_id="t",
-        workspace_root=str(tmp_path),
-        client=client,
-    )
-    app = XBotTextualApp(session_id="tui-retry", thread_id="t", workspace_root=str(tmp_path))
-    app.session = session
-
-    async with app.run_test(headless=True, size=(120, 40)) as pilot:
-        await pilot.pause()
-        for _ in range(60):
-            await pilot.pause()
-            if app._session_attached:
-                break
-        assert app._session_attached
-        ctx = await http_app.state.manager.get("tui-retry", "t")
-
-        composer = app.query_one("#input")
-        composer.load_text("A")
-        await app.submit_composer()
-        await pilot.pause()
-        # A is busy (LLM gated); B is held locally.
-        composer.load_text("B")
-        await app.submit_composer()
-        await pilot.pause()
-        # A is busy (LLM gated); B is held and not yet in the transcript.
-        assert not any(
-            message.content == "B" for message in app.state.messages
-        ), "B must not appear while A is busy"
-
-        release_a.set()
-        for _ in range(300):
-            await pilot.pause()
-            if not app._pending_messages:
-                break
-
-        assert not app._pending_messages, "B must be retried and delivered"

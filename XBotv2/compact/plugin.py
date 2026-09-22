@@ -45,6 +45,7 @@ class CompactPlugin:
         ctx.tools.register(build_compact_tool(service))
         ctx.commands.register(Command(
             name="compact",
+            effects=("history", "thread"),
             description="Compact conversation history immediately while idle.",
             handler=service._compact_command,
             usage="/compact",
