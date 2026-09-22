@@ -104,6 +104,11 @@ class ToolResultData(WireModel):
 class TurnData(WireModel):
     turn: int = Field(ge=1)
     status_slots: dict[str, str] = Field(default_factory=dict)
+    # The session runtime enriches a terminal turn frame after the engine
+    # validated it: the status slots above, and the conversation's running
+    # statistics. The transport model must declare everything that travels, or a
+    # client that validates what it receives rejects a legitimate frame.
+    session_stats: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class TurnCancelledData(TurnData):

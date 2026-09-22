@@ -1086,7 +1086,7 @@ export function useXBot() {
     commandInFlight.current = true;
     setCommandRunning(true);
     try {
-      const result = await api.runCommand(current.session_id, current.thread_id, command.name, raw);
+      const result = await api.runCommand(current.session_id, current.thread_id, raw);
       if (generation !== navigationGeneration.current) return null;
       if (result.data.status === "error") return result.data;
       const effects = new Set(result.data.effects);

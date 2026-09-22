@@ -22,6 +22,7 @@ def build_agent_commands(
             name="agent",
             description="List or switch the active primary Agent",
             handler=guard_command(handler.run),
+            effects=("thread", "agents", "commands"),
             usage="/agent [status|list|use <name>|<name>]",
         ),
     )

@@ -926,6 +926,7 @@ class GoalPlugin:
             name="goal",
             description="Set a completion condition and keep working toward it.",
             handler=service.command,
+            effects=("thread",),
             usage="/goal | /goal <condition> | /goal clear",
             examples=(
                 "/goal all tests in test/auth pass and the lint step is clean",

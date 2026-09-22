@@ -116,10 +116,45 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 
 ## Commands and Tools
 
+The command plane is **discovery plus execution of the slash vocabulary**, and it
+is a normal, typed part of the API surface. What a client may rely on is the
+resource: the catalogue's *shape* and the request's shape. What it may not rely
+on is the *content*: which commands exist is decided per session and thread by
+the plugins that are loaded there (the session plugin registers the built-ins,
+capability plugins register theirs through `ctx.commands`), so the list changes
+with the plugin tree and with the active agent. Clients therefore read it, they
+never hardcode it.
+
+| Field | Meaning |
+|---|---|
+| `name` / `slash` | the command and its `/` form |
+| `kind` | who runs it: `server` (this resource), `prompt` (submit the line as a message: it is a prompt template) |
+| `description` / `usage` / `examples` / `parameters` | what the user reads |
+| `effects` | what running it can touch (`history`, `thread`, `agents`, `jobs`, `commands`, `sessions`), declared *before* it runs |
+| `exclusive` | whether it must run while nothing else is |
+
+`POST` takes **one line, exactly as typed**: `{"raw": "/model use m2"}`. The
+server resolves the name from its own catalogue and hands the rest to the
+command unchanged; a line the command cannot parse comes back as an error
+*result* (`status: "error"`, with the reason in `message`), not as a transport
+failure. There is no `kind` in the request: the catalogue already says who runs
+the line, and repeating it in every client would be a second implementation of
+the same rule.
+
+One client procedure, the same in every client (TUI, Web, and any third party):
+
+1. keep your own local commands (pure UI affordances) — they win over the
+   server's catalogue;
+2. `GET …/commands` on attach, and again after any switch that can change the
+   set (session, thread, agent, provider);
+3. a line that names a local command runs locally; a `prompt` command is sent to
+   the message endpoint; anything else is `POST`ed here as one line;
+4. show `message`; use `effects` to refresh what can have changed.
+
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | `CommandListResponse` (hidden from OpenAPI schema) |
-| POST | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandResponse` (hidden from OpenAPI schema) |
+| GET | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | `CommandListResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/tools` | `list_tools` | `ToolListResponse` |
 
 ## Agent and model selection

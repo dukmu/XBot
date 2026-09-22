@@ -111,6 +111,7 @@ def build_llm_commands(
     return (
         Command(
             name="provider",
+            effects=("thread",),
             description="List or switch provider configuration",
             handler=guard_command(provider_command),
             usage="/provider [status|list|use <name>]",
@@ -118,6 +119,7 @@ def build_llm_commands(
         ),
         Command(
             name="model",
+            effects=("thread",),
             description="List or switch the model within a provider",
             handler=guard_command(model_command),
             usage="/model [status|list|use [<provider>] <model>]",
@@ -125,6 +127,7 @@ def build_llm_commands(
         ),
         Command(
             name="effort",
+            effects=("thread",),
             description="Show or switch the reasoning effort tier",
             handler=guard_command(effort_command),
             usage="/effort [<level>]",

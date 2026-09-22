@@ -437,6 +437,7 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
         "/sessions/{session_id}/threads/{thread_id}/agents",
         "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id}",
         "/sessions/{session_id}/threads/{thread_id}/close",
+        "/sessions/{session_id}/threads/{thread_id}/commands",
         "/sessions/{session_id}/threads/{thread_id}/effort",
         "/sessions/{session_id}/threads/{thread_id}/events",
         "/sessions/{session_id}/threads/{thread_id}/history/clear",
@@ -469,8 +470,14 @@ async def test_openapi_uses_typed_request_contracts(tmp_path):
     assert paths[policy_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionPolicyResponse")
     plugin_config_path = "/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}"
     assert paths[plugin_config_path]["patch"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PluginConfigPatchRequest")
-    assert "/commands" not in paths
-    assert not any(path.endswith("/commands") for path in paths)
+    command_path = "/sessions/{session_id}/threads/{thread_id}/commands"
+    assert command_path in paths, "discovery and execution are part of the contract"
+    assert paths[command_path]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"].endswith("/CommandListResponse")
+    assert paths[command_path]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"].endswith("/CommandRequest")
     assert paths["/health"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/HealthResponse")
     assert paths["/sessions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SessionListResponse")
     assert paths["/sessions/{session_id}"]["delete"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/DeleteSessionResponse")

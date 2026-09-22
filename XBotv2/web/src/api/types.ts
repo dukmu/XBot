@@ -281,6 +281,8 @@ export interface AgentInfo {
 }
 
 export interface CommandInfo {
+  /** What running it can touch, declared before it runs. */
+  effects?: string[];
   name: string;
   slash: string;
   kind: "client" | "server" | "prompt";

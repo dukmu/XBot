@@ -6,10 +6,10 @@ import shlex
 from typing import Literal
 
 from fastapi import APIRouter
+from pydantic import Field
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.commands.contracts import (
-    split_command_args,
     CommandDescription,
     CommandExecution,
     EXECUTE_COMMAND,
@@ -21,10 +21,14 @@ from XBotv2.session.contracts import SessionsPort
 
 
 class CommandRequest(WireModel):
-    command: str = ""
-    args: list[str] | None = None
-    raw: str = ""
-    kind: Literal["server", "prompt"] = "server"
+    """One line, exactly as the user typed it.
+
+    The client does not split it, and does not say what kind of command it is:
+    the server owns the catalogue, so the server is what resolves the line. Any
+    other split is a second implementation of the same rule, in every client.
+    """
+
+    raw: str = Field(min_length=1)
 
 
 class CommandListResponse(WireModel):
@@ -44,7 +48,6 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/commands",
         operation_id="list_commands",
-        include_in_schema=False,
     )
     async def session_commands(
         session_id: str,
@@ -58,49 +61,32 @@ def build_commands_router(*, sessions: SessionsPort) -> APIRouter:
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/commands",
         operation_id="run_command",
-        include_in_schema=False,
     )
     async def run_command(
         session_id: str,
         thread_id: str,
         payload: CommandRequest,
     ) -> CommandResponse:
-        raw = payload.raw
-        command = payload.command.strip().removeprefix("/")
-        args = payload.args
-        if args is None:
-            try:
-                parts = split_command_args(raw)
-            except ValueError as exc:
-                raise HttpServerError(
-                    "invalid_request",
-                    str(exc),
-                    status=400,
-                ) from exc
-            if not command and parts:
-                command = parts[0].removeprefix("/")
-            args = parts[1:] if parts else []
+        command = payload.raw.strip().removeprefix("/").split(" ", 1)[0].lower()
         if not command:
             raise HttpServerError("invalid_request", "command must be non-empty", status=400)
+        raw_args = payload.raw.strip()
+        if raw_args.startswith("/"):
+            _, _, raw_args = raw_args.partition(" ")
         catalog = await sessions.dispatch(
             session_id, thread_id, LIST_COMMANDS, EmptyRequest()
         )
         declared = next(
-            (item for item in catalog.commands if item.name == command.lower()),
+            (item for item in catalog.commands if item.name == command),
             None,
         )
-        raw_args = raw.strip()
-        if raw_args.startswith("/"):
-            _, _, raw_args = raw_args.partition(" ")
-        elif not raw_args:
-            raw_args = " ".join(args)
         result = await sessions.dispatch(
             session_id,
             thread_id,
             EXECUTE_COMMAND,
             ExecuteCommand(
                 command=command,
-                kind=payload.kind,
+                kind=declared.kind if declared is not None else "server",
                 raw_args=raw_args,
                 exclusive=declared.exclusive if declared is not None else True,
             ),

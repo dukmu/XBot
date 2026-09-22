@@ -12,7 +12,9 @@ from XBotv2.core.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field
 
 CommandHandler = Callable[[str], Awaitable["CommandResult"]]
-CommandEffect = Literal["history", "thread", "agents", "jobs", "commands", "sessions"]
+CommandEffect = Literal[
+    "history", "thread", "agents", "jobs", "commands", "sessions", "policy"
+]
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -32,6 +34,10 @@ class Command:
     usage: str = ""
     examples: tuple[str, ...] = ()
     parameters: dict[str, str] = field(default_factory=dict)
+    #: What running this command can touch, declared *before* it runs. Clients
+    #: use it to label a command, and to refresh exactly the panels that can
+    #: have changed instead of guessing.
+    effects: tuple[CommandEffect, ...] = ()
     exclusive: bool = True
 
     def __post_init__(self) -> None:
@@ -86,6 +92,15 @@ def guard_command(handler: CommandHandler) -> CommandHandler:
 
 
 class CommandDescription(BaseModel):
+    """One entry of the catalogue a server publishes.
+
+    ``kind`` says who runs it: the client (a purely local affordance), the server
+    (through the command resource) or the model's prompt (submit the line as a
+    message). ``effects`` says what it can touch. Both are the *content* of the
+    catalogue, which is per thread and changes as plugins load and unload; the
+    resource's shape is what the contract covers.
+    """
+
     name: str
     slash: str
     kind: Literal["client", "server", "prompt"]
@@ -93,6 +108,7 @@ class CommandDescription(BaseModel):
     usage: str
     examples: tuple[str, ...] = ()
     parameters: dict[str, str] = Field(default_factory=dict)
+    effects: tuple[CommandEffect, ...] = ()
     exclusive: bool
     model_config = ConfigDict(extra="forbid", frozen=True)
 

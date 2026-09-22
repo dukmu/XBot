@@ -7,11 +7,37 @@ Principles:
 - Each test creates its own engine — no shared state.
 """
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _local_proxy_environment():
+    """Keep the ambient proxy configuration out of the suite.
+
+    Every HTTP test here talks to a server on this machine, and ``httpx`` parses
+    each ``NO_PROXY`` entry as a URL when it builds a client -- so an entry such
+    as ``[::1]`` (its port parses as ``":1]"``) makes ``httpx.AsyncClient()``
+    raise before a request is ever made. That is a property of the machine, not
+    of the code under test.
+
+    Only the *ambient* settings are normalised; the client's own behaviour is
+    covered by ``tests/core/test_client.py``, which asserts that a loopback
+    target ignores them and a remote one does not.
+    """
+    names = ("NO_PROXY", "no_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY",
+             "https_proxy", "ALL_PROXY", "all_proxy")
+    saved = {name: os.environ.pop(name, None) for name in names}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is not None:
+                os.environ[name] = value
 
 
 @pytest.fixture

@@ -320,11 +320,18 @@ export class XBotApi {
     return result.commands;
   }
 
-  runCommand(sessionId: string, threadId: string, command: string, raw: string) {
+  /**
+   * Run one server command, given the line exactly as the user typed it.
+   *
+   * The server owns the catalogue, so it resolves the name and its arguments;
+   * the body is the line and nothing else. Prompt-kind commands are not run
+   * here at all -- they are prompt templates, submitted as a message.
+   */
+  runCommand(sessionId: string, threadId: string, raw: string) {
     return this.request<CommandResult>(
       "POST",
       `${threadPath(sessionId, threadId)}/commands`,
-      { command, raw, kind: "server" },
+      { raw },
     );
   }
 

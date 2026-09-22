@@ -104,6 +104,7 @@ def build_permissions_commands(
     return (
         Command(
             name="permission",
+            effects=('policy', 'commands'),
             description="Inspect or update session tool permissions",
             handler=guard_command(permission_command),
             usage=(

@@ -30,11 +30,18 @@ class Command:
     usage: str = ""
     examples: tuple[str, ...] = ()
     parameters: dict[str, str] = field(default_factory=dict)
+    effects: tuple[CommandEffect, ...] = ()
     exclusive: bool = True
 ```
 
 `__post_init__` validates the name regex and that `kind="server"`
 implies `handler is not None` (and vice versa for `kind="prompt"`).
+
+Declare `effects` for every command you register. They are published in the
+catalogue, so a client knows **before** running a command what it can touch
+(`history`, `thread`, `agents`, `jobs`, `commands`, `sessions`, `policy`) and can
+refresh exactly those panels instead of guessing. The result's `effects` are what
+actually happened; the declaration is what *can* happen.
 
 ### `CommandResult` — handler return
 
@@ -117,17 +124,25 @@ class CommandCatalog:
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | — | `CommandListResponse` |
 | `POST` | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandRequest` | `CommandResponse` |
 
-Both routes are `include_in_schema=False` (internal TUI/web surface).
+Both routes are part of the public, typed API surface (they appear in the
+OpenAPI schema and in `XBotClient` as `list_commands` / `run_command`). The
+*shape* is the contract; the *content* is not: which commands exist is decided
+per session and thread by the plugins loaded there, so clients read the
+catalogue and never hardcode it.
 
 ### `CommandRequest` (POST body)
 
 ```python
 class CommandRequest(WireModel):
-    command: str = ""               # bare name; leading / is stripped
-    args: list[str] | None = None   # pre-split; None → shlex.split(raw)
-    raw: str = ""                   # raw tail after the slash command
-    kind: Literal["server", "prompt"] = "server"
+    raw: str = Field(min_length=1)   # the line exactly as the user typed it
 ```
+
+The server resolves the name from its own catalogue and hands the rest to the
+command unchanged. Do not add `kind` back: the catalogue already says who runs a
+line (`server` → this resource, `prompt` → the message endpoint), and repeating
+it in every client is a second implementation of the same rule. A line the
+command cannot parse should come back as `CommandResult(status="error", ...)`
+(wrap the handler in `guard_command`), not as a transport failure.
 
 ### `CommandListResponse`
 

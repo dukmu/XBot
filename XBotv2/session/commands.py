@@ -78,10 +78,10 @@ def build_session_commands(
         )
 
     return (
-        Command("status", "Show the current session and thread status", handler=guard_command(status_command), usage="/status"),
-        Command("clear", "Clear conversation history", handler=guard_command(clear_command), usage="/clear"),
-        Command("undo", "Remove recent conversation turns", handler=guard_command(undo_command), usage="/undo [count]"),
-        Command("fork", "Fork the persisted session", handler=guard_command(fork_command), usage="/fork"),
+        Command("status", "Show the current session and thread status", handler=guard_command(status_command), usage="/status", effects=()),
+        Command("clear", "Clear conversation history", handler=guard_command(clear_command), usage="/clear", effects=("history", "thread", "sessions")),
+        Command("undo", "Remove recent conversation turns", handler=guard_command(undo_command), usage="/undo [count]", effects=("history", "thread", "sessions")),
+        Command("fork", "Fork the persisted session", handler=guard_command(fork_command), usage="/fork", effects=("sessions",)),
     )
 
 
