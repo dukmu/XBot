@@ -20,9 +20,6 @@ import os
 
 from pydantic import JsonValue
 
-from XBotv2.llm.contracts import ModelConfig, ProviderConfig
-
-
 def merge_request_extras(
     derived: dict[str, JsonValue],
     configured: dict[str, JsonValue],
@@ -66,12 +63,12 @@ def parse_provider_config(
             raise ValueError(f"Environment variable {env_name} is not set")
         if env_name in os.environ:
             values["api_key"] = os.environ[env_name]
+    from XBotv2.llm.contracts import ProviderConfig
+
     return ProviderConfig.model_validate(values)
 
 
 __all__ = [
-    "ModelConfig",
-    "ProviderConfig",
     "merge_request_extras",
     "parse_provider_config",
 ]

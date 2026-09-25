@@ -1,401 +1,428 @@
-"""Caption plugin: auto-title on the first user message + agent tool."""
+"""Caption requests are auxiliary projections of canonical human input."""
 
 import asyncio
-import logging
 
+import xcore
 import pytest
-from plugin_harness import mount_plugin_standalone
 
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.core import ConversationHistory, Message, ToolResult
+from XBotv2.agentloop.events import BeforeContextBuild
+from XBotv2.agentloop.protocol import LoopError
+from XBotv2.caption import CaptionConfig, CaptionRequest, CaptionResult
+from XBotv2.caption.service import (
+    CaptionService,
+    _clean_title,
+    _fallback_title,
+    caption_request,
+)
+from XBotv2.context_builder.events import ContextBuildRequest
+from XBotv2.core.domain import (
+    AgentExecutionLimits,
+    GenerationSettings,
+    MeasurementUnavailable,
+    ModelRoute,
+    ProviderError,
+    ProviderExtensions,
+    ResolvedModelSelection,
+    ResolvedRuntimeSelection,
+    StandardGenerationMode,
+    TokenCounters,
+    UsageDelta,
+)
+from XBotv2.core.domain import InputId, MessageId, NoticeId
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
+from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
+from XBotv2.core.parts import TextPart
+from XBotv2.core.provider import ProviderSystem, ProviderUser
+from XBotv2.core.stream import ModelFailed
+from XBotv2.llm import ModelPort
 from XBotv2.llm.mock import MockLLM
-from XBotv2.session import SessionInfo
-
-_SYSTEM = "You derive one short, human-readable title for a chat session."
 
 
-def make_plugin(config=None):
-    from XBotv2.caption.plugin import CaptionPlugin
-
-    component = mount_plugin_standalone(CaptionPlugin(), config)
-    return component.ctx.caption
-
-
-class SetupContext:
-    """Post-apply view of the plugin's registrations on a real XCore context."""
-
-    def __init__(self, plugin) -> None:
-        self.ctx = plugin._events
-        entries = self.ctx.tools.registrations()
-        self.tool = entries[0].tool if entries else None
-
-
-def _event_context(messages, *, turn_count=1, parent_thread_id=""):
-    session = SessionInfo("s", "agent", workspace_root="/work", turn_count=turn_count)
-    ctx = EventContext(
-        session=session,
-        messages=list(messages),
+def _human(text: str, index: int = 1) -> HumanInputMessage:
+    return HumanInputMessage(
+        id=MessageId(f"message-{index}"),
+        input_id=InputId(f"input-{index}"),
+        parts=(TextPart(text=text),),
     )
-    if parent_thread_id:
-        ctx.messages = list(messages)
-    return ctx
 
 
-@pytest.mark.asyncio
-async def test_auto_caption_requests_an_independent_title_once(caplog):
-    caplog.set_level(logging.INFO, logger="xbotv2.caption")
-    plugin = make_plugin({"auto": True, "allow_access": True})
-    plugin.model = MockLLM(responses=[{"content": '  "Billing migration plan"  '}])
-    original = [
-        Message(role="system", content=_SYSTEM),
-        Message(role="user", content="we need to port billing to the new ledger"),
-    ]
-
-    ctx = EventContext(
-        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-        messages=list(original),
+def test_caption_request_uses_human_input_and_ignores_runtime_notices():
+    notice = RuntimeNoticeMessage(
+        id=MessageId("notice-message"),
+        notice_id=NoticeId("notice-1"),
+        source="job",
+        event="completed",
+        parts=(TextPart(text="background noise"),),
     )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-
-    assert plugin.title == "Billing migration plan"
-    caption_logs = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == "xbotv2.caption"
-    ]
-    assert "caption.applied" in caption_logs
-    assert "Billing migration plan" not in "\n".join(caption_logs)
-    # The caption request is independent: the conversation is untouched.
-    assert [message.content for message in ctx.messages] == [
-        message.content for message in original
-    ]
-    # One caption per runtime, even if the hook fires again.
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    assert plugin.model.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_auto_caption_skips_subagent_threads():
-    plugin = make_plugin({"auto": True, "allow_access": True})
-    plugin.model = MockLLM(responses=[{"content": "child title"}])
-    original = [
-        Message(role="system", content=_SYSTEM),
-        Message(role="user", content="hello"),
-    ]
-
-    # A subagent thread never captions: the main thread owns the title.
-    plugin._is_subagent = True
-    sub = EventContext(
-        session=SessionInfo("s", "child", workspace_root="/work", turn_count=1),
-        messages=list(original),
+    request = caption_request(
+        CaptionRequest(
+            messages=(_human("billing migration"), notice),
+            current_title="session-1",
+        ),
+        max_chars=80,
     )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, sub)
-    assert plugin.title == "s"
-    assert plugin.model.call_count == 0
+
+    assert isinstance(request[0], ProviderSystem)
+    assert isinstance(request[1], ProviderUser)
+    assert "billing migration" in request[1].parts[0].text
+    assert "session-1" in request[1].parts[0].text
+    assert "background noise" not in request[1].parts[0].text
 
 
-@pytest.mark.asyncio
-async def test_auto_caption_respects_an_existing_title():
-    plugin = make_plugin({"auto": True, "allow_access": True})
-    plugin.model = MockLLM(responses=[{"content": "overwrite me"}])
-    await plugin.state.update(title="User-set title")
-    ctx = EventContext(
-        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-        messages=[
-            Message(role="system", content=_SYSTEM),
-            Message(role="user", content="hi"),
-        ],
+def test_caption_request_bounds_large_input_without_mutating_message():
+    content = "x" * 3000
+    message = _human(content)
+    request = caption_request(
+        CaptionRequest(messages=(message,), current_title="session-1"),
+        max_chars=80,
     )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    assert plugin.title == "User-set title"
-    assert plugin.model.call_count == 0
+    assert len(request[1].parts[0].text) < len(content)
+    assert message.parts[0].text == content
 
 
-@pytest.mark.asyncio
-async def test_auto_caption_disabled_never_calls_the_model():
-    plugin = make_plugin({"auto": False, "allow_access": True})
-    plugin.model = MockLLM(responses=[{"content": "ignored"}])
-    ctx = EventContext(
-        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-        messages=[
-            Message(role="system", content=_SYSTEM),
-            Message(role="user", content="hi"),
-        ],
+def test_title_cleaning_and_fallback_are_deterministic():
+    assert _clean_title('  "Billing   plan"  ', 80) == "Billing plan"
+    assert _clean_title("abcdefgh", 5) == "abcd…"
+    assert _fallback_title(
+        CaptionRequest(
+            messages=(_human("  first   message  "),),
+            current_title="session-1",
+        ),
+        80,
+    ) == "first message"
+    assert _fallback_title(
+        CaptionRequest(messages=(), current_title="session-1"), 80
+    ) == ""
+
+
+def test_caption_request_and_result_are_typed_plugin_contracts():
+    request = CaptionRequest(
+        messages=(_human("billing migration"),),
+        current_title="session-1",
     )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    assert plugin.title == "s"
-    assert plugin.model.call_count == 0
+    assert request.messages == (_human("billing migration"),)
+    assert request.current_title == "session-1"
 
-
-def test_tool_registered_only_when_access_is_allowed():
-    allowed = make_plugin({"auto": False, "allow_access": True})
-    assert SetupContext(allowed).tool is not None
-
-    denied = make_plugin({"auto": False, "allow_access": False})
-    assert SetupContext(denied).tool is None
+    result = CaptionResult(title="Billing plan")
+    assert result.model_dump(mode="json") == {"title": "Billing plan"}
 
 
 @pytest.mark.asyncio
-async def test_caption_tool_gets_and_sets():
-    plugin = make_plugin({"auto": False, "allow_access": True})
-    plugin.model = MockLLM(responses=[])
-    setup = SetupContext(plugin)
-    assert setup.tool is not None
-
-    result = await setup.tool.ainvoke({"action": "set", "title": "Ledger migration"})
-    assert result.status == "success"
-    assert plugin.title == "Ledger migration"
-
-    result = await setup.tool.ainvoke({"action": "get"})
-    assert result.status == "success"
-    assert "Ledger migration" in str(result.content)
-
-    bad = await setup.tool.ainvoke({"action": "set", "title": "   "})
-    assert bad.status == "error"
-
-
-@pytest.mark.asyncio
-async def test_caption_tool_refuses_on_subagent_threads():
-    plugin = make_plugin({"auto": False, "allow_access": True})
-    plugin.model = MockLLM(responses=[])
-    await plugin.state.replace(plugin.state.value.model_copy(
-        update={"parent_thread_id": "agent"}
-    ))
-    setup = SetupContext(plugin)
-    result = await setup.tool.ainvoke({"action": "set", "title": "nope"})
-    assert result.status == "error"
-    assert "main thread" in str(result.content)
-
-
-@pytest.mark.asyncio
-async def test_caption_failure_is_silent():
-    class BrokenModel:
-        def __init__(self) -> None:
-            self.call_count = 0
-
-        async def astream(self, _messages, **_kwargs):
-            self.call_count += 1
-            if False:  # pragma: no cover - keeps this an async generator
-                yield None
-            raise RuntimeError("provider down")
-
-    plugin = make_plugin({"auto": True, "allow_access": True})
-    plugin.model = BrokenModel()
-    ctx = EventContext(
-        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-        messages=[
-            Message(role="system", content=_SYSTEM),
-            Message(role="user", content="hi"),
-        ],
-    )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)  # must not raise
-    assert plugin.title == "s"
-    assert plugin.model.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_caption_title_reaches_the_session_catalog(tmp_path):
-    """A caption wrote the title; open clients must hear about it.
-
-    Nothing in the caption path knows about events: it writes the metadata
-    value, the runtime announces the change, and the process-level session
-    owner turns that into the catalog change clients already consume.
-    """
-    from XBotv2.application.app import create_agent_application
+@pytest.mark.parametrize(
+    ("automatic_response", "automatic_title"),
+    [
+        ({"content": "Automatic title"}, "Automatic title"),
+        ({"content": ""}, "Review the session title."),
+    ],
+)
+async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
+    temp_data_dir,
+    temp_workspace,
+    automatic_response,
+    automatic_title,
+):
+    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.application.app import start_application
+    from XBotv2.core.messages import ToolMessage
     from XBotv2.core.paths import RuntimePaths
-    from XBotv2.llm.mock import MockLLM
-    from XBotv2.session.contracts import (
-        AgentApplicationOptions,
-        OpenSession,
-        SESSION_RESOURCE_CHANGED,
-    )
-    from XBotv2.session.manager import SessionManager
+    from XBotv2.permissions.contracts import PermissionPolicy
 
-    class _Events:
-        def __init__(self) -> None:
-            self.seen: list[tuple[str, object]] = []
-
-        async def emit(self, event, *args) -> None:
-            self.seen.append((event, args))
-
-    paths = RuntimePaths.from_data_dir(tmp_path)
-    events = _Events()
-    model = MockLLM(responses=[
-        {"content": "Billing migration plan"},
-        {"content": "acknowledged"},
+    llm = MockLLM(responses=[
+        automatic_response,
+        {"tool_calls": [
+            {"id": "caption-get", "name": "caption", "args": {"action": "get"}},
+            {
+                "id": "caption-set",
+                "name": "caption",
+                "args": {"action": "set", "title": "Reviewed title"},
+            },
+        ]},
+        {"content": "The title is updated."},
     ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="caption-tool-contract",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        llm_override=llm,
+    )
+    application.permissions.replace_policies((PermissionPolicy(
+        default_decision="allow",
+    ),))
 
-    async def factory(options):
-        return await create_agent_application(AgentApplicationOptions(
-            paths=options.paths,
-            provider_name=options.provider_name,
-            session_id=options.session_id,
-            thread_id=options.thread_id,
-            workspace_root=options.workspace_root,
-            no_plugins=False,
-            model_override=model,
-        ))
-
-    manager = SessionManager(
-        paths,
-        events,
-        thread_persistence_factory=None,
-        application_factory=factory,
-        idle_timeout=None,
+    item = InboxItem(
+        target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content="Review the session title."),
     )
     try:
-        await manager.open(OpenSession(
-            session_id="caption-catalog",
-            thread_id="agent",
-            provider_name="default",
-            workspace_root=str(tmp_path),
-            no_plugins=False,
-            mode="new",
-        ))
-        runtime = await manager.get("caption-catalog", "agent")
-        events.seen.clear()
-
-        async for _event in runtime.engine.run_turn("port billing to the ledger"):
-            pass
-        for _ in range(20):
-            if any(name == SESSION_RESOURCE_CHANGED for name, _ in events.seen):
-                break
-            await asyncio.sleep(0.05)
-
-        summaries = [
-            args[0].session
-            for name, args in events.seen
-            if name == SESSION_RESOURCE_CHANGED
-        ]
-        assert summaries, [name for name, _ in events.seen]
-        assert summaries[-1].title == "Billing migration plan"
+        events = [event async for event in application.engine.run_turn(item)]
+        messages = application.loop_state.history.snapshot()
+        title = application.loop_state.metadata.value.title
     finally:
-        await manager.close_all()
+        await application.stop()
 
-
-@pytest.mark.asyncio
-async def test_metadata_change_stays_off_the_runtime_event_stream(tmp_path):
-    """Metadata mutations announce on the app bus — never on the runtime stream.
-
-    The bounded replay stream is the transport boundary for runtime/protocol
-    events only; a title write (or any metadata mutation) surfaces to clients
-    through catalog events, so subscribers of one channel never see the other
-    channel's traffic.
-    """
-    from XBotv2.application.app import create_agent_application
-    from XBotv2.core.metadata import THREAD_METADATA_CHANGED
-    from XBotv2.core.paths import RuntimePaths
-    from XBotv2.llm.mock import MockLLM
-    from XBotv2.session.contracts import (
-        AgentApplicationOptions,
-        OpenSession,
-        SESSION_RESOURCE_CHANGED,
-    )
-    from XBotv2.session.manager import SessionManager
-
-    class _Events:
-        def __init__(self) -> None:
-            self.seen: list[tuple[str, object]] = []
-
-        async def emit(self, event, *args) -> None:
-            self.seen.append((event, args))
-
-    paths = RuntimePaths.from_data_dir(tmp_path)
-    events = _Events()
-    model = MockLLM(responses=[{"content": "acknowledged"}])
-
-    async def factory(options):
-        return await create_agent_application(AgentApplicationOptions(
-            paths=options.paths,
-            provider_name=options.provider_name,
-            session_id=options.session_id,
-            thread_id=options.thread_id,
-            workspace_root=options.workspace_root,
-            no_plugins=False,
-            model_override=model,
-        ))
-
-    manager = SessionManager(
-        paths,
-        events,
-        thread_persistence_factory=None,
-        application_factory=factory,
-        idle_timeout=None,
-    )
-    try:
-        opened = await manager.open(OpenSession(
-            session_id="boundary-check",
-            thread_id="agent",
-            provider_name="default",
-            workspace_root=str(tmp_path),
-            no_plugins=False,
-            mode="new",
-        ))
-        runtime = await manager.get("boundary-check", "agent")
-        events.seen.clear()
-
-        bus_changes = []
-        runtime.application.events.on(
-            THREAD_METADATA_CHANGED,
-            lambda change: bus_changes.append(change),
-        )
-        stream = runtime.event_stream.subscribe(after=opened.event_cursor)
-
-        await runtime.application.loop_state.metadata.update(title="Stream check")
-
-        # The write announced on the application bus with both values.
-        assert [
-            (change.previous.title, change.current.title)
-            for change in bus_changes
-        ] == [("boundary-check", "Stream check")]
-        # The process-level catalog owner turned that into the catalog event
-        # clients consume.
-        assert [name for name, _ in events.seen] == [SESSION_RESOURCE_CHANGED]
-        # The runtime replay stream is the transport boundary for runtime
-        # events only: the title change published nothing on it.
-        assert runtime.event_stream.sequence == opened.event_cursor
-    finally:
-        await manager.close_all()
-
-
-@pytest.mark.asyncio
-async def test_transient_provider_failure_retries_caption_on_next_turn():
-    """A failed caption request must not permanently disable auto-title: the
-    next turn retries (the failure leaves the request state clean)."""
-    plugin = make_plugin({"auto": True, "allow_access": True})
-    plugin.model = MockLLM(responses=[{"content": "retried title"}])
-
-    async def fail_once(*_args, **_kwargs):
-        raise RuntimeError("provider unavailable")
-
-    original = [
-        Message(role="system", content=_SYSTEM),
-        Message(role="user", content="first message"),
+    assert not [event for event in events if isinstance(event, LoopError)]
+    caption_results = [
+        "".join(part.text for part in message.outcome.output.parts if isinstance(part, TextPart))
+        for message in messages
+        if isinstance(message, ToolMessage) and message.call.name == "caption"
     ]
+    assert caption_results == [
+        f"Session title: '{automatic_title}'",
+        "Session title set to 'Reviewed title'.",
+    ]
+    assert title == "Reviewed title"
 
-    # First turn: the provider fails; no title is applied and no permanent
-    # flag is set.
-    import XBotv2.caption.service as caption_service
 
-    failing = caption_service.invoke_llm
-    caption_service.invoke_llm = fail_once
-    try:
-        ctx = EventContext(
-            session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-            messages=list(original),
-        )
-        await plugin._events.serial(Events.BEFORE_CONTEXT, ctx)
-    finally:
-        caption_service.invoke_llm = failing
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auto", "allow_access"),
+    [(True, True), (True, False), (False, True), (False, False)],
+)
+async def test_caption_auto_and_tool_access_are_independent_application_options(
+    temp_data_dir,
+    temp_workspace,
+    auto,
+    allow_access,
+):
+    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.application.app import start_application
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.permissions.contracts import PermissionPolicy
 
-    assert plugin.title == "s"
-    assert plugin.model.call_count == 0
-
-    # Second turn: the retry succeeds and captions the session.
-    retry_ctx = EventContext(
-        session=SessionInfo("s", "agent", workspace_root="/work", turn_count=1),
-        messages=list(original),
+    responses = []
+    if auto:
+        responses.append({"content": "Automatically titled"})
+    if allow_access:
+        responses.append({
+            "tool_calls": [{
+                "id": "caption-read",
+                "name": "caption",
+                "args": {"action": "get"},
+            }],
+        })
+    responses.append({"content": "Answer."})
+    llm = MockLLM(responses=responses)
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="caption-config-matrix",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        llm_override=llm,
+        extra_plugins=[{
+            "id": "caption",
+            "config": {"auto": auto, "allow_access": allow_access},
+        }],
     )
-    await plugin._events.serial(Events.BEFORE_CONTEXT, retry_ctx)
-    assert plugin.title == "retried title"
+    application.permissions.replace_policies((PermissionPolicy(
+        default_decision="allow",
+    ),))
+
+    item = InboxItem(
+        target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content="Explain the option matrix."),
+    )
+    try:
+        events = [event async for event in application.engine.run_turn(item)]
+        title = application.loop_state.metadata.value.title
+        requests = llm.request_history
+    finally:
+        await application.stop()
+
+    assert not [event for event in events if isinstance(event, LoopError)]
+    assert title == (
+        "Automatically titled" if auto else "caption-config-matrix"
+    )
+    assert len(requests) == 1 + int(auto) + int(allow_access)
+    exposed_tools = {
+        tool.name for request in requests for tool in request.tools
+    }
+    assert ("caption" in exposed_tools) is allow_access
+
+
+@pytest.mark.asyncio
+async def test_caption_agent_tool_is_not_registered_for_a_child_application(
+    temp_data_dir,
+    temp_workspace,
+):
+    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.application.app import start_application
+    from XBotv2.core.paths import RuntimePaths
+
+    llm = MockLLM(responses=[{"content": "Child response."}])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="caption-child-contract",
+        thread_id="worker",
+        workspace_root=temp_workspace,
+        is_subagent=True,
+        parent_thread_id="main",
+        llm_override=llm,
+        extra_plugins=[{
+            "id": "caption",
+            "config": {"auto": True, "allow_access": True},
+        }],
+    )
+    try:
+        events = [event async for event in application.engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content="Inspect this child task."),
+        ))]
+        request = llm.request_history[0]
+    finally:
+        await application.stop()
+
+    assert not [event for event in events if isinstance(event, LoopError)]
+    assert "caption" not in {tool.name for tool in request.tools}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_title", ["", "''", '\" \n\''])
+async def test_caption_tool_rejects_titles_that_normalize_to_empty(
+    temp_data_dir,
+    temp_workspace,
+    invalid_title,
+):
+    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.application.app import start_application
+    from XBotv2.core.messages import ToolMessage
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.tools import ToolFailed
+    from XBotv2.permissions.contracts import PermissionPolicy
+
+    llm = MockLLM(responses=[
+        {"content": "Automatic title"},
+        {"tool_calls": [{
+            "id": "caption-empty-after-cleaning",
+            "name": "caption",
+            "args": {"action": "set", "title": invalid_title},
+        }]},
+        {"content": "The title could not be changed."},
+    ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="caption-empty-normalized",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        llm_override=llm,
+    )
+    application.permissions.replace_policies((PermissionPolicy(
+        default_decision="allow",
+    ),))
+    try:
+        events = [event async for event in application.engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content="Please rename this session."),
+        ))]
+        messages = application.loop_state.history.snapshot()
+        title = application.loop_state.metadata.value.title
+    finally:
+        await application.stop()
+
+    caption_outcome = next(
+        message.outcome
+        for message in messages
+        if isinstance(message, ToolMessage) and message.call.name == "caption"
+    )
+    assert not [event for event in events if isinstance(event, LoopError)]
+    assert isinstance(caption_outcome, ToolFailed)
+    assert caption_outcome.error.code == "caption_empty_title"
+    assert title == "Automatic title"
+
+
+def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
+    async def scenario() -> None:
+        selection = ResolvedRuntimeSelection(
+            agent_name="default",
+            prompt="",
+            limits=AgentExecutionLimits(),
+            enabled_tools=(),
+            model=ResolvedModelSelection(
+                route=ModelRoute(provider="test", model="test-model"),
+                generation=GenerationSettings(
+                    mode=StandardGenerationMode(),
+                    max_output_tokens=256,
+                ),
+                context_window=4096,
+            ),
+        )
+        events = xcore.Context()
+        state = ThreadMetadataState(
+            events,
+            session_id="session-1",
+            thread_id="main",
+        )
+        await state.initialize(
+            ThreadMetadata(runtime_selection=selection)
+        )
+
+        class FlakyCaptionModel:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.success = MockLLM(responses=[{"content": "Billing plan"}])
+
+            async def astream(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    yield ModelFailed(
+                        error=ProviderError(
+                            code="temporary_unavailable",
+                            message="caption endpoint unavailable",
+                            retryable=True,
+                            category="transport",
+                        )
+                    )
+                    return
+                async for event in self.success.astream(request):
+                    yield event
+
+        class UsageRecorder:
+            async def record(self, *_args) -> None:
+                return None
+
+        model = FlakyCaptionModel()
+        service = CaptionService(
+            events=events,
+            model=model,
+            state=state,
+            usage=UsageRecorder(),
+            session_id="session-1",
+            config=CaptionConfig(auto=True, allow_access=False),
+        )
+
+        def before_context(turn: int) -> BeforeContextBuild:
+            request = ContextBuildRequest(
+                history=(_human("Plan a billing migration"),),
+                runtime_selection=selection,
+                user_identity=None,
+                memory="",
+                sandbox_summary="",
+                runtime_paths=None,
+                turn=turn,
+            )
+            return BeforeContextBuild(request=request)
+
+        await service._on_before_context(before_context(1))
+        assert service.title == "session-1"
+        await service._on_before_context(before_context(1))
+        assert model.calls == 1
+        await service._on_before_context(before_context(2))
+
+        assert model.calls == 2
+        assert service.title == "Billing plan"
+
+        await state.replace_title("A user-selected title")
+        untouched_model = FlakyCaptionModel()
+        untouched_service = CaptionService(
+            events=events,
+            model=untouched_model,
+            state=state,
+            usage=UsageRecorder(),
+            session_id="session-1",
+            config=CaptionConfig(auto=True, allow_access=False),
+        )
+        await untouched_service._on_before_context(before_context(1))
+        assert untouched_model.calls == 0
+        assert untouched_service.title == "A user-selected title"
+
+    asyncio.run(scenario())

@@ -42,18 +42,47 @@ protocol handshake is `POST /hello`.
 | GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `ThreadTrajectoryResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
 | POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted` command submission |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutationResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutation` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutation` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | `202 Accepted` command submission |
 | GET | `/sessions/{session_id}/threads/{thread_id}/queue` | `list_pending_inputs` | `PendingInputListResponse` |
 | PATCH | `/sessions/{session_id}/threads/{thread_id}/queue/{message_id}` | `update_pending_input` | updated `PendingInputListResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/events` | `stream_events` | replay/live SSE stream |
 
+### History items and windowed reads
+
+History reads and completed live-message events use the same discriminated
+`ConversationRecord` projection (`human_input`, `runtime_notice`, `assistant`,
+`tool`, or `compaction_summary`). Each record's required `id` is the canonical
+conversation-message identity, so clients can merge live and paged records
+without inventing a second identity. Trajectory positions remain a separate
+identity for append-log entries and are not substituted for message IDs.
+
+A client that does not want the whole conversation asks for a bounded window:
+
+- `POST /sessions` (`open_session`) and `POST .../threads` (`open_thread`) accept
+  `history_limit` (1-500). The response's `history` is a `HistoryPage` with the
+  newest that many records and `older_cursor` naming the page before them; the
+  cursor is `null` when the window already holds the beginning.
+- `GET .../messages?limit=N` reads the newest `N` records, and
+  `GET .../messages?limit=N&cursor=C` reads the page before `C`. The response's
+  `next_cursor` is the cursor for the page before it, or `null` at the beginning.
+  Appending records leaves a cursor valid; a rewrite (`/history/undo`,
+  `/history/clear`, compaction) invalidates it, and the read then answers
+  `invalid_cursor` rather than a page from a different history.
+- History clear/undo responses return `HistoryMutation(removed_turns, history,
+  stats)`. Its `history` is the same `HistoryPage` used by attach and
+  `/messages`; clear also accepts the optional `history_limit` query parameter.
+- `GET .../trajectory` pages the append-only record log the same way, and also
+  accepts `before=<position>` as an absolute anchor, which is what a client uses
+  once it has released the front of its own window.
+
 `MessageRequest` supports `content`, `request_id`, `delivery` (`queue` or
 `steer`), images, and attachments. SSE envelopes carry sequence, session,
-thread, request, event type, and typed data. The event stream is replayable
-from an opaque `after` cursor; an expired cursor is an explicit conflict, not
-silent truncation.
+thread, typed event scope, kind, and payload. A `turn` scope carries the
+independent `turn_id`; it is not the message's `request_id` or an interaction
+id. The event stream is replayable from an opaque `after` cursor; an expired
+cursor is an explicit conflict, not silent truncation.
 
 Message and regeneration POSTs are command submissions and always return
 `202 Accepted`, regardless of `Accept`. Subscribe to `GET .../events` for all
@@ -92,17 +121,17 @@ are intentionally maintained in the skill rather than duplicated here.
   "protocol_version": "xbotv2.v3",
   "session_id": "<session>",
   "thread_id": "<thread>",
-  "request_id": "<request>",
   "sequence": 17,
-  "type": "assistant_message | tool_result | usage | turn_finished | ...",
-  "data": {}
+  "scope": {"kind": "turn", "turn_id": "<turn>"},
+  "kind": "assistant_completed | tool_completed | usage_updated | turn_ended | ...",
+  "payload": {}
 }
 ```
 
-The `data` object is validated by the producer-owned event schema in
+The `payload` object is validated by the producer-owned event schema in
 `agentloop/protocol.py`, `session/protocol.py`, or the owning plugin's
-`protocol.py`; clients should preserve unknown event types and use `sequence`
-for ordering.
+`protocol.py`. Clients use `sequence` for ordering and surface an unsupported
+kind instead of silently skipping it.
 
 ## Interactions
 

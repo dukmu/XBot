@@ -18,8 +18,19 @@ from typing import AsyncIterator
 import pytest
 from textual.app import App, ComposeResult
 
-from XBotv2.tests.tui.factories import SESSION, THREAD, frames
-from XBotv2.tui.events import ConnectionChanged
+from XBotv2.session.records import HumanInputRecord
+from XBotv2.tests.tui.factories import (
+    assistant_record,
+    history_page,
+    human_record,
+    tool_record,
+)
+from XBotv2.tests.tui.factories import SESSION, THREAD, frames, snapshot
+from XBotv2.tui.events import (
+    ConnectionChanged,
+    OlderHistoryLoaded,
+    SnapshotAdopted,
+)
 from XBotv2.tui.protocol import FrameTranslator
 from XBotv2.tui.state import SessionState, reduce
 from XBotv2.tui.status import Connection
@@ -39,17 +50,20 @@ def build_state(*pairs: tuple[str, dict]) -> SessionState:
 
 
 def user(message_id: str, content: str) -> tuple[str, dict]:
-    return ("message", {"id": message_id, "role": "user", "content": content})
+    return ("message", human_record(message_id, content).model_dump(mode="json"))
 
 
 def tool_started(call_id: str, name: str = "bash") -> tuple[str, dict]:
-    return ("tool_calls_started", {"tool_calls": [{"id": call_id, "name": name, "args": {}}]})
+    return (
+        "tool_calls_started",
+        {"calls": [{"call": {"id": call_id, "name": name, "args": {}}, "category": "execute"}]},
+    )
 
 
 def tool_finished(call_id: str, content: str = "ok") -> tuple[str, dict]:
     return (
-        "tool_result",
-        {"tool_call_id": call_id, "name": "bash", "status": "success", "content": content},
+        "tool_completed",
+        tool_record(call_id, "bash", content),
     )
 
 
@@ -163,7 +177,7 @@ async def test_an_entry_that_left_the_timeline_is_unmounted() -> None:
 async def test_a_growing_answer_updates_its_own_widget() -> None:
     state = build_state(
         ("turn_started", {"turn": 1}),
-        ("assistant_message_delta", {"content": "thinking"}),
+        ("assistant_text_delta", {"text": "thinking"}),
     )
     async with harness(limit=5) as (app, _pilot):
         await app.view.render(state)
@@ -173,7 +187,7 @@ async def test_a_growing_answer_updates_its_own_widget() -> None:
 
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(
-            frames(("assistant_message_delta", {"content": " harder"}))[0]
+            frames(("assistant_text_delta", {"text": " harder"}))[0]
         ):
             reduce(state, event)
         await app.view.render(state)
@@ -186,9 +200,9 @@ async def test_a_growing_answer_never_writes_into_another_entry() -> None:
     """The defect: a streamed tail landed in whichever widget was last."""
     state = build_state(
         ("turn_started", {"turn": 1}),
-        ("assistant_message", {"id": "a1", "content": "first answer"}),
+        ("assistant_completed", assistant_record("a1", "first answer")),
         user("m2", "steer"),
-        ("assistant_message_delta", {"content": "second"}),
+        ("assistant_text_delta", {"text": "second"}),
     )
     async with harness(limit=5) as (app, _pilot):
         await app.view.render(state)
@@ -196,7 +210,7 @@ async def test_a_growing_answer_never_writes_into_another_entry() -> None:
         assert body_of(first) == "first answer"
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(
-            frames(("assistant_message_delta", {"content": " answer"}))[0]
+            frames(("assistant_text_delta", {"text": " answer"}))[0]
         ):
             reduce(state, event)
         await app.view.render(state)
@@ -204,9 +218,8 @@ async def test_a_growing_answer_never_writes_into_another_entry() -> None:
         assert body_of(app.view.widget_for("m2")) == "steer"
 
 
-async def test_a_tool_result_updates_its_own_widget_in_place() -> None:
-    """The updated entry is deliberately *not* the last one: an update that
-    writes into whichever widget happens to be last is the defect this guards."""
+async def test_a_tool_result_adopts_its_record_id_without_touching_other_rows() -> None:
+    """The record replaces its temporary call row with its canonical identity."""
     state = build_state(
         ("turn_started", {"turn": 1}),
         tool_started("c1"),
@@ -215,13 +228,14 @@ async def test_a_tool_result_updates_its_own_widget_in_place() -> None:
     )
     async with harness(limit=5) as (app, _pilot):
         await app.view.render(state)
-        widget = app.view.widget_for("c1")
         last = app.view.widget_for("m3")
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(frames(tool_finished("c1", "listing"))[0]):
             reduce(state, event)
         await app.view.render(state)
-        assert app.view.widget_for("c1") is widget
+        assert app.view.widget_for("c1") is None
+        widget = app.view.widget_for("tool-c1")
+        assert widget is not None
         assert "listing" in body_of(widget)
         assert body_of(last) == "and later", "the last widget is not a dumping ground"
 
@@ -264,12 +278,15 @@ async def test_paging_newer_returns_towards_the_tail() -> None:
 
 async def test_going_to_the_tail_after_paging_back() -> None:
     state = build_state(*[user(f"m{index}", str(index)) for index in range(9)])
-    async with harness(limit=3) as (app, _pilot):
+    async with harness(limit=3, size=(80, 6)) as (app, pilot):
         await app.view.render(state)
+        await settle(pilot)
         await app.view.page_older(state)
         await app.view.go_to_tail(state)
+        await settle(pilot)
         assert app.view.mounted_ids == ("m6", "m7", "m8")
         assert app.view.anchor is None
+        assert app.view.reader_at_end is True
 
 
 async def test_an_anchor_that_left_the_timeline_falls_back_to_the_tail() -> None:
@@ -348,10 +365,10 @@ async def test_a_render_racing_a_submission_keeps_one_row_per_entry() -> None:
 
 
 def reply(message_id: str, reasoning: str) -> tuple[tuple[str, dict], ...]:
-    """A turn whose reasoning only ever arrives on the delta frames."""
+    """A turn with streamed and canonical reasoning."""
     return (
-        ("assistant_message_delta", {"reasoning": reasoning}),
-        ("assistant_message", {"id": message_id, "content": "the answer"}),
+        ("assistant_reasoning_delta", {"text": reasoning}),
+        ("assistant_completed", assistant_record(message_id, "the answer", reasoning=reasoning)),
     )
 
 
@@ -416,7 +433,7 @@ async def test_a_huge_tool_result_cannot_flood_the_transcript() -> None:
     async with harness(limit=10) as (app, _pilot):
         await app.view.render(state)
         scroll = app.query_one("#transcript", TranscriptScroll)
-        tool_widget = app.view.widget_for("c1")
+        tool_widget = app.view.widget_for("tool-c1")
         assert tool_widget is not None
         assert tool_widget.region.height <= BLOCK_MAX_LINES + 2, (
             "the meta row plus the clamped block, never the content size"
@@ -425,3 +442,137 @@ async def test_a_huge_tool_result_cannot_flood_the_transcript() -> None:
             f"the transcript holds {scroll.virtual_size.height} rows for 2 000 lines"
         )
         assert "run it" in part_of(app.view.widget_for("m1"), ".body")
+
+
+# --- the older-history notice --------------------------------------------
+
+
+def history_user(node: str, content: str) -> HumanInputRecord:
+    return human_record(node, content)
+
+
+def test_the_notice_says_what_the_client_knows_and_nothing_when_it_knows_all():
+    from XBotv2.tui.state import (
+        HistoryAvailable,
+        HistoryComplete,
+        HistoryFailed,
+        HistoryLoading,
+    )
+    from XBotv2.tui.view.transcript import older_history_label
+
+    assert older_history_label(HistoryComplete()) is None
+    assert "PageUp" in older_history_label(HistoryAvailable(cursor="c1"))
+    assert "Loading" in older_history_label(HistoryLoading(cursor="c1"))
+    assert "boom" in older_history_label(HistoryFailed(cursor="c1", message="boom"))
+
+
+def attached(*items: HumanInputRecord, cursor: str | None = None) -> SessionState:
+    """A state built the way production builds one: the server's attach answer."""
+    state = SessionState()
+    reduce(state, ConnectionChanged(Connection.CONNECTED))
+    reduce(state, SnapshotAdopted(snapshot(history=list(items), history_cursor=cursor)))
+    return state
+
+
+async def test_the_notice_is_above_the_window_and_gone_when_nothing_is_missing():
+    state = attached(history_user("m1", "one"))
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        assert not app.query("#older-history")
+
+        state = attached(history_user("m1", "one"), cursor="c1")
+        await app.view.render(state)
+        await pilot.pause()
+
+        order = list(app.query("#transcript > *"))
+        assert order.index(app.view.older_notice) < order.index(
+            app.view.widget_for("m1")
+        )
+
+        # Once the client holds the beginning there is nothing left to say.
+        state = attached(history_user("m1", "one"))
+        await app.view.render(state)
+        await pilot.pause()
+
+        assert not app.query("#older-history")
+
+
+async def test_the_notice_stays_first_when_an_older_page_is_prepended():
+    state = attached(history_user("m2", "two"), cursor="c1")
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        reduce(state, OlderHistoryLoaded(
+            cursor="c1",
+            payload=history_page(human_record("m1", "one"), older_cursor="c0"),
+        ))
+        await app.view.render(state)
+        await pilot.pause()
+
+        order = list(app.query("#transcript > *"))
+        assert order.index(app.view.older_notice) < order.index(
+            app.view.widget_for("m1")
+        )
+        assert app.view.mounted_ids == ("m1", "m2")
+
+
+async def test_a_prepended_older_page_does_not_move_the_readers_window():
+    """Prepending is the one insert that lands *above* the reader.
+
+    A page the reader asked for arrives behind them: the entry their window ends
+    at must stay exactly where it was, and the page must be reachable by paging
+    older once more.
+    """
+    state = attached(
+        history_user("m2", "two"),
+        history_user("m3", "three"),
+        cursor="c1",
+    )
+    async with harness(limit=1) as (app, pilot):
+        await app.view.render(state)
+        assert app.view.mounted_ids == ("m3",)
+
+        await app.view.page_older(state)
+        assert app.view.mounted_ids == ("m2",)
+        anchor = app.view.anchor
+        assert anchor == "m2"
+
+        reduce(state, OlderHistoryLoaded(
+            cursor="c1",
+            payload=history_page(human_record("m1", "one")),
+        ))
+        await app.view.render(state)
+        await pilot.pause()
+
+        assert app.view.mounted_ids == ("m2",), "the page landed behind the reader"
+        assert app.view.anchor == anchor
+
+        # ...and it is reachable, one window older.
+        await app.view.page_older(state)
+        assert app.view.mounted_ids == ("m1",)
+
+
+async def test_releasing_the_front_keeps_the_tail_window_on_screen():
+    """Retention is residency, not navigation: the reader stays at the tail and
+    the newest entries stay mounted."""
+    state = attached(
+        history_user("m2", "two"),
+        history_user("m3", "three"),
+        cursor="c1",
+    )
+    async with harness(limit=2) as (app, pilot):
+        reduce(state, OlderHistoryLoaded(
+            cursor="c1",
+            payload=history_page(human_record("m1", "one")),
+        ))
+        await app.view.render(state)
+        assert app.view.mounted_ids == ("m2", "m3")
+
+        from XBotv2.tui.state import release_oldest_loaded_page
+
+        release_oldest_loaded_page(state)
+        await app.view.render(state)
+        await pilot.pause()
+
+        assert app.view.mounted_ids == ("m2", "m3")
+        assert app.view.anchor is None, "the reader is still following the tail"
+        assert state.older.__class__.__name__ == "HistoryAvailable"

@@ -4,22 +4,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field
 
-from XBotv2.core import ClientEvent
-from XBotv2.core.history import TrajectoryTransaction
-from XBotv2.core.tools import validated_client_event
 from XBotv2.protocol import WireModel
+from XBotv2.core.messages import CompactionSummaryMessage
+from XBotv2.core.domain import TokenCounters
 
 # Why a compaction ran; the only reason vocabulary shared with clients.
 CompactionReason = Literal["automatic", "manual", "context-overflow"]
-
-# The durable bracket one compaction commit must complete exactly once.
-COMPACTION_TRANSACTION = TrajectoryTransaction(
-    start_event="compaction/start",
-    end_event="compaction/end",
-    id_field="compaction_id",
-)
 
 # Reasons a user did not request explicitly.
 AUTOMATIC_COMPACTION_REASONS: frozenset[str] = frozenset(
@@ -31,7 +23,8 @@ def is_automatic_compaction(reason: str) -> bool:
     return reason in AUTOMATIC_COMPACTION_REASONS
 
 
-class CompactionStartedData(WireModel):
+class CompactionStarted(WireModel):
+    kind: Literal["compaction_started"] = "compaction_started"
     reason: CompactionReason
     messages_before: int = Field(ge=0)
     history_chars_before: int = Field(ge=0)
@@ -55,55 +48,33 @@ class CompactionMetrics(WireModel):
     messages_before: int = Field(ge=0)
     messages_after: int = Field(ge=0)
     messages_removed: int
-    model_usage: dict[str, int] = Field(default_factory=dict)
+    model_usage: TokenCounters = Field(default_factory=TokenCounters)
     summary_output_tokens: int = Field(default=1, ge=1)
 
 
-class CompactionCompletedData(WireModel):
+class CompactionCompleted(WireModel):
+    kind: Literal["compaction_completed"] = "compaction_completed"
     reason: CompactionReason
     metrics: CompactionMetrics
     # Clients render a notice for unrequested compaction without re-deriving
     # the reason vocabulary themselves.
     automatic: bool = False
-    # The live summary travels on the event so a client can show what was kept
-    # without reading the trajectory back; the durable copy stays in the
-    # surface replacement.
-    summary: str = ""
+    summary: CompactionSummaryMessage
 
 
-class CompactionFailedData(WireModel):
+class CompactionFailed(WireModel):
+    kind: Literal["compaction_failed"] = "compaction_failed"
     reason: CompactionReason
     message: str = Field(min_length=1)
     automatic: bool = False
 
 
-CompactEventType = Literal[
-    "compaction_started",
-    "compaction_completed",
-    "compaction_failed",
-]
-
-_EVENT_MODELS: dict[str, type[WireModel]] = {
-    "compaction_started": CompactionStartedData,
-    "compaction_completed": CompactionCompletedData,
-    "compaction_failed": CompactionFailedData,
-}
-
-
-def compact_event(type: CompactEventType, data: dict[str, JsonValue]) -> ClientEvent:
-    """Validate a Compact-owned event before publishing it through XCore."""
-    return validated_client_event(type, data, _EVENT_MODELS[type])
-
-
 __all__ = [
     "AUTOMATIC_COMPACTION_REASONS",
-    "COMPACTION_TRANSACTION",
-    "CompactEventType",
-    "CompactionCompletedData",
-    "CompactionFailedData",
+    "CompactionCompleted",
+    "CompactionFailed",
     "CompactionMetrics",
     "CompactionReason",
-    "CompactionStartedData",
-    "compact_event",
+    "CompactionStarted",
     "is_automatic_compaction",
 ]

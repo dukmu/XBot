@@ -9,13 +9,10 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from pydantic import Field, JsonValue
 
-from XBotv2.protocol import WireModel
-from XBotv2.protocol.http_util import (
-    _SSE_RESPONSE,
-    _format_sse,
-    _sse_response,
-    HttpServerError,
-)
+from XBotv2.protocol import WireModel, server_event
+from XBotv2.protocol.http_util import _SSE_RESPONSE, _sse_response, HttpServerError
+from XBotv2.protocol.sse import encode_server_event
+from XBotv2.core.domain import SessionScope
 from XBotv2.session.contracts import (
     SessionResourceChanged,
     SessionResourceRemoved,
@@ -258,18 +255,24 @@ async def _workspace_sse(
     cursor: int,
 ) -> AsyncIterator[bytes]:
     try:
-        yield _format_sse(
-            event={"type": "catalog/connected", "data": {"cursor": cursor}},
-            seq=cursor,
+        yield encode_server_event(server_event(
+            kind="catalog/connected",
+            payload={"cursor": cursor},
+            sequence=cursor,
+            session_id="",
             thread_id="workspaces",
-        )
+            scope=SessionScope(),
+        ))
         async for frame in stream:
-            event_type, data = _workspace_event(frame)
-            yield _format_sse(
-                event={"type": event_type, "data": data},
-                seq=frame.sequence,
+            kind, payload = _workspace_event(frame)
+            yield encode_server_event(server_event(
+                kind=kind,
+                payload=payload,
+                sequence=frame.sequence,
+                session_id="",
                 thread_id="workspaces",
-            )
+                scope=SessionScope(),
+            ))
     finally:
         await stream.aclose()
 

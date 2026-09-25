@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from XBotv2.agentloop.contracts import AllTools, ToolSelection
 
 
 class CoreToolsModel(BaseModel):
@@ -36,23 +37,8 @@ class WorkspaceToolConfig(CoreToolsModel):
         return value
 
 
-class ToolResultConfig(CoreToolsModel):
-    cache_threshold_chars: int = Field(default=12_000, ge=1)
-    preview_chars: int = Field(default=8_000, ge=0)
-    tail_chars: int = Field(default=2_000, ge=0)
-
-    @model_validator(mode="after")
-    def validate_preview(self) -> "ToolResultConfig":
-        if self.preview_chars > self.cache_threshold_chars:
-            raise ValueError("preview_chars cannot exceed cache_threshold_chars")
-        if self.tail_chars > self.preview_chars:
-            raise ValueError("tail_chars cannot exceed preview_chars")
-        return self
-
-
 class CoreToolsConfig(CoreToolsModel):
-    tool_results: ToolResultConfig = Field(default_factory=ToolResultConfig)
-    tools: list[str] | None = None
+    enabled_tools: ToolSelection = Field(default_factory=AllTools)
     hooks: list[HookConfig] = Field(default_factory=list)
     workspace_tools: list[WorkspaceToolConfig] = Field(default_factory=list)
 
@@ -60,6 +46,5 @@ class CoreToolsConfig(CoreToolsModel):
 __all__ = [
     "CoreToolsConfig",
     "HookConfig",
-    "ToolResultConfig",
     "WorkspaceToolConfig",
 ]

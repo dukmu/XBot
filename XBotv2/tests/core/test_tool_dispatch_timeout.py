@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.tools import Tool, ToolCall, ToolFailed
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
 
@@ -53,12 +53,11 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
     ]
 
     assert time.monotonic() - started < 0.2
-    assert results[0].status == "error"
-    assert "Tool slow timed out after 0.05s" in results[0].content
-    error = results[0].error
-    assert error["code"] == "tool_timeout"
-    assert error["message"] == "Tool slow timed out after 0.05s"
-    assert error["details"] == {"timeout_seconds": 0.05}
+    outcome = results[0].message.outcome
+    assert isinstance(outcome, ToolFailed)
+    assert "Tool slow timed out after 0.05s" in outcome.error.message
+    assert outcome.error.code == "tool_timeout"
+    assert outcome.error.message == "Tool slow timed out after 0.05s"
 
 
 @pytest.mark.asyncio
@@ -84,10 +83,9 @@ async def test_invalid_tool_arguments_are_returned_to_the_model() -> None:
     ]
 
     assert invoked is False
-    assert results[0].status == "error"
-    assert results[0].content == (
-        "Error: Invalid arguments for choose at options.0: "
+    assert isinstance(results[0].message.outcome, ToolFailed)
+    assert results[0].message.outcome.error.message == (
         "['nested'] is not of type 'string'"
     )
-    assert results[1].status == "error"
-    assert "'extra' was unexpected" in results[1].content
+    assert isinstance(results[1].message.outcome, ToolFailed)
+    assert "'extra' was unexpected" in results[1].message.outcome.error.message

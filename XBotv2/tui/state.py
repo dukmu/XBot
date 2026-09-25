@@ -23,23 +23,50 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Mapping
 
 from XBotv2.compact.protocol import (
-    CompactionCompletedData,
-    CompactionFailedData,
-    CompactionStartedData,
+    CompactionCompleted,
+    CompactionFailed,
+    CompactionStarted,
 )
-from XBotv2.core.usage import INPUT_USAGE_FIELDS, USAGE_COUNTER_FIELDS, UsageData
-from XBotv2.interactions.protocol import UserInputRequiredData
-from XBotv2.jobs.contracts import JobSnapshot
-from XBotv2.permissions.protocol import PermissionRequestData
-from XBotv2.session.contracts import PendingInputData, SessionHistoryItem
+from XBotv2.agentloop.protocol import (
+    AssistantReasoningDelta,
+    TurnCancelled as CancelledOutcome,
+)
+from XBotv2.core.domain import (
+    Cursor,
+    ReasoningGenerationMode,
+    ResolvedRuntimeSelection,
+    UsageSnapshot,
+)
+from XBotv2.interactions.protocol import UserInputRecorded, UserInputRequest
+from XBotv2.goal.models import ActiveGoal, NoGoal
+from XBotv2.jobs.contracts import JobView
+from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission
+from XBotv2.permissions.protocol import PermissionResponseRecorded
+from XBotv2.session.contracts import PendingInputData
+from XBotv2.session.records import (
+    AssistantRecord,
+    CompactionSummaryRecord,
+    ConversationRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import (
+    ToolCancelled,
+    ToolDenied,
+    ToolFailed,
+    ToolSucceeded,
+)
 from XBotv2.session.protocol import OpenSessionResponse
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
-    ClientNotice,
+    ClientNoticeReceived,
     CompactionChanged,
     ConnectionChanged,
     ErrorFrame,
@@ -50,21 +77,27 @@ from XBotv2.tui.events import (
     InterruptAsked,
     InterruptSettled,
     JobCompletionNotice,
+    GoalChangedReceived,
+    TaskChangedReceived,
     JobUpdated,
     LocalNotice,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
+    OlderHistoryRequested,
     TranscriptCleared,
     QueueReplaced,
+    RuntimeNoticePublished,
     SessionConfigured,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
     TurnStarted,
     UiEvent,
-    UsageUpdated,
+    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     UserMessagePublished,
@@ -86,19 +119,65 @@ from XBotv2.tui.timeline import (
 # A tool is unfinished until a result arrives; these are the two client-side
 # states, the other four are the server's own result statuses.
 _UNFINISHED_TOOL_STATUSES: frozenset[str] = frozenset({"pending", "running"})
-_FINAL_TOOL_STATUS_BY_EVENT: Mapping[str, ToolStatus] = {
-    "turn_finished": "cancelled",
-    "turn_cancelled": "cancelled",
-    "error": "error",
-}
-
-_RUNNING_JOB_STATUSES: frozenset[str] = frozenset({"pending", "running"})
+_RUNNING_JOB_STATUSES: frozenset[str] = frozenset({"queued", "running"})
 
 
 # ``ThreadSummary.kind`` is the authority for these two words
 # (``tests/tui/test_reuse.py`` pins them to the wire's Literal).
 MAIN_THREAD_KIND = "main"
 SUBAGENT_THREAD_KIND = "subagent"
+
+@dataclass
+class HeldPage:
+    """One page the reader loaded, and the cursor that preceded it.
+
+    The pair is what makes releasing safe: a page is exactly the span between
+    those two cursors, so putting the first one back names the page before the
+    new front, and the reader can load the same page again.
+    """
+
+    cursor: Cursor
+    ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HistoryComplete:
+    """The client holds the beginning of the conversation."""
+
+
+@dataclass(frozen=True)
+class HistoryKnown:
+    """The states that name the page before the oldest entry held.
+
+    ``cursor`` is the server's own cursor for that page. The three subclasses are
+    the only states in which a page can be asked for, retried, or awaited, so a
+    request never has to ask whether a cursor exists.
+    """
+
+    cursor: Cursor
+
+
+@dataclass(frozen=True)
+class HistoryAvailable(HistoryKnown):
+    """Older messages exist and can be loaded."""
+
+
+@dataclass(frozen=True)
+class HistoryLoading(HistoryKnown):
+    """That page is being read right now."""
+
+
+@dataclass(frozen=True)
+class HistoryFailed(HistoryKnown):
+    """The page could not be read; the cursor is kept so the reader can retry."""
+
+    message: str
+
+
+#: What the client knows about the conversation before its oldest entry, as one
+#: value. The cursor exists only in the variants that can fetch a page, so there
+#: is no state in which a missing cursor has to be interpreted.
+OlderHistory = HistoryComplete | HistoryAvailable | HistoryLoading | HistoryFailed
 
 
 @dataclass
@@ -118,16 +197,13 @@ class SessionState:
     turn_started_at: float = 0.0
     stream_entry_id: str | None = None
     queue: tuple[PendingInputData, ...] = ()
-    jobs: dict[str, JobSnapshot] = field(default_factory=dict)
+    jobs: dict[str, JobView] = field(default_factory=dict)
     # Unanswered prompts by request id. ``facts.interaction`` is derived from
     # this, so several concurrent prompts cannot lose one another.
     pending_interactions: dict[str, InteractionRequest] = field(default_factory=dict)
     status_slots: dict[str, str] = field(default_factory=dict)
-    context_window: int = 0
-    context_input_tokens: int = 0
-    usage: dict[str, int] = field(
-        default_factory=lambda: {key: 0 for key in USAGE_COUNTER_FIELDS}
-    )
+    runtime_selection: ResolvedRuntimeSelection | None = None
+    usage: UsageSnapshot = field(default_factory=UsageSnapshot)
     # The client has handed input to the server and is waiting for the message
     # frame that confirms it. It is not a belief about the turn: a queued input
     # stays in flight while the thread is idle.
@@ -139,16 +215,45 @@ class SessionState:
     # both questions about it, and a hand-copied subset would drift.
     thread: ThreadSummary | None = None
     title: str = ""
-    agent_name: str = ""
-    provider: str = ""
-    model: str = ""
-    model_mode: str = ""
+    # Everything the client knows about the part of the conversation it does not
+    # hold, as one value: whether it holds the beginning, where the page before
+    # its oldest entry starts, whether one is in flight, and why the last one
+    # failed. There is no cursor field to fall back to and none to contradict it.
+    older: OlderHistory = field(default_factory=HistoryComplete)
+    # Pages the reader asked for, oldest last: the front-most page is the one
+    # most recently loaded, and therefore the one released first.
+    loaded_pages: list[HeldPage] = field(default_factory=list)
     _local_counter: int = 0
+
+
 
     @property
     def thread_kind(self) -> str:
         """The wire's word for the attached thread's kind."""
         return self.thread.kind if self.thread is not None else MAIN_THREAD_KIND
+
+    @property
+    def agent_name(self) -> str:
+        return self.runtime_selection.agent_name if self.runtime_selection else ""
+
+    @property
+    def provider(self) -> str:
+        return self.runtime_selection.model.route.provider if self.runtime_selection else ""
+
+    @property
+    def model(self) -> str:
+        return self.runtime_selection.model.route.model if self.runtime_selection else ""
+
+    @property
+    def model_mode(self) -> str:
+        if self.runtime_selection is None:
+            return ""
+        mode = self.runtime_selection.model.generation.mode
+        return mode.effort if isinstance(mode, ReasoningGenerationMode) else ""
+
+    @property
+    def context_window(self) -> int:
+        return self.runtime_selection.model.context_window if self.runtime_selection else 0
 
     @property
     def read_only(self) -> bool:
@@ -179,15 +284,7 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         _adopt_snapshot(state, event.snapshot)
 
     elif isinstance(event, SessionConfigured):
-        payload = event.payload
-        if payload.agent_name:
-            state.agent_name = payload.agent_name
-        if payload.provider:
-            state.provider = payload.provider
-        if payload.model:
-            state.model = payload.model
-        state.model_mode = payload.model_mode or state.model_mode
-        state.context_window = payload.context_window or state.context_window
+        state.runtime_selection = event.payload.runtime_selection
 
     elif isinstance(event, StatusSlotsUpdated):
         state.status_slots = dict(event.slots)
@@ -195,6 +292,12 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, ThreadRead):
         turn_status = ServerTurn(event.payload.turn_status)
         state.thread = event.payload
+        state.title = event.payload.title
+        # A fresh client has not seen the historical turn frames.  The thread
+        # read already carries the count derived from the canonical persisted
+        # conversation, so it is also the authority for the displayed turn
+        # number after attach, resume, undo, or compaction.
+        state.turn = event.payload.session_stats.turns
         state.facts = replace(
             state.facts,
             server_turn=turn_status,
@@ -208,8 +311,8 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             _finalize_open_tools(state, "cancelled", clock)
         state.submission_in_flight = False
 
-    elif isinstance(event, UsageUpdated):
-        _apply_usage(state, event.payload)
+    elif isinstance(event, UsageSnapshotReceived):
+        state.usage = event.payload.snapshot
 
     elif isinstance(event, CompactionChanged):
         _apply_compaction(state, event)
@@ -217,10 +320,9 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, QueueReplaced):
         state.queue = tuple(event.payload.items)
 
-    elif isinstance(event, ClientNotice):
+    elif isinstance(event, ClientNoticeReceived):
         _append(state, NoticeEntry(
             id=state.next_local_id("client_message"),
-            seq=state.timeline.next_seq(),
             notice_kind="client_message",
             text=event.payload.message,
             level=event.payload.level,
@@ -233,7 +335,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, LocalNotice):
         _append(state, NoticeEntry(
             id=state.next_local_id(f"local:{event.notice_kind}"),
-            seq=state.timeline.next_seq(),
             notice_kind=event.notice_kind,
             text=event.text,
             level=event.level,
@@ -241,38 +342,56 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 
     elif isinstance(event, JobCompletionNotice):
         payload = event.payload
-        text = f"{payload.job_id}: {payload.status}"
-        if payload.command:
-            text = f"{text} — {payload.command}"
+        text = f"{payload.view.id}: {payload.view.state}"
+        if payload.view.label:
+            text = f"{text} — {payload.view.label}"
         _append(state, NoticeEntry(
             id=state.next_local_id("completion_notice"),
-            seq=state.timeline.next_seq(),
             notice_kind="completion_notice",
             text=text,
+        ))
+
+    elif isinstance(event, GoalChangedReceived):
+        goal = event.payload.snapshot
+        state_value = goal.state
+        if isinstance(state_value, NoGoal):
+            text = "Goal cleared"
+            detail = ""
+        else:
+            text = f"Goal {state_value.kind}: {state_value.condition}"
+            detail = "" if isinstance(state_value, ActiveGoal) else state_value.reason
+        _append(state, NoticeEntry(
+            id="goal:active",
+            notice_kind="goal",
+            text=text,
+            detail=detail,
+        ))
+
+    elif isinstance(event, TaskChangedReceived):
+        tasks = event.payload.snapshot.tasks
+        completed = sum(task.status == "completed" for task in tasks)
+        _append(state, NoticeEntry(
+            id="tasks:active",
+            notice_kind="tasks",
+            text=f"Tasks {completed}/{len(tasks)} completed",
         ))
 
     elif isinstance(event, InteractionOpened):
         state.pending_interactions[_request_id(event.request)] = event.request
         _append(state, NoticeEntry(
             id=_interaction_entry_id(event.request),
-            seq=state.timeline.next_seq(),
             notice_kind=f"interaction:{_interaction_kind(event.request)}",
             text=_interaction_text(event.request),
         ))
         _refresh_interaction_facts(state)
 
     elif isinstance(event, InteractionResolved):
-        opened = state.pending_interactions.pop(event.payload.request_id, None)
+        opened = state.pending_interactions.pop(event.payload.interaction_id, None)
         if opened is not None:
             entry_id = _interaction_entry_id(opened)
             existing = state.timeline.get(entry_id)
             _append(state, NoticeEntry(
                 id=entry_id,
-                seq=(
-                    existing.seq
-                    if isinstance(existing, NoticeEntry)
-                    else state.timeline.next_seq()
-                ),
                 notice_kind=f"interaction:{_interaction_kind(opened)}",
                 text=_interaction_text(opened, resolution=event),
             ))
@@ -281,7 +400,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, StreamGapDetected):
         _append(state, NoticeEntry(
             id=state.next_local_id("gap"),
-            seq=state.timeline.next_seq(),
             notice_kind="stream_gap",
             text=(
                 f"Missed {event.received - event.expected} event(s) "
@@ -327,9 +445,13 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         )
         _append(state, NoticeEntry(
             id=state.next_local_id("cancelled"),
-            seq=state.timeline.next_seq(),
             notice_kind="turn_cancelled",
-            text=f"Turn interrupted ({event.payload.reason}).",
+            text=(
+                "Turn interrupted "
+                f"({event.payload.outcome.reason})."
+                if isinstance(event.payload.outcome, CancelledOutcome)
+                else "Turn interrupted."
+            ),
         ))
 
     elif isinstance(event, InterruptAsked):
@@ -361,22 +483,46 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             )
 
     elif isinstance(event, AssistantDelta):
-        _append_delta(
-            state,
-            event.payload.content or "",
-            event.payload.reasoning or "",
-        )
+        if isinstance(event.payload, AssistantReasoningDelta):
+            _append_delta(state, "", event.payload.text)
+        else:
+            _append_delta(state, event.payload.text, "")
 
     elif isinstance(event, AssistantCompleted):
-        _complete_assistant(state, event.payload.id, event.payload.content)
+        _complete_assistant(state, event.payload)
 
     elif isinstance(event, HistoryReplaced):
-        _rebuild_from_items(state, tuple(event.payload.history))
+        mutation = event.payload.mutation
+        _rebuild_from_items(state, mutation.history.items)
+        state.older = _older_from_cursor(mutation.history.older_cursor)
+        state.turn = mutation.stats.turns
+        state.loaded_pages.clear()
+
+    elif isinstance(event, OlderHistoryRequested):
+        # An ask while a page is already in flight changes nothing: that page is
+        # the answer to this one too. An ask after a failure is a retry.
+        if isinstance(state.older, HistoryKnown):
+            state.older = HistoryLoading(cursor=state.older.cursor)
+
+    elif isinstance(event, OlderHistoryLoaded):
+        added = _prepend_from_items(state, event.payload.items)
+        state.loaded_pages.append(HeldPage(cursor=event.cursor, ids=added))
+        state.older = _older_from_cursor(event.payload.older_cursor)
+
+    elif isinstance(event, OlderHistoryFailed):
+        if isinstance(state.older, HistoryLoading):
+            state.older = HistoryFailed(
+                cursor=state.older.cursor, message=event.message,
+            )
 
     elif isinstance(event, ToolCallsStarted):
-        _start_tool_calls(state, event.payload.tool_calls, clock)
+        _start_tool_calls(
+            state,
+            tuple(item.call for item in event.payload.calls),
+            clock,
+        )
 
-    elif isinstance(event, ToolResult):
+    elif isinstance(event, ToolRecordReceived):
         _finish_tool_call(state, event.payload, clock)
 
     elif isinstance(event, ErrorFrame):
@@ -385,7 +531,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         _finalize_open_tools(state, "error", clock)
         _append(state, ErrorEntry(
             id=state.next_local_id("error"),
-            seq=state.timeline.next_seq(),
             message=message,
         ))
 
@@ -396,7 +541,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             # to "sending": the echo can arrive before the local bookkeeping.
             _append(state, UserEntry(
                 id=event.input_id,
-                seq=state.timeline.next_seq(),
                 content=event.content,
                 delivery=Delivery.PENDING,
             ))
@@ -410,21 +554,23 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         state.facts = replace(state.facts, last_error=event.error)
         _append(state, ErrorEntry(
             id=state.next_local_id("submit_error"),
-            seq=state.timeline.next_seq(),
             message=f"Message not delivered: {event.error}",
         ))
 
     elif isinstance(event, UserMessagePublished):
         _publish_user_message(state, event)
 
+    elif isinstance(event, RuntimeNoticePublished):
+        _append(state, _entry_from_history_item(state, event.payload))
+
     elif isinstance(event, JobUpdated):
-        state.jobs[event.payload.job_id] = event.payload
+        state.jobs[event.payload.id] = event.payload
         state.facts = replace(
             state.facts,
             jobs_running=sum(
                 1
                 for job in state.jobs.values()
-                if job.status in _RUNNING_JOB_STATUSES
+                if job.state in _RUNNING_JOB_STATUSES
             ),
         )
 
@@ -437,52 +583,27 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 # --- usage and compaction -------------------------------------------------
 
 
-def _apply_usage(state: SessionState, usage: UsageData) -> None:
-    state.context_input_tokens = _effective_context_tokens(
-        usage, state.context_input_tokens
-    )
-    for key in USAGE_COUNTER_FIELDS:
-        if key in usage.model_fields_set:
-            state.usage[key] += int(getattr(usage, key))
-
-
 def _apply_compaction(state: SessionState, event: CompactionChanged) -> None:
     payload = event.payload
-    if isinstance(payload, CompactionStartedData):
+    if isinstance(payload, CompactionStarted):
         state.facts = replace(state.facts, compaction=True)
         return
     state.facts = replace(state.facts, compaction=False)
-    if isinstance(payload, CompactionFailedData):
+    if isinstance(payload, CompactionFailed):
         _append(state, NoticeEntry(
             id=state.next_local_id("compaction_failed"),
-            seq=state.timeline.next_seq(),
             notice_kind="compaction",
             text=f"Compaction failed: {payload.message}",
         ))
         return
-    if not isinstance(payload, CompactionCompletedData):  # pragma: no cover - union
+    if not isinstance(payload, CompactionCompleted):  # pragma: no cover - union
         raise TypeError(f"Unsupported compaction payload: {payload!r}")
     _append(state, NoticeEntry(
         id=state.next_local_id("compaction"),
-        seq=state.timeline.next_seq(),
         notice_kind="compaction",
         text="Conversation compacted",
-        detail=payload.summary,
+        detail=payload.summary.summary,
     ))
-
-
-def _effective_context_tokens(usage: UsageData, previous: int) -> int:
-    """Context size for the status bar.
-
-    ``context_tokens`` is authoritative when the provider reported it; providers
-    that only report the input breakdown are summed; an event that carries
-    neither leaves the previous reading alone.
-    """
-    if "context_tokens" in usage.model_fields_set:
-        return int(usage.context_tokens)
-    if any(field in usage.model_fields_set for field in INPUT_USAGE_FIELDS):
-        return sum(int(getattr(usage, field)) for field in INPUT_USAGE_FIELDS)
-    return previous
 
 
 # --- timeline mutation ----------------------------------------------------
@@ -500,7 +621,7 @@ def _append_delta(state: SessionState, content: str, reasoning: str) -> None:
     if not isinstance(existing, AssistantEntry):
         entry_id = state.next_local_id("assistant")
         state.stream_entry_id = entry_id
-        existing = AssistantEntry(id=entry_id, seq=state.timeline.next_seq())
+        existing = AssistantEntry(id=entry_id)
     _append(state, replace(
         existing,
         content=existing.content + content,
@@ -509,23 +630,28 @@ def _append_delta(state: SessionState, content: str, reasoning: str) -> None:
     ))
 
 
-def _complete_assistant(state: SessionState, message_id: str, content: str) -> None:
+def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
     stream_id = state.stream_entry_id
     streamed = state.timeline.get(stream_id) if stream_id is not None else None
     if isinstance(streamed, AssistantEntry):
-        # The frame carries the authoritative body; the accumulated reasoning
-        # stays, because only the delta frames ever carried it.
+        # Delta entries use a local identity; the completed record owns the
+        # durable identity. Replace the streaming placeholder rather than
+        # retaining both as separate transcript entries.
+        if stream_id != record.id:
+            state.timeline.remove(stream_id)
         _append(state, replace(
             streamed,
-            content=content or streamed.content,
+            id=record.id,
+            content=record.content,
+            reasoning=record.reasoning,
             streaming=False,
         ))
         state.stream_entry_id = None
         return
     _append(state, AssistantEntry(
-        id=message_id or state.next_local_id("assistant"),
-        seq=state.timeline.next_seq(),
-        content=content,
+        id=record.id,
+        content=record.content,
+        reasoning=record.reasoning,
     ))
 
 
@@ -558,7 +684,6 @@ def _start_tool_calls(state: SessionState, calls, now: float) -> None:
             continue
         _append(state, ToolEntry(
             id=call.id,
-            seq=state.timeline.next_seq(),
             name=call.name,
             args=dict(call.args),
             status="running",
@@ -566,20 +691,40 @@ def _start_tool_calls(state: SessionState, calls, now: float) -> None:
         ))
 
 
-def _finish_tool_call(state: SessionState, payload, now: float) -> None:
-    existing = state.timeline.get(payload.tool_call_id)
+def _finish_tool_call(state: SessionState, record: ToolRecord, now: float) -> None:
+    call_id = str(record.call.id)
+    existing = state.timeline.get(call_id)
     known = isinstance(existing, ToolEntry)
-    body = payload.content if payload.error is None else payload.error
+    outcome = record.outcome
+    if isinstance(outcome, ToolSucceeded):
+        status: ToolStatus = "success"
+        body = _tool_output_text(outcome.output.parts)
+    elif isinstance(outcome, ToolFailed):
+        status = "error"
+        body = _tool_output_text(outcome.output.parts) or outcome.error.message
+    elif isinstance(outcome, ToolDenied):
+        status = "denied"
+        body = outcome.reason
+    elif isinstance(outcome, ToolCancelled):
+        status = "cancelled"
+        body = outcome.reason
+    else:  # pragma: no cover - ToolOutcome is closed
+        raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
+    if call_id != record.id:
+        state.timeline.remove(call_id)
     _append(state, ToolEntry(
-        id=payload.tool_call_id,
-        seq=existing.seq if known else state.timeline.next_seq(),
-        name=payload.name or (existing.name if known else "tool"),
+        id=record.id,
+        name=record.call.name,
         args=existing.args if known else {},
-        status=payload.status,
+        status=status,
         result=body,
         started_at=existing.started_at if known else now,
         finished_at=now,
     ))
+
+
+def _tool_output_text(parts: tuple[object, ...]) -> str:
+    return "".join(part.text for part in parts if isinstance(part, TextPart))
 
 
 def _publish_user_message(state: SessionState, event: UserMessagePublished) -> None:
@@ -594,7 +739,6 @@ def _publish_user_message(state: SessionState, event: UserMessagePublished) -> N
     else:
         _append(state, UserEntry(
             id=message_id,
-            seq=state.timeline.next_seq(),
             content=event.payload.content,
             delivery=Delivery.ACCEPTED,
         ))
@@ -611,32 +755,26 @@ def _adopt_snapshot(state: SessionState, snapshot: OpenSessionResponse) -> None:
     ``server_turn``/``turn_open`` alone: an answerless snapshot is not evidence
     that nothing is running.
     """
-    state.session_id = snapshot.session_id or state.session_id
-    state.thread_id = snapshot.thread_id or state.thread_id
-    state.title = snapshot.title or state.title
-    state.agent_name = snapshot.agent_name or state.agent_name
-    state.provider = snapshot.provider or state.provider
-    state.model = snapshot.model or state.model
-    state.model_mode = snapshot.model_mode or state.model_mode
-    state.context_window = snapshot.context_window or state.context_window
-    state.status_slots = dict(snapshot.status_slots)
-    state.usage = {
-        key: int(getattr(snapshot.usage, key, 0) or 0)
-        for key in USAGE_COUNTER_FIELDS
-    }
-    state.context_input_tokens = _effective_context_tokens(
-        snapshot.usage, state.context_input_tokens
-    )
-    state.queue = tuple(snapshot.pending_inputs)
+    opened = snapshot.data
+    metadata = opened.metadata
+    state.session_id = opened.key.session_id
+    state.thread_id = opened.key.thread_id
+    state.title = metadata.title
+    state.runtime_selection = metadata.runtime_selection
+    state.status_slots = dict(opened.status_slots)
+    state.usage = opened.usage
+    state.queue = tuple(opened.pending_inputs)
     # Unanswered prompts arrive as ``pending_interactions``; the transport
     # replays each one as an ``InteractionOpened`` event so a reconnecting
     # client rebuilds the dialog through the same path as a live one.
-    _rebuild_from_items(state, tuple(snapshot.history))
+    _rebuild_from_items(state, opened.history.items)
+    state.older = _older_from_cursor(opened.history.older_cursor)
+    state.loaded_pages.clear()
 
 
 def _rebuild_from_items(
     state: SessionState,
-    items: tuple[SessionHistoryItem, ...],
+    items: tuple[ConversationRecord, ...],
 ) -> None:
     """Replace the timeline with a server-authored baseline.
 
@@ -650,59 +788,112 @@ def _rebuild_from_items(
         state.timeline.upsert(_entry_from_history_item(state, item))
 
 
-def _entry_from_history_item(state: SessionState, item: SessionHistoryItem) -> Entry:
-    seq = state.timeline.next_seq()
-    if item.role == "user":
-        if item.runtime is not None:
-            # An injected reminder or goal round carries runtime provenance and
-            # is not something the human typed.
-            return NoticeEntry(
-                id=state.next_local_id("runtime"),
-                seq=seq,
-                notice_kind="runtime",
-                text=item.content or "injected turn",
-            )
+def _prepend_from_items(
+    state: SessionState,
+    items: tuple[ConversationRecord, ...],
+) -> tuple[str, ...]:
+    """Add one older page ahead of what the client holds; return the new ids.
+
+    A page is older than the window it extends, so nothing the client already
+    holds moves; an id that appears in both is refreshed where it stands and is
+    not part of what this page added.
+    """
+    return state.timeline.prepend(
+        [_entry_from_history_item(state, item) for item in items]
+    )
+
+
+def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
+    """What a server cursor means about the conversation before the window.
+
+    A cursor names the page before the oldest entry held; the server sends none
+    exactly when that entry is the beginning of the conversation.
+    """
+    if cursor is None:
+        return HistoryComplete()
+    return HistoryAvailable(cursor=cursor)
+
+
+def release_oldest_loaded_page(state: SessionState) -> None:
+    """Let the front-most loaded page go and page back to where it started.
+
+    The caller must have checked that a page is held; asking to release nothing
+    is a bug in the caller, not a state the conversation can be in. Only pages
+    the *reader* loaded are ever released -- the window the attach returned is
+    what the client is for.
+    """
+    released = state.loaded_pages.pop()
+    for entry_id in released.ids:
+        state.timeline.remove(entry_id)
+    state.older = HistoryAvailable(cursor=released.cursor)
+
+
+def _entry_from_history_item(state: SessionState, item: ConversationRecord) -> Entry:
+    """One replayed item as the entry it names.
+
+    ``item.id`` is the identity of the transcript node the record sits on, so a
+    page the client loads later names the same message the same way and upserts
+    the entry it already holds.
+    """
+    entry_id = item.id
+    if isinstance(item, RuntimeNoticeRecord):
+        return NoticeEntry(
+            id=entry_id,
+            notice_kind="runtime",
+            text=item.content or "injected turn",
+        )
+    if isinstance(item, HumanInputRecord):
         return UserEntry(
-            id=state.next_local_id("user"),
-            seq=seq,
+            id=entry_id,
             content=item.content,
             delivery=Delivery.ACCEPTED,
         )
-    if item.role == "assistant":
+    if isinstance(item, AssistantRecord):
         return AssistantEntry(
-            id=state.next_local_id("assistant"),
-            seq=seq,
+            id=entry_id,
             content=item.content,
             reasoning=item.reasoning,
         )
-    if item.role == "tool":
-        # A persisted tool record has finished, and its status already speaks the
-        # same vocabulary as a live result.
-        return ToolEntry(
-            id=item.tool_call_id or state.next_local_id("tool"),
-            seq=seq,
-            name="tool",
-            status=item.status or "success",
-            result=item.content,
+    if isinstance(item, CompactionSummaryRecord):
+        return NoticeEntry(
+            id=entry_id,
+            notice_kind="compaction",
+            text=item.summary,
         )
-    raise ValueError(f"Unsupported history role: {item.role!r}")
+    if isinstance(item, ToolRecord):
+        outcome = item.outcome
+        result = ""
+        if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+            result = "".join(
+                part.text for part in outcome.output.parts
+                if isinstance(part, TextPart)
+            )
+        return ToolEntry(
+            id=entry_id,
+            name=item.call.name,
+            status={"succeeded": "success", "failed": "error"}.get(
+                outcome.kind, outcome.kind
+            ),
+            result=result,
+        )
+    raise TypeError(f"Unsupported conversation record: {type(item).__name__}")
 
 
 # --- interactions ---------------------------------------------------------
 
 
 def _request_id(request: InteractionRequest) -> str:
-    return str(request.request_id)
+    return str(request.interaction_id)
 
 
 def _interaction_entry_id(request: InteractionRequest) -> str:
-    return f"interaction:{request.request_id}"
+    return f"interaction:{request.interaction_id}"
 
 
 def _interaction_kind(request: InteractionRequest) -> str:
-    if isinstance(request, PermissionRequestData):
+    if isinstance(request, PermissionRequest):
         return "permission"
-    if isinstance(request, UserInputRequiredData):
+    if isinstance(request, UserInputRequest):
         return "user_input"
     raise TypeError(f"Unsupported interaction request: {request!r}")
 
@@ -711,15 +902,17 @@ def _interaction_text(
     request: InteractionRequest,
     resolution: InteractionResolved | None = None,
 ) -> str:
-    if isinstance(request, PermissionRequestData):
-        subject = (
-            request.tool_call.name
-            if request.tool_call is not None
-            else str(getattr(request.permission, "tool", "") or "tool")
-        )
-        lines = [f"{subject}: {request.reason}"]
-    elif isinstance(request, UserInputRequiredData):
-        lines = [request.question]
+    lines = [f"ID: {request.interaction_id}"]
+    if isinstance(request, PermissionRequest):
+        if isinstance(request.subject, ToolPermission):
+            subject = request.subject.tool_call.name
+        elif isinstance(request.subject, NamedPermission):
+            subject = request.subject.tool
+        else:  # pragma: no cover - PermissionSubject is closed
+            raise TypeError(f"Unsupported permission subject: {request.subject!r}")
+        lines.append(f"{subject}: {request.reason}")
+    elif isinstance(request, UserInputRequest):
+        lines.append(request.question)
         lines.extend(
             f"{index}. {option.label} — {option.description}"
             for index, option in enumerate(request.options, start=1)
@@ -727,7 +920,14 @@ def _interaction_text(
     else:
         raise TypeError(f"Unsupported interaction request: {request!r}")
     if resolution is not None:
-        lines.append(f"→ {resolution.payload.decision or resolution.payload.status}")
+        payload = resolution.payload
+        if isinstance(payload, PermissionResponseRecorded):
+            result_kind = payload.approval.kind
+        elif isinstance(payload, UserInputRecorded):
+            result_kind = payload.resolution.kind
+        else:  # pragma: no cover - InteractionResolved is closed
+            raise TypeError(f"Unsupported interaction resolution: {payload!r}")
+        lines.append(f"→ {result_kind}")
     return "\n".join(lines)
 
 

@@ -1,130 +1,111 @@
-"""Cumulative model usage stored through the shared state protocol."""
+"""Cumulative request usage owned by one thread."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from pydantic import JsonValue
 
+from pydantic import JsonValue
 from xcore import Context
 from xcore.state import StateService
 
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.agentloop import EventContext, Events, LoopState
-from XBotv2.core.messages import Message
+from XBotv2.agentloop import Events, LoopState
+from XBotv2.agentloop.events import ModelResponseObserved
+from XBotv2.application import (
+    APPLICATION_INITIALIZED,
+    RUNTIME_EVENT,
+    ApplicationInitialized,
+    RuntimeEvent,
+)
+from XBotv2.core.domain import RequestObservation, UsageDelta, UsageSnapshot
+from XBotv2.core.messages import AssistantMessage, ConversationMessage
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.core.usage import (
+from XBotv2.usage.contracts import (
     USAGE_SNAPSHOT_KEY,
     USAGE_STATE_NAMESPACE,
-    UsageData,
+    UsageUpdated,
 )
 
 
 class UsageService:
-    """Own the one cumulative usage snapshot for a thread."""
+    """Own the sole cumulative usage snapshot for a thread."""
 
     def __init__(
         self,
         store: StateService,
+        events,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._store = store
+        self._events = events
         self._log = runtime_log.bind("usage")
-        self._snapshot = UsageData()
+        self._snapshot = UsageSnapshot()
         self._initialized = False
         self._lock = asyncio.Lock()
 
-    async def initialize(self, messages: Sequence[Message]) -> None:
+    async def initialize(self, messages: Sequence[ConversationMessage]) -> None:
         async with self._lock:
             if self._initialized:
                 return
             stored = await self._store.get(USAGE_SNAPSHOT_KEY)
             source = "history"
             if stored is None:
-                snapshot = UsageData()
+                snapshot = UsageSnapshot()
                 for message in messages:
-                    usage = message.usage_metadata
-                    if usage:
-                        delta = UsageData.from_provider(usage)
-                        if not delta.is_empty():
-                            snapshot = snapshot.add(delta)
+                    if isinstance(message, AssistantMessage):
+                        snapshot = snapshot.add(
+                            message.exchange.observation,
+                            message.exchange.usage,
+                        )
                 self._snapshot = snapshot
                 if snapshot.requests:
-                    await self._store.set(
-                        USAGE_SNAPSHOT_KEY,
-                        snapshot.to_snapshot(),
-                    )
+                    await self._persist()
             else:
                 source = "snapshot"
                 if not isinstance(stored, Mapping):
                     raise TypeError("Persisted usage snapshot must be an object")
-                self._snapshot = UsageData.from_snapshot(stored)
+                self._snapshot = UsageSnapshot.model_validate(stored)
             self._initialized = True
             self._log.info(
                 "usage.initialized",
                 source=source,
                 messages=len(messages),
-                **self._snapshot.totals(),
+                requests=len(self._snapshot.requests),
+                counters=self._snapshot.total_counters.model_dump(mode="json"),
             )
 
-    def snapshot(self) -> UsageData:
+    def snapshot(self) -> UsageSnapshot:
         return self._snapshot
 
-    async def add(
+    async def record(
         self,
-        usage: Mapping[str, JsonValue],
-        *,
-        update_context: bool = True,
-    ) -> dict[str, int] | None:
+        observation: RequestObservation,
+        usage: UsageDelta,
+    ) -> UsageSnapshot:
         async with self._lock:
             if not self._initialized:
-                raise RuntimeError("UsageService must be initialized before recording usage")
-            delta = UsageData.from_provider(usage)
-            if delta.is_empty():
-                return None
-            updated = self._snapshot.add(delta)
-            self._snapshot = (
-                updated
-                if update_context
-                else updated.model_copy(
-                    update={"context_tokens": self._snapshot.context_tokens}
+                raise RuntimeError(
+                    "UsageService must be initialized before recording usage"
                 )
-            )
-            await self._store.set(USAGE_SNAPSHOT_KEY, self._snapshot.to_snapshot())
+            self._snapshot = self._snapshot.add(observation, usage)
+            await self._persist()
             self._log.info(
                 "usage.recorded",
-                delta=delta.totals(),
-                context_updated=update_context,
-                cumulative=self._snapshot.totals(),
+                purpose=observation.purpose.kind,
+                delta=usage.counters.model_dump(mode="json"),
+                cumulative=self._snapshot.total_counters.model_dump(mode="json"),
             )
-            event = delta.to_event_dict()
-            if not update_context:
-                event["context_tokens"] = self._snapshot.context_tokens
-            return event
+            await self._events.emit(
+                RUNTIME_EVENT,
+                RuntimeEvent(event=UsageUpdated(snapshot=self._snapshot)),
+            )
+            return self._snapshot
 
-    async def update_context(self, context_tokens: int) -> dict[str, int]:
-        """Persist and publish a new effective-context size without a request."""
-        async with self._lock:
-            if not self._initialized:
-                raise RuntimeError("UsageService must be initialized before updating context")
-            if isinstance(context_tokens, bool) or context_tokens < 0:
-                raise ValueError("context_tokens must be a non-negative integer")
-            self._snapshot = self._snapshot.model_copy(
-                update={"context_tokens": context_tokens}
-            )
-            await self._store.set(USAGE_SNAPSHOT_KEY, self._snapshot.to_snapshot())
-            self._log.info(
-                "usage.context_updated",
-                context_tokens=context_tokens,
-                cumulative=self._snapshot.totals(),
-            )
-            return {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "requests": 0,
-                "context_tokens": context_tokens,
-            }
+    async def _persist(self) -> None:
+        await self._store.set(
+            USAGE_SNAPSHOT_KEY,
+            self._snapshot.model_dump(mode="json"),
+        )
 
 
 class UsageHandlers:
@@ -135,10 +116,8 @@ class UsageHandlers:
     async def initialize(self, _event: ApplicationInitialized) -> None:
         await self._service.initialize(self._state.messages)
 
-    async def record(self, event: EventContext) -> None:
-        response = event.model_response
-        if response is not None and response.usage_metadata:
-            await self._service.add(response.usage_metadata)
+    async def record(self, event: ModelResponseObserved) -> None:
+        await self._service.record(event.exchange.observation, event.exchange.usage)
 
 
 class UsageComponent:
@@ -150,11 +129,12 @@ class UsageComponent:
     ) -> None:
         service = UsageService(
             ctx.state.namespace(USAGE_STATE_NAMESPACE),
+            ctx,
             ctx.runtime_log,
         )
         handlers = UsageHandlers(service, ctx.loop_state)
         ctx.set("usage", service)
-        ctx.on(Events.AFTER_MODEL_RESPONSE, handlers.record)
+        ctx.on(Events.MODEL_RESPONSE_OBSERVED, handlers.record)
         ctx.on(APPLICATION_INITIALIZED, handlers.initialize, prepend=True)
 
 

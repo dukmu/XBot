@@ -9,7 +9,7 @@ from XBotv2.core.providers import BaseProvider
 
 @dataclass(frozen=True, slots=True)
 class ACPLaunch:
-    provider_name: str
+    provider_name: str | None
     no_plugins: bool
     selected_agent: str | None = None
     llm_override: BaseProvider | None = None

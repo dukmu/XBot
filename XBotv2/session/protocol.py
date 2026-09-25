@@ -11,26 +11,25 @@ import logging
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import AsyncIterator, Literal, Protocol
+from typing import AsyncIterator, Literal, Protocol, TypeAlias
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 from XBotv2.protocol.http_util import (
     _SSE_RESPONSE,
     error_payload,
     _sse_response,
     HttpServerError,
-    _format_sse,
 )
 from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.permissions import PermissionResponseRequest
-from XBotv2.protocol import ErrorEventData, WireModel
+from XBotv2.protocol import ResourceResponse, ServerEvent, WireModel
+from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.errors import OperationError
-from XBotv2.core.history import ConversationPage
-from XBotv2.core.tools import ClientEvent, validated_client_event
-from XBotv2.core.timing import SessionStats, conversation_stats
+from XBotv2.core.domain import Cursor, ResolvedRuntimeSelection
+from XBotv2.core.history import HistoryPage, TrajectoryRead
 from XBotv2.server import ServerOptions
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import (
@@ -38,27 +37,25 @@ from XBotv2.session.contracts import (
     HistoryMutation,
     ImageInput,
     InteractionReceipt,
-    OpenedSession,
+    OpenedThread,
     OpenSession,
     OpenThread,
     PendingInputData,
-    PendingInteractionData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionEventSubscription,
+    SessionEventFrame,
     SessionEventCursorExpired,
-    SessionHistoryItem,
     SessionNotFound,
     SessionMode,
-    SessionDescriptor,
     SessionSummary,
-    SessionTrajectoryItem,
     ThreadNotActive,
     ThreadSummary,
     conversation_replay,
 )
+from XBotv2.session.records import ConversationRecord, InputRecordPayload
 
 logger = logging.getLogger("xbotv2.api")
 
@@ -91,12 +88,7 @@ class SessionUpdateRequest(WireModel):
     title: str = Field(min_length=1, max_length=200)
 
 
-class OpenSessionResponse(SessionDescriptor):
-    status: Literal["ready"] = "ready"
-    history: list[SessionHistoryItem] = Field(default_factory=list)
-    history_cursor: str | None = None
-    pending_inputs: list["PendingInputData"] = Field(default_factory=list)
-    pending_interactions: list[PendingInteractionData] = Field(default_factory=list)
+OpenSessionResponse: TypeAlias = ResourceResponse[OpenedThread]
 
 
 class OpenThreadRequest(WireModel):
@@ -108,23 +100,6 @@ class OpenThreadRequest(WireModel):
     history_limit: int | None = Field(default=None, ge=1, le=500)
 
 
-class ThreadMessagesResponse(WireModel):
-    session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    messages: list[SessionHistoryItem] = Field(default_factory=list)
-    next_cursor: str | None = None
-
-
-class ThreadTrajectoryResponse(WireModel):
-    session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    items: list[SessionTrajectoryItem] = Field(default_factory=list)
-    next_cursor: str | None = None
-    #: Highest trajectory position; a windowed client compares it with the last
-    #: item it holds to know whether it is at the tail.
-    newest_position: int = 0
-
-
 class UndoRequest(WireModel):
     count: int = Field(default=1, ge=1)
     history_limit: int | None = Field(default=None, ge=1, le=500)
@@ -132,18 +107,6 @@ class UndoRequest(WireModel):
 
 class RegenerateRequest(WireModel):
     request_id: str = ""
-
-
-class HistoryMutationResponse(WireModel):
-    session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    removed_turns: int = Field(ge=0)
-    messages: list[SessionHistoryItem] = Field(default_factory=list)
-    session_stats: SessionStats = Field(default_factory=SessionStats)
-    history_cursor: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
 
 
 class ForkResponse(WireModel):
@@ -157,29 +120,8 @@ class DeleteSessionResponse(WireModel):
     status: Literal["deleted"] = "deleted"
 
 
-class MessageData(WireModel):
-    id: str
-    role: Literal["user"]
-    content: str = ""
-    images: list[dict[str, JsonValue]] = Field(default_factory=list)
-    artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
-    runtime: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
-
-
-class HistoryUpdatedData(WireModel):
-    history: list[SessionHistoryItem] = Field(default_factory=list)
-    operation: str = Field(min_length=1)
-    turns: int = Field(ge=0)
-    history_cursor: str | None = None
-    session_stats: SessionStats = Field(default_factory=SessionStats)
-
-
 class AgentConfiguredData(WireModel):
-    agent_name: str = ""
-    provider: str = ""
-    model: str = ""
-    model_mode: str = ""
-    context_window: int = Field(default=0, ge=0)
+    runtime_selection: ResolvedRuntimeSelection
 
 
 class PendingInputListResponse(WireModel):
@@ -208,47 +150,58 @@ class InputDeliveryData(WireModel):
     target: Literal["next-turn", "next-step"] | None = None
 
 
-SessionEventType = Literal[
-    "agent_configured",
-    "history_updated",
-    "message",
-    "queue_updated",
-    "input_accepted",
-    "input_claimed",
-    "input_consumed",
-]
-
-_SESSION_EVENT_MODELS: dict[str, type[WireModel]] = {
-    "agent_configured": AgentConfiguredData,
-    "history_updated": HistoryUpdatedData,
-    "message": MessageData,
-    "queue_updated": QueueUpdatedData,
-    "input_accepted": InputDeliveryData,
-    "input_claimed": InputDeliveryData,
-    "input_consumed": InputDeliveryData,
-}
+class AgentConfiguredEvent(AgentConfiguredData):
+    kind: Literal["agent_configured"] = "agent_configured"
 
 
-def session_event(
-    type: SessionEventType,
-    data: dict[str, JsonValue],
-) -> ClientEvent:
-    """Validate one Session-owned event at its producer boundary."""
-    return validated_client_event(type, data, _SESSION_EVENT_MODELS[type])
+class HistoryUpdatedEvent(WireModel):
+    kind: Literal["history_updated"] = "history_updated"
+    operation: str = Field(min_length=1)
+    mutation: HistoryMutation
+
+
+class MessagePublishedEvent(WireModel):
+    kind: Literal["message"] = "message"
+    record: InputRecordPayload
+
+
+class QueueReplacedEvent(QueueUpdatedData):
+    kind: Literal["queue_updated"] = "queue_updated"
+
+
+class InputAcceptedEvent(InputDeliveryData):
+    kind: Literal["input_accepted"] = "input_accepted"
+
+
+class InputClaimedEvent(WireModel):
+    kind: Literal["input_claimed"] = "input_claimed"
+    message_ids: list[str] = Field(default_factory=list)
+
+
+class InputConsumedEvent(WireModel):
+    kind: Literal["input_consumed"] = "input_consumed"
+    message_ids: list[str] = Field(default_factory=list)
+
+
+SessionEvent = (
+    AgentConfiguredEvent
+    | HistoryUpdatedEvent
+    | MessagePublishedEvent
+    | QueueReplacedEvent
+    | InputAcceptedEvent
+    | InputClaimedEvent
+    | InputConsumedEvent
+)
 
 
 def session_error_event(
     code: str,
     message: str,
-    *,
-    details: dict[str, JsonValue] | None = None,
-) -> ClientEvent:
-    """Validate a Session-produced generic error event."""
-    return validated_client_event(
-        "error",
-        {"code": code, "message": message, "details": details or {}},
-        ErrorEventData,
-    )
+) -> object:
+    """Return the loop's canonical error event for a session failure."""
+    from XBotv2.agentloop.protocol import LoopError
+
+    return LoopError(code=code, message=message)
 
 
 class MessageRequest(WireModel):
@@ -279,34 +232,11 @@ class CloseResponse(WireModel):
 
 
 def _open_session_response(
-    value: OpenedSession,
-    page: ConversationPage | None = None,
+    value: OpenedThread,
+    history: HistoryPage[ConversationRecord],
 ) -> OpenSessionResponse:
-    history = page.messages if page is not None else value.history
-    return OpenSessionResponse.model_validate(
-        {
-            **value.model_dump(mode="json", exclude={"history"}),
-            "history": conversation_replay(history),
-            "history_cursor": page.next_cursor if page is not None else None,
-        }
-    )
-
-
-def _history_response(
-    session_id: str,
-    thread_id: str,
-    result: HistoryMutation,
-    page: ConversationPage | None = None,
-) -> HistoryMutationResponse:
-    messages = page.messages if page is not None else result.messages
-    return HistoryMutationResponse(
-        session_id=session_id,
-        thread_id=thread_id,
-        removed_turns=result.removed_turns,
-        messages=conversation_replay(messages),
-        session_stats=conversation_stats(result.messages),
-        history_cursor=page.next_cursor if page is not None else None,
-    )
+    value = value.model_copy(update={"history": history})
+    return OpenSessionResponse(data=value)
 
 
 async def _requested_history_page(
@@ -314,14 +244,16 @@ async def _requested_history_page(
     session_id: str,
     thread_id: str,
     limit: int | None,
-) -> ConversationPage | None:
-    if limit is None:
-        return None
-    return await sessions.message_page(
+) -> HistoryPage[ConversationRecord]:
+    page = await sessions.message_page(
         session_id,
         thread_id,
         cursor=None,
         limit=limit,
+    )
+    return HistoryPage(
+        items=conversation_replay(page.items),
+        older_cursor=page.older_cursor,
     )
 
 
@@ -339,9 +271,57 @@ async def _interaction_response(
             status=410,
         ) from exc
     return InteractionResponse(
-        request_id=value.request_id,
-        pending_interactions=list(value.pending_interactions),
+        request_id=value.interaction_id,
+        pending_interactions=list(value.pending_ids),
     )
+
+
+def _session_event_payload(event: object) -> dict[str, JsonValue]:
+    """Encode a typed internal event at the sole SSE boundary."""
+    from XBotv2.agentloop.protocol import (
+        AssistantCompleted,
+        LoopEvent,
+        ToolCompleted,
+        UsageObserved,
+        is_loop_event,
+    )
+    from XBotv2.session.records import project_message
+
+    if isinstance(event, MessagePublishedEvent):
+        return event.record.root.model_dump(mode="json")
+    if isinstance(event, (
+        AgentConfiguredEvent,
+        HistoryUpdatedEvent,
+        QueueReplacedEvent,
+        InputAcceptedEvent,
+        InputClaimedEvent,
+        InputConsumedEvent,
+    )):
+        return event.model_dump(mode="json", exclude={"kind"})
+    if isinstance(event, AssistantCompleted):
+        return project_message(event.message).model_dump(mode="json")
+    if isinstance(event, ToolCompleted):
+        return project_message(event.execution.message).model_dump(mode="json")
+    if isinstance(event, UsageObserved):
+        return event.usage.model_dump(mode="json")
+    if is_loop_event(event):
+        return event.model_dump(mode="json", exclude={"kind"})
+    from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
+    from XBotv2.goal.models import GoalChanged
+    from XBotv2.interactions import ClientNotice, UserInputRecorded, UserInputRequest
+    from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
+    from XBotv2.permissions import PermissionRequest, PermissionResponseRecorded
+    from XBotv2.todolist.contracts import TaskChanged
+    from XBotv2.usage import UsageUpdated
+    if isinstance(event, (
+        CompactionCompleted, CompactionFailed, CompactionStarted, GoalChanged,
+        ClientNotice, UserInputRecorded, UserInputRequest,
+        JobCompletedEvent, JobUpdatedEvent, PermissionRequest, TaskChanged,
+        PermissionResponseRecorded,
+        UsageUpdated,
+    )):
+        return event.model_dump(mode="json", exclude={"kind"})
+    raise TypeError(f"Unsupported session event: {type(event).__name__}")
 
 
 async def _session_sse(
@@ -351,15 +331,26 @@ async def _session_sse(
 ) -> AsyncIterator[bytes]:
     try:
         async for frame in events:
-            yield _format_sse(
-                event={"type": frame.event.type, "data": frame.event.data},
-                seq=frame.sequence,
-                session_id=session_id,
-                thread_id=thread_id,
-                request_id=frame.request_id,
-            )
+            yield _format_sse(frame, session_id=session_id, thread_id=thread_id)
     finally:
         await events.aclose()
+
+
+def _format_sse(
+    frame: SessionEventFrame,
+    *,
+    session_id: str,
+    thread_id: str,
+) -> bytes:
+    """Encode a complete typed session frame at the HTTP boundary."""
+    return encode_server_event(ServerEvent(
+        session_id=session_id,
+        thread_id=thread_id,
+        sequence=frame.sequence,
+        scope=frame.scope,
+        kind=frame.event.kind,
+        payload=_session_event_payload(frame.event),
+    ))
 
 
 async def _session_not_found(
@@ -443,8 +434,8 @@ def build_session_router(
             ) from exc
         page = await _requested_history_page(
             sessions,
-            opened.session_id,
-            opened.thread_id,
+            opened.key.session_id,
+            opened.key.thread_id,
             payload.history_limit,
         )
         return _open_session_response(opened, page)
@@ -525,8 +516,8 @@ def build_session_router(
             raise HttpServerError("session_exists", str(exc), status=409) from exc
         page = await _requested_history_page(
             sessions,
-            opened.session_id,
-            opened.thread_id,
+            opened.key.session_id,
+            opened.key.thread_id,
             payload.history_limit,
         )
         return _open_session_response(opened, page)
@@ -550,18 +541,16 @@ def build_session_router(
         thread_id: str,
         cursor: str | None = None,
         limit: int | None = Query(default=None, ge=1, le=500),
-    ) -> ThreadMessagesResponse:
+    ) -> HistoryPage[ConversationRecord]:
         page = await sessions.message_page(
             session_id,
             thread_id,
-            cursor=cursor,
+            cursor=Cursor(cursor) if cursor is not None else None,
             limit=limit,
         )
-        return ThreadMessagesResponse(
-            session_id=session_id,
-            thread_id=thread_id,
-            messages=conversation_replay(page.messages),
-            next_cursor=page.next_cursor,
+        return HistoryPage(
+            items=conversation_replay(page.items),
+            older_cursor=page.older_cursor,
         )
 
     @router.get(
@@ -574,21 +563,15 @@ def build_session_router(
         cursor: str | None = None,
         before: int | None = Query(default=None, ge=1),
         limit: int = Query(default=160, ge=1, le=500),
-    ) -> ThreadTrajectoryResponse:
+    ) -> TrajectoryRead:
         page = await sessions.trajectory_page(
             session_id,
             thread_id,
-            cursor=cursor,
+            cursor=Cursor(cursor) if cursor is not None else None,
             limit=limit,
             before=before,
         )
-        return ThreadTrajectoryResponse(
-            session_id=session_id,
-            thread_id=thread_id,
-            items=list(page.items),
-            next_cursor=page.next_cursor,
-            newest_position=page.newest_position,
-        )
+        return page
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}",
@@ -622,9 +605,13 @@ def build_session_router(
     async def clear_thread_history(
         session_id: str,
         thread_id: str,
-    ) -> HistoryMutationResponse:
-        result = await sessions.clear_history(session_id, thread_id)
-        return _history_response(session_id, thread_id, result)
+        history_limit: int | None = Query(default=None, ge=1, le=500),
+    ) -> HistoryMutation:
+        return await sessions.clear_history(
+            session_id,
+            thread_id,
+            history_limit=history_limit,
+        )
 
     @router.post(
         "/sessions/{session_id}/threads/{thread_id}/history/undo",
@@ -634,19 +621,12 @@ def build_session_router(
         session_id: str,
         thread_id: str,
         payload: UndoRequest,
-    ) -> HistoryMutationResponse:
-        result = await sessions.undo_history(session_id, thread_id, payload.count)
-        page = await _requested_history_page(
-            sessions,
+    ) -> HistoryMutation:
+        return await sessions.undo_history(
             session_id,
             thread_id,
-            payload.history_limit,
-        )
-        return _history_response(
-            session_id,
-            thread_id,
-            result,
-            page,
+            payload.count,
+            history_limit=payload.history_limit,
         )
 
     @router.post(
@@ -858,26 +838,26 @@ __all__ = [
     "CloseResponse",
     "DeleteSessionResponse",
     "ForkResponse",
-    "HistoryMutationResponse",
-    "HistoryUpdatedData",
     "ImageInput",
     "InterruptResponse",
-    "MessageData",
     "MessageRequest",
     "OpenSessionRequest",
     "OpenSessionResponse",
     "OpenThreadRequest",
-    "SessionHistoryItem",
     "SessionListResponse",
     "SessionMode",
-    "SessionEventType",
+    "AgentConfiguredEvent",
+    "HistoryUpdatedEvent",
+    "InputAcceptedEvent",
+    "InputClaimedEvent",
+    "InputConsumedEvent",
+    "MessagePublishedEvent",
+    "QueueReplacedEvent",
+    "SessionEvent",
     "SessionSummary",
     "ThreadListResponse",
-    "ThreadMessagesResponse",
-    "ThreadTrajectoryResponse",
     "ThreadSummary",
     "UndoRequest",
     "build_session_router",
-    "session_event",
     "session_error_event",
 ]

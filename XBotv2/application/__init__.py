@@ -8,7 +8,7 @@ from XBotv2.application.events import (
 )
 from XBotv2.application.contracts import (
     AgentApplicationPort,
-    AgentApplicationSnapshot,
+    ApplicationSnapshot,
     ApplicationEventsPort,
     ChildApplicationRequest,
     ChildApplication,
@@ -29,7 +29,7 @@ from XBotv2.application.contracts import (
 
 __all__ = [
     "AgentApplicationPort",
-    "AgentApplicationSnapshot",
+    "ApplicationSnapshot",
     "APPLICATION_INITIALIZED",
     "ApplicationInitialized",
     "ApplicationEventsPort",

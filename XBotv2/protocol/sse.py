@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
-from XBotv2.protocol.models import ServerEvent, server_event
+from XBotv2.protocol.models import ServerEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +15,10 @@ class SseMessage:
     event: str | None
     data: str
     event_id: str | None
+
+
+class SseDecodeError(ValueError):
+    """An SSE frame did not contain a valid ServerEvent."""
 
 
 @dataclass(slots=True)
@@ -67,7 +71,7 @@ class SseDecoder:
 
 def encode_server_event(event: ServerEvent) -> bytes:
     """Encode one validated server event as an SSE message."""
-    event_name = _single_line("event type", event.type)
+    event_name = _single_line("event kind", event.kind)
     event_id = _single_line("event id", str(event.sequence))
     payload = json.dumps(event.model_dump(), ensure_ascii=False, default=str)
     data = "".join(f"data: {line}\n" for line in payload.splitlines() or [""])
@@ -75,21 +79,20 @@ def encode_server_event(event: ServerEvent) -> bytes:
 
 
 def decode_server_event(message: SseMessage) -> ServerEvent:
-    """Validate one SSE data payload, surfacing malformed JSON as an event."""
+    """Validate one SSE data payload; malformed frames are not runtime events."""
     try:
         payload = json.loads(message.data)
-    except json.JSONDecodeError:
-        return server_event(
-            type="error",
-            data={"code": "sse_decode_error", "message": message.data},
-        )
+    except json.JSONDecodeError as exc:
+        raise SseDecodeError("SSE data is not valid JSON") from exc
     try:
-        return ServerEvent.model_validate(payload)
+        event = ServerEvent.model_validate(payload)
     except ValidationError as exc:
-        return server_event(
-            type="error",
-            data={"code": "sse_decode_error", "message": str(exc)},
+        raise SseDecodeError(f"SSE payload is not a ServerEvent: {exc}") from exc
+    if message.event is not None and message.event != event.kind:
+        raise SseDecodeError(
+            f"SSE event name {message.event!r} does not match payload kind {event.kind!r}"
         )
+    return event
 
 
 def _single_line(label: str, value: str) -> str:
@@ -100,6 +103,7 @@ def _single_line(label: str, value: str) -> str:
 
 __all__ = [
     "SseDecoder",
+    "SseDecodeError",
     "SseMessage",
     "decode_server_event",
     "encode_server_event",

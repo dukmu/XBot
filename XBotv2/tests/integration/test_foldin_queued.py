@@ -13,6 +13,7 @@ batch) must:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,23 @@ import yaml
 import httpx
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import Tool
+from XBotv2.agentloop import AllTools
+from XBotv2.core.tools import Tool, ToolSucceeded
+from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application.server import start_server_application
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    LoopError,
+    LoopTurnEnded,
+    TurnCancelled,
+    ToolCompleted,
+)
+from XBotv2.core.parts import TextPart
+from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
+from XBotv2.session.protocol import MessagePublishedEvent
+from XBotv2.session.runtime import start_regenerate_turn
+from XBotv2.usage import UsageUpdated
 
 
 @pytest_asyncio.fixture
@@ -36,7 +51,7 @@ async def foldin_app(tmp_path: Path):
                 "id": "llm",
                 "name": "llm",
                 "config": {
-                    "default": "default",
+                    "default_provider": "default",
                     "providers": {
                         "default": {
                             "protocol": "openai",
@@ -47,6 +62,7 @@ async def foldin_app(tmp_path: Path):
                                 {
                                     "model": "test",
                                     "max_context_tokens": 4096,
+                                    "max_output_tokens": 1024,
                                 },
                             ],
                         },
@@ -101,11 +117,11 @@ def _runtime_command(runtime, content: str, request_id: str, *, delivery="steer"
             await runtime.send_message(content, request_id, delivery=delivery)
             async for frame in events:
                 yield frame.event
-                if frame.event.type in {"turn_finished", "turn_cancelled"}:
+                if isinstance(frame.event, LoopTurnEnded):
                     break
                 if (
-                    frame.event.type == "error"
-                    and frame.event.data.get("code") == "turn_failed"
+                    isinstance(frame.event, LoopError)
+                    and frame.event.code == "turn_failed"
                 ):
                     break
         finally:
@@ -125,7 +141,7 @@ async def test_agent_application_snapshot_without_optional_plugins(foldin_app):
     )
 
     snapshot = await asyncio.wait_for(runtime.application.snapshot(), timeout=2)
-    assert snapshot.agent
+    assert snapshot.metadata.runtime_selection.agent_name
 
 
 @pytest.mark.asyncio
@@ -151,7 +167,10 @@ async def _run_foldin(app, llm):
         llm_override=llm,
     )
     services = ctx.application._context
-    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services.permissions.replace_policies((PermissionPolicy(
+        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
+        default_decision="ask",
+    ),))
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -161,13 +180,12 @@ async def _run_foldin(app, llm):
         return value
 
     services.tools._registry.register(Tool.from_function(wait_for_release))
-    services.tools._registry.restrict(None)
+    services.tools._registry.restrict(AllTools())
 
     ev_stream = ctx.event_stream.subscribe()
 
     async def _collect_events(stream):
-        events = [event.model_dump(mode="json") async for event in stream]
-        return events
+        return [event async for event in stream]
 
     first_task = asyncio.create_task(
         _collect_events(_runtime_command(ctx, "first request", "req-1"))
@@ -184,8 +202,8 @@ async def _run_foldin(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = (await anext(ev_stream)).event.model_dump(mode="json")
-                if event.get("type") == "message":
+                event = (await anext(ev_stream)).event
+                if isinstance(event, MessagePublishedEvent):
                     message_events.append(event)
     except TimeoutError:
         pass
@@ -223,9 +241,9 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
     # The folded-in input is notified on the shared event stream with the
     # server-side id and content, so the client renders it from the event.
     assert any(
-        event["data"].get("role") == "user"
-        and event["data"].get("content") == "second queued"
-        and event["data"].get("id")
+        event.record.root.kind == "human_input"
+        and event.record.root.content == "second queued"
+        and event.record.root.id
         for event in message_events
     ), "folded-in input must receive a message event with an id"
 
@@ -235,21 +253,24 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         event
         for events in (first_events, second_events)
         for event in events
-        if event["type"] == "assistant_message"
+        if isinstance(event, AssistantCompleted)
     ]
-    contents = [event["data"].get("content") for event in combined]
+    contents = [
+        "".join(part.text for part in event.message.parts if isinstance(part, TextPart))
+        for event in combined
+    ]
     assert contents.count("handled both") == 2, (
         f"central response was not observed by both subscribers: {contents}"
     )
 
     # Each usage event must be applied exactly once.
     usage_totals = [
-        event["data"].get("total_tokens")
+        event.snapshot.total_counters.output
         for events in (first_events, second_events)
         for event in events
-        if event["type"] == "usage"
+        if isinstance(event, UsageUpdated)
     ]
-    assert usage_totals.count(280) == 2, (
+    assert usage_totals.count(130) == 2, (
         f"central usage event was not observed by both subscribers: {usage_totals}"
     )
 
@@ -269,7 +290,10 @@ async def _run_multi_queue(app, llm):
         llm_override=llm,
     )
     services = ctx.application._context
-    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services.permissions.replace_policies((PermissionPolicy(
+        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
+        default_decision="ask",
+    ),))
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -279,12 +303,12 @@ async def _run_multi_queue(app, llm):
         return value
 
     services.tools._registry.register(Tool.from_function(wait_for_release))
-    services.tools._registry.restrict(None)
+    services.tools._registry.restrict(AllTools())
 
     async def collect(stream):
         events = []
         async for event in stream:
-            events.append(event.model_dump(mode="json"))
+            events.append(event)
         return events
 
     ev_stream = ctx.event_stream.subscribe()
@@ -302,9 +326,9 @@ async def _run_multi_queue(app, llm):
     try:
         async with asyncio.timeout(1):
             while True:
-                event = (await anext(ev_stream)).event.model_dump(mode="json")
-                if event.get("type") == "message":
-                    message_events.append(event.get("data", {}).get("content"))
+                event = (await anext(ev_stream)).event
+                if isinstance(event, MessagePublishedEvent):
+                    message_events.append(event.record.root.content)
     except TimeoutError:
         pass
     return first_events, second_events, third_events, message_events
@@ -330,15 +354,26 @@ async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
 
     # Every consumer follows the authoritative central stream.
     first_tool_results = [
-        event["data"].get("content")
+        "".join(
+            part.text
+            for part in event.execution.message.outcome.output.parts
+            if isinstance(part, TextPart)
+        )
         for event in first_events
-        if event["type"] == "tool_result"
+        if isinstance(event, ToolCompleted)
     ]
-    assert first_tool_results == ["x"], first_tool_results
+    assert first_tool_results == ["x"], (
+        first_tool_results,
+        [type(event).__name__ for event in first_events],
+    )
     assert [
-        event["data"].get("content")
+        "".join(
+            part.text
+            for part in event.execution.message.outcome.output.parts
+            if isinstance(part, TextPart)
+        )
         for event in second_events + third_events
-        if event["type"] == "tool_result"
+        if isinstance(event, ToolCompleted)
     ] == ["x", "x"]
 
     # All inputs are notified in submission order on the shared stream.
@@ -346,13 +381,13 @@ async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
 
     # The fused reply is delivered once to each central-stream subscriber.
     third_replies = [
-        event["data"].get("content")
+        "".join(part.text for part in event.message.parts if isinstance(part, TextPart))
         for event in third_events
-        if event["type"] == "assistant_message"
+        if isinstance(event, AssistantCompleted)
     ]
     assert "handled first second and third" in third_replies, third_replies
     assert any(
-        event["type"] == "assistant_message" and event["data"].get("content")
+        isinstance(event, AssistantCompleted)
         for event in second_events
     ), "central stream subscriber missed the merged reply"
 
@@ -369,7 +404,6 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
     completion notice the TUI never applies); no terminal ``job_updated``
     reached live clients, so tasks stayed "running" forever."""
 
-    from XBotv2.jobs import JobKind
     from XBotv2.coretools.shell import shell_tools
 
     ctx = await foldin_app.state.manager.open_session(
@@ -381,7 +415,10 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
         llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
     services = ctx.application._context
-    services.permissions.replace_rules({"allow": [{"tool": ".*"}]})
+    services.permissions.replace_policies((PermissionPolicy(
+        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
+        default_decision="ask",
+    ),))
     events = ctx.event_stream.subscribe()
 
     registry = services.jobs
@@ -392,22 +429,351 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
             None,
             registry,
             str(foldin_app.state.paths.data_dir),
+            services.artifacts,
         )
+    }
+    assert set(tools["shell"].parameters["properties"]) == {
+        "command",
+        "cwd",
+        "background",
+        "name",
+        "sandbox_permissions",
+        "justification",
     }
     started = await tools["shell"].ainvoke(
         {"command": "echo done", "background": True},
     )
-    job_id = started.content.split("Started ")[1]
+    job_id = started.output.parts[0].text.removeprefix("Started ")
     await registry.wait([job_id])
 
     task_updates = []
     async with asyncio.timeout(1):
         while True:
-            event = (await anext(events)).event.model_dump(mode="json")
-            if event.get("type") == "job_updated":
-                task_updates.append(event["data"].get("status"))
-            if "completed" in task_updates:
+            event = (await anext(events)).event
+            if isinstance(event, JobUpdatedEvent):
+                task_updates.append(event.view.state)
+            if "succeeded" in task_updates:
                 break
-    assert "completed" in task_updates, task_updates
+    assert "succeeded" in task_updates, task_updates
     assert "running" in task_updates, task_updates
-    assert task_updates.index("running") < task_updates.index("completed"), task_updates
+    assert task_updates.index("running") < task_updates.index("succeeded"), task_updates
+
+
+@pytest.mark.asyncio
+async def test_background_job_failure_and_cancel_notices_are_consumed_once(
+    foldin_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from XBotv2.coretools.shell import ShellCommandError, shell_tools
+
+    llm = MockLLM(responses=[{"content": "acknowledged"}])
+    ctx = await foldin_app.state.manager.open_session(
+        session_id="job-terminal-states",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=llm,
+    )
+    services = ctx.application._context
+    events = ctx.event_stream.subscribe()
+    blocked_started = asyncio.Event()
+
+    async def run(command: str, **_kwargs: object) -> str:
+        if command == "fail":
+            raise ShellCommandError("command failed", exit_code=7)
+        if command == "block":
+            blocked_started.set()
+            await asyncio.Event().wait()
+        return "completed"
+
+    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    tools = {
+        tool.name: tool
+        for tool in shell_tools(
+            None,
+            services.jobs,
+            str(foldin_app.state.paths.data_dir),
+            services.artifacts,
+        )
+    }
+
+    async def start(command: str) -> str:
+        result = await tools["shell"].ainvoke(
+            {"command": command, "background": True},
+        )
+        return result.output.parts[0].text.removeprefix("Started ")
+
+    failed_id = await start("fail")
+    cancelled_id = await start("block")
+    await blocked_started.wait()
+    await services.jobs.cancel(cancelled_id)
+    await services.jobs.wait([failed_id, cancelled_id], timeout=1)
+
+    updates: dict[str, list[str]] = {failed_id: [], cancelled_id: []}
+    completions: list[JobCompletedEvent] = []
+    async with asyncio.timeout(1):
+        while any(not states or states[-1] not in {
+            "failed_running", "cancelled_running",
+        } for states in updates.values()) or len(completions) < 2:
+            event = (await anext(events)).event
+            if isinstance(event, JobUpdatedEvent) and event.view.id in updates:
+                updates[event.view.id].append(event.view.state)
+            elif isinstance(event, JobCompletedEvent):
+                completions.append(event)
+
+    assert updates[failed_id][0] == "queued"
+    assert updates[failed_id][-1] == "failed_running"
+    assert updates[cancelled_id][0] == "queued"
+    assert updates[cancelled_id][-1] == "cancelled_running"
+    assert updates[failed_id].count("failed_running") == 1
+    assert updates[cancelled_id].count("cancelled_running") == 1
+    assert {
+        item.view.id: item.view.state for item in completions
+    } == {
+        failed_id: "failed_running",
+        cancelled_id: "cancelled_running",
+    }
+    assert len(ctx.engine.inbox) == 2
+    assert llm.call_count == 0
+
+    await asyncio.wait_for(
+        _collect(_runtime_command(ctx, "review jobs", "review-jobs")),
+        timeout=3,
+    )
+    assert llm.call_count == 1
+    assert len(ctx.engine.inbox) == 0
+    assert [message.kind for message in ctx.engine.messages] == [
+        "runtime_notice", "runtime_notice", "human_input", "assistant",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shell_output_pages_are_continuable_through_shell_tools(
+    foldin_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from XBotv2.coretools.shell import shell_tools
+
+    ctx = await foldin_app.state.manager.open_session(
+        session_id="shell-output-pages",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "unused"}]),
+    )
+    jobs = ctx.application._context.jobs
+    assert jobs is not None
+
+    async def run(command: str, **_kwargs: object) -> str:
+        return "" if command == "emit empty" else "abcdef"
+
+    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    tools = {
+        tool.name: tool
+        for tool in shell_tools(
+            None,
+            jobs,
+            str(foldin_app.state.paths.data_dir),
+            ctx.application._context.artifacts,
+        )
+    }
+    started = await tools["shell"].ainvoke(
+        {"command": "emit output", "background": True},
+    )
+    job_id = started.output.parts[0].text.removeprefix("Started ")
+    await jobs.wait([job_id], timeout=1)
+    job = jobs.get_or_none(job_id)
+    assert job is not None and job.result is not None
+    assert job.result.output_ref.kind.value == "tool_results"
+    assert ctx.application._context.artifacts.read(job.result.output_ref) == b"abcdef"
+
+    first = await tools["read_shell"].ainvoke(
+        {"id": job_id, "cursor": None, "max_bytes": 3},
+    )
+    second = await tools["read_shell"].ainvoke(
+        {"id": job_id, "cursor": 3, "max_bytes": 3},
+    )
+    assert isinstance(first, ToolSucceeded)
+    assert isinstance(second, ToolSucceeded)
+    assert json.loads(first.output.parts[0].text) == {
+        "data": "abc",
+        "next_cursor": 3,
+        "eof": False,
+        "truncated": True,
+    }
+    assert json.loads(second.output.parts[0].text) == {
+        "data": "def",
+        "next_cursor": None,
+        "eof": True,
+        "truncated": False,
+    }
+
+    empty_started = await tools["shell"].ainvoke(
+        {"command": "emit empty", "background": True},
+    )
+    empty_id = empty_started.output.parts[0].text.removeprefix("Started ")
+    await jobs.wait([empty_id], timeout=1)
+    empty_page = await tools["read_shell"].ainvoke({"id": empty_id})
+    assert isinstance(empty_page, ToolSucceeded)
+    assert json.loads(empty_page.output.parts[0].text) == {
+        "data": "",
+        "next_cursor": None,
+        "eof": True,
+        "truncated": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_close_cancels_and_removes_owned_background_job(
+    foldin_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from XBotv2.coretools.shell import shell_tools
+
+    ctx = await foldin_app.state.manager.open_session(
+        session_id="job-session-close",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "unused"}]),
+    )
+    jobs = ctx.application._context.jobs
+    assert jobs is not None
+    command_started = asyncio.Event()
+    command_cancelled = asyncio.Event()
+
+    async def run(_command: str, **_kwargs: object) -> str:
+        command_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            command_cancelled.set()
+            raise
+
+    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    shell_tool = next(
+        tool
+        for tool in shell_tools(
+            None,
+            jobs,
+            str(foldin_app.state.paths.data_dir),
+            ctx.application._context.artifacts,
+        )
+        if tool.name == "shell"
+    )
+    result = await shell_tool.ainvoke(
+        {"command": "block", "background": True},
+    )
+    job_id = result.output.parts[0].text.removeprefix("Started ")
+    await command_started.wait()
+
+    await foldin_app.state.manager.close_session(
+        "job-session-close",
+        reason="test_session_close",
+    )
+
+    assert command_cancelled.is_set()
+    assert jobs.closing is True
+    assert jobs.all() == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
+    runtime = await foldin_app.state.manager.open_session(
+        session_id="regenerate-events",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[
+            {"content": "first answer"},
+            {"content": "replacement answer"},
+        ]),
+    )
+
+    async def drain_turn(stream):
+        events = []
+        async for frame in stream:
+            events.append(frame.event)
+            if isinstance(frame.event, LoopTurnEnded):
+                return events
+        raise AssertionError("turn stream ended without a terminal event")
+
+    first_stream = runtime.event_stream.subscribe()
+    await runtime.send_message("original question", "original-request")
+    await drain_turn(first_stream)
+    await first_stream.aclose()
+
+    replay_stream = runtime.event_stream.subscribe()
+    await start_regenerate_turn(runtime, request_id="regenerate-request")
+    replay_events = await drain_turn(replay_stream)
+    await replay_stream.aclose()
+
+    published_inputs = [
+        event.record.root
+        for event in replay_events
+        if isinstance(event, MessagePublishedEvent)
+    ]
+    assert [(record.id, record.content) for record in published_inputs] == [
+        ("original-request", "original question"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_emits_one_cancel_terminal_and_runtime_recovers(
+    foldin_app,
+) -> None:
+    runtime = await foldin_app.state.manager.open_session(
+        session_id="interrupt-recovery",
+        thread_id="t",
+        provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[
+            {
+                "chunks": ["partial", " response"],
+                "chunk_delay_ms": 500,
+            },
+            {"content": "recovered"},
+        ]),
+    )
+
+    interrupted_stream = runtime.event_stream.subscribe()
+    await runtime.send_message("interrupt me", "interrupt-request")
+    assert runtime.request_interrupt()
+    interrupted = await asyncio.wait_for(drain(interrupted_stream), timeout=2)
+    await interrupted_stream.aclose()
+
+    terminals = [
+        event.outcome
+        for event in interrupted
+        if isinstance(event, LoopTurnEnded)
+    ]
+    assert terminals == [TurnCancelled(reason="client_interrupt")]
+    assert not runtime.turn_lock.locked()
+    assert runtime.engine.pending_input_count == 0
+
+    recovery_stream = runtime.event_stream.subscribe()
+    await runtime.send_message("try again", "recovery-request")
+    recovered = await asyncio.wait_for(drain(recovery_stream), timeout=2)
+    await recovery_stream.aclose()
+    assert any(
+        isinstance(event, AssistantCompleted)
+        and any(
+            isinstance(part, TextPart) and part.text == "recovered"
+            for part in event.message.parts
+        )
+        for event in recovered
+    )
+
+
+async def drain(stream):
+    events = []
+    async for frame in stream:
+        events.append(frame.event)
+        if isinstance(frame.event, LoopTurnEnded):
+            return events
+    raise AssertionError("turn stream ended without a terminal event")

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
-
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic import JsonValue
 
 from XBotv2.compact.protocol import CompactionMetrics, CompactionReason
-from XBotv2.core.messages import Message
+from XBotv2.core.domain import HistoryRevision, MessageId
+from XBotv2.core.messages import CompactionSummaryMessage
 
 
 class CompactConfig(BaseModel):
@@ -24,19 +22,25 @@ class CompactConfig(BaseModel):
     summary_output_tokens: int = Field(default=2_048, ge=1)
 
 
-class CompactionProposal(TypedDict):
-    messages: list[Message]
-    prefix_end: int
-    compaction_id: str
-    summary: str
-    compact_reason: CompactionReason
-    compact_metrics: CompactionMetrics
-    source_node_ids: NotRequired[list[str]]
+class CompactionSelection(BaseModel):
+    expected_revision: HistoryRevision
+    source_ids: tuple[MessageId, ...] = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CompactionPlan(BaseModel):
+    id: str = Field(min_length=1)
+    reason: CompactionReason
+    selection: CompactionSelection
+    summary: CompactionSummaryMessage
+    metrics: CompactionMetrics
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 __all__ = [
     "CompactConfig",
     "CompactionMetrics",
-    "CompactionProposal",
+    "CompactionPlan",
+    "CompactionSelection",
     "CompactionReason",
 ]

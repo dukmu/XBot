@@ -23,6 +23,8 @@ from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import HttpServerError
+from XBotv2.permissions import PermissionPolicy
+from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.session.contracts import SessionsPort
 
 
@@ -79,12 +81,10 @@ class SessionPolicyPatch(WireModel):
 
 class SessionPolicyResponse(WireModel):
     session_id: str = Field(min_length=1)
-    permissions: dict[str, list[dict[str, JsonValue]]] = Field(default_factory=dict)
-    effective_permissions: dict[str, list[dict[str, JsonValue]]] = Field(
-        default_factory=dict
-    )
-    sandbox: dict[str, JsonValue] = Field(default_factory=dict)
-    effective_sandbox: dict[str, JsonValue] = Field(default_factory=dict)
+    permissions: PermissionPolicy = Field(default_factory=PermissionPolicy)
+    effective_permissions: PermissionPolicy = Field(default_factory=PermissionPolicy)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    effective_sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
 
 class PluginConfigPatchRequest(WireModel):
@@ -98,10 +98,14 @@ def _policy_response(
 ) -> SessionPolicyResponse:
     return SessionPolicyResponse(
         session_id=session_id,
-        permissions=dict(snapshot.policy.get("permissions") or {}),
-        effective_permissions=dict(snapshot.effective_permissions),
-        sandbox=dict(snapshot.policy.get("sandbox") or {}),
-        effective_sandbox=dict(snapshot.effective_sandbox),
+        permissions=PermissionPolicy.model_validate(
+            snapshot.policy.get("permissions") or {}
+        ),
+        effective_permissions=PermissionPolicy.model_validate(
+            snapshot.effective_permissions
+        ),
+        sandbox=SandboxConfig.model_validate(snapshot.policy.get("sandbox") or {}),
+        effective_sandbox=SandboxConfig.model_validate(snapshot.effective_sandbox),
     )
 
 

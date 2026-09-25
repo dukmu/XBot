@@ -843,7 +843,15 @@ def _error(code: str, message: str, **data: JsonValue) -> dict[str, JsonValue]:
 def main() -> None:
     try:
         request = json.load(sys.stdin)
-        result = execute(str(request.get("operation") or ""), dict(request.get("args") or {}))
+        if not isinstance(request, dict):
+            raise ValueError("Filesystem request must be an object")
+        operation = request.get("operation")
+        args = request.get("args")
+        if not isinstance(operation, str) or not operation:
+            raise ValueError("Filesystem request requires a non-empty operation")
+        if not isinstance(args, dict):
+            raise ValueError("Filesystem request requires an args object")
+        result = execute(operation, args)
     except Exception as exc:
         result = _error("invalid_request", str(exc))
     sys.stdout.write(json.dumps(result, ensure_ascii=False))

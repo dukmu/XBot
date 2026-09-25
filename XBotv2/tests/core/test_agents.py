@@ -4,6 +4,7 @@ import pytest
 
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.agents import AgentDefinition
+from XBotv2.agentloop import AllTools
 from XBotv2.core import RuntimeVariables
 from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.permissions.system import PermissionSystem
@@ -81,15 +82,14 @@ def test_builtin_explorer_definition_is_read_only():
     )
 
     assert definition.mode == "all"
-    assert "read" in definition.tools
-    assert "search" in definition.tools
-    permissions = PermissionSystem(definition.permissions)
+    assert definition.tool_policy.enabled == ("read", "search", "ask_user")
+    permissions = PermissionSystem(definition.permission_policy)
     assert permissions.check("edit") == "deny"
     assert permissions.check("path") == "deny"
     assert permissions.check("shell") == "deny"
     assert permissions.check("spawn_subagent") == "deny"
     assert permissions.check("wait_subagent") == "deny"
-    assert permissions.check("read") == "ask"
+    assert permissions.check("read") == "allow"
 
 
 def test_builtin_default_definition_is_primary_capable():
@@ -99,7 +99,7 @@ def test_builtin_default_definition_is_primary_capable():
 
     assert definition.name == "default"
     assert definition.mode == "all"
-    assert definition.tools is None
+    assert isinstance(definition.tool_policy.enabled, AllTools)
 
 
 def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_path):
@@ -107,10 +107,11 @@ def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_pa
     path.write_text(
         "---\n"
         "description: Reviewer\n"
-        "permissions:\n"
-        "  allow:\n"
-        "    - tool: filesystem_read\n"
-        "      paths: ${workspace}\n"
+        "permission_policy:\n"
+        "  rules:\n"
+        "    - tool_pattern: filesystem_read\n"
+        "      path_scope: ${workspace}\n"
+        "      decision: allow\n"
         "---\n"
         "```var\n"
         "${tool_results}\n"
@@ -125,4 +126,4 @@ def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_pa
     definition = load_definition(path, variables)
 
     assert definition.prompt == str(tmp_path / "state/artifacts/tool_results")
-    assert definition.permissions["allow"][0]["paths"] == "${workspace}"
+    assert definition.permission_policy.rules[0].path_scope == "${workspace}"

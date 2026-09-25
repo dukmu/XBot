@@ -30,25 +30,25 @@ from XBotv2.tui.view.entries import (
     entry_classes,
     entry_header,
     entry_reasoning,
+    entry_widget,
     format_payload,
     looks_like_markdown,
 )
 
 
 def user(delivery: Delivery = Delivery.ACCEPTED, content: str = "hello") -> UserEntry:
-    return UserEntry(id="u1", seq=1, content=content, delivery=delivery)
+    return UserEntry(id="u1", content=content, delivery=delivery)
 
 
 def assistant(content: str = "answer", *, streaming: bool = False, reasoning: str = "") -> AssistantEntry:
     return AssistantEntry(
-        id="a1", seq=2, content=content, reasoning=reasoning, streaming=streaming
+        id="a1", content=content, reasoning=reasoning, streaming=streaming
     )
 
 
 def tool(**overrides) -> ToolEntry:
     fields = {
         "id": "c1",
-        "seq": 3,
         "name": "bash",
         "args": {},
         "status": "success",
@@ -93,8 +93,8 @@ def test_a_finished_tool_shows_how_long_it_took() -> None:
 
 
 def test_notice_and_error_headers() -> None:
-    assert entry_header(NoticeEntry(id="n1", seq=4, notice_kind="compact", text="t")) == "compact"
-    assert entry_header(ErrorEntry(id="e1", seq=5, message="boom")) == "error"
+    assert entry_header(NoticeEntry(id="n1", notice_kind="compact", text="t")) == "compact"
+    assert entry_header(ErrorEntry(id="e1", message="boom")) == "error"
 
 
 def test_an_unknown_entry_is_rejected_loudly() -> None:
@@ -117,7 +117,7 @@ def test_a_tool_body_omits_what_is_empty() -> None:
 
 
 def test_a_notice_body_includes_its_detail() -> None:
-    entry = NoticeEntry(id="n1", seq=1, notice_kind="compact", text="compacted", detail="kept the gist")
+    entry = NoticeEntry(id="n1", notice_kind="compact", text="compacted", detail="kept the gist")
     assert entry_body(entry) == "compacted\nkept the gist"
 
 
@@ -299,9 +299,30 @@ async def test_reasoning_is_its_own_clamped_block() -> None:
     )
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        blocks = [b for b in blocks_of(app.query_one(EntryWidget)) if b.label == "thinking"]
+        blocks = [b for b in blocks_of(app.query_one(EntryWidget)) if b.label == "Think"]
         assert len(blocks) == 1, "reasoning is its own block, beside the body"
         assert "60 lines" in str(blocks[0].head_widget.content.plain)
+
+
+async def test_short_reasoning_remains_a_collapsible_think_block() -> None:
+    app = EntryHarness(entry_widget(assistant(reasoning="brief thought")))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        (block,) = [
+            item for item in blocks_of(app.query_one(EntryWidget))
+            if item.label == "Think"
+        ]
+        assert block.collapsible is True
+        assert "Think" in block.head_text
+        assert "ctrl+e expands" in block.head_text
+
+
+async def test_short_tool_output_remains_collapsible() -> None:
+    app = EntryHarness(entry_widget(tool(args={"cmd": "pwd"}, result="/repo")))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        (block,) = blocks_of(app.query_one(EntryWidget))
+        assert block.collapsible is True
 
 
 async def test_an_error_is_never_folded_away() -> None:
@@ -309,7 +330,7 @@ async def test_an_error_is_never_folded_away() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     message = "\n".join(f"failure line {index}" for index in range(80))
-    app = EntryHarness(entry_widget(ErrorEntry(id="e1", seq=9, message=message)))
+    app = EntryHarness(entry_widget(ErrorEntry(id="e1", message=message)))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)
@@ -328,7 +349,7 @@ async def test_help_is_never_folded() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     listing = "\n".join(f"/command-{index}  does something" for index in range(15))
-    app = EntryHarness(entry_widget(NoticeEntry(id="n1", seq=3, notice_kind="help", text=listing)))
+    app = EntryHarness(entry_widget(NoticeEntry(id="n1", notice_kind="help", text=listing)))
     async with app.run_test(size=(80, 40)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)

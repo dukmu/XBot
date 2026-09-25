@@ -1,243 +1,243 @@
-"""Provider-boundary tests for oversized current user input caching."""
-
-import xml.etree.ElementTree as ET
+"""Lossless content-cache projections and their ArtifactStore references."""
 
 import pytest
-import xcore
 
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.config.contracts import RuntimeConfig
 from XBotv2.content_cache.content_cache import (
-    DEFAULT_CACHE_THRESHOLD_CHARS,
+    cache_tool_execution,
     cache_user_message,
+    externalize_text,
 )
-from XBotv2.content_cache.plugin import (
-    ContentCacheComponent,
-    ContentCacheService,
+from XBotv2.content_cache.contracts import ContentCachePolicy
+from XBotv2.content_cache.plugin import ContentCacheService
+from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.events import (
+    AfterToolExecution,
+    InputAccepted,
 )
-from XBotv2.content_cache.contracts import (
-    ContentCacheConfig,
-)
-from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.messages import Message
-from XBotv2.core.tokens import estimate_request_tokens, read_request_anchor
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.tests.helpers import make_engine
-from XBotv2.token_manager.plugin import TokenManagerPlugin
-
-
-class _CountingArtifacts:
-    def __init__(self, delegate):
-        self._delegate = delegate
-        self.put_calls = 0
-
-    def put(self, *args, **kwargs):
-        self.put_calls += 1
-        return self._delegate.put(*args, **kwargs)
-
-    def read(self, artifact):
-        return self._delegate.read(artifact)
-
-    def exists(self, artifact):
-        return self._delegate.exists(artifact)
-
-    def model_path(self, artifact):
-        return self._delegate.model_path(artifact)
-
-
-def test_content_cache_config_controls_threshold_and_preview(artifact_store):
-    config = ContentCacheConfig.model_validate({
-        "cache_threshold_chars": 20,
-        "preview_chars": 12,
-        "tail_chars": 4,
-    })
-    service = ContentCacheService(artifact_store, config)
-
-    bounded = service.bind_current_user_message([
-        Message(role="user", content="abcdefghijklmnopqrstuvwxyz"),
-    ])[0]
-
-    root = ET.fromstring(bounded.content)
-    assert root.attrib["cache_threshold_chars"] == "20"
-    assert root.attrib["inline_limit_chars"] == "12"
-    assert root.findtext("preview/beginning") == "\nabcdefgh\n"
-    assert root.findtext("preview/ending") == "\nwxyz\n"
-
-
-@pytest.mark.parametrize(
-    ("config", "message"),
-    [
-        ({"cache_threshold_chars": 0}, "cache_threshold_chars"),
-        (
-            {"cache_threshold_chars": 10, "preview_chars": 11},
-            "preview_chars",
-        ),
-        ({"preview_chars": 10, "tail_chars": 11}, "tail_chars"),
-    ],
+from XBotv2.core.domain import InputId, MessageId, ToolCallId, ToolTiming
+from XBotv2.core.messages import HumanInputMessage, ToolMessage
+from XBotv2.core.parts import TextPart
+from xcore import Context
+from XBotv2.core.tools import (
+    ContinueTurn,
+    ToolCallRef,
+    ToolExecution,
+    ToolSucceeded,
+    ToolOutput,
 )
-def test_content_cache_config_rejects_invalid_sizes(config, message):
-    with pytest.raises(ValueError, match=message):
-        ContentCacheConfig.model_validate(config)
 
 
-def test_cache_user_message_keeps_original_and_explains_relative_path(
+def policy() -> ContentCachePolicy:
+    return ContentCachePolicy(
+        threshold_chars=12,
+        preview_chars=8,
+        tail_chars=3,
+    )
+
+
+def test_externalized_content_keeps_the_complete_utf8_original(artifact_store):
+    source = "start α middle-secret end 二"
+
+    result = externalize_text(
+        source,
+        artifact_store,
+        policy(),
+        kind=ArtifactKind.CONTEXT,
+        name="source.txt",
+    )
+
+    assert result is not None
+    assert result.original.kind is ArtifactKind.CONTEXT
+    assert result.original_chars == len(source)
+    assert artifact_store.read(result.original) == source.encode("utf-8")
+    assert artifact_store.exists(result.original)
+    assert result.preview.startswith("start")
+    assert result.preview.endswith("二")
+    assert "middle-secret" not in result.preview
+
+
+def test_short_text_is_not_externalized(artifact_store):
+    assert externalize_text(
+        "short",
+        artifact_store,
+        policy(),
+        kind=ArtifactKind.CONTEXT,
+        name="source.txt",
+    ) is None
+
+
+def test_user_cache_returns_a_projection_without_mutating_canonical_history(
     artifact_store,
 ):
-    content = "begin:" + "x" * DEFAULT_CACHE_THRESHOLD_CHARS + ":end"
-    source = Message(role="user", content=content)
+    source = "start α " + ("middle-secret " * 5) + "end 二"
+    message = HumanInputMessage(
+        id=MessageId("message-long"),
+        input_id=InputId("input-long"),
+        parts=(TextPart(text=source),),
+    )
 
-    bounded, artifact = cache_user_message(source, artifact_store)
+    projected, externalized = cache_user_message(
+        message,
+        artifact_store,
+        policy(),
+    )
 
-    assert artifact is not None
-    assert bounded is not source
-    assert source.content == content
-    root = ET.fromstring(bounded.content)
-    assert root.attrib == {
-        "cache_threshold_chars": str(DEFAULT_CACHE_THRESHOLD_CHARS),
-        "inline_limit_chars": "12000",
-        "kind": "user_input",
-        "omitted_chars": str(len(content) - 12000),
-        "original_chars": str(len(content)),
-    }
-    assert root.findtext("cache_path").strip() == artifact_store.model_path(artifact)
-    instruction = root.findtext("read_instruction")
-    assert "Pass it unchanged" in instruction
-    assert "absolute filesystem path" in instruction
-    assert artifact_store.read(artifact).decode() == content
-
-
-def test_only_current_user_message_is_considered(state_store, artifact_store):
-    oversized = "x" * (DEFAULT_CACHE_THRESHOLD_CHARS + 1)
-    messages = [
-        Message(role="user", content=oversized),
-        Message(role="assistant", content=oversized),
-        Message(role="tool", content=oversized),
-        Message(role="user", content="current"),
-    ]
-
-    bounded = ContentCacheService(
-        artifact_store, ContentCacheConfig()
-    ).bind_current_user_message(messages)
-
-    assert bounded is messages
-    assert all(message.content in {oversized, "current"} for message in messages)
-    assert not state_store.paths.artifact_dir(ArtifactKind.CONTEXT).exists()
+    assert isinstance(projected, HumanInputMessage)
+    assert projected is not message
+    assert message.parts == (TextPart(text=source),)
+    assert message.artifacts == ()
+    assert externalized is not None
+    assert projected.parts[0].text == externalized.preview
+    assert projected.artifacts == (externalized.original,)
+    assert artifact_store.read(projected.artifacts[0]) == source.encode("utf-8")
 
 
-def test_react_requests_reuse_one_cached_current_message(
-    state_store, artifact_store
+def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
+    artifact_store,
 ):
-    artifacts = _CountingArtifacts(artifact_store)
-    service = ContentCacheService(artifacts, ContentCacheConfig())
-    previous = Message(
-        role="user", content="p" * (DEFAULT_CACHE_THRESHOLD_CHARS + 1)
-    )
-    current = Message(
-        role="user", content="c" * (DEFAULT_CACHE_THRESHOLD_CHARS + 1)
-    )
-    messages = [
-        previous,
-        Message(
-            role="assistant",
-            content="a" * (DEFAULT_CACHE_THRESHOLD_CHARS + 1),
+    source = "tool-start α " + ("middle-secret " * 5) + "tool-end 二"
+    execution = ToolExecution(
+        message=ToolMessage(
+            id=MessageId("tool-message"),
+            call=ToolCallRef(id=ToolCallId("call-1"), name="read"),
+            outcome=ToolSucceeded(output=ToolOutput(parts=(TextPart(text=source),))),
+            timing=ToolTiming(duration_ms=1),
         ),
-        Message(
-            role="tool",
-            content="t" * (DEFAULT_CACHE_THRESHOLD_CHARS + 1),
-        ),
-        current,
-    ]
-
-    first = service.bind_current_user_message(messages)
-    second = service.bind_current_user_message(messages)
-
-    assert artifacts.put_calls == 1
-    assert first[-1] is second[-1]
-    assert first[:-1] == messages[:-1]
-    assert messages[-1] is current
-    cached_files = list(
-        state_store.paths.artifact_dir(ArtifactKind.CONTEXT).glob("*.txt")
+        directive=ContinueTurn(),
     )
-    assert len(cached_files) == 1
-    assert cached_files[0].read_text() == current.content
+
+    projected, externalized = cache_tool_execution(
+        execution,
+        artifact_store,
+        policy(),
+    )
+
+    assert projected is not execution
+    assert execution.message.outcome.output.parts == (TextPart(text=source),)
+    assert externalized is not None
+    assert projected.message.outcome.output.parts == (
+        TextPart(text=externalized.preview),
+    )
+    assert projected.message.outcome.output.artifacts == (externalized.original,)
+    assert artifact_store.read(externalized.original) == source.encode("utf-8")
+
+
+@pytest.mark.parametrize("value", ["short", "", "small result"])
+def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, value):
+    message = HumanInputMessage(
+        id=MessageId("message-short"),
+        input_id=InputId("input-short"),
+        parts=(TextPart(text=value),),
+    )
+    projected_message, input_externalized = cache_user_message(
+        message,
+        artifact_store,
+        policy(),
+    )
+    execution = ToolExecution(
+        message=ToolMessage(
+            id=MessageId("tool-short"),
+            call=ToolCallRef(id=ToolCallId("call-short"), name="read"),
+            outcome=ToolSucceeded(output=ToolOutput(parts=(TextPart(text=value),))),
+            timing=ToolTiming(duration_ms=1),
+        ),
+        directive=ContinueTurn(),
+    )
+    projected_execution, tool_externalized = cache_tool_execution(
+        execution,
+        artifact_store,
+        policy(),
+    )
+
+    assert projected_message is message
+    assert input_externalized is None
+    assert projected_execution is execution
+    assert tool_externalized is None
+
+
+class _FailingArtifactStore:
+    def put(self, *_args, **_kwargs):
+        raise OSError("artifact store is unavailable")
 
 
 @pytest.mark.asyncio
-async def test_engine_caches_provider_copy_once_without_mutating_history(
-    state_store,
+async def test_artifact_write_failure_keeps_large_user_input_unchanged(
     artifact_store,
-    temp_workspace,
+    caplog,
 ):
-    user_input = "request:" + "z" * DEFAULT_CACHE_THRESHOLD_CHARS
-    llm = MockLLM(responses=[{"content": "done"}])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=ToolRegistry(),
-        plugin_ctx=xcore.Context(),
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
+    source = "complete user input " + ("secret " * 5)
+    message = HumanInputMessage(
+        id=MessageId("message-write-failure"),
+        input_id=InputId("input-write-failure"),
+        parts=(TextPart(text=source),),
+    )
+    service = ContentCacheService(_FailingArtifactStore(), policy())
+    result = await service.externalize_accepted_input(InputAccepted(
+        input=InboxItem(
+            id="input-write-failure",
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content=source),
         ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
-    )
-    engine._events.set("artifacts", artifact_store)
-    ContentCacheComponent().apply(engine._events, ContentCacheConfig())
-    token_manager = TokenManagerPlugin()
-    token_manager.apply(engine._events)
+        message=message,
+    ))
 
-    _ = [event async for event in engine.run_turn(user_input)]
-
-    provider_user = next(
-        message for message in llm.get_call_messages(0) if message.role == "user"
-    )
-    assert ET.fromstring(provider_user.content).attrib["kind"] == "user_input"
-    assert engine.messages[0].content == user_input
-    assert state_store.history.load()[0].content == user_input
-    provider_messages = llm.get_call_messages(0)
-    provider_estimate = estimate_request_tokens(provider_messages)
-    assert token_manager.diagnostics()["latest_request"]["raw_estimate"] == (
-        provider_estimate
-    )
-    assistant = next(message for message in engine.messages if message.role == "assistant")
-    anchor = read_request_anchor(assistant)
-    assert anchor is not None
-    assert anchor.request_estimate == provider_estimate
+    assert result is None
+    assert message.parts == (TextPart(text=source),)
+    assert message.artifacts == ()
+    assert "content_cache.user_input.write_failed" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_engine_leaves_user_input_below_threshold_inline(
-    state_store,
-    artifact_store,
-    temp_workspace,
-):
-    user_input = "request:" + "z" * 12_000
-    llm = MockLLM(responses=[{"content": "done"}])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=ToolRegistry(),
-        plugin_ctx=xcore.Context(),
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
+async def test_artifact_write_failure_keeps_large_tool_result_unchanged(caplog):
+    source = "complete tool result " + ("secret " * 5)
+    execution = ToolExecution(
+        message=ToolMessage(
+            id=MessageId("tool-write-failure"),
+            call=ToolCallRef(id=ToolCallId("call-write-failure"), name="read"),
+            outcome=ToolSucceeded(output=ToolOutput(parts=(TextPart(text=source),))),
+            timing=ToolTiming(duration_ms=1),
         ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
+        directive=ContinueTurn(),
     )
-    engine._events.set("artifacts", artifact_store)
-    ContentCacheComponent().apply(engine._events, ContentCacheConfig())
+    service = ContentCacheService(_FailingArtifactStore(), policy())
 
-    _ = [event async for event in engine.run_turn(user_input)]
-
-    provider_user = next(
-        message for message in llm.get_call_messages(0) if message.role == "user"
+    result = await service.externalize_tool_result(
+        AfterToolExecution(execution),
     )
-    assert provider_user.content == user_input
-    assert not state_store.paths.artifact_dir(ArtifactKind.CONTEXT).exists()
+
+    assert result is None
+    assert execution.message.outcome.output.parts == (TextPart(text=source),)
+    assert "content_cache.tool_result.write_failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_accepted_input_replacement_persists_original_artifact(artifact_store):
+    source = "complete user input " + ("secret " * 5)
+    message = HumanInputMessage(
+        id=MessageId("message-turn-end"),
+        input_id=InputId("input-turn-end"),
+        parts=(TextPart(text=source),),
+    )
+    service = ContentCacheService(artifact_store, policy())
+    accepted = InputAccepted(
+        input=InboxItem(
+            id="input-turn-end",
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content=source),
+        ),
+        message=message,
+    )
+    result = await service.externalize_accepted_input(accepted)
+
+    assert isinstance(result, InputAccepted)
+    assert result is not accepted
+    assert result.input == accepted.input
+    assert result.message is not message
+    assert result.message.id == message.id
+    assert result.message.input_id == message.input_id
+    assert result.message.parts[0].text != source
+    assert len(result.message.artifacts) == 1
+    assert artifact_store.read(result.message.artifacts[0]) == source.encode("utf-8")
+    assert message.parts == (TextPart(text=source),)
+    assert message.artifacts == ()

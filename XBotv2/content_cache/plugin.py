@@ -1,113 +1,87 @@
-"""Cache only the current oversized user input at the provider boundary."""
+"""Lossless externalization of large model-visible text."""
 
 from __future__ import annotations
 
+import logging
+
 from xcore import Context
 
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.content_cache.content_cache import cache_user_message
-from XBotv2.content_cache.contracts import (
-    ContentCacheConfig,
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.events import (
+    AfterToolExecution,
+    InputAccepted,
+    ReplaceExecution,
 )
+from XBotv2.content_cache.content_cache import (
+    cache_tool_execution,
+    cache_user_message,
+)
+from XBotv2.content_cache.contracts import ContentCachePolicy
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import HumanInputMessage
+
+logger = logging.getLogger(__name__)
 
 
 class ContentCacheService:
-    """Create and reuse provider copies for oversized current user messages.
-
-    Only the most recent oversized user message is ever consulted, so the
-    memoization holds at most one entry and is cleared at turn end.
-    """
+    """Externalize complete originals into canonical message artifacts."""
 
     def __init__(
         self,
         artifacts: ArtifactStorePort,
-        config: ContentCacheConfig,
+        policy: ContentCachePolicy,
     ) -> None:
         self._artifacts = artifacts
-        self._config = config
-        self._cached: tuple[int, Message, Message] | None = None
+        self._policy = policy
 
-    def bind_current_user_message(self, messages: list[Message]) -> list[Message]:
-        index = next(
-            (
-                index
-                for index in range(len(messages) - 1, -1, -1)
-                if messages[index].role == "user"
-            ),
-            None,
-        )
-        if index is None:
-            return messages
-        source = messages[index]
-        cached = (
-            self._cached
-            if self._cached is not None
-            and self._cached[0] == id(source)
-            and self._cached[1] is source
-            else None
-        )
-        if cached is not None:
-            bounded = cached[2]
-        else:
-            bounded, artifact = cache_user_message(
-                source,
+    async def externalize_accepted_input(
+        self,
+        event: InputAccepted,
+    ) -> InputAccepted | None:
+        message = event.message
+        if not isinstance(message, HumanInputMessage):
+            return None
+        try:
+            projected, externalized = cache_user_message(
+                message,
                 self._artifacts,
-                cache_threshold_chars=self._config.cache_threshold_chars,
-                preview_chars=self._config.preview_chars,
-                tail_chars=self._config.tail_chars,
+                self._policy,
             )
-            if artifact is None:
-                return messages
-            # Bounded by design: replacing the slot keeps exactly one entry.
-            self._cached = (id(source), source, bounded)
-        bound = list(messages)
-        bound[index] = bounded
-        return bound
+        except OSError:
+            logger.exception("content_cache.user_input.write_failed")
+            return None
+        if externalized is None:
+            return None
+        return InputAccepted(event.input, projected)
 
-    def clear(self) -> None:
-        self._cached = None
-
-
-class ContentCacheHandler:
-    def __init__(self, service: ContentCacheService) -> None:
-        self._service = service
-
-    async def bind_model_request(self, event: EventContext) -> None:
-        request = event.model_request
-        if request is not None:
-            request.messages = self._service.bind_current_user_message(
-                request.messages
+    async def externalize_tool_result(
+        self,
+        event: AfterToolExecution,
+    ) -> ReplaceExecution | None:
+        try:
+            replacement, externalized = cache_tool_execution(
+                event.execution,
+                self._artifacts,
+                self._policy,
             )
-
-    async def clear_cache(self, _event: EventContext) -> None:
-        self._service.clear()
-
+        except OSError:
+            logger.exception("content_cache.tool_result.write_failed")
+            return None
+        if externalized is None:
+            return None
+        return ReplaceExecution(replacement)
 
 class ContentCacheComponent:
     inject = ["artifacts"]
     name = "xbot.content_cache"
-    Config = ContentCacheConfig
+    Config = ContentCachePolicy
 
-    def apply(self, ctx: Context, config: ContentCacheConfig) -> None:
-        service = ContentCacheService(
-            ctx.artifacts,
-            config,
-        )
-        ctx.set("content_cache", service)
-        # An independent observer: binding the bounded copy of an oversized
-        # user message must happen even when another listener answers the
-        # request first (e.g. a compaction rebuild).
-        ctx.on(
-            Events.BEFORE_MODEL_REQUEST,
-            ContentCacheHandler(service).bind_model_request,
-            prepend=True,
-        )
-        ctx.on(
-            Events.TURN_END,
-            ContentCacheHandler(service).clear_cache,
-        )
+    def apply(self, ctx: Context, config: ContentCachePolicy) -> None:
+        service = ContentCacheService(ctx.artifacts, config)
+        ctx.on(Events.INPUT_ACCEPTED, service.externalize_accepted_input)
+        ctx.on(Events.AFTER_TOOL_CALL, service.externalize_tool_result)
 
 
 plugin = ContentCacheComponent()
+
+__all__ = ["ContentCacheComponent", "ContentCacheService", "plugin"]

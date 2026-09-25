@@ -1,9 +1,9 @@
 """Core tools component: base tools and core event listeners as a plugin.
 
-Registers the always-available filesystem, shell, and content tools, the
-tool-result cache event listener, and the
-startup-configured hooks from the runtime config -- all through the shared
-services, so even "core" setup is a plugin in the tree.
+Registers the always-available filesystem and shell tools plus
+startup-configured workspace hooks -- all through the shared services, so
+even "core" setup is a plugin in the tree. Large-text externalization belongs
+to the content_cache plugin.
 """
 
 from __future__ import annotations
@@ -54,7 +54,6 @@ class CoreToolsComponent:
         ]
         from XBotv2.coretools.filesystem import filesystem_tools
         from XBotv2.coretools.shell import shell_tools
-        from XBotv2.coretools.result_cache import make_tool_result_cache_hook
 
         # ``read(mode=media)`` is the single model-facing content tool; it
         # covers path, URL, and base64 media input (images today).
@@ -64,6 +63,7 @@ class CoreToolsComponent:
                 ctx.sandbox,
                 ctx.jobs,
                 str(ctx.workspace_root),
+                artifacts,
                 # Resolved lazily per call: order-independent whether or not
                 # the permissions plugin mounts.
                 approval_layer=lambda: ctx.get("permissions", strict=False),
@@ -72,15 +72,6 @@ class CoreToolsComponent:
         for tool in tools:
             ctx.tools.register(tool)
 
-        ctx.on(
-            Events.AFTER_TOOL_CALL,
-            make_tool_result_cache_hook(
-                artifacts,
-                cache_threshold_chars=config.tool_results.cache_threshold_chars,
-                preview_chars=config.tool_results.preview_chars,
-                tail_chars=config.tool_results.tail_chars,
-            ),
-        )
         for declaration in hooks:
             ctx.on(
                 declaration.stage,

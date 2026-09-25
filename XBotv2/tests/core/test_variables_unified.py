@@ -4,6 +4,8 @@ import pytest
 
 from XBotv2.config.loader import load_plugin_tree
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.permissions.contracts import PermissionPolicy
+from XBotv2.permissions.system import PermissionSystem
 from XBotv2.core.variables import RuntimeVariables, expand_env_refs
 
 
@@ -68,7 +70,7 @@ plugins:
   - id: llm
     name: llm
     config:
-      default: opencode
+      default_provider: opencode
       providers:
         opencode:
           protocol: openai
@@ -91,17 +93,21 @@ plugins:
     }
 
 
-def test_runtime_references_expand_in_permission_paths(tmp_path):
-    doc = """
-plugins:
-  - id: permissions
-    name: permissions
-    config:
-      allow:
-        - tool: edit
-          paths: "${workspace}/src"
-"""
-    paths = _tree(tmp_path, doc)
-    tree = load_plugin_tree(paths, tmp_path, session_id="s1")
-    entry = next(e for e in tree.entries if e.id == "permissions")
-    assert entry.config["allow"][0]["paths"] == f"{tmp_path}/src"
+def test_permission_path_scope_resolves_against_runtime_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    policy = PermissionPolicy.model_validate({
+        "default_decision": "ask",
+        "rules": [{
+            "tool_pattern": "edit",
+            "path_scope": "${workspace}",
+            "decision": "allow",
+        }],
+    })
+    permissions = PermissionSystem(
+        policy,
+        variables=RuntimeVariables({"workspace": str(workspace)}),
+    )
+
+    assert permissions.check("edit", {"path": "report.md", "mode": "write"}) == "allow"
+    assert permissions.check("edit", {"path": "../outside.md", "mode": "write"}) == "ask"

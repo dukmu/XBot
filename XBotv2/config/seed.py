@@ -17,7 +17,7 @@ _INITIAL_PLUGINS_YAML = """\
 #   disabled: true
 # - id: llm
 #   config:
-#     default: minimax
+#     default_provider: minimax
 """
 
 _BUILTIN_SKILL = "xbot-plugin-development"

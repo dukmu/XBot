@@ -17,7 +17,7 @@ from XBotv2.core.paths import RuntimePaths
 async def start_server_application(
     *,
     paths: RuntimePaths,
-    provider_name: str,
+    provider_name: str | None,
     workspace_root: str,
     no_plugins: bool,
 ) -> Context:

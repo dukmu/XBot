@@ -4,39 +4,71 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.agentloop import AgentLoopDriverPort, agentloop_event
-from XBotv2.agentloop.contracts import InboxInput, InboxTarget
+from XBotv2.agentloop import AgentLoopDriverPort, Claimed, Consumed, Inserted
+from XBotv2.agentloop.protocol import (
+    LoopError,
+    LoopTurnStarted,
+    LoopTurnEnded,
+    TurnFinished,
+)
+from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget, RuntimeInput
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
     RuntimeEvent,
 )
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.messages import ImageContent
+from XBotv2.core.artifacts import ImageRef
 from XBotv2.core.errors import OperationError
+from XBotv2.core.domain import (
+    EventScope,
+    SessionScope,
+    TurnId,
+    TurnScope,
+)
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.events import ObserveInbox
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
+from XBotv2.core.history import HistoryPage
 from XBotv2.core.paths import RuntimePaths
-from pydantic import JsonValue
-
-from XBotv2.core.tools import ClientEvent
-from XBotv2.interactions import interaction_recorded_event
+from XBotv2.interactions import (
+    InteractionRequest,
+    InteractionResolution,
+)
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     HistoryChanged,
+    HistoryMutation,
     SessionPort,
+    SessionKey,
     conversation_replay,
 )
 from XBotv2.session.event_stream import SessionEventStream
-from XBotv2.session.protocol import session_error_event, session_event
+from XBotv2.session.protocol import (
+    AgentConfiguredEvent,
+    HistoryUpdatedEvent,
+    InputAcceptedEvent,
+    InputClaimedEvent,
+    InputConsumedEvent,
+    MessagePublishedEvent,
+    QueueReplacedEvent,
+    session_error_event,
+)
 from XBotv2.session.contracts import PendingInputData
+from XBotv2.session.records import (
+    HumanInputRecord,
+    InputRecordPayload,
+    RuntimeNoticeRecord,
+    project_human_input,
+)
 
 
 class SessionBusy(RuntimeError):
@@ -53,39 +85,21 @@ def require_idle(ctx: "SessionRuntime", action: str) -> None:
         )
 
 
-def _pending_input_snapshot(item: InboxInput) -> PendingInputData:
+def _pending_input_snapshot(item: InboxItem) -> PendingInputData:
     return PendingInputData(
-        message_id=item.message_id,
-        content=item.content,
+        message_id=item.id,
+        content=item.input.content,
         target=item.target.value,
-        source=item.source,
-        image_count=len(item.images),
-        artifact_count=len(item.artifacts),
+        image_count=len(item.input.images),
+        artifact_count=len(item.input.artifacts),
     )
-
-
-def _runtime_message_data(
-    source: str,
-    metadata: dict[str, JsonValue],
-) -> dict[str, str] | None:
-    """Project non-user inbox provenance onto the live message event."""
-    if source == "user":
-        return None
-    event = metadata.get("kind")
-    if not isinstance(event, str) or not event:
-        event = "continuation" if metadata.get("continuation") else "injected"
-    return {"source": source, "event": event}
 
 
 @dataclass
 class SessionRuntime(SessionPort):
     """Protocol streams and one concrete agent-loop driver."""
 
-    session_id: str
-    thread_id: str
-    provider_name: str
     paths: RuntimePaths
-    workspace_root: str
     no_plugins: bool
     application: AgentApplicationPort
     engine: AgentLoopDriverPort
@@ -99,12 +113,24 @@ class SessionRuntime(SessionPort):
     )
     turn_task: asyncio.Task | None = None
     wakeup_task: asyncio.Task | None = None
-    event_stream: SessionEventStream = field(default_factory=SessionEventStream)
+    event_stream: SessionEventStream = field(init=False)
     close_reason: str = "session_closed"
     last_activity: float = field(default_factory=time.monotonic)
     _wakeup_requested: bool = False
     _active_router: "TurnEventRouter | None" = field(default=None, init=False)
     _log: RuntimeLog = field(init=False)
+
+    @property
+    def key(self) -> SessionKey:
+        return self.application.loop_state.session.key
+
+    @property
+    def session_id(self) -> str:
+        return self.key.session_id
+
+    @property
+    def thread_id(self) -> str:
+        return self.key.thread_id
 
     def __post_init__(self) -> None:
         self._log = self.runtime_log.bind(
@@ -112,12 +138,24 @@ class SessionRuntime(SessionPort):
             session_id=self.session_id,
             thread_id=self.thread_id,
         )
+        self.event_stream = SessionEventStream(self.application.loop_state.session)
         self.touch()
         events = self.application.events
-        events.on(Events.INBOX_SPLICE, self._on_inbox_splice)
+        events.on(Events.INBOX_CHANGED, self._on_inbox_changed)
         events.on(RUNTIME_EVENT, self._on_runtime_event)
         events.on(HISTORY_CHANGED, self._on_history_changed)
         events.on(AGENT_CONFIGURED, self._on_agent_configured)
+
+    @property
+    def provider_name(self) -> str:
+        return (
+            self.application.loop_state.metadata.value
+            .runtime_selection.model.route.provider
+        )
+
+    @property
+    def workspace_root(self) -> str:
+        return self.application.loop_state.metadata.value.workspace_root
 
     def touch(self) -> None:
         """Mark the runtime active; resets the idle-reaper deadline."""
@@ -135,143 +173,94 @@ class SessionRuntime(SessionPort):
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
         page = self.application.history_pages.page(limit=160)
-        self._publish_runtime_event(session_event(
-            "history_updated",
-            {
-                "history": conversation_replay(page.messages),
-                "history_cursor": page.next_cursor,
-                "operation": event.operation,
-                "turns": event.turns,
-                "session_stats": conversation_stats(event.messages),
-            },
+        self._publish_runtime_event(HistoryUpdatedEvent(
+            operation=event.operation,
+            mutation=HistoryMutation(
+                removed_turns=event.turns,
+                history=HistoryPage(
+                    items=conversation_replay(page.items),
+                    older_cursor=page.older_cursor,
+                ),
+                stats=conversation_stats(event.messages),
+            ),
         ))
 
     async def _on_agent_configured(self, event: AgentConfigured) -> None:
-        """Project provider/model selection changes for status displays."""
-        self.provider_name = event.provider
-        data = {
-            "agent_name": event.agent_name,
-            "provider": event.provider,
-            "model": event.model,
-            "model_mode": event.model_mode,
-            "context_window": event.context_window,
-        }
-        if data:
-            self._publish_runtime_event(session_event("agent_configured", data))
+        """Publish the effective selection without flattening its fields."""
+        self._publish_runtime_event(AgentConfiguredEvent(
+            runtime_selection=event.runtime_selection,
+        ))
 
-    def _publish_runtime_event(self, event: ClientEvent) -> None:
-        request_id = str(event.data.get("request_id") or "")
-        self.event_stream.publish(event, request_id=request_id)
+    def _publish_runtime_event(self, event) -> None:
+        self.publish_event(event)
 
-    def _on_inbox_splice(self, event: EventContext) -> None:
+    def publish_event(
+        self,
+        event,
+        *,
+        scope: EventScope = SessionScope(),
+    ) -> None:
+        self.event_stream.publish(event, scope=scope)
+
+    def _on_inbox_changed(self, event: ObserveInbox) -> None:
         self.touch()
-        payload = event.inbox_splice
-        if payload is None:
-            return
-        if payload.wake:
+        change = event.change
+        if isinstance(change, Inserted) and change.wake:
             # The producer declares the wake intent; the runtime owns whether
             # and when the loop actually runs.
             self._request_wakeup()
-        splice_event = ClientEvent(
-            type="agent/inbox/spliced",
-            data=payload.model_dump(mode="json"),
-        )
+        splice_event = QueueReplacedEvent(items=self.pending_inputs())
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
         self._publish_runtime_event(splice_event)
-        if payload.operation == "insert" and payload.message_ids:
-            self._publish_runtime_event(session_event(
-                "input_accepted",
-                {
-                    "message_ids": payload.message_ids,
-                    "target": payload.target.value if payload.target else None,
-                },
+        if isinstance(change, Inserted):
+            self._publish_runtime_event(InputAcceptedEvent(
+                message_ids=[change.item.id],
+                target=change.item.target.value,
             ))
-        self._publish_runtime_event(session_event(
-            "queue_updated",
-            {
-                "items": [
-                    item.model_dump(mode="json") for item in self.pending_inputs()
-                ]
-            },
-        ))
-        if payload.operation == "claim":
-            claimed = session_event(
-                "input_claimed",
-                {"message_ids": payload.message_ids},
+        if isinstance(change, Claimed):
+            claimed = InputClaimedEvent(
+                message_ids=[item.id for item in change.items]
             )
             if self._active_router is not None:
-                self._active_router.claim(payload.items)
                 self._active_router.emit(claimed)
             else:
                 self._publish_runtime_event(claimed)
-        if payload.operation == "consume":
-            consumed = session_event(
-                "input_consumed",
-                {"message_ids": payload.message_ids},
+        if isinstance(change, Consumed):
+            consumed = InputConsumedEvent(
+                message_ids=[item.id for item in change.items]
             )
             if self._active_router is not None:
                 self._active_router.emit(consumed)
             else:
                 self._publish_runtime_event(consumed)
-        if payload.operation != "claim":
+        if not isinstance(change, Claimed):
             return
-        for item in payload.items:
-            if not item.metadata.get("defer_message_event"):
-                continue
-            source = item.source
-            runtime = _runtime_message_data(source, item.metadata)
-            images = list(item.images)
-            artifacts = list(item.artifacts)
-            event = self._message_event(
-                item.message_id,
-                item.content,
-                images,
-                artifacts,
-                runtime=runtime,
-            )
-            self.event_stream.publish(event, request_id=item.message_id)
+        for item in change.items:
+            if isinstance(item.input, HumanInput):
+                record = HumanInputRecord(
+                    id=item.id,
+                    content=item.input.content,
+                    images=item.input.images,
+                    artifacts=item.input.artifacts,
+                )
+            elif isinstance(item.input, RuntimeInput):
+                record = RuntimeNoticeRecord(
+                    id=item.id,
+                    source=item.input.source,
+                    event=item.input.event,
+                    content=item.input.content,
+                    images=item.input.images,
+                    artifacts=item.input.artifacts,
+                )
+            else:  # pragma: no cover - InputPayload is closed
+                raise TypeError(f"Unsupported inbox input: {item.input!r}")
+            event = MessagePublishedEvent(record=InputRecordPayload(record))
+            self.publish_event(event)
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
-        self._publish_runtime_event(event.client_event)
-
-    def _message_event(
-        self,
-        message_id: str,
-        content: str,
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        *,
-        runtime: dict[str, str] | None = None,
-    ) -> ClientEvent:
-        data: dict[str, JsonValue] = {
-            "id": message_id,
-            "role": "user",
-            "content": content,
-            "images": [image.model_dump(mode="json") for image in images or []],
-            "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts or []],
-        }
-        if runtime is not None:
-            data["runtime"] = runtime
-        return session_event("message", data)
-
-    def _publish_message_event(
-        self,
-        message_id: str,
-        content: str,
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-    ) -> None:
-        """Broadcast one accepted user message on the shared event stream.
-
-        Input ordering is owned by the agent inbox. This event is only the
-        protocol projection used by clients to render accepted input.
-        """
-        event = self._message_event(
-            message_id, content, images, artifacts
-        )
-        self.event_stream.publish(event, request_id=message_id)
+        self._publish_runtime_event(event.event)
 
     def pending_inputs(self) -> tuple[PendingInputData, ...]:
         return tuple(_pending_input_snapshot(item) for item in self.engine.pending_inputs)
@@ -305,27 +294,28 @@ class SessionRuntime(SessionPort):
         request_id: str,
         *,
         delivery: str = "steer",
-        images: list[ImageContent] | None = None,
+        images: list[ImageRef] | None = None,
         artifacts: list[ArtifactRef] | None = None,
     ) -> None:
         """Submit input; output is delivered by the session event stream."""
         if delivery not in {"queue", "steer"}:
             raise ValueError(f"Unsupported input delivery mode: {delivery}")
+        user_input = HumanInput(
+            content=content,
+            images=tuple(images or ()),
+            artifacts=tuple(artifacts or ()),
+        )
         async with self._submission_lock:
             if not self.turn_lock.locked():
                 try:
                     await start_turn(
                         self,
-                        content=content,
-                        request_id=request_id,
-                        images=images,
-                        artifacts=artifacts,
-                        accepted_event=self._message_event(
-                            request_id,
-                            content,
-                            images,
-                            artifacts,
+                        item=InboxItem(
+                            id=request_id or f"input-{uuid.uuid4().hex}",
+                            target=InboxTarget.NEXT_TURN,
+                            input=user_input,
                         ),
+                        request_id=request_id,
                     )
                 except SessionBusy:
                     pass
@@ -333,22 +323,18 @@ class SessionRuntime(SessionPort):
                     self.touch()
                     return
             queued = delivery == "queue"
-            enqueue = self.engine.followup if queued else self.engine.steer
-            await enqueue(
-                content,
-                source="user",
-                message_id=request_id,
-                images=images,
-                artifacts=artifacts,
-                metadata={"defer_message_event": True} if queued else None,
+            await self.engine.submit_input(
+                InboxItem(
+                    id=request_id or f"input-{uuid.uuid4().hex}",
+                    target=(
+                        InboxTarget.NEXT_TURN
+                        if queued
+                        else InboxTarget.NEXT_STEP
+                    ),
+                    input=user_input,
+                ),
+                wake=True,
             )
-            if not queued:
-                self._publish_message_event(
-                    request_id,
-                    content,
-                    images,
-                    artifacts,
-                )
             self.touch()
 
     def request_interrupt(self) -> bool:
@@ -370,7 +356,7 @@ class SessionRuntime(SessionPort):
             if self.turn_lock.locked():
                 return
             self._wakeup_requested = False
-            await start_turn(self, content=None)
+            await start_turn(self, item=None)
             task = self.turn_task
             if task is not None:
                 await task
@@ -383,6 +369,7 @@ class SessionRuntime(SessionPort):
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
+        self.application.loop_state.session.status = "closing"
         task = self.turn_task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -400,11 +387,6 @@ class SessionRuntime(SessionPort):
         await self.engine.discard_inputs()
         try:
             await self.engine.close_session()
-        except Exception as exc:
-            self._log.exception(
-                "session.engine.close.failed",
-                error_type=type(exc).__name__,
-            )
         finally:
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
@@ -413,11 +395,7 @@ class SessionRuntime(SessionPort):
                 await self.application.close()
             finally:
                 self.event_stream.close()
-
-
-def _event_payload(event: dict[str, JsonValue]) -> ClientEvent:
-    """Validate a loop event before projecting it onto the session stream."""
-    return ClientEvent.model_validate(event)
+                self.application.loop_state.session.status = "closed"
 
 
 class TurnEventRouter:
@@ -426,74 +404,37 @@ class TurnEventRouter:
     def __init__(
         self,
         runtime: SessionRuntime,
-        request_id: str,
+        turn_id: TurnId,
     ) -> None:
         self._runtime = runtime
-        self._request_id = request_id
+        self._turn_id = turn_id
 
-    def emit(self, event: ClientEvent) -> None:
-        self._runtime.event_stream.publish(
+    def emit(self, event) -> None:
+        self._runtime.publish_event(
             event,
-            request_id=self._request_id,
+            scope=TurnScope(self._turn_id),
         )
-
-    def claim(self, items: list[InboxInput]) -> None:
-        user_ids = [item.message_id for item in items if item.source == "user"]
-        if user_ids:
-            self._request_id = user_ids[-1]
 
     async def live_sink(
         self,
-        client_event: ClientEvent,
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, JsonValue]:
-        del tool_call_id
-        event_type = client_event.type
-        request_id = str(client_event.data.get("request_id") or "")
-        waiter = self._runtime.application.client_events.waiter(event_type)
-        if waiter is None:
-            raise RuntimeError(
-                f"No waiter registered for client event {event_type!r}"
-            )
+        client_event: InteractionRequest,
+    ) -> InteractionResolution:
+        request_id = client_event.interaction_id
+        waiter = self._runtime.application.client_events.waiter_for(client_event)
         pending = waiter.register(request_id)
         self.emit(client_event)
-        try:
-            result = await waiter.wait_registered(
-                request_id,
-                pending,
-                timeout_seconds,
+        result = await waiter.wait_registered(
+            request_id,
+            pending,
+            self._runtime.application.client_events.timeout_for(client_event),
+        )
+        self.emit(
+            self._runtime.application.client_events.recorded_event(
+                client_event,
+                result,
             )
-        except Exception as exc:
-            return {
-                "request_id": request_id,
-                "status": "error",
-                "reason": str(exc),
-            }
-        self.emit(interaction_recorded_event(
-            (
-                "permission_response_recorded"
-                if event_type == "permission_request"
-                else "user_input_recorded"
-            ),
-            {
-                "request_id": request_id,
-                "status": result.status,
-                "decision": result.decision,
-                "scope": result.scope,
-                "answer": result.answer,
-                "pending_interactions": [],
-            },
-        ))
-        return {
-            "request_id": result.request_id,
-            "status": result.status,
-            "answer": result.answer,
-            "decision": result.decision,
-            "scope": result.scope,
-            "reason": result.reason,
-        }
+        )
+        return result
 
 
 @asynccontextmanager
@@ -514,10 +455,8 @@ async def _execute_turn(
     runtime: SessionRuntime,
     router: TurnEventRouter,
     *,
-    content: str | None,
+    item: InboxItem | None,
     request_id: str,
-    images: list[ImageContent] | None,
-    artifacts: list[ArtifactRef] | None,
     interactive: bool | None,
     ready: asyncio.Event | None = None,
 ) -> None:
@@ -535,31 +474,20 @@ async def _execute_turn(
         async with interaction_sink:
             turn_stream = (
                 runtime.engine.run_turn(
-                    content,
+                    item,
                     request_id=request_id,
-                    images=images,
-                    artifacts=artifacts,
                 )
-                if content is not None
+                if item is not None
                 else runtime.engine.run_pending(request_id=request_id)
             )
             async with aclosing(turn_stream):
                 async for event in turn_stream:
                     if ready is not None:
                         ready.set()
-                    payload = _event_payload(event)
-                    if payload.type in {"turn_finished", "turn_cancelled"}:
-                        slots = await runtime.application.status_slots()
-                        if slots:
-                            payload.data["status_slots"] = slots
-                        snapshot = await runtime.application.snapshot()
-                        payload.data["session_stats"] = conversation_stats(
-                            snapshot.messages
-                        ).model_dump(mode="json")
-                    router.emit(payload)
-                    if payload.type == "turn_started":
+                    router.emit(event)
+                    if isinstance(event, LoopTurnStarted):
                         turn_open = True
-                    elif payload.type in {"turn_finished", "turn_cancelled"}:
+                    elif isinstance(event, LoopTurnEnded):
                         turn_open = False
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
@@ -573,15 +501,15 @@ async def _execute_turn(
         router.emit(session_error_event(
             "turn_failed",
             str(exc) or type(exc).__name__,
-            details={"exception_type": type(exc).__name__},
         ))
         if turn_open:
             # Only a turn that reached its started boundary receives a
             # lifecycle terminal frame; pre-start failures terminate via the
             # typed error event above.
-            router.emit(_event_payload(agentloop_event(
-                "turn_finished", {"turn": runtime.engine.turn_count},
-            )))
+            router.emit(LoopTurnEnded(
+                turn=runtime.engine.turn_count,
+                outcome=TurnFinished(stop_reason="session_error"),
+            ))
     finally:
         if ready is not None:
             ready.set()
@@ -597,30 +525,23 @@ async def _execute_turn(
 async def start_turn(
     runtime: SessionRuntime,
     *,
-    content: str | None,
+    item: InboxItem | None,
     request_id: str = "",
-    images: list[ImageContent] | None = None,
-    artifacts: list[ArtifactRef] | None = None,
     interactive: bool | None = None,
-    accepted_event: ClientEvent | None = None,
 ) -> None:
     """Start a turn whose authoritative output is the Session event stream."""
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
     await runtime.turn_lock.acquire()
     try:
-        router = TurnEventRouter(runtime, request_id)
+        router = TurnEventRouter(runtime, TurnId(uuid.uuid4().hex))
         runtime._active_router = router
         ready = asyncio.Event()
-        if accepted_event is not None:
-            runtime.event_stream.publish(accepted_event, request_id=request_id)
         task = asyncio.create_task(_execute_turn(
             runtime,
             router,
-            content=content,
+            item=item,
             request_id=request_id,
-            images=images,
-            artifacts=artifacts,
             interactive=interactive,
             ready=ready,
         ))
@@ -643,42 +564,25 @@ async def start_regenerate_turn(
     await runtime.turn_lock.acquire()
     try:
         message = await runtime.application.history.regenerate_history()
-        artifacts = [
-            value
-            for value in message.artifact or []
-            if isinstance(value, ArtifactRef)
-        ]
-        page = runtime.application.history_pages.page(limit=160)
-        snapshot = await runtime.application.snapshot()
-        router = TurnEventRouter(runtime, request_id)
+        record = project_human_input(message)
+        router = TurnEventRouter(runtime, TurnId(uuid.uuid4().hex))
         runtime._active_router = router
-        router.emit(session_event(
-            "history_updated",
-            {
-                "history": conversation_replay(page.messages),
-                "history_cursor": page.next_cursor,
-                "operation": "regenerate",
-                "turns": 1,
-                "session_stats": conversation_stats(snapshot.messages),
-            },
-        ))
-        accepted = runtime._message_event(
-            message.input_id or request_id,
-            message.content,
-            list(message.images),
-            artifacts,
-        )
-        router.emit(accepted)
     except BaseException:
         runtime.turn_lock.release()
         raise
     task = asyncio.create_task(_execute_turn(
         runtime,
         router,
-        content=message.content,
+        item=InboxItem(
+            id=message.input_id or request_id or f"input-{uuid.uuid4().hex}",
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(
+                content=record.content,
+                images=record.images,
+                artifacts=record.artifacts,
+            ),
+        ),
         request_id=request_id,
-        images=list(message.images),
-        artifacts=artifacts,
         interactive=interactive,
     ))
     runtime.turn_task = task

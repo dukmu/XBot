@@ -43,6 +43,19 @@ ENTRY_CSS = """
 EntryWidget {
     height: auto;
     width: 1fr;
+    margin-bottom: 1;
+}
+EntryWidget.user {
+    border-left: thick $accent;
+    padding-left: 1;
+}
+EntryWidget.assistant {
+    border-left: thick $success;
+    padding-left: 1;
+}
+EntryWidget.tool {
+    border-left: thick $warning;
+    padding-left: 1;
 }
 EntryWidget > .meta {
     height: auto;
@@ -51,6 +64,10 @@ EntryWidget > .meta {
 EntryWidget > .body, EntryWidget > .reasoning {
     height: auto;
     width: 1fr;
+}
+EntryWidget > .reasoning {
+    border-left: thick $secondary;
+    padding-left: 1;
 }
 EntryWidget ClampedBlock:focus {
     border-left: thick $accent;
@@ -228,8 +245,10 @@ def entry_widget(
     if reasoning is not None:
         children.append(ClampedBlock(
             str(reasoning.plain),
-            label="thinking",
+            label="Think",
             classes="reasoning",
+            always_show_label=True,
+            always_collapsible=True,
             streaming=isinstance(entry, AssistantEntry) and entry.streaming,
         ))
     body = entry_body(entry, visibility=visibility)
@@ -246,6 +265,7 @@ def _body_block(entry: Entry, body: str) -> Widget:
         label=block_label(entry),
         renderable=entry_body_renderable(entry, body=body),
         classes="body",
+        always_collapsible=isinstance(entry, ToolEntry),
         streaming=isinstance(entry, AssistantEntry) and entry.streaming,
     )
 
@@ -292,7 +312,12 @@ async def _sync_reasoning(
         return
     before = widget.children[0] if widget.children else None
     block = ClampedBlock(
-        str(reasoning.plain), label="thinking", classes="reasoning", streaming=streaming
+        str(reasoning.plain),
+        label="Think",
+        classes="reasoning",
+        always_show_label=True,
+        always_collapsible=True,
+        streaming=streaming,
     )
     if before is not None:
         await widget.mount(block, before=before)

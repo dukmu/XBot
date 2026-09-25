@@ -1,7 +1,7 @@
-"""Wire-level HTTP framing helpers for the server route modules.
+"""Wire-level HTTP response helpers for the server route modules.
 
-This module is pure protocol: error envelopes and SSE framing built from the
-wire DTOs and SSE encoder only. It imports no application or plugin logic.
+This module is pure protocol: error envelopes and streaming response headers.
+It imports no application or plugin logic.
 Capability response builders live in their owning plugin ``protocol`` modules.
 """
 
@@ -12,9 +12,7 @@ from collections.abc import AsyncIterator
 from pydantic import JsonValue
 from fastapi.responses import StreamingResponse
 
-from XBotv2.protocol.models import ErrorResponse, server_event
-from XBotv2.protocol.sse import encode_server_event
-from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.models import ErrorResponse
 
 logger = logging.getLogger("xbotv2.api")
 
@@ -75,31 +73,3 @@ def error_payload(
         details=details or {},
         retryable=retryable,
     ).model_dump()
-
-
-def _format_sse(
-    *,
-    event: dict[str, JsonValue],
-    seq: int,
-    session_id: str = "",
-    thread_id: str = "agent",
-    request_id: str = "",
-) -> bytes:
-    """Format a single SSE frame.
-
-    Per §10.5.4: ``event: <type>`` and ``data: <json>`` on separate
-    lines, with a single ``id: <seq>`` line. The ``type`` and the
-    SSE ``event`` field share the same name so consumers can use
-    either listener style.
-    """
-
-    payload_event = server_event(
-        protocol_version=PROTOCOL_VERSION,
-        session_id=session_id,
-        thread_id=thread_id,
-        request_id=request_id,
-        sequence=seq,
-        type=str(event.get("type", "message") or "message"),
-        data=dict(event.get("data") or {}),
-    )
-    return encode_server_event(payload_event)

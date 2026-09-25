@@ -33,6 +33,9 @@ ClampedBlock {{
 ClampedBlock:focus {{
     border-left: thick $accent;
 }}
+ClampedBlock.expanded {{
+    height: {BLOCK_MAX_LINES};
+}}
 ClampedBlock > .block-head {{
     height: auto;
     width: 1fr;
@@ -69,6 +72,7 @@ def plan_block(
     label: str,
     expanded: bool = False,
     streaming: bool = False,
+    always_collapsible: bool = False,
     max_lines: int = BLOCK_MAX_LINES,
     preview_lines: int = BLOCK_PREVIEW_LINES,
 ) -> BlockPlan:
@@ -80,7 +84,7 @@ def plan_block(
     because that is the part being written.
     """
     lines = count_lines(text)
-    if lines <= max_lines:
+    if lines <= max_lines and not always_collapsible:
         return BlockPlan(head="", body=text, lines=lines, collapsible=False)
     if streaming or expanded:
         return BlockPlan(
@@ -131,12 +135,16 @@ class ClampedBlock(VerticalScroll):
         renderable: Text | object | None = None,
         expanded: bool = False,
         streaming: bool = False,
+        always_show_label: bool = False,
+        always_collapsible: bool = False,
         max_lines: int = BLOCK_MAX_LINES,
         preview_lines: int = BLOCK_PREVIEW_LINES,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.label = label
+        self.always_show_label = always_show_label
+        self.always_collapsible = always_collapsible
         self._text = text
         self.max_lines = max_lines
         self.preview_lines = preview_lines
@@ -145,10 +153,11 @@ class ClampedBlock(VerticalScroll):
             label=label,
             expanded=expanded,
             streaming=streaming,
+            always_collapsible=always_collapsible,
             max_lines=max_lines,
             preview_lines=preview_lines,
         )
-        self._expanded = expanded
+        self._expanded = expanded or streaming
         self._renderable = renderable
         self.head_widget: Static | None = None
         self.body_widget: Static | None = None
@@ -180,8 +189,9 @@ class ClampedBlock(VerticalScroll):
         return _plain(self.head_widget)
 
     def compose(self) -> ComposeResult:
-        if self._plan.head:
-            self.head_widget = Static(Text(self._plan.head), classes="block-head")
+        head = self._head_text()
+        if head:
+            self.head_widget = Static(Text(head), classes="block-head")
             yield self.head_widget
         self.body_widget = Static(
             Text(self._plan.body) if isinstance(self._renderable, Text) else (self._renderable or Text(self._plan.body)),
@@ -229,18 +239,19 @@ class ClampedBlock(VerticalScroll):
             label=self.label,
             expanded=self._expanded,
             streaming=streaming,
+            always_collapsible=self.always_collapsible,
             max_lines=self.max_lines,
             preview_lines=self.preview_lines,
         )
 
     def _apply(self) -> None:
-        head_text = Text(self._plan.head)
+        head_text = Text(self._head_text())
         body_text = (
             self._renderable
             if (self._expanded and self._renderable is not None)
             else Text(self._plan.body)
         )
-        if self._plan.head:
+        if self._head_text():
             if self.head_widget is None:
                 self.head_widget = Static(head_text, classes="block-head")
                 self.mount(self.head_widget, before=0)
@@ -255,12 +266,14 @@ class ClampedBlock(VerticalScroll):
         self.set_class(self._plan.collapsible, "collapsible")
         self.set_class(self._expanded, "expanded")
 
+    def _head_text(self) -> str:
+        return self._plan.head or (self.label if self.always_show_label else "")
+
 
 def _plain(widget: Static | None) -> str:
     if widget is None:
         return ""
-    content = widget.content
-    return str(getattr(content, "plain", None) or getattr(content, "markup", "") or "")
+    return str(widget.content)
 
 
 __all__ = [

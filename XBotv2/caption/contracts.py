@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from XBotv2.core.messages import ConversationMessage
+
 
 class CaptionConfig(BaseModel):
     """The persisted and resolved configuration for ``caption``."""
@@ -25,4 +27,30 @@ class CaptionConfig(BaseModel):
     output_tokens: int = Field(default=96, ge=8, le=256)
 
 
-__all__ = ["CaptionConfig"]
+class CaptionRequest(BaseModel):
+    """Canonical conversation snapshot and current title for captioning."""
+
+    messages: tuple[ConversationMessage, ...]
+    current_title: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CaptionResult(BaseModel):
+    """Validated human-facing session title produced by the caption owner."""
+
+    title: str = Field(min_length=1, max_length=200)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CaptionTitleError(ValueError):
+    """A requested title cannot be normalized to a non-empty value."""
+
+    code = "caption_empty_title"
+
+
+__all__ = [
+    "CaptionConfig",
+    "CaptionRequest",
+    "CaptionResult",
+    "CaptionTitleError",
+]

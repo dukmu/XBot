@@ -9,8 +9,8 @@ from xcore import Context
 
 from XBotv2.context_builder import (
     CONTEXT_COMPONENTS_BUILT,
-    ContextComponent,
-    ContextComponentsBuilt,
+    BuiltContext,
+    FilePromptComponent,
 )
 from XBotv2.core.variables import RuntimeVariables
 
@@ -30,39 +30,33 @@ class WorkspaceInstructionsPlugin:
 
     def _inject_workspace_instructions(
         self,
-        event: ContextComponentsBuilt,
+        event: BuiltContext,
     ) -> None:
         if not self._instructions_path.is_file():
             return
+        try:
+            source_text = self._instructions_path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise UnicodeError(
+                f"Workspace instructions at {self._instructions_path} must be UTF-8: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise OSError(
+                f"Unable to read workspace instructions at {self._instructions_path}: {exc}"
+            ) from exc
         text = self._variables.expand_markdown(
-            self._instructions_path.read_text(encoding="utf-8").strip(),
+            source_text.strip(),
             source="AGENTS.md",
         )
         if not text:
             return
-        component = ContextComponent(
-            role="system",
-            source="workspace_instructions",
-            content=text,
-            plugin_name=self.name,
+        component = FilePromptComponent(
             stage="system_instructions",
-            source_path="AGENTS.md",
+            source=self.name,
+            logical_path="AGENTS.md",
+            text=text,
         )
-        before_sources = {
-            "plugin_fragment",
-            "memory",
-            "runtime_state",
-            "history",
-        }
-        index = next(
-            (
-                index
-                for index, existing in enumerate(event.components)
-                if existing.source in before_sources
-            ),
-            len(event.components),
-        )
-        event.components.insert(index, component)
+        event.components.append(component)
 
 
 plugin = WorkspaceInstructionsPlugin()

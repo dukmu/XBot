@@ -11,7 +11,7 @@ from XBotv2.core.paths import RuntimePaths
 async def run_acp(
     *,
     data_dir: str,
-    provider_name: str,
+    provider_name: str | None,
     no_plugins: bool = False,
     selected_agent: str | None = None,
 ) -> None:

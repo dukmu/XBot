@@ -18,24 +18,24 @@ import signal
 import subprocess
 import tempfile
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Literal
 
 from pydantic import JsonValue
 
+from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
 from XBotv2.jobs import (
     Job,
-    JobKind,
     JobNotFound,
     JobRegistryClosed,
-    JobResult,
-    JobRunnerContext,
     JobsPort,
+    OutputPage,
     WaitResult,
     parse_job_status,
 )
-from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.sandbox.contracts import SandboxPort
 
 #: Lazily-resolved approval-layer capability. The shell tool discharges
@@ -56,6 +56,14 @@ _ESCALATION_UNAVAILABLE = (
 )
 
 
+def _success(text: str) -> ToolSucceeded:
+    return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=text),)))
+
+
+def _failure(code: str, message: str) -> ToolFailed:
+    return ToolFailed(error=ToolError(code=code, message=message), output=ToolOutput())
+
+
 class ShellCommandError(RuntimeError):
     """Shell failure carrying the process exit code."""
 
@@ -71,19 +79,39 @@ _ESCALATION_JUSTIFICATION_REQUIRED = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ShellJobSpec:
+    command: str
+    cwd: str | None
+    escalated: bool
+    label: str
+    kind: str = "shell"
+
+
+@dataclass(frozen=True, slots=True)
+class ShellJobResult:
+    output_ref: ArtifactRef
+    exit_code: int
+
+
 class ShellRunner:
     """Runs one background SHELL job through the shared shell executor."""
 
-    def __init__(self, *, sandbox: SandboxPort | None = None) -> None:
+    def __init__(
+        self,
+        spec: ShellJobSpec,
+        *,
+        artifacts: ArtifactStorePort,
+        sandbox: SandboxPort | None = None,
+    ) -> None:
         self.sandbox = sandbox
+        self.spec = spec
+        self.artifacts = artifacts
 
-    async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult:
-        command = str(job.metadata.get("command") or "")
-        cwd_value = job.metadata.get("cwd")
-        cwd = str(cwd_value) if cwd_value else None
-        escalated = bool(job.metadata.get("escalated"))
-        output = ctx.outputs.create_text()
-        ctx.primary_output = output
+    async def run(self, job: Job) -> ShellJobResult:
+        command = self.spec.command
+        cwd = self.spec.cwd
+        escalated = self.spec.escalated
         try:
             text = await run_shell_command(
                 command,
@@ -96,13 +124,17 @@ class ShellRunner:
         except ShellCommandError:
             raise
         except Exception as exc:  # noqa: BLE001 - spawn errors are job errors
-            await output.write(f"Failed to start command: {exc}\n")
             raise ShellCommandError(str(exc)) from exc
-        await output.write(text)
-        return JobResult(
-            summary="Exited with code 0",
-            output_store=output,
-            data={"exit_code": 0},
+        output_ref = self.artifacts.put(
+            ArtifactKind.TOOL_RESULT,
+            text.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            name="shell-output.txt",
+            suffix=".txt",
+        )
+        return ShellJobResult(
+            output_ref=output_ref,
+            exit_code=0,
         )
 
     async def cancel(self, job: Job) -> None:
@@ -122,10 +154,11 @@ async def shell(
     justification: str | None = None,
     *,
     sandbox: SandboxPort | None = None,
-    job_registry: JobsPort | None = None,
+    job_registry: JobsPort,
+    artifacts: ArtifactStorePort,
     default_cwd: str | None = None,
     approval_layer: ApprovalLayer = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Run a shell command in the foreground, or start one in the background.
 
     Foreground (default) commands must be non-interactive and return their
@@ -156,14 +189,14 @@ async def shell(
     cwd = cwd or default_cwd
     if sandbox_permissions == "require_escalated":
         if not justification or not justification.strip():
-            return ToolResult.failure(
+            return _failure(
                 "invalid_sandbox_request",
                 _ESCALATION_JUSTIFICATION_REQUIRED,
             )
         if _resolve_approval_layer(approval_layer) is None:
             # Fail closed: without an approval layer nobody can ever approve
             # this escape, so the command must not run unsandboxed.
-            return ToolResult.failure(
+            return _failure(
                 "sandbox_escape_unavailable",
                 _ESCALATION_UNAVAILABLE,
             )
@@ -176,6 +209,7 @@ async def shell(
             justification=justification,
             sandbox=sandbox,
             job_registry=job_registry,
+            artifacts=artifacts,
             approval_layer=approval_layer,
         )
     active_sandbox = (
@@ -189,8 +223,8 @@ async def shell(
             timeout_seconds=0,
         )
     except Exception as exc:
-        return ToolResult.failure("command_failed", str(exc))
-    return ToolResult.success(output)
+        return _failure("command_failed", str(exc))
+    return _success(output)
 
 
 async def start_shell(
@@ -203,9 +237,10 @@ async def start_shell(
     justification: str | None = None,
     *,
     sandbox: SandboxPort | None = None,
-    job_registry: JobsPort | None = None,
+    job_registry: JobsPort,
+    artifacts: ArtifactStorePort,
     approval_layer: ApprovalLayer = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Start a shell command in the background and return its job ID.
 
     The command runs independently of the current turn. Use ``wait_shell``
@@ -227,41 +262,40 @@ async def start_shell(
         justification: Required explanation when requesting escalation.
     """
     if not command.strip():
-        return ToolResult.failure("invalid_command", "Command cannot be empty")
+        return _failure("invalid_command", "Command cannot be empty")
     if sandbox_permissions == "require_escalated":
         if not justification or not justification.strip():
-            return ToolResult.failure(
+            return _failure(
                 "invalid_sandbox_request",
                 _ESCALATION_JUSTIFICATION_REQUIRED,
             )
         if _resolve_approval_layer(approval_layer) is None:
-            return ToolResult.failure(
+            return _failure(
                 "sandbox_escape_unavailable",
                 _ESCALATION_UNAVAILABLE,
             )
-    if job_registry is None:
-        return ToolResult.failure(
-            "job_registry_unavailable",
-            "Background shells require a live session",
-        )
     try:
+        spec = ShellJobSpec(
+            command=command,
+            cwd=cwd,
+            escalated=sandbox_permissions == "require_escalated",
+            label=name or command,
+        )
         job = await job_registry.create(
-            kind=JobKind.SHELL,
-            metadata={
-                "command": command,
-                "cwd": cwd or "",
-                "name": name,
-                "escalated": sandbox_permissions == "require_escalated",
-            },
+            spec=spec,
+            owner="coretools.shell",
             name=name,
         )
     except JobRegistryClosed:
-        return ToolResult.failure("session_closing", "Session is closing")
+        return _failure("session_closing", "Session is closing")
     runner_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
     )
-    job_registry.start(job.id, ShellRunner(sandbox=runner_sandbox))
-    return ToolResult.success(
+    job_registry.start(
+        job.id,
+        ShellRunner(spec, artifacts=artifacts, sandbox=runner_sandbox),
+    )
+    return _success(
         f"Started {job.id}"
     )
 
@@ -269,8 +303,8 @@ async def start_shell(
 async def list_shells(
     status: str | None = None,
     *,
-    job_registry: JobsPort | None = None,
-) -> ToolResult:
+    job_registry: JobsPort,
+) -> ToolSucceeded | ToolFailed:
     """List session-owned background shells with lightweight metadata.
 
     Never includes command output; use ``read_shell`` for text. Jobs are
@@ -279,19 +313,15 @@ async def list_shells(
     Args:
         status: Optional filter: pending, running, completed, failed, cancelled.
     """
-    if job_registry is None:
-        return ToolResult.failure(
-            "job_registry_unavailable", "Background shells require a live session"
-        )
     status_filter = parse_job_status(status)
-    summaries = job_registry.list(kind=JobKind.SHELL, status=status_filter)
+    summaries = job_registry.list(kind="shell", status=status_filter)
     payload = {
         "shells": [
             summary.model_dump(mode="json", exclude_none=True)
             for summary in summaries
         ]
     }
-    return ToolResult.success(
+    return _success(
         json.dumps(payload, ensure_ascii=False)
     )
 
@@ -301,8 +331,8 @@ async def wait_shell(
     mode: Literal["all", "any"] = "all",
     timeout_ms: int | None = None,
     *,
-    job_registry: JobsPort | None = None,
-) -> ToolResult:
+    job_registry: JobsPort,
+) -> ToolSucceeded | ToolFailed:
     """Wait for background shells to reach a terminal state.
 
     Returns only IDs, statuses, and exit codes — never command output. Use
@@ -314,15 +344,11 @@ async def wait_shell(
         mode: ``all`` waits for every listed job; ``any`` returns on the first.
         timeout_ms: Optional maximum wait time in milliseconds.
     """
-    if job_registry is None:
-        return ToolResult.failure(
-            "job_registry_unavailable", "Background shells require a live session"
-        )
     resolved = ids or [
-        job.id for job in job_registry.all() if job.kind is JobKind.SHELL
+            job.id for job in job_registry.all() if job.kind == "shell"
     ]
     if not resolved:
-        return ToolResult.failure("shell_not_found", "No shell jobs to wait for")
+        return _failure("shell_not_found", "No shell jobs to wait for")
     try:
         result = await job_registry.wait(
             resolved,
@@ -330,9 +356,9 @@ async def wait_shell(
             timeout=(timeout_ms / 1000) if timeout_ms is not None else None,
         )
     except JobNotFound:
-        return ToolResult.failure("shell_not_found", "Unknown shell job id")
+        return _failure("shell_not_found", "Unknown shell job id")
     payload = _wait_payload(result, job_registry)
-    return ToolResult.success(
+    return _success(
         json.dumps(payload, ensure_ascii=False)
     )
 
@@ -343,8 +369,9 @@ async def read_shell(
     cursor: int | None = None,
     max_bytes: int = 8000,
     *,
-    job_registry: JobsPort | None = None,
-) -> ToolResult:
+    job_registry: JobsPort,
+    artifacts: ArtifactStorePort,
+) -> ToolSucceeded | ToolFailed:
     """Read captured output from one background shell job.
 
     The shell runner captures combined stdout/stderr; ``stream`` selects the
@@ -358,43 +385,41 @@ async def read_shell(
         max_bytes: Maximum characters to return (default 8000).
     """
     del stream
-    if job_registry is None:
-        return ToolResult.failure(
-            "job_registry_unavailable", "Background shells require a live session"
-        )
     job = job_registry.get_or_none(id)
-    if job is None or job.kind is not JobKind.SHELL:
-        return ToolResult.failure("shell_not_found", f"Unknown shell job: {id}")
-    store = job.result.output_store if job.result is not None else None
-    if store is None:
-        return ToolResult.success(
-            "No output captured yet"
-        )
-    chunk = await store.read(cursor=cursor, max_bytes=max_bytes)
-    return ToolResult.success(
-        chunk.data # TODO: more detailed output structure with next_cursor, etc.
+    if job is None or job.kind != "shell":
+        return _failure("shell_not_found", f"Unknown shell job: {id}")
+    result = job.result
+    if not isinstance(result, ShellJobResult):
+        if job.status in {"queued", "running"}:
+            return _failure("shell_not_complete", "Shell output is not available yet")
+        return _failure("shell_output_unavailable", "Shell job has no captured output")
+    text = artifacts.read(result.output_ref).decode("utf-8")
+    start = max(0, min(cursor or 0, len(text)))
+    end = min(len(text), start + max_bytes)
+    page = OutputPage(
+        data=text[start:end],
+        next_cursor=end if end < len(text) else None,
+        eof=end >= len(text),
+        truncated=end < len(text),
     )
+    return _success(json.dumps(asdict(page), ensure_ascii=False))
 
 
 async def cancel_shell(
     id: str,
     *,
-    job_registry: JobsPort | None = None,
-) -> ToolResult:
+    job_registry: JobsPort,
+) -> ToolSucceeded | ToolFailed:
     """Cancel one background shell job (idempotent).
 
     Args:
         id: Shell job ID returned by start_shell.
     """
-    if job_registry is None:
-        return ToolResult.failure(
-            "job_registry_unavailable", "Background shells require a live session"
-        )
     job = job_registry.get_or_none(id)
-    if job is None or job.kind is not JobKind.SHELL:
-        return ToolResult.failure("shell_not_found", f"Unknown shell job: {id}")
+    if job is None or job.kind != "shell":
+        return _failure("shell_not_found", f"Unknown shell job: {id}")
     result = await job_registry.cancel(id)
-    return ToolResult.success(
+    return _success(
         f"Shell {id} {result.status}"
     )
 
@@ -403,6 +428,7 @@ def shell_tools(
     sandbox: SandboxPort | None,
     job_registry: JobsPort,
     default_cwd: str,
+    artifacts: ArtifactStorePort,
     approval_layer: ApprovalLayer = None,
 ) -> tuple[Tool, ...]:
     """Build the shell Tools for one session's runtime services.
@@ -416,16 +442,20 @@ def shell_tools(
             "sandbox": sandbox,
             "job_registry": job_registry,
             "default_cwd": default_cwd,
+            "artifacts": artifacts,
             "approval_layer": approval_layer,
         }),
         (list_shells, {"job_registry": job_registry}),
         (wait_shell, {"job_registry": job_registry}),
-        (read_shell, {"job_registry": job_registry}),
+        (read_shell, {"job_registry": job_registry, "artifacts": artifacts}),
         (cancel_shell, {"job_registry": job_registry}),
     )
     tools = tuple(
         replace(
-            Tool.from_function(function),
+            Tool.from_function(
+                function,
+                excluded_parameters=frozenset(dependencies),
+            ),
             function=partial(function, **dependencies),
         )
         for function, dependencies in bindings
@@ -451,10 +481,10 @@ def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, JsonValue
     ready: list[dict[str, JsonValue]] = []
     for summary in result.ready:
         item = summary.model_dump(mode="json", exclude_none=True)
-        if summary.kind == JobKind.SHELL.value:
+        if summary.kind == "shell":
             job = registry.get_or_none(summary.id)
-            if job is not None and job.result is not None and "exit_code" in job.result.data:
-                item["exit_code"] = job.result.data["exit_code"]
+            if job is not None and isinstance(job.result, ShellJobResult):
+                item["exit_code"] = job.result.exit_code
         ready.append(item)
     return {
         "ready": ready,

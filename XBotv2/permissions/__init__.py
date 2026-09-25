@@ -3,28 +3,36 @@
 from XBotv2.permissions.events import (
     PERMISSION_DECIDED,
     PERMISSION_REQUESTED,
-    PermissionDecided,
+    PermissionDecisionRecorded,
     PermissionRequested,
 )
 from XBotv2.permissions.contracts import (
     ApprovalPort,
+    Approval,
+    Allowed,
+    Denied,
+    NamedPermission,
+    PermissionRequest,
+    PermissionPolicy,
+    PermissionRule,
     PermissionsPort,
 )
-from XBotv2.permissions.protocol import (
-    ApprovalDecision, PermissionDeniedData, PermissionRequestData,
-    PermissionResponseRequest, RequestedPermissionData,
-)
+from XBotv2.permissions.protocol import PermissionResponseRecorded, PermissionResponseRequest
 
 __all__ = [
-    "ApprovalDecision",
+    "Approval",
+    "Allowed",
     "ApprovalPort",
+    "NamedPermission",
+    "PermissionRequest",
+    "PermissionPolicy",
+    "PermissionRule",
     "PERMISSION_DECIDED",
     "PERMISSION_REQUESTED",
-    "PermissionDecided",
-    "PermissionDeniedData",
-    "PermissionRequestData",
+    "Denied",
+    "PermissionDecisionRecorded",
     "PermissionRequested",
     "PermissionResponseRequest",
+    "PermissionResponseRecorded",
     "PermissionsPort",
-    "RequestedPermissionData",
 ]

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pydantic import BaseModel
 
-from XBotv2.agentloop import LoopSettings
-from XBotv2.agents import AgentDefinition
-from XBotv2.core import ClientEvent
-from XBotv2.session.contracts import SessionInfo
+from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.session.contracts import SessionRuntimeState
 
 
 APPLICATION_INITIALIZED = "session/init"
@@ -16,14 +15,13 @@ RUNTIME_EVENT = "runtime/event"
 
 @dataclass(frozen=True, slots=True)
 class ApplicationInitialized:
-    agent: AgentDefinition | None
-    session: SessionInfo
-    settings: LoopSettings
+    session: SessionRuntimeState
+    metadata: ThreadMetadata
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:
-    client_event: ClientEvent
+    event: BaseModel
 
 
 __all__ = [

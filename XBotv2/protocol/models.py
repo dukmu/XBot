@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.core.domain import EventScope
 
 
 class WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    def wire_payload(self) -> dict[str, JsonValue]:
+        """Encode a concrete event model without its routing discriminator."""
+        return self.model_dump(mode="json", exclude={"kind"})
 
 
 class HelloRequest(WireModel):
@@ -44,8 +49,13 @@ class ErrorResponse(WireModel):
     retryable: bool = False
 
 
-class ErrorEventData(ErrorResponse):
-    stage: str | None = None
+T = TypeVar("T")
+
+
+class ResourceResponse(WireModel, Generic[T]):
+    """HTTP envelope for one owner-defined resource value."""
+
+    data: T
 
 
 class EndData(WireModel):
@@ -54,42 +64,42 @@ class EndData(WireModel):
 
 class ServerEvent(WireModel):
     protocol_version: str = PROTOCOL_VERSION
-    session_id: str = ""
-    thread_id: str = "agent"
-    request_id: str = ""
-    sequence: int = 0
-    type: str
-    data: dict[str, JsonValue] = Field(default_factory=dict)
+    session_id: str
+    thread_id: str
+    sequence: int = Field(ge=0)
+    scope: EventScope
+    kind: str = Field(min_length=1)
+    payload: dict[str, JsonValue]
 
 
 def server_event(
     *,
-    type: str,
-    data: dict[str, JsonValue] | None = None,
-    sequence: int = 0,
-    session_id: str = "",
-    thread_id: str = "agent",
-    request_id: str = "",
+    kind: str,
+    payload: dict[str, JsonValue],
+    sequence: int,
+    session_id: str,
+    thread_id: str,
+    scope: EventScope,
     protocol_version: str = PROTOCOL_VERSION,
 ) -> ServerEvent:
     return ServerEvent(
         protocol_version=protocol_version,
         session_id=session_id,
         thread_id=thread_id,
-        request_id=request_id,
         sequence=sequence,
-        type=type,
-        data=dict(data or {}),
+        scope=scope,
+        kind=kind,
+        payload=payload,
     )
 
 
 __all__ = [
     "EndData",
-    "ErrorEventData",
     "ErrorResponse",
     "HealthResponse",
     "HelloRequest",
     "HelloResponse",
+    "ResourceResponse",
     "ServerEvent",
     "WireModel",
     "server_event",

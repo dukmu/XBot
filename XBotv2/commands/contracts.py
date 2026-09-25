@@ -29,7 +29,7 @@ class CommandResult:
 class Command:
     name: str
     description: str
-    kind: Literal["server", "prompt"] = "server"
+    kind: Literal["client", "server", "prompt"] = "server"
     handler: CommandHandler | None = None
     usage: str = ""
     examples: tuple[str, ...] = ()
@@ -45,10 +45,10 @@ class Command:
             raise ValueError(
                 "command name must use lowercase letters, digits, hyphens, or underscores"
             )
-        if self.kind not in {"server", "prompt"}:
-            raise ValueError("command kind must be server or prompt")
-        if self.kind == "server" and self.handler is None:
-            raise ValueError("server command requires a handler")
+        if self.kind not in {"client", "server", "prompt"}:
+            raise ValueError("command kind must be client, server, or prompt")
+        if self.kind in {"client", "server"} and self.handler is None:
+            raise ValueError(f"{self.kind} command requires a handler")
         if self.kind == "prompt" and self.handler is not None:
             raise ValueError("prompt command must not define a handler")
 

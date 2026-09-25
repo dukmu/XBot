@@ -382,9 +382,11 @@ activity 行绕过渲染层、被快照重建摘除)。结果它污染每一轮�
 
 ### 5.10 第 10 步落定的 chrome
 
-- **只宣传能执行的命令**。`BUILTIN_COMMANDS` 现在只有 `help` / `clear-screen` / `copy` / `exit`;
-  `session` / `thread` / `attach` / `thinking` / `details` 等**实现后才会重新加入**。
-  一个回答"尚未实现"的目录项比不提供更糟。
+- **只宣传能执行的命令**。`BUILTIN_COMMANDS` 中的 client command 必须有实际 handler；当前包含
+  session/thread/provider/model/agent、显示控制、附件、交互回应、清屏、复制和退出等已实现操作。
+  `/approve <id> [once|session]`、`/deny <id>` 与 `/answer <id> <text>` 通过标准 HTTP client
+  permission/user-input endpoints 响应阻塞请求，ID 来自可见 interaction entry。不能把审批或答案
+  当作普通 Agent 消息发送，也不能以“尚未实现”的占位命令冒充能力。
 - **调色板不是新概念**:`CommandPalette` 就是"在命令搜索结果上的 `SelectionScreen`",
   没有第二套列表模型。`Option` / `SelectionModel` 同时服务会话选择与命令面板。
 - **过滤保持高亮**:`with_options(..., keep=...)` 在候选中保留当前高亮项,否则按索引收敛——
@@ -539,42 +541,74 @@ controller 丢掉 `images`、提交后不消费附件、`/attach clear` 失效�
 这条路径是**服务端正确行为**,客户端把该失败作为 `error` 帧渲染(I4);
 客户端目前不读取模型的模态能力,所以不会在 `/attach` 时就预判拒绝——记录为已知限制,不做无依据的静默处理。
 
-### 5.16 两条"不做"的决定(有证据)
+### 5.16 历史窗口:稳定身份、分页与驻留(已实现)
 
-1. **客户端保留整段历史;这不修,理由是有证据的**(2026-14 轮复核后从"待实现缺口"改为**决定**)。
+**问题。** 附加会话时不传 `history_limit`(`transport.connect` → `open_session`),服务端返回**完整**
+`value.history`(`session/protocol.py:_open_session_response`,page 为 `None` 时取整段),客户端把整段放进
+`Timeline` 且没有淘汰路径。新会话(resume)、`--session`、thread 切换、重连基线重建,**四条路径都是全量**;
+渲染是 O(窗口)(`TranscriptView.limit`),**状态与内存是 O(n)**。
 
-   现状:附加会话时不传 `history_limit`(`transport.connect` → `XBotClient.open_session(history_limit=None)`),
-   服务端返回**完整** `value.history`(`session/protocol.py:_open_session_response`,page 为 `None` 时取整段),
-   客户端把整段放进 `Timeline`,没有淘汰路径;`timeline.py:trim_front` 因而**没有生产调用者**。
+**第一步:身份属于节点,不属于消息身上的字段(已实现)。**
 
-   要做到有界,必须同时具备"按游标取更旧一页"和"窗口不在尾部"两件事,而第一件事在**消息列表这个面上做不到去重**:
+先前一版实现是错的,记在这里以免复发:它用 `input_id or xbot_message_id or tool_call_id` 从**别的字段**推断
+身份,再回退到 node_id,再回退到空串,客户端再回退到本地 id。这有两个后果:同一服务器消息在不同投影下可能
+得到不同的 id;而"没有身份"这件事被**静默降级**成"本地 id",于是预取一页与窗口重叠的历史会**重复行**——
+正是最初被报告的跨页错乱。
 
-   - `ThreadMessagesResponse.messages` 的元素是 `SessionHistoryItem`,它**没有 id 字段**
-     (`XBotv2/session/contracts.py:94`,`conversation_replay` 也不写 id,只有 `role/content/reasoning/
-     tool_calls/tool_call_id/input_id/status/data/images/artifacts/error/runtime/timing`)。
-   - 因此客户端给历史条目分配的 id 是**本地合成**的(`state._entry_from_history_item` 用
-     `next_local_id("user"/"assistant")`)。预取一页**与已有窗口重叠**的历史时,无法按 id 判定"这条已经有了":
-     同一服务器消息会拿到新的本地 id,结果是**重复行**——正是当初被报告的跨分页错乱那一类。
-   - 相比之下,游标本身是可用的:`tests/core/test_persistence.py::
-     test_append_preserves_cursor_and_surface_replace_invalidates_it` 证明 **append 不掉游标**,
-     只有 `replace`(压缩/清空/回滚等 surface 变化)才让游标失效;所以"能翻旧页"这件事是成立的,
-     缺的是**稳定身份**。而带稳定身份的面是 trajectory(`SessionTrajectoryMessage.message_id` +
-     append-only 的 `position` + `before=` 锚点),TUI 的历史装载目前走的是消息列表。
-   - 结论:**把窗口化做对 = 让 TUI 的历史装载改走 trajectory 面**(Web 端就是这么做窗口的),
-     那是一次独立的设计改动,不是给 `Timeline` 加一个上限。只加淘汰而不解决身份问题会**丢历史**
-     (旧客户端就是靠"整页重复就再问一次"的启发式硬撑),违反 I2/I3 与"不做静默恢复"。
-   - 用户侧**现在就有**一个显式、可见的有界手段:`/clear-screen` 重置 timeline;重新附加会话也只取服务端当前那份基线。
-     因此这不是"能力被删掉",而是"客户端选择保留全部可见历史,并把有界化的正确做法记录在案"。
+现在的规则只有一条,且由结构保证:
 
-   若将来要做,必须一并满足(已核对):`history_limit` 服务端上限 **500**;`open_session(history_limit=N)`
-   返回最新 N 条 + `history_cursor`;更旧页走 `list_messages(cursor=next_cursor, limit=...)`(只能向更旧方向走);
-   淘汰决策只能放在 controller 的 flush("读者在不在尾部"只有视图知道,`TranscriptView.reader_at_end`);
-   淘汰必须**从最新端**进行,否则会删掉读者窗口前方的锚点;回到尾部时重取最新一页替换窗口;
-   `TranscriptView._render_locked` 现存的"锚点消失就回退尾部"应从兜底升级为"不该发生"的断言。
+- 身份是 **transcript 节点的 identity**(`HistoryNode.node_id`,即 trajectory record 的 position:
+  append 为 `str(position)`,replacement 为 `f"{position}:{index}"`,`persistence/store.py` 的
+  `MessageRecord.node_id()` / `SurfaceReplaceRecord.node_id(index)` 是**唯一**的命名处)。
+- 消息与身份**一起**传递:`ConversationPage.nodes`、`AgentApplicationSnapshot.surface`、
+  `HistoryMutation.nodes`、`TrajectoryMessage.node`、`TrajectorySurfaceReplace.nodes` 都是 `HistoryNode`,
+  `messages` / `node_ids` 只是派生属性——**不存在两份需要对齐的列表**,也就没有对齐校验这种兜底。
+- `SessionHistoryItem.id` **必填且非空**(`Field(min_length=1)`)。没有身份的记录无法进入窗口,
+  在 wire 校验处就报错,而不是在客户端猜。
+- 客户端 `_entry_from_history_item` 直接用 `item.id`,**没有 `or` 分支**。
 
-2. **`/attach` 不预判模型模态**。是否支持图片由模型配置声明,客户端不读取该能力;
-   不支持时服务端在 `providers._validate_message_capabilities` 抛错、turn 失败,客户端按 I4
-   把失败渲染出来。见 §5.15 的真实服务端发现。
+**第二步:分页与驻留(已实现)。**
+
+- **有界起步**:`TransportConfig.history_limit`(默认 50)随 attach 一起发;服务端返回最新 N 条 +
+  `history_cursor`。四条路径共用 `TransportSession._attach_request`,不会有一条漏掉窗口。
+- **向上翻页**:`OlderHistoryLoaded`/`HistoryFailed`/`HistoryRequested` 三个事件 +
+  `list_messages(cursor, limit)`;controller 的 `page_older` 先在窗口内移动,移动不了才向服务端要更旧一页。
+- **显式状态**:`OlderHistory = HistoryComplete | HistoryAvailable(cursor) | HistoryLoading(cursor) |
+  HistoryFailed(cursor, message)`。游标只存在于**能取页**的变体里,因此没有"这个 None 是什么意思"的判断;
+  失败保持可见且可重试。视图在窗口上方渲染同一状态(`view/transcript.py:older_history_label`),
+  没有可说的内容时该行**不挂载**。
+- **驻留**:`SessionState.retention_limit`(默认 2000,来自 `TransportConfig`)。超限时 controller 的
+  `_release_held_pages` 释放**读者自己加载的整页**(LIFO),并**把该页之前那个游标放回**
+  (`HeldPage(cursor, ids)`)。这是关键:一页正好是两个游标之间的跨度,所以释放后 `history_cursor` 恰好指向
+  新窗口前方那一页,**被释放的部分仍然取得回来**——不像 opencode 今日 TUI 的 `slice(-100)` 那样永久丢失。
+  释放只在读者**跟随尾部**时发生(读者正在看的那一页不会在他脚下消失),attach 返回的窗口永不释放。
+- `Timeline.prepend` 把新页插到最前并保持页内顺序,已持有的 id **原地更新而不移动**(读取位置不跳),
+  预置条目的 `seq` 重编号到现有最小值之下,`seq` 与插入顺序不再可能互相矛盾。
+
+**与 Web 端的关系。** Web 端(`XBotv2/web/src/state/useXBot.ts:838-863`)已经在做**同类**窗口:它按
+trajectory 的**绝对 position** 作锚点、`before=` 取更旧页,并在裁剪时**同步推进锚点**
+("otherwise the next older page would start before the dropped records and leave a gap")。两者的差别是:
+Web 是"任意裁剪 + 数字锚点 + `before`",TUI 是"整页释放 + 放回游标"。两者都保证未持有的部分仍可取得;
+把两者统一到哪一种(给 `SessionHistoryItem` 加 position 并把 `/messages` 加上 `before`,或让 Web 也用
+整页释放)是**下一步的独立决定**,不在本次改动内。
+
+**验证。** 除逐层单测外,有两条端到端证据:HTTP 层 `test_every_read_of_a_message_names_the_same_node`
+(带 limit 的附加 / `/messages?limit&cursor` / `/trajectory` 对同一条消息给出同一个 id)与真实服务端 +
+真实 Textual 的 `test_app_real_server.py::test_a_real_window_pages_back_and_names_the_same_nodes`
+(有界重附加 → 报"还有更早" → `page_older()` → 记录 id 与 SDK 读到的逐一相等)。视口不变量另有两条:
+`test_a_prepended_older_page_does_not_move_the_readers_window`(页插在读者上方,窗口与锚点不动,再翻一次能到达)
+与 `test_releasing_the_front_keeps_the_tail_window_on_screen`。**变异校验**:对本次新增行为做了 11 处破坏性
+变异(attach 漏掉 window、恢复重建不带 window、prepend 变 append、prepend 忘记去重、释放页丢掉游标、
+驻留忽略"读者在不在尾部"、历史条目退回本地 id、所有记录共用一个 id、有界附加忽略 page、状态行永不挂载、
+翻页不发请求),11 处全部被上述测试捕获(其中"有界附加忽略 page"由既有的
+`test_message_pages_artifact_download_and_regenerate_are_authoritative` 捕获)。
+
+**服务端驻留与 compact:不改,证据见 `docs/project/history-windowing-analysis.md`。** 要点:
+会话全量驻留内存的是**读路径**,窗口化客户端不会让服务端内存变小;`compact` 只退役 **surface**
+(`preserve_transcript=True` 时 transcript 与 trajectory 只增不减);一个活跃线程至少 6 个可增长容器、
+2 组 `Message` 对象;分页原语(attach `history_limit`、`/messages`、`/trajectory`、`[1,revision,offset]`
+游标、`newest_position`)都已存在。另一处已知不一致:messages 读取在 `limit=None` 时读 surface、
+在 `limit=N` 时读 transcript(压缩后是两套内容),本次未改动,已记录在分析文档 §3。
 
 ### 5.17 线程视图(缺口 3 已补齐)
 

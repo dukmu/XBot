@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from XBotv2.core import Tool, ToolResult
+from XBotv2.core import Tool, ToolOutcome, succeeded_text
 
 
 class _CompactToolOwner(Protocol):
@@ -12,7 +12,7 @@ class _CompactToolOwner(Protocol):
 
 
 def build_compact_tool(owner: _CompactToolOwner) -> Tool:
-    async def request_compaction() -> ToolResult:
+    async def request_compaction() -> ToolOutcome:
         """Request one semantic compaction before the next model call.
 
         Use this when older conversation detail is consuming context but the
@@ -21,7 +21,7 @@ def build_compact_tool(owner: _CompactToolOwner) -> Tool:
         repeatedly when automatic compaction is already active.
         """
         owner.request_manual_compaction()
-        return ToolResult.success(
+        return succeeded_text(
             "Conversation compaction requested."
         )
 

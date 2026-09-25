@@ -30,7 +30,7 @@ entry; activation itself is dependency-driven.
 | todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
 | mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session |
-| content_cache | agent | oversized current user-input projection | artifacts |
+| content_cache | agent | lossless externalization of oversized current user input and ToolResult text | artifacts |
 | compact | agent | append-only semantic history replacement | tools, commands, model, loop state |
 | browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
 | token_manager | agent | request/context observation | session |

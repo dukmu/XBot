@@ -7,51 +7,39 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import Field
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.core.tools import ClientEvent
 from XBotv2.jobs.contracts import (
     LIST_JOBS,
     STOP_ALL_JOBS,
     STOP_JOB,
     StopJob,
-    JobSnapshot,
+    JobView,
 )
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
 
 
-class JobCompletionData(WireModel):
-    type: Literal["background_job", "subagent"]
-    kind: Literal["background_job", "subagent"]
-    job_id: str = Field(min_length=1)
-    status: str = Field(min_length=1)
-    command: str = ""
-    agent: str = ""
+class JobUpdatedEvent(WireModel):
+    kind: Literal["job_updated"] = "job_updated"
+    view: JobView
 
 
-def job_updated_event(snapshot: JobSnapshot) -> ClientEvent:
-    return ClientEvent(type="job_updated", data=snapshot.model_dump(mode="json"))
+class JobCompletedEvent(WireModel):
+    kind: Literal["job_completed"] = "job_completed"
+    view: JobView
 
 
-def job_completion_event(snapshot: JobSnapshot) -> ClientEvent:
-    kind = "background_job" if snapshot.kind == "shell" else "subagent"
-    payload = JobCompletionData(
-        type=kind,
-        kind=kind,
-        job_id=snapshot.job_id,
-        status=snapshot.status,
-        command=snapshot.command,
-        agent=snapshot.agent,
-    )
-    return ClientEvent(
-        type="completion_notice",
-        data=payload.model_dump(mode="json"),
-    )
+def job_updated_event(view: JobView) -> JobUpdatedEvent:
+    return JobUpdatedEvent(view=view)
+
+
+def job_completed_event(view: JobView) -> JobCompletedEvent:
+    return JobCompletedEvent(view=view)
 
 
 class JobListResponse(WireModel):
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
-    jobs: list[JobSnapshot] = Field(default_factory=list)
+    jobs: list[JobView] = Field(default_factory=list)
 
 
 class JobStopResponse(JobListResponse):
@@ -121,10 +109,11 @@ def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
 
 
 __all__ = [
-    "JobCompletionData",
+    "JobCompletedEvent",
+    "JobUpdatedEvent",
     "JobListResponse",
     "JobStopResponse",
     "build_jobs_router",
-    "job_completion_event",
+    "job_completed_event",
     "job_updated_event",
 ]

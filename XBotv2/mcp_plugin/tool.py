@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 
-from XBotv2.core import Tool, ToolError, ToolResult
+from XBotv2.core import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded, TextPart
 from XBotv2.mcp_plugin.mcp_client import MCPClient
 
 
@@ -25,12 +25,11 @@ class MCPTool:
             parameters=self._parameters,
         )
 
-    async def __call__(self, **kwargs: JsonValue) -> ToolResult:
+    async def __call__(self, **kwargs: JsonValue) -> ToolSucceeded | ToolFailed:
         result = await self._client.call_tool(self._server, self._name, dict(kwargs))
         if result.is_error:
-            return ToolResult(
-                status="error",
-                content=result.content,
+            return ToolFailed(
                 error=ToolError(code="mcp_tool_error", message=result.content),
+                output=ToolOutput(),
             )
-        return ToolResult.success(result.content)
+        return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=result.content),)))

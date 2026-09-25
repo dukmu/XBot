@@ -83,9 +83,9 @@ def composer_hint(model: ComposerModel) -> str:
     if model.read_only:
         return _READ_ONLY_HINT
     if facts.interaction is Interaction.PERMISSION:
-        return "Approval required — choose an option, or type allow / deny"
+        return "Approval required — use /approve ID [once|session] or /deny ID"
     if facts.interaction is Interaction.USER_INPUT:
-        return "Answer required — type your response"
+        return "Answer required — use /answer ID <text>"
     if facts.interrupt is Interrupt.REQUESTED:
         return "Interrupting…"
     if model.submission_in_flight:
@@ -102,9 +102,9 @@ def composer_placeholder(model: ComposerModel) -> str:
     if model.read_only:
         return "read-only"
     if facts.interaction is Interaction.PERMISSION:
-        return "allow / deny"
+        return "/approve ID | /deny ID"
     if facts.interaction is Interaction.USER_INPUT:
-        return "type an answer"
+        return "/answer ID <text>"
     if model.pending_images > 0:
         return _attachment_note(model.pending_images)
     if facts.server_turn is ServerTurn.RUNNING or facts.turn_open:
@@ -169,8 +169,8 @@ class ComposerInput(TextArea):
         Whether it may be *sent* is not decided here: a read-only thread view
         still runs client commands, and only the caller knows which is which.
         """
-        text = self.text.strip()
-        if not text and not self.may_submit_empty:
+        text = self.text
+        if not text.strip() and not self.may_submit_empty:
             return False
         self.load_text("")
         result = self.on_submit(text)

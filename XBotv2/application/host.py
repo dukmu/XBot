@@ -8,7 +8,7 @@ from xcore import Context
 
 from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.application.contracts import (
-    AgentApplicationSnapshot,
+    ApplicationSnapshot,
     ApplicationEventsPort,
     ClientEventsPort,
     COLLECT_STATUS_SLOTS,
@@ -19,7 +19,7 @@ from XBotv2.application.contracts import (
 )
 from XBotv2.permissions import PermissionsPort
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import ConversationPageReader
+from XBotv2.core.history import HistoryReader
 
 
 @dataclass(slots=True)
@@ -32,7 +32,7 @@ class MountedAgentApplication:
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
-    history_pages: ConversationPageReader
+    history_pages: HistoryReader
     usage: UsageSnapshotPort
     loop_state: LoopStateView
     parent_permissions: PermissionsPort
@@ -43,15 +43,9 @@ class MountedAgentApplication:
         await self.events.emit(COLLECT_STATUS_SLOTS, slots)
         return dict(slots.values)
 
-    async def snapshot(self) -> AgentApplicationSnapshot:
-        settings = self.driver.settings
-        return AgentApplicationSnapshot(
-            agent=settings.agent_name,
-            provider=settings.provider,
-            model=settings.model,
-            model_mode=settings.model_mode,
-            context_window=self.driver.context_window,
-            messages=tuple(self.driver.messages),
+    async def snapshot(self) -> ApplicationSnapshot:
+        return ApplicationSnapshot(
+            messages=self.loop_state.history.snapshot(),
             usage=self.usage.snapshot(),
             metadata=self.loop_state.metadata.value,
             status_slots=await self.status_slots(),
@@ -85,7 +79,7 @@ def mounted_application(context: Context) -> MountedAgentApplication:
 class _TranscriptPages:
     """Host projection adapter; model-surface reads remain persistence-internal."""
 
-    def __init__(self, history: ConversationPageReader) -> None:
+    def __init__(self, history: HistoryReader) -> None:
         self._history = history
 
     def page(self, *, limit: int, cursor: str | None = None):

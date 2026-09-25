@@ -16,12 +16,26 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal, Protocol
 from xml.sax.saxutils import escape
+from uuid import uuid4
 
 from pydantic import JsonValue
 from xcore import Context
 from xcore.state import StateService
 
-from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
+from XBotv2.agentloop import (
+    AgentLoopDriverPort,
+    Events,
+    InboxItem,
+    InboxTarget,
+    RuntimeInput,
+)
+from XBotv2.agentloop.events import (
+    AfterToolExecution,
+    LoopFailure,
+    SessionLifecycle,
+    TurnEnded,
+    TurnStarted,
+)
 from XBotv2.application import (
     COLLECT_STATUS_SLOTS,
     RUNTIME_EVENT,
@@ -29,19 +43,40 @@ from XBotv2.application import (
     StatusSlots,
 )
 from XBotv2.commands import Command, CommandEffect, CommandResult
-from XBotv2.core import ClientEvent, Tool, ToolResult
-from XBotv2.core.usage import UsageData
+from XBotv2.core import Tool, ToolOutcome, ToolFailed, ToolSucceeded, failed_text, succeeded_text
+from XBotv2.core.messages import RuntimeNoticeMessage
+from XBotv2.core.parts import TextPart
+from XBotv2.core.provider import ModelRequest
+from XBotv2.core.domain import (
+    AuxiliaryRequest,
+    RequestObservation,
+    ResolvedModelSelection,
+    UsageSnapshot,
+)
+from XBotv2.core.tokens import estimate_request_tokens
 from XBotv2.goal.evaluator import (
     evaluation_request,
     parse_verdict,
     render_transcript,
 )
 from XBotv2.goal.models import (
+    AchievedGoal,
+    ActiveGoal,
+    FailedGoal,
     MAX_GOAL_CONDITION_CHARS,
     GoalConfig,
+    GoalChanged,
+    GoalCheckinPolicy,
+    GoalProgress,
     GoalSnapshot,
+    GoalState,
     GoalStats,
     GoalVerdict,
+    Impossible,
+    Met,
+    NoGoal,
+    NotMet,
+    PausedGoal,
 )
 from XBotv2.llm import ModelPort, invoke_llm
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
@@ -50,10 +85,6 @@ logger = logging.getLogger("xbotv2.goal")
 
 _STATS_SLOT_KEY = "goal_stats"
 _REASON_SLOT_KEY = "goal_reason"
-_MIGRATED_STAT_KEYS = frozenset({
-    "tool_calls", "input_tokens", "output_tokens", "total_tokens",
-    "todo_items", "todo_completed",
-})
 _CLEAR_ALIASES = frozenset({"clear", "stop", "off", "reset", "none", "cancel"})
 _COMPACT_OPERATION = "compact:"
 _EVALUATOR_OUTPUT_TOKENS = 512
@@ -81,7 +112,9 @@ _UNRECOVERABLE_HINTS = (
 class UsagePort(Protocol):
     """Cumulative-thread usage consumed by Goal statistics."""
 
-    def snapshot(self) -> UsageData: ...
+    def snapshot(self) -> UsageSnapshot: ...
+
+    async def record(self, observation, usage) -> UsageSnapshot: ...
 
 
 class JobsPort(Protocol):
@@ -102,6 +135,7 @@ class GoalService:
         events: Context | None = None,
         jobs: JobsPort | None = None,
         usage: UsagePort | None = None,
+        model_selection: Callable[[], ResolvedModelSelection] | None = None,
         todolist_getter: Callable[[], Any | None] | None = None,
         config: GoalConfig | None = None,
         now: Callable[[], float] = time.time,
@@ -112,6 +146,7 @@ class GoalService:
         self._events = events
         self._jobs = jobs
         self._usage = usage
+        self._model_selection = model_selection
         self._todolist_getter = todolist_getter
         self._config = config or GoalConfig()
         self._now = now
@@ -120,32 +155,29 @@ class GoalService:
         self._continuation_pending = False
         self._pending_tool_calls = 0
         self._turn_used_tools = False
+        self._latest_reason = ""
 
     # -- state -------------------------------------------------------------
 
-    async def snapshot(self) -> GoalSnapshot | None:
+    async def snapshot(self) -> GoalSnapshot:
         stored = await self._store.get("snapshot")
         if stored is None:
-            return None
+            return GoalSnapshot(state=NoGoal())
         if not isinstance(stored, Mapping):
             raise TypeError("Persisted Goal snapshot must be an object")
-        data = dict(stored)
-        if data.get("schema_version") in {1, 2}:
-            data = _migrate(data)
-        return GoalSnapshot.model_validate(data)
+        return GoalSnapshot.model_validate(stored)
 
-    async def _active_goal(self) -> GoalSnapshot | None:
-        goal = await self.snapshot()
-        if goal is None or goal.status != "active":
-            return None
-        return goal
+    async def _active_goal(self) -> ActiveGoal | None:
+        state = (await self.snapshot()).state
+        return state if isinstance(state, ActiveGoal) else None
 
-    async def _write(self, goal: GoalSnapshot) -> None:
-        await self._store.set("snapshot", goal.model_dump(mode="json"))
+    async def _write(self, state) -> None:
+        snapshot = GoalSnapshot(state=state)
+        await self._store.set("snapshot", snapshot.model_dump(mode="json"))
 
     # -- human command -----------------------------------------------------
 
-    async def create_goal(self, condition: str) -> ToolResult:
+    async def create_goal(self, condition: str) -> ToolOutcome:
         """Start a session goal that keeps working until the condition holds.
 
         Use this for substantial work with a verifiable end state when the
@@ -165,7 +197,7 @@ class GoalService:
         """
         return await self.set_condition(condition)
 
-    async def get_goal(self) -> ToolResult:
+    async def get_goal(self) -> ToolOutcome:
         """Read the current session goal without changing it.
 
         Returns no goal when none is set. Use this when you need the condition,
@@ -182,33 +214,36 @@ class GoalService:
             return _command_result(await self.clear(), effects=("thread",))
         return _command_result(await self.set_condition(text), effects=("thread",))
 
-    async def status(self) -> ToolResult:
-        goal = await self.snapshot()
-        if goal is None:
-            return ToolResult.success("No goal set.")
+    async def status(self) -> ToolOutcome:
+        goal = (await self.snapshot()).state
+        if isinstance(goal, NoGoal):
+            return succeeded_text("No goal set.")
         goal = await self._refresh_stats(goal)
-        return ToolResult.success(_format_status(
-            goal, now=self._now(), max_rounds=self._config.max_rounds
+        return succeeded_text(_format_status(
+            goal,
+            now=self._now(),
+            max_rounds=self._config.max_rounds,
+            active_reason=self._latest_reason,
         ))
 
-    async def set_condition(self, condition: str) -> ToolResult:
+    async def set_condition(self, condition: str) -> ToolOutcome:
         text = condition.strip()
         if not text:
-            return ToolResult.failure(
+            return failed_text(
                 "invalid_condition", "Goal condition must not be empty"
             )
         if len(text) > MAX_GOAL_CONDITION_CHARS:
-            return ToolResult.failure(
+            return failed_text(
                 "condition_too_long",
                 "Goal condition must not exceed "
                 f"{MAX_GOAL_CONDITION_CHARS} characters",
             )
-        previous = await self.snapshot()
-        goal = GoalSnapshot(
+        previous = (await self.snapshot()).state
+        goal = ActiveGoal(
             condition=text,
-            status="active",
             started_at=self._now(),
         )
+        self._latest_reason = ""
         self._pending_tool_calls = 0
         self._turn_used_tools = False
         # A queued turn for a replaced goal must not swallow the new one.
@@ -218,33 +253,38 @@ class GoalService:
         await self._write_usage_baseline()
         await self._emit(goal)
         message = _format_status(
-            goal, now=self._now(), max_rounds=self._config.max_rounds
+            goal,
+            now=self._now(),
+            max_rounds=self._config.max_rounds,
+            active_reason=self._latest_reason,
         )
-        if previous is not None and previous.status == "active":
+        if isinstance(previous, ActiveGoal):
             message += f"\nReplaced active goal: {previous.condition}"
         # Claude Code starts a turn immediately, with the condition itself as
         # the directive, so no separate prompt is needed.
         await self._start_round(goal)
-        return ToolResult.success(message)
+        return succeeded_text(message)
 
-    async def clear(self) -> ToolResult:
-        goal = await self.snapshot()
-        if goal is None:
-            return ToolResult.success("No goal set.")
+    async def clear(self) -> ToolOutcome:
+        goal = (await self.snapshot()).state
+        if isinstance(goal, NoGoal):
+            return succeeded_text("No goal set.")
         self._cancel_timer()
-        updated = goal.model_copy(update={
-            "status": "cleared",
-            "finished_at": self._now(),
-        })
-        await self._write(updated)
-        await self._emit(updated)
-        return ToolResult.success(f"Goal cleared: {updated.condition}")
+        await self._write(NoGoal())
+        await self._emit(NoGoal())
+        self._latest_reason = ""
+        return succeeded_text(f"Goal cleared: {goal.condition}")
 
     # -- lifecycle hooks ---------------------------------------------------
 
-    async def on_turn_start(self, event: EventContext) -> None:
+    async def on_turn_start(self, event: TurnStarted) -> None:
         self._turn_used_tools = False
-        if event.continuation:
+        latest = event.history[-1] if event.history else None
+        if (
+            isinstance(latest, RuntimeNoticeMessage)
+            and latest.source == "goal"
+            and latest.event == "round"
+        ):
             self._continuation_pending = False
             return
         # A human prompt restarts evaluation after a stall and resets the
@@ -252,33 +292,36 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None:
             return
-        if goal.stalled or goal.idle_checkins or goal.retries:
+        progress = goal.progress
+        if progress.stalled or progress.idle_checkins or progress.retries:
             await self._write(goal.model_copy(update={
-                "stalled": False,
-                "idle_checkins": 0,
-                "retries": 0,
-                "checkin_seconds": 0.0,
+                "progress": progress.model_copy(update={
+                    "stalled": False,
+                    "idle_checkins": 0,
+                    "retries": 0,
+                }),
+                "checkin_policy": GoalCheckinPolicy(),
             }))
 
-    async def on_tool_call(self, event: EventContext) -> None:
-        if event.tool_call is None:
-            return
+    async def on_tool_call(self, event: AfterToolExecution) -> None:
         self._turn_used_tools = True
         if await self._active_goal() is None:
             return
         self._pending_tool_calls += 1
 
-    async def on_turn_end(self, event: EventContext) -> None:
+    async def on_turn_end(self, event: TurnEnded) -> None:
         goal = await self._active_goal()
         if goal is None:
             return
         goal = await self._refresh_stats(goal, flush_pending=True)
         if event.stop_reason == "client_interrupt":
-            await self._terminate(goal, status="paused", reason="Interrupted.")
+            await self._pause(goal, reason="Interrupted.")
             return
-        goal = goal.model_copy(update={
-            "tool_less_turns": 0 if self._turn_used_tools else goal.tool_less_turns + 1,
-        })
+        goal = goal.model_copy(update={"progress": goal.progress.model_copy(update={
+            "tool_less_turns": (
+                0 if self._turn_used_tools else goal.progress.tool_less_turns + 1
+            ),
+        })})
         await self._write(goal)
         await self._emit(goal)
         if self._background_running():
@@ -289,7 +332,7 @@ class GoalService:
         self._cancel_timer()
         self._schedule_evaluation()
 
-    async def on_error(self, event: EventContext) -> None:
+    async def on_error(self, event: LoopFailure) -> None:
         goal = await self._active_goal()
         if goal is None:
             return
@@ -298,51 +341,45 @@ class GoalService:
         if _is_unrecoverable(error):
             await self._terminate(
                 goal,
-                status="cleared",
+                outcome="failed",
                 reason=(
-                    "Cleared after an unrecoverable error: "
-                    f"{error}. Run /goal again to continue."
+                    "Stopped after an unrecoverable error: "
+                    f"{error}."
                 ),
             )
             return
-        retries = goal.retries + 1
+        retries = goal.progress.retries + 1
         if retries > self._config.max_retries:
-            await self._terminate(
+            await self._pause(
                 goal,
-                status="paused",
-                reason=f"Paused after {goal.retries} retries: {error}",
+                reason=f"Paused after {goal.progress.retries} retries: {error}",
             )
             return
         updated = goal.model_copy(update={
-            "retries": retries,
-            "reason": f"Retrying after error: {error}",
+            "progress": goal.progress.model_copy(update={"retries": retries}),
         })
+        self._latest_reason = f"Retrying after error: {error}"
         await self._write(updated)
         await self._emit(updated)
         self._schedule_retry(updated)
 
-    async def on_session_resume(self, _event: EventContext) -> None:
+    async def on_session_resume(self, _event: SessionLifecycle) -> None:
         """Restore an active goal with its counters reset, as Claude Code does."""
         goal = await self._active_goal()
         if goal is None:
             return
         await self._write_usage_baseline()
         updated = goal.model_copy(update={
-            "turns_evaluated": 0,
             "started_at": self._now(),
-            "finished_at": 0.0,
-            "retries": 0,
-            "tool_less_turns": 0,
-            "idle_checkins": 0,
-            "checkin_seconds": 0.0,
-            "stalled": False,
-            "reason": "",
+            "progress": GoalProgress(),
+            "checkin_policy": GoalCheckinPolicy(),
         })
+        self._latest_reason = ""
         await self._write(updated)
         await self._emit(updated)
         await self._start_round(updated)
 
-    async def on_session_close(self, _event: EventContext) -> None:
+    async def on_session_close(self, _event: SessionLifecycle) -> None:
         self.dispose()
 
     async def on_compaction(self, event: HistoryChanged) -> None:
@@ -356,20 +393,24 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None:
             return
-        await self._engine.inject(
-            _render_compaction_state(
-                goal,
-                round_number=min(
-                    goal.turns_evaluated + 1, self._config.max_rounds
+        await self._engine.submit_input(
+            InboxItem(
+                target=InboxTarget.NEXT_STEP,
+                input=RuntimeInput(
+                    source="goal",
+                    event="compaction",
+                    content=_render_compaction_state(
+                        goal,
+                        round_number=min(
+                            goal.progress.turns_evaluated + 1,
+                            self._config.max_rounds,
+                        ),
+                        max_rounds=self._config.max_rounds,
+                        reason=self._latest_reason,
+                    ),
                 ),
-                max_rounds=self._config.max_rounds,
             ),
-            source="goal",
-            metadata={
-                "kind": "compaction",
-                "round": goal.turns_evaluated + 1,
-                "max_rounds": self._config.max_rounds,
-            },
+            wake=False,
         )
 
     def dispose(self) -> None:
@@ -377,20 +418,21 @@ class GoalService:
         self._cancel_evaluation()
 
     async def contribute_status(self, slots: StatusSlots) -> None:
-        goal = await self.snapshot()
-        if goal is None:
+        goal = (await self.snapshot()).state
+        if isinstance(goal, NoGoal):
             return
         goal = await self._refresh_stats(goal)
-        slots.add("goal", goal.status)
+        slots.add("goal", goal.kind)
         # Clients show the objective next to the state (the WebUI goal bar does),
         # and a slot is the only place they can read it without a command round
         # trip.  Kept short for a status bar.
         slots.add("goal_objective", _short(goal.condition, 120))
-        if goal.status == "active":
+        if isinstance(goal, ActiveGoal):
             slots.add("goal_round", _current_round_label(goal, self._config))
-        if goal.reason:
-            slots.add(_REASON_SLOT_KEY, _short(goal.reason, 60))
-        if goal.status in {"achieved", "failed", "paused", "cleared"}:
+        reason = self._latest_reason if isinstance(goal, ActiveGoal) else goal.reason
+        if reason:
+            slots.add(_REASON_SLOT_KEY, _short(reason, 60))
+        if not isinstance(goal, ActiveGoal):
             if _has_stats(goal.stats):
                 slots.add(_STATS_SLOT_KEY, _format_stats_short(goal.stats))
 
@@ -420,12 +462,40 @@ class GoalService:
             if goal is None:
                 return
             transcript = render_transcript(list(self._engine.messages))
-            response = await invoke_llm(
-                self._model,
-                evaluation_request(goal.condition, transcript),
-                output_tokens=_EVALUATOR_OUTPUT_TOKENS,
+            request = evaluation_request(goal.condition, transcript)
+            if self._usage is None or self._model_selection is None:
+                raise RuntimeError("Goal evaluator requires usage and model selection")
+            selection = self._model_selection()
+            selection = selection.model_copy(update={
+                "generation": selection.generation.model_copy(update={
+                    "max_output_tokens": _EVALUATOR_OUTPUT_TOKENS,
+                }),
+            })
+            model_request = ModelRequest(
+                messages=request,
+                tools=(),
+                selection=selection,
             )
-            verdict = parse_verdict(str(response.content or ""))
+            response = await invoke_llm(self._model, model_request)
+            await self._usage.record(
+                RequestObservation(
+                    selection=selection,
+                    purpose=AuxiliaryRequest(
+                        owner="goal",
+                        operation_id=uuid4().hex,
+                    ),
+                    estimated_input_tokens=estimate_request_tokens(
+                        model_request.messages,
+                        model_request.tools,
+                    ),
+                    observed_context=response.observed_context,
+                ),
+                response.usage,
+            )
+            content = "".join(
+                part.text for part in response.parts if isinstance(part, TextPart)
+            )
+            verdict = parse_verdict(content)
         except Exception as exc:  # noqa: BLE001 — any failure follows the retry policy
             await self._evaluation_failed(str(exc) or type(exc).__name__)
             return
@@ -435,18 +505,20 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None:
             return
-        retries = goal.retries + 1
+        retries = goal.progress.retries + 1
         if retries > self._config.max_retries:
-            await self._terminate(
+            await self._pause(
                 goal,
-                status="paused",
-                reason=f"Paused after {goal.retries} evaluation failures: {reason}",
+                reason=(
+                    "Paused after "
+                    f"{goal.progress.retries} evaluation failures: {reason}"
+                ),
             )
             return
         updated = goal.model_copy(update={
-            "retries": retries,
-            "reason": f"Evaluation failed: {reason}",
+            "progress": goal.progress.model_copy(update={"retries": retries}),
         })
+        self._latest_reason = f"Evaluation failed: {reason}"
         await self._write(updated)
         await self._emit(updated)
         self._schedule_retry(updated)
@@ -455,41 +527,48 @@ class GoalService:
         goal = await self._active_goal()
         if goal is None:
             return
-        turns = goal.turns_evaluated + 1
-        if verdict.verdict in {"met", "impossible"}:
+        turns = goal.progress.turns_evaluated + 1
+        if isinstance(verdict, (Met, Impossible)):
             await self._terminate(
                 goal,
-                status="achieved" if verdict.verdict == "met" else "failed",
+                outcome="achieved" if isinstance(verdict, Met) else "failed",
                 reason=verdict.reason,
                 turns_evaluated=turns,
             )
             return
-        if goal.tool_less_turns >= self._config.stall_turns:
+        if not isinstance(verdict, NotMet):
+            raise TypeError(f"Unsupported goal verdict: {type(verdict).__name__}")
+        goal = await self._refresh_stats(goal, flush_pending=True)
+        if goal.progress.tool_less_turns >= self._config.stall_turns:
             updated = goal.model_copy(update={
-                "turns_evaluated": turns,
-                "reason": verdict.reason,
-                "stalled": True,
+                "progress": goal.progress.model_copy(update={
+                    "turns_evaluated": turns,
+                    "stalled": True,
+                }),
             })
+            self._latest_reason = verdict.reason
             await self._write(updated)
             await self._emit(updated)
             logger.warning(
-                "goal.stalled tool_less_turns=%d", goal.tool_less_turns
+                "goal.stalled tool_less_turns=%d",
+                goal.progress.tool_less_turns,
             )
             return
         updated = goal.model_copy(update={
-            "turns_evaluated": turns,
-            "reason": verdict.reason,
-            "retries": 0,
-            "idle_checkins": 0,
-            "checkin_seconds": 0.0,
-            "stalled": False,
+            "progress": goal.progress.model_copy(update={
+                "turns_evaluated": turns,
+                "retries": 0,
+                "idle_checkins": 0,
+                "stalled": False,
+            }),
+            "checkin_policy": GoalCheckinPolicy(),
         })
+        self._latest_reason = verdict.reason
         await self._write(updated)
         await self._emit(updated)
         if turns >= self._config.max_rounds:
-            await self._terminate(
+            await self._pause(
                 updated,
-                status="paused",
                 reason=(
                     f"Round cap reached ({turns}/{self._config.max_rounds}); "
                     "set the goal again to continue."
@@ -500,7 +579,7 @@ class GoalService:
 
     async def _start_round(
         self,
-        goal: GoalSnapshot,
+        goal: ActiveGoal,
         *,
         reason: str = "",
         note: str = "",
@@ -512,38 +591,43 @@ class GoalService:
         compaction without a separate per-request projection.
         """
         active = await self._active_goal()
-        if active is None or active.stalled or self._continuation_pending:
+        if (
+            active is None
+            or active.progress.stalled
+            or self._continuation_pending
+        ):
             return
         round_number = min(
-            goal.turns_evaluated + 1, self._config.max_rounds
+            goal.progress.turns_evaluated + 1,
+            self._config.max_rounds,
         )
         self._continuation_pending = True
         try:
-            await self._engine.followup(
-                _render_round(
-                    goal,
-                    round_number=round_number,
-                    max_rounds=self._config.max_rounds,
-                    reason=reason,
-                    note=note,
+            await self._engine.submit_input(
+                InboxItem(
+                    target=InboxTarget.NEXT_TURN,
+                    input=RuntimeInput(
+                        source="goal",
+                        event="round",
+                        content=_render_round(
+                            goal,
+                            round_number=round_number,
+                            max_rounds=self._config.max_rounds,
+                            reason=reason,
+                            note=note,
+                        ),
+                    ),
                 ),
-                source="goal",
-                metadata={
-                    "kind": "round",
-                    "round": round_number,
-                    "max_rounds": self._config.max_rounds,
-                    # Marks the turn as automatic so the loop clears its
-                    # pending flag at turn start and never treats a round as a
-                    # human prompt.
-                    "continuation": True,
-                },
+                wake=True,
             )
         except BaseException:
             self._continuation_pending = False
             raise
 
-    def _schedule_retry(self, goal: GoalSnapshot) -> None:
-        delay = self._config.retry_seconds * (2 ** max(0, goal.retries - 1))
+    def _schedule_retry(self, goal: ActiveGoal) -> None:
+        delay = self._config.retry_seconds * (
+            2 ** max(0, goal.progress.retries - 1)
+        )
         self._cancel_timer()
         self._timer = asyncio.create_task(self._retry_after(delay))
 
@@ -554,24 +638,26 @@ class GoalService:
         if goal is None:
             return
         await self._start_round(goal, note="Retry after the previous error.")
-        self._schedule_evaluation()
 
     def _background_running(self) -> bool:
         if self._jobs is None:
             return False
         try:
-            snapshots = self._jobs.snapshots()
+            snapshots = self._jobs.views()
         except Exception:  # noqa: BLE001 — advisory; never block the loop
             logger.warning("goal.jobs_read_failed", exc_info=True)
             return False
         return any(
-            getattr(snapshot, "status", "") in {"pending", "running"}
+            snapshot.state in {"queued", "running"}
             for snapshot in snapshots
         )
 
-    def _schedule_checkin(self, goal: GoalSnapshot) -> None:
+    def _schedule_checkin(self, goal: ActiveGoal) -> None:
         self._cancel_timer()
-        interval = goal.checkin_seconds or self._config.checkin_seconds
+        interval = (
+            self._config.checkin_seconds
+            * goal.checkin_policy.backoff_factor
+        )
         self._timer = asyncio.create_task(self._checkin_after(interval))
 
     async def _checkin_after(self, delay: float) -> None:
@@ -583,16 +669,19 @@ class GoalService:
         if not self._background_running():
             self._schedule_evaluation()
             return
-        if goal.idle_checkins >= self._config.max_idle_checkins:
+        if goal.progress.idle_checkins >= self._config.max_idle_checkins:
             return
-        base = self._config.checkin_seconds
-        interval = min(
-            (goal.checkin_seconds or base) * 2,
-            base * self._config.checkin_max_factor,
+        factor = min(
+            goal.checkin_policy.backoff_factor * 2,
+            self._config.checkin_max_factor,
         )
         updated = goal.model_copy(update={
-            "idle_checkins": goal.idle_checkins + 1,
-            "checkin_seconds": interval,
+            "progress": goal.progress.model_copy(update={
+                "idle_checkins": goal.progress.idle_checkins + 1,
+            }),
+            "checkin_policy": GoalCheckinPolicy(
+                backoff_factor=factor
+            ),
         })
         await self._write(updated)
         await self._emit(updated)
@@ -601,63 +690,81 @@ class GoalService:
 
     async def _terminate(
         self,
-        goal: GoalSnapshot,
+        goal: ActiveGoal,
         *,
-        status: Literal["achieved", "failed", "paused", "cleared"],
+        outcome: Literal["achieved", "failed"],
         reason: str,
         turns_evaluated: int | None = None,
     ) -> None:
         self._cancel_timer()
-        updated = goal.model_copy(update={
-            "status": status,
-            "reason": reason,
-            "finished_at": self._now(),
-            **(
-                {"turns_evaluated": turns_evaluated}
-                if turns_evaluated is not None
-                else {}
-            ),
-        })
+        goal = await self._refresh_stats(goal, flush_pending=True)
+        progress = goal.progress.model_copy(update=(
+            {"turns_evaluated": turns_evaluated}
+            if turns_evaluated is not None
+            else {}
+        ))
+        terminal_type = AchievedGoal if outcome == "achieved" else FailedGoal
+        updated = terminal_type(
+            condition=goal.condition,
+            started_at=goal.started_at,
+            finished_at=self._now(),
+            reason=reason,
+            progress=progress,
+            stats=goal.stats,
+        )
         await self._write(updated)
         await self._emit(updated)
 
+    async def _pause(self, goal: ActiveGoal, *, reason: str) -> None:
+        self._cancel_timer()
+        goal = await self._refresh_stats(goal, flush_pending=True)
+        paused = PausedGoal(
+            condition=goal.condition,
+            started_at=goal.started_at,
+            paused_at=self._now(),
+            reason=reason,
+            progress=goal.progress,
+            stats=goal.stats,
+            checkin_policy=goal.checkin_policy,
+        )
+        await self._write(paused)
+        await self._emit(paused)
+
     # -- consumption -------------------------------------------------------
 
-    def _usage_snapshot(self) -> UsageData:
-        return UsageData() if self._usage is None else self._usage.snapshot()
+    def _usage_snapshot(self) -> UsageSnapshot:
+        return UsageSnapshot() if self._usage is None else self._usage.snapshot()
 
     async def _write_usage_baseline(self) -> None:
         usage = self._usage_snapshot()
+        counters = usage.total_counters
         await self._store.set("usage_baseline", {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "total_tokens": usage.total_tokens,
+            "input_tokens": counters.input,
+            "output_tokens": counters.output,
         })
 
     async def _read_usage_baseline(self) -> dict[str, int]:
         stored = await self._store.get("usage_baseline")
         if not isinstance(stored, Mapping):
-            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            return {"input_tokens": 0, "output_tokens": 0}
         return {
             "input_tokens": int(stored.get("input_tokens") or 0),
             "output_tokens": int(stored.get("output_tokens") or 0),
-            "total_tokens": int(stored.get("total_tokens") or 0),
         }
 
     async def _refresh_stats(
         self,
-        goal: GoalSnapshot,
+        goal: GoalState,
         *,
         flush_pending: bool = False,
-    ) -> GoalSnapshot:
+    ) -> GoalState:
         """Overlay provider usage and task progress on a Goal snapshot."""
         baseline = await self._read_usage_baseline()
-        usage = self._usage_snapshot()
+        counters = self._usage_snapshot().total_counters
         stats = goal.stats.model_copy(update={
             "tool_calls": goal.stats.tool_calls + self._pending_tool_calls,
-            "input_tokens": max(0, usage.input_tokens - baseline["input_tokens"]),
-            "output_tokens": max(0, usage.output_tokens - baseline["output_tokens"]),
-            "total_tokens": max(0, usage.total_tokens - baseline["total_tokens"]),
+            "input_tokens": max(0, counters.input - baseline["input_tokens"]),
+            "output_tokens": max(0, counters.output - baseline["output_tokens"]),
         })
         todolist = self._todolist_getter() if self._todolist_getter is not None else None
         if todolist is not None:
@@ -681,14 +788,14 @@ class GoalService:
             self._pending_tool_calls = 0
         return goal.model_copy(update={"stats": stats})
 
-    async def _emit(self, goal: GoalSnapshot) -> None:
+    async def _emit(self, goal: GoalState) -> None:
         if self._events is None:
             return
-        event = ClientEvent(type="goal_updated", data=goal.model_dump(mode="json"))
+        event = GoalChanged(snapshot=GoalSnapshot(state=goal))
         try:
             await self._events.emit(
                 RUNTIME_EVENT,
-                RuntimeEvent(client_event=event),
+                RuntimeEvent(event=event),
             )
         except Exception:  # noqa: BLE001 — a UI notification is advisory
             logger.warning("goal.client_event_failed", exc_info=True)
@@ -708,30 +815,6 @@ def _is_unrecoverable(error: BaseException | None) -> bool:
         return False
     text = f"{type(error).__name__} {error}".lower()
     return any(hint in text for hint in _UNRECOVERABLE_HINTS)
-
-
-def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
-    """Read a v1/v2 snapshot as the evaluator-owned v3 record."""
-    status = str(data.get("status") or "active")
-    raw_stats = data.get("stats")
-    stats = (
-        {
-            key: value
-            for key, value in raw_stats.items()
-            if key in _MIGRATED_STAT_KEYS
-        }
-        if isinstance(raw_stats, Mapping)
-        else {}
-    )
-    return {
-        "condition": str(data.get("objective") or data.get("condition") or "").strip(),
-        "status": {"complete": "achieved", "blocked": "failed"}.get(status, status),
-        "reason": str(data.get("summary") or data.get("reason") or ""),
-        "started_at": float(data.get("started_at") or 0.0),
-        "finished_at": float(data.get("finished_at") or 0.0),
-        "stats": stats,
-        "schema_version": 3,
-    }
 
 
 def _has_stats(stats: GoalStats) -> bool:
@@ -784,30 +867,43 @@ def _format_duration(seconds: float) -> str:
     return f"{total // 3_600}h{(total % 3_600) // 60:02d}m"
 
 
-def _current_round_label(goal: GoalSnapshot, config: GoalConfig) -> str:
-    current = min(goal.turns_evaluated + 1, config.max_rounds)
+def _current_round_label(goal: ActiveGoal, config: GoalConfig) -> str:
+    current = min(goal.progress.turns_evaluated + 1, config.max_rounds)
     return f"{current}/{config.max_rounds}"
 
 
 def _format_status(
-    goal: GoalSnapshot, *, now: float, max_rounds: int
+    goal: ActiveGoal | PausedGoal | AchievedGoal | FailedGoal,
+    *,
+    now: float,
+    max_rounds: int,
+    active_reason: str = "",
 ) -> str:
-    lines = [f"[{goal.status}] {goal.condition}"]
-    if goal.status == "active":
+    lines = [f"[{goal.kind}] {goal.condition}"]
+    if isinstance(goal, ActiveGoal):
+        duration = max(0.0, now - goal.started_at)
         lines.append(
-            f"Running: {_format_duration(goal.duration_seconds(now=now))} \u00b7 "
-            f"round {min(goal.turns_evaluated + 1, max_rounds)}/{max_rounds} \u00b7 "
+            f"Running: {_format_duration(duration)} \u00b7 "
+            f"round {min(goal.progress.turns_evaluated + 1, max_rounds)}"
+            f"/{max_rounds} \u00b7 "
             f"{_compact_count(goal.stats.total_tokens)} tokens"
         )
+        reason = active_reason
     else:
+        ended_at = (
+            goal.paused_at
+            if isinstance(goal, PausedGoal)
+            else goal.finished_at
+        )
         lines.append(
-            f"Ran: {_format_duration(goal.duration_seconds(now=now))} \u00b7 "
-            f"{goal.turns_evaluated} rounds \u00b7 "
+            f"Ran: {_format_duration(max(0.0, ended_at - goal.started_at))} \u00b7 "
+            f"{goal.progress.turns_evaluated} rounds \u00b7 "
             f"{_compact_count(goal.stats.total_tokens)} tokens"
         )
-    if goal.reason:
-        lines.append(f"Latest: {goal.reason}")
-    if goal.stalled:
+        reason = goal.reason
+    if reason:
+        lines.append(f"Latest: {reason}")
+    if goal.progress.stalled:
         lines.append(
             "The loop stopped: several turns made no tool calls. "
             "Send a message to resume."
@@ -818,7 +914,7 @@ def _format_status(
 
 
 def _render_round(
-    goal: GoalSnapshot,
+    goal: ActiveGoal,
     *,
     round_number: int,
     max_rounds: int,
@@ -850,17 +946,18 @@ def _render_round(
 
 
 def _render_compaction_state(
-    goal: GoalSnapshot,
+    goal: ActiveGoal,
     *,
     round_number: int,
     max_rounds: int,
+    reason: str,
 ) -> str:
     lines = [
         f"Active goal: {json.dumps(goal.condition, ensure_ascii=False)}",
         f"Round: {round_number}/{max_rounds}",
     ]
-    if goal.reason:
-        lines.append(f"Latest evaluator verdict: {goal.reason}")
+    if reason:
+        lines.append(f"Latest evaluator verdict: {reason}")
     return (
         '<system_reminder source="goal" event="compaction" '
         f'round="{round_number}" max="{max_rounds}">\n'
@@ -878,23 +975,31 @@ def _checkin_note() -> str:
 
 
 def _command_result(
-    result: ToolResult,
+    result: ToolOutcome,
     *,
     effects: tuple[CommandEffect, ...] = (),
 ) -> CommandResult:
     return CommandResult(
-        message=result.content,
-        status="ok" if result.status == "success" else "error",
+        message=_tool_outcome_text(result),
+        status="ok" if isinstance(result, ToolSucceeded) else "error",
         effects=effects,
     )
+
+
+def _tool_outcome_text(result: ToolOutcome) -> str:
+    if isinstance(result, (ToolSucceeded, ToolFailed)):
+        return "".join(
+            part.text for part in result.output.parts if isinstance(part, TextPart)
+        ) or (result.error.message if isinstance(result, ToolFailed) else "")
+    return result.reason
 
 
 class GoalPlugin:
     """Register the evaluator-driven Goal service for each mounted session."""
 
     inject = {
-        "required": ["commands", "engine", "model", "state", "tools"],
-        "optional": ["jobs", "todolist", "usage"],
+        "required": ["commands", "engine", "loop_state", "model", "state", "tools", "usage"],
+        "optional": ["jobs", "todolist"],
     }
     name = "goal"
     Config = GoalConfig
@@ -908,7 +1013,8 @@ class GoalPlugin:
             model=ctx.model,
             events=ctx,
             jobs=ctx.get("jobs", strict=False),
-            usage=ctx.get("usage", strict=False),
+            usage=ctx.usage,
+            model_selection=lambda: ctx.loop_state.metadata.value.runtime_selection.model,
             todolist_getter=lambda: ctx.get("todolist", strict=False),
             config=config,
         )
@@ -945,7 +1051,7 @@ class GoalPlugin:
             "status": "ready",
             "scope": "session",
             "goal_statuses": sorted({
-                "active", "achieved", "failed", "paused", "cleared",
+                "none", "active", "achieved", "failed", "paused",
             }),
             "evaluator": "auxiliary_model_call",
             "commands": ["/goal", "/goal <condition>", "/goal clear"],

@@ -1,14 +1,12 @@
-"""Durable timing metadata and conversation-level statistics."""
+"""Timing projections derived from canonical conversation messages."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
+
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
-from XBotv2.core.messages import Message
-
-TIMING_METADATA_KEY = "xbot_timing"
-SESSION_STATS_METADATA_KEY = "xbot_session_stats"
+from XBotv2.core.messages import AssistantMessage, ConversationMessage, HumanInputMessage, ToolMessage
 
 
 class SessionStats(BaseModel):
@@ -23,80 +21,41 @@ class SessionStats(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     def add(self, other: "SessionStats") -> "SessionStats":
-        current = self.model_dump()
-        increment = other.model_dump()
-        return SessionStats(**{
-            name: current[name] + increment[name]
-            for name in type(self).model_fields
-        })
+        return SessionStats(
+            turns=self.turns + other.turns,
+            steps=self.steps + other.steps,
+            llm_ms=self.llm_ms + other.llm_ms,
+            tool_ms=self.tool_ms + other.tool_ms,
+            ttft_ms=self.ttft_ms + other.ttft_ms,
+            ttft_steps=self.ttft_steps + other.ttft_steps,
+            decode_ms=self.decode_ms + other.decode_ms,
+            decode_tokens=self.decode_tokens + other.decode_tokens,
+        )
 
     @field_serializer("llm_ms", "tool_ms", "ttft_ms", "decode_ms")
     def _round_milliseconds(self, value: float) -> float:
         return round(value, 3)
 
 
-def conversation_stats(messages: Iterable[Message]) -> SessionStats:
-    """Fold visible history, including statistics retained by compaction."""
+def conversation_stats(messages: Iterable[ConversationMessage]) -> SessionStats:
     stats = SessionStats()
     for message in messages:
-        retained = _stats(message.response_metadata.get(SESSION_STATS_METADATA_KEY))
-        if retained is not None:
-            stats = stats.add(retained)
-        if message.role == "user":
-            if "runtime_input" not in message.additional_kwargs:
-                stats = stats.add(SessionStats(turns=1))
-            continue
-        timing = _timing(message.response_metadata.get(TIMING_METADATA_KEY))
-        if timing is None:
-            continue
-        if message.role == "assistant":
-            ttft = timing.get("ttft_ms")
-            decode = timing.get("decode_ms")
-            output_tokens = _nonnegative_int(message.usage_metadata.get("output_tokens"))
+        if isinstance(message, HumanInputMessage):
+            stats = stats.add(SessionStats(turns=1))
+        elif isinstance(message, AssistantMessage):
+            timing = message.exchange.timing
+            counters = message.exchange.usage.counters
             stats = stats.add(SessionStats(
                 steps=1,
-                llm_ms=timing.get("llm_ms", 0.0),
-                ttft_ms=ttft or 0.0,
-                ttft_steps=1 if ttft is not None else 0,
-                decode_ms=decode or 0.0,
-                decode_tokens=output_tokens if decode is not None else 0,
+                llm_ms=timing.total_ms,
+                ttft_ms=timing.first_delta_ms or 0.0,
+                ttft_steps=1 if timing.first_delta_ms is not None else 0,
+                decode_ms=timing.decode_ms or 0.0,
+                decode_tokens=counters.output if timing.decode_ms is not None else 0,
             ))
-        elif message.role == "tool":
-            stats = stats.add(SessionStats(tool_ms=timing.get("duration_ms", 0.0)))
+        elif isinstance(message, ToolMessage):
+            stats = stats.add(SessionStats(tool_ms=message.timing.duration_ms))
     return stats
 
 
-def _timing(value: object) -> dict[str, float] | None:
-    if not isinstance(value, Mapping):
-        return None
-    result: dict[str, float] = {}
-    for key, number in value.items():
-        if (
-            not isinstance(key, str)
-            or isinstance(number, bool)
-            or not isinstance(number, (int, float))
-            or number < 0
-        ):
-            raise ValueError("Persisted timing metadata is malformed")
-        result[key] = float(number)
-    return result
-
-
-def _stats(value: object) -> SessionStats | None:
-    if not isinstance(value, Mapping):
-        return None
-    return SessionStats.model_validate(value)
-
-
-def _nonnegative_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return 0
-    return value
-
-
-__all__ = [
-    "SESSION_STATS_METADATA_KEY",
-    "TIMING_METADATA_KEY",
-    "SessionStats",
-    "conversation_stats",
-]
+__all__ = ["SessionStats", "conversation_stats"]

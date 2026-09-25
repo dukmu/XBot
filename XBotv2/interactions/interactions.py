@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
-import logging
-
 import asyncio
 
-from pydantic import JsonValue
-
 from XBotv2.interactions.contracts import (
+    InteractionResolution,
     InteractionWaiterPort,
     InteractionNotPending,
-    InteractionResult,
+    ResolutionFactory,
 )
 
-logger = logging.getLogger("xbotv2.interactions")
-
-
 class InteractionWaiter(InteractionWaiterPort):
-    def __init__(self) -> None:
-        self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
+    def __init__(
+        self,
+        *,
+        timed_out: ResolutionFactory,
+        cancelled: ResolutionFactory,
+    ) -> None:
+        self._timed_out = timed_out
+        self._cancelled = cancelled
+        self._pending: dict[str, asyncio.Future[InteractionResolution]] = {}
 
-    def register(self, request_id: str) -> asyncio.Future[InteractionResult]:
+    def register(self, request_id: str) -> asyncio.Future[InteractionResolution]:
         """Register a request before exposing it to a live client."""
         if request_id in self._pending:
             raise InteractionNotPending(
@@ -35,16 +36,16 @@ class InteractionWaiter(InteractionWaiterPort):
         self,
         request_id: str,
         timeout_seconds: float | None,
-    ) -> InteractionResult:
+    ) -> InteractionResolution:
         future = self.register(request_id)
         return await self.wait_registered(request_id, future, timeout_seconds)
 
     async def wait_registered(
         self,
         request_id: str,
-        future: asyncio.Future[InteractionResult],
+        future: asyncio.Future[InteractionResolution],
         timeout_seconds: float | None,
-    ) -> InteractionResult:
+    ) -> InteractionResolution:
         """Wait for a request previously created by :meth:`register`."""
         if self._pending.get(request_id) is not future:
             raise InteractionNotPending(
@@ -55,42 +56,31 @@ class InteractionWaiter(InteractionWaiterPort):
                 return await future
             return await asyncio.wait_for(future, timeout=float(timeout_seconds))
         except asyncio.TimeoutError:
-            return InteractionResult(
-                request_id=request_id,
-                status="timeout",
-                reason="timeout",
-            )
+            return self._timed_out("timeout")
         finally:
             if self._pending.get(request_id) is future:
                 self._pending.pop(request_id, None)
 
-    def _resolve(self, request_id: str, result: InteractionResult) -> InteractionResult:
+    def resolve(
+        self,
+        request_id: str,
+        resolution: InteractionResolution,
+    ) -> InteractionResolution:
         future = self._pending.get(request_id)
         if future is None:
             raise InteractionNotPending(f"No live interaction request: {request_id}")
         if future.done():
-            # A second answer for the same request is dropped; say so instead
-            # of silently discarding a caller's decision.
-            logger.warning(
-                "interaction.resolve.duplicate",
-                extra={"request_id": request_id},
+            raise InteractionNotPending(
+                f"Interaction request {request_id!r} has already been resolved"
             )
-            return result
-        future.set_result(result)
-        return result
+        future.set_result(resolution)
+        return resolution
 
-    def answer(self, request_id: str, *, answer: JsonValue = None, decision: str = "", scope: str = "once") -> InteractionResult:
-        return self._resolve(request_id, InteractionResult(
-            request_id=request_id, status="answered", answer=answer, decision=decision, scope=scope,
-        ))
+    def cancel(self, request_id: str, reason: str = "cancelled") -> InteractionResolution:
+        return self.resolve(request_id, self._cancelled(reason))
 
-    def cancel(self, request_id: str, reason: str = "cancelled") -> InteractionResult:
-        return self._resolve(request_id, InteractionResult(
-            request_id=request_id, status="cancelled", reason=reason,
-        ))
-
-    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]:
-        results = []
+    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResolution]:
+        results: list[InteractionResolution] = []
         for request_id in list(self._pending):
             try:
                 results.append(self.cancel(request_id, reason))
@@ -99,4 +89,7 @@ class InteractionWaiter(InteractionWaiterPort):
         return results
 
     def pending_request_ids(self) -> list[str]:
-        return list(self._pending)
+        return [
+            request_id for request_id, future in self._pending.items()
+            if not future.done()
+        ]

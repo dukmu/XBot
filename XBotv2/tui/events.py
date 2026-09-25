@@ -5,8 +5,8 @@ by ``protocol.py``), local submissions, interrupt results, watchdog readings.
 
 Two rules keep this module from re-declaring the protocol:
 
-* a frame-shaped event **carries the producer's payload model** (``TurnData``,
-  ``AssistantMessageData``, ``ToolResultData``, ``CompactionCompletedData``, ...)
+* a frame-shaped event **carries the producer's payload model** (loop events,
+  ``AssistantRecord``, ``ToolRecord``, ``CompactionCompleted``, ...)
   instead of restating its fields. The wire shape is defined once, by its owner.
 * only genuinely client-side events declare their own fields: a submission, an
   interrupt request, a watchdog reading, a gap, a connection change.
@@ -21,42 +21,52 @@ from dataclasses import dataclass, field
 from typing import Mapping, Union
 
 from XBotv2.agentloop.protocol import (
-    AssistantMessageData,
-    AssistantMessageDeltaData,
-    ErrorEventData,
-    ToolCallStartedItem,
-    ToolCallsStartedData,
-    ToolResultData,
-    TurnCancelledData,
-    TurnData,
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopTurnEnded,
+    LoopTurnStarted,
+    StartedToolCall,
+    ToolCallsStarted as LoopToolCallsStarted,
 )
 from XBotv2.compact.protocol import (
-    CompactionCompletedData,
-    CompactionFailedData,
-    CompactionStartedData,
+    CompactionCompleted,
+    CompactionFailed,
+    CompactionStarted,
 )
-from XBotv2.core.usage import UsageData
+from XBotv2.usage import UsageUpdated
 from XBotv2.interactions.protocol import (
-    ClientMessageData,
-    InteractionRecordedData,
-    UserInputRequiredData,
+    ClientNotice,
+    UserInputRequest,
+    UserInputRecorded,
 )
-from XBotv2.jobs.contracts import JobSnapshot
-from XBotv2.jobs.protocol import JobCompletionData
+from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.protocol import JobCompletedEvent
+from XBotv2.goal.models import GoalChanged
+from XBotv2.todolist.contracts import TaskChanged
 from XBotv2.session.contracts import ThreadSummary
-from XBotv2.permissions.protocol import PermissionRequestData
+from XBotv2.core.domain import Cursor
+from XBotv2.core.history import HistoryPage
+from XBotv2.permissions.contracts import PermissionRequest
+from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.session.protocol import (
     AgentConfiguredData,
-    HistoryUpdatedData,
-    MessageData,
+    HistoryUpdatedEvent,
     OpenSessionResponse,
     QueueUpdatedData,
 )
+from XBotv2.session.records import (
+    AssistantRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+    ConversationRecord,
+)
 from XBotv2.tui.status import Connection, ServerTurn
 
-InteractionRequest = Union[PermissionRequestData, UserInputRequiredData]
+InteractionRequest = Union[PermissionRequest, UserInputRequest]
 CompactionPayload = Union[
-    CompactionStartedData, CompactionCompletedData, CompactionFailedData
+    CompactionStarted, CompactionCompleted, CompactionFailed
 ]
 
 
@@ -118,17 +128,17 @@ class StreamGapDetected:
 
 @dataclass(frozen=True)
 class TurnStarted:
-    payload: TurnData
+    payload: LoopTurnStarted
 
 
 @dataclass(frozen=True)
 class TurnFinished:
-    payload: TurnData
+    payload: LoopTurnEnded
 
 
 @dataclass(frozen=True)
 class TurnCancelled:
-    payload: TurnCancelledData
+    payload: LoopTurnEnded
 
 
 @dataclass(frozen=True)
@@ -146,39 +156,39 @@ class InterruptSettled:
 
 @dataclass(frozen=True)
 class AssistantDelta:
-    payload: AssistantMessageDeltaData
+    payload: AssistantTextDelta | AssistantReasoningDelta
 
 
 @dataclass(frozen=True)
 class AssistantCompleted:
-    payload: AssistantMessageData
+    payload: AssistantRecord
 
 
 @dataclass(frozen=True)
 class HistoryReplaced:
-    payload: HistoryUpdatedData
+    payload: HistoryUpdatedEvent
 
 
 @dataclass(frozen=True)
 class ToolCallsStarted:
-    payload: ToolCallsStartedData
+    payload: LoopToolCallsStarted
 
 
 @dataclass(frozen=True)
-class ToolResult:
-    payload: ToolResultData
+class ToolRecordReceived:
+    payload: ToolRecord
 
 
 @dataclass(frozen=True)
 class ErrorFrame:
-    payload: ErrorEventData
+    payload: LoopError
 
 
 @dataclass(frozen=True)
-class ClientNotice:
+class ClientNoticeReceived:
     """A server-authored line for the transcript (``client_message``)."""
 
-    payload: ClientMessageData
+    payload: ClientNotice
 
 
 @dataclass(frozen=True)
@@ -211,15 +221,25 @@ class JobCompletionNotice:
     extend a turn.
     """
 
-    payload: JobCompletionData
+    payload: JobCompletedEvent
+
+
+@dataclass(frozen=True)
+class GoalChangedReceived:
+    payload: GoalChanged
+
+
+@dataclass(frozen=True)
+class TaskChangedReceived:
+    payload: TaskChanged
 
 
 # --- usage, compaction, queue --------------------------------------------
 
 
 @dataclass(frozen=True)
-class UsageUpdated:
-    payload: UsageData
+class UsageSnapshotReceived:
+    payload: UsageUpdated
 
 
 @dataclass(frozen=True)
@@ -246,7 +266,7 @@ class InteractionOpened:
 
 @dataclass(frozen=True)
 class InteractionResolved:
-    payload: InteractionRecordedData
+    payload: PermissionResponseRecorded | UserInputRecorded
 
 
 # --- local input ----------------------------------------------------------
@@ -273,7 +293,46 @@ class UserMessagePublished:
     and arrives through ``QueueReplaced``, not through this frame.
     """
 
-    payload: MessageData
+    payload: HumanInputRecord
+
+
+@dataclass(frozen=True)
+class RuntimeNoticePublished:
+    payload: RuntimeNoticeRecord
+
+
+# --- older history --------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OlderHistoryRequested:
+    """The reader asked for the page before the oldest entries held.
+
+    The client asks exactly once per page: it stays pending until the page
+    arrives or fails, so holding the key down is one request, not a stream.
+    """
+
+
+@dataclass(frozen=True)
+class OlderHistoryLoaded:
+    """One older page arrived.
+
+    ``cursor`` is the request cursor that produced it: the page spans exactly the
+    entries between that cursor and the one in the payload, which is what lets
+    the client release the page again and stand where it stood before.
+    ``payload.older_cursor`` is the cursor for the page before this one, or None
+    when the client now holds the beginning of the conversation.
+    """
+
+    payload: HistoryPage[ConversationRecord]
+    cursor: Cursor
+
+
+@dataclass(frozen=True)
+class OlderHistoryFailed:
+    """The page could not be read. Kept visible so the reader can retry."""
+
+    message: str
 
 
 # --- background work ------------------------------------------------------
@@ -283,7 +342,7 @@ class UserMessagePublished:
 class JobUpdated:
     """One job snapshot. The server publishes jobs one at a time."""
 
-    payload: JobSnapshot
+    payload: JobView
 
 
 UiEvent = Union[
@@ -302,13 +361,18 @@ UiEvent = Union[
     AssistantCompleted,
     HistoryReplaced,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
     ErrorFrame,
-    ClientNotice,
+    ClientNoticeReceived,
     JobCompletionNotice,
+    GoalChangedReceived,
+    TaskChangedReceived,
     LocalNotice,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
+    OlderHistoryRequested,
     TranscriptCleared,
-    UsageUpdated,
+    UsageSnapshotReceived,
     CompactionChanged,
     QueueReplaced,
     InteractionOpened,
@@ -316,6 +380,7 @@ UiEvent = Union[
     UserInputSubmitted,
     UserInputFailed,
     UserMessagePublished,
+    RuntimeNoticePublished,
     JobUpdated,
 ]
 
@@ -323,7 +388,7 @@ UiEvent = Union[
 __all__ = [
     "AssistantCompleted",
     "AssistantDelta",
-    "ClientNotice",
+    "ClientNoticeReceived",
     "CompactionChanged",
     "CompactionPayload",
     "ConnectionChanged",
@@ -335,6 +400,8 @@ __all__ = [
     "InterruptAsked",
     "InterruptSettled",
     "JobCompletionNotice",
+    "GoalChangedReceived",
+    "TaskChangedReceived",
     "LocalNotice",
     "TranscriptCleared",
     "JobUpdated",
@@ -343,16 +410,17 @@ __all__ = [
     "SnapshotAdopted",
     "StatusSlotsUpdated",
     "StreamGapDetected",
-    "ToolCallStartedItem",
+    "StartedToolCall",
     "ToolCallsStarted",
-    "ToolResult",
+    "ToolRecordReceived",
     "TurnCancelled",
     "TurnFinished",
     "TurnStarted",
     "UiEvent",
-    "UsageUpdated",
+    "UsageSnapshotReceived",
     "UserInputFailed",
     "UserInputSubmitted",
     "UserMessagePublished",
+    "RuntimeNoticePublished",
     "ThreadRead",
 ]

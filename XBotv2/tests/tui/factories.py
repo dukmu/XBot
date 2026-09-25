@@ -21,9 +21,25 @@ from XBotv2.commands import (
     CommandListResponse,
     CommandResponse,
 )
-from XBotv2.core.usage import UsageData
+from XBotv2.core.domain import (
+    AgentExecutionLimits,
+    GenerationSettings,
+    ModelRoute,
+    ReasoningGenerationMode,
+    ResolvedModelSelection,
+    ResolvedRuntimeSelection,
+    SessionScope,
+    StandardGenerationMode,
+    UsageSnapshot,
+)
+from XBotv2.core.history import HistoryPage
+from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.core.domain import CompletedStop, ModelTiming, ToolTiming
+from XBotv2.core.tools import ToolCallRef, ToolSucceeded, text_output
+from XBotv2.interactions.protocol import InteractionResponse
 from XBotv2.protocol import ServerEvent, server_event
-from XBotv2.session.contracts import ThreadSummary
+from XBotv2.session.contracts import OpenedThread, SessionKey, ThreadSummary
+from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.session.protocol import OpenSessionResponse
 
 
@@ -37,20 +53,52 @@ PNG_BYTES = base64.b64decode(
 
 
 def snapshot(**overrides: Any) -> OpenSessionResponse:
-    base: dict[str, Any] = {
-        "session_id": SESSION,
-        "thread_id": THREAD,
-        "agent_name": "XBotv2",
-        "workspace_root": "/w",
-        "provider": "p",
-        "model": "m",
-        "model_mode": "",
-        "context_window": 0,
-        "usage": UsageData(),
-        "status_slots": {},
-        "event_cursor": 0,
-    }
-    return OpenSessionResponse(**{**base, **overrides})
+    session_id = overrides.pop("session_id", SESSION)
+    thread_id = overrides.pop("thread_id", THREAD)
+    workspace_root = overrides.pop("workspace_root", "/w")
+    provider = overrides.pop("provider", "p")
+    model_name = overrides.pop("model", "m")
+    agent_name = overrides.pop("agent_name", "XBotv2")
+    model_mode = overrides.pop("model_mode", "")
+    context_window = overrides.pop("context_window", 4096)
+    history = overrides.pop("history", ())
+    history_cursor = overrides.pop("history_cursor", None)
+    runtime_selection = overrides.pop(
+        "runtime_selection",
+        ResolvedRuntimeSelection(
+            agent_name=agent_name,
+            prompt="",
+            limits=AgentExecutionLimits(),
+            enabled_tools=(),
+            model=ResolvedModelSelection(
+                route=ModelRoute(provider=provider, model=model_name),
+                generation=GenerationSettings(
+                    mode=(
+                        ReasoningGenerationMode(effort=model_mode)
+                        if model_mode
+                        else StandardGenerationMode()
+                    ),
+                    max_output_tokens=context_window,
+                ),
+                context_window=context_window,
+            ),
+        ),
+    )
+    opened = OpenedThread(
+        key=SessionKey(session_id=session_id, thread_id=thread_id),
+        metadata=ThreadMetadata(
+            runtime_selection=runtime_selection,
+            workspace_root=workspace_root,
+        ),
+        history=HistoryPage(items=tuple(history), older_cursor=history_cursor),
+        usage=overrides.pop("usage", UsageSnapshot()),
+        status_slots=overrides.pop("status_slots", {}),
+        event_cursor=overrides.pop("event_cursor", 0),
+        pending_inputs=overrides.pop("pending_inputs", ()),
+        pending_interactions=overrides.pop("pending_interactions", ()),
+        **overrides,
+    )
+    return OpenSessionResponse(data=opened)
 
 
 def thread(**overrides: Any) -> ThreadSummary:
@@ -62,6 +110,33 @@ def thread(**overrides: Any) -> ThreadSummary:
         "turn_status": "idle",
     }
     return ThreadSummary(**{**base, **overrides})
+
+
+def human_record(message_id: str, content: str) -> HumanInputRecord:
+    return HumanInputRecord(id=message_id, content=content)
+
+
+def assistant_record(message_id: str, content: str, *, reasoning: str = "") -> dict[str, Any]:
+    return AssistantRecord(
+        id=message_id,
+        content=content,
+        reasoning=reasoning,
+        timing=ModelTiming(total_ms=0),
+        stop=CompletedStop(),
+    ).model_dump(mode="json")
+
+
+def tool_record(call_id: str, name: str, content: str) -> dict[str, Any]:
+    return ToolRecord(
+        id=f"tool-{call_id}",
+        call=ToolCallRef(id=call_id, name=name),
+        outcome=ToolSucceeded(output=text_output(content)),
+        timing=ToolTiming(duration_ms=0),
+    ).model_dump(mode="json")
+
+
+def history_page(*items: HumanInputRecord, older_cursor: str | None = None) -> HistoryPage:
+    return HistoryPage(items=items, older_cursor=older_cursor)
 
 
 def command(name: str = "status", **overrides: Any) -> CommandDescription:
@@ -123,17 +198,24 @@ def catalog(**overrides: Any) -> Any:
 
 def agent_list(**overrides: Any) -> Any:
     from XBotv2.agents.protocol import AgentInfo, AgentListResponse
+    from XBotv2.agents.contracts import AgentModelPolicy, AgentToolPolicy
+    from XBotv2.core.domain import AgentExecutionLimits
+
+    def info(name: str, description: str) -> AgentInfo:
+        return AgentInfo(
+            name=name,
+            description=description,
+            mode="primary",
+            model_policy=AgentModelPolicy(),
+            limits=AgentExecutionLimits(),
+            tool_policy=AgentToolPolicy(),
+        )
 
     base: dict[str, Any] = {
         "active": "default",
         "agents": [
-            AgentInfo(name="default", description="the default agent", mode="primary"),
-            AgentInfo(
-                name="reviewer",
-                description="reviews diffs",
-                mode="primary",
-                model="m2",
-            ),
+            info("default", "the default agent"),
+            info("reviewer", "reviews diffs"),
         ],
     }
     return AgentListResponse(**{**base, **overrides})
@@ -155,11 +237,12 @@ def frame(
     thread_id: str = THREAD,
 ) -> ServerEvent:
     return server_event(
-        type=frame_type,
-        data=data or {},
+        kind=frame_type,
+        payload=data or {},
         sequence=sequence,
         session_id=session_id,
         thread_id=thread_id,
+        scope=SessionScope(),
     )
 
 
@@ -198,6 +281,7 @@ class ScriptedBackend:
     sent: list[dict[str, Any]] = field(default_factory=list)
     opened: list[dict[str, Any]] = field(default_factory=list)
     interrupts: int = 0
+    interaction_responses: list[dict[str, Any]] = field(default_factory=list)
     interrupt_cancelled: bool = True
     interrupt_error: BaseException | None = None
     send_error: BaseException | None = None
@@ -300,6 +384,36 @@ class ScriptedBackend:
         result = self.command_result or execution()
         return CommandResponse(data=result)
 
+    # --- older history pages ------------------------------------------
+    #: Pages handed out in order, one per read; the last one repeats when a test
+    #: reads more times than it scripted.
+    pages: list[Any] = field(default_factory=list)
+    page_error: BaseException | None = None
+    #: ``{session_id, thread_id, cursor, limit}`` for every read, in order.
+    page_reads: list[dict[str, Any]] = field(default_factory=list)
+
+    async def list_messages(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> Any:
+        self.page_reads.append({
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "cursor": cursor,
+            "limit": limit,
+        })
+        if self.page_error is not None:
+            raise self.page_error
+        if len(self.pages) > 1:
+            return self.pages.pop(0)
+        if self.pages:
+            return self.pages[0]
+        return HistoryPage(items=(), older_cursor=None)
+
     # --- reads --------------------------------------------------------
     async def list_threads(self, session_id: str) -> Any:
         self.read_threads.append(session_id)
@@ -336,6 +450,42 @@ class ScriptedBackend:
             {"session_id": session_id, "thread_id": thread_id,
              "status": "interrupting", "cancelled": self.interrupt_cancelled},
         )()
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        decision: str,
+        scope: str = "once",
+    ) -> InteractionResponse:
+        self.interaction_responses.append({
+            "kind": "permission",
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "request_id": request_id,
+            "decision": decision,
+            "scope": scope,
+        })
+        return InteractionResponse(request_id=request_id)
+
+    async def respond_user_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        answer: str,
+    ) -> InteractionResponse:
+        self.interaction_responses.append({
+            "kind": "user_input",
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "request_id": request_id,
+            "answer": answer,
+        })
+        return InteractionResponse(request_id=request_id)
 
     # --- stream -------------------------------------------------------
     def stream_events(
@@ -414,6 +564,16 @@ class RecordingView:
     composers: list[Any] = field(default_factory=list)
     pages: list[str] = field(default_factory=list)
     tail_calls: int = 0
+    #: Whether the reader is following the tail; tests flip it to stand in for a
+    #: reader who scrolled back.
+    at_end: bool = True
+    #: Whether moving the window is possible; False means the window is already
+    #: at the oldest entry the client holds.
+    can_move_older: bool = True
+
+    @property
+    def reader_at_end(self) -> bool:
+        return self.at_end
 
     async def render_transcript(self, state: Any) -> bool:
         self.transcripts.append(state)
@@ -433,7 +593,7 @@ class RecordingView:
 
     async def page_older(self, state: Any) -> bool:
         self.pages.append("older")
-        return True
+        return self.can_move_older
 
     async def page_newer(self, state: Any) -> bool:
         self.pages.append("newer")

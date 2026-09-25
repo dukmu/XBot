@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias, TypeGuard
 
 from fastapi import APIRouter
-from pydantic import Field, JsonValue, model_validator
-from XBotv2.protocol import ErrorEventData, WireModel
-from XBotv2.core.usage import UsageData
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from XBotv2.protocol import WireModel
 from XBotv2.agentloop.contracts import LIST_TOOLS
+from XBotv2.core.domain import UsageDelta
+from XBotv2.core.messages import AssistantMessage
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.tools import ToolCall, ToolExecution
 
 if TYPE_CHECKING:
     from XBotv2.session.contracts import SessionsPort
@@ -29,129 +30,119 @@ class ToolListResponse(WireModel):
     tools: list[ToolInfo] = Field(default_factory=list)
 
 
-class AssistantMessageData(WireModel):
-    id: str = ""
-    content: str
-    tool_calls: list[dict[str, JsonValue]] = Field(default_factory=list)
-    timing: "ModelTimingData | None" = None
-    # Why the provider stopped generating ("length", "max_tokens", "end_turn",
-    # ...).  Clients use it to flag a reply that was cut off mid-answer.
-    stop_reason: str = ""
+class _LoopEventModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ModelTimingData(WireModel):
-    llm_ms: float = Field(ge=0)
-    ttft_ms: float | None = Field(default=None, ge=0)
-    decode_ms: float | None = Field(default=None, ge=0)
-
-
-class ToolTimingData(WireModel):
-    duration_ms: float = Field(ge=0)
-
-
-class AssistantMessageDeltaData(WireModel):
-    content: str | None = None
-    reasoning: str | None = None
-
-    @model_validator(mode="after")
-    def _require_delta_field(self) -> "AssistantMessageDeltaData":
-        if not self.model_fields_set.intersection({"content", "reasoning"}):
-            raise ValueError("assistant message delta requires content or reasoning")
-        return self
-
-
-class ToolCallStartedItem(WireModel):
-    """One started tool call with its owner-declared category.
-
-    ``kind`` is declared by the tool's owning package and rendered by
-    clients (ACP); it is never re-derived from the tool name.
-    """
-
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    args: dict[str, JsonValue] = Field(default_factory=dict)
-    type: Literal["tool_call"] = "tool_call"
-    kind: str = "other"
-
-
-class ToolCallsStartedData(WireModel):
-    tool_calls: list[ToolCallStartedItem] = Field(min_length=1)
-
-
-class ToolCallDeltaItemData(WireModel):
-    tool_call_id: str = Field(min_length=1)
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    args_delta: str | dict[str, JsonValue]
-    args: str | dict[str, JsonValue]
-    index: int = Field(ge=0)
-    replaces_tool_call_id: str | None = None
-
-
-class ToolCallDeltaData(WireModel):
-    tool_calls: list[ToolCallDeltaItemData] = Field(min_length=1)
-
-
-class ToolResultData(WireModel):
-    tool_call_id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    content: JsonValue = ""
-    status: Literal["success", "error", "denied", "cancelled"]
-    data: JsonValue = None
-    error: dict[str, JsonValue] | None = None
-    artifacts: list[dict[str, JsonValue]] = Field(default_factory=list)
-    images: list[dict[str, JsonValue]] = Field(default_factory=list)
-    timing: ToolTimingData | None = None
-
-
-class TurnData(WireModel):
+class LoopTurnStarted(_LoopEventModel):
+    kind: Literal["turn_started"] = "turn_started"
     turn: int = Field(ge=1)
-    status_slots: dict[str, str] = Field(default_factory=dict)
-    # The session runtime enriches a terminal turn frame after the engine
-    # validated it: the status slots above, and the conversation's running
-    # statistics. The transport model must declare everything that travels, or a
-    # client that validates what it receives rejects a legitimate frame.
-    session_stats: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class TurnCancelledData(TurnData):
+class AssistantTextDelta(_LoopEventModel):
+    kind: Literal["assistant_text_delta"] = "assistant_text_delta"
+    text: str
+
+
+class AssistantReasoningDelta(_LoopEventModel):
+    kind: Literal["assistant_reasoning_delta"] = "assistant_reasoning_delta"
+    text: str
+
+
+class AssistantCompleted(_LoopEventModel):
+    kind: Literal["assistant_completed"] = "assistant_completed"
+    message: AssistantMessage
+
+
+class StartedToolCall(BaseModel):
+    call: ToolCall
+    category: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolCallsStarted(_LoopEventModel):
+    kind: Literal["tool_calls_started"] = "tool_calls_started"
+    calls: tuple[StartedToolCall, ...] = Field(min_length=1)
+
+
+class ToolCallArgumentsDelta(_LoopEventModel):
+    kind: Literal["tool_call_delta"] = "tool_call_delta"
+    call_id: str = Field(min_length=1)
+    name_delta: str
+    arguments_delta: str
+
+
+class ToolCompleted(_LoopEventModel):
+    kind: Literal["tool_completed"] = "tool_completed"
+    execution: ToolExecution
+
+
+class UsageObserved(_LoopEventModel):
+    kind: Literal["usage"] = "usage"
+    usage: UsageDelta
+
+
+class TurnFinished(BaseModel):
+    kind: Literal["finished"] = "finished"
+    stop_reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TurnCancelled(BaseModel):
+    kind: Literal["cancelled"] = "cancelled"
     reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-AgentLoopEventType = Literal[
-    "assistant_message",
-    "assistant_message_delta",
-    "error",
-    "tool_call_delta",
-    "tool_calls_started",
-    "tool_result",
-    "turn_cancelled",
-    "turn_finished",
-    "turn_started",
-    "usage",
+TurnOutcome: TypeAlias = Annotated[
+    TurnFinished | TurnCancelled,
+    Field(discriminator="kind"),
 ]
 
-_EVENT_MODELS: dict[str, type[WireModel]] = {
-    "assistant_message": AssistantMessageData,
-    "assistant_message_delta": AssistantMessageDeltaData,
-    "error": ErrorEventData,
-    "tool_call_delta": ToolCallDeltaData,
-    "tool_calls_started": ToolCallsStartedData,
-    "tool_result": ToolResultData,
-    "turn_cancelled": TurnCancelledData,
-    "turn_finished": TurnData,
-    "turn_started": TurnData,
-    "usage": UsageData,
-}
+
+class LoopTurnEnded(_LoopEventModel):
+    kind: Literal["turn_ended"] = "turn_ended"
+    turn: int = Field(ge=1)
+    outcome: TurnOutcome
 
 
-def agentloop_event(
-    type: AgentLoopEventType,
-    data: dict[str, JsonValue],
-) -> dict[str, JsonValue]:
-    """Validate one Agent-loop-owned event at its producer boundary."""
-    payload = _EVENT_MODELS[type].model_validate(data)
-    return {"type": type, "data": payload.model_dump(exclude_unset=True)}
+class LoopError(_LoopEventModel):
+    kind: Literal["error"] = "error"
+    code: str = Field(min_length=1)
+    message: str
+    exception_type: str = ""
+
+
+LoopEvent: TypeAlias = Annotated[
+    LoopTurnStarted
+    | AssistantTextDelta
+    | AssistantReasoningDelta
+    | AssistantCompleted
+    | ToolCallsStarted
+    | ToolCallArgumentsDelta
+    | ToolCompleted
+    | UsageObserved
+    | LoopTurnEnded
+    | LoopError,
+    Field(discriminator="kind"),
+]
+
+_LOOP_EVENT_TYPES = (
+    LoopTurnStarted,
+    AssistantTextDelta,
+    AssistantReasoningDelta,
+    AssistantCompleted,
+    ToolCallsStarted,
+    ToolCallArgumentsDelta,
+    ToolCompleted,
+    UsageObserved,
+    LoopTurnEnded,
+    LoopError,
+)
+
+
+def is_loop_event(value: object) -> TypeGuard[LoopEvent]:
+    return type(value) in _LOOP_EVENT_TYPES
 
 
 def build_tools_router(*, sessions: "SessionsPort") -> APIRouter:
@@ -186,18 +177,23 @@ def build_tools_router(*, sessions: "SessionsPort") -> APIRouter:
 
 
 __all__ = [
-    "AgentLoopEventType",
-    "AssistantMessageData",
-    "AssistantMessageDeltaData",
-    "ToolCallDeltaData",
-    "ToolCallDeltaItemData",
-    "ToolCallStartedItem",
-    "ToolCallsStartedData",
+    "AssistantCompleted",
+    "AssistantReasoningDelta",
+    "AssistantTextDelta",
+    "LoopError",
+    "LoopEvent",
+    "LoopTurnEnded",
+    "LoopTurnStarted",
+    "StartedToolCall",
+    "ToolCallArgumentsDelta",
+    "ToolCallsStarted",
+    "ToolCompleted",
     "ToolInfo",
     "ToolListResponse",
-    "ToolResultData",
-    "TurnCancelledData",
-    "TurnData",
-    "agentloop_event",
+    "TurnCancelled",
+    "TurnFinished",
+    "TurnOutcome",
+    "UsageObserved",
     "build_tools_router",
+    "is_loop_event",
 ]

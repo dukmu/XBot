@@ -9,7 +9,18 @@ from __future__ import annotations
 
 import pytest
 
-from XBotv2.core.usage import UsageData
+from XBotv2.core.domain import (
+    GenerationSettings,
+    ModelRoute,
+    ProviderMeasured,
+    ReasoningGenerationMode,
+    RequestObservation,
+    ResolvedModelSelection,
+    TokenCounters,
+    TurnRequest,
+    UsageDelta,
+    UsageSnapshot,
+)
 from XBotv2.tui.events import ConnectionChanged
 from XBotv2.tui.status import (
     Connection,
@@ -20,7 +31,11 @@ from XBotv2.tui.status import (
     StatusFacts,
     derive,
 )
-from XBotv2.tui.view.status_bar import StatusLine, render_status_line
+from XBotv2.tui.view.status_bar import (
+    StatusLine,
+    render_session_bar,
+    render_status_line,
+)
 
 
 def line(**overrides) -> StatusLine:
@@ -35,7 +50,7 @@ def line(**overrides) -> StatusLine:
         "model_mode": "",
         "status_slots": {},
         "context_window": 0,
-        "usage": UsageData(),
+        "usage": UsageSnapshot(),
         "context_input_tokens": 0,
         "queue_depth": 0,
         "activity": "",
@@ -100,25 +115,76 @@ def test_the_queue_depth_is_shown_only_while_something_is_queued() -> None:
     assert "queued:2" in plain(line(queue_depth=2))
 
 
-def test_the_context_remainder_needs_a_window_and_a_reading() -> None:
-    assert "ctx-free" not in plain(line(context_window=1000, context_input_tokens=0))
-    assert "ctx-free" not in plain(line(context_window=0, context_input_tokens=10))
-    assert "ctx-free:80%" in plain(line(context_window=1000, context_input_tokens=200))
+def test_session_statistics_are_not_repeated_in_the_status_line() -> None:
+    model = line(usage=UsageSnapshot(total_counters=TokenCounters(input=100, output=20)))
+    shown = plain(model)
+    assert "in:100" not in shown
+    assert "out:20" not in shown
 
 
-def test_token_totals_are_shown() -> None:
-    model = line(usage=UsageData(input_tokens=100, output_tokens=20, total_tokens=120))
-    assert "tokens:120" in plain(model)
+def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
+    selection = ResolvedModelSelection(
+        route=ModelRoute(provider="test", model="test-model"),
+        generation=GenerationSettings(
+            mode=ReasoningGenerationMode(effort="low"), max_output_tokens=512
+        ),
+        context_window=4096,
+    )
+    observation = RequestObservation(
+        selection=selection,
+        purpose=TurnRequest(turn_id="turn-1"),
+        estimated_input_tokens=350,
+        observed_context=ProviderMeasured(tokens=350),
+    )
+    snapshot = UsageSnapshot(
+        total_counters=TokenCounters(input=300, output=50, cache_read=100),
+        requests=(observation,),
+        latest_turn_observation=observation,
+    )
+
+    shown = plain(line(
+        usage=snapshot,
+        context_window=4096,
+        context_input_tokens=350,
+    ))
+
+    assert "in:300" not in shown
+    assert "out:50" not in shown
+    assert "ctx:350/4096" not in shown
+    assert "cache:25%" not in shown
+
+
+def test_session_bar_keeps_usage_visible_beside_session_identity() -> None:
+    snapshot = UsageSnapshot(
+        total_counters=TokenCounters(input=300, output=50, cache_read=100)
+    )
+    shown = render_session_bar(
+        line(
+            session_label="session-1",
+            usage=snapshot,
+            context_window=4096,
+            context_input_tokens=350,
+        ),
+        width=100,
+    ).plain
+
+    assert "session:session-1" in shown
+    assert "in:300" in shown
+    assert "out:50" in shown
+    assert "cache:25%" in shown
+    assert "ctx:350/4096" in shown
 
 
 def test_the_activity_text_is_shown_while_a_turn_runs() -> None:
     assert "turn:3" in plain(line(activity="turn:3 1.2s"))
 
 
-def test_the_agent_and_model_are_shown() -> None:
-    shown = plain(line())
+def test_status_line_keeps_runtime_status_without_repeating_session_identity() -> None:
+    shown = plain(line(model_mode="adaptive"))
     assert "XBotv2" in shown
-    assert "deepseek/v4" in shown
+    assert "deepseek/v4" not in shown
+    assert "session:s1" not in shown
+    assert "mode:adaptive" in shown
 
 
 def test_status_slots_are_shown() -> None:
@@ -141,7 +207,9 @@ def test_the_line_never_exceeds_the_width_it_is_given(width: int) -> None:
         status_slots={"goal": "ship the rewrite", "effort": "high"},
         context_window=128_000,
         context_input_tokens=64_000,
-        usage=UsageData(total_tokens=1_234_567, output_tokens=9_000),
+        usage=UsageSnapshot(
+            total_counters=TokenCounters(input=1_225_567, output=9_000)
+        ),
         queue_depth=4,
         activity="turn:12 34.5s",
     )
@@ -287,3 +355,21 @@ def test_the_report_marks_a_subagent_thread_read_only() -> None:
 
     text = status_report(report_state(summary={"kind": "subagent"}))
     assert "read-only" in text
+
+
+def test_thread_read_updates_the_authoritative_session_title() -> None:
+    from XBotv2.session.contracts import ThreadSummary
+    from XBotv2.tui.events import ThreadRead
+    from XBotv2.tui.state import SessionState, reduce
+
+    state = SessionState(title="session-id")
+    thread = ThreadSummary(
+        session_id="session-id",
+        thread_id="main",
+        status="active",
+        title="Caption from the server",
+    )
+
+    reduce(state, ThreadRead(payload=thread))
+
+    assert state.title == "Caption from the server"

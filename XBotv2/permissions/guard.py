@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Awaitable, Callable
 
 from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core.tools import ClientEvent, GuardDecision, ToolCall
-from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
+from XBotv2.core.tools import GuardDecision, ToolCall
+from XBotv2.permissions import Allowed, Approval, ApprovalPort
+from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.permissions import PermissionsPort
 from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
 from XBotv2.permissions.approval import request_decision
@@ -21,7 +22,7 @@ class PermissionGuard:
         permissions: PermissionsPort,
         approval: ApprovalPort,
         emit: Callable[[str, object], Awaitable[object]],
-        apply_decision: Callable[[ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]],
+        apply_decision: Callable[[PermissionRequest, Approval], Awaitable[Approval]],
     ) -> None:
         self._permissions = permissions
         self._approval = approval
@@ -37,27 +38,21 @@ class PermissionGuard:
             return None
         if decision == "deny":
             return GuardDecision("deny", reason, source="permissions")
-        payload = PermissionRequestData(
-            request_id=f"permission:{tool_call.id}",
+        event = PermissionRequest(
+            interaction_id=f"permission:{tool_call.id}",
             source="permission_system",
-            tool_call=tool_call,
-            decision="ask",
+            subject=ToolPermission(tool_call=tool_call),
             reason=reason,
             resume_supported=True,
-        )
-        event = ClientEvent(
-            type="permission_request",
-            data=payload.model_dump(exclude_none=True),
         )
         await self._emit(
             PERMISSION_REQUESTED,
             PermissionRequested(
-                tool_call=tool_call,
-                client_event=event,
+                request=event,
             ),
         )
         result = await request_decision(self._approval, event, self._apply_decision)
-        if result.decision != "allow" or self._permissions.check(tool_call.name, tool_call.args) == "deny":
+        if not isinstance(result, Allowed) or self._permissions.check(tool_call.name, tool_call.args) == "deny":
             return GuardDecision(
                 "deny",
                 reason or f"Permission denied for tool: {tool_call.name}",

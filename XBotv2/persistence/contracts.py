@@ -8,15 +8,15 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
-from XBotv2.agentloop.contracts import InboxInput
+from XBotv2.agentloop.contracts import InboxItem
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.history import (
-    ConversationPage,
-    HistoryNode,
-    TrajectoryPage,
-    TrajectoryTransaction,
+    DurableEvent,
+    HistoryPage,
+    TrajectoryRead,
 )
-from XBotv2.core.messages import Message
+from XBotv2.core.domain import Cursor
+from XBotv2.core.messages import ConversationMessage
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.metadata import ThreadMetadata
 
@@ -68,36 +68,30 @@ class ThreadLifecycleRecord(BaseModel):
 
 
 class HistoryPort(Protocol):
-    def load(self) -> list[Message]: ...
+    def load(self) -> list[ConversationMessage]: ...
 
-    def load_surface(self) -> tuple[HistoryNode, ...]: ...
+    def load_surface(self) -> tuple[ConversationMessage, ...]: ...
 
-    def load_transcript(self) -> list[Message]: ...
+    def load_transcript(self) -> list[ConversationMessage]: ...
 
-    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]: ...
+    def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]: ...
 
-    def replace(self, messages: Sequence[Message]) -> None: ...
+    def replace(self, messages: Sequence[ConversationMessage]) -> None: ...
 
     def replace_surface(
         self,
-        source_node_ids: Sequence[str],
-        messages: Sequence[Message],
+        source_ids: Sequence[str],
+        messages: Sequence[ConversationMessage],
         *,
         operation: str,
         preserve_transcript: bool,
-    ) -> tuple[HistoryNode, ...]: ...
+    ) -> tuple[ConversationMessage, ...]: ...
 
-    def record(
-        self,
-        event: str,
-        data: dict[str, JsonValue],
-        *,
-        durable: bool = False,
-    ) -> None: ...
+    def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
 
     def open_transactions(
         self,
-        transaction: TrajectoryTransaction,
+        transaction_kind: str,
     ) -> frozenset[str]: ...
 
     def count(self) -> int: ...
@@ -106,27 +100,27 @@ class HistoryPort(Protocol):
         self,
         *,
         limit: int,
-        cursor: str | None = None,
-    ) -> ConversationPage: ...
+        cursor: Cursor | None = None,
+    ) -> HistoryPage[ConversationMessage]: ...
 
     def page_transcript(
         self,
         *,
         limit: int,
-        cursor: str | None = None,
-    ) -> ConversationPage: ...
+        cursor: Cursor | None = None,
+    ) -> HistoryPage[ConversationMessage]: ...
 
     def page_trajectory(
         self,
         *,
         limit: int,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
         before: int | None = None,
-    ) -> TrajectoryPage: ...
+    ) -> TrajectoryRead: ...
 
 
 class MetadataPort(Protocol):
-    def load(self) -> ThreadMetadata: ...
+    def load(self) -> ThreadMetadata | None: ...
 
     def save(self, metadata: ThreadMetadata) -> None: ...
 
@@ -137,11 +131,11 @@ class MetadataPort(Protocol):
 class InboxPersistencePort(Protocol):
     """Durable inbox operations owned by the persistence plugin."""
 
-    def load(self) -> list[InboxInput]: ...
+    def load(self) -> list[InboxItem]: ...
 
-    def replace(self, items: Sequence[InboxInput]) -> None: ...
+    def replace(self, items: Sequence[InboxItem]) -> None: ...
 
-    def reconcile(self, committed_input_ids: set[str]) -> list[InboxInput]: ...
+    def reconcile(self, committed_input_ids: set[str]) -> list[InboxItem]: ...
 
 
 class ThreadLifecyclePort(Protocol):
@@ -173,8 +167,6 @@ class StatePort(Protocol):
 class ThreadPersistencePort(Protocol):
     session_id: str
     thread_id: str
-    workspace_root: str
-    provider: str
     history: HistoryPort
     state: StatePort
     artifacts: ArtifactStorePort
@@ -191,8 +183,6 @@ class ThreadPersistenceFactory(Protocol):
         session_paths: SessionPaths,
         *,
         thread_id: str,
-        workspace_root: str = "",
-        provider: str = "",
     ) -> ThreadPersistencePort: ...
 
 
@@ -206,5 +196,4 @@ __all__ = [
     "ThreadLifecycleWriterPort",
     "ThreadPersistenceFactory",
     "ThreadPersistencePort",
-    "TrajectoryTransaction",
 ]

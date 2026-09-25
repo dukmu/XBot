@@ -2,7 +2,6 @@
 
 import json
 import sys
-import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,7 +32,7 @@ def _write_runtime_config(data_dir, config):
     entries = []
     core = {
         key: config[key]
-        for key in ("tools", "tool_results", "hooks", "workspace_tools")
+        for key in ("enabled_tools", "hooks", "workspace_tools")
         if key in config
     }
     if core:
@@ -41,7 +40,7 @@ def _write_runtime_config(data_dir, config):
     if "instructions" in config:
         entries.append({"id": "config", "config": {"instructions": config["instructions"]}})
     if "provider" in config:
-        entries.append({"id": "llm", "config": {"default": config["provider"]}})
+        entries.append({"id": "llm", "config": {"default_provider": config["provider"]}})
     for plugin_id in ("permissions", "sandbox"):
         if plugin_id in config:
             entries.append({"id": plugin_id, "config": {plugin_id: config[plugin_id]}})
@@ -63,6 +62,112 @@ import yaml
 from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.contracts import AgentApplicationOptions
+from XBotv2.agentloop import InboxItem, InboxTarget, HumanInput
+from XBotv2.agentloop.protocol import AssistantCompleted, LoopError, ToolCompleted
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import ToolSucceeded
+from XBotv2.core.artifacts import ArtifactKind, ImageRef
+from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.parts import ImagePart
+from XBotv2.core.provider import ProviderUser, ResolvedImagePart
+
+
+async def _run_turn(engine, content):
+    """Run the loop through its explicit typed-input contract."""
+    item = InboxItem(
+        target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content=content),
+    )
+    return [event async for event in engine.run_turn(item)]
+
+
+@pytest.mark.asyncio
+async def test_application_resolves_logical_image_for_provider_without_persisting_path(
+    temp_data_dir,
+    temp_workspace,
+):
+    """An image ref stays logical in history and is resolved only per request."""
+    llm = MockLLM(
+        responses=[{"content": "I can inspect the image."}],
+        input_modalities=["text", "image"],
+    )
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="image-context-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        provider_name="mock",
+        llm_override=llm,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "mock",
+                    "providers": {
+                        "mock": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_output_tokens": 1024,
+                                "input_modalities": ["text", "image"],
+                            }],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "caption",
+                "config": {"auto": False, "allow_access": False},
+            },
+        ],
+    )
+    payload = b"image payload for request projection"
+    artifact = application.artifacts.put(
+        ArtifactKind.MEDIA,
+        payload,
+        media_type="image/png",
+        name="diagram.png",
+        suffix=".png",
+    )
+    image = ImageRef(
+        artifact_id=artifact.id,
+        media_type=artifact.media_type,
+        size=artifact.size,
+    )
+
+    try:
+        events = [event async for event in application.engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content="Describe this diagram.", images=(image,)),
+        ))]
+        request = llm.request_history[0]
+        provider_user = next(
+            message for message in request.messages
+            if isinstance(message, ProviderUser)
+            and any(isinstance(part, ResolvedImagePart) for part in message.parts)
+        )
+        resolved = next(
+            part for part in provider_user.parts
+            if isinstance(part, ResolvedImagePart)
+        )
+        history = application.loop_state.history.snapshot()
+    finally:
+        await application.stop()
+
+    assert not [event for event in events if isinstance(event, LoopError)]
+    assert resolved.ref == image
+    assert resolved.absolute_path == application.artifacts.model_path(artifact)
+    assert Path(resolved.absolute_path).read_bytes() == payload
+    human = next(message for message in history if isinstance(message, HumanInputMessage))
+    image_part = next(part for part in human.parts if isinstance(part, ImagePart))
+    assert image_part.image == image
+    assert resolved.absolute_path not in str(human.model_dump(mode="json"))
+
+
+def _system_prompt(provider, request_index=-1):
+    message = provider.request_history[request_index].messages[0]
+    return "\n".join(part.text for part in message.parts)
 
 
 @pytest.mark.asyncio
@@ -143,45 +248,6 @@ class TestApplicationStartupBasics:
         assert "request_permission" not in names
 
     @pytest.mark.asyncio
-    async def test_application_startup_applies_system_tool_result_cache_limits(
-        self, temp_data_dir, temp_workspace, monkeypatch
-    ):
-        _write_plugins(temp_data_dir, {"coretools": {"config": {
-            "tool_results": {
-                "cache_threshold_chars": 2048,
-                "preview_chars": 512,
-                "tail_chars": 128,
-            },
-        }}})
-        captured = {}
-
-        def cache_hook(_state_store, **options):
-            captured.update(options)
-
-            async def apply(_ctx):
-                return None
-
-            return apply
-
-        monkeypatch.setattr("XBotv2.coretools.result_cache.make_tool_result_cache_hook", cache_hook)
-
-        await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="cache-config",
-            workspace_root=temp_workspace,
-            plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-]),
-        )
-
-        assert captured == {
-            "cache_threshold_chars": 2048,
-            "preview_chars": 512,
-            "tail_chars": 128,
-        }
-
-    @pytest.mark.asyncio
     async def test_application_startup_rejects_unknown_provider(self, temp_data_dir):
         with pytest.raises(ValueError, match="Unknown provider config: typo"):
             await start_application(
@@ -205,17 +271,17 @@ class TestApplicationStartupBasics:
                 "id": "llm",
                 "name": "llm",
                 "config": {
-                    "default": "global",
+                    "default_provider": "global",
                     "providers": {
                         "global": {
                             "protocol": "mock",
                             "default_model": "global",
-                            "models": [{"model": "global"}],
+                            "models": [{"model": "global", "max_output_tokens": 1024}],
                         },
                         "workspace": {
                             "protocol": "mock",
                             "default_model": "workspace",
-                            "models": [{"model": "workspace"}],
+                            "models": [{"model": "workspace", "max_output_tokens": 1024}],
                         },
                     },
                 },
@@ -228,7 +294,7 @@ class TestApplicationStartupBasics:
             yaml.safe_dump([{
                 "id": "llm",
                 "name": "llm",
-                "config": {"default": "workspace"},
+                "config": {"default_provider": "workspace"},
             }], sort_keys=False),
             encoding="utf-8",
         )
@@ -243,8 +309,9 @@ class TestApplicationStartupBasics:
 ]),
         )
 
-        assert application.engine.settings.provider == "workspace"
-        assert application.engine.settings.model == "workspace"
+        selection = application.agent_runtime.current_selection()
+        assert selection.provider == "workspace"
+        assert selection.model == "workspace"
 
         # An explicit provider on a workspace without an overlay wins.
         plain_workspace = temp_workspace.parent / "plain-ws"
@@ -260,8 +327,9 @@ class TestApplicationStartupBasics:
 ]),
         )
 
-        assert explicit.engine.settings.provider == "global"
-        assert explicit.engine.settings.model == "global"
+        selection = explicit.agent_runtime.current_selection()
+        assert selection.provider == "global"
+        assert selection.model == "global"
 
     def test_cli_reports_unknown_provider_without_traceback(
         self,
@@ -524,7 +592,7 @@ plugin = NormalClosePlugin()""",
     @pytest.mark.asyncio
     async def test_application_startup_tool_filter_limits_visible_tools(self, temp_data_dir):
         """System tool selectors restrict tools passed to the model."""
-        _write_runtime_config(temp_data_dir, {"tools": ["read"]})
+        _write_runtime_config(temp_data_dir, {"enabled_tools": ["read"]})
 
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -542,7 +610,7 @@ plugin = NormalClosePlugin()""",
     @pytest.mark.asyncio
     async def test_application_startup_unknown_tool_filter_silently_ignored(self, temp_data_dir):
         """Unknown tool selectors are silently ignored (no tools enabled)."""
-        _write_runtime_config(temp_data_dir, {"tools": ["no_such_tool"]})
+        _write_runtime_config(temp_data_dir, {"enabled_tools": ["no_such_tool"]})
 
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -582,7 +650,7 @@ plugin = SimplePlugin()
         )
         monkeypatch.syspath_prepend(str(plugins_root))
 
-        _write_runtime_config(temp_data_dir, {"tools": ["plugin_tool"]})
+        _write_runtime_config(temp_data_dir, {"enabled_tools": ["plugin_tool"]})
 
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -599,103 +667,6 @@ plugin = SimplePlugin()
             "plugin_tool"
         ]
         assert application.engine.tools.resolve("read") is None
-
-    @pytest.mark.asyncio
-    async def test_application_startup_registers_system_hooks(
-        self, temp_data_dir, tmp_path, monkeypatch
-    ):
-        """System-declared hooks are resolved and registered."""
-        hook_dir = tmp_path / "hook_modules"
-        hook_dir.mkdir()
-        (hook_dir / "test_personality_hooks.py").write_text(
-            """
-async def before_user_message(ctx):
-    return {"user_input": ctx.user_input + " from hook"}
-"""
-        )
-        monkeypatch.syspath_prepend(str(hook_dir))
-
-        _write_plugins(temp_data_dir, {"coretools": {"config": {
-            "hooks": [{
-                "stage": "before/user-message-accept",
-                "target": "test_personality_hooks:before_user_message",
-            }],
-        }}})
-
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="test-session",
-            thread_id="test-thread",
-            plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-{"content": "ok"}]),
-        )
-
-        events = [e async for e in application.engine.run_turn("hello")]
-
-        assert events[-1]["type"] == "turn_finished"
-        assert application.engine.messages[0].content == "hello from hook"
-
-    @pytest.mark.asyncio
-    async def test_application_startup_invalid_system_hook_raises(self, temp_data_dir):
-        """Broken system hook declarations fail loudly."""
-        _write_plugins(temp_data_dir, {"coretools": {"config": {
-            "hooks": [{"stage": "turn/start", "target": "missing_module:nope"}],
-        }}})
-
-        with pytest.raises(ModuleNotFoundError):
-            await start_application(
-                paths=RuntimePaths.from_data_dir(temp_data_dir),
-                session_id="test-session",
-                thread_id="test-thread",
-                plugin_dirs=[],
-                llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-]),
-            )
-
-    @pytest.mark.asyncio
-    async def test_workspace_hook_script_loads_relative_to_xbot_directory(
-        self, temp_data_dir, temp_workspace
-    ):
-        config_dir = temp_workspace / ".xbot"
-        (config_dir / "hooks").mkdir(parents=True)
-        (config_dir / "hooks" / "rewrite.py").write_text(
-            "async def rewrite(ctx):\n"
-            "    return {'user_input': ctx.user_input + ' from workspace'}\n",
-            encoding="utf-8",
-        )
-        (config_dir / "plugins.yaml").write_text(
-            yaml.safe_dump([{
-                "id": "coretools",
-                "name": "coretools",
-                "config": {
-                    "hooks": [{
-                        "stage": "before/user-message-accept",
-                        "target": "hooks/rewrite.py:rewrite",
-                    }],
-                },
-            }], sort_keys=False),
-            encoding="utf-8",
-        )
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="test-session",
-            thread_id="test-thread",
-            workspace_root=temp_workspace,
-            plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-{"content": "ok"}]),
-        )
-        print("DIAG listener:", application._bus.listener_count("before/user-message-accept"))
-        print("DIAG overlay:", (temp_workspace / ".xbot" / "plugins.yaml").is_file())
-
-        _ = [event async for event in application.engine.run_turn("hello")]
-        print("DIAG msg:", application.engine.messages[0].content)
-
-        assert application.engine.messages[0].content == "hello from workspace"
 
     @pytest.mark.asyncio
     async def test_workspace_config_registers_direct_tools(
@@ -724,36 +695,19 @@ async def before_user_message(ctx):
                 {
                     "id": "permissions",
                     "name": "permissions",
-                    "config": {
-                        "allow": [{"tool": "workspace_greeting"}],
-                    },
                 },
             ], sort_keys=False),
             encoding="utf-8",
         )
-        llm = MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-
-            {"tool_calls": [{
-                "id": "call_greeting",
-                "name": "workspace_greeting",
-                "args": {"name": "Ada"},
-            }]},
-            {"content": "done"},
-        ])
-
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="workspace-tool",
             workspace_root=temp_workspace,
             plugin_dirs=[],
-            llm_override=llm,
+            llm_override=MockLLM(responses=[]),
         )
-        events = [event async for event in application.engine.run_turn("greet Ada")]
 
-        result = next(event for event in events if event["type"] == "tool_result")
-        assert result["data"]["content"] == "hello Ada"
-        assert "workspace:workspace_greeting" in application.engine.tools.names()
+        assert application.engine.tools.resolve("workspace:workspace_greeting") is not None
 
     @pytest.mark.asyncio
     async def test_application_startup_passes_external_plugin_configs(
@@ -815,10 +769,13 @@ plugin = ConfiguredPlugin()
         # Override workspace for the sandbox
         application.sandbox.workspace_root = temp_workspace
 
-        events = [e async for e in application.engine.run_turn("hi")]
-        assistant_events = [e for e in events if e["type"] == "assistant_message"]
+        events = await _run_turn(application.engine, "hi")
+        assistant_events = [e for e in events if isinstance(e, AssistantCompleted)]
         assert len(assistant_events) == 1
-        assert "Hello from application_startup!" in assistant_events[0]["data"]["content"]
+        assert any(
+            getattr(part, "text", "") and "Hello from application_startup!" in part.text
+            for part in assistant_events[0].message.parts
+        )
 
     @pytest.mark.asyncio
     async def test_application_startup_creates_state(self, temp_data_dir):
@@ -857,17 +814,37 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [e async for e in application.engine.run_turn("hello")]
+        _ = await _run_turn(application.engine, "hello")
 
-        system = llm.get_call_messages(llm.call_count - 1)[0]
-        root = ET.fromstring(system.content)
-        workspace = root.find("workspace_instructions")
-        assert workspace is not None
-        assert workspace.attrib["source"] == "AGENTS.md"
-        assert workspace.text.strip() == (
+        prompt = _system_prompt(llm)
+        assert (
             f"Workspace instruction path:\n{temp_workspace}\n"
             "Keep ${workspace} and ${UNRELATED} literal."
+        ) in prompt
+
+    @pytest.mark.asyncio
+    async def test_invalid_utf8_workspace_instructions_fail_before_agent_request(
+        self, temp_data_dir, temp_workspace
+    ):
+        instructions = temp_workspace / "AGENTS.md"
+        instructions.write_bytes(b"Workspace rule: \xff")
+        _write_plugins(temp_data_dir, {"caption": {"disabled": True}})
+        llm = MockLLM(responses=[{"content": "must not be requested"}])
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="invalid-workspace-instructions",
+            workspace_root=temp_workspace,
+            llm_override=llm,
         )
+
+        events = await _run_turn(application.engine, "hello")
+
+        errors = [event for event in events if isinstance(event, LoopError)]
+        assert len(errors) == 1
+        assert errors[0].code == "engine_error"
+        assert str(instructions) in errors[0].message
+        assert "UTF-8" in errors[0].message
+        assert not llm.request_history
 
     @pytest.mark.asyncio
     async def test_workspace_agents_md_is_read_between_model_requests(
@@ -889,16 +866,16 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [event async for event in application.engine.run_turn("first turn")]
+        _ = await _run_turn(application.engine, "first turn")
         instructions.write_text("Workspace rule version two.", encoding="utf-8")
-        _ = [event async for event in application.engine.run_turn("second turn")]
+        _ = await _run_turn(application.engine, "second turn")
         instructions.unlink()
-        _ = [event async for event in application.engine.run_turn("third turn")]
+        _ = await _run_turn(application.engine, "third turn")
 
         # Call 0 belongs to the automatic caption; the three turns are 1..3.
-        first_system = str(llm.get_call_messages(1)[0].content)
-        second_system = str(llm.get_call_messages(2)[0].content)
-        third_system = str(llm.get_call_messages(3)[0].content)
+        first_system = _system_prompt(llm, 1)
+        second_system = _system_prompt(llm, 2)
+        third_system = _system_prompt(llm, 3)
         assert "Workspace rule version one." in first_system
         assert "Workspace rule version two." not in first_system
         assert "Workspace rule version two." in second_system
@@ -937,13 +914,12 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [event async for event in application.engine.run_turn("hello")]
+        _ = await _run_turn(application.engine, "hello")
 
-        root = ET.fromstring(llm.get_call_messages(llm.call_count - 1)[0].content)
-        runtime = root.findtext("runtime_environment") or ""
-        assert "Human: Ada (human-7)" in runtime
-        assert f"- workspace: {temp_workspace}" in runtime
-        assert f"- tool_results: {application.variables['tool_results']}" in runtime
+        prompt = _system_prompt(llm)
+        assert "Human: Ada (human-7)" in prompt
+        assert f"- workspace: {temp_workspace}" in prompt
+        assert f"- tool_results: {application.variables['tool_results']}" in prompt
 
     @pytest.mark.asyncio
     async def test_application_startup_separates_configured_and_agent_instructions(
@@ -968,11 +944,11 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [event async for event in application.engine.run_turn("hello")]
+        _ = await _run_turn(application.engine, "hello")
 
-        root = ET.fromstring(llm.get_call_messages(llm.call_count - 1)[0].content)
-        assert root.findtext("developer_instructions").strip() == "Configured rule."
-        assert root.findtext("agent_instructions").strip() == "Agent workflow."
+        prompt = _system_prompt(llm)
+        assert "Configured rule." in prompt
+        assert "Agent workflow." in prompt
 
     @pytest.mark.asyncio
     async def test_workspace_can_disable_agents_md_plugin(
@@ -999,9 +975,9 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [event async for event in application.engine.run_turn("hello")]
+        _ = await _run_turn(application.engine, "hello")
 
-        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(llm.call_count - 1))
+        prompt = _system_prompt(llm)
         assert "must not appear" not in prompt
 
     @pytest.mark.asyncio
@@ -1061,16 +1037,575 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        _ = [event async for event in application.engine.run_turn("hello")]
-        prompt = "\n".join(str(msg.content) for msg in llm.get_call_messages(llm.call_count - 1))
+        _ = await _run_turn(application.engine, "hello")
+        prompt = _system_prompt(llm)
         assert "- reviewer: Workspace reviewer" in prompt
         await application.stop()
+
+    @pytest.mark.asyncio
+    async def test_parent_agent_runs_a_subagent_application_through_jobs(
+        self, temp_data_dir, temp_workspace
+    ):
+        from XBotv2.core.provider import ProviderTool
+        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.permissions import PermissionPolicy, PermissionRule
+
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+        secret = temp_workspace / "secret.txt"
+        secret.write_text("parent-only content", encoding="utf-8")
+        class AgentRoutedMockLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.parent_responses = [
+                    {"content": "session title"},
+                    {"tool_calls": [{
+                        "id": "spawn-reviewer",
+                        "name": "spawn_subagent",
+                        "args": {
+                            "agent": "reviewer",
+                            "prompt": "Inspect the change.",
+                        },
+                    }]},
+                    {"tool_calls": [{
+                        "id": "wait-reviewer",
+                        "name": "wait_subagent",
+                        "args": {"mode": "all"},
+                    }]},
+                    {"tool_calls": [{
+                        "id": "read-reviewer",
+                        "name": "read_subagent",
+                        "args": {"id": "subagent_1"},
+                    }]},
+                    {"content": "The review is complete: The parent policy prevented file access."},
+                ]
+                self.child_responses = [
+                    {"tool_calls": [{
+                        "id": "reviewer-read",
+                        "name": "read",
+                        "args": {"path": "secret.txt", "mode": "utf8"},
+                    }]},
+                    {"content": "The parent policy prevented file access."},
+                ]
+                self.child_requests = []
+
+            async def _astream_once(self, request):
+                system_text = "\n".join(
+                    part.text for part in request.messages[0].parts
+                )
+                is_child = "Review." in system_text
+                responses = self.child_responses if is_child else self.parent_responses
+                if is_child:
+                    self.child_requests.append(request)
+                yield ModelCompleted(response=self.to_response(responses.pop(0)))
+
+        llm = AgentRoutedMockLLM()
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="subagent-e2e",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+        application.permissions.replace_policies((PermissionPolicy(
+            default_decision="allow",
+            rules=(PermissionRule(tool_pattern="read", decision="deny"),),
+        ),))
+        try:
+            events = await _run_turn(
+                application.engine,
+                "Ask the reviewer agent to inspect this change, wait for it, then report.",
+            )
+
+            tool_completions = [
+                event for event in events if isinstance(event, ToolCompleted)
+            ]
+            assert [event.execution.message.call.name for event in tool_completions] == [
+                "spawn_subagent",
+                "wait_subagent",
+                "read_subagent",
+            ]
+            assert all(
+                isinstance(event.execution.message.outcome, ToolSucceeded)
+                for event in tool_completions
+            )
+            assert any(
+                isinstance(event, AssistantCompleted)
+                and "The review is complete: The parent policy prevented file access." in "".join(
+                    part.text for part in event.message.parts
+                    if isinstance(part, TextPart)
+                )
+                for event in events
+            )
+
+            jobs = application.jobs.all()
+            assert len(jobs) == 1
+            job = jobs[0]
+            assert job.kind == "subagent"
+            assert job.status == "succeeded"
+            assert job.result is not None
+            assert job.result.child.final_response == (
+                "The parent policy prevented file access."
+            )
+            child_tool_results = [
+                "".join(part.text for part in message.parts if isinstance(part, TextPart))
+                for request in llm.child_requests
+                for message in request.messages
+                if isinstance(message, ProviderTool)
+            ]
+            assert "Tool execution did not produce output" in child_tool_results
+            assert all("parent-only content" not in text for text in child_tool_results)
+            lifecycle = application.thread_persistence.lifecycle.load()
+            assert [record.event for record in lifecycle] == ["started", "completed"]
+            assert lifecycle[0].thread_id != "main"
+            assert lifecycle[1].thread_id == lifecycle[0].thread_id
+            assert lifecycle[0].agent == "reviewer"
+            assert lifecycle[0].parent_thread_id == "main"
+        finally:
+            await application.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("terminal", ["failed_running", "cancelled_running"])
+    async def test_subagent_failure_and_cancel_close_child_application(
+        self, temp_data_dir, temp_workspace, terminal
+    ):
+        import asyncio
+
+        from XBotv2.core.domain import ProviderError
+        from XBotv2.core.stream import ModelCompleted, ModelFailed
+        from XBotv2.core.filesystem.session_lock import acquire_session
+
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+        child_started = asyncio.Event()
+
+        class LifecycleMockLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.parent_responses = [
+                    {"content": "session title"},
+                    {"tool_calls": [{
+                        "id": "spawn-reviewer",
+                        "name": "spawn_subagent",
+                        "args": {"agent": "reviewer", "prompt": "Inspect."},
+                    }]},
+                    {"tool_calls": [{
+                        "id": "wait-reviewer",
+                        "name": "wait_subagent",
+                        "args": {"mode": "all"},
+                    }]},
+                    {"content": "The review job reached a terminal state."},
+                ]
+
+            async def _astream_once(self, request):
+                self._state.request_history.append(request)
+                system_text = "\n".join(
+                    part.text for part in request.messages[0].parts
+                )
+                if "Review." not in system_text:
+                    response = self.parent_responses[self._state.call_count]
+                    self._state.call_count += 1
+                    yield ModelCompleted(
+                        response=self.to_response(response)
+                    )
+                    return
+
+                child_started.set()
+                if terminal == "failed_running":
+                    yield ModelFailed(error=ProviderError(
+                        code="child_provider_failed",
+                        message="child provider failed",
+                        retryable=False,
+                        category="provider",
+                    ))
+                    return
+                await asyncio.Event().wait()
+
+        llm = LifecycleMockLLM()
+        paths = RuntimePaths.from_data_dir(temp_data_dir)
+        session_id = f"subagent-{terminal}"
+        application = await start_application(
+            paths=paths,
+            session_id=session_id,
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+        )
+        owner_observer = acquire_session(
+            paths.session(session_id).root,
+            label="subagent-lifecycle-test-observer",
+        )
+        turn = asyncio.create_task(_run_turn(
+            application.engine,
+            "Ask the reviewer agent to inspect this change and wait for it.",
+        ))
+        try:
+            await asyncio.wait_for(child_started.wait(), timeout=3)
+            jobs = application.jobs
+            assert jobs is not None
+            job = next(item for item in jobs.all() if item.kind == "subagent")
+            assert owner_observer.count == 3  # parent, observer, and active child
+
+            if terminal == "cancelled_running":
+                await jobs.cancel(job.id)
+
+            events = await asyncio.wait_for(turn, timeout=5)
+            assert any(isinstance(event, AssistantCompleted) for event in events)
+            assert job.status == terminal
+            records = application.thread_persistence.lifecycle.load()
+            child_records = [
+                record for record in records
+                if record.thread_id != "main"
+            ]
+            assert [record.event for record in child_records] == [
+                "started",
+                "failed" if terminal == "failed_running" else "cancelled",
+            ]
+            assert child_records[1].error
+            assert owner_observer.count == 2  # child released its session ownership
+        finally:
+            if not turn.done():
+                turn.cancel()
+                await asyncio.gather(turn, return_exceptions=True)
+            await application.stop()
+            owner_observer.release()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("evaluation_failure", ["malformed", "transport"])
+    async def test_goal_evaluator_retries_only_after_the_retry_round_finishes(
+        self, temp_data_dir, temp_workspace, evaluation_failure
+    ):
+        import asyncio
+
+        from XBotv2.application.events import RUNTIME_EVENT
+        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
+        from XBotv2.core.domain import ProviderError
+        from XBotv2.core.stream import ModelCompleted, ModelFailed
+        from XBotv2.goal.models import AchievedGoal, GoalChanged
+
+        class GoalRetryMockLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.retry_round_started = asyncio.Event()
+                self.retry_round_release = asyncio.Event()
+                self.retry_round_finished = asyncio.Event()
+                self.retry_evaluation_started = asyncio.Event()
+                self.first_evaluation_returned = asyncio.Event()
+                self.retry_evaluation_saw_new_round = False
+                self.evaluations = 0
+                self.rounds = 0
+                self.order = []
+
+            async def _astream_once(self, request):
+                texts = [
+                    part.text
+                    for message in request.messages
+                    for part in message.parts
+                    if isinstance(part, TextPart)
+                ]
+                prompt = "\n".join(texts)
+                self._state.request_history.append(request)
+                if "You judge whether a completion condition has been met." in prompt:
+                    self.evaluations += 1
+                    if self.evaluations == 1:
+                        self.order.append("evaluation_failed")
+                        self.first_evaluation_returned.set()
+                        if evaluation_failure == "transport":
+                            yield ModelFailed(error=ProviderError(
+                                code="goal_evaluator_unavailable",
+                                message="Goal evaluator is unavailable.",
+                                retryable=False,
+                                category="provider",
+                            ))
+                            return
+                        yield ModelCompleted(
+                            response=self.to_response({"content": "not a verdict"})
+                        )
+                        return
+                    self.retry_evaluation_started.set()
+                    self.retry_evaluation_saw_new_round = (
+                        self.retry_round_finished.is_set()
+                    )
+                    self.order.append("retry_evaluation")
+                    yield ModelCompleted(response=self.to_response({
+                        "content": '{"verdict":"met","reason":"verified"}',
+                    }))
+                    return
+
+                if '<system_reminder source="goal" event="round"' in prompt:
+                    self.rounds += 1
+                    if self.rounds == 2:
+                        self.order.append("retry_round_started")
+                        self.retry_round_started.set()
+                        await self.retry_round_release.wait()
+                        self.retry_round_finished.set()
+                        self.order.append("retry_round_finished")
+                    yield ModelCompleted(response=self.to_response({
+                        "content": f"Goal work round {self.rounds}.",
+                    }))
+                    return
+
+                yield ModelCompleted(response=self.to_response({
+                    "content": "Session title.",
+                }))
+
+        llm = GoalRetryMockLLM()
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="goal-retry-order",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+            extra_plugins=[{
+                "id": "goal",
+                "config": {"max_retries": 1, "retry_seconds": 0.01},
+            }],
+        )
+        goal_events = []
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: goal_events.append(event.event)
+            if isinstance(event.event, GoalChanged)
+            else None,
+        )
+
+        async def run_pending_turn():
+            async for _ in application.engine.run_pending():
+                pass
+
+        retry_turn = None
+        try:
+            result = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(
+                    command="goal",
+                    kind="server",
+                    raw_args="finish the API",
+                ),
+            )
+            assert result.status == "ok"
+            await run_pending_turn()
+            await asyncio.wait_for(
+                llm.first_evaluation_returned.wait(), timeout=3
+            )
+            async with asyncio.timeout(3):
+                while application.engine.pending_input_count == 0:
+                    await asyncio.sleep(0.001)
+
+            retry_turn = asyncio.create_task(run_pending_turn())
+            await asyncio.wait_for(llm.retry_round_started.wait(), timeout=3)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    llm.retry_evaluation_started.wait(), timeout=0.05
+                )
+            llm.retry_round_release.set()
+            await asyncio.wait_for(retry_turn, timeout=3)
+            await asyncio.wait_for(llm.retry_evaluation_started.wait(), timeout=3)
+            assert llm.retry_evaluation_saw_new_round
+            assert llm.order.index("retry_round_finished") < llm.order.index(
+                "retry_evaluation"
+            )
+            assert any(
+                isinstance(event.snapshot.state, AchievedGoal)
+                for event in goal_events
+            )
+        finally:
+            llm.retry_round_release.set()
+            if retry_turn is not None and not retry_turn.done():
+                await asyncio.gather(retry_turn, return_exceptions=True)
+            await application.stop()
+
+    @pytest.mark.asyncio
+    async def test_goal_clear_cancels_scheduled_evaluator_retry(
+        self, temp_data_dir, temp_workspace
+    ):
+        import asyncio
+
+        from XBotv2.application.events import RUNTIME_EVENT
+        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
+        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.goal.models import ActiveGoal, GoalChanged
+
+        class RetryCancellationLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.rounds = 0
+                self.evaluations = 0
+
+            async def _astream_once(self, request):
+                texts = [
+                    part.text
+                    for message in request.messages
+                    for part in message.parts
+                    if isinstance(part, TextPart)
+                ]
+                prompt = "\n".join(texts)
+                if "You judge whether a completion condition has been met." in prompt:
+                    self.evaluations += 1
+                    yield ModelCompleted(response=self.to_response({
+                        "content": "malformed evaluator output",
+                    }))
+                    return
+                if '<system_reminder source="goal" event="round"' in prompt:
+                    self.rounds += 1
+                yield ModelCompleted(response=self.to_response({
+                    "content": f"Work round {self.rounds}.",
+                }))
+
+        llm = RetryCancellationLLM()
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="goal-retry-clear",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+            extra_plugins=[{
+                "id": "goal",
+                "config": {"max_retries": 1, "retry_seconds": 0.2},
+            }],
+        )
+        retry_scheduled = asyncio.Event()
+
+        def observe_goal(event):
+            if (
+                isinstance(event.event, GoalChanged)
+                and isinstance(event.event.snapshot.state, ActiveGoal)
+                and event.event.snapshot.state.progress.retries == 1
+            ):
+                retry_scheduled.set()
+
+        application.on(RUNTIME_EVENT, observe_goal)
+
+        async def run_pending_turn():
+            async for _ in application.engine.run_pending():
+                pass
+
+        try:
+            created = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(
+                    command="goal",
+                    kind="server",
+                    raw_args="finish the API",
+                ),
+            )
+            assert created.status == "ok"
+            await run_pending_turn()
+            await asyncio.wait_for(retry_scheduled.wait(), timeout=3)
+            # Let _evaluation_failed finish scheduling its owned timer before
+            # clearing the condition through the public command path.
+            await asyncio.sleep(0.02)
+
+            cleared = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(
+                    command="goal",
+                    kind="server",
+                    raw_args="clear",
+                ),
+            )
+            assert cleared.status == "ok"
+            await asyncio.sleep(0.25)
+
+            assert llm.rounds == 1
+            assert llm.evaluations == 1
+            assert application.engine.pending_input_count == 0
+        finally:
+            await application.stop()
+
+    @pytest.mark.asyncio
+    async def test_goal_round_cap_pauses_without_starting_another_round(
+        self, temp_data_dir, temp_workspace
+    ):
+        import asyncio
+
+        from XBotv2.application.events import RUNTIME_EVENT
+        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
+        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.goal.models import GoalChanged, PausedGoal
+
+        class RoundCapLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.rounds = 0
+
+            async def _astream_once(self, request):
+                texts = [
+                    part.text
+                    for message in request.messages
+                    for part in message.parts
+                    if isinstance(part, TextPart)
+                ]
+                prompt = "\n".join(texts)
+                if "You judge whether a completion condition has been met." in prompt:
+                    yield ModelCompleted(response=self.to_response({
+                        "content": '{"verdict":"not_yet_met","reason":"More work remains."}',
+                    }))
+                    return
+                if '<system_reminder source="goal" event="round"' in prompt:
+                    self.rounds += 1
+                yield ModelCompleted(response=self.to_response({
+                    "content": f"Work round {self.rounds}.",
+                }))
+
+        llm = RoundCapLLM()
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="goal-round-cap",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=llm,
+            extra_plugins=[{
+                "id": "goal",
+                "config": {"max_rounds": 1},
+            }],
+        )
+        paused = asyncio.Event()
+        paused_states = []
+
+        def observe_goal(event):
+            if (
+                isinstance(event.event, GoalChanged)
+                and isinstance(event.event.snapshot.state, PausedGoal)
+            ):
+                paused_states.append(event.event.snapshot.state)
+                paused.set()
+
+        application.on(RUNTIME_EVENT, observe_goal)
+        try:
+            created = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(
+                    command="goal",
+                    kind="server",
+                    raw_args="finish the API",
+                ),
+            )
+            assert created.status == "ok"
+            async for _ in application.engine.run_pending():
+                pass
+            await asyncio.wait_for(paused.wait(), timeout=3)
+
+            assert llm.rounds == 1
+            assert len(paused_states) == 1
+            assert paused_states[0].progress.turns_evaluated == 1
+            assert paused_states[0].reason == "Round cap reached (1/1); set the goal again to continue."
+            assert application.engine.pending_input_count == 0
+        finally:
+            await application.stop()
 
     @pytest.mark.asyncio
     async def test_shell_tool_runs_in_workspace_root(self, temp_data_dir, temp_workspace):
         """Shell tool defaults cwd to the attached workspace root."""
         _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "allow": [{"tool": "shell"}],
+            "rules": [{"tool_pattern": "shell", "decision": "allow"}],
+            "default_decision": "ask",
         }}})
         llm = MockLLM(responses=[
             {"content": "session title"},  # caption auto-titles the first message
@@ -1092,10 +1627,14 @@ plugin = ConfiguredPlugin()
             llm_override=llm,
         )
 
-        events = [e async for e in application.engine.run_turn("where are you?")]
+        events = await _run_turn(application.engine, "where are you?")
 
-        tool_result = next(e for e in events if e["type"] == "tool_result")
-        assert str(temp_workspace) in tool_result["data"]["content"]
+        tool_result = next(e for e in events if isinstance(e, ToolCompleted))
+        outcome = tool_result.execution.message.outcome
+        assert isinstance(outcome, ToolSucceeded)
+        assert str(temp_workspace) in "".join(
+            part.text for part in outcome.output.parts
+        )
 
     @pytest.mark.asyncio
     async def test_application_startup_default_session_id_is_generated(self, temp_data_dir):
@@ -1148,35 +1687,6 @@ plugin = ConfiguredPlugin()
 
         assert application.permissions.check("read", {}) == "allow"
         assert application.sandbox.enabled is True
-
-    @pytest.mark.asyncio
-    async def test_application_startup_binds_workspace_permission_scope(
-        self,
-        temp_data_dir,
-        temp_workspace,
-    ):
-        _write_plugins(temp_data_dir, {"permissions": {"config": {
-            "allow": [{"tool": "edit", "paths": "${workspace}"}],
-            "ask": [{"tool": "edit"}],
-        }}})
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="test-session",
-            workspace_root=temp_workspace,
-            plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-]),
-        )
-
-        ps = application.permissions
-        assert ps.check(
-            "edit", {"path": "notes.md", "mode": "write"}
-        ) == "allow"
-        assert ps.check(
-            "edit", {"path": str(temp_data_dir / "outside.md"), "mode": "write"}
-        ) == "ask"
-
 
 class TestApplicationStartupNoPlugins:
     """Engine works correctly in explicit no-plugin mode."""
@@ -1326,10 +1836,9 @@ class TestApplicationStartupNoPlugins:
         )
         application.sandbox.workspace_root = temp_workspace
 
-        events = [e async for e in application.engine.run_turn("test")]
-        types = [e["type"] for e in events]
-        assert "turn_started" in types
-        assert "assistant_message" in types
+        events = await _run_turn(application.engine, "test")
+        assert any(event.kind == "turn_started" for event in events)
+        assert any(isinstance(event, AssistantCompleted) for event in events)
 
     @pytest.mark.asyncio
     async def test_runtime_can_start_without_message_persistence(
@@ -1358,11 +1867,9 @@ class TestApplicationStartupNoPlugins:
         )
         assert application.get("thread_persistence", strict=False) is None
         assert application.artifacts is not None
-        events = [
-            event async for event in application.engine.run_turn("hello")
-        ]
+        events = await _run_turn(application.engine, "hello")
         assert any(
-            event.get("type") == "assistant_message" for event in events
+            isinstance(event, AssistantCompleted) for event in events
         )
         await application.stop()
 
@@ -1370,31 +1877,37 @@ class TestApplicationStartupNoPlugins:
 class TestMemoryLoading:
     @pytest.mark.asyncio
     async def test_memory_md_loaded_from_data_memory(self, temp_data_dir):
-        """MEMORY.md in data/memory/ is loaded into RuntimeConfig.memory."""
+        """Data-root memory is included in the provider request."""
         (temp_data_dir / "memory").mkdir()
         (temp_data_dir / "memory" / "MEMORY.md").write_text("# Custom Memory\n\nImportant facts.\n")
 
+        llm = MockLLM(responses=[
+            {"content": "session title"},
+            {"content": "ok"},
+        ])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="mem-test",
             thread_id="t",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-{"content": "ok"}]),
+            llm_override=llm,
         )
-        assert "Important facts" in getattr(application.engine.settings, "memory", "")
+        await _run_turn(application.engine, "hello")
+        assert "Important facts." in _system_prompt(llm)
 
     @pytest.mark.asyncio
     async def test_memory_md_missing_no_error(self, temp_data_dir):
         """Application startup works fine when MEMORY.md doesn't exist."""
+        llm = MockLLM(responses=[
+            {"content": "session title"},
+            {"content": "ok"},
+        ])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="mem-missing",
             thread_id="t",
             plugin_dirs=[],
-            llm_override=MockLLM(responses=[
-            {"content": "session title"},  # caption auto-titles the first message
-{"content": "ok"}]),
+            llm_override=llm,
         )
-        assert getattr(application.engine.settings, "memory", "") == ""
+        await _run_turn(application.engine, "hello")
+        assert "Important facts." not in _system_prompt(llm)

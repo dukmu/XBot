@@ -16,45 +16,88 @@ Invariants under test:
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from XBotv2.agentloop.protocol import (
-    AssistantMessageData,
-    AssistantMessageDeltaData,
-    ErrorEventData,
-    ToolCallStartedItem,
-    ToolCallsStartedData,
-    ToolResultData,
-    TurnCancelledData,
-    TurnData,
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopTurnEnded,
+    LoopTurnStarted,
+    StartedToolCall,
+    ToolCallsStarted as LoopToolCallsStarted,
+    TurnCancelled as CancelledOutcome,
+    TurnFinished as FinishedOutcome,
 )
 from XBotv2.compact.protocol import (
-    CompactionCompletedData,
-    CompactionFailedData,
-    CompactionStartedData,
+    CompactionCompleted,
+    CompactionFailed,
+    CompactionMetrics,
+    CompactionStarted,
 )
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.usage import UsageData
+from XBotv2.core.domain import (
+    AgentExecutionLimits,
+    CompletedStop,
+    Cursor,
+    GenerationSettings,
+    ModelRoute,
+    ModelTiming,
+    ReasoningGenerationMode,
+    ProviderMeasured,
+    RequestObservation,
+    ResolvedModelSelection,
+    ResolvedRuntimeSelection,
+    StandardGenerationMode,
+    TokenCounters,
+    TurnId,
+    TurnRequest,
+    UsageSnapshot,
+)
+from XBotv2.core.messages import CompactionSummaryMessage
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import (
+    ToolCall,
+    ToolCallRef,
+    ToolDenied,
+    ToolError,
+    ToolFailed,
+    ToolOutput,
+    ToolSucceeded,
+    ToolTiming,
+)
+from XBotv2.core.history import HistoryPage
+from XBotv2.core.timing import SessionStats
 from XBotv2.interactions.protocol import (
-    ClientMessageData,
-    InteractionRecordedData,
+    Answered,
+    ClientNotice as ClientNoticeModel,
     UserInputOption,
-    UserInputRequiredData,
+    UserInputRecorded,
+    UserInputRequest,
 )
-from XBotv2.jobs.contracts import JobSnapshot
-from XBotv2.permissions.protocol import PermissionRequestData
-from XBotv2.session.contracts import PendingInputData, SessionHistoryItem, ThreadSummary
+from XBotv2.jobs.contracts import JobView
+from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
+from XBotv2.permissions.protocol import PermissionResponseRecorded
+from XBotv2.session.contracts import HistoryMutation, PendingInputData, ThreadSummary
+from XBotv2.session.records import (
+    AssistantRecord,
+    ConversationRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
+from XBotv2.usage import UsageUpdated
 from XBotv2.session.protocol import (
     AgentConfiguredData,
-    HistoryUpdatedData,
-    MessageData,
+    HistoryUpdatedEvent,
     OpenSessionResponse,
     QueueUpdatedData,
 )
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
-    ClientNotice,
+    ClientNoticeReceived,
     CompactionChanged,
     ConnectionChanged,
     ErrorFrame,
@@ -64,23 +107,34 @@ from XBotv2.tui.events import (
     InterruptAsked,
     InterruptSettled,
     JobUpdated,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
+    OlderHistoryRequested,
     QueueReplaced,
     SessionConfigured,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
     TurnStarted,
-    UsageUpdated,
+    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     UserMessagePublished,
     ThreadRead,
 )
-from XBotv2.tui.state import SessionState, reduce
+from XBotv2.tui.state import (
+    HistoryAvailable,
+    HistoryComplete,
+    HistoryFailed,
+    HistoryLoading,
+    SessionState,
+    reduce,
+    release_oldest_loaded_page,
+)
 from XBotv2.tui.status import Connection, Interaction, Interrupt, ServerTurn, Status, derive
 from XBotv2.tui.timeline import (
     AssistantEntry,
@@ -107,108 +161,173 @@ def connected() -> ConnectionChanged:
 
 
 def turn_started(turn: int = 1, slots: dict | None = None) -> TurnStarted:
-    return TurnStarted(payload=TurnData(turn=turn, status_slots=slots or {}))
+    return TurnStarted(payload=LoopTurnStarted(turn=turn))
 
 
 def turn_finished(turn: int = 1) -> TurnFinished:
-    return TurnFinished(payload=TurnData(turn=turn))
+    return TurnFinished(payload=LoopTurnEnded(
+        turn=turn, outcome=FinishedOutcome(stop_reason="completed"),
+    ))
 
 
 def turn_cancelled(turn: int = 1, reason: str = "client_interrupt") -> TurnCancelled:
-    return TurnCancelled(payload=TurnCancelledData(turn=turn, reason=reason))
+    return TurnCancelled(payload=LoopTurnEnded(
+        turn=turn, outcome=CancelledOutcome(reason=reason),
+    ))
 
 
 def delta(*, content: str | None = None, reasoning: str | None = None) -> AssistantDelta:
-    fields = {}
-    if content is not None:
-        fields["content"] = content
     if reasoning is not None:
-        fields["reasoning"] = reasoning
-    return AssistantDelta(payload=AssistantMessageDeltaData(**fields or {"content": ""}))
+        return AssistantDelta(payload=AssistantReasoningDelta(text=reasoning))
+    return AssistantDelta(payload=AssistantTextDelta(text=content or ""))
 
 
-def completed(message_id: str = "a1", content: str = "") -> AssistantCompleted:
-    return AssistantCompleted(payload=AssistantMessageData(id=message_id, content=content))
+def completed(
+    message_id: str = "a1", content: str = "", *, reasoning: str = ""
+) -> AssistantCompleted:
+    return AssistantCompleted(payload=AssistantRecord(
+        id=message_id, content=content, reasoning=reasoning,
+        timing=ModelTiming(total_ms=0),
+        stop=CompletedStop(),
+    ))
 
 
-def tool_started(*calls: ToolCallStartedItem) -> ToolCallsStarted:
-    return ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=list(calls)))
+def tool_started(*calls: StartedToolCall) -> ToolCallsStarted:
+    return ToolCallsStarted(payload=LoopToolCallsStarted(calls=tuple(calls)))
 
 
 def tool_result(
     call_id: str = "c1",
     *,
     name: str = "bash",
-    status: str = "success",
+    outcome_kind: str = "succeeded",
     content: object = "",
     error: dict | None = None,
-) -> ToolResult:
-    return ToolResult(payload=ToolResultData(
-        tool_call_id=call_id, name=name, status=status, content=content, error=error
+) -> ToolRecordReceived:
+    text = content if isinstance(content, str) else __import__("json").dumps(content, ensure_ascii=False)
+    output = ToolOutput(parts=(TextPart(text=text),))
+    if outcome_kind == "succeeded":
+        outcome = ToolSucceeded(output=output)
+    elif outcome_kind == "failed":
+        outcome = ToolFailed(
+            error=ToolError(
+                code=str((error or {}).get("code", "tool_error")),
+                message=str((error or {}).get("message", text)),
+            ),
+            output=output,
+        )
+    elif outcome_kind == "denied":
+        outcome = ToolDenied(reason=text or "denied")
+    else:
+        raise ValueError(f"unsupported tool outcome in test: {outcome_kind}")
+    return ToolRecordReceived(payload=ToolRecord(
+        id=call_id,
+        call=ToolCallRef(id=call_id, name=name),
+        outcome=outcome,
+        timing=ToolTiming(duration_ms=0),
     ))
 
 
 def error_frame(code: str = "engine_error", message: str = "boom") -> ErrorFrame:
-    return ErrorFrame(payload=ErrorEventData(code=code, message=message))
+    return ErrorFrame(payload=LoopError(code=code, message=message))
 
 
-def usage(**counters) -> UsageUpdated:
-    return UsageUpdated(payload=UsageData(**counters))
+def usage(**counters) -> UsageSnapshotReceived:
+    observed_context = counters.pop("observed_context", None)
+    observation = None
+    if observed_context is not None:
+        selection = ResolvedModelSelection(
+            route=ModelRoute(provider="p", model="m"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128,
+            ),
+            context_window=4096,
+        )
+        observation = RequestObservation(
+            selection=selection,
+            purpose=TurnRequest(turn_id=TurnId("turn-1")),
+            estimated_input_tokens=0,
+            observed_context=ProviderMeasured(tokens=observed_context),
+        )
+    return UsageSnapshotReceived(payload=UsageUpdated(
+        snapshot=UsageSnapshot(
+            total_counters=TokenCounters(**counters),
+            latest_turn_observation=observation,
+        ),
+    ))
 
 
 def user_message(message_id: str = "m1", content: str = "hi") -> UserMessagePublished:
-    return UserMessagePublished(payload=MessageData(id=message_id, role="user", content=content))
+    return UserMessagePublished(payload=HumanInputRecord(id=message_id, content=content))
 
 
 def queue(*items: PendingInputData) -> QueueReplaced:
     return QueueReplaced(payload=QueueUpdatedData(items=list(items)))
 
 
-def history(*items: SessionHistoryItem) -> HistoryReplaced:
-    return HistoryReplaced(payload=HistoryUpdatedData(
-        history=list(items), operation="clear", turns=0
+def history(
+    *items: HumanInputRecord | AssistantRecord | ToolRecord,
+    operation: str = "clear",
+    removed_turns: int = 0,
+    turns: int = 0,
+    older_cursor: str | None = None,
+) -> HistoryReplaced:
+    return HistoryReplaced(payload=HistoryUpdatedEvent(
+        operation=operation,
+        mutation=HistoryMutation(
+            removed_turns=removed_turns,
+            history=HistoryPage(items=items, older_cursor=older_cursor),
+            stats=SessionStats(turns=turns),
+        ),
     ))
 
 
-def configured(**fields) -> SessionConfigured:
-    return SessionConfigured(payload=AgentConfiguredData(**fields))
+def configured(*, agent_name: str = "XBotv2", provider: str = "p", model: str = "m", model_mode: str = "", context_window: int = 4096) -> SessionConfigured:
+    selection = ResolvedRuntimeSelection(
+        agent_name=agent_name,
+        prompt="",
+        limits=AgentExecutionLimits(),
+        enabled_tools=(),
+        model=ResolvedModelSelection(
+            route=ModelRoute(provider=provider, model=model),
+            generation=GenerationSettings(
+                mode=(
+                    ReasoningGenerationMode(effort=model_mode)
+                    if model_mode
+                    else StandardGenerationMode()
+                ),
+                max_output_tokens=context_window,
+            ),
+            context_window=context_window,
+        ),
+    )
+    return SessionConfigured(payload=AgentConfiguredData(runtime_selection=selection))
 
 
 def notice(text: str = "heads up", level: str = "info") -> ClientNotice:
-    return ClientNotice(payload=ClientMessageData(message=text, level=level, source="test"))
+    return ClientNoticeReceived(payload=ClientNoticeModel(message=text, level=level, source="test"))
 
 
 def compaction_started() -> CompactionChanged:
-    return CompactionChanged(payload=CompactionStartedData(
+    return CompactionChanged(payload=CompactionStarted(
         reason="manual", messages_before=1, history_chars_before=1, context_tokens_before=1
     ))
 
 
 def compaction_completed(summary: str = "") -> CompactionChanged:
-    return CompactionChanged(payload=CompactionCompletedData(
-        reason="manual", summary=summary, metrics=_metrics()
+    return CompactionChanged(payload=CompactionCompleted(
+        reason="manual", summary=CompactionSummaryMessage(id="summary", summary=summary), metrics=_metrics()
     ))
 
 
 def compaction_failed(message: str = "no budget") -> CompactionChanged:
-    return CompactionChanged(payload=CompactionFailedData(reason="manual", message=message))
+    return CompactionChanged(payload=CompactionFailed(reason="manual", message=message))
 
 
 def snapshot(**overrides) -> OpenSessionResponse:
-    base: dict = {
-        "session_id": "s1",
-        "thread_id": "agent",
-        "agent_name": "XBotv2",
-        "workspace_root": "/w",
-        "provider": "p",
-        "model": "m",
-        "model_mode": "",
-        "context_window": 0,
-        "usage": UsageData(),
-        "status_slots": {},
-        "event_cursor": 0,
-    }
-    return OpenSessionResponse(**{**base, **overrides})
+    from XBotv2.tests.tui.factories import snapshot as build_snapshot
+
+    return build_snapshot(**overrides)
 
 
 def thread(**overrides) -> ThreadSummary:
@@ -222,51 +341,80 @@ def thread(**overrides) -> ThreadSummary:
     return ThreadSummary(**{**base, **overrides})
 
 
-def history_user(content: str = "hello", **overrides) -> SessionHistoryItem:
-    return SessionHistoryItem(role="user", content=content, **overrides)
+#: Transcript identity for fixtures that do not care which node they mean. The
+#: wire requires one, so the fixture supplies a distinct one per item.
+_NODE_IDS = itertools.count(1)
 
 
-def history_assistant(content: str = "hi", **overrides) -> SessionHistoryItem:
-    return SessionHistoryItem(role="assistant", content=content, **overrides)
+def _node_id(overrides: dict) -> str:
+    return str(overrides.pop("id", None) or f"node-{next(_NODE_IDS)}")
 
 
-def call(call_id: str = "c1", name: str = "bash", args: dict | None = None) -> ToolCallStartedItem:
-    return ToolCallStartedItem(id=call_id, name=name, args=args or {})
+def history_user(content: str = "hello", **overrides) -> HumanInputRecord:
+    message_id = _node_id(overrides)
+    if overrides:
+        raise TypeError(f"unsupported human record fields: {tuple(overrides)}")
+    return HumanInputRecord(id=message_id, content=content)
 
 
-def job(job_id: str = "j1", status: str = "running", kind: str = "agent") -> JobSnapshot:
-    return JobSnapshot(
-        job_id=job_id,
+def history_assistant(content: str = "hi", **overrides) -> AssistantRecord:
+    message_id = _node_id(overrides)
+    if overrides:
+        raise TypeError(f"unsupported assistant record fields: {tuple(overrides)}")
+    return AssistantRecord(
+        id=message_id, content=content,
+        timing=ModelTiming(total_ms=0), stop=CompletedStop(),
+    )
+
+
+def history_tool(call_id: str, content: str, *, id: str) -> ToolRecord:
+    return ToolRecord(
+        id=id,
+        call=ToolCallRef(id=call_id, name="bash"),
+        outcome=ToolSucceeded(output=ToolOutput(parts=(TextPart(text=content),))),
+        timing=ToolTiming(duration_ms=0),
+    )
+
+
+def call(call_id: str = "c1", name: str = "bash", args: dict | None = None) -> StartedToolCall:
+    return StartedToolCall(call=ToolCall(id=call_id, name=name, args=args or {}), category="execute")
+
+
+def job(job_id: str = "j1", status: str = "running", kind: str = "agent") -> JobView:
+    return JobView(
+        id=job_id,
         kind=kind,
-        status=status,
-        command="review",
-        cwd="/w",
-        created_at=0.0,
-        started_at=0.0,
-        finished_at=0.0,
+        label="review",
+        state=status,
+        elapsed_ms=0,
     )
 
 
 def interaction_recorded(
     request_id: str, *, status: str = "answered", decision: str = ""
 ) -> InteractionResolved:
-    return InteractionResolved(payload=InteractionRecordedData(
-        request_id=request_id, status=status, decision=decision
+    if decision:
+        approval = Allowed(scope="session" if decision == "allow" else "once")
+        return InteractionResolved(payload=PermissionResponseRecorded(
+            interaction_id=request_id, approval=approval,
+        ))
+    return InteractionResolved(payload=UserInputRecorded(
+        interaction_id=request_id, resolution=Answered(answer=status),
     ))
 
 
 def permission_request(request_id: str = "r1", reason: str = "needs approval"):
-    return PermissionRequestData(
-        request_id=request_id,
+    return PermissionRequest(
+        interaction_id=request_id,
         source="permission_system",
         reason=reason,
-        tool_call=ToolCall(id="c1", name="bash", args={"command": "rm -rf /"}),
+        subject=ToolPermission(tool_call=ToolCall(id="c1", name="bash", args={"command": "rm -rf /"})),
     )
 
 
 def user_input_request(request_id: str = "q1", question: str = "Which one?"):
-    return UserInputRequiredData(
-        request_id=request_id,
+    return UserInputRequest(
+        interaction_id=request_id,
         source="ask_user",
         tool_call_id="c1",
         question=question,
@@ -282,29 +430,33 @@ def kinds(state: SessionState) -> list[EntryKind]:
 
 
 def contents(state: SessionState) -> list[str]:
-    """Body text of each entry, whichever field carries it."""
-    return [
-        getattr(entry, "content", None)
-        or getattr(entry, "result", None)
-        or getattr(entry, "text", "")
-        for entry in state.timeline
-    ]
+    values: list[str] = []
+    for entry in state.timeline:
+        if isinstance(entry, (UserEntry, AssistantEntry)):
+            values.append(entry.content)
+        elif isinstance(entry, ToolEntry):
+            values.append(str(entry.result))
+        elif isinstance(entry, NoticeEntry):
+            values.append(entry.text)
+        else:
+            raise TypeError(f"Unsupported timeline entry: {type(entry).__name__}")
+    return values
 
 
-def _metrics() -> dict:
-    return {
-        "context_tokens_before": 1,
-        "context_tokens_after_estimate": 1,
-        "context_tokens_released_estimate": 0,
-        "estimate_source": "heuristic",
-        "history_chars_before": 1,
-        "history_chars_after": 1,
-        "summary_chars": 1,
-        "summary_truncated": False,
-        "messages_before": 1,
-        "messages_after": 1,
-        "messages_removed": 0,
-    }
+def _metrics() -> CompactionMetrics:
+    return CompactionMetrics(
+        context_tokens_before=1,
+        context_tokens_after_estimate=1,
+        context_tokens_released_estimate=0,
+        estimate_source="heuristic",
+        history_chars_before=1,
+        history_chars_after=1,
+        summary_chars=1,
+        summary_truncated=False,
+        messages_before=1,
+        messages_after=1,
+        messages_removed=0,
+    )
 
 
 # --- I7/I1: the reducer owns the status facts ----------------------------
@@ -415,6 +567,15 @@ def test_watchdog_readings_are_honoured_in_both_directions() -> None:
     assert derive(state.facts) is Status.READY
 
 
+def test_thread_read_restores_the_persisted_turn_number() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot()),
+        ThreadRead(payload=thread(session_stats={"turns": 3})),
+    )
+    assert state.turn == 3
+
+
 # --- snapshot contents ----------------------------------------------------
 
 
@@ -426,28 +587,14 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
                 history=[
                     history_user("hello"),
                     history_assistant("hi"),
-                    SessionHistoryItem(
-                        role="tool", content="ok", tool_call_id="t1", status="success"
-                    ),
+                    history_tool("t1", "ok", id="tool-1"),
                 ]
             )
         ),
     )
     assert kinds(state) == [EntryKind.USER, EntryKind.ASSISTANT, EntryKind.TOOL]
     assert contents(state) == ["hello", "hi", "ok"]
-    tool = state.timeline.get("t1")
-    assert isinstance(tool, ToolEntry)
-    assert tool.status == "success"
-
-
-def test_history_tool_without_a_status_is_a_success() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(
-            snapshot(history=[SessionHistoryItem(role="tool", content="ok", tool_call_id="t1")])
-        ),
-    )
-    tool = state.timeline.get("t1")
+    tool = state.timeline.get("tool-1")
     assert isinstance(tool, ToolEntry)
     assert tool.status == "success"
 
@@ -456,7 +603,9 @@ def test_injected_history_turn_is_a_notice_not_typed_input() -> None:
     state = session(
         connected(),
         SnapshotAdopted(
-            snapshot(history=[history_user("reminder", runtime={"source": "goal", "event": "round"})])
+            snapshot(history=[RuntimeNoticeRecord(
+                id="notice-1", source="goal", event="round", content="reminder",
+            )])
         ),
     )
     assert kinds(state) == [EntryKind.NOTICE]
@@ -472,6 +621,65 @@ def test_snapshot_replaces_a_previous_timeline_instead_of_appending() -> None:
     assert contents(state) == ["new"]
 
 
+# --- replayed identity ----------------------------------------------------
+#
+# A completed assistant record carries its server identity, and history uses the
+# same identity. Replaying it must replace rather than duplicate the live entry.
+
+
+def test_replayed_items_are_stored_under_their_wire_identity() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(
+            snapshot(
+                history=[
+                    history_user("hello", id="input-1"),
+                    history_assistant("hi", id="assistant-1-0-abcd"),
+                    history_tool("call-9", "ok", id="tool-call-9"),
+                ]
+            )
+        ),
+    )
+    assert state.timeline.ids() == (
+        "input-1", "assistant-1-0-abcd", "tool-call-9",
+    )
+
+
+def test_two_records_of_one_node_are_one_entry() -> None:
+    """The identity is the node's, so a page that repeats a node the client
+    already holds updates that entry instead of adding a second one."""
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history=[history_assistant("hi", id="7")])),
+        history(history_assistant("hi, corrected", id="7")),
+    )
+
+    assert state.timeline.ids() == ("7",)
+    entry = state.timeline.get("7")
+    assert isinstance(entry, AssistantEntry)
+    assert entry.content == "hi, corrected"
+
+
+def test_a_replayed_history_replaces_what_the_frames_built() -> None:
+    """A reload is a fresh start using the same server-owned record identities."""
+    state = session(
+        connected(),
+        UserInputSubmitted(input_id="input-1", content="hello"),
+        user_message("input-1", "hello"),
+        delta(content="par"),
+        completed("assistant-1", "answer"),
+    )
+    live = state.timeline.ids()
+    assert live[0] == "input-1", "the prompt keeps the id the client submitted"
+    assert live[1] == "assistant-1", "completion adopts the server record identity"
+
+    history(history_user("hello", id="1"), history_assistant("answer", id="2"))
+    reduce(state, history(history_user("hello", id="1"), history_assistant("answer", id="2")))
+
+    assert state.timeline.ids() == ("1", "2")
+    assert contents(state) == ["hello", "answer"]
+
+
 def test_snapshot_seeds_usage_identity_and_queue() -> None:
     state = session(
         connected(),
@@ -483,7 +691,9 @@ def test_snapshot_seeds_usage_identity_and_queue() -> None:
                 model_mode="fast",
                 context_window=64_000,
                 status_slots={"goal": "ship"},
-                usage=UsageData(input_tokens=100, output_tokens=20, total_tokens=120),
+                usage=UsageSnapshot(
+                    total_counters=TokenCounters(input=100, output=20),
+                ),
                 pending_inputs=[
                     PendingInputData(message_id="q1", content="queued", target="next-turn")
                 ],
@@ -498,8 +708,8 @@ def test_snapshot_seeds_usage_identity_and_queue() -> None:
     )
     assert state.context_window == 64_000
     assert state.status_slots == {"goal": "ship"}
-    assert state.usage["input_tokens"] == 100
-    assert state.usage["total_tokens"] == 120
+    assert state.usage.total_counters.input == 100
+    assert state.usage.total_counters.output == 20
     assert [item.message_id for item in state.queue] == ["q1"]
 
 
@@ -546,9 +756,7 @@ def test_completion_closes_the_stream_and_keeps_one_entry() -> None:
         connected(),
         turn_started(),
         delta(content="partial"),
-        AssistantCompleted(
-            payload=AssistantMessageData(id="a1", content="partial answer")
-        ),
+        completed("a1", "partial answer"),
     )
     assert len(state.timeline) == 1
     entry = next(iter(state.timeline))
@@ -558,16 +766,16 @@ def test_completion_closes_the_stream_and_keeps_one_entry() -> None:
     assert state.stream_entry_id is None
 
 
-def test_completion_keeps_the_reasoning_that_only_deltas_carried() -> None:
+def test_completion_uses_the_canonical_record_reasoning() -> None:
     state = session(
         connected(),
         turn_started(),
         delta(reasoning="why"),
-        completed("a1", "answer"),
+        completed("a1", "answer", reasoning="canonical reasoning"),
     )
     entry = next(iter(state.timeline))
     assert isinstance(entry, AssistantEntry)
-    assert entry.reasoning == "why"
+    assert entry.reasoning == "canonical reasoning"
 
 
 def test_completion_without_deltas_appends_one_entry() -> None:
@@ -580,7 +788,8 @@ def test_reasoning_streams_into_the_same_entry() -> None:
         connected(),
         turn_started(),
         delta(reasoning="thinking "),
-        delta(content="answer", reasoning="hard"),
+        delta(reasoning="hard"),
+        delta(content="answer"),
     )
     entry = next(iter(state.timeline))
     assert isinstance(entry, AssistantEntry)
@@ -666,7 +875,7 @@ def test_tool_result_completes_the_same_entry() -> None:
         connected(),
         turn_started(),
         tool_started(call()),
-        tool_result("c1", status="success", content="a\nb"),
+        tool_result("c1", outcome_kind="succeeded", content="a\nb"),
     )
     tool = state.timeline.get("c1")
     assert isinstance(tool, ToolEntry)
@@ -674,16 +883,10 @@ def test_tool_result_completes_the_same_entry() -> None:
     assert tool.result == "a\nb"
 
 
-def test_structured_tool_result_is_kept_as_sent() -> None:
-    """Tool payloads are stored raw; formatting them is the view's job."""
-    state = session(connected(), tool_result("c1", content={"a": 1}))
-    tool = state.timeline.get("c1")
-    assert isinstance(tool, ToolEntry)
-    assert tool.result == {"a": 1}
-
-
 def test_tool_result_without_a_started_call_still_lands() -> None:
-    state = session(connected(), tool_result("c9", status="denied", content="no"))
+    state = session(
+        connected(), tool_result("c9", outcome_kind="denied", content="no")
+    )
     tool = state.timeline.get("c9")
     assert isinstance(tool, ToolEntry)
     assert tool.status == "denied"
@@ -823,6 +1026,7 @@ def test_permission_request_blocks_the_turn_visibly() -> None:
     assert state.pending_interactions == {"r1": permission_request()}
     entry = next(iter(state.timeline))
     assert isinstance(entry, NoticeEntry)
+    assert "ID: r1" in entry.text
     assert "bash" in entry.text
 
 
@@ -831,6 +1035,7 @@ def test_user_input_request_blocks_the_turn_visibly() -> None:
     assert derive(state.facts) is Status.WAITING_USER
     entry = next(iter(state.timeline))
     assert isinstance(entry, NoticeEntry)
+    assert "ID: q1" in entry.text
     assert "Which one?" in entry.text
     assert "A — the first" in entry.text
 
@@ -877,31 +1082,28 @@ def test_resolving_an_unknown_prompt_changes_nothing() -> None:
 # --- usage, compaction, queue, notices -----------------------------------
 
 
-def test_usage_accumulates_across_events() -> None:
+def test_usage_events_replace_the_authoritative_snapshot() -> None:
     state = session(
         connected(),
-        usage(input_tokens=10, output_tokens=5, total_tokens=15),
-        usage(input_tokens=2, output_tokens=3, total_tokens=5),
+        usage(input=10, output=5),
+        usage(input=2, output=3),
     )
-    assert state.usage["input_tokens"] == 12
-    assert state.usage["output_tokens"] == 8
-    assert state.usage["total_tokens"] == 20
+    assert state.usage.total_counters.input == 2
+    assert state.usage.total_counters.output == 3
 
 
-def test_usage_fields_the_provider_did_not_report_are_untouched() -> None:
-    state = session(connected(), usage(input_tokens=10), usage(output_tokens=4))
-    assert state.usage["input_tokens"] == 10
-    assert state.usage["output_tokens"] == 4
+def test_usage_snapshot_does_not_merge_missing_fields_from_an_older_snapshot() -> None:
+    state = session(connected(), usage(input=10), usage(output=4))
+    assert state.usage.total_counters.input == 0
+    assert state.usage.total_counters.output == 4
 
 
 def test_context_tokens_track_the_reported_context_size() -> None:
-    state = session(connected(), usage(context_tokens=1234))
-    assert state.context_input_tokens == 1234
-
-
-def test_context_tokens_fall_back_to_the_input_breakdown() -> None:
-    state = session(connected(), usage(input_tokens=7, cache_read_input_tokens=3))
-    assert state.context_input_tokens == 10
+    state = session(connected(), usage(observed_context=1234))
+    observation = state.usage.latest_turn_observation
+    assert observation is not None
+    assert isinstance(observation.observed_context, ProviderMeasured)
+    assert observation.observed_context.tokens == 1234
 
 
 def test_compaction_makes_the_status_visible_then_returns_a_summary() -> None:
@@ -981,7 +1183,7 @@ def test_job_updates_replace_by_id_instead_of_appending() -> None:
     state = session(
         connected(),
         JobUpdated(job("j1", "running")),
-        JobUpdated(job("j1", "completed")),
+        JobUpdated(job("j1", "succeeded")),
     )
     assert list(state.jobs) == ["j1"]
     assert state.facts.jobs_running == 0
@@ -990,8 +1192,8 @@ def test_job_updates_replace_by_id_instead_of_appending() -> None:
 def test_terminal_jobs_do_not_count_as_running() -> None:
     state = session(
         connected(),
-        JobUpdated(job("j1", "completed")),
-        JobUpdated(job("j2", "stopped", "shell")),
+        JobUpdated(job("j1", "succeeded")),
+        JobUpdated(job("j2", "cancelled_before_start", "shell")),
     )
     assert state.facts.jobs_running == 0
 
@@ -1096,7 +1298,7 @@ def test_an_interrupt_that_found_nothing_running_settles_the_turn() -> None:
     state = session(
         connected(),
         turn_started(),
-        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        tool_started(call("c1")),
         InterruptAsked(),
         InterruptSettled(cancelled=False),
     )
@@ -1111,7 +1313,7 @@ def test_a_thread_read_that_says_idle_cancels_what_is_still_open() -> None:
     state = session(
         connected(),
         turn_started(),
-        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        tool_started(call("c1")),
         ThreadRead(payload=thread(turn_status="idle")),
     )
     assert state.facts.turn_open is False
@@ -1123,8 +1325,191 @@ def test_a_thread_read_that_says_running_leaves_open_work_alone() -> None:
     state = session(
         connected(),
         turn_started(),
-        ToolCallsStarted(payload=ToolCallsStartedData(tool_calls=[call("c1")])),
+        tool_started(call("c1")),
         ThreadRead(payload=thread(turn_status="running")),
     )
     assert state.facts.turn_open is True
     assert state.timeline.get("c1").status == "running"
+
+
+# --- older history --------------------------------------------------------
+#
+# The client holds a window, not the conversation. These tests pin what it knows
+# about the part it does not hold: whether there is more, whether a page is in
+# flight, and why the last one failed -- all of it derived from frames and page
+# results, never guessed.
+
+
+def page(
+    *items: ConversationRecord,
+    cursor: str | None = None,
+    requested: str = "c1",
+) -> OlderHistoryLoaded:
+    return OlderHistoryLoaded(
+        cursor=Cursor(requested),
+        payload=HistoryPage(
+            items=items,
+            older_cursor=Cursor(cursor) if cursor is not None else None,
+        ),
+    )
+
+
+def test_attach_records_that_older_history_exists() -> None:
+    state = session(connected(), SnapshotAdopted(snapshot(history_cursor="c1")))
+
+    assert state.older == HistoryAvailable(cursor="c1")
+
+
+def test_attach_without_a_cursor_means_the_beginning_is_held() -> None:
+    state = session(connected(), SnapshotAdopted(snapshot()))
+
+    assert state.older == HistoryComplete()
+
+
+def test_asking_for_older_history_reports_it_is_loading() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history_cursor="c1")),
+        OlderHistoryRequested(),
+    )
+
+    assert state.older == HistoryLoading(cursor="c1")
+
+
+def test_an_older_page_is_prepended_keeping_server_order() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(
+            history=[history_assistant("last", id="a2")], history_cursor="c1",
+        )),
+        page(
+            history_user("first", id="u1"),
+            history_assistant("reply", id="a1"),
+        ),
+    )
+
+    assert contents(state) == ["first", "reply", "last"]
+    assert state.timeline.ids() == ("u1", "a1", "a2")
+    assert state.older == HistoryComplete()
+
+
+def test_an_older_page_advances_the_cursor_to_the_page_before_it() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history_cursor="c1")),
+        page(history_user("first", id="u1"), cursor="c0"),
+    )
+
+    assert state.older == HistoryAvailable(cursor="c0")
+
+
+def test_an_older_page_that_repeats_held_entries_does_not_duplicate_them() -> None:
+    """A page boundary is not a promise: a message that arrived live can also
+    appear in the page that overlaps it."""
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(
+            history=[history_assistant("last", id="a2")], history_cursor="c1",
+        )),
+        page(
+            history_user("first", id="u1"),
+            history_assistant("last", id="a2"),
+        ),
+    )
+
+    assert state.timeline.ids() == ("u1", "a2")
+
+
+def test_a_failed_older_page_is_visible_and_retryable() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history_cursor="c1")),
+        OlderHistoryRequested(),
+        OlderHistoryFailed("older history is unavailable"),
+    )
+
+    assert state.older == HistoryFailed(
+        cursor="c1", message="older history is unavailable",
+    )
+
+    reduce(state, OlderHistoryRequested())
+    assert state.older == HistoryLoading(cursor="c1")
+
+
+def test_a_history_rewrite_puts_the_cursor_where_the_server_says() -> None:
+    """``/clear`` and ``/undo`` send a fresh page: what the client held is gone,
+    and so is the cursor the older pages were relative to."""
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history_cursor="c1")),
+        page(history_user("first", id="u1")),
+    )
+    assert state.older == HistoryComplete()
+
+    reduce(state, history(
+        history_user("kept", id="u2"),
+        operation="undo",
+        removed_turns=1,
+        turns=1,
+        older_cursor="c9",
+    ))
+
+    assert contents(state) == ["kept"]
+    assert state.older == HistoryAvailable(cursor="c9")
+
+
+def test_releasing_the_front_page_restores_the_cursor_that_preceded_it() -> None:
+    """Residency is bounded by letting a whole loaded page go, not by trimming.
+
+    A loaded page is exactly the span between two cursors, so releasing it puts
+    the client back where it stood before the load: the cursor in effect then is
+    the cursor for the page before the new front. Nothing becomes unreachable --
+    the reader can load the same page again.
+    """
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(history=[history_assistant("tail", id="a9")], history_cursor="c1")),
+        page(history_user("second", id="u2"), requested="c1", cursor="c0"),
+        page(history_user("first", id="u1"), requested="c0", cursor=None),
+    )
+    assert state.older == HistoryComplete()
+
+    release_oldest_loaded_page(state)
+
+    assert state.timeline.ids() == ("u2", "a9")
+    # Back to the cursor the second page was read with, so the first page can be
+    # fetched again.
+    assert state.older == HistoryAvailable(cursor="c0")
+
+
+def test_releasing_never_touches_the_window_the_attach_returned() -> None:
+    """The attach window is what the client always holds; only pages the reader
+    asked for can be released, so a client that never paged never shrinks."""
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(
+            history=[history_user("only", id="u1")], history_cursor="c1",
+        )),
+    )
+
+    assert state.loaded_pages == []
+    assert state.timeline.ids() == ("u1",)
+
+
+def test_releasing_a_page_that_repeated_held_entries_removes_only_what_it_added() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(
+            history=[history_user("tail", id="u3")], history_cursor="c1",
+        )),
+        page(
+            history_user("old", id="u1"),
+            history_user("tail", id="u3"),
+            requested="c1",
+            cursor=None,
+        ),
+    )
+
+    release_oldest_loaded_page(state)
+
+    assert state.timeline.ids() == ("u3",)

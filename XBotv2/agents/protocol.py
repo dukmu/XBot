@@ -8,11 +8,15 @@ from fastapi import APIRouter
 from pydantic import Field
 
 from XBotv2.agents.contracts import (
+    AgentDefinition,
+    AgentModelPolicy,
+    AgentToolPolicy,
     LIST_AGENTS,
     SELECT_AGENT,
     SelectAgent,
 )
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.domain import AgentExecutionLimits
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
 
@@ -21,9 +25,20 @@ class AgentInfo(WireModel):
     name: str = Field(min_length=1)
     description: str
     mode: Literal["primary", "subagent", "all"]
-    provider: str = ""
-    model: str = ""
-    context_window: int = Field(default=0, ge=0)
+    model_policy: AgentModelPolicy
+    limits: AgentExecutionLimits
+    tool_policy: AgentToolPolicy
+
+    @classmethod
+    def from_definition(cls, definition: AgentDefinition) -> "AgentInfo":
+        return cls(
+            name=definition.name,
+            description=definition.description,
+            mode=definition.mode,
+            model_policy=definition.model_policy,
+            limits=definition.limits,
+            tool_policy=definition.tool_policy,
+        )
 
 
 class AgentListResponse(WireModel):
@@ -59,14 +74,7 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         return AgentListResponse(
             active=catalog.active,
             agents=[
-                AgentInfo(
-                    name=definition.name,
-                    description=definition.description,
-                    mode=definition.mode,
-                    provider=definition.provider or "",
-                    model=definition.model or "",
-                    context_window=definition.context_window or 0,
-                )
+                AgentInfo.from_definition(definition)
                 for definition in catalog.agents
             ],
         )

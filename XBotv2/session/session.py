@@ -8,7 +8,8 @@ from typing import Protocol
 
 from XBotv2.agentloop import LoopState
 from XBotv2.core.errors import OperationError
-from XBotv2.core.messages import Message
+from XBotv2.core.domain import ReasoningGenerationMode
+from XBotv2.core.messages import ConversationMessage, HumanInputMessage
 from XBotv2.core.paths import RuntimePaths, SessionPaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.contracts import (
@@ -18,7 +19,6 @@ from XBotv2.session.contracts import (
     PrepareFork,
     SessionStatus,
 )
-from XBotv2.session.contracts import SessionInfo
 
 
 def fork_persisted_session(paths: RuntimePaths, source_session_id: str) -> str:
@@ -62,14 +62,12 @@ class Session:
         self,
         *,
         events: SessionEventsPort,
-        info: SessionInfo,
         paths: RuntimePaths,
         variables: RuntimeVariables,
         state: LoopState,
         session_paths: SessionPaths,
     ) -> None:
         self._events = events
-        self.info = info
         self.paths = paths
         self.variables = variables
         self.state = state
@@ -77,34 +75,30 @@ class Session:
 
     @property
     def session_id(self) -> str:
-        return self.info.session_id
+        return self.state.session.session_id
 
     @property
     def thread_id(self) -> str:
-        return self.info.thread_id
+        return self.state.session.thread_id
 
     @property
     def workspace_root(self) -> str:
-        return self.info.workspace_root
-
-    # -- session identity (SessionInfo-compatible surface) ------------------
-
-    @property
-    def provider(self) -> str:
-        return self.state.session.provider
+        return self.state.metadata.value.workspace_root
 
     def status(self, *, pending_input_count: int) -> SessionStatus:
+        selection = self.state.metadata.value.runtime_selection
+        mode = selection.model.generation.mode
         return SessionStatus(
             session_id=self.session_id,
             thread_id=self.thread_id,
             workspace_root=self.workspace_root,
-            agent=self.state.metadata.value.agent,
-            provider=self.state.metadata.value.provider or self.provider,
-            model=self.state.metadata.value.model,
-            model_mode=self.state.metadata.value.model_mode,
-            context_window=self.state.metadata.value.context_window,
+            agent=selection.agent_name,
+            provider=selection.model.route.provider,
+            model=selection.model.route.model,
+            model_mode=mode.effort if isinstance(mode, ReasoningGenerationMode) else "",
+            context_window=selection.model.context_window,
             title=self.state.metadata.value.title,
-            status=self.info.status,
+            status=self.state.session.status,
             resumed=self.state.resumed,
             turn_count=self.state.turn_count,
             message_count=len(self.state.history),
@@ -127,12 +121,12 @@ class Session:
         ``SessionStats``); only the visible surface is cleared.
         """
         history = self.state.history
-        removed = sum(message.role == "user" for message in history)
+        removed = sum(isinstance(message, HumanInputMessage) for message in history)
         history.clear()
-        await self._announce_history_change("clear")
+        await self._announce_history_change("clear", removed)
         return removed
 
-    async def undo_history(self, count: int) -> list[Message]:
+    async def undo_history(self, count: int) -> list[ConversationMessage]:
         """Undo complete user turns; caller owns idle-check and turn lock."""
         try:
             messages = self.state.history.undo(count)
@@ -144,15 +138,14 @@ class Session:
         await self._announce_history_change("undo", count)
         return list(messages)
 
-    async def regenerate_history(self) -> Message:
+    async def regenerate_history(self) -> HumanInputMessage:
         """Remove the latest human-authored turn and return its input."""
         history = self.state.history
         index = next(
             (
                 position
                 for position in range(len(history) - 1, -1, -1)
-                if history[position].role == "user"
-                and "runtime_input" not in history[position].additional_kwargs
+                if isinstance(history[position], HumanInputMessage)
             ),
             None,
         )

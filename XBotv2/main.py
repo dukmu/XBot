@@ -12,6 +12,20 @@ import webbrowser
 from pathlib import Path
 
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    LoopError,
+    LoopTurnEnded,
+    ToolCompleted,
+    TurnCancelled,
+)
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.interactions import ClientNotice
+from XBotv2.tui.transport import (
+    DEFAULT_HISTORY_RETENTION,
+    DEFAULT_HISTORY_WINDOW,
+)
 
 __version__ = "0.2.0"
 
@@ -49,8 +63,8 @@ def _common_parser() -> argparse.ArgumentParser:
         help="runtime data directory (env: XBOT_DATA_DIR)",
     )
     parser.add_argument(
-        "--provider", default=_env("PROVIDER", "default"),
-        help="provider configuration name (env: XBOT_PROVIDER)",
+        "--provider", default=_env("PROVIDER"),
+        help="provider configuration name; defaults to the configured provider (env: XBOT_PROVIDER)",
     )
     parser.add_argument("--session", default=_env("SESSION"), help="session to resume")
     parser.add_argument(
@@ -103,6 +117,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tui.add_argument(
         "--port", type=int, default=_env("PORT", "4096"), help=argparse.SUPPRESS
+    )
+    tui.add_argument(
+        "--history-window",
+        type=int,
+        default=DEFAULT_HISTORY_WINDOW,
+        help=(
+            "conversation entries fetched when attaching and per older page "
+            f"(default {DEFAULT_HISTORY_WINDOW})"
+        ),
+    )
+    tui.add_argument(
+        "--history-retention",
+        type=int,
+        default=DEFAULT_HISTORY_RETENTION,
+        help=(
+            "conversation entries kept in memory before released pages are "
+            f"dropped (default {DEFAULT_HISTORY_RETENTION})"
+        ),
     )
 
     serve = commands.add_parser(
@@ -284,6 +316,8 @@ def _run_tui(args) -> None:
                 agent=getattr(args, "agent", None),
                 workspace_root=str(_workspace_root(args)),
                 mode="resume" if session_id else "new",
+                history_window=args.history_window,
+                history_retention=args.history_retention,
             )
         )
     finally:
@@ -391,10 +425,11 @@ def _spawn_server(args) -> subprocess.Popen:
         sys.executable, "-m", "XBotv2.main",
         "serve",
         "--data-dir", args.data_dir,
-        "--provider", args.provider,
         "--workspace", str(_workspace_root(args)),
         "--log-level", args.log_level,
     ]
+    if args.provider is not None:
+        cmd.extend(["--provider", args.provider])
     uds = getattr(args, "uds", None)
     if uds:
         cmd.extend(["--uds", uds])
@@ -483,11 +518,7 @@ async def _run_once(args):
     await engine.start_session()
     session = context.loop_state.session
     runtime = SessionRuntime(
-        session_id=session.session_id,
-        thread_id=session.thread_id,
-        provider_name=args.provider,
         paths=RuntimePaths.from_data_dir(args.data_dir),
-        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
         application=application,
         engine=engine,
@@ -497,26 +528,31 @@ async def _run_once(args):
     try:
         await runtime.send_message(args.prompt, "once")
         async for frame in events:
-            etype = frame.event.type
-            data = frame.event.data
-
-            if etype == "assistant_message":
-                content = data.get("content", "")
+            event = frame.event
+            if isinstance(event, AssistantCompleted):
+                content = "".join(
+                    part.text for part in event.message.parts if isinstance(part, TextPart)
+                )
                 if content:
                     print(content)
-            elif etype == "tool_result":
-                tc_id = data.get("tool_call_id", "")
-                content = data.get("content", "")
-                print(f"\n[{tc_id}]: {content[:300]}")
-            elif etype == "client_message":
-                print(f"\n[message] {data.get('message', '')}")
-            elif etype == "permission_denied":
-                print(f"\n[permission denied] {data.get('reason', '')}")
-            elif etype == "error":
-                print(f"\nError: {data.get('message', 'unknown')}")
-            if etype in {"turn_finished", "turn_cancelled"} or (
-                etype == "error" and data.get("code") == "turn_failed"
-            ):
+            elif isinstance(event, ToolCompleted):
+                outcome = event.execution.message.outcome
+                if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+                    content = "".join(
+                        part.text
+                        for part in outcome.output.parts
+                        if isinstance(part, TextPart)
+                    )
+                elif isinstance(outcome, (ToolDenied, ToolCancelled)):
+                    content = outcome.reason
+                else:
+                    raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
+                print(f"\n[{event.execution.message.call.id}]: {content[:300]}")
+            elif isinstance(event, ClientNotice):
+                print(f"\n[message] {event.message}")
+            elif isinstance(event, LoopError):
+                print(f"\nError: {event.message}")
+            if isinstance(event, (LoopTurnEnded, LoopError)):
                 # A failed turn may never reach ``turn_started`` and therefore
                 # has no lifecycle terminal frame; the typed error ends it.
                 break

@@ -12,8 +12,19 @@ import json
 import re
 from collections.abc import Sequence
 
-from XBotv2.core import Message, prompt_container, prompt_element
-from XBotv2.goal.models import GOAL_VERDICT_VALUES, GoalVerdict
+from XBotv2.core.messages import (
+    AssistantMessage,
+    CompactionSummaryMessage,
+    ConversationMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
+from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.core.provider import ProviderMessage, ProviderSystem, ProviderUser
+from XBotv2.core.tools import ToolCall, ToolFailed, ToolSucceeded
+from XBotv2.core import prompt_container, prompt_element
+from XBotv2.goal.models import GoalVerdict, Impossible, Met, NotMet
 
 _TRANSCRIPT_MAX_CHARS = 48_000
 _MESSAGE_MAX_CHARS = 4_000
@@ -37,38 +48,32 @@ class GoalEvaluationError(RuntimeError):
     """The evaluator call failed or returned no usable verdict."""
 
 
-def evaluation_request(condition: str, transcript: str) -> list[Message]:
+def evaluation_request(condition: str, transcript: str) -> tuple[ProviderMessage, ...]:
     """Build the one-shot evaluator request envelope."""
-    return [
-        Message(
-            role="system",
-            content=prompt_element(
+    return (
+        ProviderSystem(parts=(TextPart(text=prompt_element(
                 "goal_evaluation_instructions", _EVALUATION_INSTRUCTIONS
-            ),
-        ),
-        Message(
-            role="user",
-            content=prompt_container("goal_evaluation", [
+            )),)),
+        ProviderUser(parts=(TextPart(text=prompt_container("goal_evaluation", [
                 prompt_element("completion_condition", condition),
                 prompt_element("conversation", transcript),
-            ]),
-        ),
-    ]
+            ])),)),
+    )
 
 
 def render_transcript(
-    messages: Sequence[Message],
+    messages: Sequence[ConversationMessage],
     *,
     max_chars: int = _TRANSCRIPT_MAX_CHARS,
 ) -> str:
     """Render the conversation as an evaluator-readable transcript."""
     entries: list[str] = []
     for message in messages:
-        content = str(message.content or "").strip()
+        content = _message_text(message).strip()
         if len(content) > _MESSAGE_MAX_CHARS:
             content = f"{content[:_MESSAGE_MAX_CHARS]}\n[truncated]"
-        entry = f"[{message.role}]"
-        tool_names = [call.name for call in message.tool_calls or () if call.name]
+        entry = f"[{_message_role(message)}]"
+        tool_names = [part.name for part in message.parts if isinstance(part, ToolCall)] if isinstance(message, AssistantMessage) else []
         if tool_names:
             entry += f" (tool calls: {', '.join(tool_names)})"
         if content:
@@ -78,6 +83,33 @@ def render_transcript(
     if len(text) > max_chars:
         text = "[earlier conversation omitted]\n\n" + text[-max_chars:]
     return text
+
+
+def _message_role(message: ConversationMessage) -> str:
+    if isinstance(message, HumanInputMessage):
+        return "user"
+    if isinstance(message, AssistantMessage):
+        return "assistant"
+    if isinstance(message, ToolMessage):
+        return "tool"
+    if isinstance(message, RuntimeNoticeMessage):
+        return "runtime"
+    return "summary"
+
+
+def _message_text(message: ConversationMessage) -> str:
+    if isinstance(message, CompactionSummaryMessage):
+        return message.summary
+    if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage, AssistantMessage)):
+        return "".join(
+            part.text
+            for part in message.parts
+            if isinstance(part, (TextPart, ReasoningPart))
+        )
+    outcome = message.outcome
+    if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+        return "".join(part.text for part in outcome.output.parts if isinstance(part, TextPart))
+    return outcome.reason
 
 
 def parse_verdict(content: str) -> GoalVerdict:
@@ -99,12 +131,17 @@ def parse_verdict(content: str) -> GoalVerdict:
     if not isinstance(payload, dict):
         raise GoalEvaluationError("evaluator verdict must be a JSON object")
     verdict = payload.get("verdict")
-    if verdict not in GOAL_VERDICT_VALUES:
+    if verdict not in {"not_yet_met", "met", "impossible"}:
         raise GoalEvaluationError(
             f"evaluator returned an unknown verdict: {verdict!r}"
         )
     reason = str(payload.get("reason") or "").strip()
-    return GoalVerdict(verdict=verdict, reason=reason[:_REASON_MAX_CHARS])
+    verdict_type = {
+        "not_yet_met": NotMet,
+        "met": Met,
+        "impossible": Impossible,
+    }[verdict]
+    return verdict_type(reason=reason[:_REASON_MAX_CHARS])
 
 
 __all__ = [

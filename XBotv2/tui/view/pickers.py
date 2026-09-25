@@ -13,10 +13,12 @@ terminal, and keeping it here is what stops each command growing its own copy of
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Sequence
 
 from XBotv2.llm.contracts import ProviderCatalog
-from XBotv2.session.contracts import ThreadSummary
+from XBotv2.agents.protocol import AgentListResponse
+from XBotv2.core.domain import ModelRoute
+from XBotv2.session.contracts import SessionSummary, ThreadSummary
 from XBotv2.tui.view.selection import Option
 
 
@@ -38,18 +40,18 @@ def filter_options(options: Sequence[Option], query: str) -> tuple[Option, ...]:
     return tuple(kept)
 
 
-def _detail(*parts: Any) -> str:
+def _detail(*parts: str) -> str:
     return " ".join(str(part) for part in parts if part)
 
 
-def session_options(items: Sequence[Any]) -> tuple[Option, ...]:
+def session_options(items: Sequence[SessionSummary]) -> tuple[Option, ...]:
     """Rows for ``/session``: one per stored session."""
     return tuple(
         Option(
-            value=str(getattr(item, "session_id", "")),
-            label=str(getattr(item, "title", "") or getattr(item, "session_id", "")),
+            value=item.session_id,
+            label=item.title or item.session_id,
             detail=_detail(
-                getattr(item, "workspace_root", "") or getattr(item, "status", "")
+                item.workspace_root or item.status
             ),
         )
         for item in items
@@ -151,9 +153,9 @@ def effort_tiers(catalog: ProviderCatalog, *, provider: str = "", model: str = "
     return ()
 
 
-def agent_options(response: Any, **_: Any) -> tuple[Option, ...]:
+def agent_options(response: AgentListResponse, **_: Any) -> tuple[Option, ...]:
     """Rows for ``/agent``: one per agent this thread can switch to."""
-    active = str(getattr(response, "active", "") or "")
+    active = response.active
     return tuple(
         Option(
             value=item.name,
@@ -161,12 +163,20 @@ def agent_options(response: Any, **_: Any) -> tuple[Option, ...]:
             detail=_detail(
                 "active" if item.name == active else "",
                 item.mode,
-                item.provider,
-                item.model,
+                (
+                    item.model_policy.route.provider
+                    if isinstance(item.model_policy.route, ModelRoute)
+                    else ""
+                ),
+                (
+                    item.model_policy.route.model
+                    if isinstance(item.model_policy.route, ModelRoute)
+                    else ""
+                ),
                 item.description,
             ),
         )
-        for item in getattr(response, "agents", ()) or ()
+        for item in response.agents
     )
 
 

@@ -3,28 +3,116 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Callable
+from dataclasses import dataclass
+from typing import AsyncIterator
+from anthropic.types import MessageDeltaUsage, Usage
 from pydantic import JsonValue
 
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import (
-    ContentPart,
-    Message,
-    ImagePart,
-    ModelChunk,
+from XBotv2.core.provider import (
+    ProviderMessage,
+    ProviderUser,
+    ProviderAssistant,
+    ProviderSystem,
+    ProviderTool,
+    ResolvedImagePart,
+    ModelRequest,
+    ToolSchema,
+)
+from XBotv2.core.parts import (
+    ImagePart as CanonicalImagePart,
+    ReasoningPart as CanonicalReasoningPart,
+    TextPart as CanonicalTextPart,
+)
+from XBotv2.core.stream import (
+    ModelCompleted,
     ModelResponse,
-    ReasoningPart,
-    TextPart,
+    ModelStreamEvent,
+    ToolCallDelta,
+    ReasoningDelta,
+    TextDelta,
+)
+from XBotv2.core.domain import (
+    CompletedStop,
+    LengthLimitedStop,
+    ModelStop,
+    ProviderExtensions,
+    ProviderMeasured,
+    TokenCounters,
+    ToolCallsRequestedStop,
+    UsageDelta,
 )
 from XBotv2.core.tools import ToolCall
-from XBotv2.core.providers import (
-    BaseProvider,
-    ModelRequestOptions,
-    provider_context_overflow,
+from XBotv2.core.providers import BaseProvider
+from XBotv2.llm.base import (
+    attachment_prompt,
+    provider_usage,
+    resolved_image_data,
+    tool_content,
 )
-from XBotv2.llm.base import attachment_prompt, tool_content, usage_metadata
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
+from XBotv2.llm.provider_errors import (
+    normalize_sdk_provider_error,
+    provider_context_overflow,
+)
+
+
+@dataclass(slots=True)
+class _UsageAccumulator:
+    input_tokens: int | None = None
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    def merge(
+        self,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
+    ) -> None:
+        if input_tokens is not None:
+            self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        if cache_read_input_tokens is not None:
+            self.cache_read_input_tokens = cache_read_input_tokens
+        if cache_creation_input_tokens is not None:
+            self.cache_creation_input_tokens = cache_creation_input_tokens
+
+
+@dataclass(slots=True)
+class _TextBlockState:
+    text: str
+
+
+@dataclass(slots=True)
+class _ThinkingBlockState:
+    text: str
+    signature: str = ""
+
+
+@dataclass(slots=True)
+class _RedactedThinkingBlockState:
+    data: str
+
+
+@dataclass(slots=True)
+class _ToolUseBlockState:
+    call_id: str
+    name: str
+    initial_input: dict[str, object]
+    argument_fragments: list[str]
+    arguments: dict[str, object] | None = None
+
+
+_AnthropicBlockState = (
+    _TextBlockState
+    | _ThinkingBlockState
+    | _RedactedThinkingBlockState
+    | _ToolUseBlockState
+)
+
 
 class AnthropicProvider(BaseProvider):
     supported_input_modalities = frozenset({"text", "image"})
@@ -32,37 +120,25 @@ class AnthropicProvider(BaseProvider):
     def __init__(
         self,
         *,
-        model: str,
         api_key: str,
         base_url: str | None,
-        temperature: float | None,
-        max_output_tokens: int,
-        reasoning_effort: str | None = None,
-        thinking: str | None = None,
         extra_body: dict[str, JsonValue] | None = None,
         extra_headers: dict[str, str] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
         input_modalities: list[str] | None = None,
-        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         from anthropic import AsyncAnthropic
 
         super().__init__(
-            model=model,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            reasoning_effort=reasoning_effort,
-            thinking=thinking,
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
             input_modalities=input_modalities,
-            artifacts=artifacts,
         )
         kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
-        self._extra_body = dict(extra_body or {})
+        self._extra_body = {} if extra_body is None else dict(extra_body)
         if extra_headers:
             kwargs["default_headers"] = dict(extra_headers)
         self.client = AsyncAnthropic(**kwargs)
@@ -76,253 +152,224 @@ class AnthropicProvider(BaseProvider):
         "input tokens exceed",
     )
 
-    def normalize_provider_error(self, error: Exception) -> Exception:
-        return provider_context_overflow(
+    def normalize_provider_error(self, error: Exception):
+        overflow = provider_context_overflow(
             error,
             types=self._OVERFLOW_TYPES,
             statuses=self._OVERFLOW_STATUSES,
             message_prefixes=self._OVERFLOW_MESSAGE_PREFIXES,
-        ) or error
-
-    def _provider_tools(
-        self,
-        tools: list[dict[str, JsonValue]],
-    ) -> list[dict[str, JsonValue]]:
-        return [anthropic_tool_schema(tool) for tool in tools]
+        )
+        return overflow if overflow is not None else normalize_sdk_provider_error(error)
 
     async def _astream_once(
         self,
-        messages: list[Message],
-        *,
-        options: ModelRequestOptions | None = None,
-    ) -> AsyncIterator[ModelChunk]:
+        request: ModelRequest,
+    ) -> AsyncIterator[ModelStreamEvent]:
+        selection = request.selection
         system, request_messages = anthropic_request_messages(
-            messages,
-            image_loader=self.read_image,
-            artifacts=self.artifacts,
+            request.messages,
         )
         api_kwargs: dict[str, JsonValue] = {
-            "model": self.model,
+            "model": selection.route.model,
             "messages": request_messages,
-            "max_tokens": (
-                options.max_output_tokens
-                if options is not None and options.max_output_tokens is not None
-                else self.max_output_tokens
-            ),
+            "max_tokens": selection.generation.max_output_tokens,
         }
-        if self.temperature is not None:
-            api_kwargs["temperature"] = self.temperature
+        if selection.generation.temperature is not None:
+            api_kwargs["temperature"] = selection.generation.temperature
         if system:
             api_kwargs["system"] = system
-        if self.bound_tools:
-            api_kwargs["tools"] = self.bound_tools
+        if request.tools:
+            api_kwargs["tools"] = [
+                anthropic_tool_schema(tool) for tool in request.tools
+            ]
         derived_extra_body: dict[str, JsonValue] = {}
-        if self.reasoning_effort:
-            derived_extra_body["reasoning_effort"] = self.reasoning_effort
-        if self.thinking:
-            derived_extra_body["thinking"] = {"type": self.thinking}
+        if selection.generation.mode.kind == "reasoning":
+            derived_extra_body["reasoning_effort"] = selection.generation.mode.effort
         extra_body = merge_request_extras(
             derived_extra_body,
-            getattr(self, "_extra_body", {}),
+            self._extra_body,
         )
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
-        tool_blocks: dict[int, dict[str, JsonValue]] = {}
-        tool_json: dict[int, list[str]] = {}
-        content_blocks: dict[int, dict[str, JsonValue]] = {}
-        usage_values = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_creation_input_tokens": 0,
-        }
-        response_model = self.model
+        content_blocks: dict[int, _AnthropicBlockState] = {}
+        usage_values = _UsageAccumulator()
+        response_model = selection.route.model
         stop_reason = ""
 
         stream = await self.client.messages.create(stream=True, **api_kwargs)
         try:
             async for event in stream:
-                event_type = getattr(event, "type", "")
+                event_type = event.type
                 if event_type == "message_start":
-                    message = getattr(event, "message", None)
-                    response_model = getattr(message, "model", self.model)
-                    _merge_anthropic_usage(
-                        usage_values,
-                        getattr(message, "usage", None),
-                    )
+                    message = event.message
+                    response_model = message.model
+                    _merge_anthropic_usage(usage_values, message.usage)
                 elif event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    index = int(getattr(event, "index", 0))
-                    block_type = getattr(block, "type", "")
+                    block = event.content_block
+                    index = event.index
+                    block_type = block.type
                     if block_type == "tool_use":
-                        tool_blocks[index] = content_blocks[index] = {
-                            "type": "tool_use",
-                            "id": getattr(block, "id", ""),
-                            "name": getattr(block, "name", ""),
-                            "input": {},
-                        }
-                        tool_json[index] = []
-                    elif block_type == "text":
-                        text = str(getattr(block, "text", "") or "")
-                        content_blocks[index] = {"type": "text", "text": text}
-                        if text:
-                            yield ModelChunk(content=text)
-                    elif block_type == "thinking":
-                        thinking = str(getattr(block, "thinking", "") or "")
-                        content_blocks[index] = {
-                            "type": "thinking",
-                            "thinking": thinking,
-                        }
-                        signature = str(getattr(block, "signature", "") or "")
-                        if signature:
-                            content_blocks[index]["signature"] = signature
-                        if thinking:
-                            yield ModelChunk(
-                                reasoning=thinking,
-                            )
-                    elif block_type == "redacted_thinking":
-                        content_blocks[index] = {
-                            "type": "redacted_thinking",
-                            "data": str(getattr(block, "data", "") or ""),
-                        }
-                elif event_type == "content_block_delta":
-                    index = int(getattr(event, "index", 0))
-                    delta = getattr(event, "delta", None)
-                    if delta is None:
-                        continue
-                    delta_type = getattr(delta, "type", "")
-                    if delta_type == "input_json_delta":
-                        partial = getattr(delta, "partial_json", "")
-                        if partial:
-                            tool_json.setdefault(index, []).append(partial)
-                    elif delta_type == "text_delta":
-                        text = getattr(delta, "text", "")
-                        if text:
-                            content_blocks.setdefault(
-                                index,
-                                {"type": "text", "text": ""},
-                            )["text"] += text
-                            yield ModelChunk(content=text)
-                    elif delta_type == "thinking_delta":
-                        thinking = getattr(delta, "thinking", "")
-                        if thinking:
-                            content_blocks.setdefault(
-                                index,
-                                {"type": "thinking", "thinking": ""},
-                            )["thinking"] += thinking
-                            yield ModelChunk(
-                                reasoning=thinking,
-                            )
-                    elif delta_type == "signature_delta":
-                        signature = getattr(delta, "signature", "")
-                        if signature:
-                            thinking_block = content_blocks.setdefault(
-                                index,
-                                {"type": "thinking", "thinking": ""},
-                            )
-                            thinking_block["signature"] = (
-                                str(thinking_block.get("signature") or "")
-                                + signature
-                            )
-                elif event_type == "content_block_stop":
-                    index = int(getattr(event, "index", 0))
-                    metadata = tool_blocks.get(index)
-                    if metadata is not None:
-                        args = _parse_tool_args(
-                            "".join(tool_json.get(index, [])),
-                            tool_name=str(metadata.get("name") or ""),
+                        content_blocks[index] = _ToolUseBlockState(
+                            call_id=block.id,
+                            name=block.name,
+                            initial_input=block.input,
+                            argument_fragments=[],
                         )
-                        metadata["input"] = args
-                        yield ModelChunk(
-                            tool_calls=[
-                                ToolCall(
-                                    id=metadata.get("id", ""),
-                                    name=metadata.get("name", ""),
-                                    args=args,
-                                )
-                            ]
+                    elif block_type == "text":
+                        text = block.text
+                        content_blocks[index] = _TextBlockState(text=text)
+                        if text:
+                            yield TextDelta(text=text)
+                    elif block_type == "thinking":
+                        thinking = block.thinking
+                        content_blocks[index] = _ThinkingBlockState(
+                            text=thinking,
+                            signature=block.signature,
+                        )
+                        if thinking:
+                            yield ReasoningDelta(text=thinking)
+                    elif block_type == "redacted_thinking":
+                        content_blocks[index] = _RedactedThinkingBlockState(
+                            data=block.data,
+                        )
+                elif event_type == "content_block_delta":
+                    index = event.index
+                    delta = event.delta
+                    delta_type = delta.type
+                    block = content_blocks.get(index)
+                    if block is None:
+                        raise ValueError(
+                            "Anthropic content delta arrived before its block start"
+                        )
+                    if delta_type == "input_json_delta":
+                        if not isinstance(block, _ToolUseBlockState):
+                            raise ValueError(
+                                "Anthropic input JSON delta belongs to a non-tool block"
+                            )
+                        block.argument_fragments.append(delta.partial_json)
+                    elif delta_type == "text_delta":
+                        if not isinstance(block, _TextBlockState):
+                            raise ValueError(
+                                "Anthropic text delta belongs to a non-text block"
+                            )
+                        text = delta.text
+                        if text:
+                            block.text += text
+                            yield TextDelta(text=text)
+                    elif delta_type == "thinking_delta":
+                        if not isinstance(block, _ThinkingBlockState):
+                            raise ValueError(
+                                "Anthropic thinking delta belongs to a non-thinking block"
+                            )
+                        thinking = delta.thinking
+                        if thinking:
+                            block.text += thinking
+                            yield ReasoningDelta(text=thinking)
+                    elif delta_type == "signature_delta":
+                        if not isinstance(block, _ThinkingBlockState):
+                            raise ValueError(
+                                "Anthropic signature delta belongs to a non-thinking block"
+                            )
+                        block.signature += delta.signature
+                elif event_type == "content_block_stop":
+                    index = event.index
+                    block = content_blocks.get(index)
+                    if block is None:
+                        raise ValueError(
+                            "Anthropic content block stopped before its start"
+                        )
+                    if isinstance(block, _ToolUseBlockState):
+                        arguments = "".join(block.argument_fragments)
+                        block.arguments = (
+                            _parse_tool_args(arguments, tool_name=block.name)
+                            if arguments
+                            else block.initial_input
+                        )
+                        yield ToolCallDelta(
+                            call_id=block.call_id,
+                            name_delta=block.name,
+                            arguments_delta=arguments,
                         )
                 elif event_type == "message_delta":
-                    delta = getattr(event, "delta", None)
-                    stop_reason = (
-                        getattr(delta, "stop_reason", "") or stop_reason
-                    )
-                    _merge_anthropic_usage(
-                        usage_values,
-                        getattr(event, "usage", None),
-                    )
+                    delta = event.delta
+                    if delta.stop_reason is not None:
+                        stop_reason = delta.stop_reason
+                    _merge_anthropic_usage(usage_values, event.usage)
         finally:
             await stream.close()
 
-        response_metadata = {"model_name": response_model}
-        if stop_reason:
-            response_metadata["stop_reason"] = stop_reason
-        yield ModelResponse(
+        if usage_values.input_tokens is None:
+            raise ValueError("Anthropic stream ended without message_start usage")
+        input_tokens = usage_values.input_tokens
+        output_tokens = usage_values.output_tokens
+        stop: ModelStop
+        if stop_reason == "tool_use":
+            stop = ToolCallsRequestedStop()
+        elif stop_reason in {"max_tokens", "length"}:
+            stop = LengthLimitedStop(limit_kind="output_tokens")
+        else:
+            stop = CompletedStop()
+        yield ModelCompleted(response=ModelResponse(
             parts=_response_parts(content_blocks),
-            response_metadata=response_metadata,
-            usage_metadata=normalize_anthropic_usage(**usage_values),
-        )
+            usage=UsageDelta(counters=TokenCounters(
+                input=input_tokens,
+                output=output_tokens,
+                cache_read=usage_values.cache_read_input_tokens,
+                cache_create=usage_values.cache_creation_input_tokens,
+                prompt_cache_write=0,
+            )),
+            observed_context=ProviderMeasured(tokens=(
+                input_tokens
+                + usage_values.cache_read_input_tokens
+                + usage_values.cache_creation_input_tokens
+            )),
+            stop=stop,
+            provider_extensions=ProviderExtensions(
+                provider="anthropic",
+                payload={"model": response_model},
+            ),
+        ))
 
 
 def anthropic_request_messages(
-    messages: list[Message],
-    *,
-    image_loader: Callable[[str], str] | None = None,
-    artifacts: ArtifactStorePort | None = None,
+    messages: tuple[ProviderMessage, ...],
 ) -> tuple[str, list[dict[str, JsonValue]]]:
     system = "\n\n".join(
-        message.content
+        part.text
         for message in messages
-        if message.role == "system" and message.content.strip()
+        if isinstance(message, ProviderSystem)
+        for part in message.parts
+        if part.text.strip()
     )
     return system, anthropic_messages(
         messages,
-        image_loader=image_loader,
-        artifacts=artifacts,
     )
 
 
 def anthropic_messages(
-    messages: list[Message],
-    *,
-    image_loader: Callable[[str], str] | None = None,
-    artifacts: ArtifactStorePort | None = None,
+    messages: tuple[ProviderMessage, ...],
 ) -> list[dict[str, JsonValue]]:
     result: list[dict[str, JsonValue]] = []
     for message in messages:
-        role = message.role
-        if role == "system":
+        if isinstance(message, ProviderSystem):
             continue
-        content = message.content
         blocks: list[dict[str, JsonValue]] = []
-        target_role = "assistant" if role == "assistant" else "user"
-        if role == "tool":
-            tool_blocks = _parts_to_anthropic(
-                message.parts,
-                image_loader=image_loader,
-            )
-            block: dict[str, JsonValue] = {
+        if isinstance(message, ProviderTool):
+            blocks.append({
                 "type": "tool_result",
-                "tool_use_id": message.tool_call_id,
-                "content": tool_blocks if message.images else tool_content(message, artifacts),
-            }
-            if (message.status or "success") != "success":
-                block["is_error"] = True
-            blocks.append(block)
-        elif role == "assistant":
-            blocks.extend(_parts_to_anthropic(
-                message.parts,
-                image_loader=image_loader,
-            ))
+                "tool_use_id": message.call_id,
+                "content": _parts_to_anthropic(message.parts),
+            })
+            target_role = "user"
+        elif isinstance(message, ProviderAssistant):
+            blocks.extend(_parts_to_anthropic(message.parts))
+            target_role = "assistant"
+        elif isinstance(message, ProviderUser):
+            blocks.extend(_parts_to_anthropic(message.parts))
+            target_role = "user"
         else:
-            blocks.extend(_parts_to_anthropic(
-                message.parts,
-                image_loader=image_loader,
-            ))
-            attachments = attachment_prompt(message, artifacts)
-            if attachments:
-                blocks.append({"type": "text", "text": attachments})
+            raise TypeError(f"Unsupported provider message: {type(message).__name__}")
         if not blocks:
             continue
         if result and result[-1]["role"] == target_role:
@@ -332,46 +379,54 @@ def anthropic_messages(
     return result
 
 
-def _response_parts(blocks: dict[int, dict[str, JsonValue]]) -> list[ContentPart]:
-    parts: list[ContentPart] = []
-    for block in (blocks[index] for index in sorted(blocks)):
-        block_type = block.get("type")
-        if block_type == "text":
-            parts.append(TextPart(text=str(block.get("text") or "")))
-        elif block_type == "thinking":
-            provider_data = {}
-            if block.get("signature"):
-                provider_data = {
-                    "anthropic": {"signature": block["signature"]}
-                }
-            parts.append(ReasoningPart(
-                text=str(block.get("thinking") or ""),
-                provider_data=provider_data,
+def _response_parts(
+    blocks: dict[int, _AnthropicBlockState],
+) -> list[CanonicalTextPart | CanonicalReasoningPart | ToolCall]:
+    parts: list[CanonicalTextPart | CanonicalReasoningPart | ToolCall] = []
+    for index in sorted(blocks):
+        block = blocks[index]
+        if isinstance(block, _TextBlockState):
+            parts.append(CanonicalTextPart(text=block.text))
+        elif isinstance(block, _ThinkingBlockState):
+            provider_data = (
+                ProviderExtensions(
+                    provider="anthropic",
+                    payload={"signature": block.signature},
+                )
+                if block.signature
+                else None
+            )
+            parts.append(CanonicalReasoningPart(
+                text=block.text,
+                provider_extensions=provider_data,
             ))
-        elif block_type == "redacted_thinking":
-            parts.append(ReasoningPart(
+        elif isinstance(block, _RedactedThinkingBlockState):
+            parts.append(CanonicalReasoningPart(
                 text="",
-                provider_data={
-                    "anthropic": {"redacted_data": block.get("data", "")}
-                },
+                provider_extensions=ProviderExtensions(
+                    provider="anthropic",
+                    payload={"redacted_data": block.data},
+                ),
             ))
-        elif block_type == "tool_use":
+        else:
+            if block.arguments is None:
+                raise ValueError(
+                    f"Anthropic tool block {index} ended without content_block_stop"
+                )
             parts.append(ToolCall(
-                id=str(block.get("id") or ""),
-                name=str(block.get("name") or ""),
-                args=dict(block.get("input") or {}),
+                id=block.call_id,
+                name=block.name,
+                args=block.arguments,
             ))
     return parts
 
 
 def _parts_to_anthropic(
-    parts: list[ContentPart],
-    *,
-    image_loader: Callable[[str], str] | None,
+    parts: tuple,
 ) -> list[dict[str, JsonValue]]:
     blocks: list[dict[str, JsonValue]] = []
     for part in parts:
-        if isinstance(part, TextPart):
+        if isinstance(part, CanonicalTextPart):
             blocks.append({"type": "text", "text": part.text})
         elif isinstance(part, ToolCall):
             blocks.append({
@@ -380,28 +435,26 @@ def _parts_to_anthropic(
                 "name": part.name,
                 "input": part.args,
             })
-        elif isinstance(part, ImagePart):
-            if image_loader is None:
-                raise ValueError("Image loader is required for image content")
-            if part.media_type not in {
+        elif isinstance(part, ResolvedImagePart):
+            if part.ref.media_type not in {
                 "image/gif",
                 "image/jpeg",
                 "image/png",
                 "image/webp",
             }:
                 raise ValueError(
-                    f"Unsupported Anthropic image type: {part.media_type}"
+                    f"Unsupported Anthropic image type: {part.ref.media_type}"
                 )
             blocks.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": part.media_type,
-                    "data": image_loader(part.path),
+                    "media_type": part.ref.media_type,
+                    "data": resolved_image_data(part),
                 },
             })
-        elif isinstance(part, ReasoningPart):
-            data = part.provider_data.get("anthropic") or {}
+        elif isinstance(part, CanonicalReasoningPart):
+            data = part.provider_extensions.payload if part.provider_extensions else {}
             if data.get("redacted_data"):
                 blocks.append({
                     "type": "redacted_thinking",
@@ -416,15 +469,11 @@ def _parts_to_anthropic(
     return blocks
 
 
-def anthropic_tool_schema(tool: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    function = tool.get("function", tool)
+def anthropic_tool_schema(tool: ToolSchema) -> dict[str, JsonValue]:
     return {
-        "name": function.get("name", ""),
-        "description": function.get("description", ""),
-        "input_schema": function.get(
-            "parameters",
-            {"type": "object", "properties": {}},
-        ),
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.parameters,
     }
 
 
@@ -434,8 +483,8 @@ def normalize_anthropic_usage(
     output_tokens: int,
     cache_read_input_tokens: int,
     cache_creation_input_tokens: int,
-) -> dict[str, int]:
-    return usage_metadata(
+):
+    return provider_usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         context_tokens=(
@@ -448,36 +497,33 @@ def normalize_anthropic_usage(
     )
 
 
-def _merge_anthropic_usage(total: dict[str, int], usage: Any) -> None:
-    if usage is None:
-        return
-    for key in total:
-        value = getattr(usage, key, None)
-        if value is not None:
-            total[key] = int(value)
+def _merge_anthropic_usage(
+    total: _UsageAccumulator,
+    usage: Usage | MessageDeltaUsage,
+) -> None:
+    total.merge(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+    )
 
 
 __all__ = ["AnthropicProvider"]
 
 
-def create_anthropic_provider(provider_config, model_config, *, artifacts=None):
+def create_anthropic_provider(provider_config, model_config):
     """Factory for the anthropic protocol route.
 
     ``provider_config`` is the adapter instance (endpoint + credentials);
     ``model_config`` is the selected specific model from its catalog.
     """
     protocol = provider_config.protocol
-    if model_config.max_output_tokens is None:
-        raise ValueError(
-            "Anthropic protocol providers require max_output_tokens "
-            f"for model {model_config.model!r}"
-        )
     logging.getLogger("xbotv2.llm").info(
         "creating anthropic provider=%s model=%s", protocol, model_config.model
     )
     return AnthropicProvider(
         **_provider_arguments(provider_config, model_config),
-        artifacts=artifacts,
         extra_headers=provider_config.headers or None,
     )
 

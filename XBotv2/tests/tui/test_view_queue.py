@@ -18,7 +18,6 @@ def pending(
     *,
     content: str = "do this next",
     target: str = "next-turn",
-    source: str = "user",
     image_count: int = 0,
     artifact_count: int = 0,
 ) -> PendingInputData:
@@ -26,7 +25,6 @@ def pending(
         message_id=message_id,
         content=content,
         target=target,
-        source=source,
         image_count=image_count,
         artifact_count=artifact_count,
     )

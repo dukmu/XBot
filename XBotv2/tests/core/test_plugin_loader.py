@@ -404,12 +404,12 @@ class TestOrderIndependence:
                 "id": "llm",
                 "name": "llm",
                 "config": {
-                    "default": "mock",
+                    "default_provider": "mock",
                     "providers": {
                         "mock": {
                             "protocol": "mock",
                             "default_model": "mock",
-                            "models": [{"model": "mock"}],
+                            "models": [{"model": "mock", "max_output_tokens": 1024}],
                         },
                     },
                 },

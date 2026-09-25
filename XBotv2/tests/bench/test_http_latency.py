@@ -52,7 +52,7 @@ async def http_app(tmp_path: Path):
                 "id": "llm",
                 "name": "llm",
                 "config": {
-                    "default": "default",
+                    "default_provider": "default",
                     "providers": {
                         "default": {
                             "protocol": "openai",
@@ -63,6 +63,7 @@ async def http_app(tmp_path: Path):
                                 {
                                     "model": "test",
                                     "max_context_tokens": 4096,
+                                    "max_output_tokens": 1024,
                                 },
                             ],
                         },
@@ -152,8 +153,8 @@ async def test_http_turn_latency_distribution(
             )
             assert response.status_code == 202
             async for frame in events:
-                event_type_counter[frame.event.type] += 1
-                if frame.event.type == "turn_finished":
+                event_type_counter[frame.event.kind] += 1
+                if frame.event.kind == "turn_finished":
                     break
             latencies_ms.append((time.perf_counter() - started) * 1000.0)
         finally:

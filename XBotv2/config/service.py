@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from pydantic import JsonValue
 
-from XBotv2.config.loader import load_plugin_tree
+from XBotv2.config.loader import load_plugin_tree as resolve_plugin_tree
 from XBotv2.config.plugin_catalog import update_plugin_config
 from XBotv2.config.policy import load_session_policy, patch_session_policy
 
@@ -33,6 +33,7 @@ from XBotv2.loader.contracts import PluginTree
 from XBotv2.core.runtime_logging import RuntimeLog
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.application.contracts import ApplicationEventsPort
+from XBotv2.permissions.contracts import PermissionPolicy
 
 
 class ConfigService(SettingsPort):
@@ -80,7 +81,7 @@ class ConfigService(SettingsPort):
     def load_plugin_tree(
         self, workspace: Path, session_id: str, thread_id: str = "agent"
     ) -> PluginTree:
-        return load_plugin_tree(
+        return resolve_plugin_tree(
             self.paths,
             workspace,
             session_id,
@@ -90,6 +91,37 @@ class ConfigService(SettingsPort):
             is_subagent=self._is_subagent,
             no_plugins=self._no_plugins,
         )
+
+    def permission_policies(self) -> tuple[PermissionPolicy, ...]:
+        """Resolve every applicable permission layer for security meet."""
+        stages = (
+            (False, False, False, None),
+            (True, False, False, None),
+            (True, True, False, None),
+            (True, True, True, None),
+            (True, True, True, self._extra_plugins),
+        )
+        policies: list[PermissionPolicy] = []
+        for include_global, include_workspace, include_session, extra in stages:
+            tree = resolve_plugin_tree(
+                self.paths,
+                self.workspace_root,
+                self.session_id,
+                extra_plugins=extra,
+                plugin_dirs=self._plugin_dirs,
+                is_subagent=self._is_subagent,
+                no_plugins=self._no_plugins,
+                include_global=include_global,
+                include_workspace=include_workspace,
+                include_session=include_session,
+            )
+            entry = tree.entry("permissions")
+            if entry is None or entry.disabled:
+                continue
+            policy = PermissionPolicy.model_validate(entry.config)
+            if not policies or policy != policies[-1]:
+                policies.append(policy)
+        return tuple(policies)
 
     def memory(self) -> str:
         if not self.paths.memory_file.exists():
@@ -122,7 +154,7 @@ class ConfigService(SettingsPort):
             POLICY_CHANGED,
             PolicyChanged(
                 policy=policy,
-                effective_permissions=permissions,
+                permission_policies=self.permission_policies(),
                 effective_sandbox=sandbox,
             ),
         )

@@ -34,6 +34,17 @@ def test_short_content_is_shown_whole_and_is_not_collapsible() -> None:
     assert plan.body == "one\ntwo"
 
 
+def test_short_think_or_tool_content_can_still_be_folded() -> None:
+    plan = plan_block(
+        "one\ntwo",
+        label="Think",
+        always_collapsible=True,
+    )
+    assert plan.collapsible is True
+    assert "Think" in plan.head
+    assert plan.body == "one\ntwo"
+
+
 def test_long_content_collapses_to_a_summary_and_a_preview() -> None:
     plan = plan_block(many_lines(40), label="tool output")
     assert plan.collapsible is True
@@ -84,6 +95,18 @@ class Harness(App[None]):
         self.block = self.query_one("#block", ClampedBlock)
 
 
+class SingleBlockHarness(App[None]):
+    def __init__(self, block: ClampedBlock) -> None:
+        super().__init__()
+        self._block = block
+
+    def compose(self) -> ComposeResult:
+        yield self._block
+
+    def on_mount(self) -> None:
+        self.block = self._block
+
+
 def block_text(block: ClampedBlock) -> str:
     return "\n".join(
         str(getattr(part.content, "plain", "") or "") for part in [block.head_widget, block.body_widget] if part is not None
@@ -130,6 +153,22 @@ async def test_short_content_has_no_summary_row() -> None:
         await pilot.pause()
         assert block.collapsible is False
         assert block.head_widget is None
+
+
+async def test_expanded_short_block_uses_the_fixed_height_window() -> None:
+    block = ClampedBlock(
+        "one line",
+        label="Think",
+        always_collapsible=True,
+        id="short-block",
+    )
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert block.collapsible is True
+        block.toggle()
+        await pilot.pause()
+        assert block.region.height == BLOCK_MAX_LINES
 
 
 async def test_a_long_answer_stays_open_once_it_has_streamed() -> None:

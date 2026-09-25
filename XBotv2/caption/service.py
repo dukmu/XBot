@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from uuid import uuid4
 
 from xcore import Context
-from XBotv2.agentloop.events import EventContext
+from XBotv2.agentloop.events import BeforeContextBuild
 
-from XBotv2.caption.contracts import CaptionConfig
-from XBotv2.core import Message
+from XBotv2.caption.contracts import (
+    CaptionConfig,
+    CaptionRequest,
+    CaptionResult,
+    CaptionTitleError,
+)
+from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.parts import TextPart
+from XBotv2.core.provider import ModelRequest, ProviderMessage, ProviderSystem, ProviderUser
 from XBotv2.core.metadata import ThreadMetadataState
+from XBotv2.core.domain import AuxiliaryRequest, RequestObservation
+from XBotv2.core.tokens import estimate_request_tokens
 from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
+from XBotv2.usage import UsagePort
 
 logger = logging.getLogger("xbotv2.caption")
 
@@ -24,28 +34,29 @@ _SYSTEM = (
 
 
 def caption_request(
-    conversation: Sequence[Message],
+    request: CaptionRequest,
     max_chars: int,
-) -> list[Message]:
+) -> tuple[ProviderMessage, ...]:
     latest = " ".join(
-        str(message.content)
-        for message in conversation
-        if message.role == "user"
+        "".join(part.text for part in message.parts if isinstance(part, TextPart))
+        for message in request.messages
+        if isinstance(message, HumanInputMessage)
     ).strip()
     preview = latest or "a new conversation"
     if len(preview) > 2400:
         preview = preview[:2400] + "…"
     user = (
         "Title this conversation in at most "
-        f"{max_chars} characters: {preview!r}"
+        f"{max_chars} characters. Current title: {request.current_title!r}. "
+        f"Conversation: {preview!r}"
     )
-    return [
-        Message(role="system", content=_SYSTEM),
-        Message(role="user", content=user),
-    ]
+    return (
+        ProviderSystem(parts=(TextPart(text=_SYSTEM),)),
+        ProviderUser(parts=(TextPart(text=user),)),
+    )
 
 
-def _fallback_title(conversation: Sequence[Message], max_chars: int) -> str:
+def _fallback_title(request: CaptionRequest, max_chars: int) -> str:
     """A deterministic caption when the auxiliary model returns no text.
 
     Thinking models routinely spend a small output budget on reasoning and
@@ -53,9 +64,9 @@ def _fallback_title(conversation: Sequence[Message], max_chars: int) -> str:
     message is the best signal the session already holds.
     """
     latest = " ".join(
-        str(message.content)
-        for message in conversation
-        if message.role == "user"
+        "".join(part.text for part in message.parts if isinstance(part, TextPart))
+        for message in request.messages
+        if isinstance(message, HumanInputMessage)
     ).strip()
     if not latest:
         return ""
@@ -82,81 +93,110 @@ class CaptionService:
         events: Context,
         model: ModelPort,
         state: ThreadMetadataState,
+        usage: UsagePort,
         session_id: str,
-        thread_id: str,
         config: CaptionConfig,
         is_subagent: bool = False,
     ) -> None:
         self._events = events
         self.model = model
         self.state = state
+        self._usage = usage
         self._session_id = session_id
-        self._thread_id = thread_id
         self.config = config
         # Subagent threads are named by their parent session, never here.
         self._is_subagent = is_subagent
         self._captioned = False
+        self._last_attempted_turn: int | None = None
 
     @property
     def title(self) -> str:
         return self.state.value.title
 
-    def caption_available(self) -> bool:
-        return self.config.allow_access and not self.state.value.parent_thread_id
-
-    def _is_first_turn(self, ctx: EventContext) -> bool:
+    def _needs_caption(self, event: BeforeContextBuild) -> bool:
         if self._captioned or self._is_subagent:
             return False
-        # A session starts with its id as the provisional title; captions are
-        # only for the first human turn that has not replaced it yet.
+        if self._last_attempted_turn == event.request.turn:
+            return False
+        # A session starts with its id as the provisional title. Keep retrying
+        # after a transient provider failure until a title is actually applied.
         if self.state.value.title != self._session_id:
             return False
-        # turn_count is owned by the loop state and mirrored onto the session
-        # identity; no capability probing is needed here.
-        if int(ctx.session.turn_count or 0) > 1:
-            return False
-        return any(message.role == "user" for message in ctx.messages)
+        return any(
+            isinstance(message, HumanInputMessage)
+            for message in event.request.history
+        )
 
-    async def _on_before_context(self, ctx: EventContext) -> None:
-        """Fire one independent caption request on the first user message."""
-        if not self.config.auto or not self._is_first_turn(ctx):
+    async def _on_before_context(self, event: BeforeContextBuild) -> None:
+        """Try one independent caption request per turn until one succeeds."""
+        if not self.config.auto or not self._needs_caption(event):
             return
-        request = caption_request(ctx.messages, self.config.max_chars)
+        self._last_attempted_turn = event.request.turn
+        caption = CaptionRequest(
+            messages=tuple(event.request.history),
+            current_title=self.title,
+        )
+        request = caption_request(
+            caption,
+            self.config.max_chars,
+        )
+        selection = self.state.value.runtime_selection.model
+        selection = selection.model_copy(update={
+            "generation": selection.generation.model_copy(update={
+                "max_output_tokens": self.config.output_tokens,
+            }),
+        })
+        model_request = ModelRequest(
+            messages=request,
+            tools=(),
+            selection=selection,
+        )
         try:
-            response = await invoke_llm(
-                self.model,
-                request,
-                output_tokens=self.config.output_tokens,
-            )
+            response = await invoke_llm(self.model, model_request)
         except Exception:  # noqa: BLE001 — a caption must never break the turn
             logger.exception("caption.request.failed")
             return
-        title = _clean_title(response.content or "", self.config.max_chars)
+        await self._usage.record(
+            RequestObservation(
+                selection=selection,
+                purpose=AuxiliaryRequest(
+                    owner="caption",
+                    operation_id=uuid4().hex,
+                ),
+                estimated_input_tokens=estimate_request_tokens(
+                    model_request.messages,
+                    model_request.tools,
+                ),
+                observed_context=response.observed_context,
+            ),
+            response.usage,
+        )
+        text = "".join(
+            part.text for part in response.parts if isinstance(part, TextPart)
+        )
+        title = _clean_title(text, self.config.max_chars)
         if not title:
-            title = _fallback_title(ctx.messages, self.config.max_chars)
+            title = _fallback_title(
+                caption,
+                self.config.max_chars,
+            )
         if title:
             # Only a successfully applied title disables future attempts; a
             # transient provider failure leaves _captioned False so the next
             # turn retries instead of permanently disabling auto-title.
-            await self._apply_title(title)
+            await self._apply_title(CaptionResult(title=title))
 
-    async def _apply_title(self, title: str) -> None:
-        if not title.strip():
-            raise ValueError("Session title must be non-empty")
-        if len(title) > 200:
-            raise ValueError("Session title must not exceed 200 characters")
-        await self.state.update(title=title)
+    async def _apply_title(self, result: CaptionResult) -> CaptionResult:
+        await self.state.replace_title(result.title)
         self._captioned = True
         logger.info("caption.applied")
+        return result
 
-    async def caption_get(self) -> dict[str, str]:
-        return {
-            "title": self.title,
-            "session_id": self._session_id,
-            "thread_id": self._thread_id,
-        }
+    async def caption_get(self) -> CaptionResult:
+        return CaptionResult(title=self.title)
 
-    async def caption_set(self, title: str) -> str:
+    async def caption_set(self, title: str) -> CaptionResult:
         cleaned = _clean_title(title, self.config.max_chars)
-        await self._apply_title(cleaned)
-        return cleaned
+        if not cleaned:
+            raise CaptionTitleError("Caption title must contain visible text.")
+        return await self._apply_title(CaptionResult(title=cleaned))

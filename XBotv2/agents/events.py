@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from XBotv2.agents.contracts import AgentDefinition
-from XBotv2.session.contracts import SessionInfo
+from XBotv2.core.domain import ResolvedRuntimeSelection
+from XBotv2.session.contracts import SessionKey
 
 
 AGENT_CONFIGURED = "agent/configured"
@@ -13,13 +13,8 @@ AGENT_CONFIGURED = "agent/configured"
 
 @dataclass(frozen=True, slots=True)
 class AgentConfigured:
-    agent: AgentDefinition | None
-    session: SessionInfo
-    agent_name: str
-    provider: str
-    model: str
-    model_mode: str
-    context_window: int
+    runtime_selection: ResolvedRuntimeSelection
+    session_key: SessionKey
 
 
 __all__ = ["AGENT_CONFIGURED", "AgentConfigured"]

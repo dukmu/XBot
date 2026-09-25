@@ -14,7 +14,7 @@ import pytest
 
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.paths import RuntimePaths
-from plugin_harness import mount_ctx
+from xcore import Context
 
 
 def _state_file(tmp_path) -> Path:
@@ -28,14 +28,19 @@ def _core_store(tmp_path) -> ThreadPersistence:
     return ThreadPersistence.create(
         RuntimePaths.from_data_dir(tmp_path).session("s"),
         thread_id="t",
-        workspace_root="/workspace",
-        provider="default",
+    )
+
+
+def _context(store: ThreadPersistence) -> Context:
+    return Context(
+        data_dir=store.paths.plugin_state_dir,
+        state_service=store.state,
     )
 
 
 @pytest.mark.asyncio
 async def test_mutations_are_persisted_immediately(tmp_path) -> None:
-    ctx = mount_ctx(_core_store(tmp_path))
+    ctx = _context(_core_store(tmp_path))
     store = ctx.state.namespace("sample")
 
     await store.set("enabled", True)
@@ -54,9 +59,9 @@ async def test_mutations_are_persisted_immediately(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
-    ctx = mount_ctx(_core_store(tmp_path))
-    first: PluginStore = ctx.state.namespace("shared")
-    second: PluginStore = ctx.state.namespace("shared")
+    ctx = _context(_core_store(tmp_path))
+    first = ctx.state.namespace("shared")
+    second = ctx.state.namespace("shared")
 
     assert await first.all() == {}
     assert await second.all() == {}
@@ -68,7 +73,7 @@ async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_event_loop_tasks_preserve_all_updates(tmp_path) -> None:
-    ctx = mount_ctx(_core_store(tmp_path))
+    ctx = _context(_core_store(tmp_path))
     store = ctx.state.namespace("shared")
 
     await asyncio.gather(*(
@@ -80,9 +85,9 @@ async def test_event_loop_tasks_preserve_all_updates(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_namespaces_are_isolated(tmp_path) -> None:
-    ctx = mount_ctx(_core_store(tmp_path))
-    goal: PluginStore = ctx.state.namespace("goal")
-    todo: PluginStore = ctx.state.namespace("todolist")
+    ctx = _context(_core_store(tmp_path))
+    goal = ctx.state.namespace("goal")
+    todo = ctx.state.namespace("todolist")
 
     await goal.set("state", {"active": True})
     assert await todo.all() == {}
@@ -91,7 +96,7 @@ async def test_plugin_namespaces_are_isolated(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_read_values_cannot_mutate_store_without_set(tmp_path) -> None:
-    ctx = mount_ctx(_core_store(tmp_path))
+    ctx = _context(_core_store(tmp_path))
     store = ctx.state.namespace("sample")
     await store.set("nested", {"count": 1})
 

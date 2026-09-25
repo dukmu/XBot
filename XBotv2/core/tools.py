@@ -5,11 +5,13 @@ from __future__ import annotations
 import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Callable, Literal, TypeAlias, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from XBotv2.core.artifacts import ArtifactRef, ImageContent
+from XBotv2.core.artifacts import ArtifactRef
+from XBotv2.core.domain import StructuredToolOutput, ToolCallId, ToolTiming
+from XBotv2.core.parts import ImagePart, TextPart
 
 
 @dataclass(frozen=True)
@@ -24,23 +26,14 @@ class GuardDecision:
     action: Literal["deny"] = "deny"
     reason: str = ""
     source: str = "guard"
-    client_events: tuple["ClientEvent", ...] = ()
+    pass
 
 
 class ToolCall(BaseModel):
-    id: str = Field(min_length=1)
+    id: ToolCallId = Field(min_length=1)
     name: str = Field(min_length=1)
     args: dict[str, JsonValue] = Field(default_factory=dict)
     type: Literal["tool_call"] = "tool_call"
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class ToolCallDelta(BaseModel):
-    index: int
-    id: str = ""
-    name: str = ""
-    args: str = ""
-    type: Literal["tool_call_chunk"] = "tool_call_chunk"
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -48,59 +41,85 @@ class ToolError(BaseModel):
     code: str
     message: str
     retryable: bool = False
-    details: dict[str, JsonValue] = Field(default_factory=dict)
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-class ClientEvent(BaseModel):
-    type: str = Field(min_length=1)
-    data: dict[str, JsonValue] = Field(default_factory=dict)
+    details: Mapping[str, JsonValue] = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def validated_client_event(
-    event_type: str,
-    data: Mapping[str, object],
-    model: type[BaseModel],
-) -> ClientEvent:
-    """Validate one typed event payload and return its client envelope."""
-    payload = model.model_validate(data)
-    return ClientEvent(
-        type=event_type,
-        data=payload.model_dump(mode="json", exclude_unset=True),
+class ToolCallRef(BaseModel):
+    id: ToolCallId
+    name: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolOutput(BaseModel):
+    parts: tuple[TextPart | ImagePart, ...] = ()
+    structured: StructuredToolOutput | None = None
+    artifacts: tuple[ArtifactRef, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+
+class ToolSucceeded(BaseModel):
+    kind: Literal["succeeded"] = "succeeded"
+    output: ToolOutput
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolFailed(BaseModel):
+    kind: Literal["failed"] = "failed"
+    error: ToolError
+    output: ToolOutput
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolDenied(BaseModel):
+    kind: Literal["denied"] = "denied"
+    reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolCancelled(BaseModel):
+    kind: Literal["cancelled"] = "cancelled"
+    reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ToolOutcome: TypeAlias = ToolSucceeded | ToolFailed | ToolDenied | ToolCancelled
+
+
+def text_output(text: str, *, artifacts: tuple[ArtifactRef, ...] = ()) -> ToolOutput:
+    """Create the canonical textual tool output."""
+    return ToolOutput(parts=(TextPart(text=text),), artifacts=artifacts)
+
+
+def succeeded_text(text: str, *, artifacts: tuple[ArtifactRef, ...] = ()) -> ToolSucceeded:
+    return ToolSucceeded(output=text_output(text, artifacts=artifacts))
+
+
+def failed_text(code: str, message: str, *, retryable: bool = False) -> ToolFailed:
+    return ToolFailed(
+        error=ToolError(code=code, message=message, retryable=retryable),
+        output=ToolOutput(),
     )
 
 
-class ToolResult(BaseModel):
-    status: Literal["success", "error", "denied", "cancelled"] = "success"
-    content: str = ""
-    data: JsonValue = None
-    error: ToolError | None = None
-    artifacts: tuple[ArtifactRef, ...] = ()
-    images: tuple[ImageContent, ...] = ()
-    client_events: tuple[ClientEvent, ...] = ()
-    turn_complete: bool = False
+class ContinueTurn(BaseModel):
+    kind: Literal["continue"] = "continue"
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    @classmethod
-    def success(
-        cls,
-        content: str = "",
-        *,
-        data: JsonValue = None,
-        images: tuple[ImageContent, ...] = (),
-    ) -> "ToolResult":
-        return cls(content=content, data=data, images=images)
 
-    @classmethod
-    def failure(
-        cls, code: str, message: str, *, retryable: bool = False
-    ) -> "ToolResult":
-        return cls(
-            status="error",
-            content=message,
-            error=ToolError(code=code, message=message, retryable=retryable),
-        )
+class CompleteTurn(BaseModel):
+    kind: Literal["complete"] = "complete"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
+
+TurnDirective: TypeAlias = ContinueTurn | CompleteTurn
+
+
+class ToolExecution(BaseModel):
+    message: "ToolMessage"
+    events: tuple[object, ...] = ()
+    directive: TurnDirective
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 @dataclass(frozen=True)
 class Tool:
@@ -128,7 +147,13 @@ class Tool:
     grant_selectors: tuple[str, ...] = ()
 
     @classmethod
-    def from_function(cls, function: Callable[..., Any], *, name: str | None = None) -> "Tool":
+    def from_function(
+        cls,
+        function: Callable[..., Any],
+        *,
+        name: str | None = None,
+        excluded_parameters: frozenset[str] = frozenset(),
+    ) -> "Tool":
         signature = inspect.signature(function)
         description = (inspect.getdoc(function) or "").strip()
         try:
@@ -154,7 +179,7 @@ class Tool:
             parameters=_parameters_schema(
                 signature,
                 type_hints,
-                excluded=frozenset(tool_call_parameters),
+                excluded=frozenset(tool_call_parameters) | excluded_parameters,
             ),
             tool_call_parameter=(
                 tool_call_parameters[0] if tool_call_parameters else None
@@ -292,12 +317,32 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
 
 __all__ = [
     "ArtifactRef",
-    "ClientEvent",
+    "CompleteTurn",
+    "ContinueTurn",
+    "GuardDecision",
+    "ToolCallRef",
+    "ToolExecution",
+    "ToolFailed",
+    "ToolOutput",
+    "ToolOutcome",
+    "ToolSucceeded",
+    "ToolDenied",
+    "ToolCancelled",
+    "TurnDirective",
     "Tool",
     "ToolCall",
-    "ToolCallDelta",
     "ToolError",
-    "ToolResult",
+    "ToolCallRef",
+    "ToolCancelled",
+    "ToolDenied",
+    "ToolFailed",
+    "ToolOutput",
+    "ToolOutcome",
+    "ToolSucceeded",
+    "TurnDirective",
+    "failed_text",
+    "succeeded_text",
+    "text_output",
     "tool_parameters_schema",
     "provider_tool_schema",
 ]

@@ -92,8 +92,7 @@ class QueuePanel(VerticalScroll):
         widget = self._widgets.get(message_id)
         if widget is None:
             return ""
-        content = widget.content
-        return str(getattr(content, "plain", "") or "")
+        return str(widget.content)
 
     def show(self, items: Sequence[PendingInputData], *, width: int) -> None:
         """Render ``items`` in order, updating existing rows in place."""

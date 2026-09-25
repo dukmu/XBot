@@ -31,7 +31,7 @@ async def main() -> None:
                         "id": "llm",
                         "name": "llm",
                         "config": {
-                            "default": "default",
+                            "default_provider": "default",
                             "providers": {
                                 "default": {
                                     "protocol": "openai",

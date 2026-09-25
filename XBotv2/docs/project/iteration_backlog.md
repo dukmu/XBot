@@ -63,7 +63,7 @@ Contract unification in the same branch:
   replaces the untyped `**kwargs` side channel through `BaseProvider.astream`,
   `ModelPort.astream`, and `LlmService.astream`; adapters read a validated field
   and Anthropic's required `max_tokens` stays a config-boundary error.
-- Declarative provider error vocabulary. `core.providers.provider_context_overflow`
+- Declarative provider error vocabulary. `llm.provider_errors.provider_context_overflow`
   classifies overflow from `types` / `codes` / `statuses` / `message_prefixes`
   that each adapter declares as data, replacing per-adapter inline `body`
   sniffing (including `startswith("prompt is too long")` inside the Anthropic

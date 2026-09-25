@@ -57,6 +57,7 @@ from acp.schema import (
 )
 
 from XBotv2.main import __version__
+from XBotv2.agentloop.protocol import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session import SessionEventFrame, conversation_replay
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
@@ -68,7 +69,22 @@ from XBotv2.commands import (
 )
 from pydantic import JsonValue
 
-from XBotv2.core import ClientEvent, EmptyRequest
+from XBotv2.core import EmptyRequest
+from XBotv2.core.domain import TokenCounters, TurnId, TurnScope
+from XBotv2.interactions.contracts import InteractionRequest, InteractionResolution
+from XBotv2.interactions.protocol import (
+    Answered,
+    InputCancelled,
+    InputTimedOut,
+    UserInputRequest,
+)
+from XBotv2.permissions.contracts import (
+    Allowed,
+    Denied,
+    NamedPermission,
+    PermissionRequest,
+    ToolPermission,
+)
 from XBotv2.core.errors import OperationError
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
@@ -83,6 +99,7 @@ from XBotv2.session.contracts import (
     ThreadNotActive,
 )
 from XBotv2.session.contracts import SessionsPort
+from XBotv2.session.protocol import AgentConfiguredEvent, MessagePublishedEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -92,6 +109,7 @@ class ActivePrompt:
     request_id: str
     mapper: ACPEventMapper
     completed: asyncio.Event
+    turn_id: TurnId | None = None
     failure: Exception | None = None
 
 
@@ -102,7 +120,7 @@ class XBotACPAgent:
         self,
         *,
         sessions: SessionsPort,
-        provider_name: str,
+        provider_name: str | None,
         no_plugins: bool = False,
         selected_agent: str | None = None,
         llm_override: Any | None = None,
@@ -188,15 +206,15 @@ class XBotACPAgent:
             ),
             model_override=self.llm_override,
         ))
-        await self._prepare_session(opened.session_id, opened.event_cursor)
+        await self._prepare_session(opened.key.session_id, opened.event_cursor)
         self._log.info(
             "acp.session.created",
-            session_id=opened.session_id,
+            session_id=opened.key.session_id,
             workspace_root=workspace,
         )
         return NewSessionResponse(
-            session_id=opened.session_id,
-            config_options=await self._config_options(opened.session_id),
+            session_id=opened.key.session_id,
+            config_options=await self._config_options(opened.key.session_id),
         )
 
     async def resume_session(
@@ -364,7 +382,9 @@ class XBotACPAgent:
                 error_type="mapped_runtime_error",
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
             )
-            raise RequestError.internal_error(prompt.mapper.error)
+            raise RequestError.internal_error(
+                prompt.mapper.error.model_dump(mode="json")
+            )
         self._log.info(
             "acp.prompt.finished",
             session_id=session_id,
@@ -540,29 +560,39 @@ class XBotACPAgent:
             async for frame in events:
                 await self._resolve_interaction(session_id, frame.event)
                 active = self._active_prompts.get(session_id)
+                if (
+                    active is not None
+                    and active.turn_id is None
+                    and isinstance(frame.scope, TurnScope)
+                    and isinstance(frame.event, MessagePublishedEvent)
+                    and frame.event.record.root.id == active.request_id
+                ):
+                    active.turn_id = frame.scope.turn_id
                 active_prompt = (
                     active
-                    if active is not None and frame.request_id == active.request_id
+                    if (
+                        active is not None
+                        and isinstance(frame.scope, TurnScope)
+                        and frame.scope.turn_id == active.turn_id
+                    )
                     else None
                 )
                 event_mapper = active_prompt.mapper if active_prompt else mapper
-                if frame.event.type == "agent_configured":
+                if (
+                    isinstance(frame.event, AgentConfiguredEvent)
+                ):
                     # Track the live window locally: the mapper instance is
                     # never mutated from outside.
-                    window = frame.event.data.get("context_window")
-                    if isinstance(window, int) and window > 0:
-                        fallback_window = window
+                    fallback_window = (
+                        frame.event.runtime_selection.model.context_window
+                    )
                 for update in event_mapper.updates(
-                    frame.event.model_dump(),
+                    frame.event,
                     fallback_context_size=fallback_window,
                 ):
                     await self._update(session_id, update)
                 if active_prompt is not None:
-                    if frame.event.type in {
-                        "turn_finished",
-                        "turn_cancelled",
-                        "error",
-                    }:
+                    if isinstance(frame.event, (LoopTurnEnded, LoopError)):
                         active_prompt.completed.set()
         except asyncio.CancelledError:
             raise
@@ -720,42 +750,50 @@ class XBotACPAgent:
                 limit=200,
             )
             pages.append(page)
-            cursor = page.next_cursor
+            cursor = page.older_cursor
             if cursor is None:
                 break
         for page in reversed(pages):
-            for update in replay_history(conversation_replay(page.messages)):
+            for update in replay_history(conversation_replay(page.items)):
                 await self._update(session_id, update)
 
     async def _handle_interaction(
         self,
         session_id: str,
-        event: ClientEvent,
+        event: InteractionRequest,
         *,
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, JsonValue]:
+    ) -> InteractionResolution:
         del timeout_seconds
-        data = event.data
-        request_id = str(data.get("request_id") or "")
-        correlation_id = str(data.get("tool_call_id") or tool_call_id or "")
+        request_id = event.interaction_id
+        correlation_id = tool_call_id
         if self.connection is None:
-            return {
-                "request_id": request_id,
-                "status": "disconnected",
-                "reason": "ACP client disconnected",
-            }
-        if event.type == "permission_request":
-            call = data.get("tool_call") or {}
-            call_id = str(call.get("id") or correlation_id or request_id)
+            if isinstance(event, PermissionRequest):
+                return Denied(reason="ACP client disconnected")
+            return InputCancelled(reason="ACP client disconnected")
+        if isinstance(event, PermissionRequest):
+            if isinstance(event.subject, ToolPermission):
+                call = event.subject.tool_call
+                call_id = str(call.id)
+                call_name = call.name
+                call_args = call.args
+            elif isinstance(event.subject, NamedPermission):
+                call_id = correlation_id or request_id
+                call_name = event.subject.tool
+                call_args = event.subject.params
+            else:  # pragma: no cover - PermissionSubject is closed
+                raise TypeError(
+                    f"Unsupported permission subject: {event.subject!r}"
+                )
             response: RequestPermissionResponse = (
                 await self.connection.request_permission(
                     session_id=session_id,
                     tool_call=ToolCallProgress(
                         session_update="tool_call_update",
                         tool_call_id=call_id,
-                        title=str(call.get("name") or "Permission required"),
-                        raw_input=call.get("args"),
+                        title=call_name,
+                        raw_input=call_args,
                     ),
                     options=[
                         PermissionOption(
@@ -782,37 +820,33 @@ class XBotACPAgent:
                     "allow_once",
                     "allow_session",
                 }
-                return {
-                    "request_id": request_id,
-                    "status": "answered",
-                    "decision": "allow" if allowed else "deny",
-                    "scope": (
+                if allowed:
+                    return Allowed(scope=(
                         "session"
-                        if allowed and outcome.option_id == "allow_session"
+                        if outcome.option_id == "allow_session"
                         else "once"
-                    ),
-                }
-            return {
-                "request_id": request_id,
-                "status": "cancelled"
-                if isinstance(outcome, DeniedOutcome)
-                else "answered",
-                "decision": "deny",
-                "scope": "once",
-            }
+                    ))
+                return Denied(reason="permission denied")
+            return Denied(
+                reason=(
+                    "permission request cancelled"
+                    if isinstance(outcome, DeniedOutcome)
+                    else "permission denied"
+                )
+            )
 
-        options = data.get("options") or []
+        if not isinstance(event, UserInputRequest):
+            raise TypeError(f"Unsupported interaction request: {event!r}")
+        correlation_id = event.tool_call_id or correlation_id
+        options = event.options
         elicitation = getattr(self.client_capabilities, "elicitation", None)
         if getattr(elicitation, "form", None) is None:
-            return {
-                "request_id": request_id,
-                "status": "cancelled",
-                "reason": "ACP client does not support form elicitation",
-            }
+            return InputCancelled(
+                reason="ACP client does not support form elicitation"
+            )
         labels = [
-            str(option.get("label") or "")
+            option.label
             for option in options
-            if isinstance(option, dict) and option.get("label")
         ]
         mode = ElicitationFormSessionMode(
             session_id=session_id,
@@ -829,54 +863,52 @@ class XBotACPAgent:
             ),
         )
         response = await self.connection.create_elicitation(
-            message=str(data.get("question") or "Input required"),
+            message=event.question,
             mode=mode,
         )
         content = getattr(response, "content", None)
         if not isinstance(content, dict) or "answer" not in content:
-            return {
-                "request_id": request_id,
-                "status": "cancelled",
-                "reason": "user declined",
-            }
-        return {
-            "request_id": request_id,
-            "status": "answered",
-            "answer": content["answer"],
-        }
+            return InputCancelled(reason="user declined")
+        return Answered(answer=content["answer"])
 
     async def _resolve_interaction(
         self,
         session_id: str,
-        event: ClientEvent,
+        event: InteractionRequest,
     ) -> None:
-        if event.type not in {"permission_request", "user_input_required"}:
-            return
         result = await self._handle_interaction(session_id, event)
-        request_id = str(result.get("request_id") or "")
-        if result.get("status") != "answered":
+        request_id = event.interaction_id
+        if isinstance(result, (Denied, InputCancelled, InputTimedOut)):
             await self.sessions.cancel_interaction(
                 session_id,
                 "agent",
-                event.type,
+                event.kind,
                 request_id,
-                str(result.get("reason") or "cancelled"),
+                result.reason,
             )
             return
-        if event.type == "permission_request":
+        if isinstance(event, PermissionRequest):
+            if not isinstance(result, Allowed):
+                raise TypeError(
+                    f"Permission request received {type(result).__name__} resolution"
+                )
             await self.sessions.respond_permission(
                 session_id,
                 "agent",
                 request_id,
-                str(result.get("decision") or "deny"),
-                str(result.get("scope") or "once"),
+                "allow",
+                result.scope,
             )
             return
+        if not isinstance(result, Answered):
+            raise TypeError(
+                f"User input received {type(result).__name__} resolution"
+            )
         await self.sessions.respond_user_input(
             session_id,
             "agent",
             request_id,
-            result.get("answer"),
+            result.answer,
         )
 
     @staticmethod
@@ -987,17 +1019,17 @@ def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
     return content, images
 
 
-def _usage(data: dict[str, int] | None) -> Usage | None:
+def _usage(data: TokenCounters | None) -> Usage | None:
     if data is None:
         return None
     return Usage(
-        input_tokens=data["input_tokens"],
-        output_tokens=data["output_tokens"],
-        total_tokens=data["total_tokens"],
-        cached_read_tokens=data["cache_read_input_tokens"],
+        input_tokens=data.input,
+        output_tokens=data.output,
+        total_tokens=data.input + data.output,
+        cached_read_tokens=data.cache_read,
         cached_write_tokens=(
-            data["cache_creation_input_tokens"]
-            + data["prompt_cache_write_tokens"]
+            data.cache_create
+            + data.prompt_cache_write
         ),
     )
 

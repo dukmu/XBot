@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias
 
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import ConversationMessage
 
-PromptFragmentStage = Literal[
+PromptStage = Literal[
     "system_prefix",
     "system_instructions",
     "system_rules",
@@ -15,34 +15,48 @@ PromptFragmentStage = Literal[
 ]
 
 
-class PromptFragmentRegistry(Protocol):
-    def register_fragment(
-        self,
-        stage: PromptFragmentStage,
-        plugin_name: str,
-        text: str,
-        *,
-        source: str | None = None,
-    ) -> None: ...
+class PromptComponentRegistry(Protocol):
+    def register_component(self, owner: str, component: "PromptComponent") -> None: ...
 
-    def unregister_fragment(
-        self,
-        stage: PromptFragmentStage,
-        plugin_name: str,
-    ) -> None: ...
+    def unregister_owner(self, owner: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
-class ContextComponent:
-    """One source-tagged context section before escaped provider rendering."""
-
-    role: str
+class InlinePromptComponent:
+    stage: PromptStage
     source: str
-    content: str
-    plugin_name: str | None = None
-    stage: PromptFragmentStage | None = None
-    source_path: str | None = None
-    message: Message | None = None
+    text: str
 
 
-__all__ = ["ContextComponent", "PromptFragmentStage", "PromptFragmentRegistry"]
+@dataclass(frozen=True, slots=True)
+class FilePromptComponent:
+    stage: PromptStage
+    source: str
+    logical_path: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryComponent:
+    message: ConversationMessage
+
+
+PromptComponent: TypeAlias = InlinePromptComponent | FilePromptComponent
+ContextComponent: TypeAlias = PromptComponent | HistoryComponent
+
+
+@dataclass(slots=True)
+class BuiltContext:
+    components: list[ContextComponent]
+
+
+__all__ = [
+    "BuiltContext",
+    "ContextComponent",
+    "FilePromptComponent",
+    "HistoryComponent",
+    "InlinePromptComponent",
+    "PromptComponent",
+    "PromptComponentRegistry",
+    "PromptStage",
+]

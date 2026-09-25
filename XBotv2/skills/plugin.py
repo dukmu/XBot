@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from pydantic import JsonValue
 from xcore import Context
@@ -15,9 +14,19 @@ from XBotv2.core import (
     prompt_container,
     prompt_element,
     Tool,
-    ToolResult,
+    ToolOutcome,
+    succeeded_text,
 )
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.contracts import HumanInput
+from XBotv2.agentloop.events import (
+    AcceptInput,
+    BeforeModelRequest,
+    OnTurnInput,
+    RejectInput,
+    ReplaceRequest,
+    TurnEnded,
+)
 from XBotv2.commands import Command
 from XBotv2.core.tools import GuardDecision, ToolCall
 
@@ -33,7 +42,7 @@ class SkillToolHandler:
         self._runtime = runtime
         self._skill = skill
 
-    async def invoke(self) -> ToolResult:
+    async def invoke(self) -> ToolOutcome:
         content = await load_skill(
             self._skill.name,
             skill_registry=self._runtime._registry,
@@ -41,7 +50,7 @@ class SkillToolHandler:
             variables=self._runtime._variables,
         )
         self._runtime._activate_skill(self._skill)
-        return ToolResult.success(
+        return succeeded_text(
             f"{content}\n\nSkill activated: {self._skill.name} "
             f"({self._skill.scope})",
         )
@@ -74,8 +83,8 @@ class SkillsPlugin:
         self._runtime_paths: RuntimePaths = ctx.runtime_paths
         ctx.dispose(self._cleanup_runtime)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
-        ctx.on(Events.BEFORE_USER_MESSAGE_ACCEPT, self._on_before_user_message)
-        ctx.on(Events.BEFORE_TOOL_SCHEMA_BIND, self._on_before_tool_schema)
+        ctx.on(Events.ON_TURN_INPUT, self._on_before_user_message)
+        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_tool_schema)
         ctx.on(Events.TURN_END, self._on_turn_end)
         ctx.tools.guard(self._guard_tool_scope)
 
@@ -100,7 +109,7 @@ class SkillsPlugin:
         global_dirs = (self._runtime_paths.data_dir / ".agents" / "skills",)
         self._registry.discover(Path(ws), global_dirs=global_dirs)
         max_context = int(
-            event.settings.context_window or 0
+            event.metadata.runtime_selection.model.context_window
         )
         if max_context > 0:
             self._metadata_budget_chars = min(
@@ -141,9 +150,9 @@ class SkillsPlugin:
             cleanup="caller",
         )
 
-    async def _on_before_tool_schema(self, ctx: EventContext):
-        request = ctx.model_request
-        tools = list(request.tools) if request is not None else []
+    async def _on_before_tool_schema(self, event: BeforeModelRequest):
+        request = event.request
+        tools = list(request.tools)
         if not tools or not self._model_skill_names:
             return None
         remaining = self._metadata_budget_chars
@@ -161,10 +170,19 @@ class SkillsPlugin:
                 continue
             if remaining > len(name):
                 selected.append(
-                    replace(tool, description=description[: remaining - len(name)])
+                    tool.model_copy(
+                        update={
+                            "description": description[: remaining - len(name)]
+                        }
+                    )
                 )
                 remaining = 0
-        request.tools = selected
+        selected_tools = tuple(selected)
+        if selected_tools == request.tools:
+            return None
+        return ReplaceRequest(
+            request.model_copy(update={"tools": selected_tools})
+        )
 
     def _skill_as_tool(self, skill: Skill) -> Tool:
         handler = SkillToolHandler(self, skill)
@@ -186,9 +204,12 @@ class SkillsPlugin:
         self._active_skills.add(skill.name)
 
 
-    async def _on_before_user_message(self, ctx: EventContext):
+    async def _on_before_user_message(self, event: OnTurnInput):
         """Expand /skill-name [instructions] with SKILL.md content."""
-        text = (ctx.user_input or "").strip()
+        payload = event.input.input
+        if not isinstance(payload, HumanInput):
+            return None
+        text = payload.content.strip()
         if not text.startswith("/"):
             return
         parts = text.split(None, 1)
@@ -197,16 +218,9 @@ class SkillsPlugin:
         if skill is None:
             return
         if not skill.user_invocable:
-            return {
-                "event": {
-                    "type": "error",
-                    "data": {
-                        "code": "skill_not_user_invocable",
-                        "message": f"Skill '/{skill_name}' is not user-invocable.",
-                    },
-                },
-                "turn_complete": True,
-            }
+            return RejectInput(
+                f"Skill '/{skill_name}' is not user-invocable."
+            )
         instructions = parts[1] if len(parts) > 1 else ""
         content = await load_skill(
             skill_name,
@@ -215,8 +229,7 @@ class SkillsPlugin:
             sandbox=self._sandbox,
         )
         self._activate_skill(skill)
-        return {
-            "user_input": prompt_container(
+        expanded = prompt_container(
                 "skill_invocation",
                 [
                     prompt_element("skill_instructions", content),
@@ -228,9 +241,17 @@ class SkillsPlugin:
                     "source": skill.path,
                 },
             )
-        }
+        return AcceptInput(
+            event.input.model_copy(
+                update={
+                    "input": payload.model_copy(
+                        update={"content": expanded}
+                    )
+                }
+            )
+        )
 
-    async def _on_turn_end(self, ctx: EventContext) -> None:
+    async def _on_turn_end(self, ctx: TurnEnded) -> None:
         self._active_skills.clear()
         self._permission_scope.clear()
 

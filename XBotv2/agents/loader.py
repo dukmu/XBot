@@ -1,33 +1,29 @@
-"""Agent definition loading from Markdown frontmatter.
-
-Parses the agent file format only: frontmatter fields, tool selectors, model
-overrides, and prompt expansion.  Permission policy values are carried as raw
-data — the permissions plugin owns their validation and normalization.
-"""
+"""Agent definition loading from validated Markdown frontmatter."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
 import yaml
 from pydantic import JsonValue, TypeAdapter
 
-from XBotv2.agents.contracts import AgentDefinition
-from XBotv2.core import RuntimeVariables
+from XBotv2.agents.contracts import (
+    AgentDefinition,
+    AgentModelPolicy,
+    AgentToolPolicy,
+)
+from XBotv2.core.domain import AgentExecutionLimits
+from XBotv2.core.variables import RuntimeVariables
+from XBotv2.permissions.contracts import PermissionPolicy
 
 _FRONTMATTER = "---"
 _FIELDS = {
     "description",
     "mode",
-    "provider",
-    "model",
-    "temperature",
-    "max_output_tokens",
-    "context_window",
-    "max_iterations",
-    "steps",
-    "permission",
-    "permissions",
-    "tools",
+    "model_policy",
+    "limits",
+    "permission_policy",
+    "tool_policy",
     "hidden",
 }
 
@@ -36,7 +32,6 @@ def load_definitions(
     directory: Path,
     variables: RuntimeVariables | None = None,
 ) -> list[AgentDefinition]:
-    """Load every ``*.md`` definition in *directory* (empty when absent)."""
     if not directory.is_dir():
         return []
     return [
@@ -72,88 +67,23 @@ def load_definition(
         text[marker + len(_FRONTMATTER) + 2:].strip(),
         source=str(path),
     )
-    tools, disabled_tools = parse_tools(metadata.get("tools"), path)
-    if "permission" in metadata and "permissions" in metadata:
-        raise ValueError(f"Use either permission or permissions, not both: {path}")
-    permissions = metadata.get("permission", metadata.get("permissions"))
-    if permissions is None:
-        permissions = {}
-    provider, model = parse_model(metadata, path)
     return AgentDefinition(
         name=path.stem,
         description=str(metadata.get("description") or ""),
         mode=str(metadata.get("mode") or "all"),
         prompt=prompt,
-        provider=provider,
-        model=model,
-        temperature=_optional_float(metadata, "temperature"),
-        max_output_tokens=_optional_int(metadata, "max_output_tokens"),
-        context_window=_optional_int(metadata, "context_window"),
-        max_iterations=_optional_int(
-            metadata, "max_iterations", alias="steps"
+        model_policy=AgentModelPolicy.model_validate(
+            metadata.get("model_policy") or {}
         ),
-        permissions=permissions,
-        tools=tools,
-        disabled_tools=disabled_tools,
+        limits=AgentExecutionLimits.model_validate(metadata.get("limits") or {}),
+        permission_policy=PermissionPolicy.model_validate(
+            metadata.get("permission_policy") or {"default_decision": "allow"}
+        ),
+        tool_policy=AgentToolPolicy.model_validate(
+            metadata.get("tool_policy") or {}
+        ),
         hidden=bool(metadata.get("hidden", False)),
     )
 
 
-def parse_tools(
-    value: JsonValue,
-    path: Path,
-) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
-    """Parse the ``tools`` selector into visible/disabled tool names.
-
-    A list restricts the visible tool set; an OpenCode-style boolean mapping
-    only disables the ``false`` entries.  Tool visibility is not a permission
-    policy: allowed/denied decisions come from the ``permission`` field.
-    """
-    if value is None:
-        return None, ()
-    if isinstance(value, list):
-        return tuple(str(tool) for tool in value), ()
-    if isinstance(value, dict) and all(
-        isinstance(enabled, bool) for enabled in value.values()
-    ):
-        disabled = tuple(
-            str(tool) for tool, visible in value.items() if not visible
-        )
-        return None, disabled
-    raise ValueError(f"Agent tools must be a list or boolean mapping: {path}")
-
-
-def parse_model(
-    metadata: dict[str, JsonValue],
-    path: Path,
-) -> tuple[str | None, str | None]:
-    provider = str(metadata["provider"]) if metadata.get("provider") else None
-    model = str(metadata["model"]) if metadata.get("model") else None
-    if model is None or "/" not in model:
-        return provider, model
-    model_provider, model_name = model.split("/", 1)
-    if provider is not None and provider != model_provider:
-        raise ValueError(
-            f"Agent provider {provider!r} conflicts with model {model!r}: {path}"
-        )
-    return provider or model_provider, model_name
-
-
-def _optional_float(metadata: dict[str, JsonValue], name: str) -> float | None:
-    value = metadata.get(name)
-    return float(value) if value is not None else None
-
-
-def _optional_int(
-    metadata: dict[str, JsonValue],
-    name: str,
-    *,
-    alias: str | None = None,
-) -> int | None:
-    if alias and name in metadata and alias in metadata:
-        raise ValueError(f"Use either {name} or {alias}, not both")
-    value = metadata.get(name, metadata.get(alias) if alias else None)
-    return int(value) if value is not None else None
-
-
-__all__ = ["load_definition", "load_definitions", "parse_model", "parse_tools"]
+__all__ = ["load_definition", "load_definitions"]

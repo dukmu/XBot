@@ -110,6 +110,21 @@ async def test_arrows_move_the_highlight() -> None:
         await context.__aexit__(None, None, None)
 
 
+async def test_arrows_keep_selection_bounded_after_winding_past_both_ends() -> None:
+    app, pilot, context = await open_screen(
+        SelectionScreen("Sessions", options("a", "b", "c"))
+    )
+    try:
+        # Eight downs over three rows wrap twice and land on c. The next up
+        # must move to b; it must not pay back an unbounded press counter.
+        await pilot.press(*(["down"] * 8))
+        assert app.screen.model.current.value == "c"
+        await pilot.press("up")
+        assert app.screen.model.current.value == "b"
+    finally:
+        await context.__aexit__(None, None, None)
+
+
 async def test_enter_returns_the_highlighted_value() -> None:
     app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
     try:

@@ -1,4 +1,4 @@
-"""Public declarations for prompt-fragment contributions."""
+"""Public declarations for prompt-component contributions."""
 
 from XBotv2.prompts.contracts import PromptsPort
 

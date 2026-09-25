@@ -4,34 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from XBotv2.compact.protocol import CompactionMetrics, CompactionReason
-from XBotv2.core import Message
-from XBotv2.session.contracts import SessionInfo
+from XBotv2.compact.contracts import CompactionPlan
+from XBotv2.core.messages import ConversationMessage
+from XBotv2.session.contracts import SessionRuntimeState
 
 
 PRE_COMPACT = "before/compact"
 POST_COMPACT = "after/compact"
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class BeforeCompact:
-    """Mutable proposal exposed before compacted history is committed."""
-
-    messages: list[Message]
-    reason: CompactionReason
-    session: SessionInfo | None = None
+    plan: CompactionPlan
+    session: SessionRuntimeState | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterCompact:
+    plan: CompactionPlan
     """Notification emitted after compacted history has been committed."""
 
-    messages: tuple[Message, ...]
-    reason: CompactionReason
-    metrics: CompactionMetrics
+    messages: tuple[ConversationMessage, ...]
     previous_message_count: int
     current_message_count: int
-    session: SessionInfo | None = None
+    session: SessionRuntimeState | None = None
 
 
 __all__ = [

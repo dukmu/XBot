@@ -49,19 +49,13 @@ def test_the_builtins_are_declared_in_their_search_order() -> None:
         "thinking",
         "details",
         "attach",
+        "approve",
+        "deny",
+        "answer",
         "clear-screen",
         "copy",
         "exit",
     )
-
-
-def test_every_client_command_the_user_can_type_is_carried_out_locally() -> None:
-    """A client command that only forwards to the server would be a lie: the
-    bare forms are handled here, and their argument forms are the server's."""
-    from XBotv2.tui.app import TuiApp
-
-    for name in ("status", "jobs", "provider", "model", "effort", "agent"):
-        assert name in TuiApp._COMMAND_HANDLERS, name
 
 
 def test_the_runtime_selections_document_their_argument_forms() -> None:

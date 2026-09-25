@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from XBotv2.config import PatchPolicy, SettingsPort
-from XBotv2.permissions.contracts import PermissionRuleConfig
+from XBotv2.permissions.contracts import PermissionRule
 from XBotv2.commands import (
     Command,
     CommandResult,
@@ -28,13 +28,18 @@ def build_permissions_commands(
         action = parts[0].lower() if parts else "status"
         if action == "status" and len(parts) <= 1:
             snapshot = settings.policy()
-            effective = snapshot.effective_permissions
+            policies = settings.permission_policies()
+            effective = tuple(rule for policy in policies for rule in policy.rules)
             session = snapshot.policy.get("permissions", {})
             grants = permissions.session_grants()
             lines = [
                 "Permission policy",
-                f"  Effective: deny={len(effective.get('deny', []))} allow={len(effective.get('allow', []))} ask={len(effective.get('ask', []))}",
-                f"  Session overrides: deny={len(session.get('deny', []))} allow={len(session.get('allow', []))} ask={len(session.get('ask', []))}",
+                "  Effective layers: " + str(len(policies)),
+                "  Effective rules: " + ", ".join(
+                    f"{decision}={sum(rule.decision == decision for rule in effective)}"
+                    for decision in ("deny", "allow", "ask")
+                ),
+                f"  Session overrides: {len(session.get('rules', []))} rule(s)",
                 f"  Approved grants: {len(grants)} (persisted for this Agent thread)",
                 "  Precedence: deny > grant > allow > ask > default ask",
                 "Use /permission list, rules, grants, set, reset, revoke, or clear-grants.",
@@ -42,24 +47,27 @@ def build_permissions_commands(
             return CommandResult("\n".join(lines))
         if action in {"list", "rules"} and len(parts) == 1:
             snapshot = settings.policy()
-            effective = snapshot.effective_permissions
+            policies = settings.permission_policies()
             session = snapshot.policy.get("permissions", {})
             lines = ["Effective permission rules:"]
-            for decision in ("deny", "allow", "ask"):
-                rules = effective.get(decision, [])
-                lines.append(f"  {decision} ({len(rules)}):")
+            for index, policy in enumerate(policies, 1):
+                lines.append(
+                    f"  layer {index} (default={policy.default_decision}):"
+                )
                 lines.extend(
-                    f"    - {json.dumps(rule, ensure_ascii=False, sort_keys=True)}"
-                    for rule in rules
+                    "    - " + json.dumps(
+                        rule.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    for rule in policy.rules
                 )
             lines.append("Session policy overrides:")
             if session:
-                for decision in ("deny", "allow", "ask"):
-                    for rule in session.get(decision, []):
-                        lines.append(
-                            f"  {decision}: "
-                            f"{json.dumps(rule, ensure_ascii=False, sort_keys=True)}"
-                        )
+                for rule in session.get("rules", []):
+                    lines.append(
+                        "  " + json.dumps(rule, ensure_ascii=False, sort_keys=True)
+                    )
             else:
                 lines.append("  none")
             if action == "rules":
@@ -121,7 +129,7 @@ def build_permissions_commands(
     )
 
 
-def _grant_lines(grants: tuple[PermissionRuleConfig, ...]) -> list[str]:
+def _grant_lines(grants: tuple[PermissionRule, ...]) -> list[str]:
     lines = ["Approved session grants (removable by index):"]
     lines.extend(
         f"  {index}. "

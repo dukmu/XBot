@@ -2,17 +2,11 @@
 
 from typing import Protocol
 
-from XBotv2.context_builder.contracts import PromptFragmentStage
+from XBotv2.context_builder.contracts import PromptComponent
 
 
 class PromptsPort(Protocol):
-    def add(
-        self,
-        stage: PromptFragmentStage,
-        text: str,
-        *,
-        source: str | None = None,
-    ) -> None: ...
+    def add(self, component: PromptComponent) -> None: ...
 
 
 __all__ = ["PromptsPort"]

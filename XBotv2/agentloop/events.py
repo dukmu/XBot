@@ -9,15 +9,19 @@ observer events with ``ctx.emit``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
-from XBotv2.agentloop.contracts import InboxSplice, LoopSettings, ModelRequest
-from XBotv2.core.messages import Message, ModelResponse
-from XBotv2.core.tools import ClientEvent, ToolCall
-from XBotv2.session.contracts import SessionInfo
-from pydantic import JsonValue
+from XBotv2.agentloop.contracts import InboxChange, InboxItem
+from XBotv2.core.provider import ModelRequest
+from XBotv2.agentloop.protocol import LoopEvent
+from XBotv2.context_builder.events import ContextBuildRequest
+from XBotv2.core.domain import ModelExchange
+from XBotv2.core.messages import ConversationMessage
+from XBotv2.core.provider import ProviderMessage
+from XBotv2.core.stream import ModelResponse
+from XBotv2.core.tools import ToolCall, ToolExecution
+from XBotv2.session.contracts import SessionRuntimeState
 
 
 class Events:
@@ -34,34 +38,24 @@ class Events:
     ON_STOP = "stop"
     ON_STOP_FAILURE = "stop/failure"
     # User input
-    BEFORE_USER_MESSAGE_ACCEPT = "before/user-message-accept"
-    AFTER_USER_MESSAGE_ACCEPT = "after/user-message-accept"
+    ON_TURN_INPUT = "input/received"
+    INPUT_ACCEPTED = "input/accepted"
     # Context building
-    BEFORE_CONTEXT = "before/context"
-    AFTER_CONTEXT = "after/context"
+    BEFORE_CONTEXT_BUILD = "context/before-build"
+    AFTER_CONTEXT_BUILD = "context/after-build"
     # Agent / model
-    BEFORE_AGENT = "before/agent"
-    BEFORE_TOOL_SCHEMA_BIND = "before/tool-schema-bind"
-    AFTER_TOOL_SCHEMA_BIND = "after/tool-schema-bind"
     BEFORE_MODEL_REQUEST = "before/model-request"
     MODEL_REQUEST_READY = "model/request-ready"
     AFTER_MODEL_RESPONSE = "after/model-response"
+    MODEL_RESPONSE_OBSERVED = "model/response-observed"
     MODEL_REQUEST_ERROR = "model/request-error"
-    AFTER_AGENT = "after/agent"
     # Tools
-    BEFORE_TOOLS = "before/tools"
-    AFTER_TOOLS = "after/tools"
-    INBOX_SPLICE = "agent/inbox/spliced"
-    TOOL_CALLS_PARSED = "tool/calls-parsed"
+    INBOX_CHANGED = "agent/inbox/changed"
+    TOOL_CALLS_OBSERVED = "tool/calls-observed"
     BEFORE_TOOL_CALL = "before/tool-call"
     AFTER_TOOL_CALL = "after/tool-call"
-    TOOL_CALL_FAILURE = "tool/call-failure"
-    TOOL_DENIED = "tool/denied"
-    POST_TOOL_BATCH = "tool/batch-done"
-    # Messages
-    USER_MESSAGE = "user/message"
-    ASSISTANT_MESSAGE = "assistant/message"
-    TOOL_MESSAGE = "tool/message"
+    TOOL_BATCH_OBSERVED = "tool/batch-observed"
+    TOOL_MESSAGE_OBSERVED = "tool/message-observed"
     # Permissions / client
     # Core state projection changed. Persistence is one possible observer;
     # the loop does not request or name storage operations.
@@ -76,56 +70,298 @@ class EventPort(Protocol):
     async def serial(self, event: str, *args: Any) -> Any: ...
 
 
+@dataclass(frozen=True, slots=True)
+class SessionLifecycle:
+    session: SessionRuntimeState
+
+
+@dataclass(frozen=True, slots=True)
+class TurnStarted:
+    session: SessionRuntimeState
+    history: tuple[ConversationMessage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TurnEnded:
+    session: SessionRuntimeState
+    history: tuple[ConversationMessage, ...]
+    stop_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class LoopFailure:
+    session: SessionRuntimeState
+    history: tuple[ConversationMessage, ...]
+    error: BaseException
+
+
+@dataclass(frozen=True, slots=True)
+class StateChanged:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ObserveInbox:
+    change: InboxChange
+
+
+@dataclass(frozen=True, slots=True)
+class OnTurnInput:
+    input: InboxItem
+    history: tuple[ConversationMessage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptInput:
+    input: InboxItem
+    kind: str = "accept"
+
+
+@dataclass(frozen=True, slots=True)
+class RejectInput:
+    error: str
+    kind: str = "reject"
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteTurn:
+    result: LoopEvent
+    kind: str = "complete"
+
+
+OnTurnInputResult = AcceptInput | RejectInput | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class InputAccepted:
+    """Accepted input and its canonical candidate before history append."""
+
+    input: InboxItem
+    message: ConversationMessage
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeContextBuild:
+    request: ContextBuildRequest
+
+
+@dataclass(frozen=True, slots=True)
+class KeepContextRequest:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceContextRequest:
+    request: ContextBuildRequest
+    kind: str = "replace"
+
+
+BeforeContextBuildResult = KeepContextRequest | ReplaceContextRequest | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class AfterContextBuild:
+    context: tuple[ProviderMessage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KeepContext:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceContext:
+    context: tuple[ProviderMessage, ...]
+    kind: str = "replace"
+
+
+AfterContextBuildResult = KeepContext | ReplaceContext | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeModelRequest:
+    request: ModelRequest
+
+
+@dataclass(frozen=True, slots=True)
+class KeepRequest:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceRequest:
+    request: ModelRequest
+    kind: str = "replace"
+
+
+BeforeModelRequestResult = KeepRequest | ReplaceRequest | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class AfterModelResponse:
+    request: ModelRequest
+    response: ModelResponse
+
+
+@dataclass(frozen=True, slots=True)
+class KeepResponse:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceResponse:
+    response: ModelResponse
+    kind: str = "replace"
+
+
+AfterModelResponseResult = KeepResponse | ReplaceResponse | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class OnModelFailure:
+    request: ModelRequest
+    error: BaseException
+
+
+@dataclass(frozen=True, slots=True)
+class PropagateFailure:
+    kind: str = "propagate"
+
+
+@dataclass(frozen=True, slots=True)
+class RetryRequest:
+    request: ModelRequest
+    kind: str = "retry"
+
+
+OnModelFailureResult = PropagateFailure | RetryRequest | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequestReady:
+    request: ModelRequest
+    session: SessionRuntimeState
+
+
+@dataclass(frozen=True, slots=True)
+class ModelResponseObserved:
+    exchange: ModelExchange
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallsObserved:
+    calls: tuple[ToolCall, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolMessageObserved:
+    message: ConversationMessage
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeToolCall:
+    call: ToolCall
+
+
+@dataclass(frozen=True, slots=True)
+class KeepToolCall:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceToolCall:
+    call: ToolCall
+    kind: str = "replace"
+
+
+BeforeToolCallResult = KeepToolCall | ReplaceToolCall | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class AfterToolExecution:
+    execution: ToolExecution
+
+
+@dataclass(frozen=True, slots=True)
+class KeepExecution:
+    kind: str = "keep"
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceExecution:
+    execution: ToolExecution
+    kind: str = "replace"
+
+
+AfterToolExecutionResult = KeepExecution | ReplaceExecution | CompleteTurn
+
+
+@dataclass(frozen=True, slots=True)
+class ToolBatchObserved:
+    calls: tuple[ToolCall, ...]
+    executions: tuple[ToolExecution, ...]
+
+
 #: Events dispatched with ``ctx.serial`` (first non-None result is the answer).
 SHORT_CIRCUIT_EVENTS = frozenset({
-    Events.BEFORE_USER_MESSAGE_ACCEPT,
-    Events.BEFORE_CONTEXT,
-    Events.AFTER_CONTEXT,
+    Events.ON_TURN_INPUT,
+    Events.INPUT_ACCEPTED,
+    Events.BEFORE_CONTEXT_BUILD,
+    Events.AFTER_CONTEXT_BUILD,
     Events.BEFORE_MODEL_REQUEST,
-    Events.BEFORE_AGENT,
-    Events.BEFORE_TOOL_SCHEMA_BIND,
-    Events.AFTER_AGENT,
     Events.MODEL_REQUEST_ERROR,
-    Events.BEFORE_TOOLS,
     Events.BEFORE_TOOL_CALL,
-    Events.AFTER_TOOLS,
+    Events.AFTER_TOOL_CALL,
 })
 
 
-@dataclass
-class EventContext:
-    """Payload object passed to runtime event listeners.
-
-    Plugin listeners capture their declared services when they register;
-    event payloads never expose the application service container.
-    """
-
-    messages: Sequence[Message] = field(default_factory=tuple)
-    settings: LoopSettings | None = None
-    continuation: bool = False
-    session: SessionInfo | None = None
-    user_input: str | None = None
-    turn_complete: bool = False
-    context_messages: list[Message] | None = None
-    agent_response: ModelResponse | None = None
-    model_request: ModelRequest | None = None
-    model_response: ModelResponse | None = None
-    tool_calls: list[ToolCall] | None = None
-    tool_call: ToolCall | None = None
-    args: dict[str, JsonValue] | None = None
-    tool_result: Message | None = None
-    tool_results: list[Message] | None = None
-    error: BaseException | None = None
-    rebuild: bool = False
-    client_event: ClientEvent | None = None
-    stop_reason: str | None = None
-    request_id: str = ""
-    inbox_splice: InboxSplice | None = None
-
-
 __all__ = [
-    "EventContext",
+    "AcceptInput",
+    "AfterContextBuild",
+    "AfterContextBuildResult",
+    "AfterModelResponse",
+    "AfterModelResponseResult",
     "EventPort",
     "Events",
     "SHORT_CIRCUIT_EVENTS",
+    "AfterToolExecution",
+    "AfterToolExecutionResult",
+    "BeforeToolCall",
+    "BeforeToolCallResult",
+    "BeforeContextBuild",
+    "BeforeContextBuildResult",
+    "BeforeModelRequest",
+    "BeforeModelRequestResult",
+    "CompleteTurn",
+    "KeepExecution",
+    "InputAccepted",
+    "KeepContext",
+    "KeepContextRequest",
+    "KeepRequest",
+    "KeepResponse",
+    "KeepToolCall",
+    "ReplaceExecution",
+    "ReplaceContext",
+    "ReplaceContextRequest",
+    "ReplaceRequest",
+    "ReplaceResponse",
+    "ReplaceToolCall",
+    "ToolBatchObserved",
+    "LoopFailure",
+    "ModelRequestReady",
+    "ModelResponseObserved",
+    "ObserveInbox",
+    "OnModelFailure",
+    "OnModelFailureResult",
+    "OnTurnInput",
+    "OnTurnInputResult",
+    "PropagateFailure",
+    "RejectInput",
+    "RetryRequest",
+    "SessionLifecycle",
+    "StateChanged",
+    "ToolCallsObserved",
+    "ToolMessageObserved",
+    "TurnEnded",
+    "TurnStarted",
 ]

@@ -14,8 +14,10 @@ import time
 
 import pytest
 
+from XBotv2.core.domain import InputId, MessageId
 from XBotv2.core.history import HistoryCursorInvalid
-from XBotv2.core.messages import Message
+from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.persistence.store import ThreadPersistence
 
@@ -29,8 +31,14 @@ def _persistence(tmp_path) -> ThreadPersistence:
     return ThreadPersistence.create(
         RuntimePaths.from_data_dir(tmp_path).session("stress"),
         thread_id="t1",
-        workspace_root="/workspace",
-        provider="default",
+    )
+
+
+def _human(index: int) -> HumanInputMessage:
+    return HumanInputMessage(
+        id=MessageId(f"message-{index}"),
+        input_id=InputId(f"input-{index}"),
+        parts=(TextPart(text=f"m{index}"),),
     )
 
 
@@ -38,8 +46,7 @@ def _seed(persistence: ThreadPersistence, count: int) -> None:
     for start in range(0, count, 500):
         size = min(500, count - start)
         persistence.history.append([
-            Message(role="user", content=f"m{start + index}")
-            for index in range(size)
+            _human(start + index) for index in range(size)
         ])
 
 
@@ -49,15 +56,15 @@ def test_trajectory_paging_over_a_large_history_is_bounded(tmp_path):
 
     started = time.perf_counter()
     seen: list[int] = []
-    cursor: str | None = None
+    cursor = None
     pages = 0
     while True:
         page = persistence.history.page_trajectory(limit=PAGE, cursor=cursor)
         pages += 1
-        assert len(page.items) <= PAGE, "a page must not exceed the requested size"
+        assert len(page.page.items) <= PAGE, "a page must not exceed the requested size"
         assert page.newest_position == RECORDS
-        seen.extend(item.position for item in page.items)
-        cursor = page.next_cursor
+        seen.extend(item.position for item in page.page.items)
+        cursor = page.page.older_cursor
         if cursor is None:
             break
         assert pages <= RECORDS // PAGE + 1, "paging must terminate in page count"
@@ -80,11 +87,11 @@ def test_positional_anchoring_matches_the_cursor_walk(tmp_path):
     _seed(persistence, RECORDS)
 
     by_cursor: list[int] = []
-    cursor: str | None = None
+    cursor = None
     while True:
         page = persistence.history.page_trajectory(limit=PAGE, cursor=cursor)
-        by_cursor.extend(item.position for item in page.items)
-        cursor = page.next_cursor
+        by_cursor.extend(item.position for item in page.page.items)
+        cursor = page.page.older_cursor
         if cursor is None:
             break
 
@@ -94,10 +101,10 @@ def test_positional_anchoring_matches_the_cursor_walk(tmp_path):
     before: int | None = None
     while True:
         page = persistence.history.page_trajectory(limit=PAGE, before=before)
-        by_anchor.extend(item.position for item in page.items)
-        if not page.items or page.items[0].position == 1:
+        by_anchor.extend(item.position for item in page.page.items)
+        if not page.page.items or page.page.items[0].position == 1:
             break
-        before = page.items[0].position
+        before = page.page.items[0].position
 
     assert by_anchor == by_cursor
 

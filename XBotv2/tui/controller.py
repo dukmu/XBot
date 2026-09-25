@@ -13,13 +13,20 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Literal, Protocol, Sequence
 
-from XBotv2.jobs.contracts import JobSnapshot
+from XBotv2.jobs.contracts import JobView
+from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.contracts import ImageInput
-from XBotv2.tui.events import TranscriptCleared, UiEvent
-from XBotv2.tui.state import SessionState, reduce
+from XBotv2.tui.events import OlderHistoryRequested, TranscriptCleared, UiEvent
+from XBotv2.tui.state import (
+    HistoryKnown,
+    SessionState,
+    reduce,
+    release_oldest_loaded_page,
+)
 from XBotv2.tui.status import ServerTurn
 from XBotv2.tui.transport import TransportConfig, TransportSession
 from XBotv2.tui.view.composer import ComposerModel, composer_delivery
@@ -36,9 +43,12 @@ class ViewPort(Protocol):
 
     async def render_transcript(self, state: SessionState) -> bool: ...
 
+    @property
+    def reader_at_end(self) -> bool: ...
+
     def render_status(self, model: StatusLine) -> None: ...
 
-    def render_jobs(self, jobs: Sequence[JobSnapshot]) -> None: ...
+    def render_jobs(self, jobs: Sequence[JobView]) -> None: ...
 
     def render_queue(self, items: Sequence[PendingInputData]) -> None: ...
 
@@ -65,6 +75,8 @@ class TuiController:
         new_input_id: Callable[[], str] | None = None,
         workspace: str = "",
     ) -> None:
+        config = config or TransportConfig()
+        self._config = config
         self.state = SessionState()
         self._view = view
         self._clock = clock
@@ -101,8 +113,14 @@ class TuiController:
     # --- rendering ----------------------------------------------------
 
     async def flush(self) -> bool:
-        """Redraw the views if anything changed since the last flush."""
-        if not self._dirty:
+        """Redraw the views if anything changed since the last flush.
+
+        Retention is evaluated even when no event arrived: the reader returning
+        to the tail is a change only the view can see, and the pages they walked
+        past must not stay held until the next event happens to arrive.
+        """
+        released = self._release_held_pages()
+        if not self._dirty and not released:
             return False
         self._dirty = False
         await self._view.render_transcript(self.state)
@@ -111,6 +129,26 @@ class TuiController:
         self._view.render_queue(self.state.queue)
         self._view.render_composer(self.composer_model())
         return True
+
+    def _release_held_pages(self) -> bool:
+        """Bound residency by letting the reader's own oldest pages go.
+
+        Only while the reader is following the tail: a page they are looking at
+        must not be released under them. Nothing becomes unreachable -- each
+        release puts back the cursor that preceded the page, so it can be loaded
+        again -- and the window the attach returned is never released, so a
+        client that never paged back never shrinks.
+        """
+        released = False
+        while (
+            len(self.state.timeline) > self._config.history_retention
+            and self.state.loaded_pages
+        ):
+            if not self._view.reader_at_end:
+                return released
+            release_oldest_loaded_page(self.state)
+            released = True
+        return released
 
     async def flush_loop(self, interval: float = 0.1) -> None:
         """Redraw on a fixed cadence while events keep arriving.
@@ -192,7 +230,12 @@ class TuiController:
         # The submission consumed the attachments; a failure is reported
         # visibly, and the user re-attaches if they retry.
         self._attachments.clear()
-        await self.flush()
+        # Sending is an explicit return to the live conversation.  In
+        # particular, a tall multi-line composer can shrink the transcript and
+        # make Textual report that it is no longer at the end just before the
+        # input is submitted.  That layout artefact must not leave the reply
+        # below the viewport.
+        await self.go_to_tail()
         return input_id
 
     async def switch_session(
@@ -253,10 +296,56 @@ class TuiController:
         await self.transport.interrupt()
         await self.flush()
 
+    async def respond_permission(
+        self,
+        request_id: str,
+        decision: Literal["allow", "deny"],
+        scope: Literal["once", "session"] = "once",
+    ) -> None:
+        request = self.state.pending_interactions.get(request_id)
+        if not isinstance(request, PermissionRequest):
+            raise ValueError(f"No pending permission request {request_id!r}")
+        await self.transport.respond_permission(
+            request_id,
+            decision,
+            scope,
+        )
+
+    async def respond_user_input(self, request_id: str, answer: str) -> None:
+        request = self.state.pending_interactions.get(request_id)
+        if not isinstance(request, UserInputRequest):
+            raise ValueError(f"No pending user-input request {request_id!r}")
+        if not answer.strip():
+            raise ValueError("User-input answer must be non-empty")
+        await self.transport.respond_user_input(request_id, answer)
+
     async def page_older(self) -> bool:
-        moved = await self._view.page_older(self.state)
+        """Move the window back, or load the page before it.
+
+        Returns whether the reader's view of the conversation got older: moving
+        within what the client holds, or asking the server for the page before
+        the oldest entry it holds.
+        """
+        if await self._view.page_older(self.state):
+            await self.flush()
+            return True
+        loaded = await self.load_older()
         await self.flush()
-        return moved
+        return loaded
+
+    async def load_older(self) -> bool:
+        """Ask the server for the page before the oldest entry held.
+
+        One page at a time: while a page is in flight the reader's further asks
+        are already answered by it, and a failed page is retried on the next ask.
+        Nothing is requested when the client holds the beginning.
+        """
+        older = self.state.older
+        if not isinstance(older, HistoryKnown):
+            return False
+        self.dispatch(OlderHistoryRequested())
+        await self.transport.load_older(older.cursor)
+        return True
 
     async def page_newer(self) -> bool:
         moved = await self._view.page_newer(self.state)

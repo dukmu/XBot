@@ -20,19 +20,27 @@ from XBotv2.core.runtime_logging import (
     reset_log_context,
 )
 from XBotv2.core.errors import OperationError
-from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
-from XBotv2.core.messages import ImageContent, Message
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.core.tools import ClientEvent
+from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ImageRef
+from XBotv2.core.messages import ConversationMessage, HumanInputMessage, RuntimeNoticeMessage, ToolMessage
+from XBotv2.core.parts import ImagePart
+from XBotv2.core.tools import ToolFailed, ToolSucceeded
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.events import StateChanged
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.core.usage import (
+from XBotv2.usage import (
     USAGE_SNAPSHOT_KEY,
     USAGE_STATE_NAMESPACE,
-    UsageData,
 )
+from XBotv2.core.domain import Cursor, ReasoningGenerationMode, UsageSnapshot
 from XBotv2.core.providers import BaseProvider
-from XBotv2.permissions import PermissionsPort
+from XBotv2.permissions import Allowed, Denied, PermissionsPort
+from XBotv2.interactions import (
+    Answered,
+    InteractionNotPending,
+    InteractionResolution,
+)
 from XBotv2.core.timing import conversation_stats
 from XBotv2.session.runtime import SessionRuntime, require_idle, start_regenerate_turn
 from XBotv2.session.contracts import (
@@ -49,26 +57,24 @@ from XBotv2.session.contracts import (
     HistoryMutation,
     InteractionReceipt,
     InterruptResult,
-    OpenedSession,
+    OpenedThread,
     OpenSession,
     OpenThread,
     PendingInputData,
-    PendingInteractionData,
     PendingInputUpdate,
     RegenerateMessage,
     SendMessage,
     SessionExists,
     SessionEventSubscription,
     SessionNotFound,
-    SessionTrajectoryPage,
     SessionSummary,
     ThreadNotActive,
     ThreadSummary,
+    conversation_replay,
     new_session_id,
-    trajectory_replay,
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
-from XBotv2.core.history import ConversationPage, HistoryCursorInvalid
+from XBotv2.core.history import HistoryPage, HistoryCursorInvalid, TrajectoryRead
 from XBotv2.core.operations import (
     Operation,
     RequestT,
@@ -92,8 +98,8 @@ class SessionManager(SessionsPort):
         *,
         idle_timeout: float | None = 3600.0,
         reap_interval: float = 60.0,
+        application_factory: AgentApplicationFactory,
         thread_persistence_factory: ThreadPersistenceFactory | None = None,
-        application_factory: AgentApplicationFactory | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.paths = paths
@@ -117,8 +123,6 @@ class SessionManager(SessionsPort):
         session_paths: SessionPaths,
         *,
         thread_id: str,
-        workspace_root: str = "",
-        provider: str = "",
     ) -> ThreadPersistencePort:
         """Construct a persisted-state reader through the persistence host."""
         if self.thread_persistence_factory is None:
@@ -129,8 +133,6 @@ class SessionManager(SessionsPort):
         return self.thread_persistence_factory(
             session_paths,
             thread_id=thread_id,
-            workspace_root=workspace_root,
-            provider=provider,
         )
 
     def start_reaper(self) -> None:
@@ -197,7 +199,7 @@ class SessionManager(SessionsPort):
                 continue
             if age_seconds < self.empty_session_timeout:
                 continue
-            if persisted_thread_ids(self.paths, candidate.name):
+            if session_has_evidence(self.paths, candidate.name):
                 continue
             try:
                 shutil.rmtree(candidate)
@@ -239,22 +241,25 @@ class SessionManager(SessionsPort):
         boundary where the summary already reflects it.
         """
 
-        async def _on_changed(_: EventContext) -> None:
+        async def _on_changed(_: StateChanged) -> None:
             await self._publish_session_change(runtime.session_id)
 
         runtime.application.events.on(Events.STATE_CHANGED, _on_changed)
 
     async def _publish_session_change(self, session_id: str) -> None:
+        if not session_has_evidence(self.paths, session_id):
+            return
         try:
             summary = await self.session_summary(session_id)
         except Exception:  # noqa: BLE001 — a vanished session needs no catalog event
             return
-        if self._published_summaries.get(session_id) == summary:
+        previous = self._published_summaries.get(session_id)
+        if previous == summary:
             return
         self._published_summaries[session_id] = summary
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(summary),
+            SessionResourceChanged(summary, added=previous is None),
         )
 
     async def _close_runtime(
@@ -292,7 +297,7 @@ class SessionManager(SessionsPort):
         *,
         session_id: str | None,
         thread_id: str,
-        provider_name: str,
+        provider_name: str | None,
         workspace_root: str,
         selected_agent: str | None = None,
         mode: str = "new",
@@ -374,7 +379,7 @@ class SessionManager(SessionsPort):
         key: tuple[str, str],
         session_id: str,
         thread_id: str,
-        provider_name: str,
+        provider_name: str | None,
         workspace_root: str,
         selected_agent: str | None,
         mode: str,
@@ -405,11 +410,6 @@ class SessionManager(SessionsPort):
                 )
             if mode == "new" and session_paths.has_thread(thread_id):
                 raise SessionExists(f"{session_id}/{thread_id}")
-            if self.application_factory is None:
-                raise OperationError(
-                    "application_factory_unavailable",
-                    "session management has no Agent application factory",
-                )
             application = await self.application_factory(AgentApplicationOptions(
                 paths=self.paths,
                 provider_name=provider_name,
@@ -435,11 +435,7 @@ class SessionManager(SessionsPort):
                         "message persistence is not mounted",
                     )
             ctx = SessionRuntime(
-                session_id=session_id,
-                thread_id=thread_id,
-                provider_name=engine.settings.provider,
                 paths=self.paths,
-                workspace_root=workspace_root,
                 no_plugins=no_plugins,
                 application=application,
                 engine=engine,
@@ -465,15 +461,16 @@ class SessionManager(SessionsPort):
                 pending_resumed=pending_resumed,
                 duration_ms=round((time.perf_counter() - started) * 1000, 3),
             )
-            opened_summary = await self.session_summary(session_id)
-            self._published_summaries[session_id] = opened_summary
-            await self._events.emit(
-                SESSION_RESOURCE_CHANGED,
-                SessionResourceChanged(
-                    opened_summary,
-                    added=not session_preexisting,
-                ),
-            )
+            if mode == "resume" or session_has_evidence(self.paths, session_id):
+                opened_summary = await self.session_summary(session_id)
+                self._published_summaries[session_id] = opened_summary
+                await self._events.emit(
+                    SESSION_RESOURCE_CHANGED,
+                    SessionResourceChanged(
+                        opened_summary,
+                        added=not session_preexisting,
+                    ),
+                )
             return ctx
         except BaseException as exc:
             self._log.error(
@@ -529,18 +526,19 @@ class SessionManager(SessionsPort):
         *,
         reason: str = "session_closed",
     ) -> None:
+        close_errors: list[Exception] = []
         async with self._lock:
             opening = [
                 task
                 for (active_session_id, _), task in self._opening.items()
                 if active_session_id == session_id
             ]
-            contexts = [
-                ctx
+            contexts = {
+                (ctx.session_id, ctx.thread_id): ctx
                 for (active_session_id, _), ctx in self._sessions.items()
                 if active_session_id == session_id
-            ]
-            for ctx in contexts:
+            }
+            for ctx in contexts.values():
                 self._sessions.pop((ctx.session_id, ctx.thread_id), None)
         for task in opening:
             try:
@@ -549,9 +547,15 @@ class SessionManager(SessionsPort):
                 continue
             async with self._lock:
                 self._sessions.pop((runtime.session_id, runtime.thread_id), None)
-            contexts.append(runtime)
-        for ctx in contexts:
-            await self._close_runtime(ctx, reason)
+            # A build registers the runtime immediately before its opening task
+            # completes.  A close in that narrow window sees both references;
+            # the thread identity makes it one lifetime, not two closes.
+            contexts[(runtime.session_id, runtime.thread_id)] = runtime
+        for ctx in contexts.values():
+            try:
+                await self._close_runtime(ctx, reason)
+            except Exception as exc:
+                close_errors.append(exc)
         self._log.info(
             "session.closed",
             session_id=session_id,
@@ -559,7 +563,14 @@ class SessionManager(SessionsPort):
             reason=reason,
         )
         if contexts:
-            await self._emit_session_changed(session_id)
+            try:
+                await self._emit_session_changed(session_id)
+            except Exception as exc:
+                close_errors.append(exc)
+        if close_errors:
+            raise ExceptionGroup(
+                f"Failed to close session {session_id!r}", close_errors
+            )
 
     async def _emit_session_changed(self, session_id: str) -> None:
         if not self.session_exists(session_id):
@@ -567,6 +578,7 @@ class SessionManager(SessionsPort):
         await self._publish_session_change(session_id)
 
     async def close_all(self) -> None:
+        close_errors: list[Exception] = []
         async with self._lock:
             opening = list(self._opening.values())
         if opening:
@@ -579,7 +591,10 @@ class SessionManager(SessionsPort):
             self._sessions.clear()
         closed_sessions: dict[str, int] = {}
         for ctx in contexts:
-            await self._close_runtime(ctx, "session_closed")
+            try:
+                await self._close_runtime(ctx, "session_closed")
+            except Exception as exc:
+                close_errors.append(exc)
             closed_sessions[ctx.session_id] = (
                 closed_sessions.get(ctx.session_id, 0) + 1
             )
@@ -596,11 +611,19 @@ class SessionManager(SessionsPort):
                 threads=thread_count,
                 reason="session_closed",
             )
+            try:
+                await self._discard_empty_session(session_id)
+            except Exception as exc:
+                close_errors.append(exc)
         reaper = self._reaper
         self._reaper = None
         if reaper is not None and not reaper.done():
             reaper.cancel()
-            await asyncio.gather(reaper, return_exceptions=True)
+            result = (await asyncio.gather(reaper, return_exceptions=True))[0]
+            if isinstance(result, Exception):
+                close_errors.append(result)
+        if close_errors:
+            raise ExceptionGroup("Failed to close all session runtimes", close_errors)
 
     async def active_threads(self) -> dict[tuple[str, str], SessionRuntime]:
         async with self._lock:
@@ -615,6 +638,43 @@ class SessionManager(SessionsPort):
         async with self._lock:
             return self._sessions.get((session_id, thread_id))
 
+    async def _discard_empty_session(self, session_id: str) -> None:
+        """Delete an unwritten session during owner shutdown.
+
+        Reacquiring the stable cross-process lock serializes cleanup with a
+        different server that may open this session as the current one exits.
+        """
+        if session_has_evidence(self.paths, session_id):
+            return
+        session_paths = self.paths.session(session_id)
+        if not session_paths.root.exists():
+            return
+        try:
+            ownership = acquire_session(
+                session_paths.root,
+                label=f"cleanup/{session_id}",
+            )
+        except OperationError as exc:
+            if exc.code == "session_in_use":
+                return
+            raise
+        removed = False
+        try:
+            if ownership.count == 1 and not session_has_evidence(
+                self.paths, session_id
+            ):
+                shutil.rmtree(session_paths.root)
+                removed = True
+        finally:
+            ownership.release()
+        if not removed:
+            return
+        self._published_summaries.pop(session_id, None)
+        await self._events.emit(
+            SESSION_RESOURCE_REMOVED,
+            SessionResourceRemoved(session_id),
+        )
+
     async def _persisted_thread(
         self,
         session_id: str,
@@ -627,14 +687,17 @@ class SessionManager(SessionsPort):
         return self._thread_persistence(session, thread_id=thread_id)
 
     def session_exists(self, session_id: str) -> bool:
-        return self.paths.session(session_id).root.is_dir()
+        return self.paths.session(session_id).root.is_dir() or any(
+            active_session_id == session_id
+            for active_session_id, _thread_id in self._sessions
+        )
 
     def _require_session(self, session_id: str) -> None:
         """Validate a session id without reading any of its trajectories."""
         if not self.session_exists(session_id):
             raise SessionNotFound(session_id)
 
-    async def open(self, request: OpenSession) -> OpenedSession:
+    async def open(self, request: OpenSession) -> OpenedThread:
         runtime = await self.open_session(
             session_id=request.session_id,
             thread_id=request.thread_id,
@@ -654,12 +717,10 @@ class SessionManager(SessionsPort):
             path.name for path in root.iterdir() if path.is_dir()
         ) if root.is_dir() else []
         active = await self.active_threads()
-        active_session_ids = {sid for sid, _ in active}
         session_ids = [
             session_id
             for session_id in session_ids
-            if session_id in active_session_ids
-            or persisted_thread_ids(self.paths, session_id)
+            if session_has_evidence(self.paths, session_id)
         ]
         summaries = []
         for session_id in session_ids:
@@ -711,14 +772,18 @@ class SessionManager(SessionsPort):
             )
         active = active_threads.get((session_id, main_id))
         if active is not None:
-            await active.application.loop_state.metadata.update(title=value)
+            await active.application.loop_state.metadata.replace_title(value)
         else:
             persistence = self._thread_persistence(
                 self.paths.session(session_id),
                 thread_id=main_id,
-                workspace_root=summary.workspace_root,
             )
             metadata = persistence.metadata.load()
+            if metadata is None:
+                raise OperationError(
+                    "thread_metadata_missing",
+                    f"Thread {session_id}/{main_id} has no runtime metadata",
+                )
             persistence.metadata.save(metadata.model_copy(update={"title": value}))
         self._log.info("session.renamed", session_id=session_id)
         renamed = await self.session_summary(session_id)
@@ -810,7 +875,7 @@ class SessionManager(SessionsPort):
             for thread_id in sorted(thread_ids)
         ])
 
-    async def open_thread(self, request: OpenThread) -> OpenedSession:
+    async def open_thread(self, request: OpenThread) -> OpenedThread:
         await self.session_summary(request.session_id)
         parent_thread_id = request.parent_thread_id
         if request.mode == "resume":
@@ -823,9 +888,13 @@ class SessionManager(SessionsPort):
                 session,
                 thread_id=request.thread_id,
             )
-            parent_thread_id = str(
-                persistence.metadata.load().parent_thread_id
-            )
+            metadata = persistence.metadata.load()
+            if metadata is None:
+                raise OperationError(
+                    "thread_metadata_missing",
+                    f"Thread {request.session_id}/{request.thread_id} has no runtime metadata",
+                )
+            parent_thread_id = metadata.parent_thread_id
         if not parent_thread_id or parent_thread_id == request.thread_id:
             raise OperationError(
                 "invalid_request",
@@ -873,10 +942,11 @@ class SessionManager(SessionsPort):
         self,
         session_id: str,
         thread_id: str,
-    ) -> tuple[Message, ...]:
+    ) -> tuple[ConversationMessage, ...]:
+        """The visible conversation, as messages."""
         runtime = await self._runtime(session_id, thread_id)
         if runtime is not None:
-            return tuple(runtime.engine.messages)
+            return runtime.application.loop_state.history.snapshot()
         persistence = await self._persisted_thread(session_id, thread_id)
         return tuple(persistence.history.load_transcript())
 
@@ -885,36 +955,44 @@ class SessionManager(SessionsPort):
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None,
+        cursor: Cursor | None,
         limit: int | None,
-    ) -> ConversationPage:
+    ) -> HistoryPage[ConversationMessage]:
         if limit is None:
             if cursor is not None:
                 raise OperationError(
                     "invalid_cursor", "A message cursor requires a page limit."
                 )
-            return ConversationPage(await self.messages(session_id, thread_id))
-        persistence = await self._persisted_thread(session_id, thread_id)
+            return HistoryPage(
+                items=await self.messages(session_id, thread_id),
+                older_cursor=None,
+            )
         try:
-            page = persistence.history.page_transcript(limit=limit, cursor=cursor)
+            runtime = await self._runtime(session_id, thread_id)
+            if runtime is not None:
+                return runtime.application.history_pages.page(
+                    limit=limit,
+                    cursor=cursor,
+                )
+            persistence = await self._persisted_thread(session_id, thread_id)
+            return persistence.history.page_transcript(
+                limit=limit,
+                cursor=cursor,
+            )
         except HistoryCursorInvalid as exc:
             raise OperationError(
                 "invalid_cursor", str(exc)
             ) from exc
-        return ConversationPage(
-            messages=page.messages,
-            next_cursor=page.next_cursor,
-        )
 
     async def trajectory_page(
         self,
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None,
+        cursor: Cursor | None,
         limit: int,
         before: int | None = None,
-    ) -> SessionTrajectoryPage:
+    ) -> TrajectoryRead:
         persistence = await self._persisted_thread(session_id, thread_id)
         try:
             page = persistence.history.page_trajectory(
@@ -922,7 +1000,7 @@ class SessionManager(SessionsPort):
             )
         except HistoryCursorInvalid as exc:
             raise OperationError("invalid_cursor", str(exc)) from exc
-        return trajectory_replay(page)
+        return page
 
     async def artifact(
         self,
@@ -955,6 +1033,8 @@ class SessionManager(SessionsPort):
         self,
         session_id: str,
         thread_id: str,
+        *,
+        history_limit: int | None,
     ) -> HistoryMutation:
         runtime = await self.get(session_id, thread_id)
         require_idle(runtime, "rewrite history")
@@ -971,22 +1051,38 @@ class SessionManager(SessionsPort):
             removed_turns=removed,
         )
         await self._emit_session_changed(session_id)
-        return HistoryMutation(removed_turns=removed, messages=())
+        messages = runtime.application.loop_state.history.snapshot()
+        page = (
+            HistoryPage(items=messages, older_cursor=None)
+            if history_limit is None
+            else runtime.application.loop_state.history.page(limit=history_limit)
+        )
+        return HistoryMutation(
+            removed_turns=removed,
+            history=HistoryPage(
+                items=conversation_replay(page.items),
+                older_cursor=page.older_cursor,
+            ),
+            stats=conversation_stats(messages),
+        )
 
     async def undo_history(
         self,
         session_id: str,
         thread_id: str,
         count: int,
+        *,
+        history_limit: int | None,
     ) -> HistoryMutation:
         runtime = await self.get(session_id, thread_id)
         require_idle(runtime, "rewrite history")
         log_token = push_log_context(session_id=session_id, thread_id=thread_id)
         try:
             async with runtime.turn_lock:
-                messages = await runtime.application.history.undo_history(count)
+                await runtime.application.history.undo_history(count)
         finally:
             reset_log_context(log_token)
+        messages = runtime.application.loop_state.history.snapshot()
         self._log.info(
             "session.history.undone",
             session_id=session_id,
@@ -995,7 +1091,19 @@ class SessionManager(SessionsPort):
             remaining_messages=len(messages),
         )
         await self._emit_session_changed(session_id)
-        return HistoryMutation(removed_turns=count, messages=tuple(messages))
+        page = (
+            HistoryPage(items=messages, older_cursor=None)
+            if history_limit is None
+            else runtime.application.loop_state.history.page(limit=history_limit)
+        )
+        return HistoryMutation(
+            removed_turns=count,
+            history=HistoryPage(
+                items=conversation_replay(page.items),
+                older_cursor=page.older_cursor,
+            ),
+            stats=conversation_stats(messages),
+        )
 
     async def send_message(self, request: SendMessage) -> None:
         runtime = await self.get(request.session_id, request.thread_id)
@@ -1022,7 +1130,7 @@ class SessionManager(SessionsPort):
     def _store_message_inputs(
         runtime: SessionRuntime,
         request: SendMessage,
-    ) -> tuple[list[ImageContent], list[ArtifactRef]]:
+    ) -> tuple[list[ImageRef], list[ArtifactRef]]:
         images = []
         for item in request.images:
             ref = runtime.application.artifacts.put(
@@ -1031,7 +1139,7 @@ class SessionManager(SessionsPort):
                 media_type=item.media_type,
             )
             images.append(
-                ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
+                ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size)
             )
         attachments = [
             runtime.application.artifacts.put(
@@ -1104,13 +1212,19 @@ class SessionManager(SessionsPort):
         decision: str,
         scope: str,
     ) -> InteractionReceipt:
+        if decision == "allow":
+            if scope not in {"once", "session"}:
+                raise OperationError("invalid_permission_scope", scope)
+            resolution: InteractionResolution = Allowed(scope=scope)
+        elif decision == "deny":
+            resolution = Denied(reason="permission denied")
+        else:
+            raise OperationError("invalid_permission_decision", decision)
         return await self._respond_interaction(
             session_id,
             thread_id,
-            "permission_request",
             request_id,
-            decision=decision,
-            scope=scope,
+            resolution,
         )
 
     async def respond_user_input(
@@ -1123,9 +1237,8 @@ class SessionManager(SessionsPort):
         return await self._respond_interaction(
             session_id,
             thread_id,
-            "user_input_required",
             request_id,
-            answer=answer,
+            Answered(answer=answer),
         )
 
     async def cancel_interaction(
@@ -1137,50 +1250,33 @@ class SessionManager(SessionsPort):
         reason: str,
     ) -> InteractionReceipt:
         runtime = await self.get(session_id, thread_id)
-        waiter = runtime.application.client_events.waiter(event_type)
-        if waiter is None:
-            raise OperationError(
-                "capability_unavailable",
-                f"No waiter is registered for {event_type!r}",
-            )
         try:
-            waiter.cancel(request_id, reason)
-        except Exception as exc:
+            return runtime.application.client_events.cancel(
+                request_id,
+                reason,
+                expected_kind=event_type,
+            )
+        except (InteractionNotPending, TypeError) as exc:
             raise OperationError(
                 "interaction_no_longer_pending",
                 str(exc),
             ) from exc
-        return InteractionReceipt(
-            request_id=request_id,
-            pending_interactions=tuple(pending_interactions(runtime)),
-        )
 
     async def _respond_interaction(
         self,
         session_id: str,
         thread_id: str,
-        event_type: str,
         request_id: str,
-        **values: JsonValue,
+        resolution: InteractionResolution,
     ) -> InteractionReceipt:
         runtime = await self.get(session_id, thread_id)
-        waiter = runtime.application.client_events.waiter(event_type)
-        if waiter is None:
-            raise OperationError(
-                "capability_unavailable",
-                f"No waiter is registered for {event_type!r}",
-            )
         try:
-            waiter.answer(request_id, **values)
-        except Exception as exc:
+            return runtime.application.client_events.resolve(request_id, resolution)
+        except (InteractionNotPending, TypeError) as exc:
             raise OperationError(
                 "interaction_no_longer_pending",
                 str(exc),
             ) from exc
-        return InteractionReceipt(
-            request_id=request_id,
-            pending_interactions=tuple(pending_interactions(runtime)),
-        )
 
     async def interrupt(
         self,
@@ -1279,29 +1375,21 @@ def _has_persisted_session(
     return thread_has_evidence(session_paths, thread_id)
 
 
-async def _opened_session(runtime: SessionRuntime) -> OpenedSession:
+async def _opened_session(runtime: SessionRuntime) -> OpenedThread:
     event_cursor = runtime.event_stream.sequence
     snapshot = await runtime.application.snapshot()
-    return OpenedSession(
-        session_id=runtime.session_id,
-        thread_id=runtime.thread_id,
-        title=snapshot.metadata.title,
-        agent_name=snapshot.agent,
-        workspace_root=runtime.workspace_root,
-        provider=runtime.provider_name,
-        model=snapshot.model,
-        model_mode=snapshot.model_mode,
-        context_window=snapshot.context_window,
+    return OpenedThread(
+        key=runtime.application.loop_state.session.key,
+        metadata=snapshot.metadata,
         usage=snapshot.usage,
-        session_stats=conversation_stats(snapshot.messages),
-        history=snapshot.messages,
+        history=HistoryPage(
+            items=conversation_replay(snapshot.messages),
+            older_cursor=None,
+        ),
         status_slots=snapshot.status_slots,
         event_cursor=event_cursor,
         pending_inputs=runtime.pending_inputs(),
-        pending_interactions=tuple(
-            PendingInteractionData(type=event.type, data=dict(event.data))
-            for event in runtime.application.client_events.pending_interactions()
-        ),
+        pending_interactions=tuple(runtime.application.client_events.pending_interactions()),
     )
 
 
@@ -1335,6 +1423,16 @@ def persisted_thread_ids(paths: RuntimePaths, session_id: str) -> list[str]:
     return sorted(thread_ids)
 
 
+def session_has_evidence(paths: RuntimePaths, session_id: str) -> bool:
+    """Whether a session contains user-meaningful durable state."""
+    session = paths.session(session_id)
+    return (
+        session.config_file.is_file()
+        or session.threads_log.is_file()
+        or bool(persisted_thread_ids(paths, session_id))
+    )
+
+
 def _session_runtimes(
     active: Mapping[tuple[str, str], SessionRuntime],
     session_id: str,
@@ -1356,6 +1454,7 @@ async def _thread_summary(
         snapshot = await active.application.snapshot()
         metadata = snapshot.metadata
         parent_thread_id = metadata.parent_thread_id
+        mode = metadata.runtime_selection.model.generation.mode
         return ThreadSummary(
             session_id=session_id,
             thread_id=thread_id,
@@ -1363,11 +1462,11 @@ async def _thread_summary(
             kind="subagent" if parent_thread_id else "main",
             turn_status="running" if active.turn_lock.locked() else "idle",
             parent_thread_id=parent_thread_id,
-            agent=metadata.agent or snapshot.agent,
+            agent=metadata.runtime_selection.agent_name,
             provider=active.provider_name,
-            model=snapshot.model,
-            model_mode=snapshot.model_mode,
-            context_window=snapshot.context_window,
+            model=metadata.runtime_selection.model.route.model,
+            model_mode=mode.effort if isinstance(mode, ReasoningGenerationMode) else "",
+            context_window=metadata.runtime_selection.model.context_window,
             message_count=len(snapshot.messages),
             usage=snapshot.usage,
             session_stats=conversation_stats(snapshot.messages),
@@ -1379,21 +1478,23 @@ async def _thread_summary(
 
     persistence = await manager._persisted_thread(session_id, thread_id)
     metadata = persistence.metadata.load()
+    if metadata is None:
+        raise SessionNotFound(f"{session_id}/{thread_id}")
     parent_thread_id = metadata.parent_thread_id
-    nodes = persistence.history.load_surface()
-    messages = [node.message for node in nodes]
+    mode = metadata.runtime_selection.model.generation.mode
+    messages = persistence.history.load_surface()
     return ThreadSummary(
         session_id=session_id,
         thread_id=thread_id,
         status="inactive",
         kind="subagent" if parent_thread_id else "main",
         parent_thread_id=parent_thread_id,
-        agent=metadata.agent,
-        provider=metadata.provider,
-        model=metadata.model,
-        model_mode=metadata.model_mode,
-        context_window=metadata.context_window,
-        message_count=len(nodes),
+        agent=metadata.runtime_selection.agent_name,
+        provider=metadata.runtime_selection.model.route.provider,
+        model=metadata.runtime_selection.model.route.model,
+        model_mode=mode.effort if isinstance(mode, ReasoningGenerationMode) else "",
+        context_window=metadata.runtime_selection.model.context_window,
+        message_count=len(messages),
         usage=await _read_usage(persistence),
         session_stats=conversation_stats(messages),
         workspace_root=metadata.workspace_root,
@@ -1403,15 +1504,15 @@ async def _thread_summary(
 
 async def _read_usage(
     persistence: ThreadPersistencePort,
-) -> UsageData:
+) -> UsageSnapshot:
     stored = await persistence.state.namespace(USAGE_STATE_NAMESPACE).get(
         USAGE_SNAPSHOT_KEY
     )
     if stored is None:
-        return UsageData()
+        return UsageSnapshot()
     if not isinstance(stored, dict):
         raise TypeError("Persisted usage snapshot must be an object")
-    return UsageData.from_snapshot(stored)
+    return UsageSnapshot.model_validate(stored)
 
 
 def _upload_bytes(data: str) -> bytes:
@@ -1425,21 +1526,29 @@ def _upload_bytes(data: str) -> bytes:
 
 
 def _history_artifact(
-    messages: tuple[Message, ...],
+    messages: tuple[ConversationMessage, ...],
     artifact_id: str,
 ) -> ArtifactRef | None:
     for message in messages:
-        for image in message.images:
-            if image.path == artifact_id:
-                return ArtifactRef(
-                    id=image.path,
-                    kind=ArtifactKind.MEDIA,
-                    media_type=image.media_type,
-                    size=image.size,
-                )
-        for value in message.artifact or []:
-            if isinstance(value, ArtifactRef) and value.id == artifact_id:
-                return value
+        if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
+            for artifact in message.artifacts:
+                if artifact.id == artifact_id:
+                    return artifact
+            images = [part.image for part in message.parts if isinstance(part, ImagePart)]
+            for image in images:
+                if image.artifact_id == artifact_id:
+                    return ArtifactRef(
+                        id=image.artifact_id,
+                        kind=ArtifactKind.MEDIA,
+                        media_type=image.media_type,
+                        size=image.size,
+                    )
+        if isinstance(message, ToolMessage):
+            outcome = message.outcome
+            if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+                for image in outcome.output.artifacts:
+                    if image.id == artifact_id:
+                        return image
     return None
 
 

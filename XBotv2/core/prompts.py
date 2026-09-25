@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from xml.etree import ElementTree
 from xml.sax.saxutils import escape, quoteattr
 from pydantic import JsonValue
 
 _TAG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
-CACHED_CONTENT_KEY = "xbotv2_cached_content"
-DISPLAY_CONTENT_KEY = "xbotv2_display_content"
 MESSAGE_FORMAT_KEY = "xbotv2_message_format"
 
 
@@ -35,97 +32,6 @@ def prompt_container(
     opening = _opening_tag(name, attributes)
     body = "\n\n".join(child for child in children if child)
     return f"{opening}\n{body}\n</{name}>"
-
-
-def cached_content_prompt(
-    *,
-    kind: str,
-    cache_path: str,
-    original_chars: int,
-    omitted_chars: int,
-    beginning: str,
-    ending: str,
-    sha256: str | None = None,
-    inline_limit_chars: int | None = None,
-    cache_threshold_chars: int | None = None,
-) -> str:
-    """Render one cache reference without exposing raw text as markup."""
-    metadata = {
-        "kind": kind,
-        "original_chars": original_chars,
-        "omitted_chars": omitted_chars,
-        "inline_limit_chars": inline_limit_chars,
-        "cache_threshold_chars": cache_threshold_chars,
-    }
-    children = [prompt_element("cache_path", cache_path)]
-    if sha256:
-        children.append(prompt_element("sha256", sha256))
-    children.extend([
-        prompt_container(
-            "preview",
-            [
-                prompt_element("beginning", beginning),
-                prompt_element("ending", ending),
-            ],
-        ),
-        prompt_element(
-            "read_instruction",
-            "The cache_path is an absolute filesystem path in this runtime. Pass it "
-            "unchanged to the read tool. It is read-only. "
-            "Use offset and limit before acting when "
-            "omitted content may matter. For a long single line, continue with "
-            "next_offset and next_char_offset.",
-        ),
-    ])
-    return prompt_container("cached_content", children, attributes=metadata)
-
-
-def content_preview(
-    content: str,
-    *,
-    preview_chars: int,
-    tail_chars: int,
-) -> tuple[str, str]:
-    """Split a bounded preview into leading and trailing text."""
-    if preview_chars < 0:
-        raise ValueError("preview_chars must be non-negative")
-    if tail_chars < 0 or tail_chars > preview_chars:
-        raise ValueError("tail_chars must be between zero and preview_chars")
-    size = min(preview_chars, len(content))
-    tail_size = min(tail_chars, size)
-    head_size = size - tail_size
-    return content[:head_size], content[-tail_size:] if tail_size else ""
-
-
-def tool_result_display_content(content: str) -> str:
-    """Extract client-facing text from a structured Tool result."""
-    try:
-        root = ElementTree.fromstring(content)
-    except ElementTree.ParseError:
-        return content
-    if root.tag == "cached_content":
-        return _cached_content_display(root)
-    if root.tag != "tool_result":
-        return content
-    text = root.findtext("content")
-    if text is not None:
-        return _rendered_element_text(text)
-    cached = root.find("cached_content")
-    if cached is not None:
-        return _cached_content_display(cached)
-    return ""
-
-
-def _rendered_element_text(value: str) -> str:
-    if value.startswith("\n") and value.endswith("\n"):
-        return value[1:-1]
-    return value
-
-
-def _cached_content_display(element: ElementTree.Element) -> str:
-    path = (element.findtext("cache_path") or "").strip()
-    original_chars = element.attrib.get("original_chars", "unknown")
-    return f"Tool result cached at {path} ({original_chars} characters)."
 
 
 def _opening_tag(
@@ -161,12 +67,7 @@ def _is_xml_character(codepoint: int) -> bool:
 
 
 __all__ = [
-    "CACHED_CONTENT_KEY",
-    "DISPLAY_CONTENT_KEY",
     "MESSAGE_FORMAT_KEY",
-    "cached_content_prompt",
-    "content_preview",
     "prompt_container",
     "prompt_element",
-    "tool_result_display_content",
 ]

@@ -52,7 +52,7 @@
   name: llm
   profiles: [agent, server]
   config:
-    default: minimax
+    default_provider: minimax
     providers:
       minimax:
         protocol: anthropic
@@ -169,42 +169,42 @@
 - id: permissions
   name: permissions
   config:
-    allow:
-      - tool: (?:create_goal|get_goal)
-      - tool: compact
-      - tool: (?:list_shells|wait_shell|read_shell|cancel_shell)
-      - tool: (?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)
-      - tool: (?:send_message|ask_user|request_permission)
-      - tool: search
-      - tool: (?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)
-      - tool: (?:task_create|task_get|task_update|task_list)
-      - tool: read
-      - tool: edit
-        paths: ${workspace}
-      - tool: path
-        paths: ${workspace}
-      - tool: shell
-    ask:
-      - tool: (?:browser_click|browser_fill|browser_press|browser_select)
-      - tool: edit
-      - tool: path
-      - tool: shell
-        params:
+    default_decision: ask
+    rules:
+      - {tool_pattern: '(?:create_goal|get_goal)', decision: allow}
+      - {tool_pattern: compact, decision: allow}
+      - {tool_pattern: '(?:list_shells|wait_shell|read_shell|cancel_shell)', decision: allow}
+      - {tool_pattern: '(?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)', decision: allow}
+      - {tool_pattern: '(?:send_message|ask_user|request_permission)', decision: allow}
+      - {tool_pattern: search, decision: allow}
+      - {tool_pattern: '(?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)', decision: allow}
+      - {tool_pattern: '(?:task_create|task_get|task_update|task_list)', decision: allow}
+      - {tool_pattern: read, decision: allow}
+      - tool_pattern: edit
+        path_scope: ${workspace}
+        decision: allow
+      - tool_pattern: path
+        path_scope: ${workspace}
+        decision: allow
+      - {tool_pattern: shell, decision: allow}
+      - {tool_pattern: '(?:browser_click|browser_fill|browser_press|browser_select)', decision: ask}
+      - {tool_pattern: edit, decision: ask}
+      - {tool_pattern: path, decision: ask}
+      - tool_pattern: shell
+        param_patterns:
           sandbox_permissions: require_escalated
-    deny:
-      - tool: .*
-        params:
+        decision: ask
+      - tool_pattern: .*
+        param_patterns:
           command: rm -rf /.*
+        decision: deny
 
 - id: coretools
   name: coretools
   config:
-    tool_results:
-      cache_threshold_chars: 12000
-      preview_chars: 8000
-      tail_chars: 2000
     hooks: []
-    tools: null
+    enabled_tools:
+      kind: all
     workspace_tools: []
 
 - id: subagents
@@ -235,7 +235,7 @@
 - id: content_cache
   name: content_cache
   config:
-    cache_threshold_chars: 48000
+    threshold_chars: 48000
     preview_chars: 12000
     tail_chars: 2000
 

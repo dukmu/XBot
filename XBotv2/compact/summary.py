@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from pydantic import JsonValue
+from collections.abc import Sequence
 
-from XBotv2.core import (
-    MESSAGE_FORMAT_KEY,
-    Message,
-    prompt_container,
-    prompt_element,
-)
+from XBotv2.core import prompt_container, prompt_element
+from XBotv2.core.messages import CompactionSummaryMessage, ConversationMessage
+from XBotv2.core.parts import TextPart
+from XBotv2.core.provider import ProviderMessage, ProviderSystem, ProviderUser
+from XBotv2.context_builder.builder import ContextBuilder
+from XBotv2.context_builder.contracts import BuiltContext, HistoryComponent
 
 
 _SUMMARY_HEADING = "## Conversation Summary"
@@ -18,11 +17,11 @@ _TRUNCATION_MARKER = "\n\n[Middle of overlong summary omitted]\n\n"
 
 
 def summary_request(
-    messages: Sequence[Message],
+    messages: Sequence[ConversationMessage],
     max_chars: int,
     *,
-    stable_prefix: Message | Sequence[Message] | None = None,
-) -> list[Message]:
+    stable_prefix: ProviderMessage | Sequence[ProviderMessage] | None = None,
+) -> list[ProviderMessage]:
     instruction = (
         "Summarize the supplied older conversation for future continuation. "
         "Preserve the current objective and constraints, human corrections, accepted "
@@ -37,26 +36,19 @@ def summary_request(
         f"{max_chars} characters."
     )
     if stable_prefix is None:
-        stable: tuple[Message, ...] = ()
-    elif isinstance(stable_prefix, Message):
+        stable: tuple[ProviderMessage, ...] = ()
+    elif isinstance(stable_prefix, (ProviderSystem, ProviderUser)):
         stable = (stable_prefix,)
     else:
         stable = tuple(stable_prefix)
 
     return [
         *stable,
-        Message(
-            role="system",
-            content=prompt_element("summary_instructions", instruction),
+        ProviderSystem(parts=(TextPart(text=prompt_element("summary_instructions", instruction)),)),
+        *ContextBuilder.messages_from_components(
+            BuiltContext([HistoryComponent(message) for message in messages])
         ),
-        *messages,
-        Message(
-            role="user",
-            content=prompt_element(
-                "summary_request",
-                "Produce the conversation summary now.",
-            ),
-        ),
+        ProviderUser(parts=(TextPart(text=prompt_element("summary_request", "Produce the conversation summary now.")),)),
     ]
 
 
@@ -95,46 +87,18 @@ def limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
     return limited[:max_chars], True
 
 
-def compacted_message(summary: str, *, reason: str) -> Message:
-    return Message(
-        role="system",
-        content=prompt_container(
-            "historical_context",
-            [
-                prompt_element(
-                    "conversation_summary",
-                    summary,
-                    attributes={"reason": reason},
-                ),
-            ],
-            attributes={"source": "compaction"},
-        ),
-        additional_kwargs={MESSAGE_FORMAT_KEY: "xml"},
+def compacted_message(summary: str, *, reason: str) -> CompactionSummaryMessage:
+    return CompactionSummaryMessage(
+        id=f"summary-{abs(hash((summary, reason)))}",
+        summary=prompt_container("historical_context", [prompt_element(
+            "conversation_summary", summary, attributes={"reason": reason})],
+            attributes={"source": "compaction"}),
     )
-
-
-def model_usage(usage: Mapping[str, JsonValue] | None) -> dict[str, int]:
-    usage = usage or {}
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    result = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": int(
-            usage.get("total_tokens") or input_tokens + output_tokens
-        ),
-        "context_tokens": int(usage.get("context_tokens") or input_tokens),
-    }
-    for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
-        if usage.get(key) is not None:
-            result[key] = int(usage[key])
-    return result
 
 
 __all__ = [
     "compacted_message",
     "limit_summary",
-    "model_usage",
     "normalize_summary",
     "strip_summary_heading",
     "summary_request",

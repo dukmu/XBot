@@ -1,185 +1,145 @@
-import asyncio
+"""Usage aggregation over provider-neutral request observations."""
 
 import pytest
+from xcore import Context
 from xcore.state import StateService
 
-from XBotv2.core.messages import Message
-from XBotv2.usage.plugin import UsageService
-from XBotv2.core.usage import UsageData
-
-
-@pytest.mark.asyncio
-async def test_usage_owns_typed_snapshot_in_state_namespace(tmp_path):
-    state = StateService(path=tmp_path / "state.json").namespace("usage")
-    history = [Message(
-        role="assistant",
-        content="done",
-        usage_metadata={"input_tokens": 10, "output_tokens": 4},
-    )]
-
-    usage = UsageService(state)
-    await usage.initialize(history)
-    await usage.add({"input_tokens": 3, "output_tokens": 2})
-
-    restored = UsageService(state)
-    await restored.initialize([])
-    assert restored.snapshot().model_dump() == {
-        "input_tokens": 13,
-        "output_tokens": 6,
-        "total_tokens": 19,
-        "requests": 2,
-        "context_tokens": 3,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "prompt_cache_write_tokens": 0,
-    }
-
-
-@pytest.mark.asyncio
-async def test_usage_records_cache_only_request_and_explicit_zero_context(tmp_path):
-    usage = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage")
-    )
-    await usage.initialize([])
-
-    assert await usage.add({
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 12,
-        "cache_creation_input_tokens": 3,
-        "prompt_cache_write_tokens": 2,
-        "context_tokens": 0,
-        "requests": 0,
-    }) == {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 17,
-        "requests": 0,
-        "context_tokens": 0,
-        "cache_read_input_tokens": 12,
-        "cache_creation_input_tokens": 3,
-        "prompt_cache_write_tokens": 2,
-    }
-
-    assert usage.snapshot().model_dump() == {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 17,
-        "requests": 0,
-        "context_tokens": 0,
-        "cache_read_input_tokens": 12,
-        "cache_creation_input_tokens": 3,
-        "prompt_cache_write_tokens": 2,
-    }
-
-
-@pytest.mark.asyncio
-async def test_auxiliary_usage_accumulates_without_replacing_main_context(tmp_path):
-    usage = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage")
-    )
-    await usage.initialize([])
-    await usage.add({
-        "input_tokens": 100,
-        "output_tokens": 10,
-        "context_tokens": 100,
-    })
-
-    event = await usage.add(
-        {
-            "input_tokens": 20,
-            "output_tokens": 5,
-            "context_tokens": 20,
-        },
-        update_context=False,
-    )
-
-    assert event is not None
-    assert event["context_tokens"] == 100
-    assert event["input_tokens"] == 20
-    assert usage.snapshot().model_dump() == {
-        "input_tokens": 120,
-        "output_tokens": 15,
-        "total_tokens": 135,
-        "requests": 2,
-        "context_tokens": 100,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "prompt_cache_write_tokens": 0,
-    }
-
-
-@pytest.mark.asyncio
-async def test_concurrent_usage_and_context_updates_are_serialized(tmp_path):
-    usage = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage")
-    )
-    await usage.initialize([])
-
-    await asyncio.gather(*(
-        usage.add({
-            "input_tokens": 1,
-            "output_tokens": 1,
-            "context_tokens": index + 1,
-        })
-        for index in range(32)
-    ))
-    await usage.update_context(777)
-
-    assert usage.snapshot().input_tokens == 32
-    assert usage.snapshot().output_tokens == 32
-    assert usage.snapshot().requests == 32
-    assert usage.snapshot().context_tokens == 777
-
-    restored = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage")
-    )
-    await restored.initialize([])
-    assert restored.snapshot() == usage.snapshot()
-
-
-@pytest.mark.asyncio
-async def test_context_projection_updates_without_counting_a_request(tmp_path):
-    usage = UsageService(StateService(path=tmp_path / "state.json"))
-    await usage.initialize([])
-    await usage.add({"input_tokens": 100, "output_tokens": 5})
-
-    event = await usage.update_context(24)
-
-    assert event == {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "requests": 0,
-        "context_tokens": 24,
-    }
-    assert usage.snapshot().requests == 1
-    assert usage.snapshot().total_tokens == 105
-    assert usage.snapshot().context_tokens == 24
-
-
-@pytest.mark.asyncio
-async def test_zero_token_and_total_only_requests_are_not_dropped(tmp_path):
-    state_file = tmp_path / "state.json"
-    usage = UsageService(StateService(path=state_file).namespace("usage"))
-    await usage.initialize([])
-
-    assert not state_file.exists()
-    assert await usage.add({"input_tokens": 0, "output_tokens": 0})
-    assert await usage.add({"total_tokens": 9})
-
-    assert usage.snapshot().requests == 2
-    assert usage.snapshot().total_tokens == 9
-
-
-@pytest.mark.parametrize(
-    "value, error",
-    [
-        ({"input_tokens": -1}, "non-negative"),
-        ({"requests": True}, "non-negative"),
-        ({"provider_tokens": 1}, "Unknown usage fields"),
-    ],
+from XBotv2.core.domain import (
+    AuxiliaryRequest,
+    GenerationSettings,
+    MeasurementUnavailable,
+    ModelRoute,
+    ProviderMeasured,
+    RequestObservation,
+    ResolvedModelSelection,
+    StandardGenerationMode,
+    TokenCounters,
+    TurnRequest,
+    TurnId,
+    UsageDelta,
+    UsageSnapshot,
 )
-def test_usage_delta_rejects_invalid_provider_fields(value, error):
-    with pytest.raises(ValueError, match=error):
-        UsageData.from_provider(value)
+from XBotv2.usage.plugin import UsageService
+
+
+def _selection() -> ResolvedModelSelection:
+    return ResolvedModelSelection(
+        route=ModelRoute(provider="mock", model="test"),
+        generation=GenerationSettings(
+            mode=StandardGenerationMode(), max_output_tokens=128,
+        ),
+        context_window=4096,
+    )
+
+
+def _observation(purpose, context=0) -> RequestObservation:
+    observed = (
+        ProviderMeasured(tokens=context)
+        if context is not None
+        else MeasurementUnavailable(reason="provider omitted context usage")
+    )
+    return RequestObservation(
+        selection=_selection(),
+        purpose=purpose,
+        estimated_input_tokens=0,
+        observed_context=observed,
+    )
+
+
+def test_token_counters_adds_each_domain_counter():
+    current = TokenCounters(
+        input=10,
+        output=4,
+        cache_read=3,
+        cache_create=2,
+        prompt_cache_write=1,
+    )
+    delta = TokenCounters(
+        input=5,
+        output=6,
+        cache_read=7,
+        cache_create=8,
+        prompt_cache_write=9,
+    )
+
+    assert current.add(delta) == TokenCounters(
+        input=15,
+        output=10,
+        cache_read=10,
+        cache_create=10,
+        prompt_cache_write=10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_usage_records_typed_deltas_and_restores_one_snapshot(tmp_path):
+    store = StateService(path=tmp_path / "state.json").namespace("usage")
+    usage = UsageService(store, Context())
+    await usage.initialize(())
+    observation = _observation(TurnRequest(turn_id=TurnId("turn-1")), 24)
+
+    snapshot = await usage.record(
+        observation,
+        UsageDelta(counters=TokenCounters(
+            input=10,
+            output=4,
+            cache_read=2,
+            cache_create=3,
+            prompt_cache_write=1,
+        )),
+    )
+    assert snapshot.total_counters == TokenCounters(
+        input=10,
+        output=4,
+        cache_read=2,
+        cache_create=3,
+        prompt_cache_write=1,
+    )
+    assert snapshot.latest_turn_observation == observation
+    assert snapshot.requests == (observation,)
+
+    restored = UsageService(store, Context())
+    await restored.initialize(())
+    assert restored.snapshot() == snapshot
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_request_accumulates_without_replacing_turn_context(tmp_path):
+    usage = UsageService(
+        StateService(path=tmp_path / "state.json").namespace("usage"), Context(),
+    )
+    await usage.initialize(())
+    turn = _observation(TurnRequest(turn_id=TurnId("turn-1")), 100)
+    auxiliary = _observation(
+        AuxiliaryRequest(owner="caption", operation_id="title-1"), None,
+    )
+
+    await usage.record(turn, UsageDelta(counters=TokenCounters(input=100, output=10)))
+    snapshot = await usage.record(
+        auxiliary,
+        UsageDelta(counters=TokenCounters(input=20, output=5)),
+    )
+
+    assert snapshot.total_counters == TokenCounters(input=120, output=15)
+    assert snapshot.latest_turn_observation == turn
+    assert snapshot.requests == (turn, auxiliary)
+    assert snapshot.requests[-1].observed_context == MeasurementUnavailable(
+        reason="provider omitted context usage",
+    )
+
+
+@pytest.mark.asyncio
+async def test_usage_service_requires_initialization_before_recording(tmp_path):
+    usage = UsageService(
+        StateService(path=tmp_path / "state.json").namespace("usage"), Context(),
+    )
+    with pytest.raises(RuntimeError, match="initialized"):
+        await usage.record(
+            _observation(TurnRequest(turn_id=TurnId("turn-1"))), UsageDelta(
+                counters=TokenCounters(),
+            ),
+        )
+
+
+def test_usage_snapshot_starts_with_no_latest_turn_observation():
+    assert UsageSnapshot().latest_turn_observation is None

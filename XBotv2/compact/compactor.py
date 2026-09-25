@@ -6,35 +6,43 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
-from pydantic import JsonValue
 
-from XBotv2.core import (
-    ClientEvent,
-    Message,
-    ModelResponse,
-    estimate_messages_tokens,
-    estimate_request_tokens,
+from XBotv2.core import estimate_messages_tokens, estimate_model_request_tokens
+from XBotv2.core.messages import ConversationMessage
+from XBotv2.core.domain import (
+    AuxiliaryRequest,
+    RequestObservation,
+    ResolvedModelSelection,
+    TransactionAborted,
+    TransactionFailed,
+    TransactionEnded,
+    TransactionRef,
+    TransactionStarted,
+    UsageDelta,
 )
-from XBotv2.core.tools import Tool
-from XBotv2.core.timing import SESSION_STATS_METADATA_KEY, conversation_stats
+from XBotv2.core.parts import TextPart
+from XBotv2.core.provider import ModelRequest
+from XBotv2.core.tools import ToolCall
+from XBotv2.core.timing import conversation_stats
 from XBotv2.llm.contracts import ModelPort
-from XBotv2.session.contracts import SessionInfo
+from XBotv2.session.contracts import SessionRuntimeState
 
 from XBotv2.compact.history import (
     compact_prefix_end,
     history_chars,
     tool_pairing_boundaries,
 )
-from XBotv2.compact.contracts import CompactionProposal
+from XBotv2.compact.contracts import CompactionPlan, CompactionSelection
+from XBotv2.core.domain import HistoryRevision, MessageId
 from XBotv2.compact.protocol import (
+    CompactionFailed,
     CompactionMetrics,
     CompactionReason,
-    compact_event,
+    CompactionStarted,
     is_automatic_compaction,
 )
 from XBotv2.compact.summary import (
     compacted_message,
-    model_usage,
     normalize_summary,
     summary_request,
 )
@@ -42,20 +50,20 @@ from XBotv2.llm import invoke_llm
 
 logger = logging.getLogger("xbotv2.compact")
 
-RuntimePublisher = Callable[[ClientEvent], Awaitable[None]]
-UsageRecorder = Callable[[dict[str, int]], Awaitable[None]]
-TrajectoryRecorder = Callable[[str, dict[str, JsonValue]], None]
+RuntimePublisher = Callable[[object], Awaitable[None]]
+UsageRecorder = Callable[[RequestObservation, UsageDelta], Awaitable[None]]
+TrajectoryRecorder = Callable[[TransactionStarted | TransactionEnded], None]
 
 
 def _summary_input(
-    messages: Sequence[Message],
+    messages: Sequence[ConversationMessage],
     split: int,
-    stable_prefix: Sequence[Message],
+    stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
-) -> list[Message]:
+) -> list:
     prefix = list(messages[:split])
     if stable_prefix:
-        prefix = [message for message in prefix if message.role != "system"]
+        prefix = list(prefix)
     return summary_request(
         prefix,
         summary_max_chars,
@@ -64,11 +72,10 @@ def _summary_input(
 
 
 def _fit_summary_prefix(
-    messages: list[Message],
+    messages: list[ConversationMessage],
     split: int,
     *,
-    stable_prefix: Sequence[Message],
-    tools: Sequence[Tool],
+    stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
     max_context_tokens: int | None,
     summary_output_tokens: int,
@@ -86,16 +93,14 @@ def _fit_summary_prefix(
     # The envelope is a fixed prefix plus a monotonic contribution from each
     # selected message.  Fold it once and remember the largest safe cut that
     # fits; repeatedly estimating every candidate made large histories O(n²).
-    tool_list = list(tools)
-    base = estimate_request_tokens(
+    base = estimate_messages_tokens(
         _summary_input(messages, 0, stable_prefix, summary_max_chars),
-        tool_list,
     )
     boundaries = tool_pairing_boundaries(messages)
     estimate = base
     best = 0 if estimate <= available else None
     for index, message in enumerate(messages[:split], start=1):
-        if not stable_prefix or message.role != "system":
+        if not stable_prefix:
             estimate += estimate_messages_tokens([message])
         if estimate > available:
             break
@@ -109,13 +114,16 @@ def _fit_summary_prefix(
     )
 
 
-async def build_compaction_proposal(
+async def build_compaction_plan(
     *,
     model: ModelPort,
+    selection: ResolvedModelSelection,
     record_usage: UsageRecorder,
     publish_runtime_event: RuntimePublisher,
-    session: SessionInfo,
-    messages: list[Message],
+    session: SessionRuntimeState,
+    messages: list[ConversationMessage],
+    history_revision: HistoryRevision,
+    source_ids: tuple[MessageId, ...],
     reason: CompactionReason,
     keep_recent_turns: int,
     summary_max_chars: int,
@@ -126,11 +134,12 @@ async def build_compaction_proposal(
     max_context_tokens: int | None = None,
     output_reservation: int | None = None,
     summary_output_tokens: int = 2_048,
-    stable_prefix: Sequence[Message] = (),
-    tools: Sequence[Tool] = (),
+    stable_prefix: Sequence[ConversationMessage] = (),
     removable_estimate: int | None = None,
     record_trajectory: TrajectoryRecorder | None = None,
-) -> CompactionProposal | None:
+) -> CompactionPlan | None:
+    if len(source_ids) != len(messages):
+        raise ValueError("Compaction source identities must match the input history")
     # An overflow recovery must keep only the newest turn; that also relaxes the
     # "must shrink" guards below, so the reason alone drives both decisions.
     split = compact_prefix_end(
@@ -142,7 +151,6 @@ async def build_compaction_proposal(
             messages,
             split,
             stable_prefix=stable_prefix,
-            tools=tools,
             summary_max_chars=summary_max_chars,
             max_context_tokens=max_context_tokens,
             summary_output_tokens=summary_output_tokens,
@@ -156,6 +164,7 @@ async def build_compaction_proposal(
         return None
 
     compaction_id = uuid4().hex
+    transaction = TransactionRef(kind="compaction", id=compaction_id)
 
     prefix_messages = messages[:split]
     removed_estimate = (
@@ -188,66 +197,71 @@ async def build_compaction_proposal(
         context_limit,
         estimate_source,
     )
-    await publish_runtime_event(compact_event(
-        "compaction_started",
-        {
-            "reason": reason,
-            "messages_before": len(messages),
-            "history_chars_before": chars_before,
-            "context_tokens_before": context_tokens_before,
-            "context_limit": context_limit,
-        },
+    await publish_runtime_event(CompactionStarted(
+        reason=reason,
+        messages_before=len(messages),
+        history_chars_before=chars_before,
+        context_tokens_before=context_tokens_before,
+        context_limit=context_limit,
     ))
     if record_trajectory is not None:
-        record_trajectory("compaction/start", {
-            "compaction_id": compaction_id,
-            "reason": reason,
-            "messages_before": len(messages),
-            "prefix_messages": split,
-            "context_tokens_before": context_tokens_before,
-        })
+        record_trajectory(TransactionStarted(transaction=transaction))
 
     try:
-        response = await invoke_llm(
-            model,
-            _summary_input(messages, split, stable_prefix, summary_max_chars),
-            output_tokens=summary_output_tokens,
+        request_messages = tuple(
+            _summary_input(messages, split, stable_prefix, summary_max_chars)
         )
-        await record_usage(model_usage(response.usage_metadata))
-        if response.tool_calls:
+        auxiliary_selection = selection.model_copy(update={
+            "generation": selection.generation.model_copy(update={
+                "max_output_tokens": summary_output_tokens,
+            }),
+        })
+        model_request = ModelRequest(
+            messages=request_messages,
+            tools=(),
+            selection=auxiliary_selection,
+        )
+        response = await invoke_llm(model, model_request)
+        await record_usage(
+            RequestObservation(
+                selection=auxiliary_selection,
+                purpose=AuxiliaryRequest(
+                    owner="compact",
+                    operation_id=compaction_id,
+                ),
+                estimated_input_tokens=estimate_model_request_tokens(model_request),
+                observed_context=response.observed_context,
+            ),
+            response.usage,
+        )
+        if any(isinstance(part, ToolCall) for part in response.parts):
             raise RuntimeError("Compaction model must not call tools")
         summary, summary_truncated = normalize_summary(
-            str(response.content or ""),
+            "".join(part.text for part in response.parts if isinstance(part, TextPart)),
             summary_max_chars,
         )
     except asyncio.CancelledError:
         if record_trajectory is not None:
-            record_trajectory("compaction/end", {
-                "compaction_id": compaction_id,
-                "error": "cancelled",
-            })
-        await publish_runtime_event(compact_event(
-            "compaction_failed",
-            {
-                "reason": reason,
-                "message": "Compaction cancelled.",
-                "automatic": is_automatic_compaction(reason),
-            },
+            record_trajectory(TransactionEnded(
+                transaction=transaction,
+                outcome=TransactionAborted(reason="cancelled"),
+            ))
+        await publish_runtime_event(CompactionFailed(
+            reason=reason,
+            message="Compaction cancelled.",
+            automatic=is_automatic_compaction(reason),
         ))
         raise
     except Exception as exc:
         if record_trajectory is not None:
-            record_trajectory("compaction/end", {
-                "compaction_id": compaction_id,
-                "error": str(exc),
-            })
-        await publish_runtime_event(compact_event(
-            "compaction_failed",
-            {
-                "reason": reason,
-                "message": str(exc),
-                "automatic": is_automatic_compaction(reason),
-            },
+            record_trajectory(TransactionEnded(
+                transaction=transaction,
+                outcome=TransactionFailed(error=str(exc) or type(exc).__name__),
+            ))
+        await publish_runtime_event(CompactionFailed(
+            reason=reason,
+            message=str(exc) or type(exc).__name__,
+            automatic=is_automatic_compaction(reason),
         ))
         if reason == "manual":
             raise
@@ -257,11 +271,7 @@ async def build_compaction_proposal(
         return None
 
     compacted = compacted_message(summary, reason=reason)
-    compacted.response_metadata[SESSION_STATS_METADATA_KEY] = (
-        conversation_stats(prefix_messages).model_dump(mode="json")
-    )
     compacted_messages = [compacted, *messages[split:]]
-    usage = model_usage(response.usage_metadata)
     summary_estimate = estimate_messages_tokens([compacted])
     context_tokens_after = max(
         1,
@@ -273,19 +283,16 @@ async def build_compaction_proposal(
             "the generated summary is not smaller than the removable prefix."
         )
         logger.warning(message)
-        await publish_runtime_event(compact_event(
-            "compaction_failed",
-            {
-                "reason": reason,
-                "message": message,
-                "automatic": is_automatic_compaction(reason),
-            },
+        await publish_runtime_event(CompactionFailed(
+            reason=reason,
+            message=message,
+            automatic=is_automatic_compaction(reason),
         ))
         if record_trajectory is not None:
-            record_trajectory("compaction/end", {
-                "compaction_id": compaction_id,
-                "error": message,
-            })
+            record_trajectory(TransactionEnded(
+                transaction=transaction,
+                outcome=TransactionAborted(reason=message),
+            ))
         return None
 
     metrics = CompactionMetrics(
@@ -308,16 +315,18 @@ async def build_compaction_proposal(
         messages_before=len(messages),
         messages_after=len(compacted_messages),
         messages_removed=len(messages) - len(compacted_messages),
-        model_usage=usage,
+        model_usage=response.usage.counters,
     )
-    return {
-        "messages": compacted_messages,
-        "prefix_end": split,
-        "compaction_id": compaction_id,
-        "summary": summary,
-        "compact_reason": reason,
-        "compact_metrics": metrics,
-    }
+    return CompactionPlan(
+        id=compaction_id,
+        reason=reason,
+        selection=CompactionSelection(
+            expected_revision=history_revision,
+            source_ids=source_ids[:split],
+        ),
+        summary=compacted,
+        metrics=metrics,
+    )
 
 
-__all__ = ["build_compaction_proposal"]
+__all__ = ["build_compaction_plan"]

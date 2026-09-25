@@ -13,7 +13,7 @@ from __future__ import annotations
 from xcore import Context
 
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.context_builder import BEFORE_CONTEXT_BUILD, ContextBuildRequest
+from XBotv2.context_builder import CONTEXT_BUILD_INPUTS_READY, ContextBuildRequest
 from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.sandbox.commands import build_sandbox_commands
@@ -43,7 +43,7 @@ class SandboxComponent:
             ctx.commands.register(command)
         handlers = SandboxHandlers(policy)
         ctx.on(POLICY_CHANGED, handlers.update_policy)
-        ctx.on(BEFORE_CONTEXT_BUILD, handlers.contribute_context, prepend=True)
+        ctx.on(CONTEXT_BUILD_INPUTS_READY, handlers.contribute_context)
 
 
 class SandboxHandlers:

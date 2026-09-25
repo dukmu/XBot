@@ -80,32 +80,49 @@ async def test_an_evicted_cursor_rebuilds_the_baseline_over_the_real_client():
 
     requests: list[httpx.Request] = []
     opened = {
-        "session_id": "s",
-        "thread_id": "t",
-        "status": "ready",
-        "agent_name": "default",
-        "workspace_root": "/workspace",
-        "provider": "minimax",
-        "model": "MiniMax-M2",
-        "model_mode": "",
-        "context_window": 1000,
-        "usage": {},
-        "session_stats": {},
-        "history": [],
-        "event_cursor": 42,
-        "status_slots": {},
-        "pending_inputs": [],
-        "pending_interactions": [
-            {
-                "type": "permission_request",
-                "data": {
-                    "request_id": "permission:call-1",
-                    "source": "permission_system",
-                    "reason": "write the report",
-                    "tool_call": {"id": "call-1", "name": "filesystem_write", "args": {}},
+        "data": {
+            "key": {"session_id": "s", "thread_id": "t"},
+            "metadata": {
+                "runtime_selection": {
+                    "agent_name": "default",
+                    "prompt": "",
+                    "limits": {},
+                    "enabled_tools": [],
+                    "model": {
+                        "route": {"provider": "minimax", "model": "MiniMax-M2"},
+                        "generation": {
+                            "mode": {"kind": "standard"},
+                            "max_output_tokens": 1000,
+                        },
+                        "context_window": 1000,
+                    },
                 },
-            }
-        ],
+                "workspace_root": "/workspace",
+                "title": "default",
+            },
+            "usage": {},
+            "status_slots": {},
+            "event_cursor": 42,
+            "history": {"items": [], "older_cursor": None},
+            "pending_inputs": [],
+            "pending_interactions": [
+                {
+                    "kind": "permission_request",
+                    "interaction_id": "permission:call-1",
+                    "source": "permission_system",
+                    "subject": {
+                        "kind": "tool",
+                        "tool_call": {
+                            "id": "call-1",
+                            "name": "filesystem_write",
+                            "args": {},
+                        },
+                    },
+                    "reason": "write the report",
+                    "resume_supported": False,
+                }
+            ],
+        }
     }
     expired = {
         "code": "session_event_cursor_expired",
@@ -157,8 +174,8 @@ async def test_an_evicted_cursor_rebuilds_the_baseline_over_the_real_client():
     adopted = [event.snapshot for event in seen if isinstance(event, SnapshotAdopted)]
     assert adopted, "the baseline must be rebuilt from a fresh open-session"
     assert isinstance(adopted[-1], OpenSessionResponse)
-    assert adopted[-1].event_cursor == 42
-    assert adopted[-1].pending_interactions[0].data["request_id"] == "permission:call-1"
+    assert adopted[-1].data.event_cursor == 42
+    assert adopted[-1].data.pending_interactions[0].interaction_id == "permission:call-1"
     assert session.cursor == 42, "the adopted cursor is the point the stream resumes from"
     resume = [r for r in requests if json.loads(r.content or b"{}").get("mode") == "resume"]
     assert resume, "the rebuild re-opens the session in resume mode"

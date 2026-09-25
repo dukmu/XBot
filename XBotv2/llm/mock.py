@@ -1,4 +1,4 @@
-"""XBot-owned deterministic provider for tests."""
+"""Deterministic provider used by local smoke runs."""
 
 from __future__ import annotations
 
@@ -6,39 +6,35 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import Message, ModelChunk, ModelResponse
-from XBotv2.core.providers import BaseProvider, InputModality
-from XBotv2.core.tools import ToolCall, ToolCallDelta
-from XBotv2.core.usage import normalize_usage
 from pydantic import JsonValue
+
+from XBotv2.core.domain import (
+    CompletedStop,
+    MeasurementUnavailable,
+    ProviderError,
+    ProviderExtensions,
+    TokenCounters,
+    UsageDelta,
+)
+from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.core.provider import ModelRequest
+from XBotv2.core.providers import BaseProvider, InputModality
+from XBotv2.core.stream import ModelCompleted, ModelResponse, ModelStreamEvent, ReasoningDelta, TextDelta
+from XBotv2.core.tools import ToolCall
 
 
 @dataclass
 class _MockState:
     call_count: int = 0
-    call_history: list[list[Message]] = field(default_factory=list)
+    request_history: list[ModelRequest] = field(default_factory=list)
 
 
 class MockLLM(BaseProvider):
-    """Deterministic streaming provider for tests."""
-
     supported_input_modalities = frozenset({"text", "image"})
 
-    def __init__(
-        self,
-        responses: list[dict[str, JsonValue]] | None = None,
-        *,
-        input_modalities: list[InputModality] | None = None,
-        artifacts: ArtifactStorePort | None = None,
-    ) -> None:
-        super().__init__(
-            model="mock",
-            temperature=0,
-            max_output_tokens=None,
-            input_modalities=input_modalities,
-            artifacts=artifacts,
-        )
+    def __init__(self, responses: list[dict[str, JsonValue]] | None = None, *,
+                 input_modalities: list[InputModality] | None = None) -> None:
+        super().__init__(input_modalities=input_modalities)
         self.responses = responses or []
         self._state = _MockState()
 
@@ -47,110 +43,78 @@ class MockLLM(BaseProvider):
         return self._state.call_count
 
     @property
-    def call_history(self) -> list[list[Message]]:
-        return self._state.call_history
+    def request_history(self) -> tuple[ModelRequest, ...]:
+        return tuple(self._state.request_history)
 
-    def bind_tools(
-        self,
-        tools: list[dict[str, JsonValue]],
-        **_kwargs: object,
-    ) -> MockLLM:
-        self.bound_tools = list(tools)
-        return self
-
-    async def _astream_once(
-        self,
-        messages: list[Message],
-        **_kwargs: object,
-    ) -> AsyncIterator[ModelChunk]:
+    async def _astream_once(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]:
         response = self.next_response()
-        result = self.to_response(response)
-        self.call_history.append(list(messages))
+        self._state.request_history.append(request)
+        final = self.to_response(response)
         chunks = response.get("chunks")
         if isinstance(chunks, list) and chunks:
-            delay_ms = response.get("chunk_delay_ms", 0)
-            delay = float(delay_ms) / 1000 if isinstance(delay_ms, (int, float)) and delay_ms > 0 else 0
+            delay_raw = response.get("chunk_delay_ms", 0)
+            delay = float(delay_raw) / 1000 if isinstance(delay_raw, (int, float)) and delay_raw > 0 else 0
             for chunk in chunks:
                 if delay:
                     await asyncio.sleep(delay)
-                yield self.to_chunk(chunk)
-            yield result
+                if isinstance(chunk, str):
+                    yield TextDelta(text=chunk)
+                elif isinstance(chunk, dict):
+                    if chunk.get("reasoning"):
+                        yield ReasoningDelta(text=str(chunk["reasoning"]))
+                    if chunk.get("content"):
+                        yield TextDelta(text=str(chunk["content"]))
+            yield ModelCompleted(response=final)
             return
-        yield ModelChunk(
-            content=result.content,
-            reasoning=result.reasoning,
-            tool_calls=result.tool_calls,
-            response_metadata=result.response_metadata,
-            usage_metadata=result.usage_metadata,
-            additional_kwargs=result.additional_kwargs,
-        )
-
-    def get_call_messages(self, index: int) -> list[Message]:
-        return self.call_history[index]
+        yield ModelCompleted(response=final)
 
     def next_response(self) -> dict[str, JsonValue]:
         if self._state.call_count >= len(self.responses):
-            raise RuntimeError(
-                f"MockLLM exhausted after {len(self.responses)} responses "
-                f"(requested response #{self._state.call_count + 1})"
-            )
+            raise RuntimeError(f"MockLLM exhausted after {len(self.responses)} responses")
         response = self.responses[self._state.call_count]
         self._state.call_count += 1
         return response
 
-    def to_response(self, response: dict[str, JsonValue]) -> ModelResponse:
-        return ModelResponse(
-            content=str(response.get("content", "")),
-            reasoning=str(response.get("reasoning") or ""),
-            tool_calls=normalize_tool_calls(response.get("tool_calls") or []),
-            response_metadata=dict(response.get("response_metadata") or {}),
-            usage_metadata=normalize_usage(response.get("usage_metadata") or {}),
-            additional_kwargs=dict(response.get("additional_kwargs") or {}),
+    def normalize_provider_error(self, error: Exception) -> ProviderError:
+        return ProviderError(
+            code=type(error).__name__,
+            message=str(error) or type(error).__name__,
+            retryable=False,
+            category="provider",
         )
 
-    def to_chunk(self, raw: Any) -> ModelChunk:
-        if isinstance(raw, str):
-            return ModelChunk(content=raw)
-        if not isinstance(raw, dict):
-            return ModelChunk(content=str(raw))
-        return ModelChunk(
-            content=str(raw.get("content", "")),
-            reasoning=str(raw.get("reasoning") or ""),
-            tool_calls=normalize_tool_calls(raw.get("tool_calls") or []),
-            tool_call_chunks=[
-                ToolCallDelta(
-                    index=int(chunk.get("index", 0)),
-                    id=str(chunk.get("id") or ""),
-                    name=str(chunk.get("name") or ""),
-                    args=str(chunk.get("args") or ""),
-                )
-                for chunk in raw.get("tool_call_chunks") or []
-            ],
-            response_metadata=dict(raw.get("response_metadata") or {}),
-            usage_metadata=normalize_usage(raw.get("usage_metadata") or {}),
-            additional_kwargs=dict(raw.get("additional_kwargs") or {}),
+    def to_response(self, response: dict[str, JsonValue]) -> ModelResponse:
+        parts: list[TextPart | ReasoningPart | ToolCall] = []
+        if response.get("content"):
+            parts.append(TextPart(text=str(response["content"])))
+        if response.get("reasoning"):
+            parts.append(ReasoningPart(text=str(response["reasoning"])))
+        parts.extend(normalize_tool_calls(response.get("tool_calls") or []))
+        usage = response.get("usage_metadata") or {}
+        counters = TokenCounters(
+            input=int(usage.get("input_tokens", 0) or 0),
+            output=int(usage.get("output_tokens", 0) or 0),
+            cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_create=int(usage.get("cache_creation_input_tokens", 0) or 0),
+            prompt_cache_write=int(usage.get("prompt_cache_write_tokens", 0) or 0),
+        )
+        return ModelResponse(
+            parts=tuple(parts),
+            usage=UsageDelta(counters=counters),
+            observed_context=MeasurementUnavailable(reason="mock provider"),
+            stop=CompletedStop(),
+            provider_extensions=ProviderExtensions(provider="mock", payload={}),
         )
 
 
 def normalize_tool_calls(tool_calls: list[dict[str, JsonValue]]) -> list[ToolCall]:
-    normalized: list[ToolCall] = []
-    for tool_call in tool_calls:
-        normalized.append(ToolCall.model_validate({
-            "id": tool_call.get("id") or f"call_{len(normalized)}",
-            "name": tool_call.get("name") or "",
-            "args": tool_call.get("args") or {},
-            "type": tool_call.get("type") or "tool_call",
-        }))
-    return normalized
+    return [ToolCall(id=str(item.get("id") or f"call_{i}"), name=str(item.get("name") or ""),
+                     args=dict(item.get("args") or {})) for i, item in enumerate(tool_calls)]
 
 
-def create_mock_provider(provider_config, model_config, *, artifacts=None):
-    """Factory for the deterministic mock route."""
-    return MockLLM(
-        responses=model_config.mock_responses,
-        input_modalities=model_config.input_modalities,
-        artifacts=artifacts,
-    )
+def create_mock_provider(provider_config, model_config):
+    return MockLLM(responses=model_config.mock_responses,
+                   input_modalities=model_config.input_modalities)
 
 
 __all__ = ["MockLLM", "create_mock_provider"]

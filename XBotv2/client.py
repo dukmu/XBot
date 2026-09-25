@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 
 import httpx
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
 from XBotv2.agents import (
     AgentListResponse,
@@ -51,7 +51,7 @@ from XBotv2.session import (
     CloseResponse,
     DeleteSessionResponse,
     ForkResponse,
-    HistoryMutationResponse,
+    HistoryMutation,
     ImageInput,
     InterruptResponse,
     MessageRequest,
@@ -65,8 +65,6 @@ from XBotv2.session import (
     SessionMode,
     SessionSummary,
     ThreadListResponse,
-    ThreadMessagesResponse,
-    ThreadTrajectoryResponse,
     ThreadSummary,
     UndoRequest,
 )
@@ -78,8 +76,11 @@ from XBotv2.commands import (
 from XBotv2.workspaces import WorkspaceSnapshot
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.core.domain import Cursor
+from XBotv2.core.history import HistoryPage, TrajectoryRead
+from XBotv2.session.records import ConversationRecord
 
-ResponseModel = TypeVar("ResponseModel", bound=WireModel)
+ResponseModel = TypeVar("ResponseModel")
 
 # Hosts that name this machine. A request to one of them cannot need a proxy, and
 # consulting the proxy settings for it is not merely useless: ``httpx`` parses
@@ -410,13 +411,13 @@ class XBotClient:
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
         limit: int | None = None,
-    ) -> ThreadMessagesResponse:
+    ) -> HistoryPage[ConversationRecord]:
         return await self._request(
             "GET",
             f"{thread_path(session_id, thread_id)}/messages",
-            ThreadMessagesResponse,
+            HistoryPage[ConversationRecord],
             params={
                 key: value
                 for key, value in {"cursor": cursor, "limit": limit}.items()
@@ -429,14 +430,14 @@ class XBotClient:
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
         before: int | None = None,
         limit: int = 160,
-    ) -> ThreadTrajectoryResponse:
+    ) -> TrajectoryRead:
         return await self._request(
             "GET",
             f"{thread_path(session_id, thread_id)}/trajectory",
-            ThreadTrajectoryResponse,
+            TrajectoryRead,
             params={
                 key: value
                 for key, value in {
@@ -463,20 +464,20 @@ class XBotClient:
 
     async def clear_history(
         self, session_id: str, thread_id: str
-    ) -> HistoryMutationResponse:
+    ) -> HistoryMutation:
         return await self._request(
             "POST",
             f"{thread_path(session_id, thread_id)}/history/clear",
-            HistoryMutationResponse,
+            HistoryMutation,
         )
 
     async def undo_history(
         self, session_id: str, thread_id: str, count: int = 1
-    ) -> HistoryMutationResponse:
+    ) -> HistoryMutation:
         return await self._request(
             "POST",
             f"{thread_path(session_id, thread_id)}/history/undo",
-            HistoryMutationResponse,
+            HistoryMutation,
             UndoRequest(count=count),
         )
 
@@ -616,7 +617,7 @@ class XBotClient:
         thread_id: str,
         *,
         after: int | None = None,
-    ) -> AsyncIterator[ServerEvent]:
+    ) -> AsyncGenerator[ServerEvent, None]:
         return self._stream(
             "GET",
             f"{thread_path(session_id, thread_id)}/events",
@@ -639,7 +640,7 @@ class XBotClient:
         self,
         method: str,
         path: str,
-        response_model: type[ResponseModel],
+        response_model: Any,
         payload: WireModel | None = None,
         *,
         params: Mapping[str, JsonValue] | None = None,
@@ -651,7 +652,7 @@ class XBotClient:
             params=params,
         )
         await _raise_for_status(response)
-        return response_model.model_validate(response.json())
+        return TypeAdapter(response_model).validate_python(response.json())
 
     async def _request_no_content(
         self,
@@ -673,7 +674,7 @@ class XBotClient:
         payload: WireModel | None = None,
         *,
         params: Mapping[str, JsonValue] | None = None,
-    ) -> AsyncIterator[ServerEvent]:
+    ) -> AsyncGenerator[ServerEvent, None]:
         async with self._http.stream(
             method,
             path,
@@ -690,7 +691,7 @@ class XBotClient:
                     continue
                 event = decode_server_event(message)
                 yield event
-                if event.type == "end":
+                if event.kind == "end":
                     return
             message = decoder.finish()
             if message is not None:

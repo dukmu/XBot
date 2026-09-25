@@ -1,925 +1,202 @@
-"""Conversation history and strict thread persistence tests."""
+"""Persistence stores canonical messages in one append-only trajectory."""
 
-import asyncio
 import json
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import xcore
 
-from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.history import (
-    ConversationHistory,
-    HistoryCursorInvalid,
-    TrajectoryTransaction,
+from XBotv2.core.domain import (
+    InputId,
+    MessageId,
+    TransactionCommitted,
+    TransactionEnded,
+    TransactionRef,
+    TransactionStarted,
 )
-from XBotv2.core.messages import ImageContent, Message
-from XBotv2.core.metadata import (
-    THREAD_METADATA_CHANGED,
-    ThreadMetadata,
-    ThreadMetadataState,
-)
+from XBotv2.core.history import HistoryCursorInvalid, MessageAppended, SurfaceReplaced
+from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
+from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.runtime_logging import RuntimeLog
-from XBotv2.core.tools import ToolCall
-from XBotv2.agentloop.contracts import InboxInput, InboxTarget
-from XBotv2.persistence.models import (
-    MessageRecord,
-)
-from XBotv2.persistence import ThreadLifecycleRecord
 from XBotv2.persistence.store import ThreadPersistence
 
-TEST_TRANSACTION = TrajectoryTransaction(
-    start_event="compaction/start",
-    end_event="compaction/end",
-    id_field="compaction_id",
-)
 
-def thread_persistence(tmp_path, session_id="s1", *, defer_metadata=False):
+def _store(tmp_path):
     return ThreadPersistence.create(
-        RuntimePaths.from_data_dir(tmp_path).session(session_id),
-        thread_id="t1",
-        workspace_root="/workspace",
-        provider="default",
-        defer_metadata=defer_metadata,
+        RuntimePaths.from_data_dir(tmp_path).session("s1"),
+        thread_id="agent",
     )
 
 
-def test_artifact_operations_log_metadata_without_content(tmp_path, caplog):
-    caplog.set_level("DEBUG", logger="xbotv2.persistence")
-    paths = RuntimePaths.from_data_dir(tmp_path).session("s1").thread("t1")
-    store = ArtifactStore(paths, RuntimeLog())
-    payload = b"artifact-secret-content"
-
-    artifact = store.put(
-        ArtifactKind.ATTACHMENT,
-        payload,
-        media_type="application/octet-stream",
-        name="private-name.bin",
+def _human(index: int, text: str | None = None) -> HumanInputMessage:
+    return HumanInputMessage(
+        id=MessageId(f"message-{index}"),
+        input_id=InputId(f"input-{index}"),
+        parts=(TextPart(text=text or f"message {index}"),),
     )
-    assert store.read(artifact) == payload
 
-    text = caplog.text
-    assert "persistence.artifact.stored" in text
-    assert "persistence.artifact.read" in text
-    assert artifact.id in text
-    assert "artifact-secret-content" not in text
-    assert "private-name.bin" not in text
 
-
-class TestMessageRecord:
-    def test_roundtrip_preserves_model_visible_fields(self):
-        message = Message(
-            role="assistant",
-            content="calling",
-            tool_calls=[
-                ToolCall(id="call-1", name="echo", args={"value": "hello"})
-            ],
-            name="assistant",
-            status="success",
-            additional_kwargs={"provider_note": {"a": 1}},
-            response_metadata={"model": "mock"},
-            usage_metadata={"input_tokens": 2, "output_tokens": 1},
-        )
-
-        record = MessageRecord.from_message(message, 1)
-        restored = MessageRecord.model_validate(
-            record.model_dump(mode="json")
-        ).to_message()
-
-        assert restored.role == message.role
-        assert restored.content == message.content
-        assert restored.tool_calls == message.tool_calls
-        assert restored.additional_kwargs == message.additional_kwargs
-        assert restored.response_metadata == message.response_metadata
-        assert restored.usage_metadata == message.usage_metadata
-
-    def test_rejects_unknown_record_fields(self):
-        record = MessageRecord.from_message(Message(role="user", content="x"), 1)
-        raw = record.model_dump(mode="json")
-        raw["surprise"] = True
-
-        with pytest.raises(ValueError, match="Extra inputs"):
-            MessageRecord.model_validate(raw)
-
-    def test_rejects_non_json_provider_metadata(self):
-        message = Message(
-            role="assistant",
-            content="x",
-            response_metadata={"bad": object()},
-        )
-
-        with pytest.raises(ValueError, match="valid JSON"):
-            MessageRecord.from_message(message, 1)
-
-    def test_runtime_only_fields_are_not_persisted(self):
-        message = Message(
-            role="tool",
-            content="done",
-            tool_call_id="call-1",
-            client_events=[{"type": "notice", "data": {}}],
-            turn_complete=True,
-        )
-
-        restored = MessageRecord.from_message(message, 1).to_message()
-
-        assert restored.client_events == []
-        assert restored.turn_complete is False
-
-
-class TestMessageHistoryStore:
-    def test_append_uses_strict_contiguous_records(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="two"),
-        ])
-
-        records = _raw_records(persistence)
-        assert [record["position"] for record in records] == [1, 2]
-        assert all(record["schema_version"] == 1 for record in records)
-        assert [message.content for message in persistence.history.load()] == [
-            "one", "two",
-        ]
-
-    def test_concurrent_store_instances_keep_trajectory_positions_unique(
-        self, tmp_path,
-    ):
-        paths = thread_persistence(tmp_path).paths
-
-        def append(index: int) -> None:
-            persistence = ThreadPersistence.open(paths, thread_id="t1")
-            persistence.history.append([Message(role="user", content=str(index))])
-
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            list(executor.map(append, range(40)))
-
-        records = _raw_records(ThreadPersistence.open(paths, thread_id="t1"))
-        assert [record["position"] for record in records] == list(range(1, 41))
-
-    def test_stale_store_instance_resynchronizes_before_append(self, tmp_path):
-        paths = thread_persistence(tmp_path).paths
-        first = ThreadPersistence.open(paths, thread_id="t1")
-        stale = ThreadPersistence.open(paths, thread_id="t1")
-
-        first.history.append([Message(role="user", content="one")])
-        stale.history.record("test/middle", {})
-        first.history.append([Message(role="assistant", content="three")])
-
-        records = _raw_records(first)
-        assert [record["position"] for record in records] == [1, 2, 3]
-        assert records[1]["event"] == "test/middle"
-
-    def test_reading_an_absent_thread_creates_nothing(self, tmp_path):
-        """A read must not materialize a thread directory for a missing thread."""
-        paths = RuntimePaths.from_data_dir(tmp_path).session("s1")
-        persistence = ThreadPersistence.open(paths, thread_id="absent")
-
-        assert persistence.history.load() == []
-        assert persistence.history.load_transcript() == []
-        assert not persistence.paths.state_dir.exists()
-
-    def test_torn_trailing_record_is_ignored_and_repaired(self, tmp_path):
-        """A record is durable only once its terminating newline is written."""
-        persistence = thread_persistence(tmp_path)
-        history = persistence.history
-        history.append([Message(role="user", content="durable")])
-        with history.path.open("a", encoding="utf-8") as stream:
-            stream.write('{"schema_version": 1')
-
-        assert [message.content for message in history.load()] == ["durable"]
-
-        history.append([Message(role="assistant", content="after repair")])
-
-        records = _raw_records(persistence)
-        assert [record["position"] for record in records] == [1, 2]
-        assert [message.content for message in history.load()] == [
-            "durable",
-            "after repair",
-        ]
-
-    def test_replace_appends_surface_operation_without_destroying_trajectory(
-        self,
-        tmp_path,
-    ):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([
-            Message(role="user", content="discarded input"),
-            Message(role="assistant", content="discarded answer"),
-        ])
-        before = persistence.history.path.read_bytes()
-
-        surface = persistence.history.load_surface()
-        persistence.history.replace_surface(
-            tuple(node.node_id for node in surface),
-            [Message(role="system", content="summary")],
-            operation="compact:first",
-            preserve_transcript=True,
-        )
-
-        trajectory = persistence.history.path.read_bytes()
-        assert trajectory.startswith(before)
-        assert b"discarded input" in trajectory
-        assert b"discarded answer" in trajectory
-        assert b'"record_type": "surface_replace"' in trajectory
-        assert [message.content for message in persistence.history.load()] == [
-            "summary",
-        ]
-        assert [
-            message.content for message in persistence.history.load_transcript()
-        ] == ["discarded input", "discarded answer"]
-
-    def test_nested_surface_replacements_replay_deterministically(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        history = ConversationHistory(sink=persistence.history)
-        history.extend([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="answer one"),
-            Message(role="user", content="two"),
-            Message(role="assistant", content="answer two"),
-        ])
-
-        history.replace_range(
-            0,
-            2,
-            [Message(role="system", content="summary one")],
-            operation="compact:first",
-            preserve_transcript=True,
-        )
-        history.replace_range(
-            0,
-            2,
-            [Message(role="system", content="summary two")],
-            operation="compact:second",
-            preserve_transcript=True,
-        )
-
-        assert [message.content for message in history] == [
-            "summary two", "answer two",
-        ]
-        assert persistence.history.load() == history
-        assert [
-            message.content for message in persistence.history.load_transcript()
-        ] == ["one", "answer one", "two", "answer two"]
-        records = _raw_records(persistence)
-        assert [record.get("record_type", "message") for record in records] == [
-            "message", "message", "message", "message",
-            "surface_replace", "surface_replace",
-        ]
-
-    def test_surface_replay_rejects_non_current_source_nodes(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="one")])
-        with persistence.history.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({
-                "schema_version": 1,
-                "position": 2,
-                "record_type": "surface_replace",
-                "operation": "compact",
-                "transcript": "preserve",
-                "source_node_ids": ["missing"],
-                "messages": [],
-            }) + "\n")
-
-        with pytest.raises(ValueError, match="source nodes are not current"):
-            persistence.history.load()
-
-    def test_invalid_transcript_preserving_replace_writes_nothing(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="one")])
-        before = persistence.history.path.read_bytes()
-        source = persistence.history.load_surface()
-
-        with pytest.raises(ValueError, match="must produce one surface node"):
-            persistence.history.replace_surface(
-                [source[0].node_id],
-                [
-                    Message(role="system", content="first"),
-                    Message(role="system", content="second"),
-                ],
-                operation="compact:invalid",
-                preserve_transcript=True,
-            )
-
-        assert persistence.history.path.read_bytes() == before
-
-    def test_pages_read_backwards_without_loading_the_full_history(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([
-            Message(role="user", content=f"message-{index}")
-            for index in range(5)
-        ])
-
-        latest = persistence.history.page(limit=2)
-        older = persistence.history.page(limit=2, cursor=latest.next_cursor)
-        oldest = persistence.history.page(limit=2, cursor=older.next_cursor)
-
-        assert [message.content for message in latest.messages] == [
-            "message-3", "message-4",
-        ]
-        assert [message.content for message in older.messages] == [
-            "message-1", "message-2",
-        ]
-        assert [message.content for message in oldest.messages] == ["message-0"]
-        assert oldest.next_cursor is None
-
-    def test_append_preserves_cursor_and_surface_replace_invalidates_it(self, tmp_path):
-        from XBotv2.core.history import HistoryCursorInvalid
-
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="two"),
-            Message(role="user", content="three"),
-        ])
-        latest = persistence.history.page(limit=1)
-
-        persistence.history.append([Message(role="assistant", content="four")])
-        older = persistence.history.page(limit=1, cursor=latest.next_cursor)
-        assert [message.content for message in older.messages] == ["two"]
-
-        persistence.history.replace([Message(role="user", content="replacement")])
-        with pytest.raises(HistoryCursorInvalid, match="current history"):
-            persistence.history.page(limit=1, cursor=latest.next_cursor)
-
-    def test_trajectory_pages_preserve_append_order_and_cursor(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="one")])
-        persistence.history.record("compaction/start", {"compaction_id": "c1"})
-        latest = persistence.history.page_trajectory(limit=1)
-
-        persistence.history.append([Message(role="assistant", content="two")])
-        older = persistence.history.page_trajectory(
-            limit=2,
-            cursor=latest.next_cursor,
-        )
-
-        assert [(item.position, item.kind) for item in latest.items] == [(2, "event")]
-        assert [(item.position, item.kind) for item in older.items] == [(1, "message")]
-        assert older.next_cursor is None
-
-    def test_trajectory_positional_anchor_supports_a_windowed_client(self, tmp_path):
-        """A client that dropped its oldest entries can page from where it starts.
-
-        The opaque cursor chain only walks backwards from the newest page, so
-        without an explicit position anchor an evicted front would be
-        unreachable without replaying the whole trajectory.
-        """
-        persistence = thread_persistence(tmp_path)
-        for index in range(6):
-            persistence.history.append([Message(role="user", content=f"m{index}")])
-
-        newest = persistence.history.page_trajectory(limit=2)
-        assert [item.position for item in newest.items] == [5, 6]
-        assert newest.newest_position == 6
-        assert newest.next_cursor is not None
-
-        # Anchor exactly where the retained window starts.
-        older = persistence.history.page_trajectory(
-            limit=2, before=newest.items[0].position
-        )
-        assert [item.position for item in older.items] == [3, 4]
-
-        # And again from the new front, so paging can continue arbitrarily far.
-        older_still = persistence.history.page_trajectory(
-            limit=2, before=older.items[0].position
-        )
-        assert [item.position for item in older_still.items] == [1, 2]
-        assert older_still.next_cursor is None
-        assert older_still.newest_position == 6
-
-    def test_trajectory_positional_anchor_edges(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="only")])
-
-        empty = persistence.history.page_trajectory(limit=5, before=1)
-        assert empty.items == ()
-        assert empty.next_cursor is None
-        assert empty.newest_position == 1
-
-        beyond = persistence.history.page_trajectory(limit=5, before=2)
-        assert [item.position for item in beyond.items] == [1]
-
-        with pytest.raises(HistoryCursorInvalid):
-            persistence.history.page_trajectory(limit=5, before=3)
-        assert persistence.history.page_trajectory(limit=5).newest_position == 1
-
-        # A cursor and a position anchor are mutually exclusive.
-        persistence.history.append([
-            Message(role="user", content="two"),
-            Message(role="user", content="three"),
-        ])
-        cursor = persistence.history.page_trajectory(limit=1, before=3).next_cursor
-        assert cursor is not None
-        with pytest.raises(ValueError):
-            persistence.history.page_trajectory(limit=1, before=2, cursor=cursor)
-
-    def test_unmatched_compaction_start_is_detectable_after_restart(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.record("compaction/start", {"compaction_id": "c1"})
-
-        reopened = ThreadPersistence.open(persistence.paths, thread_id="t1")
-        assert reopened.history.open_transactions(TEST_TRANSACTION) == {"c1"}
-
-        reopened.history.record("compaction/end", {"compaction_id": "c1"})
-        assert reopened.history.open_transactions(TEST_TRANSACTION) == frozenset()
-
-    def test_trajectory_replay_carries_the_durable_compaction_summary(self, tmp_path):
-        """A replayed compaction shows its summary, with one durable copy.
-
-        The replacement record is a system prompt container, so it is absent
-        from the human transcript replay; the boundary derives the summary
-        text for clients from that single durable copy.
-        """
-        from XBotv2.compact.summary import compacted_message
-        from XBotv2.session.contracts import trajectory_replay
-
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="first question")])
-        nodes = persistence.history.replace_surface(
-            [str(persistence.history.load_surface()[0].node_id)],
-            [compacted_message("Kept decisions and open questions.", reason="manual")],
-            operation="compact:abc123",
-            preserve_transcript=True,
-        )
-        assert len(nodes) == 1
-
-        page = persistence.history.page_trajectory(limit=50)
-        replayed = trajectory_replay(page)
-        replacements = [
-            item for item in replayed.items if item.kind == "surface_replace"
-        ]
-
-        assert len(replacements) == 1
-        assert replacements[0].summary == "Kept decisions and open questions."
-        # The system prompt container never leaks into the transcript replay.
-        assert replacements[0].messages == ()
-        records = _raw_records(persistence)
-        assert sum(
-            "Kept decisions and open questions." in json.dumps(record)
-            for record in records
-        ) == 1
-
-    def test_compact_preserves_transcript_cursor_but_invalidates_surface_cursor(
-        self,
-        tmp_path,
-    ):
-        from XBotv2.core.history import HistoryCursorInvalid
-
-        persistence = thread_persistence(tmp_path)
-        history = ConversationHistory(sink=persistence.history)
-        history.extend([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="answer one"),
-            Message(role="user", content="two"),
-            Message(role="assistant", content="answer two"),
-        ])
-        surface_cursor = persistence.history.page(limit=1).next_cursor
-        transcript_cursor = persistence.history.page_transcript(limit=1).next_cursor
-
-        history.replace_range(
-            0,
-            2,
-            [Message(role="system", content="summary")],
-            operation="compact:test",
-            preserve_transcript=True,
-        )
-
-        with pytest.raises(HistoryCursorInvalid, match="current history"):
-            persistence.history.page(limit=1, cursor=surface_cursor)
-        transcript_page = persistence.history.page_transcript(
-            limit=1,
-            cursor=transcript_cursor,
-        )
-        assert [message.content for message in transcript_page.messages] == ["two"]
-
-        history.undo(1)
-        with pytest.raises(HistoryCursorInvalid, match="current history"):
-            persistence.history.page_transcript(limit=1, cursor=transcript_cursor)
-        assert [
-            message.content for message in persistence.history.load_transcript()
-        ] == ["one", "answer one"]
-
-    def test_clear_after_compact_removes_original_transcript_lineage(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        history = ConversationHistory(sink=persistence.history)
-        history.extend([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="answer one"),
-            Message(role="user", content="two"),
-            Message(role="assistant", content="answer two"),
-        ])
-        history.replace_range(
-            0,
-            2,
-            [Message(role="system", content="summary")],
-            operation="compact:test",
-            preserve_transcript=True,
-        )
-
-        history.clear()
-
-        assert persistence.history.load() == []
-        assert persistence.history.load_transcript() == []
-
-    def test_cursor_is_bound_to_one_thread_history(self, tmp_path):
-        from XBotv2.core.history import HistoryCursorInvalid
-
-        first = thread_persistence(tmp_path, "first")
-        second = thread_persistence(tmp_path, "second")
-        for persistence in (first, second):
-            persistence.history.append([
-                Message(role="user", content="one"),
-                Message(role="assistant", content="two"),
-            ])
-        cursor = first.history.page(limit=1).next_cursor
-        with pytest.raises(HistoryCursorInvalid, match="current history"):
-            second.history.page(limit=1, cursor=cursor)
-
-    def test_invalid_complete_record_is_an_explicit_error(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.history.append([Message(role="user", content="durable")])
-        with persistence.history.path.open("a", encoding="utf-8") as stream:
-            stream.write('{"schema_version":\n')
-
-        with pytest.raises(ValueError, match="Invalid messages.jsonl"):
-            persistence.history.load()
-
-    def test_artifacts_are_references_not_payloads(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        payload = b"small-image"
-        ref = persistence.artifacts.put(
-            ArtifactKind.MEDIA,
-            payload,
-            media_type="image/png",
-        )
-        image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
-
-        persistence.history.append([
-            Message(role="user", images=[image], artifact=[ref])
-        ])
-
-        text = persistence.history.path.read_text(encoding="utf-8")
-        assert "small-image" not in text
-        restored = persistence.history.load()[0]
-        assert restored.images == [image]
-        assert restored.artifact == [ref]
-        assert persistence.artifacts.read(ref) == payload
-
-    def test_recreation_reads_same_history(self, tmp_path):
-        first = thread_persistence(tmp_path)
-        first.history.append([Message(role="user", content="persistent")])
-
-        second = thread_persistence(tmp_path)
-
-        assert [message.content for message in second.history.load()] == [
-            "persistent"
-        ]
-
-
-class TestConversationHistory:
-    def test_in_memory_compaction_preserves_human_transcript(self):
-        messages = [
-            Message(role="user", content="one"),
-            Message(role="assistant", content="answer"),
-            Message(role="user", content="two"),
-        ]
-        history = ConversationHistory(messages)
-
-        history.replace_range(
-            0,
-            2,
-            [Message(role="system", content="summary")],
-            operation="compact:test",
-            preserve_transcript=True,
-        )
-
-        assert [message.content for message in history] == ["summary", "two"]
-        assert [
-            message.content for message in history.page_transcript(limit=10).messages
-        ] == ["one", "answer", "two"]
-
-    def test_append_and_extend_are_durable_before_visible(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        history = ConversationHistory(sink=persistence.history)
-
-        history.append(Message(role="user", content="one"))
-        history.extend([Message(role="assistant", content="two")])
-
-        assert [message.content for message in history] == ["one", "two"]
-        assert persistence.history.load() == history
-
-    def test_undo_and_clear_append_surface_operations(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        history = ConversationHistory(sink=persistence.history)
-        history.extend([
-            Message(role="user", content="one"),
-            Message(role="assistant", content="answer one"),
-            Message(role="user", content="two"),
-            Message(role="assistant", content="answer two"),
-        ])
-
-        assert [message.content for message in history.undo(1)] == [
-            "one", "answer one",
-        ]
-        trajectory_after_undo = persistence.history.path.read_text(encoding="utf-8")
-        assert "answer two" in trajectory_after_undo
-        assert '"operation": "undo"' in trajectory_after_undo
-
-        history.clear()
-
-        assert history.snapshot() == ()
-        assert persistence.history.load() == []
-        trajectory_after_clear = persistence.history.path.read_text(encoding="utf-8")
-        assert trajectory_after_clear.startswith(trajectory_after_undo)
-        assert '"operation": "clear"' in trajectory_after_clear
-
-    def test_persisted_message_nested_fields_are_immutable(self, tmp_path):
-        history = ConversationHistory(sink=thread_persistence(tmp_path).history)
-        message = Message(
-            role="assistant",
-            tool_calls=[
-                ToolCall(
-                    id="call-1",
-                    name="echo",
-                    args={"nested": {"value": 1}},
-                )
-            ],
-            usage_metadata={"input_tokens": 1},
-            data={"items": [{"status": "pending"}]},
-        )
-
-        history.append(message)
-
-        with pytest.raises(RuntimeError, match="immutable"):
-            message.usage_metadata["input_tokens"] = 2
-        with pytest.raises(RuntimeError, match="immutable"):
-            message.tool_calls[0].args["nested"]["value"] = 2
-        with pytest.raises(RuntimeError, match="immutable"):
-            message.data["items"].append({"status": "completed"})
-
-    def test_failed_sink_write_does_not_change_history(self):
-        class FailingSink:
-            def append(self, _messages):
-                raise OSError("disk full")
-
-            def replace_surface(
-                self,
-                _source_node_ids,
-                _messages,
-                *,
-                operation,
-                preserve_transcript,
-            ):
-                del operation, preserve_transcript
-                raise OSError("disk full")
-
-            def record(self, _event, _data, **_kwargs):
-                raise OSError("disk full")
-
-            def open_transactions(self, _transaction):
-                return frozenset()
-
-        original = Message(role="user", content="stable")
-        history = ConversationHistory([original], sink=FailingSink())
-
-        with pytest.raises(OSError, match="disk full"):
-            history.append(Message(role="assistant", content="not durable"))
-        assert history.snapshot() == (original,)
-
-        with pytest.raises(OSError, match="disk full"):
-            history.clear()
-        assert history.snapshot() == (original,)
-
-
-class TestThreadMetadataStore:
-    def test_typed_metadata_roundtrip(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        metadata = ThreadMetadata(
-            provider="mock",
-            model="mock-1",
-            workspace_root="/workspace",
-            title="Example",
-        )
-
-        persistence.metadata.save(metadata)
-
-        assert persistence.metadata.load() == metadata
-
-    def test_unknown_metadata_is_rejected(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.paths.metadata_file.parent.mkdir(parents=True, exist_ok=True)
-        persistence.paths.metadata_file.write_text(
-            json.dumps({"schema_version": 1, "unknown": True}),
-            encoding="utf-8",
-        )
-
-        with pytest.raises(ValueError, match="Extra inputs"):
-            persistence.metadata.load()
-
-    def test_metadata_state_persists_each_typed_replacement(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        ctx = xcore.Context()
-        state = ThreadMetadataState(
-            ctx,
-            session_id="s",
-            thread_id="t",
-            value=persistence.metadata.load(),
-        )
-        ctx.on(
-            THREAD_METADATA_CHANGED,
-            lambda change: persistence.metadata.save(change.current),
-        )
-        selected = ThreadMetadata(
-            provider="mock",
-            model="mock-2",
-            model_mode="high",
-            workspace_root="/workspace",
-        )
-
-        asyncio.run(state.replace(selected))
-
-        expected = selected.model_copy(update={"title": "s"})
-        assert state.value == expected
-        assert persistence.metadata.load() == expected
-
-    def test_metadata_state_announces_every_change_generically(self):
-        """Subscribers see whole values; field semantics belong to them."""
-        ctx = xcore.Context()
-        state = ThreadMetadataState(ctx, session_id="s", thread_id="t")
-        seen: list[tuple[ThreadMetadata, ThreadMetadata]] = []
-        dispose = ctx.on(
-            THREAD_METADATA_CHANGED,
-            lambda change: seen.append((change.previous, change.current)),
-        )
-
-        async def _drive() -> None:
-            await state.update(title="first")
-            await state.update(provider="mock")
-            await state.replace(state.value)          # same value: no event
-            dispose()
-            await state.update(title="after dispose")
-
-        asyncio.run(_drive())
-
-        assert [(p.title, c.title) for p, c in seen] == [
-            ("s", "first"),
-            ("first", "first"),
-        ]
-        assert seen[1][1].provider == "mock"
-        assert len(seen) == 2
-
-
-class TestInboxStore:
-    def test_reconcile_removes_inputs_already_committed_to_history(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        inputs = [
-            InboxInput(
-                content="one",
-                target=InboxTarget.NEXT_TURN,
-                source="user",
-                message_id="accepted",
-            ),
-            InboxInput(
-                content="two",
-                target=InboxTarget.NEXT_STEP,
-                source="user",
-                message_id="pending",
-            ),
-        ]
-        persistence.inbox.replace(inputs)
-
-        pending = persistence.inbox.reconcile({"accepted"})
-
-        assert [item.message_id for item in pending] == ["pending"]
-        assert [item.message_id for item in persistence.inbox.load()] == ["pending"]
-
-    def test_unknown_snapshot_fields_fail_explicitly(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        persistence.paths.inbox_file.write_text(
-            json.dumps({"schema_version": 1, "items": [], "legacy": []}),
-            encoding="utf-8",
-        )
-
-        with pytest.raises(ValueError, match="Extra inputs"):
-            persistence.inbox.load()
-
-
-class TestThreadLifecycleStore:
-    def test_typed_lifecycle_roundtrip(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        record = ThreadLifecycleRecord.create(
-            "started",
-            thread_id="child",
-            parent_thread_id="t1",
-            agent="builder",
-        )
-
-        persistence.lifecycle.append(record)
-
-        assert persistence.lifecycle.load() == [record]
-
-    def test_invalid_lifecycle_timestamp_fails_explicitly(self, tmp_path):
-        persistence = thread_persistence(tmp_path)
-        raw = ThreadLifecycleRecord.create(
-            "started",
-            thread_id="child",
-            parent_thread_id="t1",
-            agent="builder",
-        ).model_dump(mode="json")
-        raw["timestamp"] = "not-a-time"
-        persistence.paths.session.threads_log.parent.mkdir(parents=True, exist_ok=True)
-        persistence.paths.session.threads_log.write_text(
-            json.dumps(raw) + "\n", encoding="utf-8"
-        )
-
-        with pytest.raises(ValueError, match="ISO 8601"):
-            persistence.lifecycle.load()
-
-    def test_concurrent_thread_writers_append_complete_records(self, tmp_path):
-        session = RuntimePaths.from_data_dir(tmp_path).session("shared")
-
-        def append(index: int) -> None:
-            persistence = ThreadPersistence.create(
-                session,
-                thread_id=f"child-{index}",
-                workspace_root="/workspace",
-                provider="default",
-            )
-            persistence.lifecycle.append(ThreadLifecycleRecord.create(
-                "completed",
-                thread_id=f"child-{index}",
-                parent_thread_id="agent",
-                agent="worker",
-            ))
-
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            list(executor.map(append, range(40)))
-
-        records = ThreadPersistence.open(
-            session,
-            thread_id="agent",
-        ).lifecycle.load()
-        assert len(records) == 40
-        assert {record.thread_id for record in records} == {
-            f"child-{index}" for index in range(40)
-        }
-
-
-def _raw_records(persistence: ThreadPersistence) -> list[dict]:
-    return [
+def test_append_round_trips_canonical_message_identity(tmp_path):
+    persistence = _store(tmp_path)
+    messages = (_human(1), _human(2))
+    persistence.history.append(messages)
+
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    assert reopened.history.load_surface() == messages
+    assert reopened.history.count() == 2
+
+
+def test_trajectory_rejects_duplicate_message_identity(tmp_path):
+    history = _store(tmp_path).history
+    history.append((_human(1),))
+    with pytest.raises(ValueError, match="unique identities"):
+        history.append((_human(1, "different content"),))
+
+
+def test_surface_replacement_and_transcript_are_separate_projections(tmp_path):
+    history = _store(tmp_path).history
+    original = (_human(1), _human(2), _human(3))
+    history.append(original)
+    summary = CompactionSummaryMessage(
+        id=MessageId("summary-1"), summary="older context",
+    )
+
+    history.replace_surface(
+        (original[0].id, original[1].id),
+        (summary,),
+        operation="compact",
+        preserve_transcript=True,
+    )
+
+    assert history.load_surface() == (summary, original[2])
+    assert history.load_transcript() == list(original)
+    assert isinstance(history.page_trajectory(limit=1).page.items[0], SurfaceReplaced)
+
+
+def test_non_preserving_replacement_updates_both_projections(tmp_path):
+    history = _store(tmp_path).history
+    original = (_human(1), _human(2))
+    history.append(original)
+    replacement = _human(3, "replacement")
+    history.replace_surface(
+        tuple(message.id for message in original),
+        (replacement,),
+        operation="clear",
+        preserve_transcript=False,
+    )
+    assert history.load_surface() == (replacement,)
+    assert history.load_transcript() == [replacement]
+
+
+def test_trajectory_paging_reports_tail_and_validates_anchor(tmp_path):
+    history = _store(tmp_path).history
+    history.append(tuple(_human(index) for index in range(1, 6)))
+
+    page = history.page_trajectory(limit=2)
+    assert page.newest_position == 5
+    assert [entry.position for entry in page.page.items] == [4, 5]
+    assert all(isinstance(entry, MessageAppended) for entry in page.page.items)
+    older = history.page_trajectory(limit=2, cursor=page.page.older_cursor)
+    assert [entry.position for entry in older.page.items] == [2, 3]
+    with pytest.raises(HistoryCursorInvalid):
+        history.page_trajectory(limit=2, before=99)
+
+
+def test_open_transactions_fold_typed_start_and_end_events(tmp_path):
+    history = _store(tmp_path).history
+    transaction = TransactionRef(kind="compaction", id="tx-1")
+    history.record(TransactionStarted(transaction=transaction), durable=True)
+    assert history.open_transactions("compaction") == frozenset({"tx-1"})
+    history.record(TransactionEnded(
+        transaction=transaction,
+        outcome=TransactionCommitted(),
+    ), durable=True)
+    assert history.open_transactions("compaction") == frozenset()
+
+
+def test_corrupt_trajectory_fails_at_persistence_boundary(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1),))
+    with persistence.history.path.open("a", encoding="utf-8") as handle:
+        handle.write("{not-json}\n")
+
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    with pytest.raises(ValueError, match="Invalid messages.jsonl"):
+        reopened.history.load_surface()
+
+
+def _rewrite_records(path, mutate):
+    records = [
         json.loads(line)
-        for line in persistence.history.path.read_text(encoding="utf-8").splitlines()
+        for line in path.read_text(encoding="utf-8").splitlines()
     ]
+    mutate(records)
+    # Change file size so the shared trajectory reader must discard its cache.
+    path.write_text(
+        "\n".join(
+            json.dumps(record, ensure_ascii=False) + " "
+            for record in records
+        ) + "\n",
+        encoding="utf-8",
+    )
 
 
-class TestLazyPersist:
-    """A brand-new session is invisible until its first durable record."""
+def test_trajectory_rejects_position_gap_when_reloaded(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1), _human(2)))
+    _rewrite_records(
+        persistence.history.path,
+        lambda records: records[1]["entry"].update(position=9),
+    )
 
-    def test_deferred_metadata_stays_buffered_until_materialize(self, tmp_path):
-        persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
-        assert persistence.metadata.load().title == "s1"
-        # Buffering: saving does not touch the metadata file yet.
-        persistence.metadata.save(ThreadMetadata(title="late title"))
-        assert not persistence.paths.metadata_file.exists()
-        assert persistence.metadata.load().title == "s1"
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    with pytest.raises(ValueError, match="positions must be contiguous"):
+        reopened.history.load_surface()
 
-        # materialize() is the persistence component's transition: the first
-        # committed turn makes the thread durable, then flushes what was
-        # buffered while the session was still empty.
-        persistence.materialize()
-        assert persistence.paths.metadata_file.exists()
-        assert persistence.metadata.load().title == "late title"
 
-    def test_history_write_is_the_evidence_boundary(self, tmp_path):
-        persistence = thread_persistence(tmp_path, session_id="s1")
-        assert not persistence.has_persisted_state()
-        persistence.history.append([Message(role="user", content="hi")])
-        assert persistence.has_persisted_state()
+def test_trajectory_rejects_unknown_replacement_source_when_reloaded(tmp_path):
+    persistence = _store(tmp_path)
+    original = _human(1)
+    persistence.history.append((original,))
+    persistence.history.replace_surface(
+        (original.id,),
+        (_human(2, "replacement"),),
+        operation="replace",
+        preserve_transcript=False,
+    )
+    _rewrite_records(
+        persistence.history.path,
+        lambda records: records[1]["entry"].update(
+            source_ids=["not-in-the-current-surface"]
+        ),
+    )
 
-    def test_write_through_after_evidence_never_resurrects_a_buffered_snapshot(
-        self, tmp_path,
-    ):
-        """A caption-style write order must keep the newest value durable.
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    with pytest.raises(ValueError, match="source nodes are not current"):
+        reopened.history.load_surface()
 
-        The first metadata save happens while the thread has no message yet
-        (buffered); the first message then makes the thread durable, a later
-        metadata write passes through, and the explicit materialize at the
-        first TURN_END must not overwrite it with the older buffered value.
-        """
-        persistence = thread_persistence(tmp_path, session_id="s1", defer_metadata=True)
-        persistence.metadata.save(ThreadMetadata(
-            provider="mock",
-            model="mock-1",
-            title="",
-        ))
-        persistence.history.append([Message(role="user", content="hi")])
-        persistence.metadata.save(ThreadMetadata(
-            provider="mock",
-            model="mock-1",
-            title="captioned title",
-        ))
-        persistence.materialize()
 
-        assert persistence.metadata.load().title == "captioned title"
+def test_trajectory_rejects_reused_message_identity_when_reloaded(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1), _human(2)))
+    _rewrite_records(
+        persistence.history.path,
+        lambda records: records[1]["entry"]["message"].update(
+            id="message-1"
+        ),
+    )
+
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    with pytest.raises(ValueError, match="reuses a message identity"):
+        reopened.history.load_surface()
+
+
+def test_trajectory_rejects_legacy_flat_record_without_entry_envelope(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1),))
+    path = persistence.history.path
+    current = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    legacy = {"schema_version": current["schema_version"], **current["entry"]}
+    path.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    with pytest.raises(ValueError, match="entry"):
+        reopened.history.load_surface()

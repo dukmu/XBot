@@ -47,7 +47,7 @@ _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 async def start_application(
     *,
     paths: RuntimePaths,
-    provider_name: str = "default",
+    provider_name: str | None = None,
     session_id: str | None = None,
     thread_id: str = "agent",
     workspace_root: Path | str | None = None,
@@ -71,7 +71,8 @@ async def start_application(
     application instead of leaking through Engine. ``plugin_dirs`` only adds
     external import roots; ``no_plugins`` selects the core Agent composition.
     ``extra_plugins`` contains session-scoped configuration patches."""
-    _validate_identifier("provider_name", provider_name)
+    if provider_name is not None:
+        _validate_identifier("provider_name", provider_name)
     session_id = session_id or new_session_id()
     _validate_identifier("session_id", session_id)
     _validate_identifier("thread_id", thread_id)
@@ -103,8 +104,6 @@ async def start_application(
         ThreadPersistence.create(
             thread_paths,
             thread_id=thread_id,
-            workspace_root=str(workspace_root),
-            provider=provider_name,
             defer_metadata=defer_persist,
         )
         if persistence_enabled

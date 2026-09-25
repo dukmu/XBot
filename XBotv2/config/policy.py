@@ -12,9 +12,6 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.loader.contracts import PluginOverlay
 
 
-_PERMISSION_DECISIONS = ("deny", "allow", "ask")
-
-
 def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, JsonValue]:
     """Read policy fields from the canonical session plugin overlay."""
     rows = _read_rows(paths.session(session_id).config_file)
@@ -39,12 +36,21 @@ def patch_session_policy(
     path = paths.session(session_id).config_file
     rows = _read_rows(path)
     permission_config = dict(_plugin_config(rows, "permissions"))
+    rules = list(permission_config.get("rules", []))
     for tool in (*remove_permissions, *(permissions or {})):
-        _remove_rule(permission_config, {"tool": re.escape(tool)})
+        pattern = re.escape(tool)
+        rules = [rule for rule in rules if rule.get("tool_pattern") != pattern]
     for tool, decision in (permissions or {}).items():
-        permission_config.setdefault(decision, []).insert(
-            0, {"tool": re.escape(tool)}
+        rules.insert(
+            0,
+            {
+                "tool_pattern": re.escape(tool),
+                "param_patterns": {},
+                "path_scope": None,
+                "decision": decision,
+            },
         )
+    permission_config = {"rules": rules} if rules else {}
     sandbox_config = dict(_plugin_config(rows, "sandbox"))
     for key in remove_sandbox:
         sandbox_config.pop(key, None)
@@ -64,13 +70,6 @@ def patch_session_policy(
     elif path.exists():
         path.unlink()
     return load_session_policy(paths, session_id)
-
-
-def _remove_rule(permissions: dict[str, JsonValue], rule: dict[str, JsonValue]) -> None:
-    for key in _PERMISSION_DECISIONS:
-        permissions[key] = [item for item in permissions.get(key, []) if item != rule]
-        if not permissions[key]:
-            permissions.pop(key, None)
 
 
 def _read_rows(path: Path) -> list[dict[str, JsonValue]]:

@@ -29,58 +29,68 @@ from typing import Any, Callable, Iterable, Mapping
 from pydantic import BaseModel, ValidationError
 
 from XBotv2.agentloop.protocol import (
-    AssistantMessageData,
-    AssistantMessageDeltaData,
-    ErrorEventData,
-    ToolCallStartedItem,
-    ToolCallsStartedData,
-    ToolResultData,
-    TurnCancelledData,
-    TurnData,
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopTurnEnded,
+    LoopTurnStarted,
+    ToolCallsStarted as LoopToolCallsStarted,
+    TurnCancelled as CancelledOutcome,
 )
 from XBotv2.compact.protocol import (
-    CompactionCompletedData,
-    CompactionFailedData,
-    CompactionStartedData,
+    CompactionCompleted,
+    CompactionFailed,
+    CompactionStarted,
 )
-from XBotv2.core.usage import UsageData
+from XBotv2.usage import UsageUpdated
 from XBotv2.interactions.protocol import (
-    ClientMessageData,
-    InteractionRecordedData,
-    UserInputRequiredData,
+    ClientNotice,
+    UserInputRequest,
+    UserInputRecorded,
 )
-from XBotv2.jobs.contracts import JobSnapshot
-from XBotv2.jobs.protocol import JobCompletionData
-from XBotv2.permissions.protocol import PermissionRequestData
+from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
+from XBotv2.goal.models import GoalChanged
+from XBotv2.todolist.contracts import TaskChanged
+from XBotv2.permissions.contracts import PermissionRequest
+from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.protocol import ServerEvent
-from XBotv2.session.contracts import PendingInteractionData
+from XBotv2.interactions.contracts import InteractionRequest
 from XBotv2.session.protocol import (
     AgentConfiguredData,
-    HistoryUpdatedData,
-    MessageData,
+    HistoryUpdatedEvent,
     QueueUpdatedData,
+)
+from XBotv2.session.records import (
+    AssistantRecord,
+    HumanInputRecord,
+    InputRecordPayload,
+    RuntimeNoticeRecord,
+    ToolRecord,
 )
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
-    ClientNotice,
+    ClientNoticeReceived,
     CompactionChanged,
     ErrorFrame,
     HistoryReplaced,
     InteractionOpened,
     InteractionResolved,
     JobCompletionNotice,
+    GoalChangedReceived,
+    TaskChangedReceived,
     JobUpdated,
     QueueReplaced,
+    RuntimeNoticePublished,
     SessionConfigured,
     StatusSlotsUpdated,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
     TurnStarted,
     UiEvent,
-    UsageUpdated,
+    UsageSnapshotReceived,
     UserMessagePublished,
 )
 
@@ -101,7 +111,7 @@ class UnsupportedFrame(FrameRejected):
 # supersedes it. Anything in neither this table nor ``FRAMES`` is an error.
 IGNORED_FRAMES: Mapping[str, str] = {
     "end": "stream terminator; the transport consumes it",
-    "agent/inbox/spliced": (
+    "agent/inbox/changed": (
         "canonical agent event; input_accepted/queue_updated are the client projections"
     ),
     "input_accepted": "queue_updated carries the resulting queue",
@@ -110,17 +120,7 @@ IGNORED_FRAMES: Mapping[str, str] = {
     "tool_call_delta": (
         "a tool is shown once tool_calls_started delivers its final arguments"
     ),
-    # Contract finding: `permission_denied` is in the repository's SSE contract
-    # fixture but has no producer in the current server, and its payload
-    # (`decision: "deny"` plus `reason`) does not satisfy any existing payload
-    # model -- `PermissionRequestData` pins `decision` to `Literal["ask"]`, and
-    # `InteractionRecordedData` requires a `status` the frame does not carry.
-    # Denials the server actually publishes arrive as
-    # `permission_response_recorded`. Recorded here rather than guessed at.
-    "permission_denied": (
-        "legacy frame with no producer; recorded answers arrive as "
-        "permission_response_recorded"
-    ),
+    "usage": "usage_updated carries the authoritative cumulative snapshot",
 }
 
 Payload = Mapping[str, Any]
@@ -143,78 +143,78 @@ def _opens() -> Builder:
     return build
 
 
+def _published_input(payload: InputRecordPayload) -> tuple[UiEvent, ...]:
+    record = payload.root
+    if isinstance(record, HumanInputRecord):
+        return (UserMessagePublished(payload=record),)
+    if isinstance(record, RuntimeNoticeRecord):
+        return (RuntimeNoticePublished(payload=record),)
+    raise TypeError(f"Unsupported input record: {type(record).__name__}")
+
+
 # --- one-to-one frames ----------------------------------------------------
 
 
 _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
-    "assistant_message_delta": (AssistantMessageDeltaData, _carries(AssistantDelta)),
-    "tool_result": (ToolResultData, _carries(ToolResult)),
-    "error": (ErrorEventData, _carries(ErrorFrame)),
-    "message": (MessageData, _carries(UserMessagePublished)),
+    "assistant_text_delta": (AssistantTextDelta, _carries(AssistantDelta)),
+    "assistant_reasoning_delta": (
+        AssistantReasoningDelta,
+        _carries(AssistantDelta),
+    ),
+    "tool_completed": (ToolRecord, _carries(ToolRecordReceived)),
+    "error": (LoopError, _carries(ErrorFrame)),
+    "message": (InputRecordPayload, _published_input),
     "agent_configured": (AgentConfiguredData, _carries(SessionConfigured)),
-    "usage": (UsageData, _carries(UsageUpdated)),
+    "usage_updated": (UsageUpdated, _carries(UsageSnapshotReceived)),
     "queue_updated": (QueueUpdatedData, _carries(QueueReplaced)),
-    "history_updated": (HistoryUpdatedData, _carries(HistoryReplaced)),
-    "tool_calls_started": (ToolCallsStartedData, _carries(ToolCallsStarted)),
-    "compaction_started": (CompactionStartedData, _carries(CompactionChanged)),
-    "compaction_completed": (CompactionCompletedData, _carries(CompactionChanged)),
-    "compaction_failed": (CompactionFailedData, _carries(CompactionChanged)),
-    "job_updated": (JobSnapshot, _carries(JobUpdated)),
-    "client_message": (ClientMessageData, _carries(ClientNotice)),
-    "completion_notice": (JobCompletionData, _carries(JobCompletionNotice)),
-    "permission_request": (PermissionRequestData, _opens()),
-    "user_input_required": (UserInputRequiredData, _opens()),
+    "history_updated": (HistoryUpdatedEvent, _carries(HistoryReplaced)),
+    "tool_calls_started": (LoopToolCallsStarted, _carries(ToolCallsStarted)),
+    "compaction_started": (CompactionStarted, _carries(CompactionChanged)),
+    "compaction_completed": (CompactionCompleted, _carries(CompactionChanged)),
+    "compaction_failed": (CompactionFailed, _carries(CompactionChanged)),
+    "job_updated": (JobUpdatedEvent, lambda payload: (JobUpdated(payload=payload.view),)),
+    "client_message": (ClientNotice, _carries(ClientNoticeReceived)),
+    "job_completed": (JobCompletedEvent, _carries(JobCompletionNotice)),
+    "goal_changed": (GoalChanged, _carries(GoalChangedReceived)),
+    "task_changed": (TaskChanged, _carries(TaskChangedReceived)),
+    "permission_request": (PermissionRequest, _opens()),
+    "user_input_required": (UserInputRequest, _opens()),
 }
 
 
 # --- frames that need more than a payload swap ----------------------------
 
 
-def _turn_started(payload: TurnData) -> tuple[UiEvent, ...]:
-    return _turn((TurnStarted(payload=payload),), payload)
+def _turn_started(payload: LoopTurnStarted) -> tuple[UiEvent, ...]:
+    return (TurnStarted(payload=payload),)
 
 
-def _turn_finished(payload: TurnData) -> tuple[UiEvent, ...]:
-    return _turn((TurnFinished(payload=payload),), payload)
+def _turn_ended(payload: LoopTurnEnded) -> tuple[UiEvent, ...]:
+    if isinstance(payload.outcome, CancelledOutcome):
+        return (TurnCancelled(payload=payload),)
+    return (TurnFinished(payload=payload),)
 
 
-def _turn_cancelled(payload: TurnCancelledData) -> tuple[UiEvent, ...]:
-    return _turn((TurnCancelled(payload=payload),), payload)
-
-
-def _turn(events: tuple[UiEvent, ...], payload: TurnData) -> tuple[UiEvent, ...]:
-    """Status slots travel beside the turn frame that carries them."""
-    if payload.status_slots:
-        return (events[0], StatusSlotsUpdated(payload.status_slots))
-    return events
-
-
-def _assistant_message(payload: AssistantMessageData) -> tuple[UiEvent, ...]:
-    """A tool-only answer carries no content, so its calls are materialized here."""
-    events: list[UiEvent] = [AssistantCompleted(payload=payload)]
-    if payload.tool_calls:
-        events.append(ToolCallsStarted(payload=ToolCallsStartedData(
-            tool_calls=[
-                ToolCallStartedItem.model_validate(call) for call in payload.tool_calls
-            ],
-        )))
-    return tuple(events)
+def _assistant_message(payload: AssistantRecord) -> tuple[UiEvent, ...]:
+    return (AssistantCompleted(payload=payload),)
 
 
 _SPECIAL: Mapping[str, tuple[type[BaseModel], Builder]] = {
-    "turn_started": (TurnData, _turn_started),
-    "turn_finished": (TurnData, _turn_finished),
-    "turn_cancelled": (TurnCancelledData, _turn_cancelled),
-    "assistant_message": (AssistantMessageData, _assistant_message),
-    "permission_response_recorded": (InteractionRecordedData, _carries(InteractionResolved)),
-    "user_input_recorded": (InteractionRecordedData, _carries(InteractionResolved)),
+    "turn_started": (LoopTurnStarted, _turn_started),
+    "turn_ended": (LoopTurnEnded, _turn_ended),
+    "assistant_completed": (AssistantRecord, _assistant_message),
+    "permission_response_recorded": (
+        PermissionResponseRecorded,
+        _carries(InteractionResolved),
+    ),
+    "user_input_recorded": (UserInputRecorded, _carries(InteractionResolved)),
 }
 
 FRAMES: Mapping[str, tuple[type[BaseModel], Builder]] = {**_FRAMES, **_SPECIAL}
 
 _INTERACTION_FRAMES: Mapping[str, tuple[type[BaseModel], Builder]] = {
-    "permission_request": (PermissionRequestData, _opens()),
-    "user_input_required": (UserInputRequiredData, _opens()),
+    "permission_request": (PermissionRequest, _opens()),
+    "user_input_required": (UserInputRequest, _opens()),
 }
 
 
@@ -234,16 +234,16 @@ class FrameTranslator:
             raise ForeignFrame(
                 f"frame for thread {frame.thread_id!r}, attached to {self.thread_id!r}"
             )
-        entry = FRAMES.get(frame.type)
+        entry = FRAMES.get(frame.kind)
         if entry is None:
-            if frame.type in IGNORED_FRAMES:
+            if frame.kind in IGNORED_FRAMES:
                 return ()
-            raise UnsupportedFrame(f"unsupported frame type: {frame.type!r}")
-        return _apply(entry, frame.data)
+            raise UnsupportedFrame(f"unsupported frame kind: {frame.kind!r}")
+        return _apply(entry, frame.payload)
 
 
 def replay_pending_interactions(
-    items: Iterable[PendingInteractionData],
+    items: Iterable[InteractionRequest],
 ) -> tuple[UiEvent, ...]:
     """Rebuild unanswered dialogs from a session snapshot.
 
@@ -253,10 +253,10 @@ def replay_pending_interactions(
     """
     events: list[UiEvent] = []
     for item in items:
-        entry = _INTERACTION_FRAMES.get(item.type)
+        entry = _INTERACTION_FRAMES.get(item.kind)
         if entry is None:
-            raise UnsupportedFrame(f"unsupported pending interaction: {item.type!r}")
-        events.extend(_apply(entry, item.data))
+            raise UnsupportedFrame(f"unsupported pending interaction: {item.kind!r}")
+        events.append(InteractionOpened(request=item))
     return tuple(events)
 
 

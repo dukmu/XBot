@@ -10,14 +10,14 @@ from pydantic import JsonValue
 from XBotv2.core import (
     ArtifactStorePort,
     Tool,
-    ToolResult,
+    ToolOutcome,
 )
 from XBotv2.sandbox.contracts import SandboxPort
 from xcore import Context
 
 from .browser import BrowserSession
 from .contracts import BrowserConfig
-from .network import NetworkOptions, UrlPolicy, WebAccess, network_available
+from .network import WebAccess, network_disabled
 
 
 class BrowserPlugin:
@@ -26,24 +26,14 @@ class BrowserPlugin:
     Config = BrowserConfig
 
     def __init__(self) -> None:
-        self._search = {"backend": "yandex", "region": "wt-wt", "safesearch": "moderate"}
-        self._network_options = NetworkOptions()
-        self._url_policy = UrlPolicy()
-        self._browser_options = {"headless": True, "timeout_seconds": 30.0}
+        self._config = BrowserConfig()
         self._web: WebAccess | None = None
         self._browser: BrowserSession | None = None
-        self._artifacts: ArtifactStorePort | None = None
-        self._sandbox: SandboxPort | None = None
+        self._artifacts: ArtifactStorePort
+        self._sandbox: SandboxPort
 
     def apply(self, ctx: Context, config: BrowserConfig) -> None:
-        self._search = config.search.model_dump()
-        self._network_options = NetworkOptions(
-            timeout_seconds=config.network.timeout_seconds,
-            max_response_bytes=config.network.max_response_bytes,
-            allow_private=config.network.allow_private,
-        )
-        self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
-        self._browser_options = config.browser.model_dump()
+        self._config = config
         ctx.dispose(self._dispose)
         self._artifacts = ctx.artifacts
         self._sandbox = ctx.sandbox
@@ -67,7 +57,7 @@ class BrowserPlugin:
         query: str,
         max_results: int = 5,
         freshness: Literal["day", "week", "month", "year"] | None = None,
-    ) -> ToolResult:
+    ) -> ToolOutcome:
         """Search the live public Web and return concise source results.
 
         The configured search backend returns structured titles, URLs,
@@ -78,19 +68,18 @@ class BrowserPlugin:
             max_results: Number of results from 1 to 10; defaults to 5.
             freshness: Optional day, week, month, or year recency filter.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._web_access().search(
             query,
             max_results=max_results,
             freshness=freshness,
-            backend=str(self._search["backend"]),
-            region=str(self._search["region"]),
-            safesearch=str(self._search["safesearch"]),
+            backend=self._config.search.backend,
+            region=self._config.search.region,
+            safesearch=self._config.search.safesearch,
         )
 
-    async def web_fetch(self, url: str) -> ToolResult:
+    async def web_fetch(self, url: str) -> ToolOutcome:
         """Fetch one public URL and extract readable content with source metadata.
 
         HTML is reduced to Markdown; JSON and text remain textual. Fetches are
@@ -100,12 +89,11 @@ class BrowserPlugin:
         Args:
             url: Absolute public http or https URL without embedded credentials.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._web_access().fetch(url)
 
-    async def browser_open(self, url: str) -> ToolResult:
+    async def browser_open(self, url: str) -> ToolOutcome:
         """Open a public or sandbox-approved local URL in the browser.
 
         Starts Chromium lazily. Use web_fetch for static reading and this Tool
@@ -117,25 +105,24 @@ class BrowserPlugin:
         """
         return await self._browser_session().open(url)
 
-    async def browser_snapshot(self) -> ToolResult:
+    async def browser_snapshot(self) -> ToolOutcome:
         """Read the active page text and refresh its interactive element refs.
 
         Refs are temporary and may become stale after navigation or page updates.
         """
         return await self._browser_session().snapshot()
 
-    async def browser_click(self, ref: str) -> ToolResult:
+    async def browser_click(self, ref: str) -> ToolOutcome:
         """Click one element ref from the latest browser snapshot.
 
         Args:
             ref: Element identifier such as e1 from browser_snapshot.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._browser_session().click(ref)
 
-    async def browser_fill(self, ref: str, text: str) -> ToolResult:
+    async def browser_fill(self, ref: str, text: str) -> ToolOutcome:
         """Replace the value of one editable element from the latest snapshot.
 
         Never enter credentials or sensitive data unless the human explicitly
@@ -145,62 +132,58 @@ class BrowserPlugin:
             ref: Editable element identifier from browser_snapshot.
             text: Exact text to place in the element.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._browser_session().fill(ref, text)
 
-    async def browser_press(self, key: str) -> ToolResult:
+    async def browser_press(self, key: str) -> ToolOutcome:
         """Press one Playwright keyboard key on the active page.
 
         Args:
             key: Key name or chord such as Enter or Control+A.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._browser_session().press(key)
 
-    async def browser_select(self, ref: str, value: str) -> ToolResult:
+    async def browser_select(self, ref: str, value: str) -> ToolOutcome:
         """Select one option value in a select element from the latest snapshot.
 
         Args:
             ref: Select element identifier from browser_snapshot.
             value: Exact option value to select.
         """
-        unavailable = network_available(self._sandbox)
-        if unavailable:
-            return unavailable
+        if not self._sandbox.network:
+            return network_disabled()
         return await self._browser_session().select(ref, value)
 
-    async def browser_screenshot(self) -> ToolResult:
+    async def browser_screenshot(self) -> ToolOutcome:
         """Capture the full active page into the thread's session artifacts."""
         return await self._browser_session().screenshot()
 
-    async def browser_close(self) -> ToolResult:
+    async def browser_close(self) -> ToolOutcome:
         """Close the active isolated browser and discard its temporary state."""
         return await self._browser_session().close()
 
     def _browser_session(self) -> BrowserSession:
         if self._browser is None:
             self._browser = BrowserSession(
-                policy=self._url_policy,
+                network_policy=self._config.network,
+                session_policy=self._config.session,
                 artifacts=self._artifacts,
-                headless=bool(self._browser_options["headless"]),
-                timeout_seconds=float(self._browser_options["timeout_seconds"]),
                 sandbox=self._sandbox,
             )
         return self._browser
 
     def _web_access(self) -> WebAccess:
         if self._web is None:
-            self._web = WebAccess(self._network_options)
+            self._web = WebAccess(self._config.network)
         return self._web
 
     def diagnostics(self) -> dict[str, JsonValue]:
         return {
             "status": "ready",
-            "search_backend": self._search["backend"],
+            "search_backend": self._config.search.backend,
             "browser_active": bool(self._browser and self._browser.active),
         }
 

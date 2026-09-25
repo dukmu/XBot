@@ -19,8 +19,15 @@ from typing import Sequence
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widget import Widget
+from textual.widgets import Static
 
-from XBotv2.tui.state import SessionState
+from XBotv2.tui.state import (
+    HistoryAvailable,
+    HistoryFailed,
+    HistoryLoading,
+    OlderHistory,
+    SessionState,
+)
 from XBotv2.tui.timeline import Entry
 from XBotv2.tui.view.entries import BlockVisibility, entry_widget, update_entry_widget
 from XBotv2.tui.view.plan import ViewPlan, newer_anchor, older_anchor, plan_window
@@ -46,6 +53,25 @@ class TranscriptScroll(VerticalScroll):
         pass
 
 
+def older_history_label(older: OlderHistory) -> str | None:
+    """What the transcript says above its oldest entry, or nothing to say.
+
+    The reader can only act on the part of the conversation the client does not
+    hold if it is on screen: that there is more, that a page is loading, or that
+    the last one failed and asking again is worthwhile.
+    """
+    if isinstance(older, HistoryLoading):
+        return "Loading earlier messages…"
+    if isinstance(older, HistoryAvailable):
+        return "Earlier messages are available — press PageUp to load them"
+    if isinstance(older, HistoryFailed):
+        return (
+            "Earlier messages unavailable — press PageUp to retry: "
+            f"{older.message}"
+        )
+    return None
+
+
 class TranscriptView:
     """Owns the mounted window over one timeline."""
 
@@ -65,6 +91,12 @@ class TranscriptView:
         self.visibility = visibility or BlockVisibility()
         self._widgets: dict[str, Widget] = {}
         self._mounted: tuple[str, ...] = ()
+        # The reader's only view of what the client does not hold. It is mounted
+        # only while there is something to say, and always ahead of the first
+        # entry: entries are inserted relative to other entries, so it stays
+        # above the window however far back the reader pages.
+        self.older_notice = Static("", id="older-history")
+        self._notice_mounted = False
         self._anchor: str | None = None
         self._rendered: dict[str, Entry] = {}
         # Two renders can be asked for at once: the frame loop flushes while a
@@ -125,6 +157,7 @@ class TranscriptView:
             return await self._render_locked(state)
 
     async def _render_locked(self, state: SessionState) -> bool:
+        await self._render_older_notice(state)
         ids = state.timeline.ids()
         if self._anchor is not None and self._anchor not in ids:
             # The anchored entry left the timeline (history rewritten, or the
@@ -145,6 +178,24 @@ class TranscriptView:
                 lambda: self.container.scroll_end(animate=False, immediate=True)
             )
         return changed
+
+    async def _render_older_notice(self, state: SessionState) -> None:
+        """Show, above the window, what the client knows about older messages."""
+        label = older_history_label(state.older)
+        if label is None:
+            if self._notice_mounted:
+                await self.older_notice.remove()
+                self._notice_mounted = False
+            return
+        self.older_notice.update(label)
+        if self._notice_mounted:
+            return
+        first = self._widgets.get(self._mounted[0]) if self._mounted else None
+        if first is None:
+            await self.container.mount(self.older_notice)
+        else:
+            await self.container.mount(self.older_notice, before=first)
+        self._notice_mounted = True
 
     async def _apply(self, state: SessionState, plan: ViewPlan) -> bool:
         changed = False
@@ -256,6 +307,13 @@ class TranscriptView:
         self._anchor = None
         async with self._lock:
             await self._render_locked(state)
+        # This is a command, not an incidental render.  Its contract is to put
+        # the reader at the live tail even when the mounted window was already
+        # the newest one and only a surrounding layout change moved the
+        # viewport.
+        self._schedule(
+            lambda: self.container.scroll_end(animate=False, immediate=True)
+        )
 
     def _keep_reader_place(self, state: SessionState, anchor_entry: str) -> None:
         """After paging up, hold the entry that was at the top of the viewport.

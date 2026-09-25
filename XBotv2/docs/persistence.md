@@ -60,12 +60,15 @@ explicitly; the store never rewrites or discards trajectory records.
 ## Session ownership
 
 Writers are exclusive per session: starting a runtime takes a POSIX advisory
-lock on `<session>/session.lock` for the lifetime of that runtime, so a second
-runtime on the same session fails with the stable `session_in_use` code instead
-of interleaving turns into one trajectory. Ownership is shared by every runtime
-the process starts for that session (a main thread and its subagent threads)
-and released when the last one closes; the kernel releases it if the process
-dies, so a crashed runtime cannot lock a session forever.
+lock on `<data-dir>/.locks/sessions/<session-id>.lock` for the lifetime of that
+runtime, so a second runtime on the same session fails with the stable
+`session_in_use` code instead of interleaving turns into one trajectory. The
+stable lock inode is outside the session directory, so ownership alone does not
+materialize a session and empty session files can be removed without unlinking
+a lock that another process may be opening. Ownership is shared by every
+runtime the process starts for that session (a main thread and its subagent
+threads) and released when the last one closes; the kernel releases it if the
+process dies, so a crashed runtime cannot lock a session forever.
 
 Readers are not blocked: history, transcript, and trajectory reads take no lock,
 which is why the torn-tail rule above exists. Ownership therefore guarantees

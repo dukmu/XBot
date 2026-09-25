@@ -6,9 +6,12 @@ import yaml
 import pytest
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ClientEvent
-from XBotv2.llm.config import ModelConfig, ProviderConfig
-from XBotv2.session.contracts import SessionEventFrame
+from XBotv2.core.domain import SessionScope
+from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
+from XBotv2.core.history import HistoryPage
+from XBotv2.core.timing import SessionStats
+from XBotv2.session.contracts import HistoryMutation, SessionEventFrame
+from XBotv2.session.protocol import HistoryUpdatedEvent
 
 
 class _TrackingEventSubscription(AsyncIterator[SessionEventFrame]):
@@ -66,7 +69,6 @@ class TestProviderConfig:
         from XBotv2.llm.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
-        assert llm.model_name == "deepseek-chat"
 
     def test_create_llm_anthropic_protocol(self):
         """An anthropic-protocol config creates an Anthropic client."""
@@ -87,7 +89,6 @@ class TestProviderConfig:
         from XBotv2.llm.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
-        assert llm.model == "claude-x"
 
     def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
@@ -218,38 +219,86 @@ class TestProviderConfigLoader:
             )
 
     def test_llm_service_lists_configured_providers(self):
-        """LlmService.configure stores definitions; names()/default_name() reflect them."""
+        """LlmService keeps the validated catalog and exposes its names."""
         from XBotv2.llm.service import LlmService
 
-        service = LlmService()
-        service.configure("default", {
-            "default": {
-                "protocol": "openai",
-                "default_model": "test",
-                "models": [{"model": "test"}],
+        service = LlmService(LlmConfig(
+            default_provider="default",
+            providers={
+                "default": ProviderConfig(
+                    protocol="openai",
+                    default_model="test",
+                    models=[ModelConfig(model="test")],
+                ),
+                "other": ProviderConfig(
+                    protocol="anthropic",
+                    default_model="other",
+                    models=[ModelConfig(model="other", max_output_tokens=8192)],
+                ),
             },
-            "other": {
-                "protocol": "anthropic",
-                "default_model": "other",
-                "models": [{"model": "other", "max_output_tokens": 8192}],
-            },
-        })
+        ))
 
         assert service.default_name() == "default"
         assert set(service.names()) == {"default", "other"}
         assert service.provider_config("default").resolve().model == "test"
 
+    def test_llm_service_owns_the_validated_configuration(self):
+        from XBotv2.llm.service import LlmService
+
+        config = LlmConfig(
+            default_provider="primary",
+            providers={
+                "primary": ProviderConfig(
+                    protocol="mock",
+                    default_model="mock-v1",
+                    models=[ModelConfig(model="mock-v1")],
+                ),
+            },
+        )
+
+        service = LlmService(config)
+
+        assert service.default_name() == "primary"
+        assert service.names() == ("primary",)
+        assert service.provider_config("primary") is config.providers["primary"]
+
+    def test_llm_service_resolves_configured_credential_only_at_selection(
+        self, monkeypatch
+    ):
+        from XBotv2.llm.service import LlmService
+
+        monkeypatch.setenv("PROVIDER_TEST_KEY", "secret-from-environment")
+        config = LlmConfig(
+            default_provider="custom",
+            providers={
+                "custom": ProviderConfig(
+                    protocol="openai",
+                    api_key_env="PROVIDER_TEST_KEY",
+                    default_model="model-v1",
+                    models=[ModelConfig(model="model-v1")],
+                ),
+            },
+        )
+
+        service = LlmService(config)
+
+        assert service.provider_config("custom").api_key == (
+            "secret-from-environment"
+        )
+
     def test_unknown_provider_is_rejected(self):
         from XBotv2.llm.service import LlmService
 
-        service = LlmService()
-        service.configure("default", {
-            "default": {
-                "protocol": "openai",
-                "default_model": "fallback-model",
-                "models": [{"model": "fallback-model"}],
+        service = LlmService(LlmConfig(
+            default_provider="default",
+            providers={
+                "default": ProviderConfig(
+                    protocol="openai",
+                    default_model="fallback-model",
+                    models=[ModelConfig(model="fallback-model")],
+                ),
             },
-        })
+        ))
 
         with pytest.raises(
             ValueError,
@@ -303,7 +352,7 @@ class TestProviderConfigLoader:
         (config_dir / "plugins.yaml").write_text(
             yaml.safe_dump([
                 {"id": "llm", "name": "llm", "config": {
-                    "default": "custom",
+                    "default_provider": "custom",
                     "providers": {
                         "custom": {
                             "protocol": "openai",
@@ -318,7 +367,7 @@ class TestProviderConfigLoader:
 
         tree = load_server_tree(paths=RuntimePaths.from_data_dir(tmp_path))
         llm = next(entry for entry in tree.entries if entry.id == "llm")
-        assert llm.config["default"] == "custom"
+        assert llm.config["default_provider"] == "custom"
         assert llm.config["providers"]["custom"]["default_model"] == "custom-model"
         assert llm.config["providers"]["custom"]["models"][0]["model"] == "custom-model"
 
@@ -327,8 +376,15 @@ def _event_subscription() -> _TrackingEventSubscription:
     return _TrackingEventSubscription(
         SessionEventFrame(
             sequence=1,
-            request_id="request-1",
-            event=ClientEvent(type="assistant_message", data={"content": "ok"}),
+            scope=SessionScope(),
+            event=HistoryUpdatedEvent(
+                operation="undo",
+                mutation=HistoryMutation(
+                    removed_turns=1,
+                    history=HistoryPage(items=(), older_cursor=None),
+                    stats=SessionStats(turns=1),
+                ),
+            ),
         )
     )
 
@@ -353,7 +409,7 @@ async def test_session_sse_closes_subscription_when_encoding_fails(monkeypatch) 
 
     subscription = _event_subscription()
 
-    def fail_encoding(**_):
+    def fail_encoding(*_args, **_kwargs):
         raise ValueError("invalid event")
 
     monkeypatch.setattr(protocol, "_format_sse", fail_encoding)

@@ -48,12 +48,12 @@ def build_llm_service(config: LlmConfig | None = None) -> LlmService:
     from XBotv2.llm.mock import create_mock_provider
     from XBotv2.llm.openai import create_openai_provider
 
-    config = config or LlmConfig()
-    service = LlmService()
+    if config is None:
+        config = LlmConfig()
+    service = LlmService(config)
     service.register("mock", create_mock_provider)
     service.register("openai", create_openai_provider)
     service.register("anthropic", create_anthropic_provider)
-    service.configure(config.default, config.model_dump(mode="json")["providers"])
     for name in service.names():
         service.provider_config(name, require_key=False)
     return service
@@ -75,7 +75,7 @@ class LlmComponent:
         ctx.runtime_log.bind("llm").info(
             "provider.catalog.loaded",
             providers=list(service.names()),
-            configured_default=config.default,
+            configured_default=config.default_provider,
         )
         ctx.set("llm", service)
         ctx.set("model", ModelService())

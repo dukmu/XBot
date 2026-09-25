@@ -7,23 +7,19 @@ from XBotv2.compact.events import (
     BeforeCompact,
 )
 from XBotv2.compact.protocol import (
-    CompactEventType,
-    CompactionCompletedData,
-    CompactionFailedData,
+    CompactionCompleted,
+    CompactionFailed,
     CompactionMetrics,
-    CompactionStartedData,
-    compact_event,
+    CompactionStarted,
 )
 
 __all__ = [
     "AfterCompact",
     "BeforeCompact",
-    "CompactEventType",
-    "CompactionCompletedData",
-    "CompactionFailedData",
+    "CompactionCompleted",
+    "CompactionFailed",
     "CompactionMetrics",
-    "CompactionStartedData",
+    "CompactionStarted",
     "POST_COMPACT",
     "PRE_COMPACT",
-    "compact_event",
 ]

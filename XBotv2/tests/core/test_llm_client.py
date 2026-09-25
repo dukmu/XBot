@@ -1,875 +1,499 @@
-"""Tests for llm provider message conversion."""
-
-import os
+"""Provider adapters translate canonical requests without owning conversation state."""
 
 from types import SimpleNamespace
 
+from anthropic.types import (
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+)
+from openai.types.chat import ChatCompletionChunk
+from openai.types.completion_usage import CompletionUsage
 import pytest
 
+from XBotv2.core.domain import (
+    GenerationSettings,
+    MeasurementUnavailable,
+    ModelRoute,
+    ProviderMeasured,
+    ResolvedModelSelection,
+    StandardGenerationMode,
+    ToolCallId,
+)
+from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.core.provider import (
+    ModelRequest,
+    ProviderAssistant,
+    ProviderSystem,
+    ProviderUser,
+    ProviderTool,
+    ToolSchema,
+)
+from XBotv2.core.stream import ModelCompleted, ModelFailed
+from XBotv2.core.tools import ToolCall
 from XBotv2.llm.anthropic import (
     AnthropicProvider,
     anthropic_request_messages,
-    normalize_anthropic_usage,
+    anthropic_tool_schema,
 )
-from XBotv2.core.providers import (
-    BaseProvider,
-    ProviderContextOverflowError,
-    ProviderRetryExhaustedError,
-)
+from XBotv2.llm.base import provider_usage
+from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args
 from XBotv2.llm.openai import (
     OpenAICompatibleProvider,
     normalize_openai_usage,
     openai_messages,
+    openai_tool_call,
+    openai_tool_schema,
 )
-from XBotv2.llm.config import merge_request_extras, parse_provider_config
-from XBotv2.core.messages import (
-    ImageContent,
-    Message,
-    ReasoningPart,
-    TextPart,
-)
-from XBotv2.core.tools import ToolCall
-from XBotv2.agentloop.internal_messages import structure_tool_message
 
 
-def test_provider_retry_default_is_bounded(monkeypatch):
-    monkeypatch.delenv("XBOT_PROVIDER_MAX_RETRIES", raising=False)
-
-    from XBotv2.llm.client import DEFAULT_PROVIDER_MAX_RETRIES, _retry_settings
-
-    assert _retry_settings()[0] == DEFAULT_PROVIDER_MAX_RETRIES
-
-
-@pytest.mark.asyncio
-async def test_provider_retry_exhaustion_reports_clear_error(monkeypatch):
-    class AlwaysFail(BaseProvider):
-        def __init__(self) -> None:
-            super().__init__(
-                model="flaky",
-                temperature=0,
-                max_output_tokens=None,
-                max_retries=2,
-                retry_backoff_factor=0,
-            )
-            self.calls = 0
-
-        async def _astream_once(self, messages, **kwargs):
-            self.calls += 1
-            if False:
-                yield None
-            raise ConnectionError("still down")
-
-    async def no_sleep(_delay: float) -> None:
-        return None
-
-    monkeypatch.setattr("asyncio.sleep", no_sleep)
-    llm = AlwaysFail()
-
-    with pytest.raises(ProviderRetryExhaustedError) as raised:
-        async for _ in llm.astream([]):
-            pass
-
-    assert raised.value.model == "flaky"
-    assert raised.value.retries == 2
-    assert llm.calls == 3
-
-
-def test_openai_adapter_normalizes_llama_context_error_at_provider_boundary():
-    error = RuntimeError("bad request")
-    error.body = {
-        "error": {
-            "code": 400,
-            "type": "exceed_context_size_error",
-            "message": "request exceeds the available context size",
-            "n_prompt_tokens": 4010,
-            "n_ctx": 2048,
-        }
-    }
-
-    normalized = OpenAICompatibleProvider.normalize_provider_error(
-        OpenAICompatibleProvider.__new__(OpenAICompatibleProvider), error
+def test_provider_usage_keeps_delta_and_observation_as_distinct_values():
+    delta, observed = provider_usage(
+        input_tokens=10,
+        output_tokens=3,
+        context_tokens=15,
+        cache_read_input_tokens=5,
     )
-
-    assert isinstance(normalized, ProviderContextOverflowError)
-
-
-@pytest.mark.asyncio
-async def test_openai_context_error_is_rethrown_as_typed_overflow():
-    class _OpenAIRequestFailure(RuntimeError):
-        body = {
-            "error": {
-                "code": "context_length_exceeded",
-                "message": "prompt is too long for the model context",
-            }
-        }
-
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.model = "llama-test"
-    provider.max_retries = 0
-    provider.retry_backoff_factor = 0
-    provider._validate_message_capabilities = lambda _messages: None
-
-    async def fail_once(_messages, **_kwargs):
-        raise _OpenAIRequestFailure("bad request")
-        yield  # pragma: no cover
-
-    provider._astream_once = fail_once
-
-    with pytest.raises(ProviderContextOverflowError) as raised:
-        async for _ in provider.astream([]):
-            pass
-
-    assert raised.value.__cause__.__class__ is _OpenAIRequestFailure
-
-
-def test_openai_unknown_bad_request_is_not_classified_as_context_overflow():
-    error = RuntimeError("bad request")
-    error.body = {
-        "error": {
-            "code": "invalid_parameter",
-            "message": "temperature must be between 0 and 2",
-        }
-    }
-
-    normalized = OpenAICompatibleProvider.normalize_provider_error(
-        OpenAICompatibleProvider.__new__(OpenAICompatibleProvider), error
-    )
-
-    assert normalized is error
-
-
-def test_anthropic_documented_overflow_shapes_are_classified():
-    """Anthropic reports an oversized prompt as a 400 message or a 413 body."""
-
-    class _AnthropicBadRequest(RuntimeError):
-        status_code = 400
-        body = {
-            "type": "error",
-            "error": {
-                "type": "invalid_request_error",
-                "message": "prompt is too long: 210000 tokens > 200000 maximum",
-            },
-        }
-
-    class _AnthropicTooLarge(RuntimeError):
-        status_code = 413
-        body = {
-            "type": "error",
-            "error": {
-                "type": "request_too_large",
-                "message": "Request exceeds the maximum size",
-            },
-        }
-
-    class _AnthropicUnrelated(RuntimeError):
-        status_code = 400
-        body = {
-            "type": "error",
-            "error": {
-                "type": "invalid_request_error",
-                "message": "max_tokens: must be greater than 0",
-            },
-        }
-
-    provider = AnthropicProvider.__new__(AnthropicProvider)
-
-    assert isinstance(
-        provider.normalize_provider_error(_AnthropicBadRequest("bad request")),
-        ProviderContextOverflowError,
-    )
-    assert isinstance(
-        provider.normalize_provider_error(_AnthropicTooLarge("too large")),
-        ProviderContextOverflowError,
-    )
-    unrelated = _AnthropicUnrelated("bad request")
-    assert provider.normalize_provider_error(unrelated) is unrelated
-
-
-def test_generic_openai_messages_do_not_invent_reasoning_extensions():
-    msg = Message(
-        role="assistant",
-        content="",
-        tool_calls=[ToolCall(id="c1", name="shell", args={"command": "ls"})],
-        reasoning="private reasoning",
-    )
-    out = openai_messages([msg])
-    assert "reasoning_content" not in out[0]
-    assert out[0]["tool_calls"][0]["function"]["name"] == "shell"
-    assert out[0]["content"] == ""
-
-
-def test_openai_messages_move_all_system_content_before_history():
-    out = openai_messages([
-        Message(role="system", content="base"),
-        Message(role="user", content="hello"),
-        Message(role="system", content="goal"),
-    ])
-
-    assert out == [
-        {"role": "system", "content": "base\n\ngoal"},
-        {"role": "user", "content": "hello"},
-    ]
-
-
-def test_anthropic_request_uses_top_level_system_and_groups_tool_results():
-    system, messages = anthropic_request_messages([
-        Message(role="system", content="base"),
-        Message(
-            role="assistant",
-            tool_calls=[
-                ToolCall(id="c1", name="first", args={}),
-                ToolCall(id="c2", name="second", args={}),
-            ],
-        ),
-        Message(role="tool", tool_call_id="c1", content="one"),
-        Message(role="tool", tool_call_id="c2", content="two"),
-        Message(role="system", content="goal"),
-    ])
-
-    assert system == "base\n\ngoal"
-    assert messages[1] == {
-        "role": "user",
-        "content": [
-            {"type": "tool_result", "tool_use_id": "c1", "content": "one"},
-            {"type": "tool_result", "tool_use_id": "c2", "content": "two"},
-        ],
-    }
-
-
-def test_plain_tool_content_stays_in_the_native_tool_role():
-    message = Message(
-        role="tool",
-        content="result <data>",
-        tool_call_id="call-1",
-        status="success",
-    )
-    structure_tool_message(message, "sample")
-
-    openai = openai_messages([message])
-    _system, anthropic = anthropic_request_messages([message])
-
-    assert openai == [{
-        "role": "tool",
-        "content": message.content,
-        "tool_call_id": "call-1",
-    }]
-    assert anthropic == [{
-        "role": "user",
-        "content": [{
-            "type": "tool_result",
-            "tool_use_id": "call-1",
-            "content": message.content,
-        }],
-    }]
-    assert message.content == "result <data>"
-
-
-def test_anthropic_marks_cancelled_tool_result_as_error():
-    _system, messages = anthropic_request_messages([
-        Message(
-            role="tool",
-            content="User cancelled the request.",
-            tool_call_id="call-1",
-            status="cancelled",
-        ),
-    ])
-
-    assert messages[0]["content"][0]["is_error"] is True
-
-
-def test_anthropic_request_omits_empty_assistant_and_merges_adjacent_user_blocks():
-    _system, messages = anthropic_request_messages([
-        Message(
-            role="assistant",
-            tool_calls=[ToolCall(id="call-1", name="sample", args={})],
-        ),
-        Message(role="tool", tool_call_id="call-1", content="result"),
-        Message(role="assistant", content=""),
-        Message(role="user", content="continue"),
-    ])
-
-    assert messages == [
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "call-1", "name": "sample", "input": {}},
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "call-1",
-                    "content": "result",
-                },
-                {"type": "text", "text": "continue"},
-            ],
-        },
-    ]
-
-
-def test_provider_adapters_encode_canonical_image_content():
-    image = ImageContent(path="artifacts/media/image", media_type="image/png", size=3)
-    message = Message(role="user", content="inspect", images=[image])
-
-    openai = openai_messages(
-        [message],
-        image_loader=lambda _path: "YWJj",
-    )
-    _system, anthropic = anthropic_request_messages(
-        [message],
-        image_loader=lambda _path: "YWJj",
-    )
-
-    assert openai[0]["content"] == [
-        {"type": "text", "text": "inspect"},
-        {
-            "type": "image_url",
-            "image_url": {"url": "data:image/png;base64,YWJj"},
-        },
-    ]
-    assert anthropic[0]["content"] == [
-        {"type": "text", "text": "inspect"},
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": "YWJj",
-            },
-        },
-    ]
-
-
-def test_tool_image_uses_anthropic_result_blocks_and_chat_rejects_it(artifact_store):
-    message = Message(
-        role="tool",
-        content="image loaded",
-        tool_call_id="call-1",
-        images=[ImageContent(path="artifacts/media/image", media_type="image/png", size=3)],
-    )
-
-    _system, anthropic = anthropic_request_messages(
-        [message], image_loader=lambda _path: "YWJj"
-    )
-    assert anthropic[0]["content"][0]["content"][1]["type"] == "image"
-    with pytest.raises(ValueError, match="only in user messages"):
-        openai_messages([message], image_loader=lambda _path: "YWJj")
-
-    uploaded = openai_messages([Message(
-        role="user",
-        content="inspect",
-        artifact=[{
-            "id": "attachments/sample.bin",
-            "name": "sample.bin",
-            "media_type": "application/octet-stream",
-            "size": 6,
-        }],
-    )], artifacts=artifact_store)
-    assert artifact_store.model_path("attachments/sample.bin") in uploaded[0]["content"]
-
-
-def test_anthropic_usage_values_preserve_cache_context_tokens():
-    assert normalize_anthropic_usage(
-        input_tokens=100,
-        output_tokens=20,
-        cache_read_input_tokens=700,
-        cache_creation_input_tokens=50,
-    ) == {
-        "input_tokens": 100,
-        "output_tokens": 20,
-        "total_tokens": 870,
-        "requests": 1,
-        "context_tokens": 850,
-        "cache_read_input_tokens": 700,
-        "cache_creation_input_tokens": 50,
-    }
-
-
-def test_deepseek_cache_miss_remains_uncached_input():
-    usage = SimpleNamespace(
-        prompt_tokens=283,
-        completion_tokens=69,
-        total_tokens=352,
-        prompt_cache_hit_tokens=256,
-        prompt_cache_miss_tokens=27,
-        prompt_tokens_details=SimpleNamespace(cached_tokens=256),
-    )
-
-    assert normalize_openai_usage(usage) == {
-        "input_tokens": 27,
-        "output_tokens": 69,
-        "total_tokens": 352,
-        "requests": 1,
-        "context_tokens": 283,
-        "cache_read_input_tokens": 256,
-    }
-
-
-def test_openai_usage_accepts_llama_cpp_mapping_payload():
-    assert normalize_openai_usage({
-        "prompt_tokens": 1234,
-        "completion_tokens": 17,
-        "total_tokens": 1251,
-        "prompt_tokens_details": {"cached_tokens": 12},
-    }) == {
-        "input_tokens": 1222,
-        "output_tokens": 17,
-        "total_tokens": 1251,
-        "requests": 1,
-        "context_tokens": 1234,
-        "cache_read_input_tokens": 12,
-    }
-
-
-@pytest.mark.asyncio
-async def test_anthropic_raw_stream_tolerates_null_delta_usage():
-    events = [
-        SimpleNamespace(
-            type="message_start",
-            message=SimpleNamespace(
-                model="model",
-                usage=SimpleNamespace(
-                    input_tokens=10,
-                    cache_read_input_tokens=20,
-                    cache_creation_input_tokens=0,
-                ),
-            ),
-        ),
-        SimpleNamespace(
-            type="content_block_start",
-            index=0,
-            content_block=SimpleNamespace(
-                type="thinking", thinking="", signature=""
-            ),
-        ),
-        SimpleNamespace(
-            type="content_block_delta",
-            index=0,
-            delta=SimpleNamespace(type="thinking_delta", thinking="check"),
-        ),
-        SimpleNamespace(
-            type="content_block_delta",
-            index=0,
-            delta=SimpleNamespace(type="signature_delta", signature="signed"),
-        ),
-        SimpleNamespace(type="content_block_stop", index=0),
-        SimpleNamespace(
-            type="content_block_start",
-            index=1,
-            content_block=SimpleNamespace(
-                type="tool_use", id="call-1", name="filesystem_read"
-            ),
-        ),
-        SimpleNamespace(
-            type="content_block_delta",
-            index=1,
-            delta=SimpleNamespace(
-                type="input_json_delta", partial_json='{"path":"notes.md"}'
-            ),
-        ),
-        SimpleNamespace(type="content_block_stop", index=1),
-        SimpleNamespace(type="message_delta", delta=None, usage=None),
-        SimpleNamespace(
-            type="message_delta",
-            delta=SimpleNamespace(stop_reason="tool_use"),
-            usage=SimpleNamespace(output_tokens=3),
-        ),
-    ]
-
-    class FakeStream:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if not events:
-                raise StopAsyncIteration
-            return events.pop(0)
-
-        async def close(self):
-            return None
-
-    captured = {}
-
-    class FakeMessages:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-            return FakeStream()
-
-    provider = AnthropicProvider.__new__(AnthropicProvider)
-    provider.artifacts = None
-    provider.model = "model"
-    provider.temperature = 0.2
-    provider.max_output_tokens = 100
-    provider.reasoning_effort = "high"
-    provider.thinking = "enabled"
-    provider.bound_tools = []
-    provider.client = SimpleNamespace(messages=FakeMessages())
-
-    chunks = [chunk async for chunk in provider.astream([
-        Message(role="system", content="instructions"),
-        Message(role="user", content="work"),
-    ])]
-    final = chunks[-1]
-
-    assert "tools" not in captured
-    assert captured["system"] == "instructions"
-    assert captured["extra_body"] == {
-        "reasoning_effort": "high",
-        "thinking": {"type": "enabled"},
-    }
-    assert final.content == ""
-    assert final.tool_calls == [
-        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
-    ]
-    assert final.additional_kwargs == {}
-    assert final.parts == [
-        ReasoningPart(
-            text="check",
-            provider_data={"anthropic": {"signature": "signed"}},
-        ),
-        ToolCall(
-            id="call-1", name="filesystem_read", args={"path": "notes.md"}
-        ),
-    ]
-    assert final.usage_metadata == {
-        "input_tokens": 10,
-        "output_tokens": 3,
-        "total_tokens": 33,
-        "requests": 1,
-        "context_tokens": 30,
-        "cache_read_input_tokens": 20,
-    }
-    assert final.response_metadata["stop_reason"] == "tool_use"
-
-    replay_messages = [
-        Message(
-            role="assistant",
-            content=final.content,
-            tool_calls=final.tool_calls,
-            parts=final.parts,
-            response_metadata=final.response_metadata,
-        ),
-        Message(role="tool", tool_call_id="call-1", content="file content"),
-    ]
-    _system, replay = anthropic_request_messages(replay_messages)
-    assert replay[0]["content"] == [
-        {"type": "thinking", "thinking": "check", "signature": "signed"},
-        {
-            "type": "tool_use",
-            "id": "call-1",
-            "name": "filesystem_read",
-            "input": {"path": "notes.md"},
-        },
-    ]
-    assert replay[1]["content"] == [{
-        "type": "tool_result",
-        "tool_use_id": "call-1",
-        "content": "file content",
-    }]
-@pytest.mark.asyncio
-async def test_openai_stream_reconstructs_reasoning_tools_and_usage():
-    def chunk(*, content=None, reasoning=None, tool_calls=None, usage=None):
-        choices = [] if usage else [SimpleNamespace(
-            delta=SimpleNamespace(
-                content=content,
-                reasoning_content=reasoning,
-                tool_calls=tool_calls or [],
-            ),
-            finish_reason="tool_calls" if tool_calls else None,
-        )]
-        return SimpleNamespace(choices=choices, usage=usage)
-
-    events = [
-        chunk(reasoning="check", content="done", tool_calls=[SimpleNamespace(
-            index=0,
-            id="call-1",
-            function=SimpleNamespace(
-                name="filesystem_read",
-                arguments='{"path":',
-            ),
-        )]),
-        chunk(tool_calls=[SimpleNamespace(
-            index=0,
-            id=None,
-            function=SimpleNamespace(name=None, arguments='"notes.md"}'),
-        )]),
-        chunk(usage=SimpleNamespace(
-            prompt_tokens=12,
-            completion_tokens=3,
-            total_tokens=15,
-            prompt_cache_hit_tokens=8,
-        )),
-    ]
-
-    class FakeResponse:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if not events:
-                raise StopAsyncIteration
-            return events.pop(0)
-
-    captured = {}
-
-    class FakeCompletions:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-            return FakeResponse()
-
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.artifacts = None
-    provider.model = "model"
-    provider.temperature = 0.2
-    provider.max_output_tokens = None
-    provider.reasoning_effort = "high"
-    provider.thinking = "enabled"
-    provider.bound_tools = [{"type": "function"}]
-    provider.client = SimpleNamespace(
-        chat=SimpleNamespace(completions=FakeCompletions())
-    )
-
-    chunks = [chunk async for chunk in provider.astream([
-        Message(role="system", content="instructions"),
-        Message(role="user", content="work"),
-    ])]
-    final = chunks[-1]
-
-    assert captured["stream_options"] == {"include_usage": True}
-    assert captured["reasoning_effort"] == "high"
-    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert "max_tokens" not in captured
-    assert final.content == "done"
-    assert final.additional_kwargs == {}
-    assert final.parts == [
-        ReasoningPart(text="check"),
-        TextPart(text="done"),
-        ToolCall(
-            id="call-1", name="filesystem_read", args={"path": "notes.md"}
-        ),
-    ]
-    assert final.tool_calls == [
-        ToolCall(id="call-1", name="filesystem_read", args={"path": "notes.md"})
-    ]
-    assert final.usage_metadata == {
-        "input_tokens": 4,
-        "output_tokens": 3,
-        "total_tokens": 15,
-        "requests": 1,
-        "context_tokens": 12,
-        "cache_read_input_tokens": 8,
-    }
-
-    replay_message = Message(
-        role="assistant",
-        content=final.content,
-        tool_calls=final.tool_calls,
-        parts=final.parts,
-        response_metadata=final.response_metadata,
-    )
-    replay = openai_messages([replay_message])
-    assert replay == [{
-        "role": "assistant",
-        "content": "done",
-        "tool_calls": [{
-            "id": "call-1",
-            "type": "function",
-            "function": {
-                "name": "filesystem_read",
-                "arguments": '{"path": "notes.md"}',
-            },
-        }],
-    }]
-
-
-def test_provider_config_accepts_vendor_extra_body(monkeypatch):
-    monkeypatch.setenv("VENDOR_FLAG", "on")
-
-    config = parse_provider_config({
-        "protocol": "anthropic",
-        "api_key": "k",
-        "default_model": "m",
-        "models": [
-            {
-                "model": "m",
-                "max_output_tokens": 1024,
-                "extra_body": {
-                    "thinking": {"type": "enabled", "budget_tokens": 4096},
-                    "vendor_flag": os.environ.get("VENDOR_FLAG", "off"),
-                },
-            }
-        ],
+    assert delta.counters.input == 10
+    assert delta.counters.cache_read == 5
+    assert observed == ProviderMeasured(tokens=15)
+
+    _delta, unavailable = provider_usage(input_tokens=0, output_tokens=0)
+    assert isinstance(unavailable, MeasurementUnavailable)
+
+
+def test_openai_usage_normalizes_typed_sdk_fields_and_cache_counters():
+    usage = CompletionUsage.model_validate({
+        "prompt_tokens": 20,
+        "completion_tokens": 4,
+        "total_tokens": 24,
+        "prompt_tokens_details": {"cached_tokens": 6},
+        "cache_creation_input_tokens": 2,
+        "prompt_cache_write_tokens": 3,
     })
 
-    assert config.resolve().extra_body == {
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
-        "vendor_flag": "on",
-    }
+    delta, observed = normalize_openai_usage(usage)
+
+    assert delta.counters.input == 12
+    assert delta.counters.output == 4
+    assert delta.counters.cache_read == 6
+    assert delta.counters.cache_create == 2
+    assert delta.counters.prompt_cache_write == 3
+    assert observed == ProviderMeasured(tokens=20)
 
 
-def test_merge_request_extras_deep_merges_configured_over_derived():
-    merged = merge_request_extras(
-        {
-            "thinking": {"type": "enabled"},
-            "reasoning_effort": "high",
-        },
-        {
-            "thinking": {"budget_tokens": 4096},
-            "top_p": 0.9,
-        },
+def test_openai_usage_rejects_malformed_known_extension_counter():
+    usage = CompletionUsage.model_validate({
+        "prompt_tokens": 20,
+        "completion_tokens": 4,
+        "total_tokens": 24,
+        "prompt_cache_hit_tokens": "six",
+    })
+
+    with pytest.raises(TypeError, match="prompt_cache_hit_tokens"):
+        normalize_openai_usage(usage)
+
+
+def test_openai_projection_preserves_roles_reasoning_and_tool_calls():
+    call = ToolCall(id=ToolCallId("call-1"), name="lookup", args={"q": "x"})
+    messages = (
+        ProviderSystem(parts=(TextPart(text="system"),)),
+        ProviderUser(parts=(TextPart(text="question"),)),
+        ProviderAssistant(parts=(ReasoningPart(text="think"), call)),
+        ProviderTool(call_id="call-1", parts=(TextPart(text="result"),)),
+    )
+    projected = openai_messages(messages)
+    assert [item["role"] for item in projected] == ["system", "user", "assistant", "tool"]
+    assert projected[2]["tool_calls"] == [openai_tool_call(call)]
+    assert projected[3]["tool_call_id"] == "call-1"
+
+
+def test_anthropic_projection_separates_system_and_groups_user_tool_messages():
+    messages = (
+        ProviderSystem(parts=(TextPart(text="system"),)),
+        ProviderUser(parts=(TextPart(text="question"),)),
+        ProviderTool(call_id="call-1", parts=(TextPart(text="result"),)),
+    )
+    system, projected = anthropic_request_messages(messages)
+    assert system == "system"
+    assert len(projected) == 1
+    assert projected[0]["role"] == "user"
+    assert projected[0]["content"][1]["type"] == "tool_result"
+
+
+def test_tool_schemas_are_derived_from_one_provider_neutral_schema():
+    schema = ToolSchema(
+        name="lookup",
+        description="Look up data",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+    )
+    assert openai_tool_schema(schema)["function"]["name"] == "lookup"
+    assert anthropic_tool_schema(schema)["name"] == "lookup"
+
+
+def test_tool_arguments_parser_rejects_non_object_json():
+    assert _parse_tool_args('{"q":"x"}', tool_name="lookup") == {"q": "x"}
+    with pytest.raises(ToolArgumentsError):
+        _parse_tool_args('["x"]', tool_name="lookup")
+    with pytest.raises(ToolArgumentsError):
+        _parse_tool_args('{bad', tool_name="lookup")
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_completes_with_a_typed_terminal_event():
+    """The real adapter must turn a normal provider finish into ModelCompleted."""
+    def chunk(delta, *, finish_reason=None):
+        return ChatCompletionChunk.model_validate({
+            "id": "completion-1",
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }],
+            "created": 1,
+            "model": "test-model",
+            "object": "chat.completion.chunk",
+        })
+
+    class Completions:
+        async def create(self, **_kwargs):
+            async def chunks():
+                yield chunk({"content": "hello"}, finish_reason="stop")
+
+            return chunks()
+
+    provider = OpenAICompatibleProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Completions())
+    )
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=4096,
+        ),
     )
 
-    assert merged == {
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
-        "reasoning_effort": "high",
-        "top_p": 0.9,
-    }
+    events = [event async for event in provider.astream(request)]
+
+    assert isinstance(events[-1], ModelCompleted)
+    assert "".join(part.text for part in events[-1].response.parts) == "hello"
 
 
-async def test_anthropic_extra_body_merges_vendor_config():
-    events = [
-        SimpleNamespace(
-            type="message_start",
-            message=SimpleNamespace(
-                model="m",
-                usage=SimpleNamespace(
-                    input_tokens=1,
-                    cache_read_input_tokens=0,
-                    cache_creation_input_tokens=0,
-                ),
+@pytest.mark.asyncio
+async def test_openai_tool_call_fragments_are_assembled_from_sdk_chunk_types():
+    def chunk(tool_call, *, finish_reason=None):
+        return ChatCompletionChunk.model_validate({
+            "id": "completion-1",
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": [tool_call]},
+                "finish_reason": finish_reason,
+            }],
+            "created": 1,
+            "model": "test-model",
+            "object": "chat.completion.chunk",
+        })
+
+    class Completions:
+        async def create(self, **_kwargs):
+            async def chunks():
+                yield chunk({
+                    "index": 0,
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"q":'},
+                })
+                yield chunk({
+                    "index": 0,
+                    "function": {"arguments": '"x"}'},
+                }, finish_reason="tool_calls")
+
+            return chunks()
+
+    provider = OpenAICompatibleProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Completions())
+    )
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
             ),
+            context_window=4096,
         ),
-        SimpleNamespace(
-            type="content_block_start",
-            index=0,
-            content_block=SimpleNamespace(type="text", text="hi"),
-        ),
-        SimpleNamespace(type="content_block_stop", index=0),
-        SimpleNamespace(
-            type="message_delta",
-            delta=SimpleNamespace(stop_reason="end_turn"),
-            usage=SimpleNamespace(output_tokens=1),
-        ),
-    ]
+    )
 
-    class FakeStream:
-        def __aiter__(self):
-            return self
+    events = [event async for event in provider.astream(request)]
 
-        async def __anext__(self):
-            if not events:
-                raise StopAsyncIteration
-            return events.pop(0)
+    assert isinstance(events[-1], ModelCompleted)
+    call = events[-1].response.parts[0]
+    assert call.name == "lookup"
+    assert call.args == {"q": "x"}
+
+
+@pytest.mark.asyncio
+async def test_openai_does_not_complete_a_tool_call_without_its_name():
+    malformed = ChatCompletionChunk.model_validate({
+        "id": "completion-1",
+        "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call-1",
+                "type": "function",
+                "function": {"arguments": "{}"},
+            }]},
+            "finish_reason": "tool_calls",
+        }],
+        "created": 1,
+        "model": "test-model",
+        "object": "chat.completion.chunk",
+    })
+
+    class Completions:
+        async def create(self, **_kwargs):
+            async def chunks():
+                yield malformed
+
+            return chunks()
+
+    provider = OpenAICompatibleProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Completions())
+    )
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=4096,
+        ),
+    )
+
+    events = [event async for event in provider.astream(request)]
+
+    assert isinstance(events[-1], ModelFailed)
+    assert all(not isinstance(event, ModelCompleted) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_completes_with_a_typed_terminal_event():
+    class MessageStream:
+        async def __aiter__(self):
+            yield RawMessageStartEvent.model_validate({
+                "type": "message_start",
+                "message": {
+                    "id": "message-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "test-model",
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            })
+            yield RawContentBlockStartEvent.model_validate({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+            yield RawContentBlockDeltaEvent.model_validate({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hello"},
+            })
+            yield RawMessageDeltaEvent.model_validate({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 1},
+            })
 
         async def close(self):
-            return None
+            pass
 
-    captured = {}
+    class Messages:
+        async def create(self, **_kwargs):
+            return MessageStream()
 
-    class FakeMessages:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-            return FakeStream()
-
-    provider = AnthropicProvider.__new__(AnthropicProvider)
-    provider.artifacts = None
-    provider.model = "m"
-    provider.temperature = 0.0
-    provider.max_output_tokens = 10
-    provider.reasoning_effort = "high"
-    provider.thinking = "enabled"
-    provider.bound_tools = []
-    provider._extra_body = {
-        "thinking": {"budget_tokens": 4096},
-        "top_p": 0.9,
-    }
-    provider.client = SimpleNamespace(messages=FakeMessages())
-
-    _ = [chunk async for chunk in provider.astream([
-        Message(role="user", content="hi"),
-    ])]
-
-    assert captured["extra_body"] == {
-        "reasoning_effort": "high",
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
-        "top_p": 0.9,
-    }
-
-
-async def test_openai_extra_body_merges_vendor_config():
-    events = [
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                delta=SimpleNamespace(content="done", reasoning_content=None),
-                finish_reason="stop",
-            )],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[],
-            usage=SimpleNamespace(
-                prompt_tokens=1,
-                completion_tokens=1,
-                total_tokens=2,
-                prompt_cache_hit_tokens=0,
+    provider = AnthropicProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(messages=Messages())
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
             ),
+            context_window=4096,
         ),
-    ]
-
-    class FakeResponse:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if not events:
-                raise StopAsyncIteration
-            return events.pop(0)
-
-    captured = {}
-
-    class FakeCompletions:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-            return FakeResponse()
-
-    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-    provider.artifacts = None
-    provider.model = "m"
-    provider.temperature = 0.0
-    provider.max_output_tokens = None
-    provider.reasoning_effort = None
-    provider.thinking = "enabled"
-    provider.bound_tools = []
-    provider._extra_body = {
-        "thinking": {"budget_tokens": 4096},
-        "top_p": 0.9,
-    }
-    provider.client = SimpleNamespace(
-        chat=SimpleNamespace(completions=FakeCompletions())
     )
 
-    _ = [chunk async for chunk in provider.astream([
-        Message(role="user", content="hi"),
-    ])]
+    events = [event async for event in provider.astream(request)]
 
-    assert captured["extra_body"] == {
-        "thinking": {"type": "enabled", "budget_tokens": 4096},
-        "top_p": 0.9,
-    }
+    assert isinstance(events[-1], ModelCompleted)
+    assert "".join(part.text for part in events[-1].response.parts) == "hello"
 
 
-def test_malformed_tool_call_arguments_fail_loudly():
-    """A provider that delivers malformed tool-call arguments must raise at
-    the boundary instead of fabricating empty arguments for the tool."""
-    from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args
+@pytest.mark.asyncio
+async def test_anthropic_preserves_tool_input_from_content_block_start():
+    class MessageStream:
+        def __init__(self):
+            self.events = [
+                RawMessageStartEvent.model_validate({
+                    "type": "message_start",
+                    "message": {
+                        "id": "message-1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": "test-model",
+                        "usage": {"input_tokens": 2, "output_tokens": 0},
+                    },
+                }),
+                RawContentBlockStartEvent.model_validate({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": "lookup",
+                        "input": {"q": "from-start"},
+                    },
+                }),
+                RawContentBlockStopEvent.model_validate({
+                    "type": "content_block_stop",
+                    "index": 0,
+                }),
+                RawContentBlockStartEvent.model_validate({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "call-2",
+                        "name": "lookup",
+                        "input": {},
+                    },
+                }),
+                RawContentBlockDeltaEvent.model_validate({
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"q":'},
+                }),
+                RawContentBlockDeltaEvent.model_validate({
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "input_json_delta", "partial_json": '"from-delta"}'},
+                }),
+                RawContentBlockStopEvent.model_validate({
+                    "type": "content_block_stop",
+                    "index": 1,
+                }),
+                RawMessageDeltaEvent.model_validate({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                    "usage": {"output_tokens": 1},
+                }),
+            ]
 
-    assert _parse_tool_args("") == {}
-    assert _parse_tool_args('{"a": 1}', tool_name="shell") == {"a": 1}
+        def __aiter__(self):
+            return self._iterate()
 
-    with pytest.raises(ToolArgumentsError, match="shell"):
-        _parse_tool_args("{not json", tool_name="shell")
+        async def _iterate(self):
+            for event in self.events:
+                yield event
 
-    with pytest.raises(ToolArgumentsError, match="JSON object"):
-        _parse_tool_args('["not", "an", "object"]', tool_name="edit")
+        async def close(self):
+            pass
+
+    class Messages:
+        async def create(self, **_kwargs):
+            return MessageStream()
+
+    provider = AnthropicProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(messages=Messages())
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=4096,
+        ),
+    )
+
+    events = [event async for event in provider.astream(request)]
+
+    assert isinstance(events[-1], ModelCompleted)
+    calls = events[-1].response.parts
+    assert [call.args for call in calls] == [
+        {"q": "from-start"},
+        {"q": "from-delta"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_rejects_delta_without_its_content_block_start():
+    class MessageStream:
+        async def __aiter__(self):
+            yield RawMessageStartEvent.model_validate({
+                "type": "message_start",
+                "message": {
+                    "id": "message-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "test-model",
+                    "usage": {"input_tokens": 2, "output_tokens": 0},
+                },
+            })
+            yield RawContentBlockDeltaEvent.model_validate({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "orphan"},
+            })
+            yield RawMessageDeltaEvent.model_validate({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 1},
+            })
+
+        async def close(self):
+            pass
+
+    class Messages:
+        async def create(self, **_kwargs):
+            return MessageStream()
+
+    provider = AnthropicProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(messages=Messages())
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=4096,
+        ),
+    )
+
+    events = [event async for event in provider.astream(request)]
+
+    assert isinstance(events[-1], ModelFailed)
+    assert all(not isinstance(event, ModelCompleted) for event in events)

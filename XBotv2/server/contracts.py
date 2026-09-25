@@ -64,7 +64,7 @@ class ServerInfo:
 class ServerOptions:
     """Composition launch facts consumed by server-side capability plugins."""
 
-    provider_name: str
+    provider_name: str | None
     workspace_root: Path
     no_plugins: bool
 

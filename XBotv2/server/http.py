@@ -29,10 +29,7 @@ from XBotv2.protocol import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
 
 # Preserve the established helper import surface.
-from XBotv2.protocol.http_util import (  # noqa: F401
-    _SSE_RESPONSE,
-    _format_sse,
-)
+from XBotv2.protocol.http_util import _SSE_RESPONSE  # noqa: F401
 
 
 class ApiLoggingMiddleware:

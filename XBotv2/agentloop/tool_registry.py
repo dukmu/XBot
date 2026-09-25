@@ -4,8 +4,8 @@ Namespaced tools use the format ``namespace:name``. Built-in tools are
 bare names (default namespace).
 
 ``restrict()`` supports namespace patterns:
-  - ``"*"`` or ``None``: all tools
-  - ``"shell"``: bare name match (backwards-compat)
+  - ``AllTools``: every registered model-visible tool
+  - ``"shell"``: bare name match
   - ``"filesystem*"``: all tools with that prefix
   - ``"skills:*"``: all discovered skill tools
   - ``"skills:global:*"``: all global skill tools
@@ -17,14 +17,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 
-from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.agentloop.contracts import AllTools, ToolRegistration, ToolSelection
 from XBotv2.core.tools import Tool
 
 
 class ToolRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, ToolRegistration] = {}
-        self._enabled_names: set[str] | None = None
+        self._selection: ToolSelection = AllTools()
 
     def register(
         self,
@@ -64,8 +64,10 @@ class ToolRegistry:
         if name not in self._entries:
             return False
         del self._entries[name]
-        if self._enabled_names is not None:
-            self._enabled_names.discard(name)
+        if not isinstance(self._selection, AllTools):
+            self._selection = tuple(
+                selected for selected in self._selection if selected != name
+            )
         return True
 
     def get(self, name: str) -> ToolRegistration | None:
@@ -83,7 +85,7 @@ class ToolRegistry:
         return next(self._matches(name), None)
 
     def registered(self, name: str) -> bool:
-        return name in self._entries and (self._enabled_names is None or name in self._enabled_names)
+        return name in self._entries and self._is_enabled(name)
 
     def get_all(self) -> list[Tool]:
         return [
@@ -102,16 +104,16 @@ class ToolRegistry:
         """Return all registered tools in registration order."""
         return tuple(self._entries.values())
 
-    def restrict(self, tool_names: list[str] | None) -> list[str]:
-        if tool_names is None:
-            self._enabled_names = None
+    def restrict(self, selection: ToolSelection) -> list[str]:
+        if isinstance(selection, AllTools):
+            self._selection = selection
             return self.names()
 
         expanded: set[str] = set()
-        for selector in tool_names:
+        for selector in selection:
             matches = self._expand_selector(selector)
             expanded.update(matches)
-        self._enabled_names = expanded
+        self._selection = tuple(sorted(expanded))
         return self.names()
 
     def exclude(self, tool_names: list[str]) -> list[str]:
@@ -121,7 +123,7 @@ class ToolRegistry:
             for selector in tool_names
             for name in self._expand_selector(selector)
         }
-        self._enabled_names = set(self.names()) - disabled
+        self._selection = tuple(name for name in self.names() if name not in disabled)
         return self.names()
 
     def __len__(self) -> int:
@@ -151,7 +153,7 @@ class ToolRegistry:
         return sorted(n for n in self._entries if n.endswith(f":{selector}"))
 
     def _is_enabled(self, name: str) -> bool:
-        return self._enabled_names is None or name in self._enabled_names
+        return isinstance(self._selection, AllTools) or name in self._selection
 
     def _matches(self, name: str) -> Iterator[ToolRegistration]:
         exact = self._entries.get(name)

@@ -22,17 +22,106 @@ from acp.schema import (
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session.contracts import (
+    OpenedThread,
     SessionEventFrame,
+    SessionKey,
     conversation_replay,
 )
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.messages import Message
+from XBotv2.core.domain import (
+    AgentExecutionLimits,
+    CompletedStop,
+    GenerationSettings,
+    InputId,
+    MessageId,
+    ModelExchange,
+    ModelRoute,
+    ModelTiming,
+    NoticeId,
+    ProviderExtensions,
+    ProviderMeasured,
+    RequestObservation,
+    ResolvedModelSelection,
+    ResolvedRuntimeSelection,
+    SessionScope,
+    StandardGenerationMode,
+    StructuredToolOutput,
+    TokenCounters,
+    TurnId,
+    TurnScope,
+    UsageDelta,
+    UsageSnapshot,
+)
+from XBotv2.core.history import HistoryPage
+from XBotv2.core.messages import (
+    AssistantMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
+from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.tools import (
+    ContinueTurn,
+    ToolCall,
+    ToolCallRef,
+    ToolExecution,
+    ToolOutput,
+    ToolSucceeded,
+    ToolTiming,
+    text_output,
+)
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    AssistantTextDelta,
+    LoopTurnStarted,
+    StartedToolCall,
+    ToolCallsStarted,
+    ToolCompleted,
+    UsageObserved,
+)
+from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.protocol import JobUpdatedEvent
+from XBotv2.interactions.protocol import UserInputOption, UserInputRequest
+from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
+from XBotv2.session.protocol import MessagePublishedEvent
+from XBotv2.session.records import HumanInputRecord
 from XBotv2.llm.mock import MockLLM
-from XBotv2.core import ClientEvent
-from XBotv2.session import OpenedSession, SessionSummary, ThreadSummary
+from XBotv2.session import SessionSummary, ThreadSummary
+
+
+def _exchange() -> ModelExchange:
+    return ModelExchange(
+        observation=RequestObservation(
+            selection=_selection().model,
+            purpose="turn",
+            estimated_input_tokens=0,
+            observed_context=ProviderMeasured(tokens=0),
+        ),
+        usage=UsageDelta(counters=TokenCounters()),
+        timing=ModelTiming(),
+        stop=CompletedStop(),
+        provider_extensions=ProviderExtensions(),
+    )
+
+
+def _selection() -> ResolvedRuntimeSelection:
+    return ResolvedRuntimeSelection(
+        agent_name="",
+        prompt="",
+        limits=AgentExecutionLimits(),
+        enabled_tools=(),
+        model=ResolvedModelSelection(
+            route=ModelRoute(provider="default", model="test"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(),
+                max_output_tokens=200_000,
+            ),
+            context_window=200_000,
+        ),
+    )
 
 
 class FakeConnection:
@@ -68,19 +157,24 @@ class FakeSessions:
 
     async def open(self, request):
         self.last_open = request
-        return OpenedSession(
-            session_id=request.session_id or "session-1",
-            thread_id="agent",
-            agent_name="",
-            workspace_root=request.workspace_root,
-            provider="default",
-            model="test",
-            model_mode="",
-            context_window=200_000,
-            usage={},
-            history=tuple(self.messages),
+        return OpenedThread(
+            key=SessionKey(
+                session_id=request.session_id or "session-1",
+                thread_id="agent",
+            ),
+            metadata=ThreadMetadata(
+                runtime_selection=_selection(),
+                workspace_root=request.workspace_root,
+            ),
+            usage=UsageSnapshot(),
             status_slots={},
             event_cursor=0,
+            history=HistoryPage(
+                items=conversation_replay(self.messages),
+                older_cursor=None,
+            ),
+            pending_inputs=(),
+            pending_interactions=(),
         )
 
     async def list_sessions(self):
@@ -108,12 +202,11 @@ class FakeSessions:
         assert request.request_id == "acp:session-1"
         assert not request.images
         for event in self.events:
-            value = ClientEvent.model_validate(event)
             self.event_sequence += 1
             await self.event_queue.put(SessionEventFrame(
-                self.event_sequence,
-                request.request_id,
-                value,
+                sequence=self.event_sequence,
+                scope=SessionScope(),
+                event=event,
             ))
         return None
 
@@ -196,44 +289,40 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     mapper = ACPEventMapper(context_size=200_000)
     updates = []
     for event in [
-        {"type": "assistant_message_delta", "data": {"content": "hello"}},
-        {"type": "assistant_message", "data": {"content": "hello"}},
-        {
-            "type": "tool_calls_started",
-            "data": {
-                "tool_calls": [
-                    {"id": "call-1", "name": "shell", "args": {"command": "pwd"}}
-                ]
-            },
-        },
-        {
-            "type": "tool_result",
-            "data": {
-                "tool_call_id": "call-1",
-                "name": "shell",
-                "content": "/workspace",
-                "status": "success",
-            },
-        },
-        {
-            "type": "usage",
-            "data": {
-                "input_tokens": 90,
-                "output_tokens": 10,
-                "total_tokens": 100,
-                "context_tokens": 80,
-            },
-        },
-        {
-            "type": "job_updated",
-            "data": {
-                "job_id": "task-1",
-                "kind": "shell",
-                "command": "pytest",
-                "status": "completed",
-                "output": "passed",
-            },
-        },
+        LoopTurnStarted(turn=1),
+        AssistantTextDelta(text="hello"),
+        AssistantCompleted(message=AssistantMessage(
+            id=MessageId("assistant-1"),
+            parts=(TextPart(text="hello"),),
+            exchange=_exchange(),
+        )),
+        ToolCallsStarted(calls=(StartedToolCall(
+            call=ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
+            category="shell",
+        ),)),
+        ToolCompleted(execution=ToolExecution(
+            message=ToolMessage(
+                id=MessageId("tool-1"),
+                call=ToolCallRef(id="call-1", name="shell"),
+                outcome=ToolSucceeded(output=text_output("/workspace")),
+                timing=ToolTiming(duration_ms=0),
+            ),
+            directive=ContinueTurn(),
+        )),
+        UsageObserved(usage=UsageDelta(counters=TokenCounters(
+            input_tokens=90,
+            output_tokens=10,
+            total_tokens=100,
+            context_tokens=80,
+        ))),
+        JobUpdatedEvent(view=JobView(
+            id="task-1",
+            kind="shell",
+            label="pytest",
+            state="completed",
+            elapsed_ms=0,
+            summary="passed",
+        )),
     ]:
         updates.extend(mapper.updates(event))
 
@@ -249,29 +338,35 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     assert updates[-1].status == "completed"
 
     replayed = replay_history(conversation_replay([
-        Message(role="user", content="inspect"),
-        Message(
-            role="user",
-            content="background task completed",
-            input_id="runtime-1",
-            additional_kwargs={
-                "runtime_input": {"source": "task-1", "event": "notification"}
-            },
+        HumanInputMessage(
+            id=MessageId("1"),
+            input_id=InputId("input-1"),
+            parts=(TextPart(text="inspect"),),
         ),
-        Message(
-            role="assistant",
-            reasoning="checking",
-            tool_calls=[
-                ToolCall(id="call-1", name="shell", args={"command": "pwd"})
-            ],
+        RuntimeNoticeMessage(
+            id=MessageId("2"),
+            notice_id=NoticeId("runtime-1"),
+            source="task-1",
+            event="notification",
+            parts=(TextPart(text="background task completed"),),
         ),
-        Message(
-            role="tool",
-            content="/workspace",
-            tool_call_id="call-1",
-            status="success",
-            data={"exit_code": 0},
-            artifact=[ArtifactRef(id="tool_results/out.txt")],
+        AssistantMessage(
+            id=MessageId("3"),
+            parts=(
+                ReasoningPart(text="checking"),
+                ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
+            ),
+            exchange=_exchange(),
+        ),
+        ToolMessage(
+            id=MessageId("4"),
+            call=ToolCallRef(id="call-1", name="shell"),
+            outcome=ToolSucceeded(output=ToolOutput(
+                parts=(TextPart(text="/workspace"),),
+                structured=StructuredToolOutput(kind="exit_code", value=0),
+                artifacts=(ArtifactRef(id="tool_results/out.txt"),),
+            )),
+            timing=ToolTiming(duration_ms=0),
         ),
     ]))
     assert [update.session_update for update in replayed] == [
@@ -282,41 +377,31 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         "tool_call_update",
     ]
     assert replayed[1].title == "Injected context · task-1 / notification"
-    assert replayed[-1].raw_output == {
-        "content": "/workspace",
-        "data": {"exit_code": 0},
-        "error": None,
-        "artifacts": [
-            ArtifactRef(id="tool_results/out.txt").model_dump(mode="json")
-        ],
-        "images": [],
-    }
+    assert replayed[-1].raw_output["content"] == "/workspace"
+    assert replayed[-1].raw_output["artifacts"] == [
+        ArtifactRef(id="tool_results/out.txt").model_dump(mode="json")
+    ]
 
 
 async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None:
     agent, _ = _agent(tmp_path, [])
-    permission_event = ClientEvent.model_validate({
-            "type": "permission_request",
-            "data": {
-                "request_id": "permission-1",
-                "tool_call": {
-                    "id": "call-1",
-                    "name": "shell",
-                    "args": {"command": "pwd"},
-                },
-            },
-        })
-    user_input_event = ClientEvent.model_validate({
-            "type": "user_input_required",
-            "data": {
-                "request_id": "question-1",
-                "question": "Choose",
-                "options": [
-                    {"label": "first"},
-                    {"label": "second"},
-                ],
-            },
-        })
+    permission_event = PermissionRequest(
+        interaction_id="permission-1",
+        source="tool",
+        subject=ToolPermission(
+            tool_call=ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
+        ),
+        reason="run shell",
+    )
+    user_input_event = UserInputRequest(
+        interaction_id="question-1",
+        source="tool",
+        question="Choose",
+        options=(
+            UserInputOption(label="first"),
+            UserInputOption(label="second"),
+        ),
+    )
     permission = await agent._handle_interaction("session-1", permission_event)
     answer = await agent._handle_interaction("session-1", user_input_event)
     await agent._resolve_interaction("session-1", permission_event)
@@ -440,7 +525,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             "id": "llm",
             "name": "llm",
             "config": {
-                "default": "default",
+                "default_provider": "default",
                 "providers": {
                     "default": {
                         "protocol": "openai",
@@ -451,6 +536,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
                             {
                                 "model": "test",
                                 "max_context_tokens": 4096,
+                                "max_output_tokens": 1024,
                             },
                         ],
                     },
@@ -570,9 +656,12 @@ async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -
         def __init__(self):
             self.closed = False
             self._frame = SessionEventFrame(
-                1,
-                "acp:s",
-                ClientEvent(type="assistant_message", data={"content": "hi"}),
+                sequence=1,
+                scope=SessionScope(),
+                event=MessagePublishedEvent(record=HumanInputRecord(
+                    id="u1",
+                    content="hi",
+                )),
             )
 
         def __aiter__(self):

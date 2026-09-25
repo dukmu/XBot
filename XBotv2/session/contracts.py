@@ -7,27 +7,35 @@ import secrets
 from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
-from operator import not_
 from pathlib import Path
-from typing import Annotated, TYPE_CHECKING, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from XBotv2.core.artifacts import ArtifactRef, ImageContent
+from XBotv2.core.artifacts import ArtifactRef, ImageRef
 from XBotv2.core.history import (
-    ConversationPage,
-    TrajectoryEvent,
-    TrajectoryMessage,
-    TrajectoryPage,
-    TrajectorySurfaceReplace,
+    HistoryPage,
+    TrajectoryRead,
 )
-from XBotv2.core.messages import RUNTIME_INPUT_KEY, Message
+from XBotv2.core.messages import (
+    AssistantMessage,
+    CompactionSummaryMessage,
+    ConversationMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
+from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
+from XBotv2.core.parts import ReasoningPart, TextPart
 from XBotv2.core.operations import Operation
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.prompts import MESSAGE_FORMAT_KEY, tool_result_display_content
-from XBotv2.core.timing import SessionStats, TIMING_METADATA_KEY
-from XBotv2.core.tools import ClientEvent, ToolCall
-from XBotv2.core.usage import UsageData
+from XBotv2.core.timing import SessionStats
+from XBotv2.core.tools import ToolCall
+from XBotv2.core.domain import Cursor, EventScope, UsageSnapshot
+from XBotv2.session.records import ConversationRecord, project_message
+from XBotv2.interactions.contracts import InteractionReceipt
+from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.permissions.contracts import PermissionRequest
 
 if TYPE_CHECKING:
     from XBotv2.agents import AgentDefinition
@@ -37,6 +45,7 @@ if TYPE_CHECKING:
 
 
 SessionMode = Literal["new", "resume"]
+PendingInteraction = UserInputRequest | PermissionRequest
 
 
 def new_session_id() -> str:
@@ -65,24 +74,48 @@ class SessionEventCursorExpired(LookupError):
         self.oldest = oldest
 
 
-@dataclass
-class SessionInfo:
-    """Mutable identity and counters for one active Agent thread."""
+class SessionEvent(Protocol):
+    kind: str
 
+
+@dataclass(frozen=True, slots=True)
+class SessionKey:
     session_id: str
     thread_id: str
-    workspace_root: str = ""
-    provider: str = "default"
-    turn_count: int = 0
-    event_count: int = 0
+
+
+@dataclass(slots=True)
+class SessionRuntimeState:
+    """Mutable runtime state for one Agent thread.
+
+    Identity is carried by ``key``. Workspace and effective runtime selection
+    are always read through the single thread-metadata owner.
+    """
+
+    key: SessionKey
+    metadata: ThreadMetadataState
     status: str = "active"
+    turn_count: int = 0
+    event_cursor: int = 0
+
+    @property
+    def session_id(self) -> str:
+        return self.key.session_id
+
+    @property
+    def thread_id(self) -> str:
+        return self.key.thread_id
+
+    @property
+    def workspace_root(self) -> str:
+        return self.metadata.value.workspace_root
 
 
 @dataclass(frozen=True, slots=True)
 class SessionEventFrame:
     sequence: int
-    request_id: str
-    event: ClientEvent
+    scope: EventScope
+    event: SessionEvent
 
 
 class SessionEventSubscription(AsyncIterator[SessionEventFrame], Protocol):
@@ -91,144 +124,14 @@ class SessionEventSubscription(AsyncIterator[SessionEventFrame], Protocol):
     async def aclose(self) -> None: ...
 
 
-class SessionHistoryItem(BaseModel):
-    """Transport-neutral projection of one visible conversation record."""
-
-    role: Literal["user", "assistant", "tool"]
-    content: str = ""
-    reasoning: str = Field(default="", exclude_if=not_)
-    tool_calls: tuple[ToolCall, ...] = ()
-    tool_call_id: str = ""
-    input_id: str = Field(default="", exclude=True)
-    status: str = ""
-    data: JsonValue = None
-    images: tuple[ImageContent, ...] = ()
-    artifacts: tuple[ArtifactRef, ...] = ()
-    error: dict[str, JsonValue] | None = None
-    runtime: dict[str, str] | None = Field(default=None, exclude_if=lambda value: value is None)
-    timing: dict[str, JsonValue] | None = Field(default=None, exclude_if=lambda value: value is None)
-    model_config = ConfigDict(extra="forbid", frozen=True)
+def conversation_replay(
+    messages: Iterable[ConversationMessage],
+) -> tuple[ConversationRecord, ...]:
+    """Project visible conversation messages for clients."""
+    return tuple(project_message(message) for message in messages)
 
 
-class SessionTrajectoryMessage(BaseModel):
-    position: int = Field(ge=1)
-    kind: Literal["message"] = "message"
-    message_id: str = ""
-    message: SessionHistoryItem
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class SessionTrajectorySurfaceReplace(BaseModel):
-    position: int = Field(ge=1)
-    kind: Literal["surface_replace"] = "surface_replace"
-    operation: str
-    transcript: Literal["preserve", "replace"]
-    source_node_ids: tuple[str, ...]
-    messages: tuple[SessionHistoryItem, ...]
-    #: The durable summary text of a compaction replacement. The replacement
-    #: message is a system prompt container that the human transcript replay
-    #: must not surface verbatim; this derived field lets clients render the
-    #: expandable compaction entry after a reload without storing the summary
-    #: a second time (the durable record keeps exactly one copy).
-    summary: str = ""
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class SessionTrajectoryEvent(BaseModel):
-    position: int = Field(ge=1)
-    kind: Literal["event"] = "event"
-    event: str
-    data: dict[str, JsonValue]
-    timestamp: str
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-SessionTrajectoryItem = Annotated[
-    SessionTrajectoryMessage | SessionTrajectorySurfaceReplace | SessionTrajectoryEvent,
-    Field(discriminator="kind"),
-]
-
-
-class SessionTrajectoryPage(BaseModel):
-    items: tuple[SessionTrajectoryItem, ...]
-    next_cursor: str | None = None
-    #: Highest position on the append-only trajectory; 0 for an empty one.
-    newest_position: int = 0
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-def conversation_replay(messages: Iterable[Message]) -> tuple[SessionHistoryItem, ...]:
-    replay: list[SessionHistoryItem] = []
-    for message in messages:
-        if message.role not in {"user", "assistant", "tool"}:
-            continue
-        additional = message.additional_kwargs or {}
-        content = str(message.content or "")
-        if message.role == "tool" and additional.get(MESSAGE_FORMAT_KEY):
-            content = tool_result_display_content(content)
-        runtime_value = additional.get(RUNTIME_INPUT_KEY)
-        timing = message.response_metadata.get(TIMING_METADATA_KEY)
-        replay.append(SessionHistoryItem(
-            role=message.role,
-            content=content,
-            reasoning=message.reasoning if message.role == "assistant" else "",
-            tool_calls=tuple(message.tool_calls or ()),
-            tool_call_id=message.tool_call_id or "",
-            input_id=message.input_id or "",
-            status=message.status or "",
-            data=message.data,
-            images=tuple(message.images),
-            artifacts=_artifacts(message),
-            error=message.error if message.role == "tool" else None,
-            runtime=(
-                {str(key): str(value) for key, value in runtime_value.items()}
-                if isinstance(runtime_value, dict)
-                else None
-            ),
-            timing=dict(timing) if isinstance(timing, Mapping) else None,
-        ))
-    return tuple(replay)
-
-
-def trajectory_replay(page: TrajectoryPage) -> SessionTrajectoryPage:
-    items: list[SessionTrajectoryItem] = []
-    for item in page.items:
-        if isinstance(item, TrajectoryMessage):
-            replay = conversation_replay((item.message,))
-            if replay:
-                items.append(SessionTrajectoryMessage(
-                    position=item.position,
-                    message_id=(
-                        item.message.input_id
-                        or str(item.message.additional_kwargs.get("xbot_message_id") or "")
-                        or item.message.tool_call_id
-                    ),
-                    message=replay[0],
-                ))
-        elif isinstance(item, TrajectorySurfaceReplace):
-            items.append(SessionTrajectorySurfaceReplace(
-                position=item.position,
-                operation=item.operation,
-                transcript=item.transcript,
-                source_node_ids=item.source_node_ids,
-                messages=conversation_replay(item.messages),
-                summary=compaction_summary_text(item.messages),
-            ))
-        elif isinstance(item, TrajectoryEvent):
-            items.append(SessionTrajectoryEvent(
-                position=item.position,
-                event=item.event,
-                data=item.data,
-                timestamp=item.timestamp,
-            ))
-    return SessionTrajectoryPage(
-        items=tuple(items),
-        next_cursor=page.next_cursor,
-        newest_position=page.newest_position,
-    )
-
-
-def compaction_summary_text(messages: Iterable[Message]) -> str:
+def compaction_summary_text(messages: Iterable[ConversationMessage]) -> str:
     """Read the summary text out of a compaction replacement.
 
     The replacement message carries the summary inside a
@@ -236,7 +139,7 @@ def compaction_summary_text(messages: Iterable[Message]) -> str:
     the expandable compaction entry.
     """
     for message in messages:
-        content = str(message.content or "")
+        content = message.summary if isinstance(message, CompactionSummaryMessage) else ""
         match = re.search(
             r"<conversation_summary[^>]*>([\s\S]*?)</conversation_summary>",
             content,
@@ -244,13 +147,6 @@ def compaction_summary_text(messages: Iterable[Message]) -> str:
         if match:
             return match.group(1).strip()
     return ""
-
-
-def _artifacts(message: Message) -> tuple[ArtifactRef, ...]:
-    values = tuple(message.artifact or ())
-    if not all(isinstance(value, ArtifactRef) for value in values):
-        raise TypeError("Session history artifacts must be ArtifactRef values")
-    return values
 
 
 class ImageInput(BaseModel):
@@ -271,7 +167,7 @@ class OpenSession:
     session_id: str | None
     thread_id: str
     workspace_root: str
-    provider_name: str
+    provider_name: str | None
     mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
@@ -285,36 +181,23 @@ class OpenThread:
     thread_id: str
     parent_thread_id: str
     workspace_root: str | None
-    provider_name: str
+    provider_name: str | None
     mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
 
 
-class SessionDescriptor(BaseModel):
-    session_id: str
-    thread_id: str
-    title: str = ""
-    agent_name: str
-    workspace_root: str
-    provider: str
-    model: str
-    model_mode: str
-    context_window: int
-    usage: UsageData
+class OpenedThread(BaseModel):
+    key: SessionKey
+    metadata: ThreadMetadata
+    usage: UsageSnapshot
     status_slots: dict[str, str]
     event_cursor: int
-    session_stats: SessionStats = Field(default_factory=SessionStats)
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class OpenedSession(SessionDescriptor):
-    history: tuple[Message, ...]
-    pending_inputs: tuple["PendingInputData", ...] = ()
-    pending_interactions: tuple["PendingInteractionData", ...] = ()
+    history: HistoryPage[ConversationRecord]
+    pending_inputs: tuple[PendingInputData, ...]
+    pending_interactions: tuple[PendingInteraction, ...]
     model_config = ConfigDict(
-        arbitrary_types_allowed=True,
         extra="forbid",
         frozen=True,
     )
@@ -347,7 +230,7 @@ class ThreadSummary(BaseModel):
     model_mode: str = ""
     context_window: int = 0
     message_count: int = 0
-    usage: UsageData = Field(default_factory=UsageData)
+    usage: UsageSnapshot = Field(default_factory=UsageSnapshot)
     session_stats: SessionStats = Field(default_factory=SessionStats)
     pending_interactions: tuple[str, ...] = ()
     status_slots: dict[str, str] = Field(default_factory=dict)
@@ -359,7 +242,8 @@ class ThreadSummary(BaseModel):
 @dataclass(frozen=True, slots=True)
 class HistoryMutation:
     removed_turns: int
-    messages: tuple[Message, ...]
+    history: HistoryPage[ConversationRecord]
+    stats: SessionStats
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,22 +257,8 @@ class PendingInputData(BaseModel):
     message_id: str
     content: str
     target: Literal["next-turn", "next-step"]
-    source: str = "user"
     image_count: int = 0
     artifact_count: int = 0
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class PendingInteractionData(BaseModel):
-    """One unanswered client interaction, replayable from an open response.
-
-    A live approval or question only exists in the event stream, so a client
-    that reloads or reconnects while it is pending must be able to rebuild the
-    dialog from the session snapshot instead of losing it.
-    """
-
-    type: str
-    data: dict[str, JsonValue] = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -420,12 +290,6 @@ class RegenerateMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class InteractionReceipt:
-    request_id: str
-    pending_interactions: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class InterruptResult:
     cancelled: bool
 
@@ -447,7 +311,7 @@ class PrepareFork:
 
 @dataclass(frozen=True, slots=True)
 class HistoryChanged:
-    messages: tuple[Message, ...]
+    messages: tuple[ConversationMessage, ...]
     operation: str
     turns: int = 0
 
@@ -486,7 +350,7 @@ class AgentApplicationOptions:
     """Launch facts for one session-owned Agent application."""
 
     paths: RuntimePaths
-    provider_name: str
+    provider_name: str | None
     session_id: str
     thread_id: str
     workspace_root: Path
@@ -515,59 +379,65 @@ class SessionPort(Protocol):
     thread_id: str
     workspace_root: str
 
-    @property
-    def provider(self) -> str: ...
     def new_thread_id(self, owner: str) -> str: ...
     def status(self, *, pending_input_count: int) -> SessionStatus: ...
     async def fork(self) -> str: ...
     async def clear_history(self) -> int: ...
-    async def undo_history(self, count: int) -> list[Message]: ...
-    async def regenerate_history(self) -> Message: ...
+    async def undo_history(self, count: int) -> list[ConversationMessage]: ...
+    async def regenerate_history(self) -> HumanInputMessage: ...
 
 
 class SessionsPort(Protocol):
     """Transport-neutral process API for persistent sessions and threads."""
 
     def session_exists(self, session_id: str) -> bool: ...
-    async def open(self, request: OpenSession) -> OpenedSession: ...
+    async def open(self, request: OpenSession) -> OpenedThread: ...
     async def list_sessions(self) -> tuple[SessionSummary, ...]: ...
     async def session_summary(self, session_id: str) -> SessionSummary: ...
     async def rename_session(self, session_id: str, title: str) -> SessionSummary: ...
     async def fork_session(self, session_id: str) -> str: ...
     async def delete_session(self, session_id: str) -> None: ...
     async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]: ...
-    async def open_thread(self, request: OpenThread) -> OpenedSession: ...
+    async def open_thread(self, request: OpenThread) -> OpenedThread: ...
     async def thread_summary(self, session_id: str, thread_id: str) -> ThreadSummary: ...
-    async def messages(self, session_id: str, thread_id: str) -> tuple[Message, ...]: ...
+    async def messages(self, session_id: str, thread_id: str) -> tuple[ConversationMessage, ...]: ...
     async def message_page(
         self,
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None,
+        cursor: Cursor | None,
         limit: int | None,
-    ) -> ConversationPage: ...
+    ) -> HistoryPage[ConversationMessage]: ...
     async def trajectory_page(
         self,
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None,
+        cursor: Cursor | None,
         limit: int,
         before: int | None = None,
-    ) -> SessionTrajectoryPage: ...
+    ) -> TrajectoryRead: ...
     async def artifact(
         self,
         session_id: str,
         thread_id: str,
         artifact_id: str,
     ) -> ArtifactPayload: ...
-    async def clear_history(self, session_id: str, thread_id: str) -> HistoryMutation: ...
+    async def clear_history(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        history_limit: int | None,
+    ) -> HistoryMutation: ...
     async def undo_history(
         self,
         session_id: str,
         thread_id: str,
         count: int,
+        *,
+        history_limit: int | None,
     ) -> HistoryMutation: ...
     async def send_message(self, request: SendMessage) -> None: ...
     async def pending_inputs(
@@ -639,30 +509,24 @@ __all__ = [
     "ImageInput",
     "InteractionReceipt",
     "InterruptResult",
-    "OpenedSession",
+    "OpenedThread",
     "OpenSession",
     "OpenThread",
     "PREPARE_FORK",
     "PendingInputData",
-    "PendingInteractionData",
+    "PendingInteraction",
     "PendingInputUpdate",
     "PrepareFork",
     "RegenerateMessage",
     "SESSION_RESOURCE_CHANGED",
     "SESSION_RESOURCE_REMOVED",
     "SendMessage",
-    "SessionDescriptor",
     "SessionEventFrame",
     "SessionEventSubscription",
     "SessionEventCursorExpired",
     "SessionExists",
-    "SessionInfo",
-    "SessionHistoryItem",
-    "SessionTrajectoryEvent",
-    "SessionTrajectoryItem",
-    "SessionTrajectoryMessage",
-    "SessionTrajectoryPage",
-    "SessionTrajectorySurfaceReplace",
+    "SessionKey",
+    "SessionRuntimeState",
     "SessionMode",
     "SessionNotFound",
     "SessionResourceChanged",
@@ -674,6 +538,5 @@ __all__ = [
     "ThreadNotActive",
     "ThreadSummary",
     "conversation_replay",
-    "trajectory_replay",
     "new_session_id",
 ]

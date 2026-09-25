@@ -23,12 +23,12 @@ from XBotv2.tui.timeline import (
 )
 
 
-def assistant(entry_id: str, content: str, *, streaming: bool = False, seq: int = 0) -> AssistantEntry:
-    return AssistantEntry(id=entry_id, seq=seq, content=content, streaming=streaming)
+def assistant(entry_id: str, content: str, *, streaming: bool = False) -> AssistantEntry:
+    return AssistantEntry(id=entry_id, content=content, streaming=streaming)
 
 
-def user(entry_id: str, content: str, *, seq: int = 0) -> UserEntry:
-    return UserEntry(id=entry_id, seq=seq, content=content, delivery=Delivery.ACCEPTED)
+def user(entry_id: str, content: str) -> UserEntry:
+    return UserEntry(id=entry_id, content=content, delivery=Delivery.ACCEPTED)
 
 
 # --- ordering and identity ------------------------------------------------
@@ -81,18 +81,23 @@ def test_remove_reports_whether_it_removed_anything() -> None:
 def test_entries_expose_their_kind() -> None:
     assert user("u1", "x").kind is EntryKind.USER
     assert assistant("a1", "x").kind is EntryKind.ASSISTANT
-    assert NoticeEntry(id="n1", seq=0, notice_kind="info", text="t").kind is EntryKind.NOTICE
-    assert ErrorEntry(id="e1", seq=0, message="m").kind is EntryKind.ERROR
-    assert ToolEntry(id="t1", seq=0, name="bash").kind is EntryKind.TOOL
+    assert NoticeEntry(id="n1", notice_kind="info", text="t").kind is EntryKind.NOTICE
+    assert ErrorEntry(id="e1", message="m").kind is EntryKind.ERROR
+    assert ToolEntry(id="t1", name="bash").kind is EntryKind.TOOL
 
 
-# --- sequence allocation --------------------------------------------------
+# --- order ----------------------------------------------------------------
 
 
-def test_next_seq_is_monotonic_and_unique() -> None:
+def test_order_is_the_order_entries_were_added_in() -> None:
+    """Insertion order is the only order: there is no second counter that could
+    disagree with it, and an update never moves an entry."""
     timeline = Timeline()
-    seqs = [timeline.next_seq() for _ in range(3)]
-    assert seqs == sorted(set(seqs))
+    timeline.upsert(user("u1", "one"))
+    timeline.upsert(assistant("a1", "two"))
+    timeline.upsert(user("u1", "one, corrected"))
+
+    assert timeline.ids() == ("u1", "a1")
 
 
 # --- windows --------------------------------------------------------------
@@ -150,7 +155,7 @@ def test_entries_arriving_while_paged_back_are_retained_and_counted() -> None:
     assert reader.ids == ("u0", "u1")
 
     timeline.upsert(user("u4", "live while reading"))
-    timeline.upsert(assistant("a5", "new answer", seq=timeline.next_seq()))
+    timeline.upsert(assistant("a5", "new answer"))
 
     after = timeline.window(size=2, end="u1")
     assert after.ids == ("u0", "u1"), "the reader's window must not move"
@@ -199,7 +204,6 @@ def test_tool_entry_keeps_its_full_result_and_status() -> None:
     timeline.upsert(
         ToolEntry(
             id="call-1",
-            seq=0,
             name="bash",
             args={"command": "ls"},
             status="running",
@@ -209,7 +213,6 @@ def test_tool_entry_keeps_its_full_result_and_status() -> None:
     timeline.upsert(
         ToolEntry(
             id="call-1",
-            seq=0,
             name="bash",
             args={"command": "ls"},
             status="success",
@@ -223,3 +226,73 @@ def test_tool_entry_keeps_its_full_result_and_status() -> None:
     assert entry.status == "success"
     assert entry.result == "a\nb"
     assert entry.finished_at == 2.0
+
+
+# --- older pages and bounded retention ------------------------------------
+#
+# A windowed client loads pages that are strictly older than everything it
+# holds, and eventually has to let the front go. Prepending must not disturb the
+# order or the entries it already has, and eviction must be an explicit,
+# reported act rather than a side effect of filling up.
+
+
+def test_prepend_puts_older_entries_before_everything_held() -> None:
+    timeline = Timeline()
+    timeline.upsert(assistant("a2", "second"))
+    timeline.upsert(assistant("a3", "third"))
+
+    added = timeline.prepend([user("u1", "first"), assistant("a1", "reply")])
+
+    assert added == ("u1", "a1")
+    assert timeline.ids() == ("u1", "a1", "a2", "a3")
+
+
+def test_prepend_replaces_a_held_entry_without_moving_it() -> None:
+    timeline = Timeline()
+    timeline.upsert(assistant("a2", "second"))
+    timeline.upsert(assistant("a3", "third"))
+
+    added = timeline.prepend([
+        assistant("a3", "third, corrected"),
+        user("u1", "first"),
+    ])
+
+    assert added == ("u1",)
+    assert timeline.ids() == ("u1", "a2", "a3")
+    entry = timeline.get("a3")
+    assert isinstance(entry, AssistantEntry)
+    assert entry.content == "third, corrected"
+
+
+def test_prepend_keeps_the_order_within_its_own_page() -> None:
+    """Pages arrive newest-first, and the caller reverses them; whatever order
+    the page is handed over in is the order the reader must see."""
+    timeline = Timeline()
+    timeline.upsert(assistant("a9", "tail"))
+
+    timeline.prepend([user("u1", "one"), assistant("a1", "two"), user("u2", "three")])
+
+    assert timeline.ids() == ("u1", "a1", "u2", "a9")
+
+
+def test_prepend_of_nothing_changes_nothing() -> None:
+    timeline = Timeline()
+    timeline.upsert(assistant("a1", "only"))
+
+    assert timeline.prepend([]) == ()
+    assert timeline.ids() == ("a1",)
+
+
+
+def test_prepending_an_older_page_keeps_the_order_the_reader_sees() -> None:
+    """Insertion order is the order. A page landing at the front must not
+    disturb the entries already held, and must not need a second counter to
+    agree with itself."""
+    timeline = Timeline()
+    timeline.upsert(assistant("a2", "second"))
+    timeline.upsert(assistant("a3", "third"))
+
+    timeline.prepend([user("u1", "first")])
+
+    assert [entry.id for entry in timeline] == ["u1", "a2", "a3"]
+    assert timeline.window(size=2).ids == ("a2", "a3")

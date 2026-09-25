@@ -14,6 +14,8 @@ import asyncio
 
 import pytest
 
+from XBotv2.core.tools import ToolCall
+from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,
@@ -22,6 +24,7 @@ from XBotv2.tests.tui.factories import (
     StreamScript,
     frame,
     frames,
+    human_record,
     snapshot,
     stream,
     thread,
@@ -103,7 +106,7 @@ async def test_switching_opens_the_new_session_and_adopts_it(backend: ScriptedBa
     await transport.switch(session_id=OTHER_SESSION, thread_id=OTHER_THREAD)
 
     adopted = recorder.of(SnapshotAdopted)
-    assert adopted and adopted[-1].snapshot.session_id == OTHER_SESSION
+    assert adopted and adopted[-1].snapshot.data.key.session_id == OTHER_SESSION
     assert transport.session_id == OTHER_SESSION
     assert transport.thread_id == OTHER_THREAD
 
@@ -228,15 +231,14 @@ async def test_switching_replays_the_new_sessions_pending_prompts(
     backend.session = snapshot(
         session_id=OTHER_SESSION,
         pending_interactions=[
-            {
-                "type": "permission_request",
-                "data": {
-                    "request_id": "r2",
-                    "source": "permission_system",
-                    "reason": "needs approval",
-                    "tool_call": {"id": "c2", "name": "bash", "args": {}},
-                },
-            }
+            PermissionRequest(
+                interaction_id="r2",
+                source="permission_system",
+                reason="needs approval",
+                subject=ToolPermission(
+                    tool_call=ToolCall(id="c2", name="bash", args={}),
+                ),
+            ),
         ],
     )
     recorder = Recorder()
@@ -245,7 +247,7 @@ async def test_switching_replays_the_new_sessions_pending_prompts(
     recorder.events.clear()
 
     await transport.switch(session_id=OTHER_SESSION, thread_id=OTHER_THREAD)
-    assert recorder.of(InteractionOpened)[-1].request.request_id == "r2"
+    assert recorder.of(InteractionOpened)[-1].request.interaction_id == "r2"
 
 
 # --- the controller -------------------------------------------------------
@@ -254,7 +256,7 @@ async def test_switching_replays_the_new_sessions_pending_prompts(
 async def test_the_controller_switches_and_renders(backend: ScriptedBackend) -> None:
     backend.session = snapshot(
         session_id=OTHER_SESSION,
-        history=[{"role": "user", "content": "from the other session"}],
+        history=[human_record("n6", "from the other session")],
     )
     view = RecordingView()
     controller = TuiController(
@@ -291,18 +293,14 @@ async def test_the_controller_switch_clears_the_previous_transcript(
     await controller.connect()
     from XBotv2.tui.events import UserMessagePublished
 
-    controller.dispatch(UserMessagePublished(payload=_message("m1", "old session")))
+    controller.dispatch(
+        UserMessagePublished(payload=human_record("m1", "old session"))
+    )
     await controller.flush()
     assert controller.state.timeline.get("m1") is not None
 
     await controller.switch_session(OTHER_SESSION, OTHER_THREAD)
     assert controller.state.timeline.get("m1") is None
-
-
-def _message(message_id: str, content: str):
-    from XBotv2.session.protocol import MessageData
-
-    return MessageData(id=message_id, role="user", content=content)
 
 
 async def test_switching_without_a_thread_uses_the_sessions_main_thread(
@@ -321,4 +319,4 @@ async def test_switching_without_a_thread_uses_the_sessions_main_thread(
 
     await transport.switch(session_id=OTHER_SESSION, thread_id="")
 
-    assert transport.thread_id == "main"
+    assert backend.opened[-1]["thread_id"] == "main"

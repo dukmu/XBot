@@ -5,10 +5,16 @@ from __future__ import annotations
 from pydantic import JsonValue
 from xcore import Context
 
-from XBotv2.agentloop import AgentInbox, Events, ctx_splice_recorder
+from XBotv2.agentloop import AgentInbox, Events
 from XBotv2.core.history import ConversationHistory
-from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
+from XBotv2.core.metadata import (
+    THREAD_METADATA_CHANGED,
+    THREAD_METADATA_INITIALIZED,
+    ThreadMetadataChanged,
+    ThreadMetadataInitialized,
+)
 from XBotv2.core.paths import SessionPaths
+from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.timing import conversation_stats
 from XBotv2.persistence.store import (
     DeferredThreadMetadataStore,
@@ -29,24 +35,20 @@ def _materialize_after_first_turn(persistence: ThreadPersistence):
 def _save_metadata(store: ThreadMetadataStore | DeferredThreadMetadataStore):
     """Durable subscriber of the metadata fact: write every accepted change."""
 
-    def _on_changed(change: ThreadMetadataChanged) -> None:
+    def _save(change: ThreadMetadataChanged | ThreadMetadataInitialized) -> None:
         store.save(change.current)
 
-    return _on_changed
+    return _save
 
 
 def thread_persistence_factory(
     session_paths: SessionPaths,
     *,
-    thread_id: str = "",
-    workspace_root: str = "",
-    provider: str = "",
+    thread_id: str,
 ) -> ThreadPersistence:
     return ThreadPersistence.open(
         session_paths,
         thread_id=thread_id,
-        workspace_root=workspace_root,
-        provider=provider,
     )
 
 
@@ -59,13 +61,18 @@ class ThreadPersistenceComponent:
     ) -> None:
         state = ctx.loop_state
         persistence = ctx.thread_persistence
-        nodes = persistence.history.load_surface()
-        messages = [node.message for node in nodes]
+        messages = persistence.history.load_surface()
         committed_input_ids = {
-            message.input_id for message in messages if message.input_id
+            str(message.input_id)
+            for message in messages
+            if isinstance(message, HumanInputMessage)
+        } | {
+            str(message.notice_id)
+            for message in messages
+            if isinstance(message, RuntimeNoticeMessage)
         }
         pending_inputs = persistence.inbox.reconcile(committed_input_ids)
-        state.set_history(ConversationHistory(sink=persistence.history, nodes=nodes))
+        state.set_history(ConversationHistory(messages, sink=persistence.history))
         # Restore the lifetime turn counter from the durable surface once:
         # compaction folds ``SessionStats`` (including turns) into the summary
         # message, so this value survives compaction and restart. History
@@ -80,17 +87,20 @@ class ThreadPersistenceComponent:
         # construction, so its availability, not plugin-tree order, decides
         # when the engine can be built.
         ctx.set("agent_inbox", AgentInbox(
+            events=ctx,
             items=pending_inputs,
             sink=persistence.inbox,
-            record_splice=ctx_splice_recorder(ctx),
         ))
-        state.set_provider(persistence.provider)
         # Durability subscribes to the metadata fact, not to the value holder:
         # the state announces, persistence reacts. The initial load happens
         # before the listener is registered, so hydration never rewrites the
         # file it just read; every later change is saved by the listener.
-        await state.metadata.replace(persistence.metadata.load())
-        ctx.on(THREAD_METADATA_CHANGED, _save_metadata(persistence.metadata))
+        stored_metadata = persistence.metadata.load()
+        if stored_metadata is not None:
+            await state.metadata.initialize(stored_metadata)
+        save_metadata = _save_metadata(persistence.metadata)
+        ctx.on(THREAD_METADATA_CHANGED, save_metadata)
+        ctx.on(THREAD_METADATA_INITIALIZED, save_metadata)
 
         ctx.runtime_log.bind("persistence").info(
             "persistence.hydrated",
@@ -99,7 +109,6 @@ class ThreadPersistenceComponent:
             history_messages=len(messages),
             pending_inputs=len(pending_inputs),
             resumed=state.resumed,
-            provider=persistence.provider,
         )
 
 

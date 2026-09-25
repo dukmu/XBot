@@ -14,6 +14,8 @@ from pydantic import (
 
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.loader.contracts import PluginTree
+from XBotv2.permissions.contracts import PermissionPolicy
+from XBotv2.agentloop.contracts import AllTools, ToolSelection
 
 
 class StrictModel(BaseModel):
@@ -40,31 +42,11 @@ class PluginConfig(StrictModel):
 
 
 class RuntimeConfig(StrictModel):
-    """Agent runtime projection built from a generic plugin tree.
+    """Resolved scalar inputs consumed while constructing a runtime selection."""
 
-    This model is not a plugin declaration.  Plugin-owned settings such as
-    permissions, sandbox, tools, and provider catalogs remain in their owner
-    plugins and are never copied into this contract.
-    """
-
-    provider: str = "default"
-    tools: list[str] | None = None
-    plugins: dict[str, PluginConfig] = Field(default_factory=dict)
+    enabled_tools: ToolSelection = Field(default_factory=AllTools)
     instructions: str = ""
     memory: str = ""
-    agent_name: str = Field(default="XBotv2", exclude=True)
-    agent_role: str = Field(default="", exclude=True)
-    agent_instructions: str = ""
-    max_context_tokens: int = Field(default=32_000, ge=1, exclude=True)
-    max_output_tokens: int | None = Field(default=None, ge=1, exclude=True)
-
-    @property
-    def plugin_configs(self) -> dict[str, dict[str, JsonValue]]:
-        return {
-            name: entry.config
-            for name, entry in self.plugins.items()
-            if entry.enabled
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +111,7 @@ class SettingsPort(Protocol):
         session_id: str,
     ) -> PluginTree: ...
     def memory(self) -> str: ...
+    def permission_policies(self) -> tuple[PermissionPolicy, ...]: ...
     def policy(self) -> PolicySnapshot: ...
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot: ...
     def plugin_config_catalog(

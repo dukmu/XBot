@@ -6,31 +6,69 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from XBotv2.core.tools import ClientEvent, ToolCall
-from XBotv2.permissions.protocol import ApprovalDecision
+from XBotv2.core.tools import ToolCall
 
 
 PermissionDecision = Literal["allow", "deny", "ask"]
 
 
-class PermissionRuleConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class PermissionRule(BaseModel):
+    tool_pattern: str
+    param_patterns: dict[str, str] = Field(default_factory=dict)
+    path_scope: str | None = None
+    decision: PermissionDecision
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tool: str = ".*"
-    params: dict[str, str] = Field(default_factory=dict)
-    paths: str | None = None
+
+class PermissionPolicy(BaseModel):
+    rules: tuple[PermissionRule, ...] = ()
+    default_decision: PermissionDecision = "ask"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class PermissionConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ToolPermission(BaseModel):
+    kind: Literal["tool"] = "tool"
+    tool_call: ToolCall
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    deny: list[PermissionRuleConfig] = Field(default_factory=list)
-    allow: list[PermissionRuleConfig] = Field(default_factory=list)
-    ask: list[PermissionRuleConfig] = Field(default_factory=list)
+
+class NamedPermission(BaseModel):
+    kind: Literal["named"] = "named"
+    tool: str = Field(min_length=1)
+    params: dict[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+PermissionSubject = ToolPermission | NamedPermission
+
+
+class PermissionRequest(BaseModel):
+    kind: Literal["permission_request"] = "permission_request"
+    interaction_id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    subject: PermissionSubject
+    reason: str
+    resume_supported: bool = False
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class Allowed(BaseModel):
+    kind: Literal["allowed"] = "allowed"
+    scope: Literal["once", "session"] = "once"
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class Denied(BaseModel):
+    kind: Literal["denied"] = "denied"
+    reason: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+Approval = Allowed | Denied
 
 
 class ApprovalPort(Protocol):
-    async def request(self, client_event: ClientEvent) -> ApprovalDecision: ...
+    async def request(self, request: PermissionRequest) -> Approval: ...
 
 
 class PermissionsPort(Protocol):
@@ -52,9 +90,16 @@ class PermissionsPort(Protocol):
 
 
 __all__ = [
+    "Allowed",
     "ApprovalPort",
-    "PermissionConfig",
+    "Approval",
+    "Denied",
     "PermissionDecision",
-    "PermissionRuleConfig",
+    "PermissionPolicy",
+    "PermissionRequest",
+    "PermissionRule",
+    "PermissionSubject",
     "PermissionsPort",
+    "NamedPermission",
+    "ToolPermission",
 ]

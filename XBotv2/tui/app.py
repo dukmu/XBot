@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -21,7 +21,7 @@ from textual.containers import Horizontal
 from textual import on
 from textual.widgets import Collapsible, TextArea
 
-from XBotv2.jobs.contracts import JobSnapshot
+from XBotv2.jobs.contracts import JobView
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.commands import CommandDescription
 from XBotv2.tui.attachments import load_image
@@ -30,7 +30,12 @@ from XBotv2.tui.controller import TuiController
 from XBotv2.tui.events import LocalNotice
 from XBotv2.tui.theme import TUI_CSS
 from XBotv2.tui.state import SessionState
-from XBotv2.tui.transport import TransportConfig
+from XBotv2.tui.transport import (
+    DEFAULT_HISTORY_RETENTION,
+    DEFAULT_HISTORY_WINDOW,
+    SessionBackend,
+    TransportConfig,
+)
 from XBotv2.tui.view.completion import CompletionPopup, CompletionPresenter
 from XBotv2.tui.view.palette import CommandPalette
 from XBotv2.tui.view.pickers import (
@@ -48,7 +53,7 @@ from XBotv2.tui.view.composer import Composer, ComposerModel, composer_can_submi
 from XBotv2.tui.view.entries import BlockVisibility, block_choice
 from XBotv2.tui.view.jobs import JobPanel
 from XBotv2.tui.view.queue import QueuePanel
-from XBotv2.tui.view.status_bar import StatusBar, StatusLine, status_report
+from XBotv2.tui.view.status_bar import SessionBar, StatusBar, StatusLine, status_report
 from XBotv2.tui.view.transcript import TranscriptScroll, TranscriptView
 
 class TextualViewAdapter:
@@ -58,6 +63,7 @@ class TextualViewAdapter:
         self,
         *,
         transcript: TranscriptView,
+        session: SessionBar,
         status: StatusBar,
         jobs: JobPanel,
         queue: QueuePanel,
@@ -65,6 +71,7 @@ class TextualViewAdapter:
         composer: Composer,
     ) -> None:
         self.transcript = transcript
+        self.session = session
         self.status = status
         self.jobs = jobs
         self.queue = queue
@@ -75,9 +82,10 @@ class TextualViewAdapter:
         return await self.transcript.render(state)
 
     def render_status(self, model: StatusLine) -> None:
+        self.session.show(model, width=self.session.size.width or 80)
         self.status.show(model, width=self.status.size.width or 80)
 
-    def render_jobs(self, jobs: Sequence[JobSnapshot]) -> None:
+    def render_jobs(self, jobs: Sequence[JobView]) -> None:
         self.jobs.show(jobs, width=self.jobs.size.width or 80)
         self._refresh_panels()
 
@@ -128,7 +136,7 @@ class TuiApp(App[None]):
     # binding, so the built-in one is turned off.
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+c", "copy_or_quit", "Copy / quit", priority=True),
         Binding("ctrl+d", "quit", "Quit"),
         Binding("escape", "interrupt", "Interrupt the turn"),
         Binding("pageup", "older", "Older", show=False, priority=True),
@@ -140,7 +148,7 @@ class TuiApp(App[None]):
     def __init__(
         self,
         *,
-        backend: Any,
+        backend: SessionBackend,
         config: TransportConfig | None = None,
         workspace: str = "",
         assistant_label: str = "Assistant",
@@ -162,27 +170,27 @@ class TuiApp(App[None]):
         # the user can type, not what the session is.
         self.commands = CommandRegistry.with_builtins()
         self.completion = CompletionPresenter(self.commands)
+        self._command_handlers: dict[str, Callable[[str], Awaitable[None]]] = {
+            "help": self._cmd_help,
+            "status": self._cmd_status,
+            "session": self._cmd_session,
+            "thread": self._cmd_thread,
+            "jobs": self._cmd_jobs,
+            "provider": self._cmd_provider,
+            "model": self._cmd_model,
+            "effort": self._cmd_effort,
+            "agent": self._cmd_agent,
+            "thinking": self._cmd_thinking,
+            "details": self._cmd_details,
+            "attach": self._cmd_attach,
+            "approve": self._cmd_approve,
+            "deny": self._cmd_deny,
+            "answer": self._cmd_answer,
+            "clear-screen": self._cmd_clear_screen,
+            "copy": self._cmd_copy,
+            "exit": self._cmd_exit,
+        }
         self._tasks: list[asyncio.Task] = []
-
-    # Command name -> the method that runs it. Names, not bound methods, so the
-    # table does not depend on definition order.
-    _COMMAND_HANDLERS: dict[str, str] = {
-        "help": "_cmd_help",
-        "status": "_cmd_status",
-        "session": "_cmd_session",
-        "thread": "_cmd_thread",
-        "jobs": "_cmd_jobs",
-        "provider": "_cmd_provider",
-        "model": "_cmd_model",
-        "effort": "_cmd_effort",
-        "agent": "_cmd_agent",
-        "thinking": "_cmd_thinking",
-        "details": "_cmd_details",
-        "attach": "_cmd_attach",
-        "clear-screen": "_cmd_clear_screen",
-        "copy": "_cmd_copy",
-        "exit": "_cmd_exit",
-    }
 
     @property
     def workspace(self) -> str:
@@ -200,6 +208,7 @@ class TuiApp(App[None]):
         return tuple(self._tasks)
 
     def compose(self) -> ComposeResult:
+        yield SessionBar(id="session")
         yield TranscriptScroll(id="transcript")
         with Horizontal(id="panels"):
             yield Collapsible(JobPanel(id="jobs"), title="Tasks", collapsed=False, id="job-panel")
@@ -219,6 +228,7 @@ class TuiApp(App[None]):
                 limit=self.transcript_limit,
                 assistant_label=self.assistant_label,
             ),
+            session=self.query_one("#session", SessionBar),
             status=self.query_one("#status", StatusBar),
             jobs=self.query_one("#jobs", JobPanel),
             queue=self.query_one("#queue", QueuePanel),
@@ -326,9 +336,9 @@ class TuiApp(App[None]):
         if parsed.description is None:
             self._notify("command", f"Unknown command: {parsed.raw}")
             return
-        handler = self._COMMAND_HANDLERS.get(parsed.name)
+        handler = self._command_handlers.get(parsed.name)
         if handler is not None:
-            await getattr(self, handler)(parsed.args)
+            await handler(parsed.args)
             return
         # Not one of ours. The catalogue says who runs it, so the client never
         # guesses: a prompt command is a prompt template and belongs on the
@@ -347,7 +357,7 @@ class TuiApp(App[None]):
         except Exception as exc:  # noqa: BLE001 — a failed command must be visible
             self._notify(parsed.name, f"/{parsed.name} failed: {exc}")
             return
-        message = str(getattr(result, "message", "") or "").strip()
+        message = result.message.strip()
         if not message:
             message = f"/{parsed.name}: no output"
         self._notify(parsed.name, message)
@@ -548,7 +558,7 @@ class TuiApp(App[None]):
         except Exception as exc:  # noqa: BLE001 — a failed command must be visible
             self._notify(name, f"/{name} failed: {exc}")
             return
-        message = str(getattr(result, "message", "") or "").strip() or f"/{name}: no output"
+        message = result.message.strip() or f"/{name}: no output"
         self._notify(name, message)
 
     async def _cmd_thread(self, args: str) -> None:
@@ -651,6 +661,48 @@ class TuiApp(App[None]):
         self.controller.attach(image)
         self._notify("attach", f"Attached {path.name}")
 
+    async def _cmd_approve(self, args: str) -> None:
+        parts = args.split()
+        if len(parts) not in {1, 2} or (
+            len(parts) == 2 and parts[1] not in {"once", "session"}
+        ):
+            self._notify(
+                "permission",
+                "Usage: /approve <interaction-id> [once|session]",
+            )
+            return
+        if self.controller is None:
+            return
+        scope = parts[1] if len(parts) == 2 else "once"
+        try:
+            await self.controller.respond_permission(parts[0], "allow", scope)
+        except Exception as exc:  # noqa: BLE001 — an invalid/stale id must be visible
+            self._notify("permission", f"Could not approve request: {exc}")
+
+    async def _cmd_deny(self, args: str) -> None:
+        request_id = args.strip()
+        if not request_id or any(char.isspace() for char in request_id):
+            self._notify("permission", "Usage: /deny <interaction-id>")
+            return
+        if self.controller is None:
+            return
+        try:
+            await self.controller.respond_permission(request_id, "deny")
+        except Exception as exc:  # noqa: BLE001 — an invalid/stale id must be visible
+            self._notify("permission", f"Could not deny request: {exc}")
+
+    async def _cmd_answer(self, args: str) -> None:
+        parts = args.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            self._notify("interaction", "Usage: /answer <interaction-id> <text>")
+            return
+        if self.controller is None:
+            return
+        try:
+            await self.controller.respond_user_input(parts[0], parts[1])
+        except Exception as exc:  # noqa: BLE001 — an invalid/stale id must be visible
+            self._notify("interaction", f"Could not answer request: {exc}")
+
     async def _cmd_clear_screen(self, _args: str) -> None:
         assert self.controller is not None
         await self.controller.clear_transcript()
@@ -672,6 +724,28 @@ class TuiApp(App[None]):
         self._notify("copy", f"Copied {len(text)} characters.")
 
     async def _cmd_exit(self, _args: str) -> None:
+        self.exit()
+
+    async def action_copy_or_quit(self) -> None:
+        """Copy an active selection; keep Ctrl-C as the no-selection exit key."""
+        from XBotv2.tui.view.composer import ComposerInput
+
+        focused = self.screen.focused
+        selected = (
+            focused.selected_text
+            if isinstance(focused, ComposerInput) and focused.selected_text
+            else self.screen.get_selected_text()
+        )
+        if selected:
+            self.copy_to_clipboard(selected)
+            self.screen.clear_selection()
+            self.notify(
+                f"Copied {len(selected)} characters.",
+                title="Copied",
+                timeout=2,
+                markup=False,
+            )
+            return
         self.exit()
 
     async def action_interrupt(self) -> None:
@@ -725,6 +799,8 @@ async def run_tui(
     agent: str | None = None,
     workspace_root: str | None = None,
     mode: str = "new",
+    history_window: int = DEFAULT_HISTORY_WINDOW,
+    history_retention: int = DEFAULT_HISTORY_RETENTION,
     render_interval: float = 0.1,
     client_factory: Callable[..., Any] | None = None,
 ) -> None:
@@ -747,6 +823,8 @@ async def run_tui(
             session_id=session_id or "",
             thread_id=thread_id,
             agent=agent,
+            history_window=history_window,
+            history_retention=history_retention,
             workspace_root=workspace_root,
             mode=mode,
         ),

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 from xcore import Context
-from XBotv2.agentloop import AgentInbox, LoopState, ctx_splice_recorder
+from XBotv2.agentloop import AgentInbox, EphemeralInboxSink, LoopState
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
-from XBotv2.session.contracts import SessionInfo, SessionNotFound, ThreadNotActive
+from XBotv2.session.contracts import SessionKey, SessionNotFound, ThreadNotActive
 from XBotv2.session.manager import SessionManager
 from XBotv2.session.protocol import (
     _session_not_found,
@@ -62,11 +62,9 @@ class SessionRuntimeComponent:
         variables = RuntimeVariables.for_thread(
             paths, workspace_root, thread_paths
         )
-        info = SessionInfo(
+        key = SessionKey(
             session_id=session_id,
             thread_id=thread_id,
-            workspace_root=str(workspace_root),
-            provider="default",
         )
         persistence = ctx.get("thread_persistence", strict=False)
         # The loop state and its metadata register themselves on the context
@@ -76,7 +74,7 @@ class SessionRuntimeComponent:
         # be built.
         state = LoopState(
             ctx,
-            session=info,
+            key=key,
             variables=variables,
         )
         if persistence is None:
@@ -84,11 +82,11 @@ class SessionRuntimeComponent:
             # while still handing ``agent_inbox`` to the engine composition,
             # which depends on it whenever it mounts.
             ctx.set("agent_inbox", AgentInbox(
-                record_splice=ctx_splice_recorder(ctx),
+                events=ctx,
+                sink=EphemeralInboxSink(),
             ))
         session = Session(
             events=ctx,
-            info=info,
             paths=paths,
             variables=variables,
             state=state,

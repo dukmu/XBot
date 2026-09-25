@@ -16,14 +16,13 @@ configured provider lacks a key.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Callable
-from pydantic import JsonValue
-
-from XBotv2.llm.config import ModelConfig, ProviderConfig, parse_provider_config
-from XBotv2.core.providers import BaseProvider, ModelRequestOptions
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import Message, ModelChunk
+from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
+from XBotv2.core.providers import BaseProvider
+from XBotv2.core.provider import ModelRequest
+from XBotv2.core.stream import ModelStreamEvent
 from XBotv2.llm.contracts import (
     UnknownProviderError,
     LlmServicePort,
@@ -39,10 +38,9 @@ ProviderFactory = Callable[..., BaseProvider]
 class LlmService(LlmServicePort):
     """Provider route directory with configured provider definitions."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: LlmConfig) -> None:
         self._factories: dict[str, ProviderFactory] = {}
-        self._default = "default"
-        self._providers: dict[str, dict[str, JsonValue]] = {}
+        self._config = config
 
     def register(self, provider: str, factory: ProviderFactory) -> None:
         if provider in self._factories:
@@ -59,25 +57,13 @@ class LlmService(LlmServicePort):
     def has(self, provider: str) -> bool:
         return provider in self._factories
 
-    def configure(
-        self,
-        default: str | None,
-        providers: dict[str, dict[str, JsonValue]] | None,
-    ) -> None:
-        """Store the configured provider definitions from the tree config."""
-        self._default = default or "default"
-        self._providers = {
-            str(name): dict(raw)
-            for name, raw in (providers or {}).items()
-        }
-
     def default_name(self) -> str:
         """Name of the provider used when no provider is selected."""
-        return self._default
+        return self._config.default_provider
 
     def names(self) -> tuple[str, ...]:
         """Configured provider names (minimax / deepseek / ...)."""
-        return tuple(self._providers)
+        return tuple(self._config.providers)
 
     def catalog(self) -> ProviderCatalog:
         return ProviderCatalog(
@@ -100,8 +86,7 @@ class LlmService(LlmServicePort):
                         for model in provider.models
                     ),
                 )
-                for name in self.names()
-                for provider in (self.provider_config(name, require_key=False),)
+                for name, provider in self._config.providers.items()
             ),
         )
 
@@ -121,15 +106,24 @@ class LlmService(LlmServicePort):
         request settings for one model come from ``resolve(model)``.
         """
         if name == "default":
-            name = self._default
-        raw = self._providers.get(name)
-        if raw is None:
+            name = self._config.default_provider
+        provider = self._config.providers.get(name)
+        if provider is None:
             available = ", ".join(self.names()) or "(none)"
             raise UnknownProviderError(
                 f"Unknown provider config: {name}. "
                 f"Configured providers: {available}."
             )
-        return parse_provider_config(raw, require_key=require_key)
+        if provider.api_key is not None or provider.api_key_env is None:
+            return provider
+        api_key = os.environ.get(provider.api_key_env)
+        if api_key is None and require_key:
+            raise ValueError(
+                f"Environment variable {provider.api_key_env} is not set"
+            )
+        if api_key is None:
+            return provider
+        return provider.model_copy(update={"api_key": api_key})
 
     def create(
         self,
@@ -137,7 +131,6 @@ class LlmService(LlmServicePort):
         model_config: "ModelConfig | None" = None,
         *,
         model: str | None = None,
-        artifacts: ArtifactStorePort | None = None,
     ) -> BaseProvider:
         """Create a provider client: protocol -> adapter instance -> model.
 
@@ -150,7 +143,7 @@ class LlmService(LlmServicePort):
         factory = self._factories.get(protocol)
         if factory is None:
             raise ValueError(f"Unknown protocol implementation: {protocol!r}")
-        return factory(provider_config, model_config, artifacts=artifacts)
+        return factory(provider_config, model_config)
 
 
 class ModelService(ModelPort):
@@ -168,20 +161,11 @@ class ModelService(ModelPort):
             raise RuntimeError("model port is not bound")
         return self._provider
 
-    def bind_tools(
-        self,
-        tools: list[dict[str, JsonValue]],
-        **kwargs: object,
-    ) -> BaseProvider:
-        return self.provider.bind_tools(tools, **kwargs)
-
     async def astream(
         self,
-        messages: list[Message],
-        *,
-        options: ModelRequestOptions | None = None,
-    ) -> AsyncIterator[ModelChunk]:
-        async for chunk in self.provider.astream(messages, options=options):
+        request: ModelRequest,
+    ) -> AsyncIterator[ModelStreamEvent]:
+        async for chunk in self.provider.astream(request):
             yield chunk
 
 

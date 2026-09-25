@@ -15,17 +15,18 @@ from typing import get_args, get_type_hints
 import pytest
 from pydantic import BaseModel
 
-from XBotv2.agentloop.protocol import ToolResultData
+from XBotv2.core.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.session.contracts import ThreadSummary
 from XBotv2.tui import events, protocol
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
-    ClientNotice,
+    ClientNoticeReceived,
     CompactionChanged,
     ConnectionChanged,
     ErrorFrame,
     HistoryReplaced,
+    GoalChangedReceived,
     InteractionOpened,
     InteractionResolved,
     InterruptAsked,
@@ -33,20 +34,25 @@ from XBotv2.tui.events import (
     JobCompletionNotice,
     JobUpdated,
     LocalNotice,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
+    OlderHistoryRequested,
     TranscriptCleared,
     QueueReplaced,
+    RuntimeNoticePublished,
     SessionConfigured,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
     ThreadRead,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
+    TaskChangedReceived,
     TurnCancelled,
     TurnFinished,
     TurnStarted,
     UiEvent,
-    UsageUpdated,
+    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     UserMessagePublished,
@@ -67,16 +73,19 @@ SERVER_SHAPED = {
     AssistantCompleted,
     HistoryReplaced,
     ToolCallsStarted,
-    ToolResult,
+    ToolRecordReceived,
     ErrorFrame,
-    ClientNotice,
+    ClientNoticeReceived,
     JobCompletionNotice,
-    UsageUpdated,
+    UsageSnapshotReceived,
     CompactionChanged,
     QueueReplaced,
     InteractionOpened,
     InteractionResolved,
     UserMessagePublished,
+    RuntimeNoticePublished,
+    GoalChangedReceived,
+    TaskChangedReceived,
     JobUpdated,
     ThreadRead,
 }
@@ -84,6 +93,9 @@ SERVER_SHAPED = {
 CLIENT_SIDE = {
     ConnectionChanged,
     LocalNotice,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
+    OlderHistoryRequested,
     TranscriptCleared,
     StatusSlotsUpdated,
     StreamGapDetected,
@@ -148,8 +160,11 @@ def test_turn_status_vocabulary_covers_the_wire() -> None:
 def test_tool_status_vocabulary_covers_the_wire() -> None:
     """The client's tool states are the server's result statuses plus the two
     states a call passes through before its result arrives."""
-    wire = _literal_values(ToolResultData.model_fields["status"].annotation)
-    assert wire <= set(get_args(ToolStatus))
+    wire = {
+        _literal_values(model.model_fields["kind"].annotation).pop()
+        for model in (ToolSucceeded, ToolFailed, ToolDenied, ToolCancelled)
+    }
+    assert wire == {"succeeded", "failed", "denied", "cancelled"}
     assert {"pending", "running"} <= set(get_args(ToolStatus))
 
 

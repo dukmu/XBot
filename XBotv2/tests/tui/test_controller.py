@@ -15,13 +15,18 @@ from XBotv2.tests.tui.factories import (
     THREAD,
     RecordingView,
     ScriptedBackend,
+    assistant_record,
     frame,
     frames,
+    history_page,
+    human_record,
+    snapshot,
     stream,
     thread,
 )
 from XBotv2.tui.controller import TuiController
 from XBotv2.tui.events import ConnectionChanged, ThreadRead, TurnStarted
+from XBotv2.tui.state import HistoryAvailable, HistoryFailed
 from XBotv2.tui.status import Connection, ServerTurn, Status, derive
 from XBotv2.tui.transport import TransportConfig
 
@@ -160,8 +165,14 @@ async def test_running_the_stream_renders_the_result(backend: ScriptedBackend) -
     backend.streams = [
         stream(*frames(
             ("turn_started", {"turn": 1}),
-            ("assistant_message", {"id": "a1", "content": "hello"}),
-            ("turn_finished", {"turn": 1}),
+            ("assistant_completed", assistant_record("a1", "hello")),
+            (
+                "turn_ended",
+                {
+                    "turn": 1,
+                    "outcome": {"kind": "finished", "stop_reason": "completed"},
+                },
+            ),
         ))
     ]
     control, view = controller(backend, reconnect_delays=())
@@ -230,6 +241,7 @@ async def test_submitting_renders_the_optimistic_entry(backend: ScriptedBackend)
     assert any(
         getattr(entry, "content", "") == "hello" for entry in control.state.timeline
     )
+    assert view.pages == ["tail"], "sending is an explicit return to the live tail"
 
 
 async def test_interrupting_delegates_and_renders(backend: ScriptedBackend) -> None:
@@ -286,9 +298,9 @@ async def test_a_stopped_controller_does_not_render_again(backend: ScriptedBacke
 
 
 def _turn(turn: int):
-    from XBotv2.agentloop.protocol import TurnData
+    from XBotv2.agentloop.protocol import LoopTurnStarted
 
-    return TurnData(turn=turn)
+    return LoopTurnStarted(turn=turn)
 
 
 def _plain(model) -> str:
@@ -384,7 +396,10 @@ async def test_switching_to_a_child_thread_attaches_to_it(
 
     control, _view = controller(backend)
     await control.connect()
-    backend.session = snapshot(thread_id="child", history=[{"role": "user", "content": "sub"}])
+    backend.session = snapshot(
+            thread_id="child",
+            history=[human_record("node-1", "sub")],
+        )
     backend.threads = (
         thread(),
         thread(thread_id="child", kind="subagent", agent="task"),
@@ -474,3 +489,124 @@ async def test_the_controller_runs_a_server_command(backend: ScriptedBackend) ->
     result = await control.run_command("/status")
     assert result.message == "fine"
     assert backend.command_calls[-1]["raw"] == "/status"
+
+
+# --- older history --------------------------------------------------------
+
+
+async def test_paging_up_at_the_oldest_entry_asks_the_server_for_more(
+    backend: ScriptedBackend,
+) -> None:
+    backend.session = snapshot(history_cursor="c1")
+    control, view = controller(backend, history_window=10)
+    view.can_move_older = False
+    await control.connect()
+
+    requested = await control.page_older()
+
+    assert requested is True
+    assert backend.page_reads == [{
+        "session_id": SESSION, "thread_id": THREAD, "cursor": "c1", "limit": 10,
+    }]
+
+
+async def test_paging_up_inside_the_window_asks_the_server_for_nothing(
+    backend: ScriptedBackend,
+) -> None:
+    backend.session = snapshot(history_cursor="c1")
+    control, view = controller(backend)
+    await control.connect()
+
+    requested = await control.page_older()
+
+    assert requested is True
+    assert backend.page_reads == []
+
+
+async def test_a_page_that_arrived_is_not_asked_for_again(
+    backend: ScriptedBackend,
+) -> None:
+    """Once the client holds the beginning there is no page left to ask for."""
+    backend.session = snapshot(history_cursor="c1")
+    backend.pages = [history_page(human_record("u1", "older"))]
+    control, view = controller(backend)
+    view.can_move_older = False
+    await control.connect()
+    await control.page_older()
+
+    assert await control.page_older() is False
+    assert len(backend.page_reads) == 1
+
+
+async def test_a_failed_page_is_retried_on_the_next_ask(
+    backend: ScriptedBackend,
+) -> None:
+    backend.session = snapshot(history_cursor="c1")
+    backend.page_error = RuntimeError("server is unreachable")
+    control, view = controller(backend)
+    view.can_move_older = False
+    await control.connect()
+    await control.page_older()
+    assert isinstance(control.state.older, HistoryFailed)
+
+    backend.page_error = None
+    retried = await control.page_older()
+
+    assert retried is True
+    assert len(backend.page_reads) == 2
+
+
+async def test_nothing_is_asked_when_the_client_holds_the_beginning(
+    backend: ScriptedBackend,
+) -> None:
+    control, view = controller(backend)
+    view.can_move_older = False
+    await control.connect()
+
+    assert await control.page_older() is False
+    assert backend.page_reads == []
+
+
+async def test_residency_lets_a_loaded_page_go_when_the_reader_returns_to_the_tail(
+    backend: ScriptedBackend,
+) -> None:
+    """A reader who paged back and then returned to the tail is not served by
+    holding every page they walked past; the cursor chain makes them reachable
+    again, so the client can let them go."""
+    backend.session = snapshot(
+        history=[human_record("a9", "tail")],
+        history_cursor="c1",
+    )
+    backend.pages = [history_page(human_record("u1", "older"))]
+    control, view = controller(backend, history_retention=1)
+    view.can_move_older = False
+    view.at_end = False
+    await control.connect()
+    await control.page_older()
+    assert control.state.timeline.ids() == ("u1", "a9")
+
+    view.at_end = True
+    await control.flush()
+
+    assert control.state.timeline.ids() == ("a9",)
+    # ...and the page the reader gave up residency for can be fetched again.
+    assert control.state.older == HistoryAvailable(cursor="c1")
+
+
+async def test_a_page_the_reader_is_looking_at_is_never_released(
+    backend: ScriptedBackend,
+) -> None:
+    backend.session = snapshot(
+        history=[human_record("a9", "tail")],
+        history_cursor="c1",
+    )
+    backend.pages = [history_page(human_record("u1", "older"))]
+    control, view = controller(backend, history_retention=1)
+    view.can_move_older = False
+    view.at_end = False
+    await control.connect()
+    await control.page_older()
+
+    await control.flush()
+
+    assert control.state.timeline.ids() == ("u1", "a9")

@@ -16,19 +16,20 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from functools import partial
-from typing import Callable, Literal
+from typing import Literal
 
 from XBotv2.agentloop.contracts import (
+    AllTools,
     ToolGuard,
     ToolRegistration,
+    ToolSelection,
     ToolsPort,
 )
-from XBotv2.agentloop.events import EventContext, EventPort
+from XBotv2.agentloop.events import EventPort
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
-from XBotv2.core.messages import Message
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.core.tools import Tool, ToolCall
+from XBotv2.core.tools import Tool, ToolCall, ToolExecution
 from xcore import bound_effect, current_plugin_name
 
 
@@ -172,11 +173,11 @@ class ToolsService(ToolsPort):
     def registrations(self) -> tuple[ToolRegistration, ...]:
         return self._registry.registered_entries()
 
-    def restrict(self, selectors: list[str] | None) -> tuple[str, ...]:
-        enabled = tuple(self._registry.restrict(selectors))
+    def restrict(self, selection: ToolSelection) -> tuple[str, ...]:
+        enabled = tuple(self._registry.restrict(selection))
         self._log.debug(
             "tool.selection.restricted",
-            selectors=selectors or ["*"],
+            selectors=("*" if isinstance(selection, AllTools) else selection),
             enabled_count=len(enabled),
         )
         return enabled
@@ -193,9 +194,7 @@ class ToolsService(ToolsPort):
     async def execute_all(
         self,
         tool_calls: list[ToolCall],
-        *,
-        context_factory: Callable[..., EventContext] | None = None,
-    ) -> list[Message]:
+    ) -> list[ToolExecution]:
         """Run the full tool-execution guard pipeline.
 
         Pipeline per call: rewrite-only ``BEFORE_TOOL_CALL`` event, schema
@@ -203,10 +202,9 @@ class ToolsService(ToolsPort):
         Tool owners bind their runtime dependencies before registration; the
         agent loop only submits calls and receives their ordered results.
         """
-        results: list[Message] = []
+        results: list[ToolExecution] = []
         async for message in self.execute_each(
             tool_calls,
-            context_factory=context_factory,
         ):
             results.append(message)
         return results
@@ -214,16 +212,13 @@ class ToolsService(ToolsPort):
     def execute_each(
         self,
         tool_calls: list[ToolCall],
-        *,
-        context_factory: Callable[..., EventContext] | None = None,
-    ) -> AsyncIterator[Message]:
+    ) -> AsyncIterator[ToolExecution]:
 
         return execute_tools(
             tool_calls,
             self._registry,
             events=self.events,
             guards=self.guards(),
-            context_factory=context_factory,
             runtime_log=self._log,
             approval_layer_active=self.approval_layer_active(),
         )

@@ -9,24 +9,26 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
-    ConversationPage,
-    HistoryNode,
+    DurableEvent,
+    HistoryPage,
     HistoryCursorInvalid,
-    TrajectoryEvent,
-    TrajectoryMessage,
-    TrajectoryPage,
-    TrajectorySurfaceReplace,
+    DurableEventRecorded,
+    MessageAppended,
+    TrajectoryRead,
+    SurfaceReplaced,
     decode_history_cursor,
     encode_history_cursor,
     page_messages,
 )
-from XBotv2.core.messages import Message
+from XBotv2.core.domain import Cursor, HistoryRevision, TransactionEnded, TransactionStarted
+from XBotv2.core.messages import ConversationMessage
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.persistence.contracts import (
     HistoryPort,
@@ -38,18 +40,13 @@ from XBotv2.persistence.contracts import (
 from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop.contracts import InboxInput
+from XBotv2.agentloop.contracts import InboxItem
 from XBotv2.persistence.models import (
     InboxSnapshot,
-    MessagePayloadRecord,
-    MessageRecord,
-    SurfaceReplaceRecord,
-    TrajectoryEventRecord,
-    utc_now,
+    StoredTrajectoryRecord,
 )
 from XBotv2.persistence.contracts import (
     ThreadLifecycleRecord,
-    TrajectoryTransaction,
 )
 from xcore.state import StateService
 
@@ -57,81 +54,88 @@ from xcore.state import StateService
 # durable record get an immediate flush instead.
 _SYNC_INTERVAL_SECONDS = 0.25
 
-TrajectoryRecord = MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord
+TrajectoryRecord = StoredTrajectoryRecord
 
 
 class _SurfaceState:
     """Incrementally folded current conversation surface."""
 
     def __init__(self) -> None:
-        self.nodes: list[HistoryNode] = []
+        self.messages: list[ConversationMessage] = []
+        self.seen_ids: set[str] = set()
         self.revision = 0
 
     def apply(self, record: TrajectoryRecord) -> None:
-        if isinstance(record, MessageRecord):
-            self.nodes.append(_sealed_node(str(record.position), record.to_message()))
-        elif isinstance(record, SurfaceReplaceRecord):
-            _replace_nodes(
-                self.nodes,
-                record.source_node_ids,
-                _replacement_nodes(record),
-                position=record.position,
+        entry = record.entry
+        if isinstance(entry, MessageAppended):
+            message = entry.message
+            self._claim((message,), entry.position)
+            self.messages.append(message)
+        elif isinstance(entry, SurfaceReplaced):
+            replacements = list(entry.replacements)
+            self._claim(replacements, entry.position)
+            _replace_messages(
+                self.messages,
+                entry.source_ids,
+                replacements,
+                position=entry.position,
                 scope="Surface",
                 source_term="source nodes",
             )
-            self.revision = max(self.revision, record.position)
+            self.revision = max(self.revision, entry.position)
 
-    def view(self) -> tuple[HistoryNode, ...]:
-        return tuple(self.nodes)
+    def _claim(self, messages: Sequence[ConversationMessage], position: int) -> None:
+        identities = [message.id for message in messages]
+        if len(identities) != len(set(identities)) or self.seen_ids.intersection(identities):
+            raise ValueError(f"Surface record at {position} reuses a message identity")
+        self.seen_ids.update(identities)
+
+    def view(self) -> tuple[ConversationMessage, ...]:
+        return tuple(self.messages)
 
 
 class _TranscriptState:
     """Incrementally folded human transcript; compaction stays model-only."""
 
     def __init__(self) -> None:
-        self.nodes: list[HistoryNode] = []
+        self.messages: list[ConversationMessage] = []
         self.lineage: dict[str, tuple[str, ...]] = {}
         self.revision = 0
 
     def apply(self, record: TrajectoryRecord) -> None:
-        if isinstance(record, MessageRecord):
-            node_id = str(record.position)
-            self.nodes.append(_sealed_node(node_id, record.to_message()))
-            self.lineage[node_id] = (node_id,)
-        elif isinstance(record, SurfaceReplaceRecord):
+        entry = record.entry
+        if isinstance(entry, MessageAppended):
+            message = entry.message
+            self.messages.append(message)
+            self.lineage[message.id] = (message.id,)
+        elif isinstance(entry, SurfaceReplaced):
             sources = tuple(
                 origin
-                for source in record.source_node_ids
+                for source in entry.source_ids
                 for origin in self.lineage.get(source, (source,))
             )
-            replacements = _replacement_nodes(record)
-            if record.transcript == "preserve":
+            replacements = list(entry.replacements)
+            if entry.transcript_policy == "preserve":
                 if len(replacements) != 1:
                     raise ValueError(
-                        "Transcript-preserving replacement must produce one surface node"
+                        "Transcript-preserving replacement must produce one surface record"
                     )
-                self.lineage[replacements[0].node_id] = sources
+                self.lineage[replacements[0].id] = sources
                 return
-            _replace_nodes(
-                self.nodes,
+            _replace_messages(
+                self.messages,
                 sources,
                 replacements,
-                position=record.position,
+                position=entry.position,
                 scope="Transcript",
                 source_term="sources",
             )
-            for node in replacements:
-                self.lineage[node.node_id] = (node.node_id,)
-            self.revision = max(self.revision, record.position)
+            for message in replacements:
+                self.lineage[message.id] = (message.id,)
+            self.revision = max(self.revision, entry.position)
 
-    def view(self) -> tuple[HistoryNode, ...]:
-        return tuple(self.nodes)
-
-
-def _sealed_node(node_id: str, message: Message) -> HistoryNode:
-    node = HistoryNode(node_id, message)
-    node.message.seal()
-    return node
+    def view(self) -> tuple[ConversationMessage, ...]:
+        return tuple(self.messages)
 
 
 def _apply_records(state: _SurfaceState | _TranscriptState, records: Sequence[TrajectoryRecord]) -> None:
@@ -233,7 +237,7 @@ class _TrajectoryState:
             start=1,
         ):
             record = _trajectory_record(raw)
-            if record.position != index:
+            if record.entry.position != index:
                 raise ValueError(
                     "Trajectory positions must be contiguous and start at 1"
                 )
@@ -315,10 +319,9 @@ class MessageHistoryStore(HistoryPort):
     def path(self) -> Path:
         return self._path
 
-    def load(self) -> list[Message]:
+    def load(self) -> list[ConversationMessage]:
         started = time.perf_counter()
-        nodes = self.load_surface()
-        messages = [node.message for node in nodes]
+        messages = list(self.load_surface())
         self._log.debug(
             "persistence.history.loaded",
             messages=len(messages),
@@ -326,23 +329,29 @@ class MessageHistoryStore(HistoryPort):
         )
         return messages
 
-    def load_transcript(self) -> list[Message]:
+    def load_transcript(self) -> list[ConversationMessage]:
         """Derive the human transcript without hiding compacted conversation."""
         with _trajectory_use(self._path) as state:
-            nodes = state.transcript_state().view()
-        return [node.message for node in nodes]
+            return list(state.transcript_state().view())
 
-    def load_surface(self) -> tuple[HistoryNode, ...]:
+    def load_surface(self) -> tuple[ConversationMessage, ...]:
         with _trajectory_use(self._path) as state:
             return state.surface_state().view()
 
-    def append(self, messages: Sequence[Message]) -> tuple[HistoryNode, ...]:
+    def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]:
         if not messages:
             return ()
         with _trajectory_use(self._path) as state:
             state.prepare_write(self._log)
+            existing_ids = state.surface_state().seen_ids
+            added_ids = [message.id for message in messages]
+            if len(added_ids) != len(set(added_ids)) or existing_ids.intersection(added_ids):
+                raise ValueError("Trajectory messages must have unique identities")
             added = [
-                MessageRecord.from_message(message, state.next_position + index)
+                StoredTrajectoryRecord(entry=MessageAppended(
+                    position=state.next_position + index,
+                    message=message,
+                ))
                 for index, message in enumerate(messages)
             ]
             self._append_records(added, state=state)
@@ -353,18 +362,15 @@ class MessageHistoryStore(HistoryPort):
             messages=len(added),
             next_position=next_position,
         )
-        return tuple(
-            HistoryNode(str(record.position), message)
-            for record, message in zip(added, messages, strict=True)
-        )
+        return tuple(messages)
 
-    def replace(self, messages: Sequence[Message]) -> None:
+    def replace(self, messages: Sequence[ConversationMessage]) -> None:
         surface = self.load_surface()
         if not surface:
             self.append(messages)
             return
         self.replace_surface(
-            tuple(node.node_id for node in surface),
+            tuple(message.id for message in surface),
             messages,
             operation="replace",
             preserve_transcript=False,
@@ -372,21 +378,23 @@ class MessageHistoryStore(HistoryPort):
 
     def replace_surface(
         self,
-        source_node_ids: Sequence[str],
-        messages: Sequence[Message],
+        source_ids: Sequence[str],
+        messages: Sequence[ConversationMessage],
         *,
         operation: str,
         preserve_transcript: bool,
-    ) -> tuple[HistoryNode, ...]:
+    ) -> tuple[ConversationMessage, ...]:
         with _trajectory_use(self._path) as state:
             records = state.prepare_write(self._log)
-            record = SurfaceReplaceRecord(
-                position=state.next_position,
-                operation=operation,
-                transcript="preserve" if preserve_transcript else "replace",
-                source_node_ids=tuple(source_node_ids),
-                messages=tuple(
-                    MessagePayloadRecord.from_message(message) for message in messages
+            record = StoredTrajectoryRecord(
+                entry=SurfaceReplaced(
+                    position=state.next_position,
+                    operation=operation,
+                    transcript_policy=(
+                        "preserve" if preserve_transcript else "replace"
+                    ),
+                    source_ids=tuple(source_ids),
+                    replacements=tuple(messages),
                 ),
             )
             # Both projections must accept the transition before it becomes durable.
@@ -400,62 +408,60 @@ class MessageHistoryStore(HistoryPort):
         self._log.info(
             "persistence.surface.replaced",
             operation=operation,
-            source_nodes=len(source_node_ids),
+            source_nodes=len(source_ids),
             replacement_nodes=len(messages),
         )
-        return tuple(
-            HistoryNode(f"{record.position}:{index}", message)
-            for index, message in enumerate(messages)
-        )
+        return tuple(messages)
 
-    def record(
-        self,
-        event: str,
-        data: dict[str, JsonValue],
-        *,
-        durable: bool = False,
-    ) -> None:
+    def record(self, event: DurableEvent, *, durable: bool = False) -> None:
         with _trajectory_use(self._path) as state:
             state.prepare_write(self._log)
-            record = TrajectoryEventRecord(
-                position=state.next_position,
-                event=event,
-                data=data,
-                timestamp=utc_now(),
+            record = StoredTrajectoryRecord(
+                entry=DurableEventRecorded(
+                    position=state.next_position,
+                    timestamp=datetime.now(timezone.utc),
+                    event=event,
+                ),
             )
             self._append_records((record,), state=state, sync=durable)
             state.wrote((record,))
-        self._log.debug("persistence.trajectory.event", trajectory_event=event)
+        self._log.debug("persistence.trajectory.event", trajectory_event=event.kind)
 
     def open_transactions(
         self,
-        transaction: TrajectoryTransaction,
+        transaction_kind: str,
     ) -> frozenset[str]:
         """Fold correlated start/end records without changing the surface."""
         open_ids: set[str] = set()
         with _trajectory_use(self._path) as state:
             records = state.recorded()
         for record in records:
-            if not isinstance(record, TrajectoryEventRecord):
+            entry = record.entry
+            if not isinstance(entry, DurableEventRecorded):
                 continue
-            correlation_id = str(record.data.get(transaction.id_field) or "")
-            if not correlation_id:
+            event = entry.event
+            if event.transaction.kind != transaction_kind:
                 continue
-            if record.event == transaction.start_event:
-                open_ids.add(correlation_id)
-            elif record.event == transaction.end_event:
-                open_ids.discard(correlation_id)
+            if isinstance(event, TransactionStarted):
+                open_ids.add(event.transaction.id)
+            elif isinstance(event, TransactionEnded):
+                open_ids.discard(event.transaction.id)
         return frozenset(open_ids)
 
     def count(self) -> int:
         with _trajectory_use(self._path) as state:
-            return len(state.surface_state().nodes)
+            return len(state.surface_state().messages)
 
-    def page(self, *, limit: int, cursor: str | None = None) -> ConversationPage:
+    def page(
+        self,
+        *,
+        limit: int,
+        cursor: Cursor | None = None,
+    ) -> HistoryPage[ConversationMessage]:
         with _trajectory_use(self._path) as state:
             surface = state.surface_state()
             return page_messages(
-                tuple(node.message for node in surface.nodes),
+                surface.messages,
                 revision=self._revision(surface.revision, "surface"),
                 limit=limit,
                 cursor=cursor,
@@ -466,12 +472,12 @@ class MessageHistoryStore(HistoryPort):
         self,
         *,
         limit: int,
-        cursor: str | None = None,
-    ) -> ConversationPage:
+        cursor: Cursor | None = None,
+    ) -> HistoryPage[ConversationMessage]:
         with _trajectory_use(self._path) as state:
             transcript = state.transcript_state()
             return page_messages(
-                tuple(node.message for node in transcript.nodes),
+                transcript.messages,
                 revision=self._revision(transcript.revision, "transcript"),
                 limit=limit,
                 cursor=cursor,
@@ -482,9 +488,9 @@ class MessageHistoryStore(HistoryPort):
         self,
         *,
         limit: int,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
         before: int | None = None,
-    ) -> TrajectoryPage:
+    ) -> TrajectoryRead:
         """Return one page ending before ``before`` (exclusive 1-based position).
 
         ``before`` anchors a window that already dropped its oldest entries:
@@ -497,7 +503,7 @@ class MessageHistoryStore(HistoryPort):
             raise ValueError("pass either cursor or before, not both")
         with _trajectory_use(self._path) as state:
             records = state.recorded()
-            revision = f"{self._cursor_scope}:trajectory"
+            revision = HistoryRevision(f"{self._cursor_scope}:trajectory")
             if cursor is None:
                 end = len(records) if before is None else before - 1
             else:
@@ -511,21 +517,23 @@ class MessageHistoryStore(HistoryPort):
                 _trajectory_item(record) for record in records[start:end]
             )
             newest = len(records)
-        return TrajectoryPage(
-            items=items,
-            next_cursor=encode_history_cursor(revision, start) if start else None,
+        return TrajectoryRead(
+            page=HistoryPage(
+                items=items,
+                older_cursor=encode_history_cursor(revision, start) if start else None,
+            ),
             newest_position=newest,
         )
 
-    def _revision(self, generation: int, projection: str) -> str:
-        return f"{self._cursor_scope}:{projection}:{generation}"
+    def _revision(self, generation: int, projection: str) -> HistoryRevision:
+        return HistoryRevision(f"{self._cursor_scope}:{projection}:{generation}")
 
     def has_history(self) -> bool:
         return self._path.exists() and self._path.stat().st_size > 0
 
     def _append_records(
         self,
-        records: Sequence[MessageRecord | SurfaceReplaceRecord | TrajectoryEventRecord],
+        records: Sequence[StoredTrajectoryRecord],
         *,
         state: _TrajectoryState,
         sync: bool = True,
@@ -559,48 +567,19 @@ class MessageHistoryStore(HistoryPort):
 
 
 def _trajectory_item(record: TrajectoryRecord) -> (
-    TrajectoryMessage | TrajectorySurfaceReplace | TrajectoryEvent
+    MessageAppended | SurfaceReplaced | DurableEventRecorded
 ):
-    if isinstance(record, MessageRecord):
-        return TrajectoryMessage(record.position, record.to_message())
-    if isinstance(record, SurfaceReplaceRecord):
-        return TrajectorySurfaceReplace(
-            record.position,
-            record.operation,
-            record.transcript,
-            record.source_node_ids,
-            tuple(message.to_message() for message in record.messages),
-        )
-    return TrajectoryEvent(
-        record.position,
-        record.event,
-        record.data,
-        record.timestamp,
-    )
+    return record.entry
 
 
 def _trajectory_record(value: Mapping[str, JsonValue]) -> TrajectoryRecord:
-    record_type = value.get("record_type")
-    if record_type is None:
-        return MessageRecord.model_validate(value)
-    if record_type == "surface_replace":
-        return SurfaceReplaceRecord.model_validate(value)
-    if record_type == "event":
-        return TrajectoryEventRecord.model_validate(value)
-    raise ValueError(f"Unknown trajectory record type: {record_type!r}")
+    return StoredTrajectoryRecord.model_validate(value)
 
 
-def _replacement_nodes(record: SurfaceReplaceRecord) -> list[HistoryNode]:
-    return [
-        HistoryNode(f"{record.position}:{index}", payload.to_message())
-        for index, payload in enumerate(record.messages)
-    ]
-
-
-def _replace_nodes(
-    nodes: list[HistoryNode],
+def _replace_messages(
+    messages: list[ConversationMessage],
     source_ids: Sequence[str],
-    replacements: Sequence[HistoryNode],
+    replacements: Sequence[ConversationMessage],
     *,
     position: int,
     scope: str,
@@ -611,15 +590,15 @@ def _replace_nodes(
     try:
         start = next(
             index
-            for index, node in enumerate(nodes)
-            if node.node_id == source_ids[0]
+            for index, message in enumerate(messages)
+            if message.id == source_ids[0]
         )
     except StopIteration as exc:
         raise ValueError(f"{scope} replacement at {position} {source_term} are not current") from exc
-    current = [node.node_id for node in nodes[start:start + len(source_ids)]]
+    current = [message.id for message in messages[start:start + len(source_ids)]]
     if current != list(source_ids):
         raise ValueError(f"{scope} replacement at {position} {source_term} are not current")
-    nodes[start:start + len(source_ids)] = replacements
+    messages[start:start + len(source_ids)] = replacements
 
 
 class ThreadMetadataStore(MetadataPort):
@@ -633,13 +612,11 @@ class ThreadMetadataStore(MetadataPort):
         self._thread_id = paths.thread_id
         self._log = runtime_log
 
-    def load(self) -> ThreadMetadata:
+    def load(self) -> ThreadMetadata | None:
         raw = _read_json(self._path, "thread metadata")
-        metadata = (
-            ThreadMetadata()
-            if raw is None
-            else ThreadMetadata.model_validate(raw)
-        )
+        if raw is None:
+            return None
+        metadata = ThreadMetadata.model_validate(raw)
         return metadata.with_default_title(
             session_id=self._session_id,
             thread_id=self._thread_id,
@@ -674,7 +651,7 @@ class DeferredThreadMetadataStore(MetadataPort):
     def _has_records(self) -> bool:
         return self._messages_file.exists() and self._messages_file.stat().st_size > 0
 
-    def load(self) -> ThreadMetadata:
+    def load(self) -> ThreadMetadata | None:
         return self._real.load()
 
     def save(self, metadata: ThreadMetadata) -> None:
@@ -705,24 +682,24 @@ class InboxStore(InboxPersistencePort):
         self._path = paths.inbox_file
         self._log = runtime_log
 
-    def load(self) -> list[InboxInput]:
+    def load(self) -> list[InboxItem]:
         raw = _read_json(self._path, "inbox snapshot")
         if raw is None:
             return []
-        return InboxSnapshot.model_validate(raw).to_inputs()
+        return list(InboxSnapshot.model_validate(raw).items)
 
-    def replace(self, items: Sequence[InboxInput]) -> None:
-        snapshot = InboxSnapshot.from_inputs(items)
+    def replace(self, items: Sequence[InboxItem]) -> None:
+        snapshot = InboxSnapshot(items=tuple(items))
         write_text_atomic(
             self._path,
             json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
         )
         self._log.debug("persistence.inbox.replaced", items=len(items))
 
-    def reconcile(self, committed_input_ids: set[str]) -> list[InboxInput]:
+    def reconcile(self, committed_input_ids: set[str]) -> list[InboxItem]:
         stored = self.load()
         pending = [
-            item for item in stored if item.message_id not in committed_input_ids
+            item for item in stored if item.id not in committed_input_ids
         ]
         if len(pending) != len(stored):
             self.replace(pending)
@@ -851,16 +828,12 @@ class ThreadPersistence(ThreadPersistencePort):
         paths: ThreadPaths,
         *,
         state: StateService,
-        workspace_root: str = "",
-        provider: str = "",
         artifacts: ArtifactStorePort | None = None,
         metadata: ThreadMetadataStore | DeferredThreadMetadataStore | None = None,
     ) -> None:
         self.paths = paths
         self.session_id = paths.session_id
         self.thread_id = paths.thread_id
-        self.workspace_root = workspace_root
-        self.provider = provider
         runtime_log = DEFAULT_RUNTIME_LOG.bind(
             "persistence",
             session_id=self.session_id,
@@ -901,16 +874,14 @@ class ThreadPersistence(ThreadPersistencePort):
         paths: SessionPaths | ThreadPaths,
         *,
         thread_id: str,
-        workspace_root: str,
-        provider: str,
         artifacts: ArtifactStorePort | None = None,
         defer_metadata: bool = False,
     ) -> "ThreadPersistence":
         thread_paths = _thread_paths(paths, thread_id)
-        # The directory itself is inert: a session only becomes visible through
-        # evidence (metadata or a message), so an unused open leaves nothing a
-        # listing shows or a GC pass cannot reclaim.
-        thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
+        # A manager-opened new session is not durable until its first record.
+        # Direct/resumed runtimes keep their eager persistence layout.
+        if not defer_metadata:
+            thread_paths.state_dir.mkdir(parents=True, exist_ok=True)
         metadata = (
             DeferredThreadMetadataStore(
                 ThreadMetadataStore(thread_paths),
@@ -922,8 +893,6 @@ class ThreadPersistence(ThreadPersistencePort):
         return cls(
             thread_paths,
             state=StateService(path=thread_paths.plugin_state_file),
-            workspace_root=workspace_root,
-            provider=provider,
             artifacts=artifacts,
             metadata=metadata,
         )
@@ -934,16 +903,12 @@ class ThreadPersistence(ThreadPersistencePort):
         paths: SessionPaths | ThreadPaths,
         *,
         thread_id: str,
-        workspace_root: str = "",
-        provider: str = "",
     ) -> "ThreadPersistence":
         """Open an inactive thread with one private StateService instance."""
         thread_paths = _thread_paths(paths, thread_id)
         return cls(
             thread_paths,
             state=StateService(path=thread_paths.plugin_state_file),
-            workspace_root=workspace_root,
-            provider=provider,
         )
 
 

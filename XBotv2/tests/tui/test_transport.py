@@ -17,34 +17,41 @@ import asyncio
 import pytest
 
 from XBotv2.client import XBotClientError
-from XBotv2.core.usage import UsageData
+from XBotv2.core.domain import TokenCounters, UsageSnapshot
+from XBotv2.usage import UsageUpdated as UsageUpdatedPayload
 from XBotv2.protocol import ErrorResponse
+from XBotv2.core.tools import ToolCall
+from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,
     ScriptedBackend,
     StreamScript,
+    assistant_record,
     frame,
     frames,
     snapshot,
     stream,
     thread,
 )
+from XBotv2.tests.tui.factories import history_page, human_record
 from XBotv2.tui.events import (
     AssistantDelta,
-    ClientNotice,
+    ClientNoticeReceived,
     ConnectionChanged,
     ErrorFrame,
     InteractionOpened,
     InterruptAsked,
     InterruptSettled,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
     TurnFinished,
     TurnStarted,
     UiEvent,
-    UsageUpdated,
+    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     ThreadRead,
@@ -150,7 +157,7 @@ async def test_connect_announces_connecting_then_connected(backend: ScriptedBack
 async def test_connect_adopts_the_snapshot(backend: ScriptedBackend) -> None:
     recorder = Recorder()
     await build(backend, recorder).connect()
-    assert recorder.only(SnapshotAdopted).snapshot.session_id == SESSION
+    assert recorder.only(SnapshotAdopted).snapshot.data.key.session_id == SESSION
 
 
 async def test_connect_replays_unanswered_prompts(backend: ScriptedBackend) -> None:
@@ -158,20 +165,19 @@ async def test_connect_replays_unanswered_prompts(backend: ScriptedBackend) -> N
     rebuilds it from the snapshot."""
     backend.session = snapshot(
         pending_interactions=[
-            {
-                "type": "permission_request",
-                "data": {
-                    "request_id": "r1",
-                    "source": "permission_system",
-                    "reason": "needs approval",
-                    "tool_call": {"id": "c1", "name": "bash", "args": {}},
-                },
-            }
+            PermissionRequest(
+                interaction_id="r1",
+                source="permission_system",
+                reason="needs approval",
+                subject=ToolPermission(
+                    tool_call=ToolCall(id="c1", name="bash", args={}),
+                ),
+            )
         ]
     )
     recorder = Recorder()
     await build(backend, recorder).connect()
-    assert recorder.only(InteractionOpened).request.request_id == "r1"
+    assert recorder.only(InteractionOpened).request.interaction_id == "r1"
 
 
 async def test_connect_reads_the_thread_so_a_mid_turn_attach_is_running(
@@ -190,14 +196,14 @@ async def test_connect_reads_the_thread_so_a_mid_turn_attach_is_running(
 async def test_connect_does_not_double_count_usage(backend: ScriptedBackend) -> None:
     """A thread read reports the session *total*, while usage frames are deltas.
     Feeding that total through the accumulating path would double it."""
-    total = UsageData(input_tokens=100, total_tokens=100)
+    total = UsageSnapshot(total_counters=TokenCounters(input=100))
     backend.session = snapshot(usage=total)
     backend.threads = (thread(usage=total),)
     state = SessionState()
     recorder = Recorder(state)
     await build(backend, recorder).connect()
-    assert state.usage["input_tokens"] == 100
-    assert not recorder.of(UsageUpdated), "an authoritative total is not a delta"
+    assert state.usage.total_counters.input == 100
+    assert not recorder.of(UsageSnapshotReceived), "an authoritative total is not a delta"
 
 
 async def test_connect_failure_is_visible_and_disconnects(backend: ScriptedBackend) -> None:
@@ -217,8 +223,11 @@ async def test_run_applies_frames_in_order(backend: ScriptedBackend) -> None:
     backend.streams = [
         stream(*frames(
             ("turn_started", {"turn": 1}),
-            ("assistant_message_delta", {"content": "hi"}),
-            ("turn_finished", {"turn": 1}),
+            ("assistant_text_delta", {"text": "hi"}),
+            (
+                "turn_ended",
+                {"turn": 1, "outcome": {"kind": "finished", "stop_reason": "completed"}},
+            ),
         ))
     ]
     recorder = Recorder()
@@ -226,7 +235,7 @@ async def test_run_applies_frames_in_order(backend: ScriptedBackend) -> None:
     stop_on(recorder, transport, TurnFinished)
     await transport.run()
     assert recorder.of(TurnStarted)
-    assert recorder.only(AssistantDelta).payload.content == "hi"
+    assert recorder.only(AssistantDelta).payload.text == "hi"
     assert transport.cursor == 3
 
 
@@ -237,7 +246,7 @@ async def test_a_sequence_gap_is_reported_and_the_frame_still_applies(
     backend.streams = [
         stream(
             frame("turn_started", {"turn": 1}, sequence=1),
-            frame("assistant_message_delta", {"content": "after the gap"}, sequence=9),
+            frame("assistant_text_delta", {"text": "after the gap"}, sequence=9),
         )
     ]
     recorder = Recorder()
@@ -246,7 +255,7 @@ async def test_a_sequence_gap_is_reported_and_the_frame_still_applies(
     await transport.run()
     gap = recorder.only(StreamGapDetected)
     assert (gap.expected, gap.received) == (2, 9)
-    assert recorder.only(AssistantDelta).payload.content == "after the gap"
+    assert recorder.only(AssistantDelta).payload.text == "after the gap"
 
 
 async def test_a_replayed_frame_is_not_applied_twice(backend: ScriptedBackend) -> None:
@@ -254,18 +263,30 @@ async def test_a_replayed_frame_is_not_applied_twice(backend: ScriptedBackend) -
     already applied; counting them again would inflate usage."""
     backend.streams = [
         stream(
-            frame("usage", {"input_tokens": 5}, sequence=1),
-            frame("usage", {"input_tokens": 3}, sequence=2),
+            frame(
+                "usage_updated",
+                UsageUpdatedPayload(
+                    snapshot=UsageSnapshot(total_counters=TokenCounters(input=5))
+                ).model_dump(mode="json"),
+                sequence=1,
+            ),
+            frame(
+                "usage_updated",
+                UsageUpdatedPayload(
+                    snapshot=UsageSnapshot(total_counters=TokenCounters(input=8))
+                ).model_dump(mode="json"),
+                sequence=2,
+            ),
         )
     ]
     state = SessionState()
     recorder = Recorder(state)
     transport = await connected(backend, recorder)
     transport._cursor = 1  # noqa: SLF001 - simulate a resubscription replay
-    stop_on(recorder, transport, UsageUpdated)
+    stop_on(recorder, transport, UsageSnapshotReceived)
     await transport.run()
-    assert len(recorder.of(UsageUpdated)) == 1
-    assert state.usage["input_tokens"] == 3
+    assert len(recorder.of(UsageSnapshotReceived)) == 1
+    assert state.usage.total_counters.input == 8
 
 
 async def test_an_unsequenced_frame_is_applied(backend: ScriptedBackend) -> None:
@@ -275,9 +296,9 @@ async def test_an_unsequenced_frame_is_applied(backend: ScriptedBackend) -> None
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, ClientNotice)
+    stop_on(recorder, transport, ClientNoticeReceived)
     await transport.run()
-    assert recorder.of(ClientNotice)
+    assert recorder.of(ClientNoticeReceived)
 
 
 async def test_a_frame_for_another_session_is_reported_not_applied(
@@ -318,7 +339,7 @@ async def test_a_malformed_payload_is_reported(backend: ScriptedBackend) -> None
 async def test_a_dead_stream_resubscribes_from_the_cursor(backend: ScriptedBackend) -> None:
     backend.streams = [
         stream(frame("turn_started", {"turn": 1}, sequence=1)),
-        stream(frame("assistant_message_delta", {"content": "back"}, sequence=2)),
+        stream(frame("assistant_text_delta", {"text": "back"}, sequence=2)),
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
@@ -370,6 +391,30 @@ async def test_a_stopped_transport_does_not_open_a_stream(backend: ScriptedBacke
     transport.stop()
     await transport.run()
     assert backend.stream_opens == 0
+
+
+async def test_cancelling_transport_closes_the_active_stream(backend: ScriptedBackend) -> None:
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def held_stream(*_args, **_kwargs):
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+            yield frame("end", {})
+        finally:
+            closed.set()
+
+    backend.stream_events = held_stream
+    transport = await connected(backend, Recorder())
+    task = asyncio.create_task(transport.run())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed.is_set(), "cancellation must close the backend's SSE iterator"
 
 
 # --- cursor recovery ------------------------------------------------------
@@ -569,11 +614,14 @@ async def test_a_scripted_turn_lands_in_the_transcript(backend: ScriptedBackend)
     backend.streams = [
         stream(*frames(
             ("turn_started", {"turn": 1}),
-            ("assistant_message_delta", {"content": "looking"}),
-            ("message", {"id": "m2", "role": "user", "content": "steer"}),
-            ("assistant_message_delta", {"content": "done"}),
-            ("assistant_message", {"id": "a2", "content": "done"}),
-            ("turn_finished", {"turn": 1}),
+            ("assistant_text_delta", {"text": "looking"}),
+            ("message", human_record("m2", "steer").model_dump(mode="json")),
+            ("assistant_text_delta", {"text": "done"}),
+            ("assistant_completed", assistant_record("a2", "done")),
+            (
+                "turn_ended",
+                {"turn": 1, "outcome": {"kind": "finished", "stop_reason": "completed"}},
+            ),
         ))
     ]
     state = SessionState()
@@ -680,3 +728,121 @@ async def test_running_a_server_command_goes_through_the_backend(
     assert backend.command_calls == [
         {"session_id": SESSION, "thread_id": THREAD, "raw": "/status verbose"}
     ]
+
+
+async def test_permission_and_user_input_responses_target_the_attached_thread(
+    backend: ScriptedBackend,
+) -> None:
+    recorder = Recorder()
+    session = await connected(backend, recorder)
+
+    await session.respond_permission("permission:1", "allow", "session")
+    await session.respond_permission("permission:2", "deny")
+    await session.respond_user_input("question:1", "keep the backup")
+
+    assert backend.interaction_responses == [
+        {
+            "kind": "permission",
+            "session_id": SESSION,
+            "thread_id": THREAD,
+            "request_id": "permission:1",
+            "decision": "allow",
+            "scope": "session",
+        },
+        {
+            "kind": "permission",
+            "session_id": SESSION,
+            "thread_id": THREAD,
+            "request_id": "permission:2",
+            "decision": "deny",
+            "scope": "once",
+        },
+        {
+            "kind": "user_input",
+            "session_id": SESSION,
+            "thread_id": THREAD,
+            "request_id": "question:1",
+            "answer": "keep the backup",
+        },
+    ]
+
+
+# --- the windowed attach and older pages ----------------------------------
+
+
+async def test_attach_asks_the_server_for_a_bounded_window(
+    backend: ScriptedBackend,
+) -> None:
+    """The client must not download a conversation it is not going to hold.
+
+    The bound is part of the attach request, so the server -- not the client --
+    decides what the newest page is and hands back the cursor for the one before
+    it.
+    """
+    recorder = Recorder()
+    await build(backend, recorder, history_window=40).connect()
+
+    assert backend.opened[-1]["history_limit"] == 40
+
+
+async def test_switching_threads_asks_for_a_bounded_window_too(
+    backend: ScriptedBackend,
+) -> None:
+    recorder = Recorder()
+    transport = await connected(backend, recorder, history_window=40)
+
+    await transport.switch(session_id="s2", thread_id="other")
+
+    assert backend.opened[-1]["history_limit"] == 40
+
+
+async def test_a_baseline_rebuild_keeps_the_window_bounded(
+    backend: ScriptedBackend,
+) -> None:
+    """Recovery re-attaches; a rebuild that forgot the window would pull the
+    whole conversation back in through the one path nobody watches."""
+    backend.streams = [
+        StreamScript(fail_with=cursor_expired()),
+        stream(frame("turn_started", {"turn": 3}, sequence=8)),
+    ]
+    recorder = Recorder()
+    transport = await connected(
+        backend, recorder, cursor_recoveries=0, baseline_rebuilds=1, history_window=40,
+    )
+    stop_on(recorder, transport, TurnStarted)
+
+    await transport.run()
+
+    assert [opened["history_limit"] for opened in backend.opened] == [40, 40]
+
+
+async def test_load_older_reads_the_page_before_the_cursor(
+    backend: ScriptedBackend,
+) -> None:
+    recorder = Recorder()
+    backend.pages = [history_page(human_record("u1", "first"))]
+    transport = await connected(backend, recorder, history_window=25)
+
+    await transport.load_older("cursor-1")
+
+    assert backend.page_reads == [{
+        "session_id": SESSION,
+        "thread_id": THREAD,
+        "cursor": "cursor-1",
+        "limit": 25,
+    }]
+    loaded = recorder.only(OlderHistoryLoaded)
+    assert [item.id for item in loaded.payload.items] == ["u1"]
+
+
+async def test_a_failed_older_page_is_reported_not_raised(
+    backend: ScriptedBackend,
+) -> None:
+    recorder = Recorder()
+    backend.page_error = RuntimeError("server is unreachable")
+    transport = await connected(backend, recorder)
+
+    await transport.load_older("cursor-1")
+
+    assert "unreachable" in recorder.only(OlderHistoryFailed).message
+    assert not recorder.of(OlderHistoryLoaded)

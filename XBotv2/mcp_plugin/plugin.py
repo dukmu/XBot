@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.core import (
-    Tool,
-    ToolResult,
-)
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.events import SessionLifecycle
 from xcore import Context
 from pydantic import JsonValue
 
@@ -32,7 +30,7 @@ class MCPResourceHandler:
         if subscriptions:
             self.operations.extend(["subscribe", "unsubscribe"])
 
-    async def invoke(self, operation: str, uri: str = "") -> ToolResult:
+    async def invoke(self, operation: str, uri: str = "") -> ToolOutcome:
         """List, read, subscribe to, or unsubscribe from MCP resources."""
         if operation == "list":
             return _protocol_result(await self._client.list_resources(self._server))
@@ -42,7 +40,7 @@ class MCPResourceHandler:
             return _protocol_result(await self._client.subscribe_resource(self._server, uri))
         if operation == "unsubscribe" and "unsubscribe" in self.operations and uri:
             return _protocol_result(await self._client.unsubscribe_resource(self._server, uri))
-        return ToolResult.failure(
+        return failed_text(
             "invalid_mcp_resource_request",
             f"Unsupported resource operation or missing uri: {operation}",
         )
@@ -58,7 +56,7 @@ class MCPPromptHandler:
         operation: str,
         name: str = "",
         arguments: dict[str, str] | None = None,
-    ) -> ToolResult:
+    ) -> ToolOutcome:
         """List MCP prompts or render one prompt with arguments."""
         if operation == "list":
             return _protocol_result({
@@ -68,7 +66,7 @@ class MCPPromptHandler:
             return _protocol_result(
                 await self._client.get_prompt(self._server, name, arguments)
             )
-        return ToolResult.failure(
+        return failed_text(
             "invalid_mcp_prompt_request",
             f"Unsupported prompt operation or missing name: {operation}",
         )
@@ -85,7 +83,7 @@ class MCPCompletionHandler:
         reference: str,
         argument: dict[str, str],
         context_arguments: dict[str, str] | None = None,
-    ) -> ToolResult:
+    ) -> ToolOutcome:
         """Complete an MCP prompt argument or resource-template argument."""
         ref = {
             "type": "ref/resource" if reference_type == "resource" else "ref/prompt",
@@ -100,7 +98,7 @@ class MCPCompletionHandler:
 
 
 class MCPPlugin:
-    inject = ["tools", "model", "interactions", "session"]
+    inject = ["tools", "model", "interactions", "session", "usage", "loop_state"]
     name = MCP_PLUGIN_ID
     Config = MCPConfig
 
@@ -116,6 +114,8 @@ class MCPPlugin:
         self._model = ctx.model
         self._interactions = ctx.interactions
         self._session = ctx.session
+        self._usage = ctx.usage
+        self._loop_state = ctx.loop_state
         self._config = config
         ctx.dispose(self._dispose)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
@@ -143,6 +143,8 @@ class MCPPlugin:
                         self._model,
                         self._interactions,
                         self._session,
+                        self._usage,
+                        lambda: self._loop_state.metadata.value.runtime_selection.model,
                     ),
                 )
                 registered_names = self._register_server_tools(
@@ -172,7 +174,7 @@ class MCPPlugin:
             }
         self._initialized = True
 
-    async def _on_session_close(self, ctx: EventContext) -> None:
+    async def _on_session_close(self, ctx: SessionLifecycle) -> None:
         await self._rollback_all()
         self._server_status.clear()
 
@@ -343,8 +345,8 @@ class MCPPlugin:
         self._initialized = False
 
 
-def _protocol_result(data: dict[str, JsonValue]) -> ToolResult:
-    return ToolResult.success(json.dumps(data, ensure_ascii=False))
+def _protocol_result(data: dict[str, JsonValue]) -> ToolOutcome:
+    return succeeded_text(json.dumps(data, ensure_ascii=False))
 
 
 

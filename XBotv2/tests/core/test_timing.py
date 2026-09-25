@@ -1,100 +1,81 @@
-from __future__ import annotations
+"""Timing summaries are projections of canonical conversation records."""
 
-import xcore
 import pytest
 
-from XBotv2.agentloop.engine import tool_result_event_data
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_runtime import execute_tools
-from XBotv2.core.messages import Message
-from XBotv2.core.timing import (
-    SESSION_STATS_METADATA_KEY,
-    TIMING_METADATA_KEY,
-    SessionStats,
-    conversation_stats,
+from XBotv2.core.domain import (
+    CompletedStop,
+    GenerationSettings,
+    ModelExchange,
+    ModelRoute,
+    ModelTiming,
+    ProviderExtensions,
+    ProviderMeasured,
+    RequestObservation,
+    ResolvedModelSelection,
+    StandardGenerationMode,
+    TokenCounters,
+    ToolTiming,
+    TurnId,
+    TurnRequest,
+    UsageDelta,
 )
-from XBotv2.core.tools import Tool, ToolCall
-from XBotv2.llm.mock import MockLLM
-from XBotv2.session.contracts import conversation_replay
-from XBotv2.tests.helpers import make_engine
+from XBotv2.core.messages import (
+    AssistantMessage,
+    HumanInputMessage,
+    TextPart,
+    ToolMessage,
+)
+from XBotv2.core.domain import InputId, MessageId, ToolCallId
+from XBotv2.core.tools import ToolCallRef, ToolSucceeded, text_output
+from XBotv2.core.timing import SessionStats, conversation_stats
 
 
-@pytest.mark.asyncio
-async def test_model_timing_is_persisted_and_emitted(state_store) -> None:
-    engine = make_engine(
-        llm=MockLLM(responses=[{"content": "done", "chunks": ["do", "ne"]}]),
-        tool_registry=ToolRegistry(),
-        plugin_ctx=xcore.Context(),
-        state_store=state_store,
+def _assistant() -> AssistantMessage:
+    selection = ResolvedModelSelection(
+        route=ModelRoute(provider="mock", model="test"),
+        generation=GenerationSettings(
+            mode=StandardGenerationMode(), max_output_tokens=128,
+        ),
+        context_window=4096,
+    )
+    observation = RequestObservation(
+        selection=selection,
+        purpose=TurnRequest(turn_id=TurnId("turn-1")),
+        estimated_input_tokens=10,
+        observed_context=ProviderMeasured(tokens=10),
+    )
+    return AssistantMessage(
+        id=MessageId("assistant-1"),
+        parts=(TextPart(text="answer"),),
+        exchange=ModelExchange(
+            observation=observation,
+            usage=UsageDelta(counters=TokenCounters(output=25)),
+            timing=ModelTiming(total_ms=1200, first_delta_ms=200),
+            stop=CompletedStop(),
+            provider_extensions=ProviderExtensions(provider="mock"),
+        ),
     )
 
-    events = [event async for event in engine.run_turn("go")]
-    event = next(item for item in events if item["type"] == "assistant_message")
-    timing = engine.messages[-1].response_metadata[TIMING_METADATA_KEY]
 
-    assert event["data"]["timing"] == timing
-    assert timing["llm_ms"] >= timing["ttft_ms"] >= 0
-    assert timing["decode_ms"] >= 0
-
-
-@pytest.mark.asyncio
-async def test_tool_timing_covers_success_and_dispatch_failure() -> None:
-    async def ready() -> str:
-        return "ok"
-
-    registry = ToolRegistry()
-    registry.register(Tool.from_function(ready, name="ready"))
-
-    success = [
-        message
-        async for message in execute_tools(
-            [ToolCall(id="one", name="ready", args={})],
-            registry,
-        )
-    ][0]
-    failure = [
-        message
-        async for message in execute_tools(
-            [ToolCall(id="two", name="missing", args={})],
-            registry,
-        )
-    ][0]
-
-    for message in (success, failure):
-        assert message.response_metadata[TIMING_METADATA_KEY]["duration_ms"] >= 0
-        assert tool_result_event_data(message, "tool")["timing"] == (
-            message.response_metadata[TIMING_METADATA_KEY]
-        )
-
-
-def test_conversation_stats_survive_compacted_prefix_and_replay_timing() -> None:
-    assistant = Message(
-        role="assistant",
-        content="answer",
-        response_metadata={TIMING_METADATA_KEY: {
-            "llm_ms": 1200,
-            "ttft_ms": 200,
-            "decode_ms": 1000,
-        }},
-        usage_metadata={"output_tokens": 25},
+def test_conversation_stats_derive_turn_model_and_tool_timing():
+    assistant = _assistant()
+    tool = ToolMessage(
+        id=MessageId("tool-1"),
+        call=ToolCallRef(id=ToolCallId("call-1"), name="lookup"),
+        outcome=ToolSucceeded(output=text_output("result")),
+        timing=ToolTiming(duration_ms=300),
     )
-    tool = Message(
-        role="tool",
-        content="result",
-        tool_call_id="call",
-        response_metadata={TIMING_METADATA_KEY: {"duration_ms": 300}},
-    )
-    prefix = [Message(role="user", content="question"), assistant, tool]
-    expected = conversation_stats(prefix)
-    compacted = Message(
-        role="system",
-        content="summary",
-        response_metadata={
-            SESSION_STATS_METADATA_KEY: expected.model_dump(mode="json")
-        },
+    messages = (
+        HumanInputMessage(
+            id=MessageId("input-1"),
+            input_id=InputId("input-1"),
+            parts=(TextPart(text="question"),),
+        ),
+        assistant,
+        tool,
     )
 
-    assert conversation_stats([compacted]) == SessionStats(
+    assert conversation_stats(messages) == SessionStats(
         turns=1,
         steps=1,
         llm_ms=1200,
@@ -104,8 +85,57 @@ def test_conversation_stats_survive_compacted_prefix_and_replay_timing() -> None
         decode_ms=1000,
         decode_tokens=25,
     )
-    assert conversation_replay([assistant])[0].timing == {
-        "llm_ms": 1200,
-        "ttft_ms": 200,
-        "decode_ms": 1000,
-    }
+
+
+def test_session_stats_adds_counters_without_mutating_inputs():
+    first = SessionStats(
+        turns=1,
+        steps=2,
+        llm_ms=12.5,
+        tool_ms=4.5,
+        ttft_ms=1.5,
+        ttft_steps=2,
+        decode_ms=8.0,
+        decode_tokens=20,
+    )
+    second = SessionStats(
+        turns=3,
+        steps=4,
+        llm_ms=7.5,
+        tool_ms=5.5,
+        ttft_ms=2.5,
+        ttft_steps=3,
+        decode_ms=9.0,
+        decode_tokens=30,
+    )
+
+    assert first.add(second) == SessionStats(
+        turns=4,
+        steps=6,
+        llm_ms=20.0,
+        tool_ms=10.0,
+        ttft_ms=4.0,
+        ttft_steps=5,
+        decode_ms=17.0,
+        decode_tokens=50,
+    )
+    assert first == SessionStats(
+        turns=1,
+        steps=2,
+        llm_ms=12.5,
+        tool_ms=4.5,
+        ttft_ms=1.5,
+        ttft_steps=2,
+        decode_ms=8.0,
+        decode_tokens=20,
+    )
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"total_ms": -1},
+    {"total_ms": 10, "first_delta_ms": -1},
+    {"total_ms": 10, "unexpected": 1},
+])
+def test_model_timing_rejects_invalid_measurements(kwargs):
+    with pytest.raises((ValueError, TypeError)):
+        ModelTiming(**kwargs)

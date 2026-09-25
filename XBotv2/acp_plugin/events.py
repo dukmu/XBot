@@ -15,8 +15,40 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
-from XBotv2.agentloop.contracts import runtime_input_labels
-from XBotv2.session import SessionHistoryItem
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopEvent,
+    LoopTurnEnded,
+    LoopTurnStarted,
+    ToolCallsStarted,
+    ToolCompleted,
+    TurnCancelled,
+    TurnFinished,
+    UsageObserved,
+    is_loop_event,
+)
+from XBotv2.core.domain import TokenCounters
+from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.interactions import ClientNotice
+from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
+from XBotv2.session import (
+    AssistantRecord,
+    CompactionSummaryRecord,
+    ConversationRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
+from XBotv2.core.tools import (
+    ToolCancelled,
+    ToolDenied,
+    ToolFailed,
+    ToolOutcome,
+    ToolSucceeded,
+)
 
 
 class ACPEventMapper:
@@ -24,158 +56,145 @@ class ACPEventMapper:
 
     def __init__(self, *, context_size: int = 0) -> None:
         self.stop_reason = "end_turn"
-        self.error: dict[str, Any] | None = None
-        self.usage: dict[str, int] | None = None
+        self.error: LoopError | None = None
+        self.usage: TokenCounters | None = None
         self._streamed_message = False
+        self._streamed_reasoning = False
         self._context_size = context_size
         self._jobs: set[str] = set()
 
-
     def updates(
         self,
-        event: dict[str, Any],
+        event: object,
         *,
         fallback_context_size: int | None = None,
     ) -> list[Any]:
-        event_type = str(event.get("type") or "")
-        data = event.get("data") or {}
-
-        if event_type == "turn_started":
+        if isinstance(event, LoopTurnStarted):
             self._streamed_message = False
+            self._streamed_reasoning = False
             return []
-        if event_type == "assistant_message_delta":
-            updates = []
-            content = data.get("content")
-            reasoning = data.get("reasoning")
-            if content:
-                self._streamed_message = True
-                updates.append(update_agent_message_text(str(content)))
-            if reasoning:
-                updates.append(update_agent_thought_text(str(reasoning)))
+        if isinstance(event, AssistantTextDelta):
+            self._streamed_message = True
+            return [update_agent_message_text(event.text)]
+        if isinstance(event, AssistantReasoningDelta):
+            self._streamed_reasoning = True
+            return [update_agent_thought_text(event.text)]
+        if isinstance(event, AssistantCompleted):
+            updates: list[Any] = []
+            if not self._streamed_reasoning:
+                reasoning = "".join(
+                    part.text
+                    for part in event.message.parts
+                    if isinstance(part, ReasoningPart)
+                )
+                if reasoning:
+                    updates.append(update_agent_thought_text(reasoning))
+            if not self._streamed_message:
+                content = "".join(
+                    part.text
+                    for part in event.message.parts
+                    if isinstance(part, TextPart)
+                )
+                if content:
+                    updates.append(update_agent_message_text(content))
             return updates
-        if event_type == "assistant_message":
-            content = data.get("content")
-            if content and not self._streamed_message:
-                return [update_agent_message_text(str(content))]
-            return []
-        if event_type == "client_message":
-            message = data.get("message")
-            return [update_agent_message_text(str(message))] if message else []
-        if event_type == "tool_calls_started":
-            updates = [
+        if isinstance(event, ClientNotice):
+            return [update_agent_message_text(event.message)]
+        if isinstance(event, ToolCallsStarted):
+            self._streamed_message = False
+            return [
                 start_tool_call(
-                    str(call["id"]),
-                    str(call["name"]),
+                    str(started.call.id),
+                    started.call.name,
                     # The tool owner declares the category upstream; the
                     # carrier renders it and never re-derives a taxonomy.
-                    kind=call.get("kind") or None,
+                    kind=started.category or None,
                     status="pending",
-                    raw_input=call.get("args"),
+                    raw_input=started.call.args,
                 )
-                for call in data.get("tool_calls") or []
+                for started in event.calls
             ]
-            self._streamed_message = False
-            return updates
-        if event_type == "tool_result":
-            updates = [
-                update_tool_call(
-                    str(data.get("tool_call_id") or ""),
-                    status=(
-                        "completed"
-                        if data.get("status") == "success"
-                        else "failed"
-                    ),
-                    content=[
-                        tool_content(text_block(_display_content(data.get("content"))))
-                    ],
-                    raw_output=_tool_output(data),
-                )
-            ]
-            return updates
-        if event_type == "job_updated":
-            job_id = str(data.get("job_id") or "")
-            status = str(data.get("status") or "")
-            title = str(
-                data.get("command")
-                or data.get("agent")
-                or "Background job"
-            )
-            output = data.get("output") or data.get("error")
+        if isinstance(event, ToolCompleted):
+            message = event.execution.message
+            outcome = message.outcome
+            content = _outcome_text(outcome)
+            return [update_tool_call(
+                str(message.call.id),
+                status="completed" if isinstance(outcome, ToolSucceeded) else "failed",
+                content=[tool_content(text_block(content))],
+                raw_output=outcome.model_dump(mode="json"),
+            )]
+        if isinstance(event, (JobUpdatedEvent, JobCompletedEvent)):
+            view = event.view
+            title = view.label
             content = (
-                [tool_content(text_block(str(output)))]
-                if output else None
+                [tool_content(text_block(view.summary))]
+                if view.summary else None
             )
-            if job_id not in self._jobs:
-                self._jobs.add(job_id)
+            raw_output = view.model_dump(mode="json")
+            if view.id not in self._jobs:
+                self._jobs.add(view.id)
                 return [start_tool_call(
-                    job_id,
+                    view.id,
                     title,
-                    kind="execute" if data.get("kind") == "shell" else "other",
-                    status=_task_status(status),
+                    kind="execute" if view.kind == "shell" else "other",
+                    status=_task_status(view.state),
                     content=content,
                     raw_output=(
-                        data if status in {"completed", "failed", "stopped"}
+                        raw_output
+                        if view.state not in {"queued", "running"}
                         else None
                     ),
                 )]
             return [update_tool_call(
-                job_id,
-                status=_task_status(status),
+                view.id,
+                status=_task_status(view.state),
                 content=content,
-                raw_output=data,
+                raw_output=raw_output,
             )]
-        if event_type == "usage":
-            current = {
-                key: int(data.get(key) or 0)
-                for key in (
-                    "input_tokens",
-                    "output_tokens",
-                    "total_tokens",
-                    "context_tokens",
-                    "cache_read_input_tokens",
-                    "cache_creation_input_tokens",
-                    "prompt_cache_write_tokens",
-                )
-            }
+        if isinstance(event, UsageObserved):
+            current = event.usage.counters
             if self.usage is None:
                 self.usage = current
             else:
-                for key in current:
-                    if key == "context_tokens":
-                        self.usage[key] = current[key]
-                    else:
-                        self.usage[key] += current[key]
-            size = int(
-                data.get("max_context_tokens")
-                or fallback_context_size
-                or self._context_size
-            )
-            return [
-                UsageUpdate(
-                    session_update="usage_update",
-                    used=self.usage["context_tokens"],
-                    size=size,
+                previous = self.usage
+                self.usage = TokenCounters(
+                    input=previous.input + current.input,
+                    output=previous.output + current.output,
+                    cache_read=previous.cache_read + current.cache_read,
+                    cache_create=previous.cache_create + current.cache_create,
+                    prompt_cache_write=(
+                        previous.prompt_cache_write + current.prompt_cache_write
+                    ),
                 )
-            ] if size > 0 else []
-        if event_type == "turn_cancelled":
-            self.stop_reason = "cancelled"
+            size = fallback_context_size or self._context_size
+            return [UsageUpdate(
+                session_update="usage_update",
+                used=current.input,
+                size=size,
+            )] if size > 0 else []
+        if isinstance(event, LoopTurnEnded):
+            if isinstance(event.outcome, TurnCancelled):
+                self.stop_reason = "cancelled"
+            elif isinstance(event.outcome, TurnFinished):
+                self.stop_reason = event.outcome.stop_reason
             return []
-        if event_type == "error":
-            self.error = dict(data)
+        if isinstance(event, LoopError):
+            self.error = event
+            return []
+        if is_loop_event(event):
             return []
         return []
 
 
-def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
+def replay_history(items: Iterable[ConversationRecord]) -> list[Any]:
     """Translate persisted conversation messages into ACP load updates."""
     updates: list[Any] = []
     for index, item in enumerate(items):
-        if item.role == "user" and item.content:
-            labels = runtime_input_labels(item.runtime)
-            if labels is not None:
-                source, event = labels
+        if isinstance(item, RuntimeNoticeRecord) and item.content:
+                source, event = item.source, item.event
                 updates.append(start_tool_call(
-                    item.input_id or f"runtime-input-{index}",
+                    item.id or f"runtime-input-{index}",
                     f"Injected context · {source} / {event}",
                     kind="other",
                     status="completed",
@@ -187,9 +206,10 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
                     },
                 ))
                 continue
+        elif isinstance(item, HumanInputRecord) and item.content:
             updates.append(update_user_message_text(item.content))
             continue
-        if item.role == "assistant":
+        if isinstance(item, AssistantRecord):
             if item.reasoning:
                 updates.append(update_agent_thought_text(item.reasoning))
             if item.content:
@@ -204,51 +224,40 @@ def replay_history(items: Iterable[SessionHistoryItem]) -> list[Any]:
                     raw_input=call.args,
                 ))
             continue
-        if item.role != "tool" or not item.tool_call_id:
+        if isinstance(item, CompactionSummaryRecord):
+            updates.append(update_agent_message_text(item.summary))
             continue
-        output = {
-            "content": item.content,
-            "data": item.data,
-            "error": item.error,
-            "artifacts": [value.model_dump(mode="json") for value in item.artifacts],
-            "images": [value.model_dump(mode="json") for value in item.images],
-        }
+        if not isinstance(item, ToolRecord):
+            continue
+        outcome = item.outcome
+        content = _outcome_text(outcome)
         updates.append(update_tool_call(
-            item.tool_call_id,
-            status="completed" if item.status == "success" else "failed",
-            content=[tool_content(text_block(item.content))],
-            raw_output=_tool_output(output),
+            item.call.id,
+            status="completed" if isinstance(outcome, ToolSucceeded) else "failed",
+            content=[tool_content(text_block(content))],
+            raw_output=outcome.model_dump(mode="json"),
         ))
     return updates
 
 
-def _display_content(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return ""
-    return str(value)
-
-
-def _tool_output(data: dict[str, Any]) -> Any:
-    structured = {
-        key: data.get(key)
-        for key in ("content", "data", "error", "artifacts", "images")
-    }
-    if any(
-        structured[key] not in (None, [], {})
-        for key in ("data", "error", "artifacts", "images")
-    ):
-        return structured
-    return data.get("content")
+def _outcome_text(outcome: ToolOutcome) -> str:
+    if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+        return "".join(
+            part.text
+            for part in outcome.output.parts
+            if isinstance(part, TextPart)
+        )
+    if isinstance(outcome, (ToolDenied, ToolCancelled)):
+        return outcome.reason
+    raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
 
 
 def _task_status(status: str) -> str:
-    if status == "pending":
+    if status == "queued":
         return "pending"
-    if status == "completed":
+    if status == "succeeded":
         return "completed"
-    if status in {"failed", "stopped"}:
+    if status.startswith("failed") or status.startswith("cancelled"):
         return "failed"
     return "in_progress"
 

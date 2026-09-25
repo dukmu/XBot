@@ -8,7 +8,6 @@ from XBotv2.persistence.contracts import (
     ThreadLifecycleWriterPort,
     ThreadLifecyclePort,
     ThreadLifecycleRecord,
-    TrajectoryTransaction,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
     "ThreadLifecyclePort",
     "ThreadPersistenceFactory",
     "ThreadPersistencePort",
-    "TrajectoryTransaction",
 ]

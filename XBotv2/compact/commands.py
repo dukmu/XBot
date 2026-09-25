@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import JsonValue
-
 from XBotv2.commands import CommandResult
 from XBotv2.compact.protocol import CompactionMetrics
 
@@ -13,7 +11,7 @@ from XBotv2.compact.protocol import CompactionMetrics
 class _CompactCommandOwner(Protocol):
     async def _compact_current_history(
         self,
-    ) -> tuple[dict[str, JsonValue] | None, CompactionMetrics | None]: ...
+    ) -> tuple[bool, CompactionMetrics | None]: ...
 
 
 def compact_result_message(metrics: CompactionMetrics | None) -> str:
@@ -24,8 +22,8 @@ def compact_result_message(metrics: CompactionMetrics | None) -> str:
         "Conversation history compacted "
         f"from about {metrics.context_tokens_before} to "
         f"{metrics.context_tokens_after_estimate} context tokens; "
-        f"summary model used {usage.get('input_tokens', 0)} input and "
-        f"{usage.get('output_tokens', 0)} output tokens."
+        f"summary model used {usage.input} input and "
+        f"{usage.output} output tokens."
     )
 
 
@@ -47,14 +45,7 @@ async def run_compact_command(
             status="error",
         )
 
-    if isinstance(result, dict) and result.get("event"):
-        event = result.get("event") or {}
-        data = event.get("data") or {}
-        return CommandResult(
-            str(data.get("message") or "Conversation compaction was rejected."),
-            status="error",
-        )
-    if not (isinstance(result, dict) and result.get("rebuild")):
+    if not result:
         return CommandResult(
             "Conversation history is too short to compact.",
         )

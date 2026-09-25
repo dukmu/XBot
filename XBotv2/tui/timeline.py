@@ -43,7 +43,7 @@ class Delivery(Enum):
     FAILED = "failed"
 
 
-# The server's own tool status vocabulary (``ToolResultData.status``) plus the two
+# The canonical tool outcome vocabulary projected for display, plus the two
 # states a tool passes through before its result arrives. Reusing the wire words
 # means a tool_result, a resumed history record, and a client-side "still running"
 # row all speak one vocabulary, with no translation table to drift.
@@ -56,13 +56,19 @@ _UNFINISHED_TOOL_STATUSES: frozenset[str] = frozenset({"pending", "running"})
 class Entry:
     """Common identity of every timeline entry.
 
-    ``id`` is the primary key and must be stable for the life of the entry:
-    a server message id, a tool call id, or a client-generated ``local:`` id.
-    ``seq`` is a local monotonic tie-breaker, never a position.
+    ``id`` is the primary key and must be stable for the life of the entry. It is
+    owned by whatever created the entry: a record read from the server keeps the
+    identity of its transcript node, a submitted prompt keeps the id the client
+    submitted it under until the server names the record, and everything the
+    client invents (a notice, an error, a gap) is prefixed ``local:``. Nothing
+    merges entries across those worlds: a server record replaces the timeline
+    rather than being matched into it.
+
+    Position is insertion order and nothing else -- there is no second counter
+    that could disagree with it.
     """
 
     id: str
-    seq: int
 
     kind: ClassVar[EntryKind]
 
@@ -140,13 +146,8 @@ class Timeline:
 
     def __init__(self) -> None:
         self._entries: OrderedDict[str, Entry] = OrderedDict()
-        self._seq = 0
 
     # --- identity -----------------------------------------------------
-    def next_seq(self) -> int:
-        self._seq += 1
-        return self._seq
-
     def upsert(self, entry: Entry) -> None:
         """Insert or replace by id.
 
@@ -154,6 +155,31 @@ class Timeline:
         in place while a user interjection stays where it was inserted.
         """
         self._entries[entry.id] = entry
+
+    def prepend(self, entries: Iterable[Entry]) -> tuple[str, ...]:
+        """Insert older entries ahead of everything held; return the new ids.
+
+        A loaded page is strictly older than the window it extends, so its order
+        is the reader's order. An entry the timeline already holds is *not* moved
+        to the front -- it is replaced where it stands, because a reader looking
+        at it must not see it jump. Ids already present are therefore left out of
+        the returned tuple: what comes back is exactly what the timeline gained.
+        """
+        page = [entry for entry in entries if entry.id not in self._entries]
+        for entry in entries:
+            self.upsert(entry)
+        if not page:
+            return ()
+        gained = {entry.id for entry in page}
+        self._entries = OrderedDict(
+            [(entry.id, entry) for entry in page]
+            + [
+                (entry_id, entry)
+                for entry_id, entry in self._entries.items()
+                if entry_id not in gained
+            ]
+        )
+        return tuple(entry.id for entry in page)
 
     def remove(self, entry_id: str) -> bool:
         return self._entries.pop(entry_id, None) is not None

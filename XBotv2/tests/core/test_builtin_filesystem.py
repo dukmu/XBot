@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 
 import json
@@ -17,12 +18,63 @@ from XBotv2.coretools.filesystem import (
 )
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.core.filesystem import operations as filesystem_operations
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.parts import ImagePart, TextPart
+from XBotv2.core.tools import ToolFailed, ToolOutcome, ToolSucceeded
+
+
+def _success(result: ToolOutcome) -> ToolSucceeded:
+    assert isinstance(result, ToolSucceeded)
+    return result
+
+
+def _failure(result: ToolOutcome) -> ToolFailed:
+    assert isinstance(result, ToolFailed)
+    return result
+
+
+def _text(result: ToolOutcome) -> str:
+    return "".join(
+        part.text for part in _success(result).output.parts
+        if isinstance(part, TextPart)
+    )
+
+
+def _images(result: ToolOutcome):
+    return tuple(
+        part.image for part in _success(result).output.parts
+        if isinstance(part, ImagePart)
+    )
 
 
 def _artifact_store(tmp_path: Path) -> ArtifactStore:
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     return ArtifactStore(paths.session("test").thread("agent"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"operation": "read"},
+        {"operation": "read", "args": None},
+        {"operation": "read", "args": []},
+        {"operation": None, "args": {"path": "unused"}},
+        ["read", {}],
+    ],
+)
+def test_filesystem_worker_rejects_malformed_request(payload, monkeypatch):
+    stdin = io.StringIO(json.dumps(payload))
+    stdout = io.StringIO()
+    monkeypatch.setattr(filesystem_operations.sys, "stdin", stdin)
+    monkeypatch.setattr(filesystem_operations.sys, "stdout", stdout)
+
+    filesystem_operations.main()
+
+    result = json.loads(stdout.getvalue())
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_request"
 
 
 # Test-call adapters keep each assertion focused while exercising only the
@@ -104,11 +156,10 @@ class TestReadImage:
             path=str(path), mode="media", sandbox=Sandbox(), artifacts=artifacts
         )
 
-        assert result.status == "success"
-        assert len(result.images) == 1
-        image = result.images[0]
+        assert len(_images(result)) == 1
+        image = _images(result)[0]
         assert image.media_type == "image/png"
-        assert artifacts.read(image.path) == payload
+        assert artifacts.read(image.artifact_id) == payload
 
     @pytest.mark.asyncio
     async def test_read_image_accepts_base64_and_data_url(self, tmp_path):
@@ -136,10 +187,8 @@ class TestReadImage:
             artifacts=artifacts,
         )
 
-        assert raw.status == "success"
-        assert data_url.status == "success"
-        assert raw.images[0].media_type == "image/png"
-        assert data_url.images[0].size == len(payload)
+        assert _images(raw)[0].media_type == "image/png"
+        assert _images(data_url)[0].size == len(payload)
 
     @pytest.mark.asyncio
     async def test_read_image_url_uses_http_response(self, tmp_path, monkeypatch):
@@ -189,8 +238,7 @@ class TestReadImage:
             artifacts=_artifact_store(tmp_path),
         )
 
-        assert result.status == "success"
-        assert result.images[0].media_type == "image/png"
+        assert _images(result)[0].media_type == "image/png"
 
     @pytest.mark.asyncio
     async def test_read_image_rejects_unsupported_content(self, tmp_path):
@@ -206,8 +254,7 @@ class TestReadImage:
             sandbox=Sandbox(),
         )
 
-        assert result.status == "error"
-        assert result.error.code == "unsupported_content"
+        assert _failure(result).error.code == "unsupported_content"
 
 
 class TestFilesystemRead:
@@ -220,8 +267,7 @@ class TestFilesystemRead:
             str(path), offset=1, limit=2, line_numbers=True
         )
 
-        assert result.status == "success"
-        assert result.content == "2: b\n3: c\n"
+        assert _text(result) == "2: b\n3: c\n"
 
     @pytest.mark.asyncio
     async def test_long_single_line_can_be_resumed_by_character(self, tmp_path):
@@ -231,8 +277,8 @@ class TestFilesystemRead:
         first = await read_file(str(path), max_chars=30)
         second = await read_file(str(path), offset=0, char_offset=30, max_chars=30)
 
-        assert first.content == "x" * 30
-        assert second.content == "x" * 30
+        assert _text(first) == "x" * 30
+        assert _text(second) == "x" * 30
 
     @pytest.mark.asyncio
     async def test_non_text_file_returns_metadata_and_image_dimensions(self, tmp_path):
@@ -245,8 +291,7 @@ class TestFilesystemRead:
 
         result = await read_file(str(path))
 
-        assert result.status == "success"
-        assert "Non-text file" in result.content
+        assert "Non-text file" in _text(result)
 
     @pytest.mark.asyncio
     async def test_non_text_read_does_not_attach_image_content(self, tmp_path):
@@ -266,8 +311,7 @@ class TestFilesystemRead:
 
         result = await read_file(str(path), sandbox=Sandbox())
 
-        assert result.status == "success"
-        assert result.images == ()
+        assert _images(result) == ()
 
     @pytest.mark.asyncio
     async def test_utf8_decodable_binary_returns_metadata_instead_of_controls(self, tmp_path):
@@ -276,8 +320,7 @@ class TestFilesystemRead:
 
         result = await read_file(str(path))
 
-        assert result.status == "success"
-        assert "\x00" not in result.content
+        assert "\x00" not in _text(result)
 
     @pytest.mark.asyncio
     async def test_image_magic_overrides_an_uninformative_extension(self, tmp_path):
@@ -287,7 +330,7 @@ class TestFilesystemRead:
         )
 
         result = await stat_path(str(path))
-        data = __import__("json").loads(result.content)
+        data = json.loads(_text(result))
 
         assert data["is_text"] is False
         assert data["media_type"] == "image/jpeg"
@@ -301,7 +344,7 @@ class TestFilesystemRead:
         link.symlink_to(target.name)
 
         result = await stat_path(str(link))
-        data = __import__("json").loads(result.content)
+        data = json.loads(_text(result))
 
         assert data["kind"] == "symlink"
         assert data["target"] == target.name
@@ -314,8 +357,8 @@ class TestFilesystemRead:
 
         complete = await list_files(str(tmp_path))
         bounded = await list_files(str(tmp_path), max_entries=2)
-        complete_data = json.loads(complete.content)
-        bounded_data = json.loads(bounded.content)
+        complete_data = json.loads(_text(complete))
+        bounded_data = json.loads(_text(bounded))
 
         kinds = {entry["name"]: entry["kind"] for entry in complete_data["entries"]}
         assert kinds["link"] == "symlink"
@@ -332,8 +375,8 @@ class TestFilesystemRead:
 
         bounded = await find_files("*.py", str(tmp_path), max_results=1)
         complete = await find_files("*.py", str(tmp_path), max_results=10)
-        bounded_data = json.loads(bounded.content)
-        complete_data = json.loads(complete.content)
+        bounded_data = json.loads(_text(bounded))
+        complete_data = json.loads(_text(complete))
 
         assert bounded_data["truncated"] is True
         assert set(complete_data["files"]) == {"other.py", "src/app.py"}
@@ -350,7 +393,7 @@ class TestFilesystemRead:
             case_sensitive=False,
             max_line_chars=12,
         )
-        data = json.loads(result.content)
+        data = json.loads(_text(result))
 
         assert data["returned_matches"] == 1
         match = data["matches"][0]
@@ -365,7 +408,7 @@ class TestFilesystemRead:
         path.write_text("alpha\nbeta alpha\n", encoding="utf-8")
 
         result = await search_text("alpha", str(path), literal=True)
-        data = json.loads(result.content)
+        data = json.loads(_text(result))
 
         assert data["kind"] == "file"
         assert data["returned_matches"] == 2
@@ -389,15 +432,13 @@ class TestFilesystemMutation:
         rejected = await write_file(
             "code.py", "value = agent\n", sandbox=policy
         )
-        assert rejected.status == "error"
-        assert rejected.error.code == "content_changed"
+        assert _failure(rejected).error.code == "content_changed"
         reread = await read_file("code.py", sandbox=policy)
         updated = await write_file(
             "code.py", "value = agent\n", sandbox=policy
         )
-        assert reread.status == "success"
-        assert reread.content.startswith("File changed since the previous read.")
-        assert updated.status == "success"
+        assert _text(reread).startswith("File changed since the previous read.")
+        _success(updated)
         assert path.read_text(encoding="utf-8") == "value = agent\n"
 
     @pytest.mark.asyncio
@@ -410,9 +451,8 @@ class TestFilesystemMutation:
             str(path), "name", "value", replace_all=True
         )
 
-        assert ambiguous.status == "error"
-        assert ambiguous.error.code == "ambiguous_edit"
-        replaced_data = json.loads(replaced.content)
+        assert _failure(ambiguous).error.code == "ambiguous_edit"
+        replaced_data = json.loads(_text(replaced))
         assert replaced_data["replacements"] == 2
         assert path.read_text(encoding="utf-8") == "value = 1\nvalue = 2\n"
 
@@ -432,9 +472,8 @@ class TestFilesystemMutation:
         applied = await patch_file(str(path), valid)
         rejected = await patch_file(str(path), invalid)
 
-        assert applied.status == "success"
-        assert rejected.status == "error"
-        assert rejected.error.code == "patch_failed"
+        _success(applied)
+        assert _failure(rejected).error.code == "patch_failed"
         assert path.read_text(encoding="utf-8") == "one\nTWO\n"
 
     @pytest.mark.asyncio
@@ -449,10 +488,8 @@ class TestFilesystemMutation:
         move_result = await move_path(str(copied), str(moved))
         delete_result = await delete_path(str(moved), recursive=True)
 
-        assert made.status == "success"
-        assert copy_result.status == "success"
-        assert move_result.status == "success"
-        assert delete_result.status == "success"
+        for result in (made, copy_result, move_result, delete_result):
+            _success(result)
         assert source.exists()
         assert not moved.exists()
 
@@ -472,8 +509,8 @@ class TestFilesystemSandboxContract:
         ))
         isolated = await read_file("sample.txt", sandbox=policy)
 
-        assert isolated.status == "success"
-        assert isolated.content == host.content
+        _success(isolated)
+        assert _text(isolated) == _text(host)
 
     @pytest.mark.asyncio
     async def test_real_bwrap_mutation_lifecycle(self, tmp_path):
@@ -483,7 +520,7 @@ class TestFilesystemSandboxContract:
         if not policy.backend_available:
             pytest.skip("bubblewrap is not installed")
 
-        assert (await make_directory("tree", sandbox=policy)).status == "success"
+        _success(await make_directory("tree", sandbox=policy))
         created = await write_file("tree/code.py", "one\n", sandbox=policy)
         edited = await edit_file("tree/code.py", "one", "two", sandbox=policy)
         patched = await patch_file(
@@ -496,8 +533,9 @@ class TestFilesystemSandboxContract:
         deleted_file = await delete_path("moved.py", sandbox=policy)
         deleted_tree = await delete_path("tree", recursive=True, sandbox=policy)
 
-        assert all(result.status == "success" for result in (
+        for result in (
             created, edited, patched, copied, moved, deleted_file, deleted_tree,
-        ))
+        ):
+            _success(result)
         assert not (workspace / "tree").exists()
         assert not (workspace / "moved.py").exists()

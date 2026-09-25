@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import secrets
 from collections.abc import Awaitable, Callable
-from XBotv2.core.tools import ClientEvent, Tool, ToolResult
-from XBotv2.permissions import ApprovalDecision, ApprovalPort, PermissionRequestData
+import secrets
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.permissions import Allowed, Approval, ApprovalPort, NamedPermission, PermissionRequest
 from XBotv2.permissions.approval import request_decision
 from XBotv2.permissions.patterns import compile_pattern
 
@@ -17,9 +18,9 @@ async def request_tool_permission(
     *,
     approval: ApprovalPort,
     apply_permission_decision: Callable[
-        [ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]
+        [PermissionRequest, Approval], Awaitable[Approval]
     ],
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Ask the human to approve a restricted permission rule for one tool."""
     if not tool.strip():
         raise ValueError("tool must not be empty")
@@ -29,26 +30,18 @@ async def request_tool_permission(
         if not name.strip():
             raise ValueError("parameter names must not be empty")
         compile_pattern(pattern)
-    payload = PermissionRequestData(
-        request_id=f"permission:{secrets.token_hex(8)}",
+    payload = PermissionRequest(
+        interaction_id=f"permission:{secrets.token_hex(8)}",
         source="request_permission",
-        permission={"tool": tool, "params": params},
-        decision="ask",
+        subject=NamedPermission(tool=tool, params=params),
         reason=reason,
         resume_supported=True,
     )
-    event = ClientEvent(
-        type="permission_request",
-        data=payload.model_dump(exclude_none=True),
-    )
-    result = await request_decision(approval, event, apply_permission_decision)
+    result = await request_decision(approval, payload, apply_permission_decision)
+    if not isinstance(result, Allowed):
+        return ToolFailed(error=ToolError(code="permission_rejected", message=f"Permission was not granted for {tool}."), output=ToolOutput())
     scope = result.scope
-    if result.decision != "allow":
-        return ToolResult.failure(
-            "permission_rejected",
-            f"Permission was not granted for {tool}.",
-        )
-    return ToolResult.success(f"Permission granted for {tool} ({scope}).")
+    return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=f"Permission granted for {tool} ({scope})."),)))
 
 
 class RequestPermissionTool:
@@ -58,7 +51,7 @@ class RequestPermissionTool:
         self,
         approval: ApprovalPort,
         apply_permission_decision: Callable[
-            [ClientEvent, ApprovalDecision], Awaitable[ApprovalDecision]
+            [PermissionRequest, Approval], Awaitable[Approval]
         ],
     ) -> None:
         self._approval = approval
@@ -69,7 +62,7 @@ class RequestPermissionTool:
         tool: str,
         params: dict[str, str],
         reason: str,
-    ) -> ToolResult:
+    ) -> ToolSucceeded | ToolFailed:
         """Request a permission rule for future calls; never execute the target tool.
 
         tool: Exact registered tool name.

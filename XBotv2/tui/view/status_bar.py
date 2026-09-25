@@ -17,7 +17,7 @@ from typing import Iterator, Mapping
 from rich.text import Text
 from textual.widgets import Static
 
-from XBotv2.core.usage import UsageData
+from XBotv2.core.domain import ProviderMeasured, UsageSnapshot
 from XBotv2.tui.state import SUBAGENT_THREAD_KIND, SessionState
 from XBotv2.tui.status import (
     ServerTurn,
@@ -28,7 +28,7 @@ from XBotv2.tui.status import (
 )
 
 #: Job states that mean "still running", as the server spells them.
-_RUNNING_JOB_STATUSES = frozenset({"pending", "running"})
+_RUNNING_JOB_STATUSES = frozenset({"queued", "running"})
 
 _BADGE_STYLE: dict[Status, str] = {
     Status.CONNECTING: "yellow",
@@ -67,8 +67,9 @@ class StatusLine:
     model_mode: str = ""
     status_slots: Mapping[str, str] = field(default_factory=dict, hash=False)
     context_window: int = 0
-    usage: UsageData = field(default_factory=UsageData)
+    usage: UsageSnapshot = field(default_factory=UsageSnapshot)
     context_input_tokens: int = 0
+    context_input_estimated: bool = False
     queue_depth: int = 0
     activity: str = ""
     workspace: str = ""
@@ -84,6 +85,7 @@ def status_line_for(
     activity: str = "",
 ) -> StatusLine:
     """Build the model from the session state; the view adds no facts of its own."""
+    context_input_tokens, context_input_estimated = _context_usage(state.usage)
     return StatusLine(
         facts=state.facts,
         session_label=session_label or state.title or state.session_id,
@@ -93,8 +95,9 @@ def status_line_for(
         model_mode=state.model_mode,
         status_slots=dict(state.status_slots),
         context_window=state.context_window,
-        usage=UsageData(**{key: state.usage.get(key, 0) for key in UsageData.model_fields}),
-        context_input_tokens=state.context_input_tokens,
+        usage=state.usage,
+        context_input_tokens=context_input_tokens,
+        context_input_estimated=context_input_estimated,
         queue_depth=len(state.queue),
         activity=activity,
         workspace=workspace,
@@ -142,8 +145,8 @@ def status_report(
     root = thread.workspace_root or workspace
     if root:
         lines.append(f"  Workspace: {root}")
-    if thread.agent:
-        lines.append(f"  Agent: {thread.agent}")
+    if state.agent_name:
+        lines.append(f"  Agent: {state.agent_name}")
     lines += [
         "Runtime",
         f"  State: {status}",
@@ -152,23 +155,25 @@ def status_report(
     ]
     if state.jobs:
         running = sum(
-            1 for job in state.jobs.values() if str(job.status) in _RUNNING_JOB_STATUSES
+            1 for job in state.jobs.values() if job.state in _RUNNING_JOB_STATUSES
         )
         lines.append(f"  Tasks: {running} running of {len(state.jobs)}")
     if state.pending_interactions:
         lines.append(f"  Prompts: {len(state.pending_interactions)} waiting")
-    provider = thread.provider or state.provider
-    model = thread.model or state.model
-    mode = thread.model_mode or state.model_mode
+    provider = state.provider
+    model = state.model
+    mode = state.model_mode
     lines.append("Model")
     lines.append(f"  Provider: {provider or '(unknown)'}")
     lines.append(f"  Model: {model or '(unknown)'}" + (f"  ({mode})" if mode else ""))
-    context_window = thread.context_window or state.context_window
-    if context_window:
+    context_window = state.context_window
+    context_input_tokens, estimated = _context_usage(state.usage)
+    if context_window and context_input_tokens:
         free = round(
-            100 * max(0, context_window - state.context_input_tokens) / context_window
+            100 * max(0, context_window - context_input_tokens) / context_window
         )
-        lines.append(f"  Context: {context_window} tokens, {free}% free")
+        marker = "~" if estimated else ""
+        lines.append(f"  Context: {context_window} tokens, {marker}{free}% free")
     return "\n".join(lines)
 
 
@@ -204,28 +209,60 @@ def _optional_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
         yield f"queued:{model.queue_depth}", "yellow"
     if model.activity:
         yield model.activity, "dim"
-    total = int(model.usage.total_tokens or 0)
-    if total:
-        yield f"tokens:{_compact_count(total)}", ""
-    if model.context_window > 0 and model.context_input_tokens > 0:
-        free = round(
-            100 * max(0, model.context_window - model.context_input_tokens)
-            / model.context_window
-        )
-        yield f"ctx-free:{free}%", "cyan"
-    if model.session_label:
-        yield f"session:{model.session_label}", "dim"
     if model.agent_name:
         yield f"agent:{model.agent_name}", "blue"
-    identity = "/".join(part for part in (model.provider, model.model) if part)
-    if identity:
-        if model.model_mode:
-            identity = f"{identity}:{model.model_mode}"
-        yield identity, "green"
+    if model.model_mode:
+        yield f"mode:{model.model_mode}", "green"
     for name, value in model.status_slots.items():
         yield f"{name}:{value}", "magenta"
     if model.workspace:
         yield f"cwd:{model.workspace}", "cyan"
+
+
+def _usage_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
+    counters = model.usage.total_counters
+    if counters.input or counters.output:
+        yield f"in:{_compact_count(counters.input)}", ""
+        yield f"out:{_compact_count(counters.output)}", ""
+    if counters.cache_read:
+        cache_basis = counters.input + counters.cache_read
+        if cache_basis:
+            cache_rate = round(100 * counters.cache_read / cache_basis)
+            yield f"cache:{cache_rate}%", "green"
+    if model.context_window > 0 and model.context_input_tokens > 0:
+        marker = "~" if model.context_input_estimated else ""
+        yield (
+            f"ctx:{marker}{_compact_count(model.context_input_tokens)}"
+            f"/{model.context_window}",
+            "cyan",
+        )
+
+
+def render_session_bar(model: StatusLine, *, width: int) -> Text:
+    """Render the session identity and live model statistics on one row."""
+    width = max(1, width)
+    segments: list[tuple[str, str]] = []
+    identity = model.session_label
+    if model.thread_kind == SUBAGENT_THREAD_KIND:
+        identity = f"{identity}/{model.thread_id}"
+    if identity:
+        segments.append((f"session:{identity}", "bold"))
+    segments.extend(_usage_segments(model))
+    if model.provider or model.model:
+        segments.append(("/".join(x for x in (model.provider, model.model) if x), "green"))
+
+    result = Text()
+    for segment, style in segments:
+        separator = "  " if result.plain else ""
+        available = width - len(result.plain) - len(separator)
+        if available <= 0:
+            break
+        if len(segment) > available:
+            if not result.plain:
+                result.append(_clip(segment, width), style=style)
+            break
+        result.append(separator + segment, style=style)
+    return result
 
 
 def _compact_count(value: int) -> str:
@@ -234,6 +271,15 @@ def _compact_count(value: int) -> str:
     if value < 1_000_000:
         return f"{value / 1_000:.1f}k"
     return f"{value / 1_000_000:.1f}M"
+
+
+def _context_usage(snapshot: UsageSnapshot) -> tuple[int, bool]:
+    observation = snapshot.latest_turn_observation
+    if observation is None:
+        return 0, False
+    if isinstance(observation.observed_context, ProviderMeasured):
+        return observation.observed_context.tokens, False
+    return observation.estimated_input_tokens, True
 
 
 def _clip(label: str, width: int) -> str:
@@ -256,5 +302,15 @@ class StatusBar(Static):
         self.update(render_status_line(model, width=width or self.size.width or 80))
 
 
+class SessionBar(Static):
+    """A stable session/statistics strip, independent of transient status."""
+
+    DEFAULT_CSS = STATUS_BAR_CSS
+
+    def show(self, model: StatusLine, *, width: int | None = None) -> None:
+        self.update(render_session_bar(model, width=width or self.size.width or 80))
+
+
 __all__ = [
-    "status_report","STATUS_BAR_CSS", "StatusBar", "StatusLine", "render_status_line", "status_line_for"]
+    "status_report", "STATUS_BAR_CSS", "SessionBar", "StatusBar", "StatusLine",
+    "render_session_bar", "render_status_line", "status_line_for"]

@@ -34,7 +34,7 @@ class SubagentsRuntimeComponent:
     ) -> None:
         timeout_seconds = config.timeout_seconds
         # The catalog is contributed per build (dynamic content), not as a
-        # static fragment registered from an out-of-apply listener.
+        # static prompt component registered from an out-of-apply listener.
         ctx.on(
             CONTEXT_COMPONENTS_BUILT,
             SubagentCatalogPrompt(ctx.agent_catalog).contribute,

@@ -31,6 +31,9 @@ def load_plugin_tree(
     plugin_dirs: list[Path | str] | None = None,
     is_subagent: bool = False,
     no_plugins: bool = False,
+    include_global: bool = True,
+    include_workspace: bool = True,
+    include_session: bool = True,
 ) -> PluginTree:
     """Return the one resolved tree shared by startup and configuration.
 
@@ -55,6 +58,9 @@ def load_plugin_tree(
         plugin_dirs=plugin_dirs,
         extra_plugins=extra_plugins,
         session_id=session_id,
+        include_global=include_global,
+        include_workspace=include_workspace,
+        include_session=include_session,
     )
     if session_id is not None:
         variables = RuntimeVariables.for_thread(

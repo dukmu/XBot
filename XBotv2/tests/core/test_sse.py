@@ -1,40 +1,13 @@
-"""Tests for the shared SSE wire codec."""
+"""SSE framing validates the single canonical server-event envelope."""
 
 import json
 
 import pytest
-from pydantic import ValidationError
 
-from XBotv2.agentloop import (
-    AssistantMessageData,
-    AssistantMessageDeltaData,
-    ToolCallDeltaData,
-    ToolCallsStartedData,
-    ToolResultData,
-    TurnCancelledData,
-    TurnData,
-    agentloop_event,
-)
-from XBotv2.core import ClientEvent
-from XBotv2.compact import compact_event
-from XBotv2.interactions import (
-    UserInputRequiredData,
-    UserInputResponseRequest,
-)
-from XBotv2.permissions import (
-    PermissionDeniedData,
-    PermissionRequestData,
-    PermissionResponseRequest,
-)
-from XBotv2.protocol import (
-    EndData,
-    ErrorEventData,
-    ServerEvent,
-    server_event,
-)
-from XBotv2.usage import UsageData
-from XBotv2.session import session_event
+from XBotv2.core.domain import SessionScope
+from XBotv2.protocol.models import server_event
 from XBotv2.protocol.sse import (
+    SseDecodeError,
     SseDecoder,
     SseMessage,
     decode_server_event,
@@ -42,302 +15,58 @@ from XBotv2.protocol.sse import (
 )
 
 
-def test_encode_server_event_preserves_envelope_and_unicode() -> None:
-    event = server_event(
-        session_id="s1",
-        thread_id="t1",
-        request_id="r1",
+def _event():
+    return server_event(
+        kind="history_updated",
+        payload={"operation": "undo", "label": "中文"},
         sequence=7,
-        type="assistant_message",
-        data={"content": "你好"},
+        session_id="s1",
+        thread_id="agent",
+        scope=SessionScope(),
     )
 
-    encoded = encode_server_event(event).decode("utf-8")
 
-    assert encoded.startswith("event: assistant_message\nid: 7\ndata: ")
-    assert encoded.endswith("\n\n")
-    payload = json.loads(encoded.split("data: ", 1)[1].strip())
-    assert payload == event.model_dump()
-
-
-def test_decoder_handles_comments_multiline_data_and_text_id() -> None:
+def test_server_event_round_trips_through_sse_with_unicode():
     decoder = SseDecoder()
+    message = None
+    for line in encode_server_event(_event()).decode("utf-8").splitlines():
+        message = decoder.feed(line) or message
+    assert message is not None
+    assert message.event == "history_updated"
+    assert message.event_id == "7"
+    assert decode_server_event(message) == _event()
 
-    assert decoder.feed(": keep-alive") is None
-    assert decoder.feed("event: message") is None
-    assert decoder.feed("id: event-7") is None
+
+def test_decoder_handles_comments_multiline_data_and_final_flush():
+    decoder = SseDecoder()
+    assert decoder.feed(": heartbeat") is None
+    assert decoder.feed("event: notice") is None
+    assert decoder.feed("id: abc") is None
     assert decoder.feed("data: first") is None
     assert decoder.feed("data: second") is None
-    message = decoder.feed("")
 
-    assert message is not None
-    assert message.event == "message"
-    assert message.event_id == "event-7"
-    assert message.data == "first\nsecond"
+    assert decoder.finish() == SseMessage(
+        event="notice", data="first\nsecond", event_id="abc",
+    )
 
 
-def test_decoder_flushes_unterminated_final_message() -> None:
+def test_decoder_ignores_null_event_id():
     decoder = SseDecoder()
-    decoder.feed("event: end")
-    decoder.feed("data: {\"type\":\"end\"}")
-
-    message = decoder.finish()
-
-    assert message is not None
-    assert message.event == "end"
-    assert message.data == '{"type":"end"}'
-    assert decoder.finish() is None
+    decoder.feed("id: bad\x00id")
+    decoder.feed("data: value")
+    assert decoder.feed("").event_id is None
 
 
-def test_decoder_ignores_null_event_id() -> None:
-    decoder = SseDecoder()
-    decoder.feed("id: invalid\x00id")
-    decoder.feed("data: payload")
+def test_decode_rejects_invalid_json_and_mismatched_event_name():
+    with pytest.raises(SseDecodeError, match="not valid JSON"):
+        decode_server_event(SseMessage(event="error", data="not-json", event_id="1"))
 
-    message = decoder.feed("")
-
-    assert message is not None
-    assert message.event_id is None
+    payload = json.dumps(_event().model_dump(mode="json"))
+    with pytest.raises(SseDecodeError, match="does not match"):
+        decode_server_event(SseMessage(event="wrong", data=payload, event_id="7"))
 
 
-def test_decode_server_event_surfaces_malformed_json() -> None:
-    event = decode_server_event(
-        SseMessage(event="assistant_message", data="not-json", event_id="7")
-    )
-
-    assert event.type == "error"
-    assert event.data == {"code": "sse_decode_error", "message": "not-json"}
-
-
-def test_decode_server_event_preserves_plugin_owned_payload() -> None:
-    event = decode_server_event(
-        SseMessage(
-            event="user_input_required",
-            event_id="7",
-            data=json.dumps({
-                "type": "user_input_required",
-                "data": {"request_id": "user_input:c1"},
-            }),
-        )
-    )
-
-    assert event.type == "user_input_required"
-    assert event.data == {"request_id": "user_input:c1"}
-
-
-def test_user_input_event_preserves_structured_options() -> None:
-    event = server_event(
-        type="user_input_required",
-        data={
-            "request_id": "user_input:c1",
-            "source": "ask_user",
-            "tool_call_id": "c1",
-            "question": "Continue?",
-            "options": [
-                {"label": "continue", "description": "Keep working."},
-                {"label": "stop", "description": "Stop now."},
-            ],
-        },
-    )
-
-    assert event.data["options"] == [
-        {"label": "continue", "description": "Keep working."},
-        {"label": "stop", "description": "Stop now."},
-    ]
-
-
-def test_runtime_client_message_does_not_require_a_tool_call() -> None:
-    event = server_event(
-        type="client_message",
-        data={
-            "message": "Retrying model request.",
-            "level": "warning",
-            "source": "runtime",
-            "tool_call_id": "",
-        },
-    )
-
-    assert event.data["tool_call_id"] == ""
-
-
-def test_encoder_rejects_line_breaks_in_event_type() -> None:
-    event = server_event(type="message\ninjected", sequence=1)
-
+def test_encoder_rejects_multiline_event_kind():
+    malformed = _event().model_copy(update={"kind": "bad\nkind"})
     with pytest.raises(ValueError, match="single line"):
-        encode_server_event(event)
-
-
-def test_interaction_response_requests_have_distinct_schemas() -> None:
-    permission = PermissionResponseRequest(
-        request_id="permission:c1",
-        decision="allow",
-        scope="session",
-    )
-    user_input = UserInputResponseRequest(
-        request_id="user_input:c2",
-        answer={"choice": "continue"},
-    )
-
-    assert permission.model_dump() == {
-        "request_id": "permission:c1",
-        "decision": "allow",
-        "scope": "session",
-    }
-    assert user_input.model_dump() == {
-        "request_id": "user_input:c2",
-        "answer": {"choice": "continue"},
-    }
-
-    with pytest.raises(ValidationError):
-        PermissionResponseRequest(
-            request_id="permission:c1",
-            decision="approve",
-        )
-
-
-def test_plugin_event_builders_validate_at_the_producer_boundary() -> None:
-    started = agentloop_event("turn_started", {"turn": 1})
-    message = session_event(
-        "message",
-        {"id": "request-1", "role": "user", "content": "hello"},
-    )
-
-    assert started == {"type": "turn_started", "data": {"turn": 1}}
-    assert message.data["id"] == "request-1"
-
-    with pytest.raises(ValidationError):
-        agentloop_event("turn_started", {"turn": 0})
-    with pytest.raises(ValidationError):
-        session_event("message", {"id": "request-1", "role": "user", "extra": 1})
-    with pytest.raises(ValidationError):
-        compact_event("compaction_started", {
-            "reason": "manual",
-            "messages_before": -1,
-            "history_chars_before": 10,
-            "context_tokens_before": 5,
-        })
-
-
-def test_session_stream_event_rejects_non_json_payloads() -> None:
-    with pytest.raises(ValidationError):
-        ClientEvent.model_validate({
-            "type": "message",
-            "data": {"invalid": object()},
-        })
-
-    with pytest.raises(ValidationError):
-        ClientEvent.model_validate({
-            "type": "plugin_event",
-            "data": {"invalid": object()},
-        })
-
-
-@pytest.mark.parametrize(
-    ("model", "data"),
-    [
-        (
-            PermissionRequestData,
-            {
-                "request_id": "permission:c1",
-                "source": "permission_system",
-                "reason": "Approval: shell",
-            },
-        ),
-        (
-            UserInputRequiredData,
-            {
-                "request_id": "user_input:c2",
-                "source": "ask_user",
-                "tool_call_id": "c2",
-                "options": [],
-            },
-        ),
-    ],
-)
-def test_plugin_models_reject_incomplete_interaction_payloads(
-    model: type,
-    data: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError):
-        model.model_validate(data)
-
-@pytest.mark.parametrize(
-    ("model", "data"),
-    [
-        (ErrorEventData, {"message": "missing code"}),
-        (
-            ToolResultData,
-            {"name": "shell", "content": "ok", "status": "success"},
-        ),
-        (
-            UsageData,
-            {
-                "input_tokens": -1,
-                "output_tokens": 1,
-                "total_tokens": 0,
-                "requests": 1,
-            },
-        ),
-    ],
-)
-def test_owner_models_reject_invalid_stable_payloads(
-    model: type,
-    data: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError):
-        model.model_validate(data)
-
-
-@pytest.mark.parametrize(
-    ("model", "data"),
-    [
-        (AssistantMessageData, {"tool_calls": []}),
-        (AssistantMessageDeltaData, {}),
-        (TurnData, {"turn": 0}),
-        (TurnCancelledData, {"turn": 1}),
-        (EndData, {"status": ""}),
-    ],
-)
-def test_owner_models_reject_invalid_turn_and_assistant_payloads(
-    model: type,
-    data: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError):
-        model.model_validate(data)
-
-
-@pytest.mark.parametrize(
-    ("model", "data"),
-    [
-        (
-            PermissionDeniedData,
-            {
-                "request_id": "permission:c1",
-                "source": "permission_system",
-                "tool_call": {},
-                "decision": "allow",
-                "reason": "denied",
-            },
-        ),
-        (ToolCallsStartedData, {"tool_calls": []}),
-        (
-            ToolCallDeltaData,
-            {
-                "tool_calls": [{
-                    "tool_call_id": "c1",
-                    "id": "c1",
-                    "name": "shell",
-                    "args_delta": "{}",
-                    "args": "{}",
-                    "index": -1,
-                }],
-            },
-        ),
-    ],
-)
-def test_owner_models_reject_invalid_client_and_tool_call_payloads(
-    model: type,
-    data: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError):
-        model.model_validate(data)
+        encode_server_event(malformed)

@@ -1,12 +1,10 @@
 """Wire models owned by live client interactions."""
 
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import Field, JsonValue, model_validator
 
 from XBotv2.protocol import WireModel
-from XBotv2.core import ClientEvent
-from XBotv2.core.tools import validated_client_event
 
 
 class UserInputOption(WireModel):
@@ -14,29 +12,47 @@ class UserInputOption(WireModel):
     description: str = Field(min_length=1)
 
 
-class ClientMessageData(WireModel):
+class UserInputRequest(WireModel):
+    kind: Literal["user_input_required"] = "user_input_required"
+    interaction_id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    tool_call_id: str = ""
+    question: str = Field(min_length=1)
+    options: tuple[UserInputOption, ...] = ()
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    resume_supported: bool = False
+
+    @model_validator(mode="after")
+    def _validate_ask_user_options(self) -> "UserInputRequest":
+        if self.source == "ask_user" and len(self.options) < 2:
+            raise ValueError("ask_user requires at least two options")
+        return self
+
+
+class Answered(WireModel):
+    kind: Literal["answered"] = "answered"
+    answer: JsonValue
+
+
+class InputTimedOut(WireModel):
+    kind: Literal["timeout"] = "timeout"
+    reason: str = Field(min_length=1)
+
+
+class InputCancelled(WireModel):
+    kind: Literal["cancelled"] = "cancelled"
+    reason: str = Field(min_length=1)
+
+
+UserInputResolution: TypeAlias = Answered | InputTimedOut | InputCancelled
+
+
+class ClientNotice(WireModel):
+    kind: Literal["client_message"] = "client_message"
     message: str = Field(min_length=1)
     level: Literal["info", "warning", "error"] = "info"
     source: str = Field(min_length=1)
     tool_call_id: str = ""
-
-
-class UserInputRequiredData(WireModel):
-    request_id: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    options: list[UserInputOption] = Field(default_factory=list)
-    timeout_seconds: float | None = Field(default=None, gt=0)
-    # True when an unanswered request is replayed by a session snapshot, so a
-    # client that reconnects can rebuild the dialog instead of losing it.
-    resume_supported: bool = False
-
-    @model_validator(mode="after")
-    def _validate_ask_user_options(self) -> "UserInputRequiredData":
-        if self.source == "ask_user" and len(self.options) < 2:
-            raise ValueError("ask_user requires at least two options")
-        return self
 
 
 class UserInputResponseRequest(WireModel):
@@ -44,13 +60,11 @@ class UserInputResponseRequest(WireModel):
     answer: JsonValue = None
 
 
-class InteractionRecordedData(WireModel):
-    request_id: str = Field(min_length=1)
-    status: Literal["answered", "timeout", "cancelled"]
-    decision: Literal["allow", "deny", ""] = ""
-    scope: Literal["once", "session", ""] = ""
-    answer: JsonValue = None
-    pending_interactions: list[str] = Field(default_factory=list)
+class UserInputRecorded(WireModel):
+    kind: Literal["user_input_recorded"] = "user_input_recorded"
+    interaction_id: str = Field(min_length=1)
+    resolution: UserInputResolution
+    pending_ids: tuple[str, ...] = ()
 
 
 class InteractionResponse(WireModel):
@@ -59,27 +73,15 @@ class InteractionResponse(WireModel):
     pending_interactions: list[str] = Field(default_factory=list)
 
 
-InteractionEventType = Literal[
-    "permission_response_recorded",
-    "user_input_recorded",
-]
-
-
-def interaction_recorded_event(
-    type: InteractionEventType,
-    data: dict[str, JsonValue],
-) -> ClientEvent:
-    """Validate a recorded interaction before publishing it."""
-    return validated_client_event(type, data, InteractionRecordedData)
-
-
 __all__ = [
-    "ClientMessageData",
-    "InteractionRecordedData",
-    "InteractionEventType",
+    "ClientNotice",
+    "UserInputRequest",
+    "Answered",
+    "InputTimedOut",
+    "InputCancelled",
     "InteractionResponse",
     "UserInputOption",
-    "UserInputRequiredData",
     "UserInputResponseRequest",
-    "interaction_recorded_event",
+    "UserInputRecorded",
+    "UserInputResolution",
 ]

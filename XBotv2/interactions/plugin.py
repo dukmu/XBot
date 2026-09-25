@@ -14,12 +14,45 @@ import uuid
 from pydantic import JsonValue
 
 from XBotv2.interactions.interactions import InteractionWaiter
-from XBotv2.interactions.contracts import InteractionsPort, InteractionWaiterPort
-from XBotv2.interactions import UserInputRequiredData
-from XBotv2.agentloop import EventContext, Events
+from XBotv2.interactions.contracts import (
+    InteractionReceipt,
+    InteractionRegistration,
+    InteractionResolution,
+    InteractionsPort,
+    InteractionWaiterPort,
+    ResolutionFactory,
+)
+from XBotv2.agentloop import Events
+from XBotv2.agentloop.events import SessionLifecycle
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
-from XBotv2.core.tools import ClientEvent
 from XBotv2.interactions.tools import build_ask_user_tool, send_message
+from XBotv2.interactions.protocol import (
+    Answered,
+    InputCancelled,
+    InputTimedOut,
+    UserInputOption,
+    UserInputRequest,
+    UserInputRecorded,
+)
+
+
+def _user_input_recorded(receipt: InteractionReceipt) -> UserInputRecorded:
+    resolution = receipt.resolution
+    if not isinstance(resolution, (Answered, InputTimedOut, InputCancelled)):
+        raise TypeError(
+            f"Invalid user-input resolution: {type(resolution).__name__}"
+        )
+    return UserInputRecorded(
+        interaction_id=receipt.interaction_id,
+        resolution=resolution,
+        pending_ids=receipt.pending_ids,
+    )
+
+
+def _user_input_timeout(request: object) -> float | None:
+    if not isinstance(request, UserInputRequest):
+        raise TypeError(f"Invalid user-input request: {type(request).__name__}")
+    return request.timeout_seconds
 
 
 class InteractionsService(InteractionsPort):
@@ -32,27 +65,35 @@ class InteractionsService(InteractionsPort):
     ) -> None:
         self._events = events
         self._client_events = client_events
-        self._waiter = InteractionWaiter()
+        self._waiter = InteractionWaiter(
+            timed_out=lambda reason: InputTimedOut(reason=reason),
+            cancelled=lambda reason: InputCancelled(reason=reason),
+        )
 
     @property
     def waiter(self) -> InteractionWaiterPort:
         return self._waiter
 
-    def create_waiter(self) -> InteractionWaiterPort:
-        return InteractionWaiter()
+    def create_waiter(
+        self,
+        *,
+        timed_out: ResolutionFactory,
+        cancelled: ResolutionFactory,
+    ) -> InteractionWaiterPort:
+        return InteractionWaiter(timed_out=timed_out, cancelled=cancelled)
 
-    def session_closed(self, _event: EventContext) -> None:
+    def session_closed(self, _event: SessionLifecycle) -> None:
         self._waiter.cancel_all("session_closed")
 
     async def request_user_input(
         self,
         question: str,
         *,
-        options: list[dict[str, str]] | None = None,
+        options: tuple[UserInputOption, ...] = (),
         source: str = "interaction",
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, JsonValue]:
+    ) -> InteractionResolution:
         """Publish and resolve one user-input request owned by this plugin.
 
         The event travels on the turn stream itself (the tool pipeline yields
@@ -65,40 +106,23 @@ class InteractionsService(InteractionsPort):
         ``unsupported``).
         """
         request_id = f"user_input:{tool_call_id or uuid.uuid4().hex}"
-        payload = UserInputRequiredData(
-            request_id=request_id,
+        payload = UserInputRequest(
+            interaction_id=request_id,
             tool_call_id=tool_call_id,
             source=source,
             question=question,
-            options=list(options or []),
+            options=options,
             timeout_seconds=timeout_seconds,
             resume_supported=True,
         )
-        client_event = ClientEvent(
-            type="user_input_required",
-            data=payload.model_dump(),
-        )
-        sink_result = await self._client_events.request(
-            client_event,
-            timeout_seconds=timeout_seconds,
-            tool_call_id=tool_call_id,
-        )
+        sink_result = await self._client_events.request(payload)
         if sink_result is not None:
             return sink_result
         wait_timeout = 0 if timeout_seconds is None else timeout_seconds
         result = await self._waiter.wait(request_id, wait_timeout)
-        if result.status == "timeout" and timeout_seconds is None:
-            return {
-                "request_id": result.request_id,
-                "status": "unsupported",
-                "reason": "live_user_input_unsupported",
-            }
-        return {
-            "answer": result.answer,
-            "request_id": result.request_id,
-            "status": result.status,
-            "reason": result.reason,
-        }
+        if isinstance(result, InputTimedOut) and timeout_seconds is None:
+            return InputCancelled(reason="live_user_input_unsupported")
+        return result
 
 
 class InteractionsComponent:
@@ -112,8 +136,15 @@ class InteractionsComponent:
     ) -> None:
         service = InteractionsService(ctx, ctx.client_events)
         ctx.set("interactions", service)
-        ctx.dispose(ctx.client_events.register_waiter(
-            "user_input_required", service.waiter
+        ctx.dispose(ctx.client_events.register_interaction(
+            InteractionRegistration(
+                kind="user_input_required",
+                request_type=UserInputRequest,
+                resolution_types=(Answered, InputTimedOut, InputCancelled),
+                waiter=service.waiter,
+                timeout_seconds=_user_input_timeout,
+                recorded_event=_user_input_recorded,
+            )
         ))
         ctx.tools.register(send_message)
         if ctx.session_launch.interactive:

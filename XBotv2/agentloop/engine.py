@@ -17,44 +17,107 @@ contracts. Application composition resolves all feature-plugin dependencies.
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
-from typing import Any, Unpack
+from dataclasses import dataclass
+from typing import Any
 from pydantic import JsonValue
 
-from XBotv2.agentloop.internal_messages import (
-    DISPLAY_CONTENT_KEY,
-    structure_tool_message,
-)
-from XBotv2.agentloop.contracts import InboxInput, InboxSplice, InboxTarget
 from XBotv2.agentloop.inbox import AgentInbox
-from XBotv2.agentloop.protocol import agentloop_event
-from XBotv2.agentloop.events import EventContext, EventPort, Events, SHORT_CIRCUIT_EVENTS
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopEvent,
+    LoopTurnEnded,
+    LoopTurnStarted,
+    StartedToolCall,
+    ToolCallArgumentsDelta,
+    ToolCallsStarted,
+    ToolCompleted,
+    TurnCancelled,
+    TurnFinished,
+    UsageObserved,
+    is_loop_event,
+)
+from XBotv2.agentloop.events import (
+    EventPort,
+    Events,
+    AcceptInput,
+    AfterContextBuild,
+    AfterModelResponse,
+    BeforeContextBuild,
+    BeforeModelRequest,
+    CompleteTurn as HookCompleteTurn,
+    InputAccepted,
+    KeepContext,
+    KeepContextRequest,
+    KeepRequest,
+    KeepResponse,
+    LoopFailure,
+    ModelRequestReady,
+    ModelResponseObserved,
+    OnModelFailure,
+    OnTurnInput,
+    PropagateFailure,
+    RejectInput,
+    ReplaceContext,
+    ReplaceContextRequest,
+    ReplaceRequest,
+    ReplaceResponse,
+    RetryRequest,
+    SessionLifecycle,
+    StateChanged,
+    ToolCallsObserved,
+    ToolMessageObserved,
+    TurnEnded,
+    TurnStarted,
+    SHORT_CIRCUIT_EVENTS,
+)
 from XBotv2.agentloop.contracts import (
-    runtime_input_value,
     DEFAULT_MAX_ITERATIONS,
-    LoopSettings,
-    LoopSettingsUpdate,
+    HumanInput,
+    InboxItem,
+    InboxTarget,
     LoopState,
-    ModelRequest,
-    ModelRequestErrorOutcome,
+    RuntimeInput,
 )
 from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
-from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
-    ArtifactValue,
-    ImageContent,
-    Message,
-    ModelChunk,
-    ModelResponse,
-    merge_model_chunk,
+    AssistantMessage,
+    ConversationMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
 )
+from XBotv2.core.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.provider import ModelRequest, ProviderMessage, ProviderSystem, ToolSchema
+from XBotv2.core.providers import ProviderFailure
+from XBotv2.core.stream import (
+    ModelCancelled,
+    ModelCompleted,
+    ModelFailed,
+    ModelResponse,
+    ModelStreamEvent,
+    ToolCallDelta,
+    ReasoningDelta,
+    TextDelta,
+)
+from XBotv2.core.domain import (
+    ModelExchange,
+    ModelTiming,
+    RequestObservation,
+    ToolCallId,
+    TurnRequest,
+    ToolTiming,
+    UsageDelta,
+)
+from XBotv2.config.contracts import UserContext
 from XBotv2.core.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
     RuntimeLog,
@@ -62,27 +125,28 @@ from XBotv2.core.runtime_logging import (
     reset_log_context,
 )
 from XBotv2.context_builder import (
-    BEFORE_CONTEXT_BUILD,
     BUILD_CONTEXT,
-    CONTEXT_BUILT,
+    CONTEXT_BUILD_INPUTS_READY,
     ContextBuildRequest,
-    ContextBuilt,
 )
 from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.core.tokens import (
-    RequestAnchor,
-    estimate_request_tokens,
-    write_request_anchor,
-)
-from XBotv2.core.timing import TIMING_METADATA_KEY
+from XBotv2.core.tokens import estimate_request_tokens
 from XBotv2.llm import ModelPort
-from XBotv2.session.contracts import SessionInfo
+from XBotv2.session.contracts import SessionRuntimeState
 from XBotv2.core.tools import (
-    ClientEvent,
     Tool,
     ToolCall,
-    ToolCallDelta,
-    provider_tool_schema,
+    ToolCallRef,
+    CompleteTurn as CompleteTurnDirective,
+    ToolCancelled,
+    ToolExecution,
+    ContinueTurn,
+    TurnDirective,
+    ToolError,
+    ToolFailed,
+    ToolOutput,
+    ToolOutcome,
+    ToolSucceeded,
 )
 
 class _Unchanged:
@@ -92,111 +156,55 @@ class _Unchanged:
 _UNCHANGED = _Unchanged()
 
 
-def _runtime_input(
-    source: str,
-    metadata: dict[str, JsonValue] | None,
-) -> dict[str, JsonValue]:
-    """Retain display provenance without copying private inbox payloads."""
-    return runtime_input_value(source, metadata)
-
-
 @dataclass(slots=True)
 class _TurnStartResult:
     user_input: str
-    events: list[dict[str, JsonValue]]
+    events: list[LoopEvent]
     proceed: bool
 
 
-@dataclass(slots=True)
-class _ContextBuildResult:
-    messages: list[Message] | None = None
-    event: dict[str, JsonValue] | None = None
-    turn_complete: bool | None = None
+@dataclass(frozen=True, slots=True)
+class _ContextReady:
+    messages: tuple[ProviderMessage, ...]
 
 
-@dataclass(slots=True)
-class _ModelRequestResult:
-    request: ModelRequest | None = None
-    event: dict[str, JsonValue] | None = None
-    turn_complete: bool | None = None
-    rebuild: bool = False
+@dataclass(frozen=True, slots=True)
+class _ContextCompleted:
+    event: LoopEvent
 
 
-@dataclass(slots=True)
+_ContextBuildResult = _ContextReady | _ContextCompleted
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelRequestReady:
+    request: ModelRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelRequestRebuild:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelRequestCompleted:
+    event: LoopEvent
+
+
+_ModelRequestResult = (
+    _ModelRequestReady | _ModelRequestRebuild | _ModelRequestCompleted
+)
+
+
+@dataclass(frozen=True, slots=True)
 class _ToolBatchResult:
-    stop_loop: bool = False
-    turn_complete: bool = False
+    directive: TurnDirective
 
 
 @dataclass(slots=True)
 class _ModelResponseEvent:
     response: ModelResponse
-
-
-def xbot_tool_call_deltas(
-    chunk: ModelChunk,
-    tool_stream_ids: dict[int, str],
-) -> list[dict[str, JsonValue]]:
-    raw_chunks = chunk.tool_call_chunks or chunk.tool_calls
-    deltas: list[dict[str, JsonValue]] = []
-    for index, tool_call in enumerate(raw_chunks):
-        chunk_index = tool_call.index if isinstance(tool_call, ToolCallDelta) else index
-        prior_id = tool_stream_ids.get(chunk_index)
-        tool_id = tool_call.id or prior_id or f"tool_{chunk_index}"
-        tool_stream_ids[chunk_index] = tool_id
-        args_delta = tool_call.args
-        delta = {
-                "tool_call_id": tool_id,
-                "id": tool_id,
-                "name": tool_call.name or "tool",
-                "args_delta": args_delta,
-                "args": args_delta,
-                "index": chunk_index,
-        }
-        if prior_id and prior_id != tool_id:
-            delta["replaces_tool_call_id"] = prior_id
-        deltas.append({"tool_calls": [delta]})
-    return deltas
-
-
-def tool_result_event_data(message: Message, name: str) -> dict[str, JsonValue]:
-    """Build the client-visible result without dropping structured metadata."""
-    data: dict[str, JsonValue] = {
-        "tool_call_id": message.tool_call_id,
-        "name": name,
-        "content": message.additional_kwargs.get(
-            DISPLAY_CONTENT_KEY,
-            message.content,
-        ),
-        "status": message.status or "success",
-    }
-    if message.data is not None:
-        data["data"] = message.data
-    if message.error is not None:
-        data["error"] = message.error
-    if message.artifact:
-        artifacts = (
-            message.artifact
-            if isinstance(message.artifact, (list, tuple))
-            else [message.artifact]
-        )
-        data["artifacts"] = [_artifact_event_data(artifact) for artifact in artifacts]
-    if message.images:
-        data["images"] = [image.model_dump(mode="json") for image in message.images]
-    timing = message.response_metadata.get(TIMING_METADATA_KEY)
-    if isinstance(timing, dict):
-        data["timing"] = timing
-    return data
-
-
-def _artifact_event_data(
-    artifact: ArtifactValue,
-) -> dict[str, JsonValue]:
-    if isinstance(artifact, ArtifactRef):
-        return artifact.model_dump(mode="json")
-    if isinstance(artifact, Mapping):
-        return dict(artifact)
-    raise TypeError(f"Unsupported artifact reference: {type(artifact).__name__}")
+    timing: ModelTiming
 
 
 class Engine(AgentLoopDriverPort):
@@ -209,7 +217,11 @@ class Engine(AgentLoopDriverPort):
 
         services = await start_application(...)
         engine = services.engine
-        async for event in engine.run_turn("list files"):
+        item = InboxItem(
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content="list files"),
+        )
+        async for event in engine.run_turn(item):
             print(event)
     """
 
@@ -220,7 +232,8 @@ class Engine(AgentLoopDriverPort):
         tools: ToolsPort,
         events: EventPort,
         state: LoopState,
-        settings: LoopSettings,
+        user_identity: UserContext,
+        memory: str,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
         inbox: AgentInbox,
@@ -229,11 +242,11 @@ class Engine(AgentLoopDriverPort):
         self.tools = tools
         self._events = events
         self.state = state
-        self.settings = settings
+        self.user_identity = user_identity
+        self.memory = memory
         self.max_iterations = max_iterations
         self._log = runtime_log.bind("engine")
         self.inbox = inbox
-        self.continuation: bool = False
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
@@ -252,17 +265,13 @@ class Engine(AgentLoopDriverPort):
         self.state.turn_count = value
 
     @property
-    def session(self) -> SessionInfo:
+    def session(self) -> SessionRuntimeState:
         return self.state.session
-
-    @property
-    def context_window(self) -> int:
-        return self.settings.context_window
 
     async def _dispatch(
         self,
         event: str,
-        payload: EventContext,
+        payload: object,
         *,
         short_circuit: bool | None = None,
     ) -> Any:
@@ -278,26 +287,9 @@ class Engine(AgentLoopDriverPort):
         if short_circuit is None:
             short_circuit = event in SHORT_CIRCUIT_EVENTS
         if short_circuit:
-            result = await self._events.serial(event, payload)
-            if result is not None and not isinstance(result, dict):
-                raise TypeError(
-                    f"Short-circuit hook {event} must return a dict, "
-                    f"got {type(result).__name__}"
-                )
-            return result
+            return await self._events.serial(event, payload)
         await self._events.emit(event, payload)
         return None
-
-    @staticmethod
-    def _request_error_outcome(result: Any) -> ModelRequestErrorOutcome:
-        """Read one ``model/request-error`` hook result at the boundary.
-
-        Other plugins may answer this event with their own keys, so only the
-        field this outcome defines is read instead of rejecting their dict.
-        """
-        if not isinstance(result, Mapping):
-            return ModelRequestErrorOutcome()
-        return ModelRequestErrorOutcome(retry=bool(result.get("retry")))
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -308,19 +300,32 @@ class Engine(AgentLoopDriverPort):
         if self.state.resumed:
             await self._resume_loaded_state()
             return
-        ctx = self._make_event_context()
-        await self._dispatch(Events.SESSION_START, ctx, short_circuit=False)
+        await self._dispatch(
+            Events.SESSION_START, SessionLifecycle(self.session), short_circuit=False
+        )
 
     async def _resume_loaded_state(self) -> None:
-        self._close_interrupted_tool_calls("session_restarted")
-        ctx = self._make_event_context()
-        await self._dispatch(Events.SESSION_RESUME, ctx, short_circuit=False)
+        self._close_interrupted_tool_calls(
+            ToolFailed(
+                error=ToolError(
+                    code="session_restarted",
+                    message="Tool call did not complete: session_restarted",
+                ),
+                output=ToolOutput(
+                    parts=(TextPart(text="Tool call did not complete: session_restarted."),)
+                ),
+            )
+        )
+        await self._dispatch(
+            Events.SESSION_RESUME, SessionLifecycle(self.session), short_circuit=False
+        )
         await self._publish_state_change()
 
     async def close_session(self) -> None:
         """Dispatch the loop lifecycle close boundary."""
-        ctx = self._make_event_context()
-        await self._dispatch(Events.SESSION_CLOSE, ctx, short_circuit=False)
+        await self._dispatch(
+            Events.SESSION_CLOSE, SessionLifecycle(self.session), short_circuit=False
+        )
         await self._publish_state_change()
 
     async def _prepare_tool_calls(
@@ -329,19 +334,10 @@ class Engine(AgentLoopDriverPort):
         *,
         agent_response: ModelResponse | None = None,
     ) -> bool:
-        before_ctx = self._make_event_context(tool_calls=tool_calls,
-            agent_response=agent_response,
-        )
-        before_result = await self._dispatch(Events.BEFORE_TOOLS, before_ctx,
-            short_circuit=True,
-        )
-        if before_result is not None:
-            return False
-
-        parsed_ctx = self._make_event_context(tool_calls=tool_calls,
-            agent_response=agent_response,
-        )
-        await self._dispatch(Events.TOOL_CALLS_PARSED, parsed_ctx,
+        del agent_response
+        await self._dispatch(
+            Events.TOOL_CALLS_OBSERVED,
+            ToolCallsObserved(tuple(tool_calls)),
             short_circuit=False,
         )
         return True
@@ -349,92 +345,30 @@ class Engine(AgentLoopDriverPort):
     def _tool_kind(self, name: str) -> str:
         """Read the tool owner's declared model-facing category."""
         tool = self.tools.resolve(name) if name else None
-        return str(getattr(tool, "kind", "") or "other")
+        return tool.kind if tool is not None else "other"
 
-    async def _record_inbox_splice(self, event: InboxSplice) -> None:
-        """Publish an inbox mutation before its live projection changes."""
-        await self._dispatch(
-            Events.INBOX_SPLICE,
-            self._make_event_context(inbox_splice=event),
-            short_circuit=False,
-        )
-
-    async def followup(
-        self,
-        content: str,
-        *,
-        source: str = "user",
-        message_id: str = "",
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> InboxInput:
-        return await self.inbox.followup(
-            content,
-            source=source,
-            message_id=message_id,
-            images=images,
-            artifacts=artifacts,
-            metadata=metadata,
-        )
-
-    async def steer(
-        self,
-        content: str,
-        *,
-        source: str = "user",
-        message_id: str = "",
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> InboxInput:
-        return await self.inbox.steer(
-            content,
-            source=source,
-            message_id=message_id,
-            images=images,
-            artifacts=artifacts,
-            metadata=metadata,
-        )
-
-    async def inject(
-        self,
-        content: str,
-        *,
-        source: str = "user",
-        message_id: str = "",
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> InboxInput:
-        return await self.inbox.inject(
-            content,
-            source=source,
-            message_id=message_id,
-            images=images,
-            artifacts=artifacts,
-            metadata=metadata,
-        )
+    async def submit_input(self, item: InboxItem, *, wake: bool) -> None:
+        await self.inbox.submit(item, wake=wake)
 
     @property
     def pending_input_count(self) -> int:
         return len(self.inbox)
 
     @property
-    def pending_inputs(self) -> tuple[InboxInput, ...]:
+    def pending_inputs(self) -> tuple[InboxItem, ...]:
         return tuple(self.inbox.pending)
 
-    async def edit_input(self, message_id: str, content: str) -> InboxInput:
+    async def edit_input(self, message_id: str, content: str) -> InboxItem:
         return await self.inbox.edit(message_id, content)
 
-    async def remove_input(self, message_id: str) -> InboxInput:
+    async def remove_input(self, message_id: str) -> InboxItem:
         return await self.inbox.remove(message_id)
 
     async def retarget_input(
         self,
         message_id: str,
         target: InboxTarget,
-    ) -> InboxInput:
+    ) -> InboxItem:
         return await self.inbox.retarget(message_id, target)
 
     async def discard_inputs(self) -> None:
@@ -445,13 +379,10 @@ class Engine(AgentLoopDriverPort):
         *,
         model_client: ModelPort | _Unchanged = _UNCHANGED,
         max_iterations: int | None = None,
-        **settings: Unpack[LoopSettingsUpdate],
     ) -> None:
-        """Replace loop-owned model/settings without acquiring plugin state."""
+        """Replace loop-owned runtime ports without copying effective config."""
         if model_client is not _UNCHANGED:
             self.model_client = model_client
-        if settings:
-            self.settings = replace(self.settings, **settings)
         if max_iterations is not None:
             self.max_iterations = max_iterations
 
@@ -461,21 +392,13 @@ class Engine(AgentLoopDriverPort):
 
     async def run_turn(
         self,
-        user_input: str,
+        item: InboxItem,
         *,
         request_id: str = "",
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-    ) -> AsyncIterator[dict[str, JsonValue]]:
-        await self.inbox.send(
-            user_input,
-            target=InboxTarget.NEXT_TURN,
-            wakeup=False,
-            source="user",
-            message_id=request_id,
-            images=images,
-            artifacts=artifacts,
-        )
+    ) -> AsyncIterator[LoopEvent]:
+        if item.target is not InboxTarget.NEXT_TURN:
+            raise ValueError("A direct turn input must target the next turn")
+        await self.inbox.submit(item, wake=False)
         async for event in self.run_pending(request_id=request_id):
             yield event
 
@@ -483,7 +406,7 @@ class Engine(AgentLoopDriverPort):
         self,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[dict[str, JsonValue]]:
+    ) -> AsyncIterator[LoopEvent]:
         """Run one turn claimed from the agent-owned inbox."""
         claimed = await self.inbox.claim_turn()
         if not claimed:
@@ -496,50 +419,44 @@ class Engine(AgentLoopDriverPort):
         )
         turn_started = False
         turn_ended = False
-        self.continuation = any(
-            bool(item.metadata.get("continuation")) for item in claimed
-        )
         turn_started_at = time.perf_counter()
         outcome = "completed"
         self._log.info(
             "turn.start",
             inputs=len(claimed),
-            input_chars=sum(len(item.content) for item in claimed),
-            continuation=self.continuation,
+            input_chars=sum(len(item.input.content) for item in claimed),
         )
         try:
             async for event in self._run_turn_impl(
                 claimed,
             ):
-                if event.get("type") == "turn_started":
+                if event.kind == "turn_started":
                     turn_started = True
-                elif event.get("type") in {"turn_finished", "turn_cancelled"}:
+                elif event.kind == "turn_ended":
                     turn_ended = True
                 yield event
         except asyncio.CancelledError:
             outcome = "cancelled"
             self._log.info("turn.interrupted", turn=self.turn_count)
             interrupted = self._close_interrupted_tool_calls(
-                "client_interrupt",
-                status="cancelled",
+                ToolCancelled(reason="client_interrupt")
             )
             for message, name in interrupted:
-                yield agentloop_event(
-                    "tool_result",
-                    tool_result_event_data(message, name),
+                yield ToolCompleted(
+                    execution=ToolExecution(
+                        message=message,
+                        directive=ContinueTurn(),
+                    )
                 )
             if not turn_ended:
-                turn_ctx = self._make_event_context(stop_reason="client_interrupt",
-                )
-                await self._dispatch(Events.TURN_END, turn_ctx,
+                await self._dispatch(Events.TURN_END, TurnEnded(
+                    self.session, tuple(self.messages), "client_interrupt"
+                ),
                     short_circuit=False,
                 )
-            yield agentloop_event(
-                "turn_cancelled",
-                {
-                    "turn": self.turn_count,
-                    "reason": "client_interrupt",
-                },
+            yield LoopTurnEnded(
+                turn=self.turn_count,
+                outcome=TurnCancelled(reason="client_interrupt"),
             )
             raise
         except BaseException as exc:
@@ -549,46 +466,27 @@ class Engine(AgentLoopDriverPort):
                 turn=self.turn_count,
                 error_type=type(exc).__name__,
             )
-            current_input = next(
-                (
-                    item.content
-                    for item in claimed
-                    if item.target is InboxTarget.NEXT_TURN
-                ),
-                "",
-            )
-            failure_ctx = self._make_event_context(
-                stop_reason="error",
-                error=exc,
-                user_input=current_input,
-            )
+            failure_ctx = LoopFailure(self.session, tuple(self.messages), exc)
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
-            ctx = self._make_event_context(
-                error=exc,
-                user_input=current_input,
-            )
-            await self._dispatch(Events.ON_ERROR, ctx, short_circuit=False)
-            yield agentloop_event(
-                "error",
-                {
-                    "code": "engine_error",
-                    "message": str(exc) or type(exc).__name__,
-                    "details": {"exception_type": type(exc).__name__},
-                },
+            await self._dispatch(Events.ON_ERROR, failure_ctx, short_circuit=False)
+            yield LoopError(
+                code="engine_error",
+                message=str(exc) or type(exc).__name__,
+                exception_type=type(exc).__name__,
             )
             if turn_started:
-                yield agentloop_event(
-                    "turn_finished",
-                    {"turn": self.turn_count},
+                yield LoopTurnEnded(
+                    turn=self.turn_count,
+                    outcome=TurnFinished(stop_reason="error"),
                 )
         finally:
             try:
                 await self.inbox.reconcile(
-                    [item.message_id for item in claimed],
+                    [item.id for item in claimed],
                     {
                         message.input_id
                         for message in self.messages
-                        if message.input_id
+                        if isinstance(message, HumanInputMessage)
                     },
                 )
                 await self._publish_state_change()
@@ -596,7 +494,6 @@ class Engine(AgentLoopDriverPort):
                 outcome = "state_error"
                 raise
             finally:
-                self.continuation = False
                 self._request_id.reset(request_token)
                 self._log.info(
                     "turn.finish",
@@ -611,8 +508,8 @@ class Engine(AgentLoopDriverPort):
 
     async def _run_turn_impl(
         self,
-        claimed: list[InboxInput],
-    ) -> AsyncIterator[dict[str, JsonValue]]:
+        claimed: list[InboxItem],
+    ) -> AsyncIterator[LoopEvent]:
         """Execute one user turn through the ReAct loop.
 
         Yields event dicts: {"type": str, "data": {...}}
@@ -627,6 +524,7 @@ class Engine(AgentLoopDriverPort):
         turn_complete = False
         iteration_limit_reached = False
         retrying_iteration = False
+        retry_request: ModelRequest | None = None
 
         while not turn_complete:
             if retrying_iteration:
@@ -640,111 +538,155 @@ class Engine(AgentLoopDriverPort):
                 else:
                     iteration += 1
 
-            while True:
-                context_build = await self._build_turn_context()
-                if context_build.event is not None:
-                    yield context_build.event
-                if context_build.turn_complete is not None:
-                    turn_complete = context_build.turn_complete
-                    break
-                assert context_build.messages is not None
-                context_messages = list(context_build.messages)
-                if finalizing:
-                    notice_at = (
-                        1
-                        if context_messages
-                        and context_messages[0].role == "system"
-                        else 0
+            if retry_request is not None:
+                model_request = retry_request
+                retry_request = None
+            else:
+                while True:
+                    context_build = await self._build_turn_context()
+                    if isinstance(context_build, _ContextCompleted):
+                        yield context_build.event
+                        turn_complete = True
+                        break
+                    context_messages = list(context_build.messages)
+                    if finalizing:
+                        notice_at = (
+                            1
+                            if context_messages
+                            and context_messages[0].role == "system"
+                            else 0
+                        )
+                        context_messages.insert(
+                            notice_at,
+                            ProviderSystem(parts=(TextPart(text=self._iteration_limit_notice()),)),
+                        )
+                    model_preparation = await self._prepare_model_request(
+                        context_messages
                     )
-                    context_messages.insert(
-                        notice_at,
-                        Message(
-                            role="system",
-                            content=self._iteration_limit_notice(),
-                        ),
-                    )
-                model_preparation = await self._prepare_model_request(
-                    context_messages
-                )
-                if model_preparation.event is not None:
-                    yield model_preparation.event
-                if model_preparation.turn_complete is not None:
-                    turn_complete = model_preparation.turn_complete
+                    if isinstance(model_preparation, _ModelRequestCompleted):
+                        yield model_preparation.event
+                        turn_complete = True
+                        break
+                    if isinstance(model_preparation, _ModelRequestRebuild):
+                        continue
+                    model_request = model_preparation.request
+                    if finalizing:
+                        model_request = model_request.model_copy(update={"tools": ()})
                     break
-                if model_preparation.rebuild:
-                    continue
-                assert model_preparation.request is not None
-                model_request = model_preparation.request
-                if finalizing:
-                    model_request.tools = []
-                    model_request.llm = self._llm_without_tools()
-                context_messages = model_request.messages
-                llm_with_tools = model_request.llm
-                break
             if turn_complete:
                 break
             try:
                 response = None
+                response_timing = ModelTiming(total_ms=0.0)
                 async for model_event in self._stream_model_response(
-                    llm_with_tools,
-                    context_messages,
+                    model_request,
                 ):
                     if isinstance(model_event, _ModelResponseEvent):
                         response = model_event.response
+                        response_timing = model_event.timing
                     else:
                         yield model_event
                 if response is None:
                     raise RuntimeError("LLM stream completed without a response")
             except asyncio.TimeoutError as exc:
                 self._log.error("llm.request.timeout", turn=self.turn_count)
-                err_ctx = self._make_event_context(
-                    context_messages=context_messages,
-                    model_request=model_request,
-                    error=exc,
-                )
+                failure_revision = self.state.history.surface_revision
                 recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
-                    err_ctx,
+                    OnModelFailure(model_request, exc),
+                    short_circuit=True,
                 )
-                if self._request_error_outcome(recovery).retry:
+                if isinstance(recovery, RetryRequest):
+                    retry_request = (
+                        recovery.request
+                        if self.state.history.surface_revision == failure_revision
+                        else None
+                    )
                     retrying_iteration = True
                     continue
+                if isinstance(recovery, HookCompleteTurn):
+                    if not is_loop_event(recovery.result):
+                        raise TypeError("CompleteTurn result must be a LoopEvent")
+                    yield recovery.result
+                    turn_complete = True
+                    break
+                if recovery is not None and not isinstance(recovery, PropagateFailure):
+                    raise TypeError(
+                        "OnModelFailure must return PropagateFailure, "
+                        "RetryRequest, CompleteTurn, or None"
+                    )
                 raise asyncio.TimeoutError("LLM call timed out") from None
             except Exception as exc:
                 self._log.exception(
                     "llm.request.error",
-                    provider=self.settings.provider,
-                    model=self.settings.model,
+                    provider=model_request.selection.route.provider,
+                    model=model_request.selection.route.model,
                     error_type=type(exc).__name__,
                 )
-                err_ctx = self._make_event_context(context_messages=context_messages,
-                    model_request=model_request,
-                    error=exc,
-                )
+                failure_revision = self.state.history.surface_revision
                 recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
-                    err_ctx,
+                    OnModelFailure(model_request, exc),
                     short_circuit=True,
                 )
-                if self._request_error_outcome(recovery).retry:
+                if isinstance(recovery, RetryRequest):
+                    retry_request = (
+                        recovery.request
+                        if self.state.history.surface_revision == failure_revision
+                        else None
+                    )
                     retrying_iteration = True
                     continue
+                if isinstance(recovery, HookCompleteTurn):
+                    if not is_loop_event(recovery.result):
+                        raise TypeError("CompleteTurn result must be a LoopEvent")
+                    yield recovery.result
+                    turn_complete = True
+                    break
+                if recovery is not None and not isinstance(recovery, PropagateFailure):
+                    raise TypeError(
+                        "OnModelFailure must return PropagateFailure, "
+                        "RetryRequest, CompleteTurn, or None"
+                    )
                 raise
-            content = response.content
-            if finalizing and response.tool_calls:
-                names = ", ".join(call.name for call in response.tool_calls)
+            response_result = await self._dispatch(
+                Events.AFTER_MODEL_RESPONSE,
+                AfterModelResponse(model_request, response),
+                short_circuit=True,
+            )
+            if isinstance(response_result, ReplaceResponse):
+                response = response_result.response
+            elif isinstance(response_result, HookCompleteTurn):
+                if not is_loop_event(response_result.result):
+                    raise TypeError("CompleteTurn result must be a LoopEvent")
+                yield response_result.result
+                turn_complete = True
+                break
+            elif response_result is not None and not isinstance(
+                response_result, KeepResponse
+            ):
+                raise TypeError(
+                    "AfterModelResponse must return KeepResponse, "
+                    "ReplaceResponse, CompleteTurn, or None"
+                )
+            text_parts = tuple(part for part in response.parts if isinstance(part, TextPart))
+            reasoning_parts = tuple(
+                part for part in response.parts if isinstance(part, ReasoningPart)
+            )
+            tool_calls = tuple(part for part in response.parts if isinstance(part, ToolCall))
+            content = "".join(part.text for part in text_parts)
+            if finalizing and tool_calls:
+                names = ", ".join(call.name for call in tool_calls)
                 raise RuntimeError(
                     "LLM requested tools after the iteration budget was "
                     f"exhausted: {names}"
                 )
-            if not str(content).strip() and not response.tool_calls:
-                reasoning = response.reasoning
+            if not content.strip() and not tool_calls:
+                reasoning = "".join(part.text for part in reasoning_parts)
                 after_tool = bool(
-                    self.messages and self.messages[-1].role == "tool"
+                    self.messages and isinstance(self.messages[-1], ToolMessage)
                 )
-                stop_reason = response.response_metadata.get(
-                    "stop_reason", "unknown"
-                )
+                stop_reason = response.stop.kind
                 context = " after ToolResult" if after_tool else ""
                 self._log.debug(
                     "llm.response.invalid",
@@ -756,93 +698,40 @@ class Engine(AgentLoopDriverPort):
                     f"LLM returned no assistant content or ToolUse{context} "
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
-            response_metadata = dict(response.response_metadata)
-            # The turn and iteration counters do not identify one response:
-            # ``iteration`` is reused by the retry and the finalizing paths,
-            # and a regenerated turn reuses its ``turn_count``.  The id is
-            # persisted as ``xbot_message_id`` and clients key on it, so a
-            # repeated id makes two different assistant messages look like
-            # one and silently hides the second.
             response_id = f"assistant-{self.turn_count}-{iteration}-{uuid.uuid4().hex[:8]}"
-            response_additional = dict(response.additional_kwargs)
-            response_additional["xbot_message_id"] = response_id
-            response_msg = Message(
-                role="assistant",
-                parts=response.parts,
-                usage_metadata=response.usage_metadata,
-                response_metadata=response_metadata,
-                additional_kwargs=response_additional,
-            )
-            write_request_anchor(response_msg, RequestAnchor(
-                provider=self.session.provider,
-                model=self.settings.model,
-                context_window=self.settings.context_window,
-                request_estimate=estimate_request_tokens(
+            observation = RequestObservation(
+                selection=model_request.selection,
+                purpose=TurnRequest(turn_id=self._request_id.get()),
+                estimated_input_tokens=estimate_request_tokens(
                     model_request.messages,
                     model_request.tools,
                 ),
-            ))
-            response_history = [*self.messages, response_msg]
-            yield agentloop_event(
-                "assistant_message",
-                {
-                    "id": response_id,
-                    "content": content,
-                    "tool_calls": [
-                        call.model_dump(mode="json") for call in response.tool_calls
-                    ],
-                    "timing": response_metadata.get(TIMING_METADATA_KEY),
-                    # Providers report why generation stopped ("length",
-                    # "max_tokens", ...); clients show a truncation notice for
-                    # the cases where the reply was cut off mid-answer.
-                    "stop_reason": response_metadata.get("stop_reason", ""),
-                },
+                observed_context=response.observed_context,
             )
-            if response_msg.usage_metadata:
-                yield agentloop_event("usage", response_msg.usage_metadata)
-
-            # ON_ASSISTANT_MESSAGE hook
-            am_ctx = self._make_event_context(
-                history_messages=response_history,
-                agent_response=response,
+            exchange = ModelExchange(
+                observation=observation,
+                usage=response.usage,
+                timing=response_timing,
+                stop=response.stop,
+                provider_extensions=response.provider_extensions,
             )
-            await self._dispatch(Events.ASSISTANT_MESSAGE, am_ctx, short_circuit=False)
-
-            response_ctx = self._make_event_context(
-                history_messages=response_history,
-                context_messages=context_messages,
-                agent_response=response,
-                model_request=model_request,
-                model_response=response,
+            response_msg = AssistantMessage(
+                id=response_id,
+                parts=response.parts,
+                exchange=exchange,
             )
-            await self._dispatch(Events.AFTER_MODEL_RESPONSE, response_ctx,
+            await self._dispatch(
+                Events.MODEL_RESPONSE_OBSERVED,
+                ModelResponseObserved(exchange),
                 short_circuit=False,
             )
+            yield AssistantCompleted(message=response_msg)
+            if response.usage.counters.output or response.usage.counters.input:
+                yield UsageObserved(usage=response.usage)
 
-            # AFTER_AGENT hook
-            aa_ctx = self._make_event_context(
-                history_messages=response_history,
-                agent_response=response,
-            )
-            agent_result = await self._dispatch(Events.AFTER_AGENT, aa_ctx, short_circuit=True
-            )
             self.messages.append(response_msg)
-            if agent_result is not None:
-                if isinstance(agent_result, dict):
-                    if "messages" in agent_result:
-                        self.messages.extend(agent_result["messages"])
-                    if "event" in agent_result:
-                        yield agent_result["event"]
-                    turn_complete = bool(agent_result.get("turn_complete", True))
-                else:
-                    turn_complete = True
-                if turn_complete:
-                    if await self._claim_step_inputs():
-                        continue
-                    break
 
             # Check for tool calls
-            tool_calls = response.tool_calls
             if not tool_calls:
                 # A complete response: fold any pending input so it is
                 # answered in this same turn instead of waiting for a later
@@ -852,7 +741,7 @@ class Engine(AgentLoopDriverPort):
                 turn_complete = True
                 break
 
-            batch_result = None
+            batch_result: _ToolBatchResult | None = None
             async for tool_event in self._run_tool_batch(response):
                 if isinstance(tool_event, _ToolBatchResult):
                     batch_result = tool_event
@@ -860,8 +749,8 @@ class Engine(AgentLoopDriverPort):
                     yield tool_event
             if batch_result is None:
                 raise RuntimeError("Tool batch completed without an outcome")
-            if batch_result.stop_loop:
-                turn_complete = batch_result.turn_complete
+            if isinstance(batch_result.directive, CompleteTurnDirective):
+                turn_complete = True
                 break
             await self._claim_step_inputs()
 
@@ -873,13 +762,15 @@ class Engine(AgentLoopDriverPort):
     async def _run_tool_batch(
         self,
         response: ModelResponse,
-    ) -> AsyncIterator[dict[str, JsonValue] | _ToolBatchResult]:
-        tool_calls = list(response.tool_calls)
+    ) -> AsyncIterator[LoopEvent | _ToolBatchResult]:
+        tool_calls = [
+            part for part in response.parts if isinstance(part, ToolCall)
+        ]
         if not await self._prepare_tool_calls(
             tool_calls,
             agent_response=response,
         ):
-            yield _ToolBatchResult(stop_loop=True)
+            yield _ToolBatchResult(directive=CompleteTurnDirective())
             return
 
         self._log.info(
@@ -888,161 +779,91 @@ class Engine(AgentLoopDriverPort):
             count=len(tool_calls),
             names=[call.name for call in tool_calls],
         )
-        yield agentloop_event(
-            "tool_calls_started",
-            {
-                "tool_calls": [
-                    {
-                        **call.model_dump(mode="json"),
-                        # The owning package declares the model-facing
-                        # category; clients (ACP) render it directly instead
-                        # of re-deriving a taxonomy from tool names.
-                        "kind": self._tool_kind(call.name),
-                    }
-                    for call in tool_calls
-                ]
-            },
+        yield ToolCallsStarted(
+            calls=tuple(
+                StartedToolCall(
+                    call=call,
+                    category=self._tool_kind(call.name),
+                )
+                for call in tool_calls
+            ),
         )
         tool_names_by_id = {
             call.id: call.name or "tool" for call in tool_calls
         }
 
-        committed_messages: list[Message] = []
-        tool_messages: list[Message] = []
+        tool_messages: list[ToolMessage] = []
+        directives: list[TurnDirective] = []
 
         # The serial stream yields one completed result at a time; the
         # AFTER_TOOLS boundary below remains before the next model request.
-        async for message in self.tools.execute_each(
+        async for execution in self.tools.execute_each(
             tool_calls,
-            context_factory=self._make_event_context,
         ):
+            message = execution.message
+            directives.append(execution.directive)
             tool_messages.append(message)
-            call_id = str(message.tool_call_id)
+            call_id = str(message.call.id)
             name = tool_names_by_id.get(call_id, "tool")
-            payload = tool_result_event_data(message, name)
-            persisted = copy.deepcopy(message)
-            structure_tool_message(persisted, name)
-            committed_messages.append(persisted)
-            self.messages.append(persisted)
+            self.messages.append(message)
             await self._publish_state_change()
-            for client_event in message.client_events:
-                yield client_event.model_dump(mode="json")
-            yield agentloop_event("tool_result", payload)
-
-        after_result = await self._dispatch(
-            Events.AFTER_TOOLS,
-            self._make_event_context(tool_results=tool_messages),
-            short_circuit=True,
-        )
-        if isinstance(after_result, dict) and "tool_results" in after_result:
-            tool_messages = list(after_result["tool_results"])
-
-        for message in tool_messages:
-            structure_tool_message(
-                message,
-                tool_names_by_id.get(str(message.tool_call_id), "tool"),
-            )
+            for client_event in execution.events:
+                yield client_event
+            yield ToolCompleted(execution=execution)
 
         self._log.info(
             "tool.batch.finished",
             turn=self.turn_count,
             count=len(tool_messages),
             names=[
-                tool_names_by_id.get(str(message.tool_call_id), "tool")
+                tool_names_by_id.get(str(message.call.id), "tool")
                 for message in tool_messages
             ],
-            statuses=[message.status for message in tool_messages],
-            result_chars=sum(len(str(message.content)) for message in tool_messages),
+            statuses=[message.outcome.kind for message in tool_messages],
+            result_chars=sum(
+                len("".join(part.text for part in message.outcome.output.parts if isinstance(part, TextPart)))
+                if isinstance(message.outcome, (ToolSucceeded, ToolFailed)) else 0
+                for message in tool_messages
+            ),
         )
-        # Results were committed by the serial stream before their live
-        # events. A legacy AFTER_TOOLS hook may still rewrite the batch;
-        # replace that already-committed span only when it changed.
-        if tool_messages != committed_messages:
-            if not tool_messages:
-                raise ValueError(
-                    "AFTER_TOOLS cannot replace a tool batch with no results"
-                )
-            start = len(self.messages) - len(committed_messages)
-            replacements = []
-            for message in tool_messages:
-                replacement = copy.deepcopy(message)
-                replacements.append(replacement)
-            self.messages.replace_range(
-                start,
-                len(self.messages),
-                replacements,
-                operation="after-tools",
-            )
-            await self._publish_state_change()
-
         for message in tool_messages:
-            message_ctx = self._make_event_context(tool_results=[message],
-            )
-            await self._dispatch(Events.TOOL_MESSAGE, message_ctx,
+            await self._dispatch(
+                Events.TOOL_MESSAGE_OBSERVED,
+                ToolMessageObserved(message),
                 short_circuit=False,
             )
 
-        if any(message.turn_complete for message in tool_messages):
-            yield _ToolBatchResult(stop_loop=True, turn_complete=True)
+        if any(
+            isinstance(directive, CompleteTurnDirective)
+            for directive in directives
+        ):
+            yield _ToolBatchResult(directive=CompleteTurnDirective())
             return
 
-        yield _ToolBatchResult()
+        yield _ToolBatchResult(directive=ContinueTurn())
 
     async def _start_turn(
         self,
-        user_input: str,
-        *,
-        input_kind: str = "user_message",
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        input_id: str = "",
-        source: str = "user",
-        metadata: dict[str, JsonValue] | None = None,
+        item: InboxItem,
     ) -> _TurnStartResult:
         accepted = await self._accept_user_message(
-            user_input,
-            images=images,
-            artifacts=artifacts,
-            input_id=input_id,
-            source=source,
-            metadata=metadata,
+            item,
             new_turn=True,
         )
         if not accepted.proceed:
             return accepted
         user_input = accepted.user_input
-        turn_ctx = self._make_event_context(user_input=user_input,
-        )
-        await self._dispatch(Events.TURN_START, turn_ctx,
+        await self._dispatch(Events.TURN_START, TurnStarted(
+            self.session, tuple(self.messages)
+        ),
             short_circuit=False,
         )
-        if (
-            turn_ctx.user_input is not None
-            and str(turn_ctx.user_input) != user_input
-            and self.messages
-            and self.messages[-1].role == "user"
-        ):
-            # A hook replaced the user input (e.g. the goal plugin injects the
-            # active goal context on a continuation turn); reflect it in the
-            # retained message so the model sees it on the next step.
-            previous = self.messages[-1]
-            self.state.history.replace_last(Message(
-                role="user",
-                content=str(turn_ctx.user_input),
-                input_id=previous.input_id,
-                images=previous.images,
-                artifact=previous.artifact,
-                additional_kwargs=previous.additional_kwargs,
-            ))
-        accepted.events.append(agentloop_event(
-            "turn_started",
-            {"turn": self.turn_count},
-        ))
+        accepted.events.append(LoopTurnStarted(turn=self.turn_count))
         return accepted
 
     async def _start_claimed_turn(
         self,
-        claimed: list[InboxInput],
+        claimed: list[InboxItem],
     ) -> _TurnStartResult:
         """Start a turn from one atomic DSH-style boundary claim."""
         primary_index = next(
@@ -1053,291 +874,179 @@ class Engine(AgentLoopDriverPort):
             ),
             len(claimed) - 1,
         )
-        events: list[dict[str, JsonValue]] = []
+        events: list[LoopEvent] = []
         for item in claimed[:primary_index]:
             accepted = await self._accept_user_message(
-                item.content,
-                images=item.images,
-                artifacts=item.artifacts,
-                input_id=item.message_id,
-                source=item.source,
-                metadata=item.metadata,
+                item,
             )
             events.extend(accepted.events)
             if not accepted.proceed:
                 await self.inbox.commit([
-                    claimed_item.message_id for claimed_item in claimed
+                    claimed_item.id for claimed_item in claimed
                 ])
-                return _TurnStartResult(item.content, events, False)
+                return _TurnStartResult(item.input.content, events, False)
         primary = claimed[primary_index]
-        started = await self._start_turn(
-            primary.content,
-            images=primary.images,
-            artifacts=primary.artifacts,
-            input_id=primary.message_id,
-            source=primary.source,
-            metadata=primary.metadata,
-        )
-        await self.inbox.commit([item.message_id for item in claimed])
+        started = await self._start_turn(primary)
+        await self.inbox.commit([item.id for item in claimed])
         started.events = [*events, *started.events]
         return started
 
     @staticmethod
-    def _user_message_rejected_event() -> dict[str, JsonValue]:
-        return agentloop_event(
-            "error",
-            {
-                "code": "user_message_rejected",
-                "message": "User message was rejected before entering history.",
-            },
+    def _user_message_rejected_event() -> LoopEvent:
+        return LoopError(
+            code="user_message_rejected",
+            message="User message was rejected before entering history.",
         )
 
     async def _build_turn_context(self) -> _ContextBuildResult:
-        before_ctx = self._make_event_context()
-        before_context_result = await self._dispatch(Events.BEFORE_CONTEXT, before_ctx,
+        build_request = ContextBuildRequest(
+            history=tuple(self.messages),
+            runtime_selection=self.state.metadata.value.runtime_selection,
+            user_identity=self.user_identity,
+            memory=self.memory,
+            runtime_paths=self.state.variables,
+            turn=self.turn_count,
+            sandbox_summary="",
+        )
+        before_context_result = await self._dispatch(
+            Events.BEFORE_CONTEXT_BUILD,
+            BeforeContextBuild(build_request),
             short_circuit=True,
         )
-        if isinstance(before_context_result, dict):
-            if "event" in before_context_result:
-                return _ContextBuildResult(
-                    event=before_context_result["event"],
-                    turn_complete=bool(before_context_result.get("turn_complete", True)),
-                )
-        elif before_context_result is not None:
-            return _ContextBuildResult(
-                event=self._default_hook_rejection_event(Events.BEFORE_CONTEXT),
-                turn_complete=True,
-            )
-
-        build_request = ContextBuildRequest(
-            messages=list(self.messages),
-            session=self.session,
-            agent_name=self.settings.agent_name,
-            agent_role=self.settings.agent_role,
-            user_name=self.settings.user_name,
-            user_id=self.settings.user_id,
-            developer_instructions=self.settings.developer_instructions,
-            instructions=self.settings.agent_instructions,
-            memory=self.settings.memory,
-            runtime_paths=dict(self.state.variables),
-            turn_count=self.turn_count,
-        )
-        build_result = await self._events.serial(
-            BEFORE_CONTEXT_BUILD,
-            build_request,
-        )
-        if build_result is not None:
+        if isinstance(before_context_result, ReplaceContextRequest):
+            build_request = before_context_result.request
+        elif isinstance(before_context_result, HookCompleteTurn):
+            if not is_loop_event(before_context_result.result):
+                raise TypeError("CompleteTurn result must be a LoopEvent")
+            return _ContextCompleted(event=before_context_result.result)
+        elif before_context_result is not None and not isinstance(
+            before_context_result, KeepContextRequest
+        ):
             raise TypeError(
-                f"{BEFORE_CONTEXT_BUILD} listeners must mutate "
-                "ContextBuildRequest and return None"
+                "BeforeContextBuild must return KeepContextRequest, "
+                "ReplaceContextRequest, CompleteTurn, or None"
             )
 
-        await self._events.emit(BUILD_CONTEXT, build_request)
-        context_messages = build_request.context_messages
+        await self._events.emit(CONTEXT_BUILD_INPUTS_READY, build_request)
+        context_messages = await self._events.serial(BUILD_CONTEXT, build_request)
         if context_messages is None:
             raise RuntimeError(
                 f"No context builder handled {BUILD_CONTEXT}"
             )
-
-        after_ctx = self._make_event_context(context_messages=context_messages,
-        )
-        after_result = await self._dispatch(Events.AFTER_CONTEXT, after_ctx,
-            short_circuit=True,
-        )
-        if isinstance(after_result, dict):
-            if "context_messages" in after_result:
-                context_messages = after_result["context_messages"]
-            elif "messages" in after_result:
-                context_messages = after_result["messages"]
-            if "event" in after_result:
-                return _ContextBuildResult(
-                    event=after_result["event"],
-                    turn_complete=bool(after_result.get("turn_complete", True)),
-                )
-        elif after_result is not None:
-            return _ContextBuildResult(
-                event=self._default_hook_rejection_event(Events.AFTER_CONTEXT),
-                turn_complete=True,
+        if not isinstance(context_messages, tuple):
+            raise TypeError(
+                f"{BUILD_CONTEXT} must return a tuple of ProviderMessage values"
             )
 
-        await self._events.emit(
-            CONTEXT_BUILT,
-            ContextBuilt(tuple(context_messages), self.session),
+        after_result = await self._dispatch(
+            Events.AFTER_CONTEXT_BUILD,
+            AfterContextBuild(tuple(context_messages)),
+            short_circuit=True,
         )
-        return _ContextBuildResult(messages=context_messages)
+        if isinstance(after_result, ReplaceContext):
+            context_messages = list(after_result.context)
+        elif isinstance(after_result, HookCompleteTurn):
+            if not is_loop_event(after_result.result):
+                raise TypeError("CompleteTurn result must be a LoopEvent")
+            return _ContextCompleted(event=after_result.result)
+        elif after_result is not None and not isinstance(after_result, KeepContext):
+            raise TypeError(
+                "AfterContextBuild must return KeepContext, ReplaceContext, "
+                "CompleteTurn, or None"
+            )
+
+        return _ContextReady(messages=tuple(context_messages))
 
     async def _prepare_model_request(
         self,
-        context_messages: list[Message],
+        context_messages: list[ProviderMessage],
     ) -> _ModelRequestResult:
-        before_agent_ctx = self._make_event_context()
-        before_agent = await self._dispatch(Events.BEFORE_AGENT, before_agent_ctx,
-            short_circuit=True,
-        )
-        if before_agent is not None:
-            if isinstance(before_agent, dict) and "messages" in before_agent:
-                self.messages.extend(before_agent["messages"])
-            return _ModelRequestResult(turn_complete=True)
-
-        tools = self.tools.enabled()
-        pre_schema_request = ModelRequest(
-            messages=context_messages,
-            tools=list(tools),
-            llm=self.model_client,
-        )
-        pre_schema_ctx = self._make_event_context(context_messages=context_messages,
-            model_request=pre_schema_request,
-        )
-        pre_schema_result = await self._dispatch(Events.BEFORE_TOOL_SCHEMA_BIND, pre_schema_ctx,
-            short_circuit=True,
-        )
-        if isinstance(pre_schema_result, dict):
-            if "tools" in pre_schema_result:
-                tools = list(pre_schema_result["tools"])
-                pre_schema_request.tools = tools
-            if "messages" in pre_schema_result:
-                context_messages = list(pre_schema_result["messages"])
-                pre_schema_request.messages = context_messages
-            if "event" in pre_schema_result:
-                return _ModelRequestResult(
-                    event=pre_schema_result["event"],
-                    turn_complete=bool(
-                        pre_schema_result.get("turn_complete", True)
-                    ),
-                )
-        elif pre_schema_result is not None:
-            return _ModelRequestResult(
-                event=self._default_hook_rejection_event(Events.BEFORE_TOOL_SCHEMA_BIND),
-                turn_complete=True,
+        tools = tuple(self.tools.enabled())
+        schemas = tuple(
+            ToolSchema(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
             )
-        pre_schema_request = pre_schema_ctx.model_request or pre_schema_request
-        tools = list(pre_schema_request.tools)
-        context_messages = list(pre_schema_request.messages)
-
+            for tool in tools
+        )
         model_request = ModelRequest(
-            messages=context_messages,
-            tools=list(tools),
-            llm=self._bind_tools_for_provider(list(tools)),
+            messages=tuple(context_messages),
+            tools=schemas,
+            selection=self.state.metadata.value.runtime_selection.model,
         )
-        schema_ctx = self._make_event_context(context_messages=context_messages,
-            model_request=model_request,
-        )
-        await self._dispatch(Events.AFTER_TOOL_SCHEMA_BIND, schema_ctx,
-            short_circuit=False,
-        )
-
-        request_ctx = self._make_event_context(
-            context_messages=context_messages,
-            model_request=ModelRequest(
-                messages=list(model_request.messages),
-                tools=list(model_request.tools),
-                llm=model_request.llm,
-            ),
-        )
-        model_request = request_ctx.model_request
-        assert model_request is not None
-        tools_before_hook = tuple(model_request.tools)
-        llm_before_hook = model_request.llm
-        request_result = await self._dispatch(Events.BEFORE_MODEL_REQUEST, request_ctx,
+        history_revision = self.state.history.surface_revision
+        request_result = await self._dispatch(
+            Events.BEFORE_MODEL_REQUEST,
+            BeforeModelRequest(model_request),
             short_circuit=True,
         )
-        if isinstance(request_result, dict):
-            if request_result.get("rebuild"):
-                return _ModelRequestResult(rebuild=True)
-            if "messages" in request_result:
-                model_request.messages = list(request_result["messages"])
-            if "tools" in request_result:
-                model_request.tools = list(request_result["tools"])
-                model_request.llm = self._bind_tools_for_provider(
-                    model_request.tools
-                )
-            if "llm" in request_result:
-                model_request.llm = request_result["llm"]
-            if "event" in request_result:
-                return _ModelRequestResult(
-                    event=request_result["event"],
-                    turn_complete=bool(request_result.get("turn_complete", True)),
-                )
-        elif request_result is not None:
-            return _ModelRequestResult(
-                event=self._default_hook_rejection_event(Events.BEFORE_MODEL_REQUEST),
-                turn_complete=True,
+        if isinstance(request_result, ReplaceRequest):
+            model_request = request_result.request
+        elif isinstance(request_result, HookCompleteTurn):
+            if not is_loop_event(request_result.result):
+                raise TypeError("CompleteTurn result must be a LoopEvent")
+            return _ModelRequestCompleted(event=request_result.result)
+        elif request_result is not None and not isinstance(request_result, KeepRequest):
+            raise TypeError(
+                "BeforeModelRequest must return KeepRequest, ReplaceRequest, "
+                "CompleteTurn, or None"
             )
-        if (
-            tuple(model_request.tools) != tools_before_hook
-            and model_request.llm is llm_before_hook
-        ):
-            model_request.llm = self._bind_tools_for_provider(
-                model_request.tools
-            )
-        ready_ctx = self._make_event_context(
-            context_messages=context_messages,
-            model_request=model_request,
-        )
+        if self.state.history.surface_revision != history_revision:
+            return _ModelRequestRebuild()
         await self._dispatch(
             Events.MODEL_REQUEST_READY,
-            ready_ctx,
+            ModelRequestReady(model_request, self.session),
             short_circuit=False,
         )
-        model_request = ready_ctx.model_request or model_request
+        # MODEL_REQUEST_READY observers inspect the fully transformed request.
+        # An observer may compact durable history; if so, this candidate is no
+        # longer valid and the outer loop must rebuild it before invocation.
+        if self.state.history.surface_revision != history_revision:
+            return _ModelRequestRebuild()
         self._log.debug(
             "llm.tools.bound",
-            names=[tool.name for tool in model_request.tools],
+            names=[schema.name for schema in model_request.tools],
         )
         self._log.info(
             "llm.request.ready",
-            provider=self.settings.provider,
-            model=self.settings.model,
+            provider=model_request.selection.route.provider,
+            model=model_request.selection.route.model,
             messages=len(model_request.messages),
             tools=len(model_request.tools),
             estimated_input_tokens=estimate_request_tokens(
                 model_request.messages,
                 model_request.tools,
             ),
-            context_window=self.settings.context_window,
-            max_output_tokens=self.settings.max_output_tokens,
+            context_window=model_request.selection.context_window,
+            max_output_tokens=model_request.selection.generation.max_output_tokens,
         )
-        return _ModelRequestResult(request=model_request)
+        return _ModelRequestReady(request=model_request)
 
-    async def _finish_turn(self, stop_reason: str) -> dict[str, JsonValue]:
+    async def _finish_turn(self, stop_reason: str) -> LoopEvent:
         self._log.info(
             "turn.stop",
             turn=self.turn_count,
             reason=stop_reason,
         )
-        turn_ctx = self._make_event_context(stop_reason=stop_reason,
-        )
-        await self._dispatch(Events.TURN_END, turn_ctx,
+        turn_event = TurnEnded(self.session, tuple(self.messages), stop_reason)
+        await self._dispatch(Events.TURN_END, turn_event,
             short_circuit=False,
         )
-        stop_ctx = self._make_event_context(stop_reason=stop_reason,
-        )
         try:
-            await self._dispatch(Events.ON_STOP, stop_ctx,
+            await self._dispatch(Events.ON_STOP, turn_event,
                 short_circuit=False,
             )
         except BaseException as exc:
-            failure_ctx = self._make_event_context(stop_reason=stop_reason,
-                error=exc,
-            )
+            failure_ctx = LoopFailure(self.session, tuple(self.messages), exc)
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx,
                 short_circuit=False,
             )
             raise
-        return agentloop_event(
-            "turn_finished",
-            {"turn": self.turn_count},
+        return LoopTurnEnded(
+            turn=self.turn_count,
+            outcome=TurnFinished(stop_reason=stop_reason),
         )
-
-    def _bind_tools_for_provider(self, tools: list[Tool]) -> ModelPort:
-        if not tools:
-            return self.model_client
-        return self.model_client.bind_tools([
-            provider_tool_schema(tool) for tool in tools
-        ])
-
-    def _llm_without_tools(self) -> ModelPort:
-        return self.model_client.bind_tools([])
 
     def _iteration_limit_notice(self) -> str:
         return (
@@ -1349,47 +1058,47 @@ class Engine(AgentLoopDriverPort):
 
     async def _stream_model_response(
         self,
-        llm: ModelPort,
-        context_messages: list[Message],
-    ) -> AsyncIterator[dict[str, JsonValue] | _ModelResponseEvent]:
-        """Stream provider chunks and reconstruct the final response."""
+        request: ModelRequest,
+    ) -> AsyncIterator[LoopEvent | _ModelResponseEvent]:
+        """Stream canonical provider events and return the completed response."""
         aggregate: ModelResponse | None = None
-        tool_stream_ids: dict[int, str] = {}
         started = time.perf_counter()
         first_delta_at: float | None = None
         chunk_count = 0
-        async for chunk in llm.astream(context_messages):
+        terminal_seen = False
+        async for chunk in self.model_client.astream(request):
             chunk_count += 1
-            if isinstance(chunk, ModelChunk):
-                if first_delta_at is None and (
-                    chunk.content or chunk.reasoning or chunk.tool_calls
-                ):
+            if terminal_seen:
+                raise RuntimeError(
+                    "Model stream produced an event after its terminal event"
+                )
+            if isinstance(chunk, (TextDelta, ReasoningDelta, ToolCallDelta)):
+                if first_delta_at is None:
                     first_delta_at = time.perf_counter()
-                aggregate = merge_model_chunk(aggregate, chunk)
-                if chunk.content:
-                    yield agentloop_event(
-                        "assistant_message_delta",
-                        {"content": chunk.content},
+                if isinstance(chunk, TextDelta):
+                    yield AssistantTextDelta(text=chunk.text)
+                elif isinstance(chunk, ReasoningDelta):
+                    yield AssistantReasoningDelta(text=chunk.text)
+                else:
+                    yield ToolCallArgumentsDelta(
+                        call_id=chunk.call_id,
+                        name_delta=chunk.name_delta or "",
+                        arguments_delta=chunk.arguments_delta,
                     )
-                if chunk.reasoning:
-                    yield agentloop_event(
-                        "assistant_message_delta",
-                        {"reasoning": chunk.reasoning},
-                    )
-                for tool_delta in xbot_tool_call_deltas(
-                    chunk, tool_stream_ids
-                ):
-                    yield agentloop_event("tool_call_delta", tool_delta)
                 continue
-            if isinstance(chunk, ModelResponse):
-                aggregate = chunk
+            if isinstance(chunk, ModelCompleted):
+                aggregate = chunk.response
+                terminal_seen = True
                 continue
-            self._log.warning(
-                "llm.response.unexpected_chunk",
-                chunk_type=type(chunk).__name__,
+            if isinstance(chunk, ModelFailed):
+                raise ProviderFailure(chunk.error)
+            if isinstance(chunk, ModelCancelled):
+                raise asyncio.CancelledError(chunk.reason)
+            raise TypeError(
+                f"Unsupported model stream event: {type(chunk).__name__}"
             )
         if aggregate is None:
-            raise RuntimeError("LLM stream produced no chunks")
+            raise RuntimeError("Model stream ended without a terminal event")
         finished = time.perf_counter()
         llm_ms = (finished - started) * 1000
         ttft_ms = (
@@ -1397,29 +1106,29 @@ class Engine(AgentLoopDriverPort):
             if first_delta_at is not None
             else None
         )
-        timing: dict[str, float] = {"llm_ms": round(llm_ms, 3)}
-        if ttft_ms is not None:
-            timing["ttft_ms"] = round(ttft_ms, 3)
-            timing["decode_ms"] = round(max(0.0, llm_ms - ttft_ms), 3)
-        aggregate.response_metadata[TIMING_METADATA_KEY] = timing
-        usage = aggregate.usage_metadata
+        timing = ModelTiming(
+            total_ms=round(llm_ms, 3),
+            first_delta_ms=round(ttft_ms, 3) if ttft_ms is not None else None,
+        )
+        usage = aggregate.usage.counters
         self._log.info(
             "llm.response",
-            provider=self.settings.provider,
-            model=self.settings.model,
+            provider=request.selection.route.provider,
+            model=request.selection.route.model,
             chunks=chunk_count,
-            content_chars=len(aggregate.content),
-            reasoning_chars=len(aggregate.reasoning),
-            tool_calls=len(aggregate.tool_calls),
-            input_tokens=usage.get("input_tokens", "unknown"),
-            output_tokens=usage.get("output_tokens", "unknown"),
-            total_tokens=usage.get("total_tokens", "unknown"),
-            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
-            cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
-            stop_reason=aggregate.response_metadata.get("stop_reason", "unknown"),
+            content_chars=sum(len(part.text) for part in aggregate.parts if isinstance(part, TextPart)),
+            reasoning_chars=sum(
+                len(part.text)
+                for part in aggregate.parts
+                if isinstance(part, ReasoningPart)
+            ),
+            tool_calls=sum(1 for part in aggregate.parts if isinstance(part, ToolCall)),
+            input_tokens=usage.input,
+            output_tokens=usage.output,
+            stop_reason=aggregate.stop.kind,
             duration_ms=round(llm_ms, 3),
         )
-        yield _ModelResponseEvent(aggregate)
+        yield _ModelResponseEvent(aggregate, timing)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1429,22 +1138,19 @@ class Engine(AgentLoopDriverPort):
 
     async def _publish_state_change(self) -> None:
         """Announce a mutation of the loop-owned state projection."""
-        event = self._make_event_context()
-        await self._dispatch(Events.STATE_CHANGED, event, short_circuit=False)
+        await self._dispatch(Events.STATE_CHANGED, StateChanged(), short_circuit=False)
 
     def _close_interrupted_tool_calls(
         self,
-        reason: str,
-        *,
-        status: str = "error",
-    ) -> list[tuple[Message, str]]:
-        """Append error results for an interrupted trailing tool batch."""
+        outcome: ToolOutcome,
+    ) -> list[tuple[ToolMessage, str]]:
+        """Close unanswered calls with the terminal outcome of their turn."""
         assistant_index = next(
             (
                 index
                 for index in range(len(self.messages) - 1, -1, -1)
-                if self.messages[index].role == "assistant"
-                and self.messages[index].tool_calls
+                if isinstance(self.messages[index], AssistantMessage)
+                and any(isinstance(part, ToolCall) for part in self.messages[index].parts)
             ),
             None,
         )
@@ -1452,80 +1158,29 @@ class Engine(AgentLoopDriverPort):
             return []
 
         tail = self.messages[assistant_index + 1:]
-        if any(message.role != "tool" for message in tail):
+        if any(not isinstance(message, ToolMessage) for message in tail):
             return []
         answered = {
-            message.tool_call_id for message in tail if message.tool_call_id
+            str(message.call.id) for message in tail
         }
+        calls = tuple(
+            part for part in self.messages[assistant_index].parts
+            if isinstance(part, ToolCall)
+        )
         missing = [
-            call for call in self.messages[assistant_index].tool_calls
-            if call.id not in answered
+            call for call in calls if str(call.id) not in answered
         ]
-        closed: list[tuple[Message, str]] = []
+        closed: list[tuple[ToolMessage, str]] = []
         for call in missing:
-            message = Message(
-                role="tool",
-                content=f"Tool call did not complete: {reason}.",
-                tool_call_id=call.id,
-                status=status,
+            message = ToolMessage(
+                id=f"tool-{uuid.uuid4().hex}",
+                call=ToolCallRef(id=call.id, name=call.name),
+                outcome=outcome,
+                timing=ToolTiming(duration_ms=0),
             )
-            structure_tool_message(message, call.name)
             self.messages.append(message)
             closed.append((message, call.name))
         return closed
-
-    def _default_hook_rejection_event(event: str) -> dict[str, JsonValue]:
-        return agentloop_event(
-            "error",
-            {
-                "code": "hook_short_circuit_rejected",
-                "message": f"Hook {event} short-circuited without a structured result.",
-                "stage": event,
-            },
-        )
-
-    def _make_event_context(
-        self,
-        *,
-        history_messages: list[Message] | None = None,
-        user_input: str | None = None,
-        context_messages: list[Message] | None = None,
-        agent_response: ModelResponse | None = None,
-        model_request: ModelRequest | None = None,
-        model_response: ModelResponse | None = None,
-        tool_calls: list[ToolCall] | None = None,
-        tool_call: ToolCall | None = None,
-        tool_results: list[Message] | None = None,
-        tool_result: Message | None = None,
-        stop_reason: str | None = None,
-        client_event: ClientEvent | None = None,
-        inbox_splice: InboxSplice | None = None,
-        error: BaseException | None = None,
-    ) -> EventContext:
-        return EventContext(
-            request_id=self._request_id.get(),
-            messages=(
-                history_messages
-                if history_messages is not None
-                else self.messages
-            ),
-            settings=self.settings,
-            continuation=self.continuation,
-            session=self.session,
-            user_input=user_input,
-            context_messages=context_messages,
-            agent_response=agent_response,
-            model_request=model_request,
-            model_response=model_response,
-            tool_calls=tool_calls,
-            tool_call=tool_call,
-            tool_results=tool_results,
-            tool_result=tool_result,
-            stop_reason=stop_reason,
-            client_event=client_event,
-            inbox_splice=inbox_splice,
-            error=error,
-        )
 
     async def _claim_step_inputs(self) -> bool:
         """Claim and accept every input addressed to the next loop step."""
@@ -1533,64 +1188,98 @@ class Engine(AgentLoopDriverPort):
         if not items:
             return False
         for item in items:
-            await self._accept_user_message(
-                item.content,
-                images=item.images,
-                artifacts=item.artifacts,
-                input_id=item.message_id,
-                source=item.source,
-                metadata=item.metadata,
-            )
-        await self.inbox.commit([item.message_id for item in items])
+            await self._accept_user_message(item)
+        await self.inbox.commit([item.id for item in items])
         return True
 
     async def _accept_user_message(
         self,
-        user_input: str,
+        item: InboxItem,
         *,
-        images: list[ImageContent] | None = None,
-        artifacts: list[ArtifactRef] | None = None,
-        input_id: str = "",
-        source: str = "user",
-        metadata: dict[str, JsonValue] | None = None,
         new_turn: bool = False,
     ) -> _TurnStartResult:
-        accept_ctx = self._make_event_context(user_input=user_input,
-        )
-        accept_result = await self._dispatch(Events.BEFORE_USER_MESSAGE_ACCEPT, accept_ctx,
+        user_input = item.input.content
+        accept_result = await self._dispatch(
+            Events.ON_TURN_INPUT,
+            OnTurnInput(item, tuple(self.messages)),
             short_circuit=True,
         )
-        events: list[dict[str, JsonValue]] = []
-        if isinstance(accept_result, dict):
-            if "user_input" in accept_result:
-                user_input = str(accept_result["user_input"])
-            if "event" in accept_result:
-                events.append(accept_result["event"])
-                if accept_result.get("turn_complete", True):
-                    return _TurnStartResult(user_input, events, False)
-            elif accept_result.get("turn_complete"):
-                events.append(self._user_message_rejected_event())
-                return _TurnStartResult(user_input, events, False)
-        elif accept_result is not None:
-            events.append(self._user_message_rejected_event())
+        events: list[LoopEvent] = []
+        if isinstance(accept_result, AcceptInput):
+            accepted_input = accept_result.input
+        elif isinstance(accept_result, RejectInput):
+            events.append(LoopError(
+                code="user_message_rejected",
+                message=accept_result.error,
+            ))
             return _TurnStartResult(user_input, events, False)
+        elif isinstance(accept_result, HookCompleteTurn):
+            if not is_loop_event(accept_result.result):
+                raise TypeError("CompleteTurn result must be a LoopEvent")
+            events.append(accept_result.result)
+            return _TurnStartResult(user_input, events, False)
+        elif accept_result is not None:
+            raise TypeError(
+                "OnTurnInput must return AcceptInput, RejectInput, "
+                "CompleteTurn, or None"
+            )
+        else:
+            accepted_input = item
+
+        payload = accepted_input.input
+        user_input = payload.content
+
+        parts = (
+            TextPart(text=user_input),
+            *tuple(ImagePart(image=image) for image in payload.images),
+        )
+        if isinstance(payload, HumanInput):
+            message = HumanInputMessage(
+                id=f"message-{uuid.uuid4().hex}",
+                input_id=accepted_input.id,
+                parts=parts,
+                artifacts=payload.artifacts,
+            )
+        elif isinstance(payload, RuntimeInput):
+            message = RuntimeNoticeMessage(
+                id=f"message-{uuid.uuid4().hex}",
+                notice_id=f"notice-{uuid.uuid4().hex}",
+                source=payload.source,
+                event=payload.event,
+                parts=parts,
+                artifacts=payload.artifacts,
+            )
+        else:  # pragma: no cover - InputPayload is a closed discriminated union
+            raise TypeError(f"Unsupported inbox payload: {payload!r}")
+
+        accepted_event = InputAccepted(accepted_input, message)
+        accepted_result = await self._dispatch(
+            Events.INPUT_ACCEPTED,
+            accepted_event,
+            short_circuit=True,
+        )
+        if accepted_result is not None:
+            if not isinstance(accepted_result, InputAccepted):
+                raise TypeError("INPUT_ACCEPTED must return InputAccepted or None")
+            if accepted_result.input != accepted_input:
+                raise ValueError("INPUT_ACCEPTED cannot change the accepted input")
+            replacement = accepted_result.message
+            if type(replacement) is not type(message) or replacement.id != message.id:
+                raise ValueError(
+                    "INPUT_ACCEPTED may only replace a message while preserving "
+                    "the accepted message type and identity"
+                )
+            if (
+                isinstance(message, HumanInputMessage)
+                and isinstance(replacement, HumanInputMessage)
+                and replacement.input_id != accepted_input.id
+            ):
+                raise ValueError(
+                    "INPUT_ACCEPTED cannot change accepted input identity"
+                )
+            message = replacement
 
         if new_turn:
             self.turn_count += 1
-        self.messages.append(Message(
-            role="user",
-            content=user_input,
-            input_id=input_id,
-            images=list(images or []),
-            artifact=list(artifacts or []),
-            additional_kwargs=_runtime_input(source, metadata),
-        ))
-        for event in (
-            Events.AFTER_USER_MESSAGE_ACCEPT,
-            Events.USER_MESSAGE,
-        ):
-            await self._dispatch(
-                event,
-                self._make_event_context(user_input=user_input),
-            )
+        self.messages.append(message)
         return _TurnStartResult(user_input, events, True)

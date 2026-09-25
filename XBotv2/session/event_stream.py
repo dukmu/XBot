@@ -7,11 +7,13 @@ from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from XBotv2.core.tools import ClientEvent
+from XBotv2.core.domain import EventScope, SessionScope
 from XBotv2.session.contracts import (
     SessionEventCursorExpired,
     SessionEventFrame,
     SessionEventSubscription as SessionEventSubscriptionPort,
+    SessionEvent,
+    SessionRuntimeState,
 )
 
 
@@ -62,18 +64,23 @@ class _SessionEventSubscription(AsyncIterator[SessionEventFrame]):
 
 
 class SessionEventStream:
-    def __init__(self, *, capacity: int = 512) -> None:
+    def __init__(
+        self,
+        state: SessionRuntimeState,
+        *,
+        capacity: int = 512,
+    ) -> None:
         if capacity < 1:
             raise ValueError("Session event capacity must be positive")
         self._capacity = capacity
         self._frames: deque[SessionEventFrame] = deque(maxlen=capacity)
         self._subscribers: set[_SessionSubscriber] = set()
-        self._sequence = 0
+        self._state = state
         self._closed = False
 
     @property
     def sequence(self) -> int:
-        return self._sequence
+        return self._state.event_cursor
 
     @property
     def subscriber_count(self) -> int:
@@ -82,19 +89,19 @@ class SessionEventStream:
     @property
     def oldest_sequence(self) -> int:
         if not self._frames:
-            return self._sequence + 1
+            return self.sequence + 1
         return self._frames[0].sequence
 
     def publish(
         self,
-        event: ClientEvent,
+        event: SessionEvent,
         *,
-        request_id: str = "",
+        scope: EventScope = SessionScope(),
     ) -> SessionEventFrame:
         if self._closed:
             raise RuntimeError("Session event stream is closed")
-        self._sequence += 1
-        frame = SessionEventFrame(self._sequence, request_id, event)
+        self._state.event_cursor += 1
+        frame = SessionEventFrame(self.sequence, scope, event)
         self._frames.append(frame)
         # Subscribers retain only a cursor. A single coalesced wakeup tells
         # them to pull all available frames from the central bounded window.
@@ -107,8 +114,8 @@ class SessionEventStream:
         return frame
 
     def subscribe(self, after: int | None = None) -> SessionEventSubscriptionPort:
-        cursor = self._sequence if after is None else after
-        if cursor < 0 or cursor > self._sequence:
+        cursor = self.sequence if after is None else after
+        if cursor < 0 or cursor > self.sequence:
             raise ValueError("Session event cursor is outside the current sequence")
         oldest = self.oldest_sequence
         if cursor < oldest - 1:
@@ -121,7 +128,7 @@ class SessionEventStream:
         if cursor < self.oldest_sequence - 1:
             raise SessionEventCursorExpired(cursor, self.oldest_sequence)
         next_sequence = cursor + 1
-        if next_sequence > self._sequence:
+        if next_sequence > self.sequence:
             return None
         # ``deque`` is indexed relative to the oldest retained frame.  Using
         # the global sequence modulo capacity here is incorrect after the

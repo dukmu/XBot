@@ -3,10 +3,9 @@
 import pytest
 
 import xcore
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.session import SessionInfo
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.permissions.system import PermissionSystem
+from XBotv2.permissions import PermissionPolicy
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.llm.mock import MockLLM
@@ -29,7 +28,7 @@ def tool_registry():
 @pytest.fixture
 def permission_system():
     """Default PermissionSystem (ask on everything)."""
-    return PermissionSystem(default_decision="ask")
+    return PermissionSystem(PermissionPolicy(default_decision="ask"))
 
 
 @pytest.fixture
@@ -60,8 +59,6 @@ def state_store(temp_data_dir):
     store = ThreadPersistence.create(
         RuntimePaths.from_data_dir(temp_data_dir).session("test-session"),
         thread_id="test-thread",
-        workspace_root=str(temp_data_dir),
-        provider="default",
     )
     return store
 
@@ -69,23 +66,3 @@ def state_store(temp_data_dir):
 @pytest.fixture
 def artifact_store(state_store):
     return state_store.artifacts
-
-
-@pytest.fixture
-def session_info():
-    """Minimal SessionInfo."""
-    return SessionInfo(
-        session_id="test-session",
-        thread_id="test-thread",
-        workspace_root="/workspace",
-        provider="default",
-    )
-
-
-@pytest.fixture
-def event_context(session_info, tool_registry):
-    """Basic EventContext for loop events."""
-    return EventContext(
-        messages=[],
-        session=session_info,
-    )

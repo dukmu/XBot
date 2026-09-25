@@ -33,8 +33,6 @@ class ArtifactStore:
         name: str = "",
         suffix: str = "",
     ) -> ArtifactRef:
-        if not payload:
-            raise ValueError("artifact payload must not be empty")
         if suffix and (
             not suffix.startswith(".")
             or "/" in suffix

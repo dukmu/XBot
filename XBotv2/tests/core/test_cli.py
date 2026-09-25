@@ -17,7 +17,7 @@ def test_default_command_is_tui():
     args = parse([])
 
     assert args.command == "tui"
-    assert args.provider == "default"
+    assert args.provider is None
     assert args.thread == "agent"
 
 

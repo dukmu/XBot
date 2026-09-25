@@ -112,6 +112,21 @@ BUILTIN_COMMANDS: tuple[CommandDescription, ...] = (
         "Attach a local image to the next message",
         usage="/attach <path> | /attach clear",
     ),
+    _builtin(
+        "approve",
+        "Approve a pending permission request",
+        usage="/approve <interaction-id> [once|session]",
+    ),
+    _builtin(
+        "deny",
+        "Deny a pending permission request",
+        usage="/deny <interaction-id>",
+    ),
+    _builtin(
+        "answer",
+        "Answer a pending user-input request",
+        usage="/answer <interaction-id> <text>",
+    ),
     _builtin("clear-screen", "Clear the visible transcript", usage="/clear-screen"),
     _builtin("copy", "Copy the latest reply", usage="/copy"),
     _builtin("exit", "Quit the client", usage="/exit"),

@@ -24,19 +24,43 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Protocol, Sequence
+from collections.abc import Awaitable
+from typing import AsyncGenerator, Callable, Literal, Protocol, Sequence
 
-from XBotv2.agentloop.protocol import ErrorEventData
-from XBotv2.commands import CommandDescription, CommandExecution
+from XBotv2.agents import AgentListResponse, AgentSelectionResponse
+from XBotv2.agentloop.protocol import LoopError
+from XBotv2.commands import (
+    CommandDescription,
+    CommandExecution,
+    CommandListResponse,
+    CommandResponse,
+)
 from XBotv2.client import XBotClientError
+from XBotv2.core.domain import Cursor
+from XBotv2.core.history import HistoryPage
+from XBotv2.interactions.protocol import InteractionResponse
+from XBotv2.llm import EffortSelectionResponse, ProviderCatalog, ProviderSelectionResponse
 from XBotv2.protocol import ServerEvent
-from XBotv2.session.contracts import ImageInput, ThreadSummary
-from XBotv2.session.protocol import OpenSessionResponse
+from XBotv2.protocol.models import HelloResponse
+from XBotv2.session import (
+    AttachmentInput,
+    ImageInput,
+    OpenSessionResponse,
+    SessionListResponse,
+    SessionMode,
+    SessionSummary,
+    ThreadListResponse,
+    ThreadSummary,
+)
+from XBotv2.session.protocol import InterruptResponse
+from XBotv2.session.records import ConversationRecord
 from XBotv2.tui.events import (
     ConnectionChanged,
     ErrorFrame,
     InterruptAsked,
     InterruptSettled,
+    OlderHistoryFailed,
+    OlderHistoryLoaded,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
@@ -54,6 +78,11 @@ from XBotv2.tui.status import Connection
 
 CURSOR_EXPIRED = "session_event_cursor_expired"
 
+#: The default window one attach asks for, and the default number of entries the
+#: client keeps before releasing the pages the reader walked past.
+DEFAULT_HISTORY_WINDOW = 50
+DEFAULT_HISTORY_RETENTION = 2000
+
 
 class SessionBackend(Protocol):
     """The slice of the HTTP client the transport uses.
@@ -62,39 +91,98 @@ class SessionBackend(Protocol):
     and a test can script the server without re-implementing the client.
     """
 
-    async def hello(self, **kwargs: Any) -> Any: ...
+    async def hello(
+        self,
+        *,
+        client_name: str,
+        session_id: str | None,
+        thread_id: str,
+    ) -> HelloResponse: ...
 
-    async def open_session(self, **kwargs: Any) -> OpenSessionResponse: ...
+    async def open_session(
+        self,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        workspace_root: str | None,
+        mode: SessionMode,
+        agent: str | None,
+        history_limit: int | None,
+    ) -> OpenSessionResponse: ...
 
-    async def list_sessions(self) -> Any: ...
+    async def list_sessions(self) -> SessionListResponse: ...
 
-    async def list_threads(self, session_id: str) -> Any: ...
+    async def list_threads(self, session_id: str) -> ThreadListResponse: ...
 
-    async def list_commands(self, session_id: str, thread_id: str) -> Any: ...
+    async def list_commands(
+        self, session_id: str, thread_id: str
+    ) -> CommandListResponse: ...
 
-    async def list_providers(self) -> Any: ...
+    async def list_messages(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: Cursor | None = None,
+        limit: int | None = None,
+    ) -> HistoryPage[ConversationRecord]: ...
 
-    async def list_agents(self, session_id: str, thread_id: str) -> Any: ...
+    async def list_providers(self) -> ProviderCatalog: ...
+
+    async def list_agents(self, session_id: str, thread_id: str) -> AgentListResponse: ...
 
     async def select_provider(
         self, session_id: str, thread_id: str, name: str, model: str | None = None
-    ) -> Any: ...
+    ) -> ProviderSelectionResponse: ...
 
-    async def select_effort(self, session_id: str, thread_id: str, effort: str) -> Any: ...
+    async def select_effort(
+        self, session_id: str, thread_id: str, effort: str
+    ) -> EffortSelectionResponse: ...
 
-    async def select_agent(self, session_id: str, thread_id: str, name: str) -> Any: ...
+    async def select_agent(
+        self, session_id: str, thread_id: str, name: str
+    ) -> AgentSelectionResponse: ...
 
-    async def run_command(self, session_id: str, thread_id: str, *, raw: str) -> Any: ...
+    async def run_command(
+        self, session_id: str, thread_id: str, *, raw: str
+    ) -> CommandResponse: ...
 
     async def send_message(
-        self, session_id: str, thread_id: str, content: str, **kwargs: Any
+        self,
+        session_id: str,
+        thread_id: str,
+        content: str,
+        *,
+        request_id: str,
+        delivery: Literal["queue", "steer"],
+        images: list[ImageInput],
+        attachments: list[AttachmentInput],
     ) -> None: ...
 
-    async def interrupt(self, session_id: str, thread_id: str) -> Any: ...
+    async def interrupt(self, session_id: str, thread_id: str) -> InterruptResponse: ...
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        decision: Literal["allow", "deny"],
+        scope: Literal["once", "session"] = "once",
+    ) -> InteractionResponse: ...
+
+    async def respond_user_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        answer: str,
+    ) -> InteractionResponse: ...
 
     def stream_events(
         self, session_id: str, thread_id: str, *, after: int | None = None
-    ) -> AsyncIterator[ServerEvent]: ...
+    ) -> AsyncGenerator[ServerEvent, None]: ...
 
 
 @dataclass(frozen=True)
@@ -104,8 +192,16 @@ class TransportConfig:
     session_id: str = ""
     thread_id: str = "agent"
     workspace_root: str | None = None
-    mode: str = "new"
+    mode: SessionMode = "new"
     agent: str | None = None
+    #: The client's window: how many of the newest entries one attach asks for,
+    #: and how many each page further back carries. It is the paging granularity,
+    #: not a retention bound -- the reader can always walk further back.
+    history_window: int = DEFAULT_HISTORY_WINDOW
+    #: How many entries the client holds before it lets the pages the reader
+    #: walked past go again. Only residency: the cursor chain restores them, so
+    #: nothing becomes unreachable.
+    history_retention: int = DEFAULT_HISTORY_RETENTION
     watchdog_seconds: float = 5.0
     reconnect_delays: tuple[float, ...] = (0.05, 0.1, 0.25)
     cursor_recoveries: int = 3
@@ -121,7 +217,7 @@ class TransportSession:
         *,
         config: TransportConfig | None = None,
         emit: Callable[[UiEvent], None],
-        sleep: Callable[[float], Any] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
         new_input_id: Callable[[], str] | None = None,
     ) -> None:
         self._backend = backend
@@ -177,27 +273,22 @@ class TransportSession:
         """
         self._emit(ConnectionChanged(Connection.CONNECTING))
         try:
-            hello = await self._backend.hello(
+            await self._backend.hello(
                 client_name="xbotv2-tui",
                 session_id=self._config.session_id or None,
                 thread_id=self._config.thread_id,
             )
-            self._session_id = str(getattr(hello, "session_id", "") or self._session_id)
-            self._thread_id = str(getattr(hello, "thread_id", "") or self._thread_id)
             self._translator = FrameTranslator(
                 session_id=self._session_id, thread_id=self._thread_id
             )
-            opened = await self._backend.open_session(
-                session_id=self._session_id or None,
-                thread_id=self._thread_id,
-                workspace_root=self._config.workspace_root,
+            opened = await self._open(
                 mode=self._config.mode,
-                **({"agent": self._config.agent} if self._config.agent else {}),
+                session_id=self._session_id or None,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._emit(ErrorFrame(payload=ErrorEventData(code="connect_failed", message=str(exc))))
+            self._emit(ErrorFrame(payload=LoopError(code="connect_failed", message=str(exc))))
             self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
             raise
         self._attached_to(opened)
@@ -211,36 +302,26 @@ class TransportSession:
     def _attached_to(
         self,
         opened: OpenSessionResponse,
-        *,
-        session_id: str = "",
-        thread_id: str = "",
     ) -> None:
-        """Take the identity the server answered with.
-
-        This is not bookkeeping: the translator is built from it, so an id that
-        disagrees with the server's turns every frame of the attached session
-        into a foreign frame. ``hello`` cannot supply it -- when the client asks
-        for no session in particular (the ``xbot tui`` default) the server only
-        decides at ``open_session``.
-        """
-        self._session_id = opened.session_id or session_id or self._session_id
-        self._thread_id = opened.thread_id or thread_id or self._thread_id
+        """Adopt the identity owned by the opened thread resource."""
+        self._session_id = opened.data.key.session_id
+        self._thread_id = opened.data.key.thread_id
         self._translator = FrameTranslator(
             session_id=self._session_id, thread_id=self._thread_id
         )
 
     def _adopt(self, opened: OpenSessionResponse) -> None:
         self._emit(SnapshotAdopted(opened))
-        for event in replay_pending_interactions(opened.pending_interactions):
+        for event in replay_pending_interactions(opened.data.pending_interactions):
             self._emit(event)
-        self._cursor = int(opened.event_cursor or 0)
+        self._cursor = opened.data.event_cursor
 
     async def switch(
         self,
         *,
         session_id: str,
         thread_id: str,
-        mode: str = "resume",
+        mode: SessionMode = "resume",
     ) -> OpenSessionResponse:
         """Attach to another session without tearing the client down.
 
@@ -249,14 +330,10 @@ class TransportSession:
         """
         if not thread_id:
             thread_id = await self._main_thread(session_id)
-        opened = await self._backend.open_session(
-            session_id=session_id or None,
-            thread_id=thread_id,
-            workspace_root=self._config.workspace_root,
-            mode=mode,
-            **({"agent": self._config.agent} if self._config.agent else {}),
+        opened = await self._open(
+            mode=mode, session_id=session_id or None, thread_id=thread_id,
         )
-        self._attached_to(opened, session_id=session_id, thread_id=thread_id)
+        self._attached_to(opened)
         self._cursor_recoveries = 0
         self._baseline_rebuilds = 0
         self._adopt(opened)
@@ -267,39 +344,41 @@ class TransportSession:
     async def _main_thread(self, session_id: str) -> str:
         """The thread a session is attached by: its main one, or its first."""
         listing = await self._backend.list_threads(session_id)
-        threads = tuple(getattr(listing, "threads", ()) or ())
+        threads = listing.threads
         main = next(
-            (item for item in threads if str(getattr(item, "kind", "")) == "main"),
+            (item for item in threads if item.kind == "main"),
             None,
         )
         chosen = main if main is not None else (threads[0] if threads else None)
         if chosen is None:
             raise ValueError(f"session {session_id!r} has no thread to attach to")
-        return str(getattr(chosen, "thread_id", ""))
+        return chosen.thread_id
 
-    async def list_providers(self) -> Any:
+    async def list_providers(self) -> ProviderCatalog:
         """The provider/model catalogue, for the pickers."""
         return await self._backend.list_providers()
 
-    async def list_agents(self) -> Any:
+    async def list_agents(self) -> AgentListResponse:
         """The agents this thread can switch to."""
         return await self._backend.list_agents(self._session_id, self._thread_id)
 
-    async def select_provider(self, name: str, model: str | None = None) -> Any:
+    async def select_provider(
+        self, name: str, model: str | None = None
+    ) -> ProviderSelectionResponse:
         return await self._backend.select_provider(
             self._session_id, self._thread_id, name, model
         )
 
-    async def select_effort(self, effort: str) -> Any:
+    async def select_effort(self, effort: str) -> EffortSelectionResponse:
         return await self._backend.select_effort(self._session_id, self._thread_id, effort)
 
-    async def select_agent(self, name: str) -> Any:
+    async def select_agent(self, name: str) -> AgentSelectionResponse:
         return await self._backend.select_agent(self._session_id, self._thread_id, name)
 
     async def list_commands(self) -> Sequence[CommandDescription]:
         """The commands the server offers for the attached thread."""
         response = await self._backend.list_commands(self._session_id, self._thread_id)
-        return tuple(getattr(response, "commands", ()) or ())
+        return tuple(response.commands)
 
     async def run_command(self, raw: str) -> CommandExecution:
         """Run one server-owned command and return what it answered.
@@ -311,15 +390,37 @@ class TransportSession:
         response = await self._backend.run_command(self._session_id, self._thread_id, raw=raw)
         return response.data
 
-    async def list_threads(self) -> Sequence[ThreadSummary]:
+    async def respond_permission(
+        self,
+        request_id: str,
+        decision: Literal["allow", "deny"],
+        scope: Literal["once", "session"] = "once",
+    ) -> None:
+        await self._backend.respond_permission(
+            self._session_id,
+            self._thread_id,
+            request_id=request_id,
+            decision=decision,
+            scope=scope,
+        )
+
+    async def respond_user_input(self, request_id: str, answer: str) -> None:
+        await self._backend.respond_user_input(
+            self._session_id,
+            self._thread_id,
+            request_id=request_id,
+            answer=answer,
+        )
+
+    async def list_threads(self) -> tuple[ThreadSummary, ...]:
         """The threads this session holds, for the thread picker."""
         listing = await self._backend.list_threads(self._session_id)
-        return tuple(getattr(listing, "threads", ()) or ())
+        return tuple(listing.threads)
 
-    async def list_sessions(self) -> Sequence[Any]:
+    async def list_sessions(self) -> tuple[SessionSummary, ...]:
         """The sessions this server holds, for the session picker."""
         listing = await self._backend.list_sessions()
-        return tuple(getattr(listing, "sessions", ()) or ())
+        return tuple(listing.sessions)
 
     # --- reading ------------------------------------------------------
 
@@ -371,36 +472,43 @@ class TransportSession:
         stream = self._backend.stream_events(
             self._session_id, self._thread_id, after=self._cursor
         )
-        iterator = stream.__aiter__()
-        while not self._stopped:
-            read = asyncio.ensure_future(iterator.__anext__())
-            restart = asyncio.ensure_future(self._restart.wait())
-            done, pending = await asyncio.wait(
-                {read, restart}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            if restart in done:
-                self._restart.clear()
-                self._restarting = True
-                if read in pending:
-                    read.cancel()
-                    await asyncio.gather(read, return_exceptions=True)
-                close = getattr(iterator, "aclose", None)
-                if callable(close):
-                    await close()
-                return applied
-            try:
-                frame = read.result()
-            except StopAsyncIteration:
-                return applied
-            if self._apply(frame):
-                applied += 1
-        return applied
+        iterator = stream
+        read: asyncio.Task | None = None
+        restart: asyncio.Task | None = None
+        try:
+            while not self._stopped:
+                read = asyncio.create_task(iterator.__anext__())
+                restart = asyncio.create_task(self._restart.wait())
+                done, pending = await asyncio.wait(
+                    {read, restart}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                if restart in done:
+                    self._restart.clear()
+                    self._restarting = True
+                    return applied
+                try:
+                    frame = read.result()
+                except StopAsyncIteration:
+                    return applied
+                if self._apply(frame):
+                    applied += 1
+            return applied
+        finally:
+            child_tasks = [
+                task for task in (read, restart) if task is not None
+            ]
+            for task in child_tasks:
+                if not task.done():
+                    task.cancel()
+            if child_tasks:
+                await asyncio.gather(*child_tasks, return_exceptions=True)
+            await iterator.aclose()
 
     def _apply(self, frame: ServerEvent) -> bool:
-        sequence = int(frame.sequence or 0)
+        sequence = frame.sequence
         if sequence and sequence <= self._cursor:
             # Recovery resubscribes behind the cursor on purpose, so the server
             # replays frames already applied. Applying them again would double
@@ -415,7 +523,7 @@ class TransportSession:
         except FrameRejected as exc:
             # A frame this client cannot apply is a visible failure, never a
             # skip: the cursor still advances, because the frame was consumed.
-            self._emit(ErrorFrame(payload=ErrorEventData(code="rejected_frame", message=str(exc))))
+            self._emit(ErrorFrame(payload=LoopError(code="rejected_frame", message=str(exc))))
             events = ()
         for event in events:
             self._emit(event)
@@ -429,7 +537,9 @@ class TransportSession:
             return False
         if self._cursor_recoveries >= self._config.cursor_recoveries:
             return False
-        oldest = int(exc.details.get("oldest_sequence") or 0)
+        oldest = exc.details.get("oldest_sequence")
+        if not isinstance(oldest, int) or isinstance(oldest, bool) or oldest < 1:
+            return False
         self._cursor = max(0, oldest - 1)
         self._cursor_recoveries += 1
         return True
@@ -440,20 +550,58 @@ class TransportSession:
             return False
         if self._baseline_rebuilds >= self._config.baseline_rebuilds:
             return False
-        opened = await self._backend.open_session(
-            session_id=self._session_id or None,
-            thread_id=self._thread_id,
-            workspace_root=self._config.workspace_root,
-            mode="resume",
-            **({"agent": self._config.agent} if self._config.agent else {}),
-        )
+        opened = await self._open(mode="resume", session_id=self._session_id or None)
         self._baseline_rebuilds += 1
         self._cursor_recoveries = 0
         self._adopt(opened)
         return True
 
+    async def _open(
+        self,
+        *,
+        mode: SessionMode,
+        session_id: str | None,
+        thread_id: str | None = None,
+    ) -> OpenSessionResponse:
+        """Attach to one thread, window included.
+
+        This is the only attach request the client sends. The first attach,
+        recovery, and a thread switch must all ask for the same window, and
+        spelling the request out per call is how one of them ends up asking for
+        the whole conversation.
+        """
+        return await self._backend.open_session(
+            session_id=session_id,
+            thread_id=thread_id or self._thread_id,
+            workspace_root=self._config.workspace_root,
+            mode=mode,
+            agent=self._config.agent or None,
+            history_limit=self._config.history_window,
+        )
+
+    async def load_older(self, cursor: Cursor) -> None:
+        """Read the page before ``cursor`` and hand it to the reducer.
+
+        A page that cannot be read is a visible, retryable state rather than an
+        exception: the reader asked for history, and the client must tell them it
+        could not fetch it instead of swallowing the request.
+        """
+        try:
+            page = await self._backend.list_messages(
+                self._session_id,
+                self._thread_id,
+                cursor=cursor,
+                limit=self._config.history_window,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._emit(OlderHistoryFailed(message=str(exc) or exc.__class__.__name__))
+            return
+        self._emit(OlderHistoryLoaded(payload=page, cursor=cursor))
+
     def _fail(self, exc: BaseException) -> None:
-        self._emit(ErrorFrame(payload=ErrorEventData(code="stream_failed", message=str(exc))))
+        self._emit(ErrorFrame(payload=LoopError(code="stream_failed", message=str(exc))))
         self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
 
     # --- watchdog -----------------------------------------------------
@@ -471,7 +619,7 @@ class TransportSession:
         except Exception as exc:
             self._note_watchdog_failure(str(exc))
             return False
-        summary = _find_thread(getattr(listing, "threads", ()) or (), self._thread_id)
+        summary = _find_thread(listing.threads, self._thread_id)
         if summary is None:
             self._note_watchdog_failure(
                 f"thread {self._thread_id!r} is no longer listed for session "
@@ -494,7 +642,7 @@ class TransportSession:
 
     def _note_watchdog_failure(self, message: str) -> None:
         if self._watchdog_failures == 0:
-            self._emit(ErrorFrame(payload=ErrorEventData(code="watchdog_failed", message=message)))
+            self._emit(ErrorFrame(payload=LoopError(code="watchdog_failed", message=message)))
         self._watchdog_failures += 1
 
     # --- writes -------------------------------------------------------
@@ -504,7 +652,7 @@ class TransportSession:
         text: str,
         *,
         delivery: str = "steer",
-        images: Sequence[ImageInput] | None = None,
+        images: Sequence[ImageInput] = (),
     ) -> str:
         """Send input, binding it to a client-generated id.
 
@@ -520,7 +668,8 @@ class TransportSession:
                 text,
                 request_id=input_id,
                 delivery=delivery,
-                images=list(images or ()),
+                images=list(images),
+                attachments=[],
             )
         except asyncio.CancelledError:
             raise
@@ -536,14 +685,16 @@ class TransportSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._emit(ErrorFrame(payload=ErrorEventData(code="interrupt_failed", message=str(exc))))
+            self._emit(ErrorFrame(payload=LoopError(code="interrupt_failed", message=str(exc))))
             self._emit(InterruptSettled(cancelled=False))
             return
-        self._emit(InterruptSettled(cancelled=bool(getattr(result, "cancelled", False))))
+        self._emit(InterruptSettled(cancelled=result.cancelled))
 
-def _find_thread(threads: Sequence[Any], thread_id: str) -> ThreadSummary | None:
+def _find_thread(
+    threads: Sequence[ThreadSummary], thread_id: str
+) -> ThreadSummary | None:
     for summary in threads:
-        if str(getattr(summary, "thread_id", "")) == thread_id:
+        if summary.thread_id == thread_id:
             return summary
     return None
 

@@ -7,6 +7,7 @@ the user their message was *queued* while sending it as a *steer*.
 
 from __future__ import annotations
 
+from textual.events import Paste
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
@@ -59,7 +60,7 @@ def test_a_pending_approval_asks_for_a_decision() -> None:
     hint = composer_hint(
         model(facts=StatusFacts(connection=Connection.CONNECTED, interaction=Interaction.PERMISSION))
     )
-    assert "allow" in hint.lower()
+    assert "/approve" in hint.lower()
     assert "deny" in hint.lower()
 
 
@@ -104,7 +105,7 @@ def test_the_placeholder_tracks_the_same_state() -> None:
     assert "steer" in composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING))
     ).lower()
-    assert "allow" in composer_placeholder(
+    assert "/approve" in composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, interaction=Interaction.PERMISSION))
     ).lower()
     assert composer_placeholder(model(read_only=True)).lower().startswith("read-only")
@@ -158,6 +159,22 @@ async def test_shift_enter_adds_a_line_instead_of_submitting() -> None:
         await pilot.pause()
         assert app.submitted == []
         assert "\n" in app.composer.text
+
+
+async def test_multiline_paste_preserves_unicode_and_trailing_newline_until_submit() -> None:
+    app = Harness()
+    pasted = "第一行\nsecond line 🌱\n"
+    async with app.run_test() as pilot:
+        app.post_message(Paste(pasted))
+        await pilot.pause()
+        assert app.composer.text == pasted
+        assert app.submitted == []
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.submitted == [pasted]
+        assert app.composer.text == ""
 
 
 async def test_an_empty_composer_submits_nothing() -> None:
@@ -237,4 +254,3 @@ async def test_enter_still_refuses_an_empty_composer_with_no_image() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == []
-

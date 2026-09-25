@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from XBotv2.jobs.contracts import JobsCommandPort, JobSnapshot
+from XBotv2.jobs.contracts import JobsCommandPort
 
 from XBotv2.commands import (
     Command,
@@ -17,10 +17,10 @@ def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
     async def jobs_command(raw_args: str) -> CommandResult:
         parts = split_command_args(raw_args)
         if parts in ([], ["ps"]):
-            jobs_snapshot = jobs.snapshots()
-            message = "No background jobs." if not jobs_snapshot else "\n".join(
-                f"{job.kind}  {job.job_id}  {job.status}  {job.command}"
-                for job in jobs_snapshot
+            views = jobs.views()
+            message = "No background jobs." if not views else "\n".join(
+                f"{job.kind}  {job.id}  {job.state}  {job.label}"
+                for job in views
             )
             return CommandResult(message)
         if len(parts) == 2 and parts[0] == "stop":

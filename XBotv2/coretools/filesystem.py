@@ -29,13 +29,23 @@ from weakref import WeakKeyDictionary
 import httpx
 from pydantic import JsonValue
 
-from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort
-from XBotv2.core.messages import ImageContent
-from XBotv2.core.tools import Tool, ToolResult
+from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort, ImageRef
+from XBotv2.core.parts import ImagePart, TextPart
+from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
 from XBotv2.sandbox.contracts import SandboxPort
 
 _FILE_VERSIONS: WeakKeyDictionary[SandboxPort, dict[str, str]] = WeakKeyDictionary()
+
+
+def _success(text: str, *, artifacts=(), images=(), data=None) -> ToolSucceeded:
+    parts = [TextPart(text=text)]
+    parts.extend(ImagePart(image=image) for image in images)
+    return ToolSucceeded(output=ToolOutput(parts=tuple(parts), artifacts=tuple(artifacts)))
+
+
+def _failure_result(code: str, message: str) -> ToolFailed:
+    return ToolFailed(error=ToolError(code=code, message=message), output=ToolOutput())
 
 
 # ----------------------------------------------------------------------
@@ -60,7 +70,7 @@ async def read(
     *,
     sandbox: SandboxPort | None = None,
     artifacts: ArtifactStorePort | None = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Read file content, bytes, metadata, an image, or a directory listing.
 
     ``mode`` selects the operation:
@@ -120,19 +130,19 @@ async def read(
                 f", {image.get('width')}x{image.get('height')} {image.get('format')}"
                 if image else ""
             )
-            return ToolResult.success(
+            return _success(
                 f"Non-text file: {path} ({result.get('media_type')}, "
                 f"{result.get('size_bytes')} bytes{dimensions}, "
                 f"sha256={result.get('sha256')})"
             )
-        return ToolResult.success(
+        return _success(
             _with_line_numbers(content, offset + 1) if line_numbers else content
         )
     if mode == "binary":
         result = await _operation("read_bytes", {"path": path}, sandbox)
         if not result.get("ok"):
             return _failure(result)
-        return ToolResult.success(
+        return _success(
             f"Binary file: {path} ({result.get('size_bytes')} bytes, "
             f"sha256={result.get('sha256')}, base64 in data)"
         )
@@ -158,7 +168,7 @@ async def read(
             },
             sandbox,
         )
-    return ToolResult.failure("invalid_mode", f"Unknown read mode: {mode}")
+    return _failure_result("invalid_mode", f"Unknown read mode: {mode}")
 
 
 MAX_CONTENT_BYTES = 25 * 1024 * 1024
@@ -184,7 +194,7 @@ async def _read_media(
     media_type: str | None,
     sandbox: SandboxPort | None,
     artifacts: ArtifactStorePort | None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Open one media item by type and make it visible to the model.
 
     ``read(mode=media)`` is the single model-facing content tool. Exactly one
@@ -194,7 +204,7 @@ async def _read_media(
     """
     sources = [value for value in (path, url, data) if value]
     if len(sources) != 1:
-        return ToolResult.failure(
+        return _failure_result(
             "invalid_content_source",
             "read media mode requires exactly one of path, url, or data",
         )
@@ -212,7 +222,7 @@ async def _read_media(
                 str(data or ""), media_type
             )
         if len(payload) > MAX_CONTENT_BYTES:
-            return ToolResult.failure(
+            return _failure_result(
                 "content_too_large",
                 f"Content exceeds {MAX_CONTENT_BYTES} bytes",
             )
@@ -227,9 +237,9 @@ async def _read_media(
             payload,
             media_type=selected,
         )
-        image = ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size)
+        image = ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size)
     except _ImageError as exc:
-        return ToolResult.failure(exc.code, exc.message)
+        return _failure_result(exc.code, exc.message)
 
     result_data: dict[str, JsonValue] = {
         "media_type": selected,
@@ -237,7 +247,7 @@ async def _read_media(
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
     result_data.update(metadata)
-    return ToolResult.success(
+    return _success(
         f"Image content loaded: {selected} ({len(payload)} bytes)",
         images=(image,),
     )
@@ -419,7 +429,7 @@ async def edit(
     patch: str | None = None,
     *,
     sandbox: SandboxPort | None = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Edit one UTF-8 file: write whole content, replace text, or apply a diff.
 
     ``mode`` selects the operation:
@@ -450,7 +460,7 @@ async def edit(
     """
     if mode == "write":
         if content is None:
-            return ToolResult.failure(
+            return _failure_result(
                 "invalid_arguments", "write mode requires content"
             )
         return await _structured_operation(
@@ -458,7 +468,7 @@ async def edit(
         )
     if mode == "replace":
         if old_text is None or new_text is None:
-            return ToolResult.failure(
+            return _failure_result(
                 "invalid_arguments", "replace mode requires old_text and new_text"
             )
         return await _structured_operation(
@@ -473,13 +483,13 @@ async def edit(
         )
     if mode == "patch":
         if patch is None:
-            return ToolResult.failure(
+            return _failure_result(
                 "invalid_arguments", "patch mode requires a patch"
             )
         return await _structured_operation(
             "patch", {"path": path, "patch": patch}, sandbox
         )
-    return ToolResult.failure("invalid_mode", f"Unknown edit mode: {mode}")
+    return _failure_result("invalid_mode", f"Unknown edit mode: {mode}")
 
 
 # ----------------------------------------------------------------------
@@ -497,7 +507,7 @@ async def path(
     parents: bool = True,
     *,
     sandbox: SandboxPort | None = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Manage filesystem paths: move, copy, delete, or create a directory.
 
     ``operation`` selects the action:
@@ -519,7 +529,7 @@ async def path(
     """
     if operation == "move":
         if source is None or destination is None:
-            return ToolResult.failure(
+            return _failure_result(
                 "invalid_arguments", "move requires source and destination"
             )
         return await _structured_operation(
@@ -529,7 +539,7 @@ async def path(
         )
     if operation == "copy":
         if source is None or destination is None:
-            return ToolResult.failure(
+            return _failure_result(
                 "invalid_arguments", "copy requires source and destination"
             )
         return await _structured_operation(
@@ -539,17 +549,17 @@ async def path(
         )
     if operation == "delete":
         if not path:
-            return ToolResult.failure("invalid_arguments", "delete requires path")
+            return _failure_result("invalid_arguments", "delete requires path")
         return await _structured_operation(
             "delete", {"path": path, "recursive": recursive}, sandbox
         )
     if operation == "mkdir":
         if not path:
-            return ToolResult.failure("invalid_arguments", "mkdir requires path")
+            return _failure_result("invalid_arguments", "mkdir requires path")
         return await _structured_operation(
             "mkdir", {"path": path, "parents": parents}, sandbox
         )
-    return ToolResult.failure("invalid_operation", f"Unknown path operation: {operation}")
+    return _failure_result("invalid_operation", f"Unknown path operation: {operation}")
 
 
 # ----------------------------------------------------------------------
@@ -571,7 +581,7 @@ async def search(
     kind: Literal["file", "directory", "any"] = "file",
     *,
     sandbox: SandboxPort | None = None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Search UTF-8 content or find paths by glob.
 
     ``mode`` selects the operation:
@@ -625,7 +635,7 @@ async def search(
             },
             sandbox,
         )
-    return ToolResult.failure("invalid_mode", f"Unknown search mode: {mode}")
+    return _failure_result("invalid_mode", f"Unknown search mode: {mode}")
 
 
 # ----------------------------------------------------------------------
@@ -676,13 +686,11 @@ async def _structured_operation(
     operation: str,
     args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     data = await _operation(operation, args, sandbox)
     if not data.get("ok"):
         return _failure(data)
-    return ToolResult.success(
-        json.dumps(data, ensure_ascii=False, sort_keys=True), data=data
-    )
+    return _success(json.dumps(data, ensure_ascii=False, sort_keys=True))
 
 
 async def _operation(
@@ -771,9 +779,9 @@ def _parse_result(value: str) -> dict[str, JsonValue]:
     }
 
 
-def _failure(data: dict[str, JsonValue]) -> ToolResult:
+def _failure(data: dict[str, JsonValue]) -> ToolFailed:
     error = data.get("error") or {}
-    return ToolResult.failure(
+    return _failure_result(
         str(error.get("code") or "filesystem_error"),
         str(error.get("message") or "Filesystem operation failed"),
     )

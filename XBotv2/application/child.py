@@ -10,10 +10,19 @@ from pathlib import Path
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
 from XBotv2.application import ChildApplicationError, ChildApplicationResult
+from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
 from XBotv2.persistence import ThreadLifecycleRecord
 from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
+from XBotv2.agentloop.protocol import (
+    AssistantCompleted,
+    LoopError,
+    LoopTurnEnded,
+    TurnCancelled,
+)
+from XBotv2.core.parts import TextPart
+from XBotv2.core.domain import ModelRoute
 
 
 @dataclass(slots=True)
@@ -21,7 +30,7 @@ class ChildApplications:
     """Create child Agent applications from one bound parent application."""
 
     paths: RuntimePaths
-    provider_name: str
+    provider_name: str | None
     session_id: str
     workspace_root: Path
     no_plugins: bool
@@ -36,9 +45,12 @@ class ChildApplications:
     ) -> "ChildApplicationSession":
         from XBotv2.application.app import start_application
 
+        route = request.definition.model_policy.route
         child_ctx = await start_application(
             paths=self.paths,
-            provider_name=request.definition.provider or self.provider_name,
+            provider_name=(
+                route.provider if isinstance(route, ModelRoute) else self.provider_name
+            ),
             session_id=self.session_id,
             thread_id=request.thread_id,
             workspace_root=self.workspace_root,
@@ -84,17 +96,22 @@ class ChildApplicationSession:
         error = ""
         try:
             await engine.start_session()
-            async for event in engine.run_turn(self.prompt):
-                event_type = event.get("type")
-                data = event.get("data") or {}
-                if event_type == "assistant_message":
-                    output = str(data.get("content") or "")
-                elif event_type == "error":
-                    error = str(data.get("message") or "Subagent turn failed")
-                elif event_type == "turn_cancelled":
-                    error = str(
-                        data.get("reason") or "Subagent turn was cancelled"
+            async for event in engine.run_turn(InboxItem(
+                target=InboxTarget.NEXT_TURN,
+                input=HumanInput(content=self.prompt),
+            )):
+                if isinstance(event, AssistantCompleted):
+                    output = "".join(
+                        part.text
+                        for part in event.message.parts
+                        if isinstance(part, TextPart)
                     )
+                elif isinstance(event, LoopError):
+                    error = event.message or "Subagent turn failed"
+                elif isinstance(event, LoopTurnEnded) and isinstance(
+                    event.outcome, TurnCancelled
+                ):
+                    error = event.outcome.reason
         except asyncio.CancelledError:
             with suppress(BaseException):
                 await asyncio.shield(self._close())

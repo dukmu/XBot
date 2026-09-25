@@ -11,11 +11,19 @@ from __future__ import annotations
 
 import fnmatch
 
-from XBotv2.agents.contracts import AgentDefinition
+from XBotv2.agents.contracts import (
+    AgentDefinition,
+    AgentModelPolicy,
+    AgentToolPolicy,
+)
+from XBotv2.permissions.contracts import PermissionPolicy, PermissionRule
 
 
-def _tool_pattern(value: str) -> dict[str, str]:
-    return {"tool": fnmatch.translate(value)}
+def _deny(value: str) -> PermissionRule:
+    return PermissionRule(
+        tool_pattern=fnmatch.translate(value),
+        decision="deny",
+    )
 
 
 BUILTIN_AGENT_DEFINITIONS: tuple[AgentDefinition, ...] = (
@@ -28,20 +36,23 @@ BUILTIN_AGENT_DEFINITIONS: tuple[AgentDefinition, ...] = (
         name="Explorer",
         description="Read-only workspace exploration and codebase analysis",
         mode="all",
-        temperature=0.1,
-        tools=(
-            "read",
-            "search",
-            "ask_user",
+        model_policy=AgentModelPolicy(temperature=0.1),
+        tool_policy=AgentToolPolicy(
+            enabled=(
+                "read",
+                "search",
+                "ask_user",
+            ),
         ),
-        permissions={
-            "deny": [
-                _tool_pattern("edit"),
-                _tool_pattern("path"),
-                _tool_pattern("shell"),
-                _tool_pattern("*subagent*"),
-            ],
-        },
+        permission_policy=PermissionPolicy(
+            rules=(
+                _deny("edit"),
+                _deny("path"),
+                _deny("shell"),
+                _deny("*subagent*"),
+            ),
+            default_decision="allow",
+        ),
         prompt=(
             "Explore the workspace, trace behavior, and report evidence with "
             "file references.\nDo not modify files or start other agents."

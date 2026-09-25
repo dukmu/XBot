@@ -17,7 +17,7 @@ from XBotv2.core.providers import BaseProvider
 async def start_acp_application(
     *,
     paths: RuntimePaths,
-    provider_name: str,
+    provider_name: str | None,
     no_plugins: bool,
     selected_agent: str | None,
     llm_override: BaseProvider | None = None,

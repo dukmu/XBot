@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+from textual.events import Paste
 from textual.widgets import Static
 
 from XBotv2.tests.tui.factories import (
@@ -18,9 +19,12 @@ from XBotv2.tests.tui.factories import (
     ScriptedBackend,
     command,
     execution,
+    assistant_record,
     frames,
+    human_record,
     snapshot,
     stream,
+    tool_record,
     thread,
 )
 from textual.screen import Screen
@@ -118,8 +122,8 @@ async def test_a_scripted_turn_reaches_the_screen() -> None:
             stream(
                 *frames(
                     ("turn_started", {"turn": 1}),
-                    ("assistant_message_delta", {"content": "working on it"}),
-                    ("assistant_message", {"id": "a1", "content": "working on it"}),
+                    ("assistant_text_delta", {"text": "working on it"}),
+                    ("assistant_completed", assistant_record("a1", "working on it")),
                 ),
                 hold=True,
             )
@@ -133,13 +137,89 @@ async def test_a_scripted_turn_reaches_the_screen() -> None:
         assert "Running" in status_text(app)
 
 
+async def test_a_short_assistant_reply_uses_only_its_content_height() -> None:
+    backend = ScriptedBackend(
+        streams=[
+            stream(
+                *frames(
+                    ("turn_started", {"turn": 1}),
+                    ("message", {"kind": "human_input", "id": "in-1", "content": "hi"}),
+                    ("assistant_text_delta", {"text": "A short reply."}),
+                    ("assistant_completed", assistant_record("a1", "A short reply.")),
+                    ("error", {
+                        "code": "provider_error",
+                        "message": "A reported error.",
+                        "exception_type": "RuntimeError",
+                    }),
+                ),
+                hold=True,
+            )
+        ]
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        assistant = app.query_one(".assistant")
+        assert assistant.region.height <= 5
+        assert "A reported error." in transcript_text(app)
+
+
+async def test_multiline_paste_reaches_the_server_once_without_text_loss() -> None:
+    backend = ScriptedBackend()
+    app = app_for(backend)
+    pasted = "第一行\nsecond line 🌱\n"
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        app.post_message(Paste(pasted))
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        assert composer.text == pasted
+
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert len(backend.sent) == 1
+        assert backend.sent[0]["content"] == pasted
+        assert composer.text == ""
+
+
+async def test_ctrl_c_copies_selected_transcript_text_and_only_quits_without_selection() -> None:
+    from textual.widgets import Static
+
+    backend = ScriptedBackend()
+    app = app_for(backend)
+    copied: list[str] = []
+    app.copy_to_clipboard = copied.append
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("composer text")
+        composer.input.selection = ((0, 0), (0, 8))
+        await pilot.press("ctrl+c")
+        assert copied == ["composer"]
+        assert app.is_running
+
+        composer.load_text("")
+        text = Static("select this text")
+        await app.query_one("#transcript").mount(text)
+        await pilot.pause()
+        app.screen._select_all_in_widget(text)
+        assert app.screen.get_selected_text() == "select this text"
+        await pilot.press("ctrl+c")
+        assert copied == ["composer", "select this text"]
+        assert app.is_running
+        assert app.screen.get_selected_text() is None
+        await pilot.press("ctrl+c")
+        assert not app.is_running
+
+
 async def test_the_prompt_entry_loses_its_sending_marker_once_accepted() -> None:
     backend = ScriptedBackend(
         streams=[
             stream(
                 *frames(
                     ("turn_started", {"turn": 1}),
-                    ("message", {"id": "in-1", "role": "user", "content": "hello"}),
+                    ("message", {"kind": "human_input", "id": "in-1", "content": "hello"}),
                 ),
                 hold=True,
             )
@@ -162,16 +242,13 @@ async def test_jobs_appear_in_their_panel() -> None:
                 *frames(
                     (
                         "job_updated",
-                        {
-                            "job_id": "j1",
+                        {"view": {
+                            "id": "j1",
                             "kind": "agent",
-                            "status": "running",
-                            "command": "review the diff",
-                            "cwd": "/w",
-                            "created_at": 0,
-                            "started_at": 1,
-                            "finished_at": 0,
-                        },
+                            "label": "review the diff",
+                            "state": "running",
+                            "elapsed_ms": 1,
+                        }},
                     )
                 ),
                 hold=True,
@@ -224,7 +301,7 @@ async def test_page_up_moves_the_transcript_window() -> None:
             stream(
                 *frames(
                     *[
-                        ("message", {"id": f"m{index}", "role": "user", "content": str(index)})
+                        ("message", {"kind": "human_input", "id": f"m{index}", "content": str(index)})
                         for index in range(30)
                     ]
                 ),
@@ -400,7 +477,7 @@ async def test_an_unknown_command_is_reported_and_not_sent() -> None:
 
 async def test_clear_screen_forgets_the_rendered_conversation() -> None:
     backend = ScriptedBackend(
-        streams=[stream(*frames(("message", {"id": "m1", "role": "user", "content": "kept"})), hold=True)]
+        streams=[stream(*frames(("message", {"kind": "human_input", "id": "m1", "content": "kept"})), hold=True)]
     )
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -467,14 +544,14 @@ async def test_slash_session_switches_to_the_named_session() -> None:
     backend = ScriptedBackend()
     backend.session = snapshot(
         session_id="tui-e2e",
-        history=[{"role": "user", "content": "old history"}],
+        history=[human_record("n1", "old history")],
     )
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
         backend.session = snapshot(
             session_id="other-session",
-            history=[{"role": "user", "content": "from the other one"}],
+            history=[human_record("n2", "from the other one")],
         )
         composer = app.query_one("#composer", Composer)
         composer.load_text("/session other-session")
@@ -512,7 +589,8 @@ async def test_picking_a_session_from_the_picker_switches_to_it() -> None:
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
         backend.session = snapshot(
-            session_id="two", history=[{"role": "user", "content": "picked two"}]
+            session_id="two",
+            history=[human_record("n3", "picked two")],
         )
         composer = app.query_one("#composer", Composer)
         composer.load_text("/session")
@@ -710,7 +788,7 @@ async def test_choosing_a_thread_shows_it_read_only() -> None:
         await settle(pilot)
         backend.session = snapshot(
             thread_id="child-1",
-            history=[{"role": "user", "content": "subagent work"}],
+            history=[human_record("n4", "subagent work")],
         )
         composer = app.query_one("#composer", Composer)
         composer.load_text("/thread child-1")
@@ -743,7 +821,7 @@ async def test_returning_to_the_main_thread_restores_the_composer() -> None:
         await pilot.press("enter")
         await settle(pilot)
         assert app.controller is not None and app.controller.composer_model().read_only
-        backend.session = snapshot(history=[{"role": "user", "content": "main work"}])
+        backend.session = snapshot(history=[human_record("n5", "main work")])
         composer.load_text("/thread main")
         await pilot.press("enter")
         await settle(pilot)
@@ -779,12 +857,12 @@ async def test_a_failed_thread_read_is_reported_and_changes_nothing() -> None:
 def reasoning_turn(text: str = "deliberating") -> tuple:
     return (
         frames(
-            ("assistant_message_delta", {"reasoning": text}),
-            ("assistant_message", {"id": "a1", "content": "the answer"}),
+            ("assistant_reasoning_delta", {"text": text}),
+            ("assistant_completed", assistant_record("a1", "the answer", reasoning=text)),
         )[0],
         frames(
-            ("assistant_message_delta", {"reasoning": text}),
-            ("assistant_message", {"id": "a1", "content": "the answer"}),
+            ("assistant_reasoning_delta", {"text": text}),
+            ("assistant_completed", assistant_record("a1", "the answer", reasoning=text)),
         )[1],
     )
 
@@ -802,6 +880,21 @@ async def test_thinking_off_hides_reasoning_and_says_so() -> None:
         assert "deliberating" not in transcript_text(app)
         assert "the answer" in transcript_text(app)
         assert "reasoning hidden" in transcript_text(app).lower()
+
+
+async def test_streamed_reasoning_renders_as_a_think_block_through_completion() -> None:
+    from XBotv2.tui.view.blocks import ClampedBlock
+
+    backend = ScriptedBackend(streams=[stream(*reasoning_turn(), hold=True)])
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        think_blocks = [
+            block for block in app.query(ClampedBlock) if block.label == "Think"
+        ]
+        assert len(think_blocks) == 1
+        assert "deliberating" in think_blocks[0].body_widget.content.plain
+        assert "the answer" in transcript_text(app)
 
 
 async def test_thinking_toggles_back_on() -> None:
@@ -825,8 +918,8 @@ async def test_details_off_hides_a_tool_payload() -> None:
         streams=[
             stream(
                 *frames(
-                    ("tool_calls_started", {"tool_calls": [{"id": "c1", "name": "bash", "args": {"cmd": "ls -la"}}]}),
-                    ("tool_result", {"tool_call_id": "c1", "name": "bash", "status": "success", "content": "SECRET-OUTPUT"}),
+                    ("tool_calls_started", {"calls": [{"call": {"id": "c1", "name": "bash", "args": {"cmd": "ls -la"}}, "category": "execute"}]}),
+                    ("tool_completed", tool_record("c1", "bash", "SECRET-OUTPUT")),
                 ),
                 hold=True,
             )
@@ -834,6 +927,10 @@ async def test_details_off_hides_a_tool_payload() -> None:
     )
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        assert "SECRET-OUTPUT" not in transcript_text(app)
+        assert "tool output" in transcript_text(app)
+        await pilot.press("ctrl+e")
         await settle(pilot)
         assert "SECRET-OUTPUT" in transcript_text(app)
         composer = app.query_one("#composer", Composer)
@@ -908,16 +1005,10 @@ async def test_the_jobs_panel_still_shows_while_the_queue_is_hidden() -> None:
                 *frames(
                     (
                         "job_updated",
-                        {
-                            "job_id": "j1",
-                            "kind": "shell",
-                            "status": "running",
-                            "command": "pytest",
-                            "cwd": "/w",
-                            "created_at": 0,
-                            "started_at": 1,
-                            "finished_at": 0,
-                        },
+                        {"view": {
+                            "id": "j1", "kind": "shell", "label": "pytest",
+                            "state": "running", "elapsed_ms": 1,
+                        }},
                     ),
                 ),
                 hold=True,
@@ -1004,15 +1095,10 @@ async def test_a_huge_tool_result_leaves_the_input_on_screen() -> None:
         streams=[
             stream(
                 *frames(
-                    ("tool_calls_started", {"tool_calls": [{"id": "c1", "name": "bash", "args": {}}]}),
+                    ("tool_calls_started", {"calls": [{"call": {"id": "c1", "name": "bash", "args": {}}, "category": "execute"}]}),
                     (
-                        "tool_result",
-                        {
-                            "tool_call_id": "c1",
-                            "name": "bash",
-                            "status": "success",
-                            "content": "\n".join(f"row {index}" for index in range(2000)),
-                        },
+                        "tool_completed",
+                        tool_record("c1", "bash", "\n".join(f"row {index}" for index in range(2000))),
                     ),
                 ),
                 hold=True,
@@ -1146,8 +1232,8 @@ async def test_a_folded_block_expands_from_the_keyboard() -> None:
         streams=[
             stream(
                 *frames(
-                    ("assistant_message_delta", {"content": "\n".join(f"line {i}" for i in range(40))}),
-                    ("assistant_message", {"id": "a1", "content": "\n".join(f"line {i}" for i in range(40))}),
+                    ("assistant_text_delta", {"text": "\n".join(f"line {i}" for i in range(40))}),
+                    ("assistant_completed", assistant_record("a1", "\n".join(f"line {i}" for i in range(40)))),
                 ),
                 hold=True,
             )

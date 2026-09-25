@@ -3,7 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class BrowserSearchConfig(BaseModel):
+class SearchPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     backend: str = "yandex"
@@ -11,32 +11,32 @@ class BrowserSearchConfig(BaseModel):
     safesearch: str = "moderate"
 
 
-class BrowserNetworkConfig(BaseModel):
+class NetworkPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    timeout_seconds: float = Field(default=20.0, gt=0)
-    max_response_bytes: int = Field(default=5_000_000, ge=1)
-    allow_private: bool = False
+    timeout: float = Field(default=20.0, gt=0)
+    max_bytes: int = Field(default=5_000_000, ge=1)
+    private_access: bool = False
 
 
-class BrowserSessionConfig(BaseModel):
+class BrowserSessionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     headless: bool = True
-    timeout_seconds: float = Field(default=30.0, gt=0)
+    timeout: float = Field(default=30.0, gt=0)
 
 
 class BrowserConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    search: BrowserSearchConfig = Field(default_factory=BrowserSearchConfig)
-    network: BrowserNetworkConfig = Field(default_factory=BrowserNetworkConfig)
-    browser: BrowserSessionConfig = Field(default_factory=BrowserSessionConfig)
+    search: SearchPolicy = Field(default_factory=SearchPolicy)
+    network: NetworkPolicy = Field(default_factory=NetworkPolicy)
+    session: BrowserSessionPolicy = Field(default_factory=BrowserSessionPolicy)
 
 
 __all__ = [
     "BrowserConfig",
-    "BrowserNetworkConfig",
-    "BrowserSearchConfig",
-    "BrowserSessionConfig",
+    "BrowserSessionPolicy",
+    "NetworkPolicy",
+    "SearchPolicy",
 ]

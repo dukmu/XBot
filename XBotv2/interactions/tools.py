@@ -6,13 +6,9 @@ import inspect
 import json
 from typing import Literal
 
-from XBotv2.core.tools import (
-    ClientEvent,
-    Tool,
-    ToolCall,
-    ToolResult,
-)
-from XBotv2.interactions import ClientMessageData, InteractionsPort
+from XBotv2.core.parts import TextPart
+from XBotv2.core.tools import Tool, ToolCall, ToolError, ToolFailed, ToolOutput, ToolSucceeded, ToolOutcome
+from XBotv2.interactions import Answered, InteractionsPort, UserInputOption
 
 
 _ASK_USER_SCHEMA = {
@@ -42,35 +38,20 @@ _ASK_USER_SCHEMA = {
 def send_message_to_user(
     message: str,
     level: Literal["info", "warning", "error"] = "info",
-) -> ToolResult:
+) -> ToolSucceeded:
     """Send a non-blocking progress or diagnostic message to the client."""
-    return ToolResult(
-        content=f"Message sent to user: {message}",
-        client_events=(ClientEvent(
-            type="client_message",
-            data=ClientMessageData(
-                message=message,
-                level=level,
-                source="send_message",
-            ).model_dump(),
-        ),),
-    )
+    return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=f"Message sent to user: {message}"),)))
 
 
 async def ask_user_for_input(
     question: str,
-    options: list[dict[str, str]],
+    options: tuple[UserInputOption, ...],
     timeout_seconds: float | None = None,
     *,
-    interactions: InteractionsPort | None = None,
+    interactions: InteractionsPort,
     tool_call_id: str = "",
-) -> ToolResult:
+) -> ToolSucceeded | ToolFailed:
     """Pause this tool call until the client answers one necessary question."""
-    if interactions is None:
-        return ToolResult.failure(
-            "interaction_unavailable",
-            "User input is unavailable in this session.",
-        )
     result = await interactions.request_user_input(
         question,
         options=options,
@@ -78,19 +59,21 @@ async def ask_user_for_input(
         timeout_seconds=timeout_seconds,
         tool_call_id=tool_call_id,
     )
-    if result.get("status") != "answered":
-        status = str(result.get("status") or "unavailable")
-        return ToolResult.failure(
-            "interaction_not_answered",
-            f"User input was not answered ({status}).",
+    if not isinstance(result, Answered):
+        return ToolFailed(
+            error=ToolError(
+                code="interaction_not_answered",
+                message=f"User input was not answered ({result.kind}).",
+            ),
+            output=ToolOutput(),
         )
-    answer = result.get("answer", "")
+    answer = result.answer
     content = (
         answer
         if isinstance(answer, str)
         else json.dumps(answer, ensure_ascii=False, default=str)
     )
-    return ToolResult.success(content)
+    return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=content),)))
 
 
 def build_ask_user_tool(interactions: InteractionsPort) -> Tool:
@@ -102,10 +85,10 @@ def build_ask_user_tool(interactions: InteractionsPort) -> Tool:
         timeout_seconds: float | None = None,
         *,
         tool_call: ToolCall,
-    ) -> ToolResult:
+    ) -> ToolSucceeded | ToolFailed:
         return await ask_user_for_input(
             question,
-            options,
+            tuple(UserInputOption.model_validate(option) for option in options),
             timeout_seconds,
             interactions=interactions,
             tool_call_id=tool_call.id,

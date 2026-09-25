@@ -190,7 +190,7 @@ class SelectionScreen(ModalScreen[str | None]):
     def rendered_rows(self) -> tuple[str, ...]:
         """The rows currently on screen, for tests and for inspection."""
         return tuple(
-            str(getattr(row.content, "plain", "") or "")
+            str(row.content)
             for row in self._rows
             if row.display
         )

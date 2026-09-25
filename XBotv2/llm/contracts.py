@@ -8,15 +8,19 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import (
-    Message,
-    ModelChunk,
+from XBotv2.core.provider import ModelRequest, ProviderMessage, ToolSchema
+from XBotv2.core.stream import (
+    ModelCancelled,
+    ModelCompleted,
+    ModelFailed,
     ModelResponse,
-    merge_model_chunk,
+    ModelStreamEvent,
+    ReasoningDelta,
+    TextDelta,
+    ToolCallDelta,
 )
 from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.providers import BaseProvider, ModelRequestOptions
+from XBotv2.core.providers import BaseProvider, ProviderFailure
 
 
 class ModelConfig(BaseModel):
@@ -123,7 +127,7 @@ class LlmConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default: str = "default"
+    default_provider: str = "default"
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
@@ -161,25 +165,15 @@ class LlmCatalogPort(Protocol):
 class ModelPort(Protocol):
     """Mutable model binding consumed by the Agent loop."""
 
-    def bind_tools(
-        self,
-        tools: list[dict[str, JsonValue]],
-        **kwargs: object,
-    ) -> BaseProvider: ...
-
     def astream(
         self,
-        messages: list[Message],
-        *,
-        options: ModelRequestOptions | None = None,
-    ) -> AsyncIterator[ModelChunk]: ...
+        request: ModelRequest,
+    ) -> AsyncIterator[ModelStreamEvent]: ...
 
 
 async def invoke_llm(
     llm: ModelPort,
-    messages: list[Message],
-    *,
-    output_tokens: int | None = None,
+    request: ModelRequest,
 ) -> ModelResponse:
     """Run one unbound auxiliary model call and return the merged response.
 
@@ -189,13 +183,21 @@ async def invoke_llm(
     port's ``astream``; providers implement nothing extra for this.
     """
     aggregate: ModelResponse | None = None
-    options = (
-        ModelRequestOptions(max_output_tokens=max(1, int(output_tokens)))
-        if output_tokens is not None
-        else None
-    )
-    async for chunk in llm.astream(messages, options=options):
-        aggregate = merge_model_chunk(aggregate, chunk)
+    terminal_seen = False
+    async for event in llm.astream(request):
+        if terminal_seen:
+            raise RuntimeError(
+                "Model stream produced an event after its terminal event"
+            )
+        if isinstance(event, ModelCompleted):
+            aggregate = event.response
+            terminal_seen = True
+        elif isinstance(event, ModelFailed):
+            raise ProviderFailure(event.error)
+        elif isinstance(event, ModelCancelled):
+            raise RuntimeError(event.reason)
+        elif not isinstance(event, (TextDelta, ReasoningDelta, ToolCallDelta)):
+            raise TypeError(f"Unsupported model stream event: {event!r}")
     if aggregate is None:
         raise RuntimeError("Auxiliary model call produced no response")
     return aggregate
@@ -208,11 +210,6 @@ class LlmServicePort(LlmCatalogPort, Protocol):
     def unregister(self, provider: str) -> bool: ...
     def providers(self) -> tuple[str, ...]: ...
     def has(self, provider: str) -> bool: ...
-    def configure(
-        self,
-        default: str | None,
-        providers: dict[str, dict[str, JsonValue]] | None,
-    ) -> None: ...
     def default_name(self) -> str: ...
     def names(self) -> tuple[str, ...]: ...
     def provider_config(self, name: str, *, require_key: bool = True) -> ProviderConfig: ...
@@ -222,7 +219,6 @@ class LlmServicePort(LlmCatalogPort, Protocol):
         model_config: ModelConfig | None = None,
         *,
         model: str | None = None,
-        artifacts: ArtifactStorePort | None = None,
     ) -> BaseProvider: ...
 
 

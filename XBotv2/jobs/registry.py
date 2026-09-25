@@ -1,70 +1,47 @@
-"""Kind-agnostic lifecycle registry for runtime jobs.
-
-The registry owns every lifecycle concern shared by all job kinds: ids,
-status transitions, waiting, cancellation, event notification, result/output
-storage, and cleanup. Domain adapters (shell, subagent) only implement a
-JobRunner and their model-facing tools; they never hold job state themselves.
-"""
+"""Lifecycle registry for owner-defined jobs."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from dataclasses import replace
-from typing import Any
 
 from XBotv2.jobs.contracts import (
-    TERMINAL_STATES,
     JOB_COMPLETED,
     JOB_UPDATED,
     CancelResult,
+    CancelledBeforeStart,
+    CancelledRunning,
+    FailedBeforeStart,
+    FailedRunning,
     Job,
     JobError,
+    JobEventPort,
     JobId,
-    JobKind,
+    JobIdentity,
     JobNotFound,
     JobRegistryClosed,
-    JobResult,
-    JobStatus,
-    JobSummary,
-    MAX_SUMMARY_CHARS,
-    JobEventPort,
-    WaitResult,
-    WaitMode,
     JobRunner,
+    JobStateName,
+    JobSpec,
+    JobView,
     JobsPort,
-    JobSnapshot,
+    MAX_SUMMARY_CHARS,
+    Queued,
+    Running,
+    Succeeded,
+    WaitMode,
+    WaitResult,
 )
-from XBotv2.jobs.runner import JobContext
-from pydantic import JsonValue
 
 logger = logging.getLogger("xbotv2.jobs")
 
-# Client-facing kind names preserved for the protocol / TUI task surface.
-_PROTOCOL_KIND = {
-    JobKind.SUBAGENT: "agent",
-    JobKind.SHELL: "shell",
-}
-_PROTOCOL_STATUS = {
-    JobStatus.PENDING: "pending",
-    JobStatus.RUNNING: "running",
-    JobStatus.COMPLETED: "completed",
-    JobStatus.FAILED: "failed",
-    JobStatus.CANCELLED: "stopped",
-}
-_MAX_SNAPSHOT_OUTPUT = 2_000
-_MAX_SNAPSHOT_COMMAND = 1_000
-_MAX_SUBAGENT_PROMPT_PREVIEW = 100
-
 
 class JobRegistry(JobsPort):
-    """One shared lifecycle store for all jobs owned by an engine."""
-
     def __init__(
         self,
         *,
-        limits: dict[JobKind, int] | None = None,
+        limits: dict[str, int] | None = None,
         prefix: str = "job",
         publisher: JobEventPort | None = None,
     ) -> None:
@@ -74,106 +51,87 @@ class JobRegistry(JobsPort):
         self._tasks: dict[JobId, asyncio.Task[None]] = {}
         self._next_id = 1
         self._prefix = prefix
-        self._limits: dict[JobKind, asyncio.Semaphore] = {
-            kind: asyncio.Semaphore(limit)
-            for kind, limit in (limits or {}).items()
+        self._limits = {
+            kind: asyncio.Semaphore(limit) for kind, limit in (limits or {}).items()
         }
         self._closing = False
-        # Lifecycle transitions are published on the bus; the owning plugin
-        # subscribes with fiber-owned listeners (never assigned attributes).
         self._publisher = publisher
 
     @property
     def closing(self) -> bool:
         return self._closing
 
-    # ------------------------------------------------------------------
-    # Creation / lifecycle
-    # ------------------------------------------------------------------
-
     async def create(
         self,
         *,
-        kind: JobKind,
-        metadata: dict[str, JsonValue] | None = None,
+        spec: JobSpec,
+        owner: str,
         parent_job_id: JobId | None = None,
         name: str | None = None,
     ) -> Job:
-        """Create one PENDING job and register it in the store."""
         if self._closing:
             raise JobRegistryClosed("session_closing")
+        if not owner.strip() or not spec.kind.strip() or not spec.label.strip():
+            raise ValueError("job owner, kind, and label are required")
         job = Job(
-            id=self._next_job_id(kind),
-            kind=kind,
-            status=JobStatus.PENDING,
-            parent_job_id=parent_job_id,
-            name=name,
-            metadata=dict(metadata or {}),
+            identity=JobIdentity(
+                id=self._next_job_id(spec.kind),
+                owner=owner,
+                parent=parent_job_id,
+                name=name,
+                created_at=time.time(),
+            ),
+            spec=spec,
         )
         self._jobs[job.id] = job
         self._completion_events[job.id] = asyncio.Event()
-        await self._notify_update(job)
+        await self._notify(job)
         return job
 
     def start(self, job_id: JobId, runner: JobRunner) -> Job:
-        """Begin executing *job_id* with *runner* in the background."""
         job = self._require(job_id)
-        if job.status is not JobStatus.PENDING:
-            raise ValueError(f"Job {job_id} is not pending")
-        self._runners[job.id] = runner
-        self._tasks[job.id] = asyncio.create_task(
-            self._execute(job, runner),
-            name=f"xbotv2-{job.id}",
+        if not isinstance(job.state, Queued):
+            raise ValueError(f"Job {job_id} is not queued")
+        self._runners[job_id] = runner
+        self._tasks[job_id] = asyncio.create_task(
+            self._execute(job, runner), name=f"xbotv2-{job_id}"
         )
         return job
-
-    def get(self, job_id: JobId) -> Job:
-        return self._require(job_id)
 
     def get_or_none(self, job_id: JobId) -> Job | None:
         return self._jobs.get(job_id)
 
-    def summary(self, job_id: JobId) -> JobSummary:
-        return job_summary(self._require(job_id))
-
     def all(self) -> list[Job]:
         return list(self._jobs.values())
 
+    def views(self) -> list[JobView]:
+        return [self.view(job) for job in self._jobs.values()]
+
     def is_busy(self) -> bool:
-        """Whether any job is still pending or running."""
-        return any(
-            job.status in {JobStatus.PENDING, JobStatus.RUNNING}
-            for job in self._jobs.values()
-        )
+        return any(not job.terminal for job in self._jobs.values())
 
     def list(
         self,
         *,
-        kind: JobKind | None = None,
-        status: JobStatus | None = None,
+        kind: str | None = None,
+        status: JobStateName | None = None,
         parent_job_id: JobId | None = None,
         recursive: bool = False,
         max_results: int = 20,
-    ) -> list[JobSummary]:
-        """Return lightweight summaries, newest first, capped by default."""
-        items = list(self._jobs.values())
+    ) -> list[JobView]:
+        jobs = list(self._jobs.values())
         if kind is not None:
-            items = [job for job in items if job.kind is kind]
+            jobs = [job for job in jobs if job.kind == kind]
         if status is not None:
-            items = [job for job in items if job.status is status]
+            jobs = [job for job in jobs if job.status == status]
         if parent_job_id is not None:
-            items = [
-                job
-                for job in items
+            jobs = [
+                job for job in jobs
                 if (recursive and job.parent_job_id is not None)
                 or (not recursive and job.parent_job_id == parent_job_id)
             ]
-        items.sort(key=lambda job: job.created_at, reverse=True)
-        return [job_summary(job) for job in items[:max_results]]
-
-    # ------------------------------------------------------------------
-    # Waiting
-    # ------------------------------------------------------------------
+        jobs.sort(key=lambda job: job.created_at, reverse=True)
+        return [self.view(job) for job in jobs[:max_results]]
 
     async def wait(
         self,
@@ -182,184 +140,70 @@ class JobRegistry(JobsPort):
         mode: WaitMode = "all",
         timeout: float | None = None,
     ) -> WaitResult:
-        """Wait for job completions and return only lightweight summaries.
-
-        Bulk output is never included; use the domain ``read_*`` tools for text.
-        """
         jobs = [self._require(job_id) for job_id in ids]
-        if mode == "any":
-            return await self._wait_any(jobs, timeout)
-        return await self._wait_all(jobs, timeout)
-
-    async def _wait_all(
-        self,
-        jobs: list[Job],
-        timeout: float | None,
-    ) -> WaitResult:
-        events = [self._completion_events[job.id] for job in jobs]
+        active = [job for job in jobs if not job.terminal]
         timed_out = False
-        if events:
+        waits = [self._completion_events[job.id].wait() for job in active]
+        if waits:
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(event.wait() for event in events)),
-                    timeout,
-                )
+                if mode == "all":
+                    await asyncio.wait_for(asyncio.gather(*waits), timeout)
+                else:
+                    tasks = [asyncio.create_task(wait) for wait in waits]
+                    done, pending = await asyncio.wait(
+                        tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    timed_out = not done
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
             except asyncio.TimeoutError:
                 timed_out = True
-            except asyncio.CancelledError:
-                raise
-        return self._wait_result(jobs, timed_out)
-
-    async def _wait_any(
-        self,
-        jobs: list[Job],
-        timeout: float | None,
-    ) -> WaitResult:
-        active = [job for job in jobs if not job.terminal]
-        done_tasks = [
-            asyncio.create_task(self._completion_events[job.id].wait())
-            for job in active
-        ]
-        timed_out = False
-        if done_tasks:
-            try:
-                done, pending = await asyncio.wait(
-                    done_tasks,
-                    timeout=timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            except asyncio.CancelledError:
-                for task in done_tasks:
-                    task.cancel()
-                raise
-            timed_out = not done
-            for task in pending:
-                task.cancel()
-        return self._wait_result(jobs, timed_out)
-
-    @staticmethod
-    def _wait_result(jobs: list[Job], timed_out: bool) -> WaitResult:
         return WaitResult(
-            ready=[job_summary(job) for job in jobs if job.terminal],
-            pending=[job.id for job in jobs if not job.terminal],
+            ready=tuple(self.view(job) for job in jobs if job.terminal),
+            pending=tuple(job.id for job in jobs if not job.terminal),
             timed_out=timed_out,
         )
 
-    # ------------------------------------------------------------------
-    # Cancellation / removal / shutdown
-    # ------------------------------------------------------------------
-
     async def cancel(self, job_id: JobId) -> CancelResult:
-        """Cancel a job idempotently. Terminal jobs are left untouched."""
         job = self._require(job_id)
         if job.terminal:
-            return CancelResult(
-                id=job_id, status=job.status.value, cancelled=False
-            )
-        runner_task = self._tasks.get(job.id)
-        # A PENDING job that never started has no task: writing the terminal
-        # state is safe because nothing can later overwrite it.
-        if job.status is JobStatus.PENDING and (
-            runner_task is None or runner_task.done()
-        ):
-            await self._finish(job, JobStatus.CANCELLED)
-            return CancelResult(id=job_id, status=job.status.value, cancelled=True)
-        if runner_task is None or runner_task.done():
-            return CancelResult(
-                id=job_id, status=job.status.value, cancelled=False
-            )
-        runner = self._runners.get(job.id)
+            return CancelResult(job_id, job.status, False)
+        task = self._tasks.get(job_id)
+        runner = self._runners.get(job_id)
         if runner is not None:
             try:
                 await runner.cancel(job)
-            except BaseException:  # noqa: BLE001 - cancellation must proceed
+            except BaseException:
                 logger.exception("runner.cancel failed for job %s", job_id)
-        # A PENDING job still queued behind its kind's semaphore owns a live
-        # task: cancel it so _execute records the terminal transition exactly
-        # once. Short-cutting the status here would let the queued runner
-        # start later and report completion twice.
-        runner_task.cancel()
-        await asyncio.gather(runner_task, return_exceptions=True)
-        # Report what actually happened: a job that finished (or failed)
-        # during cancellation was not cancelled.
-        return CancelResult(
-            id=job_id,
-            status=job.status.value,
-            cancelled=job.status is JobStatus.CANCELLED,
-        )
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        cancelled = isinstance(job.state, (CancelledBeforeStart, CancelledRunning))
+        return CancelResult(job_id, job.status, cancelled)
+
+    async def stop_all(self) -> list[JobView]:
+        active = [job for job in self._jobs.values() if not job.terminal]
+        await asyncio.gather(*(self.cancel(job.id) for job in active), return_exceptions=True)
+        return [self.view(job) for job in active]
+
+    async def shutdown(self) -> list[JobView]:
+        self._closing = True
+        views = await self.stop_all()
+        self.remove_all()
+        return views
 
     def remove(self, job_id: JobId) -> None:
-        """Drop one terminal job and its outputs from the registry."""
-        job = self._jobs.pop(job_id, None)
-        if job is None:
-            return
+        self._jobs.pop(job_id, None)
         self._completion_events.pop(job_id, None)
         self._runners.pop(job_id, None)
         self._tasks.pop(job_id, None)
-        job.result = None
-        job.metadata.clear()
-
-    async def stop_all(self) -> list[JobSnapshot]:
-        """Cancel every non-terminal job and return their final snapshots."""
-        active = [job for job in self._jobs.values() if not job.terminal]
-        # Gracefully stop runners first, concurrently, so live children begin
-        # their own shutdown before any task is cancelled.
-        await asyncio.gather(
-            *(
-                self._graceful_runner_cancel(job)
-                for job in active
-                if self._has_live_task(job.id)
-            ),
-            return_exceptions=True,
-        )
-        # Cancel every live task before awaiting any of them. Cancelling in
-        # one synchronous batch prevents a slot released by one cancellation
-        # from being re-acquired by a still-PENDING task mid-loop: a queued
-        # task resumes with cancellation pending and dies at the semaphore
-        # instead of starting its runner.
-        for job in active:
-            task = self._tasks.get(job.id)
-            if task is not None and not task.done():
-                task.cancel()
-            elif job.status is JobStatus.PENDING:
-                await self._finish(job, JobStatus.CANCELLED)
-        for job in active:
-            task = self._tasks.get(job.id)
-            if task is not None:
-                await asyncio.gather(task, return_exceptions=True)
-        return [self.snapshot(job) for job in active]
-
-    def _has_live_task(self, job_id: JobId) -> bool:
-        task = self._tasks.get(job_id)
-        return task is not None and not task.done()
-
-    async def _graceful_runner_cancel(self, job: Job) -> None:
-        runner = self._runners.get(job.id)
-        if runner is None:
-            return
-        try:
-            await runner.cancel(job)
-        except BaseException:  # noqa: BLE001 - cancellation must proceed
-            logger.exception("runner.cancel failed for job %s", job.id)
-
-    async def shutdown(self) -> list[JobSnapshot]:
-        """Cancel all non-terminal jobs; drop terminal jobs' outputs."""
-        self._closing = True
-        # Suppress completion notices: shutdown is not an ordinary completion.
-        snapshots = await self.stop_all()
-        self.remove_all()
-        return snapshots
 
     def remove_all(self) -> None:
-        for job_id in list(self._jobs):
+        for job_id in tuple(self._jobs):
             self.remove(job_id)
 
-    # ------------------------------------------------------------------
-    # Execution wrapper
-    # ------------------------------------------------------------------
-
     async def _execute(self, job: Job, runner: JobRunner) -> None:
-        ctx = JobContext()
         semaphore = self._limits.get(job.kind)
         acquired = False
         try:
@@ -367,119 +211,65 @@ class JobRegistry(JobsPort):
                 await semaphore.acquire()
                 acquired = True
             if job.terminal:
-                # A terminal state recorded while this task was queued wins
-                # over starting the runner (defensive guard: the cancel path
-                # cancels the task instead, so future writers cannot quietly
-                # resurrect a cancelled runner).
-                if job.finished_at is None:
-                    await self._finish(job, job.status)
                 return
-            job.status = JobStatus.RUNNING
-            job.started_at = time.time()
-            await self._notify_update(job)
-            result = await runner.run(job, ctx)
-            job.result = result
-            job.status = JobStatus.COMPLETED
+            started = time.time()
+            job.state = Running(started)
+            await self._notify(job)
+            result = await runner.run(job)
+            job.state = Succeeded(started, time.time(), result)
         except asyncio.CancelledError:
-            job.status = JobStatus.CANCELLED
-        except Exception as exc:  # noqa: BLE001 - job failures are state
-            job.error = normalize_error(exc)
-            job.status = JobStatus.FAILED
+            now = time.time()
+            if isinstance(job.state, Running):
+                job.state = CancelledRunning(job.state.started_at, now, "cancelled")
+            else:
+                job.state = CancelledBeforeStart(now, "cancelled")
+        except Exception as exc:
+            now = time.time()
+            error = normalize_error(exc)
+            if isinstance(job.state, Running):
+                job.state = FailedRunning(job.state.started_at, now, error)
+            else:
+                job.state = FailedBeforeStart(now, error)
         finally:
-            if semaphore is not None and acquired:
+            if acquired and semaphore is not None:
                 semaphore.release()
-            if job.result is None and ctx.primary_output is not None:
-                job.result = JobResult(output_store=ctx.primary_output)
-            await self._finish(job, job.status)
+            await self._notify(job)
+            if job.terminal:
+                event = self._completion_events.get(job.id)
+                if event is not None:
+                    event.set()
+                await self._notify_complete(job)
 
-    async def _finish(self, job: Job, status: JobStatus) -> None:
-        if job.finished_at is not None:
-            # Exactly one terminal transition per job: the first writer owns
-            # the notification, so waiters observe the state once.
-            return
-        job.status = status
-        job.finished_at = time.time()
-        # A completion waiter observes the fully published terminal transition,
-        # not merely the runner having stopped.
-        await self._notify_update(job)
-        await self._notify_complete(job)
-        event = self._completion_events.get(job.id)
-        if event is not None:
-            event.set()
-
-    # ------------------------------------------------------------------
-    # Notification
-    # ------------------------------------------------------------------
-
-    async def _notify_update(self, job: Job) -> None:
+    async def _notify(self, job: Job) -> None:
         if self._publisher is None or self._closing:
             return
         try:
-            await self._publisher.emit(JOB_UPDATED, self.snapshot(job))
-        except BaseException:  # noqa: BLE001 - notify must not break jobs
+            await self._publisher.emit(JOB_UPDATED, self.view(job))
+        except BaseException:
             logger.exception("job update publish failed for %s", job.id)
 
     async def _notify_complete(self, job: Job) -> None:
         if self._publisher is None or self._closing:
             return
         try:
-            await self._publisher.emit(
-                JOB_COMPLETED,
-                self.snapshot(job, full_output=(job.kind is JobKind.SUBAGENT)),
-            )
-        except BaseException:  # noqa: BLE001 - notify must not break cleanup
+            await self._publisher.emit(JOB_COMPLETED, self.view(job))
+        except BaseException:
             logger.exception("job completion publish failed for %s", job.id)
 
-    # ------------------------------------------------------------------
-    # Snapshot / rendering
-    # ------------------------------------------------------------------
-
-    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot:
-        """Build one bounded client-facing task snapshot."""
-        metadata = job.metadata
-        if job.kind is JobKind.SHELL:
-            cwd = str(metadata.get("cwd") or "")
-            agent = ""
-            thread_id = ""
-        else:
-            cwd = ""
-            agent = str(metadata.get("agent") or "")
-            thread_id = str(metadata.get("thread_id") or "")
-        command = str(metadata.get("command") or "")
-        output = self._snapshot_output(job, full_output=full_output)
-        error = str(job.error.message if job.error is not None else "")
-        return JobSnapshot(
-            job_id=job.id,
-            kind=_PROTOCOL_KIND[job.kind],
-            command=command if full_output else _preview(command, _MAX_SNAPSHOT_COMMAND),
-            cwd=cwd,
-            status=_PROTOCOL_STATUS[job.status],
-            created_at=job.created_at,
-            started_at=job.started_at or 0.0,
-            finished_at=job.finished_at or 0.0,
-            output=output,
-            error=_preview(error, _MAX_SNAPSHOT_OUTPUT),
-            agent=agent,
-            thread_id=thread_id,
-            usage=dict(
-                (job.result.data.get("usage") if job.result is not None else {}) or {}
-            ),
+    @staticmethod
+    def view(job: Job) -> JobView:
+        summary = job.error.message if job.error is not None else None
+        return JobView(
+            id=job.id,
+            kind=job.kind,
+            label=job.spec.label,
+            state=job.status,
+            elapsed_ms=job.elapsed_ms,
+            summary=_preview(summary, MAX_SUMMARY_CHARS) if summary else None,
         )
 
-    def snapshots(self) -> list[JobSnapshot]:
-        """Snapshot every live job in registration order."""
-        return [self.snapshot(job) for job in self.all()]
-
-    @staticmethod
-    def _snapshot_output(job: Job, *, full_output: bool) -> str:
-        result = job.result
-        if result is None or result.output_store is None:
-            return ""
-        value = result.output_store.all()
-        return value if full_output else _preview(value, _MAX_SNAPSHOT_OUTPUT)
-
-    def _next_job_id(self, kind: JobKind) -> JobId:
-        prefix = "sa" if kind is JobKind.SUBAGENT else "sh"
+    def _next_job_id(self, kind: str) -> JobId:
+        prefix = kind.replace("-", "_")[:8] or self._prefix
         while True:
             job_id = f"{prefix}_{self._next_id}"
             self._next_id += 1
@@ -493,44 +283,13 @@ class JobRegistry(JobsPort):
         return job
 
 
-def job_summary(job: Job) -> JobSummary:
-    """Build the lightweight model-facing summary for one job."""
-    result = job.result
-    summary = None
-    if result is not None and result.summary:
-        summary = _preview(result.summary, MAX_SUMMARY_CHARS)
-    elif job.error is not None:
-        summary = _preview(job.error.message, MAX_SUMMARY_CHARS)
-    return JobSummary(
-        id=job.id,
-        kind=job.kind.value,
-        status=job.status.value,
-        name=job.name,
-        elapsed_ms=job.elapsed_ms,
-        parent_job_id=job.parent_job_id,
-        summary=summary,
-    )
-
-
 def normalize_error(exc: BaseException) -> JobError:
-    """Map an exception to a structured, model-safe JobError."""
-    code = getattr(exc, "job_error_code", None)
-    if isinstance(code, str):
-        return JobError(code=code, message=str(exc))
-    return JobError(
-        code=getattr(exc, "code", None) or "job_failed",
-        message=str(exc) or type(exc).__name__,
-    )
+    code = getattr(exc, "job_error_code", None) or getattr(exc, "code", None) or "job_failed"
+    return JobError(code=str(code), message=str(exc) or type(exc).__name__)
 
 
 def _preview(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[:limit]}\n[truncated; {len(value) - limit} characters omitted]"
+    return value if len(value) <= limit else f"{value[:limit]}\n[truncated]"
 
 
-__all__ = [
-    "JobRegistry",
-    "job_summary",
-    "normalize_error",
-]
+__all__ = ["JobRegistry", "normalize_error"]

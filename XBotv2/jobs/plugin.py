@@ -11,14 +11,21 @@ from xcore import Context
 
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import AgentLoopDriverPort, EventContext, EventPort, Events
+from XBotv2.agentloop import (
+    AgentLoopDriverPort,
+    EventPort,
+    Events,
+    InboxItem,
+    InboxTarget,
+    RuntimeInput,
+)
+from XBotv2.agentloop.events import SessionLifecycle
 from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.jobs import JobKind
 from XBotv2.jobs.commands import build_jobs_commands
 from XBotv2.jobs.contracts import JOB_COMPLETED, JOB_UPDATED
 from XBotv2.jobs.protocol import (
     build_jobs_router,
-    job_completion_event,
+    job_completed_event,
     job_updated_event,
 )
 from XBotv2.jobs.registry import JobRegistry
@@ -31,7 +38,7 @@ from XBotv2.jobs.contracts import (
     StopJob,
     StoppedJobs,
     JobCatalog,
-    JobSnapshot,
+    JobView,
 )
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
 from XBotv2.server import contribute_router
@@ -61,7 +68,7 @@ class JobsRuntimeComponent:
         # are delivered whenever the registry runs — never by assignment
         # order inside apply.
         registry = JobRegistry(
-            limits={JobKind.SUBAGENT: max_concurrent},
+            limits={"subagent": max_concurrent},
             publisher=ctx,
         )
         ctx.set("jobs", registry)
@@ -88,42 +95,48 @@ class JobHandlers:
         self._engine = engine
         self._events = events
 
-    async def publish_update(self, snapshot: JobSnapshot) -> None:
+    async def publish_update(self, view: JobView) -> None:
         await self._events.emit(
             RUNTIME_EVENT,
-            RuntimeEvent(client_event=job_updated_event(snapshot)),
+            RuntimeEvent(event=job_updated_event(view)),
         )
 
-    async def publish_completion(self, snapshot: JobSnapshot) -> None:
-        event = job_completion_event(snapshot)
-        payload = event.data
-        await self._engine.inject(
-            prompt_container(
-                "runtime_event",
-                [prompt_element(
-                    "payload",
-                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    attributes={"encoding": "json"},
-                )],
-                attributes={"source": "jobs", "event": "completed"},
+    async def publish_completion(self, view: JobView) -> None:
+        event = job_completed_event(view)
+        payload = event.model_dump(mode="json")
+        await self._engine.submit_input(
+            InboxItem(
+                target=InboxTarget.NEXT_STEP,
+                input=RuntimeInput(
+                    source=view.id,
+                    event="completed",
+                    content=prompt_container(
+                        "runtime_event",
+                        [prompt_element(
+                            "payload",
+                            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                            attributes={"encoding": "json"},
+                        )],
+                        attributes={"source": "jobs", "event": "completed"},
+                    ),
+                ),
             ),
-            source=snapshot.job_id,
-            metadata={"kind": "notification", "payload": payload},
+            wake=False,
         )
         await self._events.emit(
             RUNTIME_EVENT,
-            RuntimeEvent(client_event=event),
+            RuntimeEvent(event=event),
         )
 
     def list_jobs(self, _request: EmptyRequest) -> JobCatalog:
-        return JobCatalog(tuple(self._registry.snapshots()))
+        return JobCatalog(tuple(self._registry.views()))
 
     async def stop_job(self, request: StopJob) -> StoppedJobs:
         job = self._registry.get_or_none(request.job_id)
         if job is None:
             raise OperationError("job_not_found", f"Unknown job: {request.job_id}")
         await self._registry.cancel(request.job_id)
-        return StoppedJobs((self._registry.snapshot(job),))
+        return StoppedJobs((self._registry.view(job),))
 
     async def stop_all(self, _request: EmptyRequest) -> StoppedJobs:
         return StoppedJobs(tuple(await self._registry.stop_all()))
@@ -136,7 +149,7 @@ class JobHandlers:
                 retryable=True,
             )
 
-    async def close(self, _event: EventContext) -> None:
+    async def close(self, _event: SessionLifecycle) -> None:
         await self._registry.shutdown()
 
 

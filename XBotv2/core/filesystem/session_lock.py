@@ -1,9 +1,11 @@
-"""Single-runtime ownership of one persisted session directory.
+"""Single-runtime ownership of one persisted session.
 
 Writers are exclusive: one runtime owns a session for as long as it runs, so a
 second runtime fails fast instead of interleaving turns into one trajectory.
 Readers stay allowed: they never take this lock, and a record becomes visible
-only once its terminating newline is durable.
+only once its terminating newline is durable. The lock inode lives outside the
+session directory so an unused session can be discarded without unlinking a
+lock that another process may be opening.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ try:
 except ImportError:  # pragma: no cover - POSIX advisory locks
     fcntl = None  # type: ignore[assignment]
 
-_LOCK_FILE_NAME = "session.lock"
+_LOCKS_DIRECTORY = ".locks"
+_SESSION_LOCK_DIRECTORY = "sessions"
 
 
 class SessionOwnership:
@@ -79,8 +82,13 @@ def acquire_session(root: Path, *, label: str) -> SessionOwnership:
 
 
 def _session_lock_path(root: Path) -> Path:
-    """The lock file one session's runtime ownership is recorded in."""
-    return Path(root) / _LOCK_FILE_NAME
+    """Stable lock inode, independent of the session's materialized files."""
+    return (
+        root.parent.parent
+        / _LOCKS_DIRECTORY
+        / _SESSION_LOCK_DIRECTORY
+        / f"{root.name}.lock"
+    )
 
 
 def _lock_session(root: Path, label: str) -> SessionOwnership:
@@ -90,8 +98,8 @@ def _lock_session(root: Path, label: str) -> SessionOwnership:
             "Session ownership requires POSIX advisory locks (fcntl), which "
             "this platform does not provide",
         )
-    root.mkdir(parents=True, exist_ok=True)
     path = _session_lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

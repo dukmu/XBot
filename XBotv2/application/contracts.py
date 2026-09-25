@@ -10,16 +10,21 @@ from typing import Any, Protocol
 from XBotv2.agentloop import AgentLoopDriverPort
 from XBotv2.agents import AgentDefinition
 from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import Message
-from XBotv2.core.usage import UsageData
-from XBotv2.interactions.contracts import InteractionWaiterPort
-from XBotv2.core.history import ConversationHistory, ConversationPageReader
+from XBotv2.core.messages import ConversationMessage, HumanInputMessage
+from XBotv2.core.domain import UsageSnapshot
+from XBotv2.interactions.contracts import (
+    InteractionRegistration,
+    InteractionRequest,
+    InteractionReceipt,
+    InteractionResolution,
+    InteractionWaiterPort,
+)
+from XBotv2.core.history import ConversationHistory, HistoryReader
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.operations import OperationContext
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
-from XBotv2.core.tools import ClientEvent
 from XBotv2.permissions import PermissionsPort
 from XBotv2.persistence import ThreadLifecycleWriterPort
 
@@ -39,17 +44,11 @@ class StatusSlots:
 
 
 @dataclass(frozen=True, slots=True)
-class AgentApplicationSnapshot:
-    agent: str
-    provider: str
-    model: str
-    model_mode: str
-    context_window: int
-    messages: tuple[Message, ...]
-    usage: UsageData
+class ApplicationSnapshot:
     metadata: ThreadMetadata
+    messages: tuple[ConversationMessage, ...]
+    usage: UsageSnapshot
     status_slots: dict[str, str]
-
 
 class ApplicationEventsPort(OperationContext, Protocol):
     def on(self, event: str, callback: Callable[..., object], **kwargs: Any) -> object: ...
@@ -60,11 +59,8 @@ class ApplicationEventsPort(OperationContext, Protocol):
 class ClientEventSink(Protocol):
     async def __call__(
         self,
-        event: ClientEvent,
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, JsonValue]: ...
+        event: InteractionRequest,
+    ) -> InteractionResolution: ...
 
 
 class ClientEventsPort(Protocol):
@@ -72,35 +68,53 @@ class ClientEventsPort(Protocol):
 
     async def request(
         self,
-        event: ClientEvent,
-        *,
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, JsonValue] | None: ...
+        event: InteractionRequest,
+    ) -> InteractionResolution | None: ...
 
-    def register_waiter(
+    def register_interaction(
         self,
-        event_type: str,
-        waiter: InteractionWaiterPort,
+        registration: InteractionRegistration,
     ) -> Callable[[], bool]: ...
 
-    def waiter(self, event_type: str) -> InteractionWaiterPort | None: ...
+    def waiter_for(self, request: InteractionRequest) -> InteractionWaiterPort: ...
+
+    def timeout_for(self, request: InteractionRequest) -> float | None: ...
+
+    def resolve(
+        self,
+        interaction_id: str,
+        resolution: InteractionResolution,
+    ) -> InteractionReceipt: ...
+
+    def cancel(
+        self,
+        interaction_id: str,
+        reason: str,
+        *,
+        expected_kind: str | None = None,
+    ) -> InteractionReceipt: ...
+
+    def recorded_event(
+        self,
+        request: InteractionRequest,
+        resolution: InteractionResolution,
+    ) -> BaseModel: ...
 
     def pending_request_ids(self) -> list[str]: ...
 
-    def pending_interactions(self) -> list[ClientEvent]: ...
+    def pending_interactions(self) -> list[InteractionRequest]: ...
 
 
 class SessionHistoryPort(Protocol):
     async def clear_history(self) -> int: ...
 
-    async def undo_history(self, count: int) -> list[Message]: ...
+    async def undo_history(self, count: int) -> list[ConversationMessage]: ...
 
-    async def regenerate_history(self) -> Message: ...
+    async def regenerate_history(self) -> HumanInputMessage: ...
 
 
 class UsageSnapshotPort(Protocol):
-    def snapshot(self) -> UsageData: ...
+    def snapshot(self) -> UsageSnapshot: ...
 
 
 class LoopStateView(Protocol):
@@ -114,7 +128,7 @@ class AgentApplicationPort(Protocol):
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
-    history_pages: ConversationPageReader
+    history_pages: HistoryReader
     usage: UsageSnapshotPort
     loop_state: LoopStateView
     persistence_available: bool
@@ -122,7 +136,7 @@ class AgentApplicationPort(Protocol):
 
     async def status_slots(self) -> dict[str, str]: ...
 
-    async def snapshot(self) -> AgentApplicationSnapshot: ...
+    async def snapshot(self) -> ApplicationSnapshot: ...
 
     async def close(self) -> None: ...
 
@@ -132,7 +146,7 @@ class SessionLaunch:
     session_id: str
     thread_id: str
     workspace_root: Path
-    provider_name: str
+    provider_name: str | None
     session_paths: SessionPaths
     interactive: bool
     is_subagent: bool
@@ -155,7 +169,7 @@ class ChildApplicationRequest:
 @dataclass(frozen=True, slots=True)
 class ChildApplicationResult:
     final_response: str
-    usage: UsageData = field(default_factory=UsageData)
+    usage: UsageSnapshot = field(default_factory=UsageSnapshot)
 
 
 class ChildApplication(Protocol):
@@ -178,7 +192,7 @@ class ChildApplicationsPort(Protocol):
 
 __all__ = [
     "AgentApplicationPort",
-    "AgentApplicationSnapshot",
+    "ApplicationSnapshot",
     "ApplicationEventsPort",
     "COLLECT_STATUS_SLOTS",
     "ChildApplicationRequest",

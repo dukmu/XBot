@@ -14,18 +14,18 @@ import xcore
 
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_service import ToolsService
-from XBotv2.core.tools import ClientEvent
-from XBotv2.permissions import ApprovalDecision
+from XBotv2.permissions import Denied
+from XBotv2.permissions.contracts import Approval, PermissionRequest
 
 
 class _UnavailableApproval:
-    async def request(self, _event: ClientEvent) -> ApprovalDecision:
-        return ApprovalDecision(decision="deny")
+    async def request(self, _event: PermissionRequest) -> Approval:
+        return Denied(reason="approval unavailable")
 
 
 async def _ignore_permission_decision(
-    _event: ClientEvent, decision: ApprovalDecision
-) -> ApprovalDecision:
+    _event: PermissionRequest, decision: Approval
+) -> Approval:
     return decision
 
 
@@ -136,7 +136,7 @@ def make_engine(
         )
     state.set_history(ConversationHistory(
         sink=state_store.history,
-        nodes=state_store.history.load_surface(),
+        messages=state_store.history.load_surface(),
     ))
     settings = LoopSettings(
         provider="default",
@@ -189,7 +189,7 @@ def make_engine(
         )
 
     events.on(BUILD_CONTEXT, _build_context)
-    from XBotv2.agentloop import AgentInbox
+    from XBotv2.agentloop import AgentInbox, EphemeralInboxSink
 
     return Engine(
         model_client=llm,
@@ -199,5 +199,5 @@ def make_engine(
         settings=settings,
         # Direct engine construction is explicit about its inbox; no
         # silent transient fallback.
-        inbox=AgentInbox(),
+        inbox=AgentInbox(events=events, sink=EphemeralInboxSink()),
     )

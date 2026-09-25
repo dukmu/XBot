@@ -8,19 +8,31 @@ from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
 
-from pydantic import JsonValue
 from xcore import Context
 from xcore.state import StateService
 
-from XBotv2.agentloop import AgentLoopDriverPort, EventContext, Events
-from XBotv2.core import Tool, ToolResult
+from XBotv2.agentloop import (
+    AgentLoopDriverPort,
+    Events,
+    InboxItem,
+    InboxTarget,
+    RuntimeInput,
+)
+from XBotv2.agentloop.events import TurnStarted
+from XBotv2.application import (
+    ApplicationEventsPort,
+    RUNTIME_EVENT,
+    RuntimeEvent,
+)
+from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
 from XBotv2.core.operations import EmptyRequest
-from XBotv2.core.tools import ClientEvent
 from XBotv2.server import contribute_router
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.todolist.contracts import (
     GET_TODOS,
+    DependencyEdge,
     Task,
+    TaskChanged,
     TaskConfig,
     TaskList,
     TaskStatusInput,
@@ -66,14 +78,16 @@ class TaskService:
         self,
         store: StateService,
         *,
-        agent_name: str = "",
-        engine: AgentLoopDriverPort | None = None,
-        config: TaskConfig | None = None,
+        agent_name: str,
+        engine: AgentLoopDriverPort,
+        events: ApplicationEventsPort,
+        config: TaskConfig,
     ) -> None:
         self._store = store
         self._agent_name = agent_name
         self._engine = engine
-        self._config = config or TaskConfig()
+        self._events = events
+        self._config = config
 
     async def snapshot(self) -> TaskList:
         stored = await self._store.get("snapshot")
@@ -81,17 +95,14 @@ class TaskService:
             return TaskList()
         if not isinstance(stored, Mapping):
             raise TypeError("Persisted task list must be an object")
-        data = dict(stored)
-        if data.get("schema_version") == 1 or "items" in data:
-            data = _migrate_v1(data)
-        return TaskList.model_validate(data)
+        return TaskList.model_validate(stored)
 
     async def task_create(
         self,
         subject: str,
         description: str = "",
-        activeForm: str = "",
-    ) -> ToolResult:
+        active_form: str = "",
+    ) -> ToolOutcome:
         """Create one task and return its id.
 
         Use the task tools for multi-step work that needs a visible plan, and
@@ -101,7 +112,7 @@ class TaskService:
         Args:
             subject: Imperative one-line title, for example "Fix the auth bug".
             description: What the task must accomplish and how it is verified.
-            activeForm: Present-continuous label shown while it runs, for
+            active_form: Present-continuous label shown while it runs, for
                 example "Fixing the auth bug".
         """
         try:
@@ -114,15 +125,15 @@ class TaskService:
                 limit=self._config.max_description_chars, required=False,
             )
             parsed_active_form = parse_task_text(
-                activeForm, field="activeForm",
+                active_form, field="active_form",
                 limit=self._config.max_active_form_chars, required=False,
             )
         except TaskValidationError as exc:
-            return ToolResult.failure(exc.code, str(exc))
+            return failed_text(exc.code, str(exc))
 
         current = await self.snapshot()
         if len(current.tasks) >= self._config.max_tasks:
-            return ToolResult.failure(
+            return failed_text(
                 "task_limit",
                 f"A task list must not exceed {self._config.max_tasks} tasks",
             )
@@ -130,12 +141,9 @@ class TaskService:
             id=current.allocate_id(),
             subject=parsed_subject,
             description=parsed_description,
-            activeForm=parsed_active_form,
+            active_form=parsed_active_form,
         )
-        updated = current.model_copy(update={
-            "next_id": current.next_id + 1,
-            "tasks": (*current.tasks, task),
-        })
+        updated = current.append(task)
         await self._write(updated)
         return await self._result(
             f"Created task #{task.id}: {task.subject}",
@@ -143,7 +151,7 @@ class TaskService:
             changes={task.id},
         )
 
-    async def task_get(self, taskId: str) -> ToolResult:
+    async def task_get(self, taskId: str) -> ToolOutcome:
         """Read one task's full details by id.
 
         Args:
@@ -152,15 +160,12 @@ class TaskService:
         try:
             parsed_id = parse_task_id(taskId)
         except TaskValidationError as exc:
-            return ToolResult.failure(exc.code, str(exc))
+            return failed_text(exc.code, str(exc))
         current = await self.snapshot()
         task = current.find(parsed_id)
         if task is None:
             return _unknown_task(parsed_id)
-        return ToolResult(
-            content=_format_task_detail(task),
-            data=current.projection(),
-        )
+        return succeeded_text(_format_task_detail(task, current))
 
     async def task_update(
         self,
@@ -168,35 +173,32 @@ class TaskService:
         status: TaskStatusInput | None = None,
         subject: str | None = None,
         description: str | None = None,
-        activeForm: str | None = None,
+        active_form: str | None = None,
         owner: str | None = None,
-        addBlocks: list[str] | None = None,
-        addBlockedBy: list[str] | None = None,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> ToolResult:
+        add_blocks: list[str] | None = None,
+        add_blocked_by: list[str] | None = None,
+    ) -> ToolOutcome:
         """Update one task: status, text, owner, or dependency edges.
 
-        ``status`` accepts pending, in_progress, completed, or deleted. Set a
+        ``status`` accepts pending, in_progress, or completed. Set a
         task in_progress when you start it and completed only from observed
         results — never because it was started, intended, or summarized. A task
-        whose ``blockedBy`` entries are not all completed cannot start. Deleting
-        a task also removes every dependency edge that referenced it.
+        whose prerequisites are not all completed cannot start.
 
         Args:
             taskId: Id of the task to change.
-            status: New status, or "deleted" to remove the task.
+            status: New status.
             subject: Replacement imperative title.
             description: Replacement description.
-            activeForm: Replacement present-continuous label.
+            active_form: Replacement present-continuous label.
             owner: Agent that claimed the task.
-            addBlocks: Task ids this task must be completed before.
-            addBlockedBy: Task ids that must be completed before this one.
-            metadata: Replacement free-form metadata object.
+            add_blocks: Task ids this task must be completed before.
+            add_blocked_by: Task ids that must be completed before this one.
         """
         try:
             parsed_id = parse_task_id(taskId)
         except TaskValidationError as exc:
-            return ToolResult.failure(exc.code, str(exc))
+            return failed_text(exc.code, str(exc))
 
         current = await self.snapshot()
         task = current.find(parsed_id)
@@ -207,7 +209,7 @@ class TaskService:
             changes: dict[str, object] = {}
             new_status = None
             if status is not None:
-                new_status = parse_task_status(status, allow_deleted=True)
+                new_status = parse_task_status(status)
             if subject is not None:
                 changes["subject"] = parse_task_text(
                     subject, field="subject", limit=self._config.max_subject_chars,
@@ -218,9 +220,9 @@ class TaskService:
                     description, field="description",
                     limit=self._config.max_description_chars, required=False,
                 )
-            if activeForm is not None:
-                changes["activeForm"] = parse_task_text(
-                    activeForm, field="activeForm",
+            if active_form is not None:
+                changes["active_form"] = parse_task_text(
+                    active_form, field="active_form",
                     limit=self._config.max_active_form_chars, required=False,
                 )
             if owner is not None:
@@ -228,36 +230,19 @@ class TaskService:
                     owner, field="owner", limit=self._config.max_subject_chars,
                     required=False,
                 )
-            if metadata is not None:
-                if not isinstance(metadata, dict):
-                    raise TaskValidationError(
-                        "invalid_task", "Task metadata must be an object"
-                    )
-                changes["metadata"] = dict(metadata)
-            blocks = parse_task_ids(addBlocks, field="addBlocks")
-            blocked_by = parse_task_ids(addBlockedBy, field="addBlockedBy")
-        except TaskValidationError as exc:
-            return ToolResult.failure(exc.code, str(exc))
-
-        if new_status == "deleted":
-            if not changes and not blocks and not blocked_by:
-                updated = current.remove(parsed_id)
-                await self._write(updated)
-                return await self._result(
-                    f"Deleted task #{parsed_id}.",
-                    updated,
-                    changes={parsed_id},
-                )
-            return ToolResult.failure(
-                "invalid_task_update",
-                "Deleting a task cannot be combined with other changes",
+            blocks = parse_task_ids(add_blocks, field="add_blocks")
+            blocked_by = parse_task_ids(
+                add_blocked_by,
+                field="add_blocked_by",
             )
+        except TaskValidationError as exc:
+            return failed_text(exc.code, str(exc))
 
         if new_status is not None:
             if new_status == "in_progress":
                 unfinished = _blocking_tasks(current, task)
                 if unfinished:
-                    return ToolResult.failure(
+                    return failed_text(
                         "blocked",
                         "Task #" f"{task.id} is blocked by "
                         + ", ".join(f"#{value}" for value in unfinished),
@@ -267,7 +252,7 @@ class TaskService:
             changes["status"] = new_status
 
         if not changes and not blocks and not blocked_by:
-            return ToolResult.failure(
+            return failed_text(
                 "invalid_task_update",
                 "Provide at least one field to update",
             )
@@ -290,7 +275,24 @@ class TaskService:
             content = f"{content}\n{nudge}"
         return await self._result(content, updated, changes={task.id, *blocks, *blocked_by})
 
-    async def task_list(self) -> ToolResult:
+    async def task_delete(self, task_id: str) -> ToolOutcome:
+        """Delete one task and all dependency edges connected to it."""
+        try:
+            parsed_id = parse_task_id(task_id)
+        except TaskValidationError as exc:
+            return failed_text(exc.code, str(exc))
+        current = await self.snapshot()
+        if current.find(parsed_id) is None:
+            return _unknown_task(parsed_id)
+        updated = current.remove(parsed_id)
+        await self._write(updated)
+        return await self._result(
+            f"Deleted task #{parsed_id}.",
+            updated,
+            changes={parsed_id},
+        )
+
+    async def task_list(self) -> ToolOutcome:
         """List every task with id, status, owner, and dependencies.
 
         Call this when the current plan is unknown, or before choosing the next
@@ -298,19 +300,13 @@ class TaskService:
         """
         current = await self.snapshot()
         if not current.tasks:
-            return ToolResult(
-                content="The task list is empty.",
-                data=current.projection(),
-            )
-        return ToolResult(
-            content=_format_task_list(current),
-            data=current.projection(),
-        )
+            return succeeded_text("The task list is empty.")
+        return succeeded_text(_format_task_list(current))
 
     async def get_snapshot(self, _request: EmptyRequest) -> TaskList:
         return await self.snapshot()
 
-    async def on_turn_start(self, _event: EventContext) -> None:
+    async def on_turn_start(self, _event: TurnStarted) -> None:
         """Count turns since the last task change and nudge once past the bound.
 
         The nudge is a persisted turn-reminder, not a per-request projection:
@@ -348,16 +344,24 @@ class TaskService:
 
     async def _inject(self, content: str, *, event: str) -> None:
         """Deliver one persisted, attributed reminder without waking a turn."""
-        if self._engine is None:
-            return
-        await self._engine.inject(
-            content,
-            source="todo",
-            metadata={"kind": event},
+        await self._engine.submit_input(
+            InboxItem(
+                target=InboxTarget.NEXT_STEP,
+                input=RuntimeInput(
+                    source="todo",
+                    event=event,
+                    content=content,
+                ),
+            ),
+            wake=False,
         )
 
     async def _write(self, tasks: TaskList) -> None:
         await self._store.set("snapshot", tasks.model_dump(mode="json"))
+        await self._events.emit(
+            RUNTIME_EVENT,
+            RuntimeEvent(event=TaskChanged(snapshot=tasks)),
+        )
 
 
     async def _stale_turns(self) -> int:
@@ -370,42 +374,18 @@ class TaskService:
         tasks: TaskList,
         *,
         changes: set[str] | None = None,
-    ) -> ToolResult:
+    ) -> ToolOutcome:
         del changes
         # Any mutation of the list resets the "tools not used recently" nudge.
         await self._store.set(_STALE_TURNS_KEY, 0)
-        return ToolResult(
-            content=content,
-            data=tasks.projection(),
-            client_events=(
-                ClientEvent(type="todo_updated", data=tasks.projection()),
-            ),
-        )
-
-
-def _migrate_v1(data: Mapping[str, object]) -> dict[str, object]:
-    """Read a v1 ``items`` snapshot as the id-addressable v2 task list."""
-    items = data.get("items") or []
-    if not isinstance(items, list):
-        raise TypeError("Persisted task list items must be a list")
-    tasks = [
-        Task(
-            id=str(index),
-            subject=str(item.get("content") or ""),
-            status=item.get("status") or "pending",
-            activeForm=str(item.get("activeForm") or ""),
-        )
-        for index, item in enumerate(items, start=1)
-        if isinstance(item, Mapping)
-    ]
-    return TaskList.from_items(tasks).model_dump(mode="json")
+        return succeeded_text(content)
 
 
 def _blocking_tasks(tasks: TaskList, task: Task) -> list[str]:
-    """Ids in ``task.blockedBy`` that are missing or not completed."""
+    """Prerequisite ids that are not completed."""
     return [
         value
-        for value in task.blockedBy
+        for value in tasks.prerequisites(task.id)
         if (blocker := tasks.find(value)) is None or blocker.status != "completed"
     ]
 
@@ -415,34 +395,19 @@ def _link(
     *,
     from_id: str,
     to_id: str,
-) -> tuple[ToolResult | None, TaskList]:
-    """Add one bidirectional dependency edge, maintaining both sides."""
-    if from_id == to_id:
-        return (
-            ToolResult.failure(
-                "invalid_task_dependency", "A task cannot depend on itself"
-            ),
-            tasks,
-        )
+) -> tuple[ToolOutcome | None, TaskList]:
+    """Add one canonical prerequisite-to-dependent edge."""
     source = tasks.find(from_id)
     target = tasks.find(to_id)
     if source is None or target is None:
         missing = from_id if source is None else to_id
         return (_unknown_task(missing), tasks)
-    updated_source = source.model_copy(update={
-        "blocks": _sorted_ids({*source.blocks, to_id}),
-    })
-    updated_target = target.model_copy(update={
-        "blockedBy": _sorted_ids({*target.blockedBy, from_id}),
-    })
-    return (
-        None,
-        tasks.replace(updated_source).replace(updated_target),
-    )
-
-
-def _sorted_ids(values: set[str]) -> tuple[str, ...]:
-    return tuple(sorted(values, key=lambda value: (int(value) if value.isdigit() else 0)))
+    try:
+        return None, tasks.add_edge(
+            DependencyEdge(prerequisite=from_id, dependent=to_id)
+        )
+    except ValueError as exc:
+        return failed_text("invalid_task_dependency", str(exc)), tasks
 
 
 def _verification_nudge(tasks: TaskList, config: TaskConfig) -> str:
@@ -460,8 +425,8 @@ def _verification_nudge(tasks: TaskList, config: TaskConfig) -> str:
     return _VERIFICATION_NUDGE
 
 
-def _unknown_task(task_id: str) -> ToolResult:
-    return ToolResult.failure("task_not_found", f"Unknown task: #{task_id}")
+def _unknown_task(task_id: str) -> ToolOutcome:
+    return failed_text("task_not_found", f"Unknown task: #{task_id}")
 
 
 def _describe_update(task: Task | None) -> str:
@@ -498,29 +463,32 @@ def _format_task_line(task: Task, tasks: TaskList, *, xml: bool = False) -> str:
     blocking = _blocking_tasks(tasks, task)
     if blocking:
         line += " \u00b7 blocked by " + ", ".join(f"#{value}" for value in blocking)
-    if task.blocks:
-        line += " \u00b7 blocks " + ", ".join(f"#{value}" for value in task.blocks)
+    dependents = tasks.dependents(task.id)
+    if dependents:
+        line += " \u00b7 blocks " + ", ".join(
+            f"#{value}" for value in dependents
+        )
     return line
 
 
-def _format_task_detail(task: Task) -> str:
+def _format_task_detail(task: Task, tasks: TaskList) -> str:
     lines = [
         f"#{task.id} [{task.status}] {task.subject}",
     ]
     if task.description:
         lines.append(f"Description: {task.description}")
-    if task.activeForm:
-        lines.append(f"Active form: {task.activeForm}")
+    if task.active_form:
+        lines.append(f"Active form: {task.active_form}")
     if task.owner:
         lines.append(f"Owner: {task.owner}")
-    if task.blocks:
-        lines.append("Blocks: " + ", ".join(f"#{value}" for value in task.blocks))
-    if task.blockedBy:
+    dependents = tasks.dependents(task.id)
+    prerequisites = tasks.prerequisites(task.id)
+    if dependents:
+        lines.append("Blocks: " + ", ".join(f"#{value}" for value in dependents))
+    if prerequisites:
         lines.append(
-            "Blocked by: " + ", ".join(f"#{value}" for value in task.blockedBy)
+            "Blocked by: " + ", ".join(f"#{value}" for value in prerequisites)
         )
-    if task.metadata:
-        lines.append(f"Metadata: {task.metadata}")
     return "\n".join(lines)
 
 
@@ -537,7 +505,7 @@ def _task_tool(function, config: TaskConfig) -> Tool:
     bounds = {
         "subject": config.max_subject_chars,
         "description": config.max_description_chars,
-        "activeForm": config.max_active_form_chars,
+        "active_form": config.max_active_form_chars,
         "owner": config.max_subject_chars,
     }
     for name, limit in bounds.items():
@@ -584,20 +552,20 @@ def _render_compaction_reminder(
 
 
 class TodolistRuntimeComponent:
-    inject = {"required": ["tools", "state"], "optional": ["engine"]}
+    inject = {"required": ["tools", "state", "engine", "loop_state"]}
     name = "todolist"
     Config = TaskConfig
 
     def apply(
         self, ctx: Context, config: TaskConfig | None = None
     ) -> None:
-        engine = ctx.get("engine", strict=False)
-        settings = getattr(engine, "settings", None)
+        engine: AgentLoopDriverPort = ctx.engine
         resolved = config or TaskConfig()
         service = TaskService(
             ctx.state.namespace(self.name),
-            agent_name=str(getattr(settings, "agent_name", "") or ""),
+            agent_name=ctx.loop_state.metadata.value.runtime_selection.agent_name,
             engine=engine,
+            events=ctx,
             config=resolved,
         )
         ctx.set("todolist", service)
@@ -608,6 +576,7 @@ class TodolistRuntimeComponent:
             service.task_create,
             service.task_get,
             service.task_update,
+            service.task_delete,
             service.task_list,
         ):
             ctx.tools.register(_task_tool(function, resolved))

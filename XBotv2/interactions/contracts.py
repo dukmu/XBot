@@ -3,65 +3,112 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from XBotv2.interactions.protocol import UserInputOption
 
 class InteractionNotPending(RuntimeError):
     """Raised when a response targets no live interaction request."""
 
 
-class InteractionResult(BaseModel):
-    request_id: str
-    status: str
-    answer: JsonValue = None
-    decision: str = ""
-    scope: str = "once"
-    reason: str = ""
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class InteractionRequest(Protocol):
+    """Common identity carried by a typed interaction request."""
+
+    interaction_id: str
+    kind: str
+    resume_supported: bool
+
+
+class InteractionResolution(Protocol):
+    kind: str
+
+
+ResolutionFactory = Callable[[str], InteractionResolution]
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionReceipt:
+    interaction_id: str
+    resolution: InteractionResolution
+    pending_ids: tuple[str, ...] = ()
+
+
+InteractionRecordedFactory = Callable[[InteractionReceipt], BaseModel]
+InteractionTimeout = Callable[[InteractionRequest], float | None]
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionRegistration:
+    """One feature-owned interaction route installed at composition time."""
+
+    kind: str
+    request_type: type
+    resolution_types: tuple[type, ...]
+    waiter: "InteractionWaiterPort"
+    timeout_seconds: InteractionTimeout
+    recorded_event: InteractionRecordedFactory
 
 
 class InteractionWaiterPort(Protocol):
-    def register(self, request_id: str) -> asyncio.Future[InteractionResult]: ...
+    def register(self, request_id: str) -> asyncio.Future[InteractionResolution]: ...
 
     async def wait_registered(
         self,
         request_id: str,
-        pending: asyncio.Future[InteractionResult],
+        pending: asyncio.Future[InteractionResolution],
         timeout_seconds: float | None,
-    ) -> InteractionResult: ...
+    ) -> InteractionResolution: ...
 
-    def answer(self, request_id: str, **values: JsonValue) -> InteractionResult: ...
+    def resolve(
+        self,
+        request_id: str,
+        resolution: InteractionResolution,
+    ) -> InteractionResolution: ...
 
     def cancel(
         self,
         request_id: str,
         reason: str = "cancelled",
-    ) -> InteractionResult: ...
+    ) -> InteractionResolution: ...
 
-    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]: ...
+    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResolution]: ...
 
     def pending_request_ids(self) -> list[str]: ...
 
 
 class InteractionsPort(Protocol):
-    def create_waiter(self) -> InteractionWaiterPort: ...
+    def create_waiter(
+        self,
+        *,
+        timed_out: ResolutionFactory,
+        cancelled: ResolutionFactory,
+    ) -> InteractionWaiterPort: ...
 
     async def request_user_input(
         self,
         question: str,
         *,
-        options: list[dict[str, str]] | None = None,
+        options: tuple["UserInputOption", ...] = (),
         source: str = "interaction",
         timeout_seconds: float | None = None,
         tool_call_id: str = "",
-    ) -> dict[str, JsonValue]: ...
+    ) -> InteractionResolution: ...
 
 
 __all__ = [
     "InteractionNotPending",
-    "InteractionResult",
+    "InteractionResolution",
+    "InteractionReceipt",
+    "InteractionRecordedFactory",
+    "InteractionRegistration",
+    "InteractionRequest",
+    "InteractionTimeout",
     "InteractionWaiterPort",
     "InteractionsPort",
+    "ResolutionFactory",
 ]
