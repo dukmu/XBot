@@ -29,14 +29,14 @@ Each architecture iteration should answer these questions before code grows:
 
 ## C/S Direction
 
-The client/server protocol needs one event model and one request correlation
-model. HTTP and SSE are the current main transport. Any JSONL frame or alternate
-transport must either share the same event contract or stay out of the main
-runtime path until it does.
+HTTP and SSE expose typed request, response, and event contracts. Keep transport
+DTOs at the owning protocol boundary and preserve event sequence, cursor, and
+turn-scope semantics across clients. A new transport must adapt those contracts
+explicitly rather than create a parallel runtime event model.
 
-The accepted message request id must remain identical across Engine turn
-context, turn-scoped Hooks, and every SSE envelope. Blocking interactions use
-their own nested ids; they must not replace or overload the outer turn id.
+Input request IDs, turn IDs, and interaction IDs have separate owners and
+meanings. Preserve correlation where the producer contract defines it; never
+substitute an interaction ID for a turn or message request ID.
 
 Agent-initiated interaction is part of the protocol, not a TUI-only feature.
 Permission requests and user questions must be registered by the server before
@@ -46,18 +46,14 @@ cannot support an interaction must fail or cancel it explicitly rather than
 leave the engine waiting indefinitely. Waiting for a local answer must not stop
 the client from consuming terminal events on the SSE stream.
 
-The TUI keeps each pending interaction payload as its state source instead of
-duplicating active flags and request ids. Every terminal turn event, including
-normal completion, clears unresolved payloads, response tasks, and choices; the
-start of a new turn also clears stale protocol state. Later input therefore
-cannot be routed to an expired request.
+Clients keep typed pending interaction payloads as the source for response
+dialogs. Terminal turn events and new turns must not leave stale request state
+that can route an answer to an expired interaction.
 
-An accepted turn has a closed lifecycle. Once `turn_started` is visible, the
-client eventually receives one `turn_finished` or `turn_cancelled`. Engine
-failures remain visible as `error` and are followed by `turn_finished`, allowing
-the UI to clear running state without hiding the diagnostic. The SSE `end`
-sentinel belongs to transport framing and is consumed before TUI state
-reduction.
+An accepted turn has an explicit terminal boundary in its event contract.
+Diagnostics remain observable alongside terminal state so clients can clear
+running indicators without hiding failures. SSE framing is consumed by the
+transport adapter and is not a runtime business event.
 
 Persisted message history must also remain closed. If a client interrupt,
 disconnect, or process restart leaves a trailing assistant tool call without a
@@ -66,11 +62,11 @@ resuming. Session recovery never replays a permission decision or user answer.
 
 ## Hook Direction
 
-Hook optimization means making the existing stages easier to reason about. The
-current enum remains intact while the implementation gains clearer categories,
-documented stage payloads, stage-specific return rules, and tests for execution
-order, short-circuiting, and failure handling. Existing public fields and types
-are preferred over parallel read views.
+Hook optimization means making the existing stages easier to reason about.
+Loop stages and their payloads are declared in the owning event contracts.
+Short-circuit stages use serial dispatch and documented result types; observer
+stages use ordinary event delivery. Keep stage-specific return rules explicit
+and covered by behavior tests.
 
 Persistence Hooks run once per changed message checkpoint. Repeated safety
 calls from normal completion, exception cleanup, or session close must be

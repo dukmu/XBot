@@ -5,35 +5,58 @@ paths, variables, loop state, and command registration used by an active
 thread. The same root plugin contributes the process `sessions` facet for
 server/ACP profiles.
 
-Source: `XBotv2/session/plugin.py`, `session.py`, `contracts.py`,
-`commands.py`.
+- **Import/profile:** `session`, Agent profile.
+- **Source:** `XBotv2/session/plugin.py`, `session.py`, `contracts.py`,
+  `commands.py`.
+- **Injects/provides:** `runtime_paths`, `session_launch`, `commands`,
+  `artifacts` (required) and `thread_persistence` (optional) → `session`,
+  `paths`, `workspace_root`, `data_root`, `variables`, `thread_paths`,
+  `agent_inbox`.
 
-## Injected services
+## Composition
 
 ```text
-runtime_paths + session_launch + artifacts
-    -> session, paths, session_paths, thread_paths, loop_state,
-       workspace_root, data_root, variables, thread_metadata
+runtime_paths + session_launch + commands + artifacts (+ thread_persistence)
+    -> session plugin -> session, paths, workspace_root, data_root,
+       variables, thread_paths, agent_inbox
 ```
+
+`SessionRuntimeComponent.inject` is a mapping with `"required"` and
+`"optional"` keys, not a flat list:
+
+```python
+class SessionRuntimeComponent:
+    inject = {
+        "required": ["runtime_paths", "session_launch", "commands", "artifacts"],
+        "optional": ["thread_persistence"],
+    }
+    name = "xbot.session"
+```
+
+There is **no** `session_paths` injected service. `session_paths` is a field of
+the `SessionLaunch` service (`application/contracts.py`) and an attribute of
+the runtime `Session` object; nothing registers a service named
+`session_paths`. `artifacts` is listed even though this component never reads
+it: the inject set selects the fiber scope, and dropping it would mount the
+runtime before the session scope owns `workspace_root`.
+
+`loop_state` and `thread_metadata` are not injected here either — constructing
+`LoopState(ctx, key=..., variables=...)` provides both on the context for the
+owning fiber's lifetime. `SessionRuntimeComponent` builds that state and then
+registers `session`, `paths`, `workspace_root`, `data_root`, `variables`, and
+`thread_paths`.
 
 Use the typed services from `Context`; do not derive filesystem paths from
 `data_root` or retain the whole context in a plugin.
 
 ## Thread identity
 
-```python
-@dataclass
-class SessionInfo:
-    session_id: str
-    thread_id: str
-    workspace_root: str = ""
-    provider: str = "default"
-    turn_count: int = 0
-    event_count: int = 0
-    status: str = "active"
-```
-
-`EventContext.session` is `SessionInfo`, not the runtime `Session` object.
+Loop lifecycle events carry `SessionRuntimeState` from
+`XBotv2.session.contracts`. It owns a `SessionKey` and a `ThreadMetadataState`,
+and derives `session_id`, `thread_id`, and `workspace_root` from them; it is
+not an older `SessionInfo` read model or the runtime `Session` service object.
+Public client-facing summaries are separate `SessionSummary` and
+`ThreadSummary` projections.
 
 ## Composition commands
 
@@ -47,16 +70,18 @@ class OpenThread:
     thread_id: str
     parent_thread_id: str
     workspace_root: str | None
-    provider_name: str
-    mode: Literal["new", "resume"]
+    provider_name: str | None
+    mode: SessionMode                      # Literal["new", "resume"]
     no_plugins: bool
     selected_agent: str | None = None
     model_override: BaseProvider | None = None
 ```
 
-`OpenSession` additionally accepts `session_id`, `plugin_configs`, and its
-resolved thread id. Server composition supplies provider and plugin facts;
-clients must not send provider objects or plugin internals.
+`provider_name` is optional (`str | None`) in both `OpenThread` and
+`OpenSession`; `None` means the provider is resolved from configuration.
+`OpenSession` additionally carries `session_id: str | None`, `plugin_configs`,
+and a required `workspace_root: str`. Server composition supplies provider and
+plugin facts; clients must not send provider objects or plugin internals.
 
 ## Paths
 
@@ -81,15 +106,26 @@ never recreate the layout with string concatenation.
 
 ## Runtime service
 
-`ctx.session` is a runtime handle and `ctx.loop_state` is the mutable loop
-state. Neither is a persistence model. Persist only typed metadata/state via
-the persistence ports and XCore `StateService` namespaces.
+`ctx.session` is a runtime handle (the `Session` object, typed by
+`SessionPort`) and `ctx.loop_state` is the mutable loop state. Neither is a
+persistence model. Persist only typed metadata/state via the persistence ports
+and XCore `StateService` namespaces.
 
 ## Commands and lifecycle
 
 ```python
-def build_session_commands(session) -> tuple[Command, ...]: ...
+def build_session_commands(
+    session: SessionPort,
+    *,
+    pending_input_count: Callable[[], int],
+) -> tuple[Command, ...]: ...
 ```
+
+Both parameters matter: `session` is positional and `pending_input_count` is a
+keyword-only callback that `/status` calls live, so the engine stays the single
+owner of pending-input state. The built-in session commands are `/status`,
+`/clear`, `/undo [count]`, and `/fork`; `/help` belongs to the Textual client
+rather than this server plugin.
 
 Session commands belong to the session plugin. Plugins should subscribe to
 typed lifecycle events (`session/start`, `session/resume`, `session/close`)

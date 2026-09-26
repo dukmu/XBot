@@ -11,31 +11,34 @@ entry; activation itself is dependency-driven.
 
 | id/name | profiles | primary responsibility | important injected services |
 |---|---|---|---|
-| config | agent, server | settings, policy and configuration routes | runtime paths, launch, server/sessions |
+| config | agent, server | settings, policy and configuration routes | runtime paths, launch, plugin overrides/dirs, server/sessions |
+| client_transport | client | HTTP API client bound to the resolved client launch | client launch |
+| tui | client | Textual terminal client and local command presentation | client API, client launch, commands |
 | persistence | agent, server, acp | history/state/artifact hydration and reader factory | loop state, thread persistence, runtime log |
 | usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
-| agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, sessions |
-| session | agent, server, acp | SessionManager, thread runtime, history routes | launch, paths, artifacts, application factory |
-| jobs | agent, server | shell/subagent task registry | commands, engine, sessions |
-| commands | agent, server | human command catalog and dispatch | sessions/server where mounted |
+| agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, sessions |
+| session | agent, server, acp | SessionManager, thread runtime, history routes | launch, paths, artifacts, commands, application factory |
+| jobs | agent, server | shell/subagent job registry | commands, engine, sessions |
+| commands | agent, server, client | human command catalog and dispatch | sessions/server where mounted |
 | llm | agent, server | provider/model directory and selection | runtime log, agent runtime, sessions |
 | agentloop | agent, server | Tool registry and AgentLoop factory | runtime log, session launch, sessions |
-| context_builder | agent | ordered context components | runtime log |
-| prompts | agent | prompt fragment registry | context builder |
+| context_builder | agent | provider-facing context compiler and prompt components | runtime log, artifacts |
+| prompts | agent | prompt component registry | context builder |
 | sandbox | agent | filesystem/process/network ceiling | paths, session, tools, settings |
 | permissions | agent | regex Tool policy and approval flow | tools, interactions, state, settings |
-| coretools | agent | read/edit/path/search/shell Tools | tools, sandbox, artifacts, jobs |
-| subagents | agent | child Agent Tools and jobs | child applications, catalog, permissions |
-| goal | agent | durable objective and `/goal` | tools, commands, engine, state |
+| coretools | agent | filesystem and shell Tools; workspace extension hooks | tools, session, sandbox, artifacts, jobs, workspace root |
+| subagents | agent | child Agent Tools and jobs | child applications, catalog, permissions, jobs, tools |
+| goal | agent | durable objective and `/goal` | tools, loop state, commands, engine, model, state, usage |
 | todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
-| mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session |
-| content_cache | agent | lossless externalization of oversized current user input and ToolResult text | artifacts |
+| mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session, usage, loop state |
+| content_cache | agent | lossless externalization of oversized current user input and Tool output text | artifacts |
 | compact | agent | append-only semantic history replacement | tools, commands, model, loop state |
 | browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
 | token_manager | agent | request/context observation | session |
 | workspace_instructions | agent | AGENTS.md context contribution | variables, workspace root |
 | interactions | agent | ask-user and client input waiters | tools, client events, session launch |
+| caption | agent | session title Tool and automatic first-message caption | tools, model, loop state, session, agent options, usage |
 | workspaces | server, acp | workspace/session catalog and directory API | sessions, state, workspace root |
 | acp_plugin | acp | ACP carrier | sessions, ACP launch, runtime log |
 | server | server | FastAPI carrier and health/hello | runtime log |

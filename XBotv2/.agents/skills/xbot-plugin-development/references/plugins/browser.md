@@ -1,194 +1,169 @@
 # `browser`
 
-Live search, page retrieval, and isolated browser control via Chromium.
-All browser interactions are sandboxed; network access is gated by the
-session's sandbox policy.
+Live search, page retrieval, and isolated browser control through Chromium. All
+browser interactions run in an isolated session, and every network-touching Tool
+is gated by the sandbox's network flag.
 
 - **Import/profile:** `browser`, Agent profile.
-- **Source:** `XBotv2/browser/plugin.py`,
-  `XBotv2/browser/contracts.py`,
-  `XBotv2/browser/browser.py`,
-  `XBotv2/browser/network.py`.
+- **Source:** `XBotv2/browser/plugin.py`, `contracts.py`, `browser.py`,
+  `network.py`.
 - **Injects/provides:** `tools`, `session`, `sandbox`, `artifacts` →
   (none directly; registers Tools).
 - **Subscribes to events:** none.
-- **Config:** `search`, `network`, `browser` sub-configs.
+- **Config:** `search`, `network`, `session` sub-configs.
+- **Tools:** `web_search`, `web_fetch`, `browser_open`, `browser_snapshot`,
+  `browser_click`, `browser_fill`, `browser_press`, `browser_select`,
+  `browser_screenshot`, `browser_close`.
 
 ## Config schema (`Config = BrowserConfig`)
 
 ```python
+class SearchPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backend: str = "yandex"
+    region: str = "wt-wt"
+    safesearch: str = "moderate"
+
+
+class NetworkPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timeout: float = Field(default=20.0, gt=0)
+    max_bytes: int = Field(default=5_000_000, ge=1)
+    private_access: bool = False
+
+
+class BrowserSessionPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    headless: bool = True
+    timeout: float = Field(default=30.0, gt=0)
+
+
 class BrowserConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    search: BrowserSearchConfig = Field(default_factory=BrowserSearchConfig)
-    network: BrowserNetworkConfig = Field(default_factory=BrowserNetworkConfig)
-    browser: BrowserSessionConfig = Field(default_factory=BrowserSessionConfig)
+
+    search: SearchPolicy = Field(default_factory=SearchPolicy)
+    network: NetworkPolicy = Field(default_factory=NetworkPolicy)
+    session: BrowserSessionPolicy = Field(default_factory=BrowserSessionPolicy)
 ```
 
-## Public data models
+The third sub-config is named **`session`** and its type is
+`BrowserSessionPolicy`. The policy type names are `SearchPolicy`,
+`NetworkPolicy`, and `BrowserSessionPolicy`; there is no `BrowserSearchConfig`,
+`BrowserNetworkConfig`, or `BrowserSessionConfig`.
 
-### `BrowserSession` (`XBotv2/browser/browser.py`)
+## Registration
+
+```python
+class BrowserPlugin:
+    inject = ['tools', 'session', 'sandbox', 'artifacts']
+    name = "browser"
+    Config = BrowserConfig
+
+    def __init__(self) -> None:
+        self._config = BrowserConfig()
+        self._web: WebAccess | None = None
+        self._browser: BrowserSession | None = None
+
+    def apply(self, ctx: Context, config: BrowserConfig) -> None:
+        self._config = config
+        ctx.dispose(self._dispose)
+        self._artifacts = ctx.artifacts
+        self._sandbox = ctx.sandbox
+        for function in (...):  # each Tool method below
+            ctx.tools.register(replace(Tool.from_function(function), kind="fetch"))
+```
+
+`plugin = BrowserPlugin()` is the root export. All ten Tools are registered from
+their bound methods with `kind="fetch"`, marking them as network-facing. The
+`WebAccess` HTTP client and the Chromium session are created lazily on first use
+and torn down by the single `ctx.dispose(self._dispose)` callback — no plugin
+holds either resource per call.
+
+## Tools
+
+| Tool | Purpose |
+|---|---|
+| `web_search(query, max_results=5, freshness=None)` | Search the live Web and return structured titles, URLs, snippets, and optional dates |
+| `web_fetch(url)` | Retrieve one page's readable content with source metadata |
+| `browser_open(url)` | Open a URL, then return a snapshot |
+| `browser_snapshot()` | Re-read the current page |
+| `browser_click`, `browser_fill`, `browser_press`, `browser_select` | Interact with the current page |
+| `browser_screenshot()` | Capture the page as an artifact |
+| `browser_close()` | Tear down the current browser session |
+
+`web_search` accepts `freshness` as one of `"day"`, `"week"`, `"month"`, or
+`"year"`.
+
+## Network policy
+
+```python
+class WebAccess:
+    """Own the HTTP client used by read-only Web tools."""
+
+    def __init__(self, policy: NetworkPolicy) -> None:
+        self.policy = policy
+        ...
+
+    async def close(self) -> None: ...
+    async def search(self, ...) -> ToolOutcome: ...
+
+
+async def validate_url(url: str, policy: NetworkPolicy) -> CheckedUrl: ...
+def network_disabled() -> ToolFailed: ...
+```
+
+`WebAccess` takes a `NetworkPolicy` — there is no separate `NetworkOptions`
+object. URL validation is the module-level `validate_url(url, policy)` returning
+a `CheckedUrl`; there is no `UrlPolicy` class.
+
+When the sandbox has no network capability the Tools return the shared
+`network_disabled()` failure (`ToolFailed`). This is a runtime gate, not a
+config flag: every network-facing Tool checks `self._sandbox.network` before
+doing work, so disabling the sandbox network capability disables these Tools
+without touching browser configuration.
+
+## `BrowserSession` (`XBotv2/browser/browser.py`)
 
 ```python
 class BrowserSession:
     def __init__(
         self,
         *,
-        policy: UrlPolicy,
-        artifacts: Any,
-        headless: bool = True,
-        timeout_seconds: float = 30.0,
+        network_policy: NetworkPolicy,
+        session_policy: BrowserSessionPolicy,
+        artifacts: ArtifactStorePort,
+        sandbox: SandboxPort,
     ) -> None: ...
 
-    async def open(self, url: str, *, sandbox: Any = None) -> ToolResult: ...
-    async def snapshot(self) -> ToolResult: ...
-    async def click(self, ref: str) -> ToolResult: ...
-    async def fill(self, ref: str, text: str) -> ToolResult: ...
-    async def press(self, key: str) -> ToolResult: ...
-    async def select(self, ref: str, value: str) -> ToolResult: ...
-    async def screenshot(self) -> ToolResult: ...
-    async def close(self) -> ToolResult: ...
-    async def shutdown(self) -> None: ...
-
-    @property
-    def active(self) -> bool: ...
+    async def open(self, url: str) -> ToolOutcome: ...
 ```
 
-`open()` accepts public `http://` / `https://` URLs and sandbox-approved
-`file://` URLs. Refs (e.g. `e1`) are from the latest `snapshot()` output
-and are ephemeral — they become stale after navigation.
+Every constructor parameter is keyword-only and named `*_policy` for the two
+policies. `open` takes only the URL — there is no per-call `sandbox` argument,
+because the session already owns its sandbox handle.
 
-### `WebAccess` (`XBotv2/browser/network.py`)
+`open` re-checks `self._sandbox.network` for non-`file:` URLs and returns
+`network_disabled()`, then navigates and returns a snapshot. Failures come back
+as `failed_text("browser_open_failed", ...)`.
 
-```python
-class WebAccess:
-    def __init__(self, options: NetworkOptions) -> None: ...
+## Sandbox interaction
 
-    async def search(
-        self,
-        query: str,
-        *,
-        max_results: int,
-        freshness: Literal["day", "week", "month", "year"] | None,
-        backend: str,
-        region: str,
-        safesearch: str,
-    ) -> ToolResult: ...
+Browser network access and Shell network access are the same capability. A
+session whose sandbox denies network gets `network_disabled()` from the Web
+Tools; it does not get a partially working browser. Do not add a browser-local
+network flag — that would create a second, bypassable policy.
 
-    async def fetch(self, url: str) -> ToolResult: ...
+## Pitfalls
 
-    async def close(self) -> None: ...
-
-@dataclass
-class NetworkOptions:
-    timeout_seconds: float = 20.0
-    max_response_bytes: int = 5_000_000
-    allow_private: bool = False
-```
-
-`fetch()` HTML is reduced to Markdown; JSON and text remain textual.
-Redirect targets are checked against `UrlPolicy`. `search()` returns
-structured titles, URLs, snippets, and optional dates.
-
-### `UrlPolicy` (`XBotv2/browser/network.py`)
-
-```python
-class UrlPolicy:
-    def __init__(self, allow_private: bool = False) -> None: ...
-
-    async def check(self, url: str) -> str:
-        """Validate and return the normalized URL, or raise ValueError."""
-```
-
-`UrlPolicy` accepts only `http://` and `https://`, rejects private or
-non-routable destinations unless `allow_private=True`, and rejects URLs with
-embedded credentials. `file://` is handled separately by `BrowserSession`
-through the sandbox's filesystem resolver.
-
-### `network_available` (`XBotv2/browser/network.py`)
-
-```python
-def network_available(sandbox: Any) -> ToolResult | None:
-    """Check sandbox.network + sandbox.enabled; return error or None."""
-```
-
-All browser Tools that make network calls (web_search, web_fetch,
-browser_click, browser_fill, browser_press, browser_select) gate
-through `network_available(self._sandbox)` first.
-
-## Tools registered by `apply()`
-
-| Tool | Function | Description |
-|---|---|---|
-| `web_search` | `self.web_search` | Search the live public Web |
-| `web_fetch` | `self.web_fetch` | Fetch one public URL |
-| `browser_open` | `self.browser_open` | Open URL in Chromium |
-| `browser_snapshot` | `self.browser_snapshot` | Read page text + element refs |
-| `browser_click` | `self.browser_click` | Click one element ref |
-| `browser_fill` | `self.browser_fill` | Replace editable element text |
-| `browser_press` | `self.browser_press` | Press Playwright keyboard key |
-| `browser_select` | `self.browser_select` | Select option in select element |
-| `browser_screenshot` | `self.browser_screenshot` | Capture page to artifacts |
-| `browser_close` | `self.browser_close` | Close browser + discard state |
-
-## How `apply()` works
-
-```python
-def apply(self, ctx, config=None):
-    config = config or {}
-    self._search.update(config.get("search") or {})
-    network = config.get("network") or {}
-    self._network_options = NetworkOptions(
-        timeout_seconds=float(network.get("timeout_seconds", 20)),
-        max_response_bytes=int(network.get("max_response_bytes", 5_000_000)),
-        allow_private=bool(network.get("allow_private", False)),
-    )
-    self._url_policy = UrlPolicy(allow_private=self._network_options.allow_private)
-    self._browser_options.update(config.get("browser") or {})
-    ctx.dispose(self._dispose)
-    self._artifacts = ctx.artifacts
-    self._sandbox = ctx.sandbox
-    for function in (
-        self.web_search, self.web_fetch, self.browser_open,
-        self.browser_snapshot, self.browser_click, self.browser_fill,
-        self.browser_press, self.browser_select,
-        self.browser_screenshot, self.browser_close,
-    ):
-        ctx.tools.register(Tool.from_function(function))
-```
-
-Lazy initialization: `BrowserSession` is created on first `browser_open`,
-`WebAccess` on first `web_search` or `web_fetch`.
-
-## On-disk artifacts
-
-`browser_screenshot()` captures the page into the session's artifacts
-directory. `browser_open()` may store the URL policy check result
-and screenshot metadata.
-
-## Cross-references
-
-- Depends on: `tools`, `session`, `sandbox`, `artifacts`.
-- Depended on by: the Agent (search/fetch/browser Tools).
-- Pairs with: `sandbox` (network capability gates),
-  `content-cache` (caches fetch results).
-
-## Common pitfalls
-
-- **Using `browser_open` for static content**: always prefer
-  `web_fetch` for static HTML/JSON/text. The browser tool starts
-  Chromium and is only needed for rendering or interaction.
-- **Using stale element refs**: `browser_snapshot` refs (`e1`, `e2`...)
-  become stale after any navigation or page update. Always call
-  `snapshot` immediately before interacting.
-- **`browser_fill` with credentials**: the tool documentation warns
-  against entering credentials unless explicitly authorized.
-  Use `browser_press` with `Enter` instead of typing passwords.
-- **`web_search` with sandbox disabled**: if `sandbox is None`
-  or `not sandbox.network`, returns `"network_disabled"`.
-- **`browser_open` with private URLs**: blocked by `UrlPolicy` unless
-  `network.allow_private=True`; local `file://` URLs are checked by the
-  sandbox filesystem resolver instead.
-- **Not calling `browser_close`**: the Chromium process continues
-  until `_dispose()` fires on session cleanup.
-- **`browser_screenshot` without active browser**: if no page
-  is open, returns an error instead of a blank screenshot.
+- Do not assume `netloc`-style validation happens in the Tool. URL safety is
+  enforced by `validate_url(url, policy)`, which consults
+  `NetworkPolicy.private_access`; a plugin that fetches URLs on its own would
+  bypass it.
+- Screenshots and fetched pages are stored as artifacts. Resolve them through
+  the injected `artifacts` store rather than reading Chromium's temp paths.
+- The session is lazy. A failed `browser_open` may mean the sandbox denied
+  network, not that Chromium is missing; check the returned failure code before
+  changing browser configuration.

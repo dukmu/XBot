@@ -11,15 +11,17 @@ user context, and handles session-level policy patches (permissions + sandbox).
   `XBotv2/config/policy.py`,
   `XBotv2/config/loader.py`,
   `XBotv2/config/events.py`.
-- **Injects/provides:** `runtime_log`, `runtime_paths`,
-  `session_launch` → `settings` (`ConfigService`).
+- **Injects/provides:** `runtime_log`, `runtime_paths`, `session_launch`,
+  `plugin_overrides`, `plugin_dirs`, `no_plugins` → `settings`
+  (`ConfigService`).
 - **Permission approval:** grants belong to the permissions runtime and are
   not persisted by this plugin. Human policy commands remain persisted.
-- **Operations:** `GET_POLICY`, `UPDATE_POLICY`.
+- **Operations:** `GET_POLICY` (`config/policy/get`), `UPDATE_POLICY`
+  (`config/policy/update`).
 
 ## Public data models
 
-### `ConfigService` (`XBotv2/config/service.py:27-67`)
+### `ConfigService` (`XBotv2/config/service.py`)
 
 ```python
 class ConfigService(SettingsPort):
@@ -33,13 +35,11 @@ class ConfigService(SettingsPort):
         workspace_root: Path,
         events: ApplicationEventsPort,
         runtime_log: RuntimeLog,
-        user_context: UserContext | None = None,
-    ) -> None:
-        self.paths = paths
-        self.session_id = session_id
-        self.workspace_root = workspace_root
-        self.events = events
-        self._user_context = user_context or UserContext()
+        extra_plugins: list[dict[str, JsonValue]] | None = None,
+        plugin_dirs: list[Path | str] | None = None,
+        is_subagent: bool = False,
+        no_plugins: bool = False,
+    ) -> None: ...
 
     def user_context(self) -> UserContext: ...
 
@@ -53,6 +53,13 @@ class ConfigService(SettingsPort):
 
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot: ...
 ```
+
+There is no `user_context` constructor parameter and no cached `_user_context`
+attribute. `user_context()` is a **method** that reads the live resolved
+`config` entry from the plugin tree on each call, so a session-scope overlay
+write is reflected immediately instead of returning a stale
+construction-time capture. It raises `RuntimeError` when the resolved tree has
+no enabled `config` entry.
 
 `policy()` returns the effective JSON objects from the resolved permission and
 sandbox entries; `update_policy()` emits `POLICY_CHANGED` after persisting.
@@ -118,17 +125,23 @@ UPDATE_POLICY = Operation(
 @dataclass(frozen=True, slots=True)
 class PolicyChanged:
     policy: dict[str, JsonValue]
-    effective_permissions: dict[str, JsonValue]
+    permission_policies: tuple[PermissionPolicy, ...]
     effective_sandbox: dict[str, JsonValue]
 
 POLICY_CHANGED = "config/policy-changed"
 ```
 
-The permission and sandbox models are owned by their respective plugins. The
-config plugin only projects their resolved JSON values; it does not redeclare
-or validate those fields.
+`PolicyChanged` does **not** carry `effective_permissions`. The merged policy is
+published as typed `permission_policies` — a tuple of the permissions plugin's
+own `PermissionPolicy` objects — because a policy change must be consumable
+without re-parsing raw JSON. Only the sandbox side stays a resolved JSON object,
+in `effective_sandbox`.
 
-## How `apply()` works (`plugin.py:18-50`)
+The permission and sandbox models are owned by their respective plugins. The
+config plugin only projects their resolved values; it does not redeclare or
+validate those fields.
+
+## How `apply()` works
 
 ```python
 def apply(self, ctx: Context, config: ConfigPluginConfig) -> None:
@@ -137,8 +150,11 @@ def apply(self, ctx: Context, config: ConfigPluginConfig) -> None:
         session_id=ctx.session_launch.session_id,
         workspace_root=ctx.session_launch.workspace_root,
         events=ctx,
-        user_context=config.user,
         runtime_log=ctx.runtime_log,
+        extra_plugins=ctx.plugin_overrides,
+        plugin_dirs=ctx.plugin_dirs,
+        is_subagent=ctx.session_launch.is_subagent,
+        no_plugins=ctx.no_plugins,
     )
     ctx.set("settings", settings)
     operations = ConfigOperations(settings)
@@ -203,11 +219,15 @@ class PolicyAwareTool:
 
 ## Cross-references
 
-- Depends on: `runtime_log`, `runtime_paths`, `session_launch`.
-- Depended on by: `sandbox` (reads `SandboxConfig`), `permissions`
-  (reads `PermissionConfig`), `coretools` (reads `ToolResultConfig`),
-  `skills` (reads `PluginConfig`).
-- Pairs with: `llm` (provider config lives in `llm` tree, not here),
+- Depends on: `runtime_log`, `runtime_paths`, `session_launch`,
+  `plugin_overrides`, `plugin_dirs`, `no_plugins`.
+- Depended on by: `sandbox` (reads its own sandbox entry through `settings`),
+  `permissions` (reads `ctx.settings.permission_policies()`), and `agents`
+  (passes `settings` into `AgentsService`).
+- Not depended on by `coretools` or `skills`: neither injects `settings`.
+  `coretools` reads its configuration from its own tree entry, and `skills`
+  takes no configuration at all.
+- Pairs with: `llm` (provider config lives in the `llm` tree entry, not here),
   `sandbox`, `commands` (`/sandbox`, `/permissions`).
 
 ## Common pitfalls

@@ -11,6 +11,8 @@ details, testing patterns, and installed-package workflows.
 - [Security](security.md) — sandbox and permission boundaries.
 - [Persistence](persistence.md) — history, state, and artifacts.
 - [HTTP API](http-api.md) — transport index; schemas and route details live in the skill.
+- [Clients and runtime behavior](clients.md) — Textual TUI, command discovery,
+  streaming, interactions, read-only thread views, and status/usage.
 - [Development](development.md) — repository workflow and verification.
 - [`project/`](project/) — engineering behavior, backlog, and recorded findings.
 

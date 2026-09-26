@@ -1,7 +1,8 @@
 # `commands`
 
-Registers and executes server-side slash commands. The model never sees
-this; commands are direct human control. Do not route a command through
+Registers human-facing slash commands. Server commands run on the server,
+prompt commands are submitted through the message endpoint, and client commands
+are local UI affordances. They are not Agent Tools and must not be routed through
 a synthetic `ToolCall`.
 
 - **Import/profile:** `commands`, Agent profile.
@@ -12,9 +13,12 @@ a synthetic `ToolCall`.
 - **Operations:** `commands/list` (`LIST_COMMANDS`,
   `EmptyRequest → CommandCatalog`), `commands/execute`
   (`EXECUTE_COMMAND`, `ExecuteCommand → CommandExecution`).
-- **Server routes:** `XBotv2/commands/protocol.py:build_commands_router`
-  exposes GET/POST under
-  `/sessions/{session_id}/threads/{thread_id}/commands`.
+- **Server routes:** `build_commands_router` in
+  `XBotv2/commands/protocol.py` exposes GET/POST under
+  `/sessions/{session_id}/threads/{thread_id}/commands`. There is no
+  `XBotv2/server/routes/` package — the router is declared in the owning plugin
+  package and mounted with `contribute_router(ctx, owner="xbot.commands.http",
+  ...)`.
 
 ## Public data models (`commands/contracts.py`)
 
@@ -25,7 +29,7 @@ a synthetic `ToolCall`.
 class Command:
     name: str                          # regex ^[a-z0-9][a-z0-9_-]*$
     description: str
-    kind: Literal["server", "prompt"] = "server"
+    kind: Literal["client", "server", "prompt"] = "server"
     handler: CommandHandler | None = None
     usage: str = ""
     examples: tuple[str, ...] = ()
@@ -34,8 +38,8 @@ class Command:
     exclusive: bool = True
 ```
 
-`__post_init__` validates the name regex and that `kind="server"`
-implies `handler is not None` (and vice versa for `kind="prompt"`).
+`__post_init__` validates the name and handler contract: `client` and `server`
+commands have handlers; `prompt` commands do not.
 
 Declare `effects` for every command you register. They are published in the
 catalogue, so a client knows **before** running a command what it can touch
@@ -53,8 +57,8 @@ class CommandResult:
     effects: tuple[CommandEffect, ...] = ()
 ```
 
-`CommandEffect = Literal["history", "thread", "agents", "tasks",
-"commands", "sessions"]`.
+`CommandEffect = Literal["history", "thread", "agents", "jobs",
+"commands", "sessions", "policy"]`.
 
 ### `CommandHandler` and helpers
 
@@ -82,6 +86,7 @@ class CommandDescription(BaseModel):
     usage: str
     examples: tuple[str, ...] = ()
     parameters: dict[str, str] = Field(default_factory=dict)
+    effects: tuple[CommandEffect, ...] = ()
     exclusive: bool
 ```
 
@@ -137,12 +142,14 @@ class CommandRequest(WireModel):
     raw: str = Field(min_length=1)   # the line exactly as the user typed it
 ```
 
-The server resolves the name from its own catalogue and hands the rest to the
-command unchanged. Do not add `kind` back: the catalogue already says who runs a
-line (`server` → this resource, `prompt` → the message endpoint), and repeating
-it in every client is a second implementation of the same rule. A line the
-command cannot parse should come back as `CommandResult(status="error", ...)`
-(wrap the handler in `guard_command`), not as a transport failure.
+The HTTP route accepts one raw line and resolves it against the current server
+catalogue. `server` entries execute through this route. A `prompt` entry is
+submitted by the client through the message endpoint; `client` entries are not
+server executable. The Textual TUI merges local commands with the server
+catalogue, with local names taking precedence. Its `/help` and `/help
+<command>` handlers are local; see [client-runtime.md](../client-runtime.md). A
+handler parse error should be a `CommandResult(status="error", ...)`, not a
+transport failure.
 
 ### `CommandListResponse`
 
@@ -159,11 +166,14 @@ class CommandResponse(WireModel):
     data: CommandExecution
 ```
 
-## `CommandsService` (`commands/plugin.py:25-94`)
+## `CommandsService` (`commands/plugin.py`)
 
 ```python
 class CommandsService:
-    def register(self, command: Command) -> str: ...
+    def register(
+        self, command: Command, *,
+        cleanup: Literal["fiber", "caller"] | None = None,
+    ) -> str: ...
     def unregister(self, name: str) -> bool: ...
     def get(self, name: str) -> Command | None: ...
     def all(self) -> tuple[Command, ...]: ...
@@ -205,25 +215,35 @@ class GreetingPlugin:
         ))
 ```
 
-For a `kind="prompt"` command (client-side expansion only), omit
-`handler` — the client expands `/foo ...` into model-visible text.
+For a `kind="prompt"` command (client-side expansion only), omit `handler`;
+the client submits the expanded prompt through the message boundary. The
+`client` kind is for local affordances, not third-party server registrations.
 
 ## Cross-references
 
 - Depends on: (none).
-- Depended on by: every plugin that exposes a slash command
-  (`sandbox`, `session`, `goal`, `todolist`, `subagents`, `jobs`,
-  `compact`, `llm-commands`, `mcp-plugin`, `browser`, etc.).
-- Pairs with: `interactions` (asynchronous input requests),
-  `permissions` (approval flow), `server.routes.commands` for
-  HTTP exposure (already wired here).
+- Depended on by the plugins that register slash commands. In the bundled tree
+  those are: `sandbox` (`/sandbox`), `permissions` (`/permission`), `session`,
+  `goal` (`/goal`), `jobs` (`/jobs`), `agents`, `compact`, and `llm` (its
+  commands facet). `skills` also registers dynamic `kind="prompt"` commands, one
+  per user-invocable discovered skill. The `tui` client plugin registers local
+  `client` commands.
+- **Not** depended on by `todolist`, `subagents`, `mcp_plugin`, or `browser`:
+  none of them registers a slash command. They expose model-facing Tools only.
+  `todolist` additionally mounts its own HTTP router
+  (`contribute_router(ctx, owner="xbot.todolist.http", ...)`); `browser`,
+  `subagents`, and `mcp_plugin` have no HTTP surface at all.
+- Pairs with: `interactions` (asynchronous input requests), `permissions`
+  (approval flow), and this plugin's own `protocol.py` for HTTP exposure.
+- There is no `XBotv2/server/routes/` package. Command HTTP exposure lives in
+  `XBotv2/commands/protocol.py` as `build_commands_router`.
 
 ## Common pitfalls
 
-- **Reusing a name across plugins**: registration is global; the
-  second wins or raises. Pick namespaced names (`mcp-list`, `job-stop`).
-- **Returning a `ToolResult` from a command handler**: command
-  handlers return `CommandResult`; `ToolResult` is for Tool invocations.
+- **Reusing a name across plugins**: registration is global; duplicate
+  names raise. Pick distinct names (`mcp-list`, `job-stop`).
+- **Returning a `ToolOutcome` from a command handler**: command
+  handlers return `CommandResult`; `ToolOutcome` is for Tool invocations.
 - **Synthesizing a `ToolCall` to invoke a command**: commands bypass
   the model entirely; routing through `ToolCall` would also run
   permissions and Tool guards, neither of which apply.

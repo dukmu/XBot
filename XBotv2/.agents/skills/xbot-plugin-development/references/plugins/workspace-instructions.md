@@ -1,19 +1,18 @@
 # `workspace_instructions`
 
-Loads `AGENTS.md` from the workspace root and injects it into the
-context builder's system message at the appropriate stage.
+Loads `AGENTS.md` from the workspace root and contributes it as an ordinary
+prompt component for each context build.
 
 - **Tree id/name:** `workspace_instructions` / `workspace_instructions`
   (the page filename is `workspace-instructions.md`); Agent profile.
-- **Source:** `XBotv2/workspace_instructions/plugin.py`.
-- **Injects/provides:** `variables`, `workspace_root` → (none
-  directly; injects into `ContextComponentsBuilt`).
+- **Source:** `XBotv2/workspace_instructions/plugin.py` (the package's only
+  implementation module).
+- **Injects/provides:** `variables`, `workspace_root` → (none directly;
+  appends a component to `BuiltContext`).
 - **Subscribes to events:** `after/context-components-build`
   (`CONTEXT_COMPONENTS_BUILT`).
 
-## Public data models
-
-### `WorkspaceInstructionsPlugin` (`XBotv2/workspace_instructions/plugin.py:12-50`)
+## `WorkspaceInstructionsPlugin` (`XBotv2/workspace_instructions/plugin.py`)
 
 ```python
 class WorkspaceInstructionsPlugin:
@@ -22,125 +21,168 @@ class WorkspaceInstructionsPlugin:
     inject = ["variables", "workspace_root"]
     name = "workspace_instructions"
 
-    def apply(self, ctx: Context, config: object | None = None) -> None:
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
         self._instructions_path = Path(ctx.workspace_root) / "AGENTS.md"
         self._variables: RuntimeVariables = ctx.variables
         ctx.on(CONTEXT_COMPONENTS_BUILT, self._inject_workspace_instructions)
 
-    def _inject_workspace_instructions(
-        self, event: ContextComponentsBuilt
-    ) -> None:
-        """Insert the workspace instructions into the correct position."""
+    def _inject_workspace_instructions(self, event: BuiltContext) -> None: ...
+
+
+plugin = WorkspaceInstructionsPlugin()
 ```
 
-### `ContextComponent` injection
+The event payload is a `BuiltContext`, not a `ContextComponentsBuilt` class —
+there is no such type. The listener return type is `None`; it is a synchronous
+`ctx.on` handler.
+
+## The contributed component
+
+The listener appends exactly one `FilePromptComponent` to `event.components`:
 
 ```python
-component = ContextComponent(
-    role="system",
-    source="workspace_instructions",
-    content=text,
-    plugin_name=self.name,
+component = FilePromptComponent(
     stage="system_instructions",
-    source_path="AGENTS.md",
+    source=self.name,           # "workspace_instructions"
+    logical_path="AGENTS.md",
+    text=text,
 )
+event.components.append(component)
 ```
 
-The component is inserted at position `index` where:
+`ContextComponent` is a type alias in `XBotv2/context_builder/contracts.py`
+(`ContextComponent: TypeAlias = PromptComponent | HistoryComponent`), **not** a
+class, and it has no `role`, `content`, `plugin_name`, or `source_path` fields.
+Construct the concrete dataclass instead:
 
 ```python
-before_sources = {
-    "plugin_fragment",
-    "memory",
-    "runtime_state",
-    "history",
-}
-index = next(
-    (i for i, c in enumerate(event.components)
-     if c.source in before_sources),
-    len(event.components),
-)
-event.components.insert(index, component)
+@dataclass(frozen=True, slots=True)
+class InlinePromptComponent:
+    stage: PromptStage
+    source: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FilePromptComponent:
+    stage: PromptStage
+    source: str
+    logical_path: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryComponent:
+    message: ConversationMessage
+
+
+PromptComponent: TypeAlias = InlinePromptComponent | FilePromptComponent
+ContextComponent: TypeAlias = PromptComponent | HistoryComponent
 ```
 
-This places workspace instructions **after** plugin fragments but
-**before** memory, runtime state, and history. The `stage` is
-`"system_instructions"` which matches the `PromptFragmentStage`.
-
-### Text processing
-
-```python
-text = self._variables.expand_markdown(
-    self._instructions_path.read_text(encoding="utf-8").strip(),
-    source="AGENTS.md",
-)
-```
-
-`${VAR}` and `$VAR` are expanded via `RuntimeVariables.expand_markdown()`.
-Empty results are silently skipped.
-
-## How `apply()` works
-
-```python
-def apply(self, ctx, config=None):
-    self._instructions_path = Path(ctx.workspace_root) / "AGENTS.md"
-    self._variables = ctx.variables
-    ctx.on(CONTEXT_COMPONENTS_BUILT, self._inject_workspace_instructions)
-```
-
-The plugin does not register tools, commands, or fragments. It
-injects the workspace `AGENTS.md` content directly into the
-`ContextComponentsBuilt` event, which is emitted after
-`build_components()` but before `messages_from_components()`.
+`PromptStage = Literal["system_prefix", "system_instructions",
+"system_rules", "context_suffix"]`. There is no `PromptFragmentStage` type;
+`stage` is a `PromptStage`.
 
 ## Injection position
 
-```
-[components built by ContextBuilder]
-├── core_instructions
-├── runtime_environment
-├── developer_instructions
-├── agent_identity
-├── agent_instructions
-├── plugin_fragment (all stages)
-├── [workspace_instructions injected HERE] ←
-├── memory
-├── runtime_state
-└── history
+There is **no** index-computation algorithm. The plugin does not scan for
+`before_sources`, does not compute an index, and never calls
+`event.components.insert(...)`. It appends:
+
+```python
+event.components.append(component)
 ```
 
-The workspace instructions appear after all plugin fragments but
-before memory, runtime state, and history — giving them higher
-priority than runtime state but lower priority than core instructions.
+Position in the built list therefore does not decide prompt order. Ordering is
+decided later by `ContextBuilder.messages_from_components`, which separates
+prompt components from history components and then sorts the prompt components
+by `PROMPT_STAGES.index(component.stage)`, where
+
+```python
+PROMPT_STAGES = ("system_prefix", "system_instructions", "system_rules", "context_suffix")
+```
+
+Because this component uses `stage="system_instructions"`, it is rendered with
+the other system instructions regardless of where it sits in
+`event.components`. Do not document or rely on an "inserted between plugin
+fragments and memory" position: that claim does not describe the code.
+
+## Rendering
+
+`_render_system_component()` decides the prompt element name from the component
+`source`:
+
+```python
+_NAMED_PROMPT_SOURCES = frozenset({
+    "core_instructions",
+    "runtime_environment",
+    "agent_identity",
+    "agent_instructions",
+    "memory",
+})
+```
+
+`workspace_instructions` is **not** in that set. The claim that it is a reserved,
+specially formatted source is inverted: this plugin's component always renders
+through the generic path, producing a `plugin_instruction` element with
+`name="workspace_instructions"`, `stage="system_instructions"`, and
+`source="AGENTS.md"` (the `FilePromptComponent.logical_path`). Only the five
+named sources above render as `prompt_element(component.source, component.text)`.
+An `InlinePromptComponent` rendered generically carries no `source` attribute at
+all, only `name` and `stage`.
+
+## Text processing
+
+```python
+text = self._variables.expand_markdown(
+    source_text.strip(),
+    source="AGENTS.md",
+)
+if not text:
+    return
+```
+
+`RuntimeVariables.expand_markdown(value, *, source=...)` does **not** expand
+`${VAR}` / `$VAR` references inline. It replaces only *explicit Markdown variable
+blocks* — a fenced ```` ```var ```` block whose entire content is `${NAME}` — and
+raises for an undefined name. Ordinary `${VAR}` text inside `AGENTS.md` is left
+untouched; `RuntimeVariables.expand()` is the general reference expander. Empty
+text is skipped and contributes nothing.
+
+Reading is UTF-8 only and failure is loud, not silent:
+
+- a missing or non-file `AGENTS.md` is the only silent no-op
+  (`if not self._instructions_path.is_file(): return`);
+- non-UTF-8 content re-raises as `UnicodeError` naming the path;
+- any other read failure re-raises as `OSError` naming the path.
 
 ## Cross-references
 
-- Depends on: `variables`, `workspace_root`, `context_builder`
-  (subscribes to `CONTEXT_COMPONENTS_BUILT`).
-- Depended on by: the context builder (receives the component).
-- Pairs with: `context-builder` (the actual component pipeline),
-  `prompts` (fragment registration, but this plugin uses direct
-  component injection).
+- Depends on: `variables`, `workspace_root`; subscribes to
+  `CONTEXT_COMPONENTS_BUILT` from `context_builder`.
+- Depended on by: the context builder pipeline — `ContextBuildHandler.build`
+  emits the event, then `messages_from_components` consumes the appended
+  component.
+- Pairs with: `context-builder` (the component pipeline) and `prompts`
+  (fragment registration — this plugin does not use it).
 
 ## Common pitfalls
 
-- **`AGENTS.md` must be at workspace root**: the path is
-  `Path(ctx.workspace_root) / "AGENTS.md"`. If the file doesn't
-  exist, the plugin does nothing (silent no-op).
-- **`${VAR}` expansion can fail**: `RuntimeVariables.expand_markdown()`
-  raises if a referenced variable is undefined. Use
-  `RuntimeVariables.from_roots(...)` to pre-populate known vars.
-- **No auto-cleanup**: unlike `PromptsService`, this plugin does
-  not use `bound_effect`. The file is read when each
-  `CONTEXT_COMPONENTS_BUILT` event is handled, so changes to `AGENTS.md`
-  are visible on the next context build; it is not a startup-only cache.
-- **`source="workspace_instructions"` in `ContextComponent`**:
-  this is a reserved source name. If another plugin uses the same
-  source, the context builder's `_render_system_component()` will
-  render it as a generic component, not with workspace-specific
-  formatting.
-- **Insertion index is position-based, not source-based**: if a
-  plugin removes components, the insertion index may shift. The
-  plugin uses `next(..., len(event.components))` as a fallback,
-  which places the component at the end if no `before_sources`
-  component is found.
+- **`AGENTS.md` must be at the workspace root**: the path is
+  `Path(ctx.workspace_root) / "AGENTS.md"`, resolved once at `apply()` time.
+- **This is not a cache**: the file is read on every
+  `CONTEXT_COMPONENTS_BUILT` event, so edits are visible on the next context
+  build. There is no startup-only snapshot and no `bound_effect` registration.
+- **Do not use `insert()` to "position" a component**: only `stage` ordering
+  matters to `messages_from_components`. Appending is sufficient and is what this
+  plugin does.
+- **Do not expect named-source formatting**: `source` must literally be one of
+  `core_instructions`, `runtime_environment`, `agent_identity`,
+  `agent_instructions`, or `memory` to render as a named prompt element;
+  `workspace_instructions` is not one of them.
+- **Missing variables raise**: `expand_markdown` calls `_require(name, source)`,
+  so a ```` ```var ```` block naming an unpopulated variable raises `ValueError`
+  rather than leaving the text alone.

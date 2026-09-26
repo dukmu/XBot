@@ -36,6 +36,8 @@ matches the work, then follow the detailed page only when necessary:
    command, event, service, state, and resource patterns.
 
 Read [session-trace.md](references/session-trace.md) for JSONL/history work.
+Read [client-runtime.md](references/client-runtime.md) for the current Textual
+client, command discovery, streamed events, interactions, and read-only views.
 For a bundled component, open its page under
 [`references/plugins/`](references/plugins/README.md) after selecting the
 component from the index. These pages record the current service names and
@@ -198,8 +200,10 @@ registered behavior.
   plugin after `server` becomes available; a transport is not a second plugin.
 - Keep protocol routes and wire models in the owning `protocol.py`; do not put
   transport concerns in Tool or service contracts.
-- Use the producer-owned typed event for business facts. `EventContext` is a
-  narrow loop hook payload, not a general application context.
+- Use producer-owned typed event payloads for business facts. Agent-loop
+  lifecycle hooks, runtime stream events, and client-visible interaction
+  events are distinct contracts; consult the definition for the stage you
+  subscribe to instead of assuming one universal `EventContext` shape.
 - A Tool may declare one keyword-only `ToolCall` parameter. Core omits it from
   the provider schema and passes the final rewritten call. Do not invent a
   one-field invocation context or pass a session id separately.

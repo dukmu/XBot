@@ -1,415 +1,380 @@
 # `jobs`
 
-Kind-agnostic background job lifecycle registry. Owns every lifecycle
-concern shared by all job kinds: IDs, status transitions, waiting,
-cancellation, event notification, result/output storage, and cleanup.
+Kind-agnostic background job lifecycle registry. It owns every lifecycle
+concern shared by all job kinds: identity, status transitions, waiting,
+cancellation, event notification, result storage, and cleanup.
 
-Domain adapters (shell, subagent) implement `JobRunner` and their
-model-facing tools; they never hold job state themselves.
+Domain adapters (shell, subagent) implement `JobRunner` and their own
+model-facing Tools; they never hold job state themselves.
 
 - **Import/profile:** `jobs`, Agent profile.
-- **Source:** `XBotv2/jobs/plugin.py`,
-  `XBotv2/jobs/registry.py`,
-  `XBotv2/jobs/runner.py`,
-  `XBotv2/jobs/output.py`,
-  `XBotv2/jobs/commands.py`,
-  `XBotv2/jobs/protocol.py`,
-  `XBotv2/jobs/contracts.py`.
+- **Source:** `XBotv2/jobs/plugin.py`, `contracts.py`, `registry.py`,
+  `protocol.py`, `commands.py`.
 - **Injects/provides:** `commands`, `engine` → `jobs` (`JobRegistry`).
-- **Subscribes to events:** `jobs/list` (`LIST_JOBS`),
-  `jobs/stop` (`STOP_JOB`), `jobs/stop-all` (`STOP_ALL_JOBS`),
-  `session/close`, `prepare/fork`.
-- **Commands:** `/jobs [ps]` (list), `/jobs stop <id>`, `/jobs stopall`.
+- **Operations:** `jobs/list` (`LIST_JOBS`, `EmptyRequest → JobCatalog`),
+  `jobs/stop` (`STOP_JOB`, `StopJob → StoppedJobs`), `jobs/stop-all`
+  (`STOP_ALL_JOBS`, `EmptyRequest → StoppedJobs`).
+- **Events:** emits `job/updated` (`JOB_UPDATED`) and `job/completed`
+  (`JOB_COMPLETED`), both carrying a `JobView`; also observes `session/close`
+  and `prepare/fork`.
+- **Commands:** `/jobs [ps]`, `/jobs stop <id>`, `/jobs stopall`.
 
-The root export is `plugin = JobsPlugin()` in `XBotv2/jobs/plugin.py`.
-`JobsPlugin` composes `JobsRuntimeComponent` and its HTTP contribution; the
-runtime component is not a second tree entry.
+There is no `jobs/runner.py` and no `jobs/output.py`. `JobRunner` is a Protocol
+declared in `jobs/contracts.py`, and a job's result is the `result` field of the
+`Succeeded` state — not a separate output subsystem.
 
-```python
-class JobsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    max_concurrent_subagents: int = Field(default=4, ge=1)
-```
+## Composition
 
-## Public data models
-
-### `JobRegistry` (`XBotv2/jobs/registry.py:59-340`)
-
-```python
-class JobRegistry:
-    def __init__(
-        self,
-        *,
-        limits: dict[JobKind, int] | None = None,
-        prefix: str = "job",
-    ) -> None:
-        self._jobs: dict[JobId, Job] = {}
-        self._completion_events: dict[JobId, asyncio.Event] = {}
-        self._runners: dict[JobId, JobRunner] = {}
-        self._tasks: dict[JobId, asyncio.Task[None]] = {}
-        self._next_id = 1
-        self._prefix = prefix
-        self._limits: dict[JobKind, asyncio.Semaphore] = {
-            kind: asyncio.Semaphore(limit)
-            for kind, limit in (limits or {}).items()
-        }
-        self._closing = False
-        self.on_update: JobCallback | None = None
-        self.on_complete: JobCallback | None = None
-
-    @property
-    def closing(self) -> bool: ...
-
-    async def create(
-        self,
-        *,
-        kind: JobKind,
-        metadata: dict[str, JsonValue] | None = None,
-        parent_job_id: JobId | None = None,
-        name: str | None = None,
-    ) -> Job: ...
-
-    def start(self, job_id: JobId, runner: JobRunner) -> Job: ...
-
-    def get(self, job_id: JobId) -> Job: ...
-    def get_or_none(self, job_id: JobId) -> Job | None: ...
-    def summary(self, job_id: JobId) -> JobSummary: ...
-    def all(self) -> list[Job]: ...
-    def is_busy(self) -> bool: ...
-
-    def list(
-        self,
-        *,
-        kind: JobKind | None = None,
-        status: JobStatus | None = None,
-        parent_job_id: JobId | None = None,
-        recursive: bool = False,
-        max_results: int = 20,
-    ) -> list[JobSummary]: ...
-
-    async def wait(
-        self,
-        ids: list[JobId],
-        *,
-        mode: WaitMode = "all",
-        timeout: float | None = None,
-    ) -> WaitResult: ...
-
-    async def cancel(self, job_id: JobId) -> CancelResult: ...
-    def remove(self, job_id: JobId) -> None: ...
-
-    async def stop_all(self) -> list[JobSnapshot]: ...
-    async def shutdown(self) -> list[JobSnapshot]: ...
-    def remove_all(self) -> None: ...
-
-    def snapshot(self, job: Job, *, full_output: bool = False) -> JobSnapshot: ...
-    def snapshots(self) -> list[JobSnapshot]: ...
-
-    # Internal execution
-    async def _execute(self, job: Job, runner: JobRunner) -> None: ...
-    async def _finish(self, job: Job, status: JobStatus) -> None: ...
-    async def _notify_update(self, job: Job) -> None: ...
-    async def _notify_complete(self, job: Job) -> None: ...
-```
-
-### `Job` dataclass
-
-```python
-@dataclass(slots=True)
-class Job:
-    id: JobId
-    kind: JobKind
-    status: JobStatus = JobStatus.PENDING
-    created_at: float = field(default_factory=time.time)
-    started_at: float | None = None
-    finished_at: float | None = None
-    parent_job_id: JobId | None = None
-    name: str | None = None
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
-    result: JobResult | None = None
-    error: JobError | None = None
-
-    @property
-    def terminal(self) -> bool: ...
-    @property
-    def elapsed_ms(self) -> int: ...
-```
-
-### `JobKind` / `JobStatus`
-
-```python
-class JobKind(str, Enum):
-    SUBAGENT = "subagent"
-    SHELL = "shell"
-
-class JobStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-TERMINAL_STATES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED})
-```
-
-### `JobsPort` consumer Protocol
-
-```python
-class JobsPort(Protocol):
-    @property
-    def closing(self) -> bool: ...
-    async def create(
-        self, *,
-        kind: JobKind,
-        metadata: dict[str, JsonValue] | None = None,
-        parent_job_id: JobId | None = None,
-        name: str | None = None,
-    ) -> Job: ...
-    def start(self, job_id: JobId, runner: JobRunner) -> Job: ...
-    def get_or_none(self, job_id: JobId) -> Job | None: ...
-    def all(self) -> list[Job]: ...
-    def list(
-        self, *,
-        kind: JobKind | None = None,
-        status: JobStatus | None = None,
-        parent_job_id: JobId | None = None,
-        recursive: bool = False,
-        max_results: int = 20,
-    ) -> list[JobSummary]: ...
-    async def wait(
-        self, ids: list[JobId], *,
-        mode: WaitMode = "all",
-        timeout: float | None = None,
-    ) -> WaitResult: ...
-    async def cancel(self, job_id: JobId) -> CancelResult: ...
-```
-
-### `JobRunner` Protocol
-
-```python
-class JobRunner(Protocol):
-    async def run(self, job: Job, ctx: JobRunnerContext) -> JobResult: ...
-    async def cancel(self, job: Job) -> None: ...
-```
-
-### `JobResult` / `JobError` / `JobSummary` / `WaitResult` / `CancelResult`
-
-```python
-@dataclass(slots=True)
-class JobResult:
-    summary: str | None = None
-    output_store: TextOutputStorePort | None = None
-    data: dict[str, JsonValue] = field(default_factory=dict)
-
-class JobError(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    code: str
-    message: str
-    detail: str | None = None
-
-class JobSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    id: JobId
-    kind: str
-    status: str
-    name: str | None = None
-    elapsed_ms: int = 0
-    parent_job_id: JobId | None = None
-    summary: str | None = None
-
-class WaitResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    ready: list[JobSummary] = Field(default_factory=list)
-    pending: list[JobId] = Field(default_factory=list)
-    timed_out: bool = False
-
-class CancelResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    id: JobId
-    status: str
-    cancelled: bool = False
-```
-
-### `OutputStore` / `TextOutputStorePort` / `OutputChunk`
-
-```python
-@dataclass(frozen=True, slots=True)
-class OutputChunk:
-    data: str
-    next_cursor: int | None = None
-    eof: bool = False
-    truncated: bool = False
-
-class OutputStore(Protocol):
-    async def read(
-        self, *, cursor: int | None = None, max_bytes: int = 8000
-    ) -> OutputChunk: ...
-
-class TextOutputStorePort(OutputStore, Protocol):
-    async def write(self, text: str) -> None: ...
-    def all(self) -> str: ...
-```
-
-### `JobCallback` / `JobSnapshot` / `JobCatalog`
-
-```python
-JobCallback = Callable[[JobSnapshot], Awaitable[None]]
-
-class JobSnapshot(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    job_id: str = Field(min_length=1)
-    kind: Literal["shell", "agent"] = "shell"
-    command: str = ""
-    cwd: str
-    status: Literal["pending", "running", "completed", "failed", "stopped"]
-    created_at: float = Field(ge=0)
-    started_at: float = Field(ge=0)
-    finished_at: float = Field(ge=0)
-    output: str = ""
-    error: str = ""
-    agent: str = ""
-    thread_id: str = ""
-    usage: dict[str, JsonValue] = Field(default_factory=dict)
-
-@dataclass(frozen=True, slots=True)
-class JobCatalog:
-    tasks: tuple[JobSnapshot, ...]
-```
-
-Protocol kind mapping: `SUBAGENT → "agent"`, `SHELL → "shell"`.
-Protocol status mapping: `CANCELLED → "stopped"`.
-
-### `JobContext` / `_OutputFactory`
-
-```python
-class JobContext:
-    def __init__(self) -> None:
-        self.outputs = _OutputFactory()
-        self.primary_output: TextOutputStorePort | None = None
-
-class _OutputFactory:
-    @staticmethod
-    def create_text(text: str = "") -> TextOutputStore: ...
-```
-
-### `JobsRuntimeComponent` / `JobHandlers`
+Job execution and its HTTP projection are one capability, mounted from a single
+root export:
 
 ```python
 class JobsRuntimeComponent:
     inject = {"required": ["commands", "engine"]}
     name = "xbot.jobs"
+    Config = JobsConfig
 
-    def apply(self, ctx: Context, config: Mapping[str, object] | None = None) -> None:
-        max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
-        registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
-        ctx.set("jobs", registry)
-        for command in build_jobs_commands(registry):
-            ctx.commands.register(command)
-        handlers = JobHandlers(registry, ctx.engine, ctx)
-        registry.on_update = handlers.publish_update
-        registry.on_complete = handlers.publish_completion
-        ctx.on(LIST_JOBS.name, handlers.list_jobs)
-        ctx.on(STOP_JOB.name, handlers.stop_job)
-        ctx.on(STOP_ALL_JOBS.name, handlers.stop_all)
-        ctx.on(PREPARE_FORK, handlers.prepare_fork)
-        ctx.on(Events.SESSION_CLOSE, handlers.close)
+    def apply(self, ctx: Context, config: JobsConfig) -> None: ...
+
+
+class JobsPlugin:
+    name = "xbot.jobs"
+    Config = JobsConfig
+
+    async def apply(self, ctx: Context, config: JobsConfig) -> None:
+        await ctx.plugin(JobsRuntimeComponent(), config)
+        await ctx.inject(["server", "sessions"], mount_http)
+
+
+plugin = JobsPlugin()
 ```
 
-The root `JobsPlugin` composes this runtime component and contributes the HTTP
-facet when `server` and `sessions` are available; they are not separate tree
-plugins.
+`JobsRuntimeComponent` is the Agent-profile fiber and carries the `inject`
+declaration. `JobsPlugin` declares no `inject` at all: its only job is to mount
+the runtime component and gate the HTTP contribution on `server` + `sessions`.
+Do not add a second tree entry for the HTTP facet.
 
-### `build_jobs_commands`
+## Configuration
 
 ```python
-def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:
-    # /jobs [ps] → list background jobs
-    # /jobs stop <id> → stop one task
-    # /jobs stopall → stop all tasks
+class JobsConfig(BaseModel):
+    max_concurrent_subagents: int = Field(default=4, ge=1)
+    model_config = ConfigDict(extra="forbid")
 ```
 
-### Events / Operations
+`max_concurrent_subagents` is the per-kind concurrency limit handed to
+`JobRegistry(limits=...)`.
+
+## State model
+
+A job's status is a **closed union of seven frozen state dataclasses**, not an
+enum and not a string field. `JobStateName` is the string projection used on the
+wire.
 
 ```python
-LIST_JOBS = Operation("jobs/list", EmptyRequest, JobCatalog)
-STOP_JOB = Operation("jobs/stop", StopJob, StoppedJobs)
-STOP_ALL_JOBS = Operation("jobs/stop-all", EmptyRequest, StoppedJobs)
+JobId = str
+JobStateName = Literal[
+    "queued", "running", "succeeded", "failed_before_start", "failed_running",
+    "cancelled_before_start", "cancelled_running",
+]
+WaitMode = Literal["any", "all"]
+MAX_SUMMARY_CHARS = 256
+```
 
+```python
+@dataclass(frozen=True, slots=True)
+class Queued:
+    kind: Literal["queued"] = "queued"
+
+@dataclass(frozen=True, slots=True)
+class Running:
+    started_at: float
+    kind: Literal["running"] = "running"
+
+@dataclass(frozen=True, slots=True)
+class Succeeded:
+    started_at: float
+    finished_at: float
+    result: object
+    kind: Literal["succeeded"] = "succeeded"
+
+@dataclass(frozen=True, slots=True)
+class FailedBeforeStart:
+    finished_at: float
+    error: JobError
+    kind: Literal["failed_before_start"] = "failed_before_start"
+
+@dataclass(frozen=True, slots=True)
+class FailedRunning:
+    started_at: float
+    finished_at: float
+    error: JobError
+    kind: Literal["failed_running"] = "failed_running"
+
+@dataclass(frozen=True, slots=True)
+class CancelledBeforeStart:
+    finished_at: float
+    reason: str
+    kind: Literal["cancelled_before_start"] = "cancelled_before_start"
+
+@dataclass(frozen=True, slots=True)
+class CancelledRunning:
+    started_at: float
+    finished_at: float
+    reason: str
+    kind: Literal["cancelled_running"] = "cancelled_running"
+
+JobState = (
+    Queued | Running | Succeeded | FailedBeforeStart | FailedRunning
+    | CancelledBeforeStart | CancelledRunning
+)
+```
+
+The `before_start` / `running` split is deliberate: a cancelled or failed job
+reports whether it ever began executing, so callers can distinguish "never ran"
+from "ran and then died".
+
+## Public data models (`jobs/contracts.py`)
+
+```python
+@dataclass(frozen=True, slots=True)
+class JobIdentity:
+    id: JobId
+    owner: str
+    parent: JobId | None
+    name: str | None
+    created_at: float
+
+
+@dataclass(slots=True)          # not frozen: the state field is replaced in place
+class Job:
+    identity: JobIdentity
+    spec: JobSpec
+    state: JobState = field(default_factory=Queued)
+
+
+@dataclass(frozen=True, slots=True)
+class JobError:
+    code: str
+    message: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WaitResult:
+    ready: tuple[JobView, ...]
+    pending: tuple[JobId, ...]
+    timed_out: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CancelResult:
+    id: JobId
+    status: JobStateName
+    cancelled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class JobCatalog:
+    jobs: tuple[JobView, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StopJob:
     job_id: str
 
+
 @dataclass(frozen=True, slots=True)
 class StoppedJobs:
-    tasks: tuple[JobSnapshot, ...]
+    jobs: tuple[JobView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OutputPage:
+    data: str
+    next_cursor: int | None = None
+    eof: bool = False
+    truncated: bool = False
 ```
 
-## Execution flow
+`Job` exposes derived read-only properties rather than duplicating
+`identity`/`spec` fields: `id`, `kind`, `parent_job_id`, `name`, `created_at`,
+`terminal`, `status` (the `JobStateName`), `started_at`, `finished_at`,
+`result`, `error`, and `elapsed_ms`. Use those instead of pattern-matching on
+`job.state` in callers. There is no `owner` property — read `job.identity.owner`.
 
-```
-JobRegistry._execute(job, runner) →
-  acquire semaphore (if kind has limit) →
-  job.status = RUNNING → notify_update() →
-  runner.run(job, ctx) →
-  on success: job.status = COMPLETED
-  on CancelledError: job.status = CANCELLED
-  on Exception: job.error = normalize_error(exc), job.status = FAILED
-  finally: release semaphore, _finish(job, status) →
-    notify_complete() → completion_event.set()
-```
+`OutputPage` is public and exported but currently unreferenced inside the
+package. It is not the job result type; treat `Succeeded.result` as the result.
 
-## How `apply()` works
+## Wire model
 
 ```python
-def apply(self, ctx, config=None):
-    max_concurrent = int((config or {}).get("max_concurrent_subagents", 4))
-    registry = JobRegistry(limits={JobKind.SUBAGENT: max_concurrent})
-    ctx.set("jobs", registry)
-    for command in build_jobs_commands(registry):
-        ctx.commands.register(command)
-    handlers = JobHandlers(registry, ctx.engine, ctx)
-    registry.on_update = handlers.publish_update
-    registry.on_complete = handlers.publish_completion
-    # ... register operations
+class JobView(BaseModel):
+    id: JobId = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    state: JobStateName
+    elapsed_ms: int = Field(ge=0)
+    summary: str | None = None
+    model_config = ConfigDict(extra="forbid", frozen=True)
 ```
 
-The registry is configured with a semaphore for `SUBAGENT` jobs
-(default 4 concurrent). `on_update` publishes `JobSnapshot` to
-`RUNTIME_EVENT` (SSE). `on_complete` injects a prompt payload to
-the engine and publishes `completion_notice` to the client.
+`JobView` is the only job shape that crosses a boundary — events, operations,
+and HTTP all use it. `Job` itself is runtime-only mutable state and must not be
+serialized.
 
-## Cross-references
+## Protocols
 
-- Depends on: `commands`, `engine`, `agentloop` (`SESSION_CLOSE`),
-  `session.contracts` (`PREPARE_FORK`).
-- Depended on by: `subagents` (SUBAGENT runner), `coretools` (SHELL runner),
-  `server-routes-jobs` (HTTP routes).
-- Pairs with: `subagents` (domain adapter), `coretools` (domain adapter).
+```python
+class JobSpec(Protocol):
+    kind: str
+    label: str
 
-## Common pitfalls
 
-- **`JobRegistry.create()` raises if closing**: raises `JobRegistryClosed`
-  if `self._closing` is True. The session closing hook calls `shutdown()`
-  which sets `_closing = True` before cancelling all tasks.
-- **`JobRegistry.cancel()` on a terminal job returns `cancelled=False`**:
-  cancellation only affects non-terminal jobs. Terminal jobs are
-  left untouched.
-- **`is_busy()` returns True if ANY job is pending/running**:
-  used by `prepare_fork` to block forking while background jobs
-  are active. `is_busy()` checks all jobs, not just SUBAGENT.
-- **`JobKind.SHELL` has no concurrency limit**: only `SUBAGENT`
-  is limited by the semaphore. SHELL jobs run unbounded.
-- **`stop_all()` cancels and returns snapshots**: it cancels all
-  non-terminal jobs, then returns `JobSnapshot` for each. The
-  snapshots reflect the cancelled status ("stopped").
-- **`shutdown()` also drops all outputs**: after `stop_all()`,
-  it calls `remove_all()` which clears job results. This is why
-  output storage must be read before shutdown.
-- **`JobRegistry.get_or_none()` returns None for unknown IDs**:
-  unlike `get()` which raises `KeyError`. Use `get_or_none()` in
-  tool handlers.
-- **`list()` newest first**: `items.sort(key=lambda job: job.created_at, reverse=True)`.
-- **`list(recursive=True)` is not a recursive descendant walk**: the current
-  registry selects jobs with any non-null `parent_job_id`; it does not compute
-  the transitive child closure. Do not describe this flag as a tree traversal.
-- **`JobSnapshot.kind` maps SUBAGENT → "agent"**: the protocol
-  layer uses different kind names than the internal `JobKind`.
+class JobRunner(Protocol):
+    async def run(self, job: Job) -> object: ...
+    async def cancel(self, job: Job) -> None: ...
+
+
+class JobsPort(Protocol):
+    @property
+    def closing(self) -> bool: ...
+    async def create(self, *, spec: JobSpec, owner: str,
+                     parent_job_id: JobId | None = None,
+                     name: str | None = None) -> Job: ...
+    def start(self, job_id: JobId, runner: JobRunner) -> Job: ...
+    def get_or_none(self, job_id: JobId) -> Job | None: ...
+    def all(self) -> list[Job]: ...
+    def list(self, *, kind: str | None = None,
+             status: JobStateName | None = None,
+             parent_job_id: JobId | None = None, recursive: bool = False,
+             max_results: int = 20) -> list[JobView]: ...
+    async def wait(self, ids: list[JobId], *, mode: WaitMode = "all",
+                   timeout: float | None = None) -> WaitResult: ...
+    async def cancel(self, job_id: JobId) -> CancelResult: ...
+
+
+class JobsCommandPort(Protocol):
+    def views(self) -> list[JobView]: ...
+    def get_or_none(self, job_id: str) -> Job | None: ...
+    async def cancel(self, job_id: str) -> CancelResult: ...
+    async def stop_all(self) -> list[JobView]: ...
+
+
+class JobEventPort(Protocol):
+    async def emit(self, event: str, *args: object) -> None: ...
+```
+
+`JobRunner.run` returns the domain's own result object; the registry stores it
+in `Succeeded.result` without interpreting it. `JobEventPort` is exported from
+`jobs.contracts` but not re-exported from `jobs.__init__` — import it from
+`XBotv2.jobs.contracts` when you need the publisher type.
+
+## `JobRegistry` (`XBotv2/jobs/registry.py`)
+
+```python
+class JobRegistry(JobsPort):
+    def __init__(
+        self,
+        *,
+        limits: dict[str, int] | None = None,
+        prefix: str = "job",
+        publisher: JobEventPort | None = None,
+    ) -> None: ...
+```
+
+All three parameters are keyword-only. `limits` maps a job `kind` to its
+concurrency ceiling and is enforced with a per-kind semaphore; `prefix` seeds
+generated ids.
+
+Beyond the `JobsPort` methods, the concrete registry adds `views()`,
+`is_busy()`, `stop_all()`, `shutdown()`, `remove(job_id)`, `remove_all()`, and
+the `JobRegistry.view(job)` classmethod. These are not part of the port — a
+plugin that only needs the lifecycle contract should inject `jobs` and stay on
+`JobsPort`.
+
+`normalize_error(exc)` converts an arbitrary exception into a `JobError` and is
+the standard way a runner reports a failure.
+
+## Events
+
+```python
+JOB_UPDATED = "job/updated"      # payload: JobView
+JOB_COMPLETED = "job/completed"  # payload: JobView
+```
+
+The emitted argument is the `JobView` itself, not a wrapper. The wire models in
+`jobs/protocol.py` are distinct from the bus payloads:
+
+```python
+class JobUpdatedEvent(WireModel):
+    kind: Literal["job_updated"] = "job_updated"
+    view: JobView
+
+
+class JobCompletedEvent(WireModel):
+    kind: Literal["job_completed"] = "job_completed"
+    view: JobView
+```
+
+`job_updated_event(view)` and `job_completed_event(view)` are the constructors.
+Completion is delivered to the Agent as an inbox item on the next step with
+`wake=False`, so a finishing background job does not by itself create a new
+turn.
+
+## Commands
+
+```python
+Command(
+    name="jobs",
+    description="List or stop background jobs",
+    handler=guard_command(jobs_command),
+    effects=("jobs",),
+    usage="/jobs [ps] | /jobs stop <id> | /jobs stopall",
+    examples=("/jobs", "/jobs stop job-3", "/jobs stopall"),
+)
+```
+
+`ps` is also the no-argument form. The listing line format is
+`f"{job.kind}  {job.id}  {job.state}  {job.label}"`, and an empty registry
+reports `"No background jobs."`.
+
+## HTTP routes (`XBotv2/jobs/protocol.py`)
+
+`def build_jobs_router(*, sessions: SessionsPort) -> APIRouter`, mounted
+through `contribute_router(ctx, owner="xbot.jobs.http", ...)`.
+
+| Method | Path | `operation_id` | Response |
+|---|---|---|---|
+| `GET` | `/sessions/{session_id}/threads/{thread_id}/jobs` | `list_jobs` | `JobListResponse` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_jobs` | `JobStopResponse` |
+
+```python
+class JobListResponse(WireModel):
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    jobs: list[JobView] = Field(default_factory=list)
+
+
+class JobStopResponse(JobListResponse):
+    matched_count: int = Field(ge=0)
+```
+
+All three routes take path parameters only; the operation request objects are
+constructed in the handler. Stopping an unknown job raises
+`OperationError("job_not_found", ...)`, which the shared server error mapping
+turns into a 404.
+
+## Extension notes
+
+- Implement `JobRunner` for a new background kind and register the job with
+  `create(spec=..., owner=...)` / `start(...)`. Do not keep job state, ids, or
+  waiting logic in the adapter.
+- `prepare/fork` is refused with a retryable `thread_busy` `OperationError`
+  while a background job is active. Preserve that: forking a thread with live
+  jobs would duplicate them.
+- Publish through `JobEventPort` rather than emitting bus events directly, so
+  the registry stays the single source of id and ordering.
+- Return a domain result from `run()` and let the registry store it; do not
+  invent an output-store abstraction for a new job kind.

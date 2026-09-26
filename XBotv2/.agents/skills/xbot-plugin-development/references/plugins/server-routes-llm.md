@@ -1,7 +1,7 @@
 # `server-routes-llm`
 
 LLM provider selection HTTP routes — list providers and switch provider/effort.
-Registered via `contribute_router()` as `xbot.http.llm`.
+Registered via `contribute_router()` as `xbot.llm.http`.
 
 - **Import/profile:** `server-routes-llm`, server profile.
 - **Source:** `XBotv2/llm/protocol.py`,

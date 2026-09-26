@@ -1,5 +1,10 @@
 # 历史窗口化分析：服务端驻留模型、compact 退役与 codex/opencode 对照
 
+> **历史分析，引用基线已过期。** 下文的代码行号、容量结论和“当前”描述只
+> 对文中注明的旧提交/工作区成立，尤其不能据此描述当前 TUI 的窗口、游标或
+> 服务端驻留行为。现行概览见 [clients.md](../clients.md) 和
+> [persistence.md](../persistence.md)；具体边界以当前源码与测试为准。
+
 **引用基线。** 全文所有 `path:line` 引用指向提交 `133d813`（分支 `fix-runtime-stream-context-compat`），可用 `git show 133d813:<path>` 复核。写作时工作区**已有未提交改动**（`XBotv2/core/history.py`、`XBotv2/core/messages.py`、`XBotv2/persistence/models.py`、`XBotv2/session/contracts.py`、`XBotv2/session/manager.py`、`XBotv2/session/protocol.py`、`XBotv2/session/runtime.py`、`XBotv2/application/contracts.py`、`XBotv2/application/host.py`、`XBotv2/tui/state.py`、`XBotv2/tui/transport.py`、`XBotv2/tui/timeline.py`、`XBotv2/tui/events.py` 等），其中已包含"给 wire history item 稳定身份"的 (a) 步实现。本文以 `133d813` 为"现状"，凡涉及工作区已完成的部分单独标注，避免行号漂移。
 
 ---

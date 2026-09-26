@@ -107,7 +107,7 @@ in `plugin.py`.
 
 ```python
 from pydantic import BaseModel, ConfigDict
-from XBotv2.core import Tool, ToolResult
+from XBotv2.core import Tool, succeeded_text
 from xcore import Context
 
 
@@ -115,9 +115,9 @@ class HelloHandler:
     def __init__(self, greeting: str) -> None:
         self._greeting = greeting
 
-    async def hello(self, name: str) -> ToolResult:
+    async def hello(self, name: str):
         """Greet one person and return the greeting to the Agent."""
-        return ToolResult.success(f"{self._greeting}, {name}!")
+        return succeeded_text(f"{self._greeting}, {name}!")
 
 
 class HelloPlugin:
@@ -317,15 +317,16 @@ If the Tool must know which final model call invoked it, use the standard
 `ToolCall` parameter rather than a session or invocation wrapper:
 
 ```python
-from XBotv2.core import ToolCall, ToolResult
+from XBotv2.core import ToolCall, succeeded_text
 
 
-async def inspect_call(value: str, *, tool_call: ToolCall) -> ToolResult:
-    return ToolResult.success(f"{tool_call.id}: {value}")
+async def inspect_call(value: str, *, tool_call: ToolCall):
+    return succeeded_text(f"{tool_call.id}: {value}")
 ```
 
 `tool_call` is keyword-only, excluded from the provider schema, and receives
-the call after `BEFORE_TOOL_CALL` rewriting. Sandbox, jobs, approval, and other
+the final call after the standard Tool pipeline has resolved its arguments.
+Sandbox, jobs, approval, and other
 services should instead be constructor dependencies of a named handler.
 
 ## 8. Add Persistent State Without Choosing a File
@@ -338,11 +339,11 @@ class CounterService:
     def __init__(self, state) -> None:
         self._state = state
 
-    async def increment(self) -> ToolResult:
+    async def increment(self):
         stored = await self._state.get("count")
         value = (0 if stored is None else int(stored)) + 1
         await self._state.set("count", value)
-        return ToolResult.success(str(value), data={"count": value})
+        return succeeded_text(str(value))
 
 
 class CounterPlugin:

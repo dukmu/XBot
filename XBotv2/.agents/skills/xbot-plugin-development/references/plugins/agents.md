@@ -9,15 +9,19 @@ manages agent/provider/model selection, and registers runtime operations
   `contracts.py`, `events.py`, `protocol.py`, `catalog.py`, `service.py`, and
   `commands.py`.
 - **Injects/provides:** `agent_catalog`, `agent_loop_factory`, `settings`,
-  `llm`, `model`, `tools`, `artifacts`, `loop_state`, `commands`,
-  `agent_options`, `thread_metadata`, `runtime_log` → `agent_runtime`
+  `llm`, `model`, `tools`, `artifacts`, `loop_state`, `agent_inbox`,
+  `commands`, `agent_options`, `runtime_log` → `agent_runtime`
   (`AgentsService`), `engine` (`Engine`).
-- The catalog mount also consumes `data_root`, `variables`, `workspace_root`,
-  and `session_launch` before the runtime mount is created.
+- The catalog mount separately consumes `data_root`, `variables`, and
+  `workspace_root`. Runtime activation is gated on `agent_inbox`, so the engine
+  is only built once restored input is available — plugin-tree order is not what
+  decides the mount point.
 - **Subscribes to events:** none in `register()`; operations registered
-  on `LIST_AGENTS`, `SELECT_AGENT`, etc.
-- **Operations:** `LIST_AGENTS`, `SELECT_AGENT`, `SELECT_PROVIDER`,
-  `SELECT_EFFORT`.
+  on `LIST_AGENTS`, `SELECT_AGENT`, `SELECT_PROVIDER`, `SELECT_EFFORT`.
+- **Operations:** `agents/list` (`LIST_AGENTS`), `agents/select`
+  (`SELECT_AGENT`), `llm/provider/select` (`SELECT_PROVIDER`), and
+  `llm/effort/select` (`SELECT_EFFORT`). The last two are owned by `llm` and
+  re-bound here against the active runtime.
 
 ## Public contracts and internal implementation
 
@@ -27,6 +31,7 @@ manages agent/provider/model selection, and registers runtime operations
 class AgentsService(AgentRuntimePort):
     def __init__(
         self,
+        *,
         catalog: AgentCatalogPort,
         factory: AgentLoopFactoryPort,
         events: ApplicationEventsPort,
@@ -36,7 +41,7 @@ class AgentsService(AgentRuntimePort):
         model: ModelPort,
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
-        metadata: ThreadMetadataState,
+        inbox: AgentInbox,
         runtime_log: RuntimeLog,
     ) -> None: ...
 
@@ -53,13 +58,16 @@ class AgentsService(AgentRuntimePort):
     async def select_effort(self, value: str) -> EffortSelection: ...
 ```
 
+Every constructor parameter is keyword-only. The service takes the durable
+`inbox: AgentInbox`, not a thread-metadata state object.
+
 ### `AgentRuntimeOperations` (`plugin.py`)
 
 ```python
 class AgentRuntimeOperations:
     def __init__(self, service: AgentsService, catalog: AgentCatalogPort) -> None: ...
 
-    def list_agents(self, _request: EmptyRequest) -> AgentCatalog: ...
+    def list_agents(self, _request: EmptyRequest) -> AgentCatalogData: ...
 
     async def select_agent(self, request: SelectAgent) -> AgentSelection: ...
 
@@ -76,6 +84,9 @@ class AgentRuntimeOperations:
         ctx.on(SELECT_EFFORT.name, self.select_effort)
 ```
 
+`list_agents` returns the wire model `AgentCatalogData`, and it filters out
+`hidden` definitions.
+
 ### `AgentDefinition` / `AgentSelection` / `AgentCreateOptions`
 
 ```python
@@ -84,16 +95,16 @@ class AgentDefinition(BaseModel):
     description: str = Field(min_length=1)
     mode: AgentMode = "subagent"
     prompt: str = ""
-    provider: str | None = None
-    model: str | None = None
-    temperature: float | None = Field(default=None, ge=0)
-    max_output_tokens: int | None = Field(default=None, gt=0)
-    context_window: int | None = Field(default=None, gt=0)
-    max_iterations: int | None = Field(default=None, gt=0)
-    permissions: dict[str, JsonValue] = Field(default_factory=dict)
-    tools: tuple[str, ...] | None = None
-    disabled_tools: tuple[str, ...] = ()
+    model_policy: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
+    limits: AgentExecutionLimits = Field(default_factory=AgentExecutionLimits)
+    permission_policy: PermissionPolicy = Field(
+        default_factory=lambda: PermissionPolicy(default_decision="allow")
+    )
+    tool_policy: AgentToolPolicy = Field(default_factory=AgentToolPolicy)
     hidden: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
 
 @dataclass(frozen=True, slots=True)
 class AgentSelection:
@@ -103,12 +114,13 @@ class AgentSelection:
     model_mode: str
     context_window: int
 
+
 @dataclass(frozen=True, slots=True)
 class AgentCreateOptions:
     session_id: str
     thread_id: str
     workspace_root: str
-    provider_name: str = "default"
+    provider_name: str | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
     model_override: BaseProvider | None = None
@@ -116,7 +128,12 @@ class AgentCreateOptions:
     is_subagent: bool = False
 ```
 
-### `AgentCatalog`
+`AgentDefinition` nests its policy objects; see
+[the catalog page](agent-catalog.md) for `model_policy`, `limits`,
+`permission_policy`, and `tool_policy` field-by-field. `provider_name` defaults
+to `None`, meaning "use the configured default".
+
+### `AgentCatalogData` / `AgentCatalog`
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -125,18 +142,41 @@ class AgentCatalog:
     agents: tuple[AgentDefinition, ...]
 ```
 
+`plugin.py` imports this model as `AgentCatalogData` (via
+`from XBotv2.agents.contracts import AgentCatalog as AgentCatalogData`) to
+distinguish it from the mutable `AgentCatalog` store in `agents/catalog.py`:
+
+```python
+from XBotv2.agents.contracts import AgentCatalog as AgentCatalogData
+```
+
+The `agents/list` operation returns the immutable contracts projection, not the
+mutable store.
+
 Child application handles do not belong to the Agent catalog. Import
 `ChildApplication`, `ChildApplicationResult`, and `ChildApplicationsPort`
 from `XBotv2.application` when implementing a child-runtime owner.
 
 ### `LIST_AGENTS` / `SELECT_AGENT` / `SELECT_PROVIDER` / `SELECT_EFFORT`
 
+`LIST_AGENTS` and `SELECT_AGENT` are declared in
+`XBotv2/agents/contracts.py`; the provider and effort operations are declared in
+`XBotv2/llm/contracts.py` and re-bound here against the active runtime.
+
 ```python
+# XBotv2/agents/contracts.py
 LIST_AGENTS = Operation("agents/list", EmptyRequest, AgentCatalog)
 SELECT_AGENT = Operation("agents/select", SelectAgent, AgentSelection, exclusive=True)
-SELECT_PROVIDER = Operation("llm/select-provider", SelectProvider, ProviderSelection)
-SELECT_EFFORT = Operation("llm/select-effort", SelectEffort, EffortSelection)
+
+# XBotv2/llm/contracts.py
+SELECT_PROVIDER = Operation("llm/provider/select", SelectProvider, ProviderSelection, exclusive=True)
+SELECT_EFFORT = Operation("llm/effort/select", SelectEffort, EffortSelection, exclusive=True)
 ```
+
+The wire names of the provider/effort operations are `llm/provider/select` and
+`llm/effort/select`. All three selection operations are `exclusive=True`: they
+refuse to run while the user's input is pending rather than reconfiguring a
+busy thread.
 
 ## How `apply()` works
 
@@ -147,7 +187,7 @@ async def mount_runtime(ctx: Context) -> None:
         factory=ctx.agent_loop_factory,
         events=ctx, state=ctx.loop_state, settings=ctx.settings,
         providers=ctx.llm, model=ctx.model, tools=ctx.tools,
-        artifacts=ctx.artifacts, metadata=ctx.thread_metadata,
+        artifacts=ctx.artifacts, inbox=ctx.agent_inbox,
         runtime_log=ctx.runtime_log,
     )
     ctx.set("agent_runtime", service)
@@ -188,8 +228,8 @@ For cross-plugin requests, prefer the typed `LIST_AGENTS` operation through an
 ## Cross-references
 
 - Depends on: `agent_catalog`, `agent_loop_factory`, `settings`,
-  `llm`, `model`, `tools`, `artifacts`, `loop_state`, `commands`,
-  `agent_options`, `thread_metadata`, `runtime_log`.
+  `llm`, `model`, `tools`, `artifacts`, `loop_state`, `agent_inbox`,
+  `commands`, `agent_options`, `runtime_log`.
 - Depended on by: the LLM command facet (delegates to `AgentRuntimePort`) and
   the Agents-owned HTTP facet.
 - Pairs with: its catalog facet, `subagents`, and `agentloop`

@@ -33,7 +33,7 @@ class ServerComponent:
         ctx.set("server", app)
 ```
 
-### `WebServer` (`XBotv2/server/plugin.py:24-80`)
+### `WebServer` (`XBotv2/server/plugin.py`)
 
 ```python
 class WebServer:
@@ -51,20 +51,30 @@ class WebServer:
 Route collision detection:
 
 ```python
-def _route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
+def route_keys(owner: FastAPI | APIRouter) -> set[tuple[str, str]]:
     keys: set[tuple[str, str]] = set()
-    for route in getattr(owner, "routes", []):
+    for route in _iter_routes(owner):
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None) or set()
         for method in methods:
             keys.add((method.upper(), str(path)))
     return keys
+
+
+def _iter_routes(owner: object) -> Iterator[BaseRoute]:
+    # Recurses into nested routers, so a mounted APIRouter's routes are
+    # visible to collision detection.
+    ...
 ```
+
+`route_keys` delegates to `_iter_routes`, which walks mounted routers
+recursively. Collision detection therefore sees routes contributed through
+`contribute_router`, not just those declared directly on the app.
 
 If `conflicts` is non-empty, raises `RuntimeError("web_server route
 collision: ...")`.
 
-### `create_app` (`XBotv2/server/http.py:130-170`)
+### `create_app` (`XBotv2/server/http.py`)
 
 ```python
 def create_app(
@@ -106,8 +116,13 @@ with HTTP 400 for malformed request payloads.
 | Condition | Status |
 |---|---|
 | `exc.code.endswith("_not_found")` | 404 |
-| `exc.code in {"event_stream_connected", "parent_thread_not_active", "task_not_background", "thread_busy"}` | 409 |
+| `exc.code in {"event_stream_connected", "parent_thread_not_active", "session_in_use", "task_not_background", "thread_busy"}` | 409 |
+| `exc.code == "session_locking_unavailable"` | 500 |
 | else | 400 |
+
+The 409 set includes `session_in_use`, and the locking-unavailable case is the
+only operation error that maps to a 5xx — it is a server-side concurrency
+failure, not a client mistake. Keep both branches when editing the mapping.
 
 ### `ApiLoggingMiddleware`
 

@@ -16,11 +16,12 @@ provider/model/temperature overrides, permissions, and tool selections.
 
 ## Public data models
 
-### `AgentCatalog` (`XBotv2/agents/catalog.py:17-90`)
+### `AgentCatalog`
 
 ```python
 class AgentCatalog:
-    def __init__(self) -> None:
+    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
+        self._ownership = ownership
         self._base: dict[str, AgentDefinition] = {}
         self._base_owners: dict[str, str] = {}
         self._overlay: dict[str, AgentDefinition] = {}
@@ -59,24 +60,52 @@ Overlay wins over base for `get()`. `definitions()` merges both layers.
 ### `AgentDefinition` (`XBotv2/agents/contracts.py`)
 
 ```python
+AgentMode = Literal["primary", "subagent", "all"]
+
+
+class AgentModelPolicy(BaseModel):
+    route: ModelRoute | InheritRoute = Field(default_factory=InheritRoute)
+    generation: GenerationMode | InheritGeneration = Field(
+        default_factory=InheritGeneration
+    )
+    temperature: float | None = Field(default=None, ge=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    context_window: int | None = Field(default=None, gt=0)
+
+
+class AgentToolPolicy(BaseModel):
+    enabled: tuple[str, ...] | AllTools = Field(default_factory=AllTools)
+    disabled: tuple[str, ...] = ()
+
+
 class AgentDefinition(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     description: str = Field(min_length=1)
     mode: AgentMode = "subagent"
     prompt: str = ""
-    provider: str | None = None
-    model: str | None = None
-    temperature: float | None = Field(default=None, ge=0)
-    max_output_tokens: int | None = Field(default=None, gt=0)
-    context_window: int | None = Field(default=None, gt=0)
-    max_iterations: int | None = Field(default=None, gt=0)
-    permissions: dict[str, JsonValue] = Field(default_factory=dict)
-    tools: tuple[str, ...] | None = None
-    disabled_tools: tuple[str, ...] = ()
+    model_policy: AgentModelPolicy = Field(default_factory=AgentModelPolicy)
+    limits: AgentExecutionLimits = Field(default_factory=AgentExecutionLimits)
+    permission_policy: PermissionPolicy = Field(
+        default_factory=lambda: PermissionPolicy(default_decision="allow")
+    )
+    tool_policy: AgentToolPolicy = Field(default_factory=AgentToolPolicy)
     hidden: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 ```
 
-`AgentMode = Literal["primary", "subagent", "all"]`.
+Model selection, execution limits, and permissions are **nested policy objects**,
+not flat fields. There is no `provider`, `model`, `temperature`,
+`max_output_tokens`, `context_window`, `max_iterations`, `permissions`,
+`tools`, or `disabled_tools` key on `AgentDefinition`: those concerns live in
+`model_policy` (`route`, `generation`, `temperature`, `max_output_tokens`,
+`context_window`), `limits` (`AgentExecutionLimits`, owned by
+`XBotv2.core.domain`), `permission_policy`, and `tool_policy` (`enabled`,
+`disabled`).
+
+Because the model is `extra="forbid"`, passing a flat `provider=`/`model=`
+keyword raises a `ValidationError` rather than being ignored.
+
 `mode="primary"` marks an Agent that is not eligible for subagent spawning;
 `"subagent"` marks one that can be spawned, and `"all"` allows both roles.
 The active primary selection is resolved separately by the Agents runtime;
@@ -124,8 +153,11 @@ def mount_catalog(ctx: Context) -> None:
 ```
 
 Three layers: builtins → `data_root/.agents/` → `workspace_root/.agents/`
-(overlay). The catalog facet also requires the per-session `session_launch`
-service in the application composition.
+(overlay). The catalog mount depends only on `data_root`, `variables`, and
+`workspace_root`; it does **not** require `session_launch`. The runtime mount is
+a separate, dependency-gated callback that additionally needs `agent_inbox`,
+`agent_loop_factory`, `settings`, `llm`, `model`, `tools`, `artifacts`,
+`loop_state`, `commands`, `agent_options`, and `runtime_log`.
 
 ## Typical extension: register a custom agent
 

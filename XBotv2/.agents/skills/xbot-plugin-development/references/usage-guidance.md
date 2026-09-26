@@ -9,7 +9,7 @@ an abstraction for a single private call.
 
 ## Choose the Right User Surface
 
-- The Agent needs to perform an operation: Tool returning `ToolResult`.
+- The Agent needs to perform an operation: a Tool returning `ToolOutcome`.
 - A human needs a direct control: slash `Command`, not a synthetic ToolCall.
 - A client needs a route or stream event: owning protocol package.
 - Another plugin needs a capability: declared XCore service.

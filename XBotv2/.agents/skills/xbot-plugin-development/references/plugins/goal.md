@@ -9,8 +9,9 @@ prompt-based Stop hook rather than an Agent-managed record.
 - **Import/profile:** `goal`, Agent profile.
 - **Source:** `XBotv2/goal/plugin.py`, `XBotv2/goal/models.py`,
   `XBotv2/goal/evaluator.py`.
-- **Injects/provides:** `commands`, `engine`, `model`, `state` → `goal`
-  (`GoalService`); optionally reads `jobs`, `todolist`, `usage`.
+- **Injects/provides:** `commands`, `engine`, `loop_state`, `model`, `state`,
+  `tools`, `usage` (all required) → `goal` (`GoalService`); `jobs` and
+  `todolist` are optional and read defensively.
 - **Subscribes to events:** `turn/start`, `after/tool-call`, `turn/end`,
   `error`, `session/resume`, `session/close`.
 - **Command:** `/goal`, `/goal <condition>`, `/goal clear`.
@@ -18,8 +19,8 @@ prompt-based Stop hook rather than an Agent-managed record.
   it). No Agent tool can end a goal: completion and impossibility are the
   evaluator's call.
 - **Events:** `COLLECT_STATUS_SLOTS` (`goal`, `goal_round`, `goal_reason`,
-  `goal_stats`), `session/history-changed` (post-compaction restatement), and a
-  `goal_updated` `ClientEvent` on every transition.
+  `goal_stats`), `session/history-changed` (post-compaction restatement), and
+  application runtime events for goal state changes.
 
 ## Public data models
 
@@ -37,9 +38,9 @@ class GoalService:
 
     async def snapshot(self) -> GoalSnapshot | None: ...
     async def command(self, raw_args: str) -> CommandResult: ...
-    async def status(self) -> ToolResult: ...          # backs get_goal
-    async def set_condition(self, condition: str) -> ToolResult: ...  # backs create_goal
-    async def clear(self) -> ToolResult: ...
+    async def status(self) -> ToolOutcome: ...          # backs get_goal
+    async def set_condition(self, condition: str) -> ToolOutcome: ...  # backs create_goal
+    async def clear(self) -> ToolOutcome: ...
     async def contribute_status(self, slots: StatusSlots) -> None: ...
     async def on_compaction(self, event: HistoryChanged) -> None: ...
     async def _start_round(self, goal: GoalSnapshot, *, reason: str = "", note: str = "") -> None: ...
@@ -120,27 +121,39 @@ the goal snapshot owns `turns_evaluated`, and the XML carries it for the model.
 `contribute_status` adds:
 
 - `goal: <status>`
+- `goal_objective: <condition>` (truncated to 120 characters) whenever a goal
+  exists
 - `goal_round: "<current>/<max>"` while active
 - `goal_reason: <latest reason>` when a reason exists
 - `goal_stats: "<tokens>tok <n>tools <done>/<total>tasks"` for a terminated goal
-  with non-zero consumption
+  with non-zero consumption — note the compact form has **no space** before
+  `tasks`
 
 `/goal` prints the full record, including duration.
 
-## Migration
+## Persistence
 
-A v1/v2 snapshot (`objective`, `summary`, `stats.turns`, `token_budget`) is
-read as v3 on load: `objective → condition`, `complete → achieved`,
-`blocked → failed`, `summary → reason`, and unknown stat keys are dropped.
+There is **no snapshot migration**. `GoalSnapshot` is exactly
+`{state: GoalState}` and is declared `extra="forbid"`, so a legacy snapshot
+carrying flat `objective`/`summary`/`token_budget` keys is *rejected* on load
+rather than upgraded. There is no `schema_version`, no `schema_level`, and no
+`token_budget` anywhere in the plugin. If the persisted shape ever has to
+change, write the migration deliberately; do not assume one exists.
 
 ## How `apply()` works
 
 ```python
 def apply(self, ctx: Context, config: GoalConfig | None = None) -> None:
     service = GoalService(
-        ctx.state.namespace(self.name), ctx.engine, model=ctx.model, events=ctx,
-        jobs=ctx.get("jobs", strict=False), usage=ctx.get("usage", strict=False),
-        todolist_getter=lambda: ctx.get("todolist", strict=False), config=config,
+        ctx.state.namespace(self.name),
+        ctx.engine,
+        model=ctx.model,
+        events=ctx,
+        jobs=ctx.get("jobs", strict=False),
+        usage=ctx.usage,
+        model_selection=lambda: ctx.loop_state.metadata.value.runtime_selection.model,
+        todolist_getter=lambda: ctx.get("todolist", strict=False),
+        config=config,
     )
     ctx.set("goal", service)
     ctx.dispose(service.dispose)
@@ -151,11 +164,18 @@ def apply(self, ctx: Context, config: GoalConfig | None = None) -> None:
     ctx.on(Events.SESSION_RESUME, service.on_session_resume)
     ctx.on(Events.SESSION_CLOSE, service.on_session_close)
     ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
+    ctx.on(HISTORY_CHANGED, service.on_compaction)
     ctx.commands.register(Command(
         name="goal", handler=service.command,
         usage="/goal | /goal <condition> | /goal clear", exclusive=False,
     ))
 ```
+
+`usage` is read as a required service (`ctx.usage`), while `jobs` and
+`todolist` go through `ctx.get(..., strict=False)` because the plugin declares
+them optional. `model_selection` is a callable, not a captured value: the
+evaluator needs the model binding that is current when it runs, and
+`ctx.loop_state.metadata` can change after `apply`.
 
 Agent tools are registered alongside the command:
 
@@ -169,17 +189,34 @@ does.
 
 ## On-disk artifacts
 
+The snapshot is the serialized `GoalSnapshot`, whose only field is the `state`
+union. The union member's `kind` discriminator and its nested `stats`,
+`progress`, and `checkin_policy` objects are preserved as written:
+
 ```json
-{"goal.snapshot": {"condition": "all tests pass", "status": "active",
-  "reason": "test/auth still fails", "turns_evaluated": 1,
-  "started_at": 1710000000.0, "finished_at": 0.0, "retries": 0,
-  "tool_less_turns": 0, "idle_checkins": 0, "checkin_seconds": 0.0,
-  "stalled": false, "stats": {"tool_calls": 0, "input_tokens": 0,
-  "output_tokens": 0, "total_tokens": 0, "todo_items": 0,
-  "todo_completed": 0}, "schema_version": 3},
- "goal.usage_baseline": {"input_tokens": 0, "output_tokens": 0,
-  "total_tokens": 0}}
+{"goal.snapshot": {"state": {
+    "kind": "active",
+    "condition": "all tests pass",
+    "started_at": 1710000000.0,
+    "stats": {"tool_calls": 0, "input_tokens": 0, "output_tokens": 0,
+              "todo_items": 0, "todo_completed": 0},
+    "progress": {"turns_evaluated": 1, "retries": 0, "tool_less_turns": 0,
+                 "idle_checkins": 0, "stalled": false},
+    "checkin_policy": {"backoff_factor": 1.0}}},
+ "goal.usage_baseline": {"input_tokens": 0, "output_tokens": 0}}
 ```
+
+Field notes that matter when reading a stored record:
+
+- `stats` has **no** `total_tokens` key. Total tokens is a derived property, not
+  a persisted field.
+- `progress` and `checkin_policy` are nested objects, not top-level keys. Only
+  `ActiveGoal` and `PausedGoal` carry `checkin_policy`; the terminated variants
+  (`AchievedGoal`, `FailedGoal`) carry `finished_at` and `reason` instead.
+- `PausedGoal` additionally carries `paused_at` and `reason`; `NoGoal` is just
+  `{"kind": "no_goal"}`.
+- The record is keyed by the state namespace from `ctx.state.namespace(name)`;
+  the baseline is a separate sibling key.
 
 ## Cross-references
 

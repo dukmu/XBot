@@ -5,18 +5,18 @@ means O(1) **with respect to conversation length** — work proportional to a fi
 window (a few hundred entries) is fine, work proportional to the whole history is
 not.
 
-> **The TUI half of this document is historical.** The TUI client was rewritten
-> from scratch (`XBotv2/tui/`; contract and decisions in `tui-rewrite-spec.md`),
-> and every module named in the TUI sections below — `tui/client.py`, `TuiState`,
-> `TranscriptSurface`, `_MAX_STATE_*`, `tests/core/test_tui_client.py`,
-> `tests/bench/test_tui_event_throughput.py` — was deleted with it. What is written
-> about that implementation is kept as the record of what it did, not as a
-> description of the current client. The current TUI's numbers, and the one TUI
-> goal it does **not** meet, are in `tui-rewrite-spec.md` §5.16: the new client
-> renders through a bounded window (`tui/view/plan.py` + `tui/view/transcript.py`)
-> but **retains the whole history in memory** and has no eviction path, so the
-> "bounded data" half of this goal is met on the Web and not on the TUI. The Web
-> and protocol sections below are current.
+> **Historical performance notes.** The old TUI implementation sections below
+> describe deleted code. The current TUI uses a stable-ID timeline, a rendered
+> window, cursor-based history paging, and page release while following the
+> tail. Its defaults are a 50-entry fetch window and 2,000-entry residency
+> target; releasing a page preserves its cursor so it can be fetched again.
+> These client limits do not bound server-side durable history. See
+> [clients.md](../clients.md) for the current client summary; source and tests
+> remain authoritative.
+>
+> The tables and findings below are retained as historical analysis. Their
+> Web status labels and old TUI measurements were not revalidated as current
+> performance guarantees.
 
 ## What was unbounded, and where it stands
 
@@ -27,8 +27,8 @@ not.
 | Web | subagent mirror `ThreadViewState.entries` | whole conversation | **fixed** — `boundTranscriptEntries(..., keepTail)` on every append and prepend |
 | Web | `deliveryStates`, `jobs`, `tasks` | per id | bounded by live objects, not history |
 | TUI (old client, deleted) | `TuiState.transcript` / `messages` / `notices` / `errors` / `tools` / `tasks` | whole conversation, except live-object-keyed ones | this was fixed in the old client by `_MAX_STATE_*` caps plus server-backed paging; the modules are gone |
-| TUI (current) | `Timeline` entries (`tui/timeline.py`) | whole conversation | **open** — the snapshot is the full server history and nothing evicts; see `tui-rewrite-spec.md` §5.16 |
-| TUI (current) | rendered widgets | whole window | **fixed** — the view mounts one planned window (`timeline.window(size=...)`), never one widget per event |
+| TUI (current) | `Timeline` entries and loaded pages | loaded history, with pages releasable while following the tail | bounded residency target with cursor-backed reload; a reader's visible pages are retained |
+| TUI (current) | rendered widgets | current transcript window | bounded by the rendered timeline window |
 
 The *rendering* was already windowed in both clients; the gap was that the
 *data* stayed full-fidelity, and reducer paths copied the whole array per event

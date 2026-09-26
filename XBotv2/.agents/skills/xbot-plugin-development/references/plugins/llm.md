@@ -1,266 +1,99 @@
 # `llm`
 
-Provider/model registry and selected `ModelPort`. Selects the active
-provider+model at session start, surfaces a typed catalog for the UI,
-and exposes operations for switching at runtime.
+Owns provider configuration, provider/model catalog discovery, model binding,
+and normalized provider stream handling. Provider-specific request, retry,
+message, error, and usage behavior stays in the provider adapter.
 
-- **Import/profile:** `llm`, Agent and server profiles.
-- **Source:** `XBotv2/llm/plugin.py`, `XBotv2/llm/contracts.py`,
-  `XBotv2/llm/config.py`, `XBotv2/llm/commands.py`,
-  `XBotv2/llm/anthropic.py`, `XBotv2/llm/openai.py`,
-  `XBotv2/core/providers.py`, `XBotv2/core/usage.py`.
-- **Injects/provides:** `runtime_log` → `llm` (`LLMService`) and
-  `model` (`ModelService`).
-- **Subscribes to events:** none in `apply`; the Agent loop drives
-  `model.astream(...)` via `ctx.model`.
+- **Import/profile:** `XBotv2.llm`, Agent and server profiles.
+- **Source:** `llm/contracts.py`, `config.py`, `service.py`, `plugin.py`,
+  `openai.py`, and `anthropic.py`.
+- **Configuration:** `LlmConfig` (`default_provider`, `providers`).
+- **Operations:** `LIST_PROVIDERS`, `SELECT_PROVIDER`, `SELECT_EFFORT`.
+- **Commands:** `/provider [status|list|use <name>]`, `/model [status|list|use
+  [<provider>] <model>]`, `/effort [<level>]`.
+- **HTTP:** provider catalog and per-thread provider/model/effort selection
+  routes are documented in [LLM routes](server-routes-llm.md).
 
-### `LlmConfig` (`XBotv2/llm/contracts.py`)
+## Configuration contracts
 
 ```python
 class LlmConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    default: str = "default"
-    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
-```
+    default_provider: str = "default"
+    providers: dict[str, ProviderConfig] = {}
 
-`LlmPlugin.Config` is this model. Provider and model fields therefore produce
-the same validation and JSON Schema used by the generic configuration UI.
-
-## Public data models
-
-### `ProviderConfig` / `ModelConfig` (`XBotv2/llm/contracts.py`)
-
-```python
 class ProviderConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    protocol: str = "openai"               # "openai" | "anthropic" | "mock"
+    protocol: str = "openai"
     base_url: str | None = None
-    api_key: str | None = None             # may come from api_key_env
+    api_key: str | None = None
     api_key_env: str | None = None
     default_model: str
-    models: list[ModelConfig] = Field(default_factory=list)
+    models: list[ModelConfig] = []
+    headers: dict[str, str] = {}
 
-    @model_validator(mode="after")
-    def _validate_catalog(self) -> "ProviderConfig":
-        # models non-empty + default_model is listed.
-        ...
-
-    def resolve(self, model: str | None = None) -> ModelConfig:
-        name = model or self.default_model
-        for candidate in self.models:
-            if candidate.model == name:
-                return candidate
-        raise ValueError(f"Unknown model {name!r} for protocol ...")
-```
-
-### `ModelConfig`
-
-```python
 class ModelConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model: str = Field(min_length=1)
-    temperature: float | None = None
-    max_context_tokens: int = Field(default=32_000, ge=1)
-    max_output_tokens: int | None = Field(default=None, ge=1)
-    reasoning_effort: str | None = None
-    effort: list[str] | None = None              # advertised effort tiers
-    thinking: str | None = Field(default=None, min_length=1)
-    extra_body: dict[str, Any] = Field(default_factory=dict)
-    input_modalities: list[Literal["text", "image"]] = Field(
-        default_factory=lambda: ["text"]
-    )
-    mock_responses: list[dict[str, Any]] = Field(default_factory=list)
-
-    @property
-    def model_mode(self) -> str:
-        return self.reasoning_effort or self.thinking or ""
-```
-
-Validation: `input_modalities` must contain `"text"`; if `effort` is
-set, `reasoning_effort` must be one of its values.
-
-### `parse_provider_config` / `expand_env`
-
-```python
-def parse_provider_config(
-    raw: dict[str, Any],
-    *,
-    require_key: bool = True,
-) -> ProviderConfig: ...
-
-def expand_env(value: str) -> str: ...
-    # ${VAR} or $VAR from os.environ; raises if unset.
-```
-
-`parse_provider_config` resolves `api_key_env` against the
-environment and validates the catalog. `require_key=False` is the
-listing path that leaves the key unresolved.
-
-### `merge_request_extras`
-
-```python
-def merge_request_extras(
-    derived: dict[str, Any],
-    configured: dict[str, Any],
-) -> dict[str, Any]: ...
-    # Deep-merge with configured winning; used so a vendor can restate
-    # or extend fields (e.g. Anthropic thinking + budget_tokens).
-```
-
-### `UsageData` (`XBotv2/core/usage.py`)
-
-```python
-class UsageData(BaseModel):
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    total_tokens: int = Field(default=0, ge=0)
-    requests: int = Field(default=0, ge=0)
-    context_tokens: int = Field(default=0, ge=0)
-    cache_read_input_tokens: int = Field(default=0, ge=0)
-    cache_creation_input_tokens: int = Field(default=0, ge=0)
-    prompt_cache_write_tokens: int = Field(default=0, ge=0)
-```
-
-Provider usage is validated by the typed contract. Unknown provider fields
-are rejected; add a field to `UsageData` before accepting a new counter.
-
-### `ProviderCapabilities` (`XBotv2/core/providers.py`)
-
-```python
-@dataclass
-class ProviderCapabilities:
-    input_modalities: frozenset[InputModality] = field(
-        default=frozenset({"text"})
-    )
-    # ... other capability flags the adapter advertises
-```
-
-### `BaseProvider` (abstract base)
-
-```python
-class BaseProvider(ABC):
-    supported_input_modalities: frozenset[InputModality] = frozenset({"text"})
-
-    async def astream(
-        self,
-        messages: list[Message],
-        **kwargs: Any,
-    ) -> AsyncIterator[ModelChunk]: ...
-```
-
-Adapters in `XBotv2/llm/anthropic.py`, `XBotv2/llm/openai.py`.
-
-## `LlmCatalogPort` / `ModelPort` Protocols
-
-```python
-class LlmCatalogPort(Protocol):
-    def catalog(self) -> ProviderCatalog: ...
-
-class ModelPort(Protocol):
-    """Mutable model binding consumed by the Agent loop."""
-
-    def bind_tools(
-        self,
-        tools: list[dict[str, JsonValue]],
-        **kwargs: object,
-    ) -> BaseProvider: ...
-
-    def astream(
-        self,
-        messages: list[Message],
-        **kwargs: object,
-    ) -> AsyncIterator[ModelChunk]: ...
-```
-
-## Provider catalog model (`XBotv2/llm/contracts.py`)
-
-```python
-class ProviderCatalog(BaseModel):
-    default: str
-    providers: tuple[ProviderDescription, ...]
-
-class ProviderDescription(BaseModel):
-    name: str
-    provider: str                 # adapter protocol, e.g. "openai"
-    default_model: str
-    models: tuple[ModelDescription, ...]
-
-class ModelDescription(BaseModel):
     model: str
-    max_context_tokens: int
-    max_output_tokens: int | None
-    reasoning_effort: str
-    effort: tuple[str, ...]
-    thinking: str
-    input_modalities: tuple[Literal["text", "image"], ...]
+    temperature: float | None = None
+    max_context_tokens: int = 32_000
+    max_output_tokens: int | None = None
+    reasoning_effort: str | None = None
+    effort: list[str] | None = None
+    thinking: str | None = None
+    extra_body: dict[str, JsonValue] = {}
+    input_modalities: list[Literal["text", "image"]] = ["text"]
 ```
 
-## Slash commands (`/provider`, `/model`, `/effort`)
+Models must include text input. If effort tiers are declared,
+`reasoning_effort`, when set, must be one of them. Provider configuration must
+list at least one model and its `default_model`. API keys may be supplied
+directly or resolved through `api_key_env`; do not log or persist resolved
+credentials. `thinking` remains a provider-specific model configuration field;
+the common generation selection exposes the current reasoning effort where the
+model advertises it.
 
-Registered by the root `XBotv2/llm/plugin.py` using command builders from
-`XBotv2/llm/commands.py`. Each takes a
-single argument and updates the active Agent runtime selection:
+## Streaming contract
 
-| Command | Argument | Effect |
-|---|---|---|
-| `/provider <name>` | provider name in catalog | switches `ctx.model` |
-| `/model <id>` | model id within current provider | updates `ModelConfig` |
-| `/effort <tier>` | one of `effort[]` advertised by model | updates `reasoning_effort` |
+`ModelPort.astream(request: ModelRequest)` yields `ModelStreamEvent` values from
+`XBotv2.core.stream`:
 
-Selection is session/runtime configuration, not a new provider
-config file.
+- `TextDelta(text)` for user-facing generated text;
+- `ReasoningDelta(text)` for reasoning content, when emitted by the provider;
+- `ToolCallDelta(call_id, name_delta, arguments_delta)` while a Tool call is
+  being assembled;
+- one terminal `ModelCompleted(response)`, `ModelFailed(error)`, or
+  `ModelCancelled(reason)` event.
 
-## Typical extension: a provider adapter
+`ModelResponse` carries typed content parts, `UsageDelta`, observed context,
+stop information, and provider extensions. The loop turns normalized text and
+reasoning deltas into distinct client events; a Tool call is dispatched only
+after its final arguments have been assembled and validated. Do not promise
+reasoning deltas for every provider/model, and do not expose provider-native
+chunks as a shared XBot contract.
 
-```python
-from XBotv2.core.providers import BaseProvider
-from XBotv2.core.messages import Message, ModelChunk
+The LLM plugin's model port accepts the typed `ModelRequest`; it does not accept
+an arbitrary `messages, **kwargs` API. For a single auxiliary call, use
+`invoke_llm(model, request)`, which consumes the same normalized event stream
+and returns the terminal response or raises the provider failure.
 
-class MyProvider(BaseProvider):
-    supported_input_modalities = frozenset({"text", "image"})
+## Catalog and selection
 
-    async def _astream_once(self, messages, **kwargs):
-        # yield ModelChunk instances incrementally
-        async for chunk in self._client.stream(messages, **kwargs):
-            yield ModelChunk(
-                delta=chunk.delta,
-                usage=chunk.usage,
-                finish_reason=chunk.finish_reason,
-            )
+`ProviderCatalog` contains the configured default and provider descriptions;
+each `ModelDescription` advertises model limits, reasoning effort, effort
+tiers, thinking configuration, and input modalities. Runtime selection changes
+the active thread's resolved runtime selection. Provider configuration itself
+is startup input; no live config reload is promised.
 
-    # Implement the adapter-specific _astream_once() wire request here.
-```
+The server command implementations are registered per active runtime. The
+Textual TUI has local provider/model/effort handlers that use the public catalog
+and selection API, and may present selectors when arguments are omitted. Other
+clients should query the catalog rather than assume those TUI controls exist.
 
-A consumer declares `inject = ["llm"]` to access the registry; agents
-read `ctx.model` for the active binding.
+## Extension guidance
 
-## Cross-references
-
-- Depends on: `runtime_log`.
-- Depended on by: the `agents` runtime (binds selected provider to the
-  loop), `usage` (records per-request deltas), `permissions` (model
-  context for allow/ask decisions), `compact` (model selection for
-  summarization), `subagents` (subagent model override).
-- Pairs with: [llm-commands.md](llm-commands.md) (slash commands for
-  runtime selection).
-
-## Common pitfalls
-
-- **Logging or persisting `api_key`**: keep credentials in environment
-  variables (`api_key_env`) or the runtime's secure storage; the
-  parsed `ProviderConfig` may carry the resolved key only in memory.
-- **Reimplementing `ProviderConfig.resolve`**: use it; it fails closed
-  on unknown model names instead of silently reusing another model's
-  settings.
-- **Mutating `ProviderConfig.models` at runtime**: provider configuration is
-  validated startup input. Apply a supported configuration update at the
-  composition boundary instead of mutating a parsed model in place; there is
-  no LLM `replace_rules` API.
-- **Ignoring `reasoning_effort` validation**: if a model declares
-  `effort` tiers, the configured `reasoning_effort` must be one of
-  them; otherwise the request errors at model time.
-- **Recalculating token counts in plugin code**: rely on
-  `UsageData` from `ModelResponse.usage`.
-- **Assuming unknown usage fields are accepted**: `UsageData.from_provider()`
-  rejects fields outside `USAGE_FIELDS`; extend the typed contract first when
-  a provider adds a counter.
+- Implement adapters behind `BaseProvider`/`ModelPort` and yield the normalized
+  stream types.
+- Keep raw provider errors, usage decoding, tool-call deltas, headers, and
+  message format inside the provider implementation.
+- Keep model limits and capabilities in validated config/catalog contracts.
+- Usage accumulation is owned by [usage](usage.md), context-window recovery and
+  compaction by [compact](compact.md), and client rendering by
+  [client-runtime](../client-runtime.md).

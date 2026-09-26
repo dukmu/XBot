@@ -1,5 +1,11 @@
 # Aligning the WebUI (and TUI browsing) with DeepSeek Harness
 
+> **Historical UI implementation/design notes.** Feature and component claims
+> below describe the work represented by this document, not a guarantee about
+> the current Web or Textual client. For current XBot client/runtime behavior,
+> see [clients.md](../clients.md); source and production-path tests are
+> authoritative.
+
 The WebUI is not a re-design. It is **ported from DeepSeek Harness and then
 adapted** to XBot's client state, because dsh's interface is a designed system
 (60 scenario snapshots, 33 UI packages, a token layer with Figma-specified
@@ -19,12 +25,12 @@ rendering as a `N subagents` count button in the main transcript (dsh's
 placement) while a viewed thread opens it.  It replaces the flat
 `ThreadActivityPanel`, which is deleted.
 
-**Not portable yet:** dsh's child sessions take typed input and can be
-interrupted from the same composer.  XBot's server refuses that outright —
-`session/protocol.py` answers "Subagent threads are read-only; switch to the
-main thread to chat." — so the read-only banner stays until the API grows a
-client-facing channel into a subagent thread.  Faking an enabled composer there
-would be a lie about what the server does.
+**Read-only client behavior:** the Textual TUI and Web subagent views present
+subagent threads for inspection without exposing a composer. This is a client
+presentation policy; do not attribute it to an API rejection or infer that all
+transport callers are unable to submit input. Thread summaries identify
+subagents through `kind` and `parent_thread_id`; current client behavior is
+summarized in [clients.md](../clients.md).
 
 ### P3 scenarios: goal bar
 

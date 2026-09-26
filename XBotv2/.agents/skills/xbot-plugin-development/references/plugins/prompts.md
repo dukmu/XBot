@@ -1,129 +1,167 @@
 # `prompts`
 
-The prompt-fragment registry — a per-plugin namespace for registering
-prompt text that gets inserted into the context builder's system message
-at the appropriate stage. Auto-cleanup is handled by `bound_effect`.
+Registers a plugin's prompt text into the context builder's system message.
+It is a thin, fiber-owned facade over the `context_builder` component registry:
+`ctx.prompts` is the supported entry point, and ownership/cleanup is derived
+from the applying plugin's fiber.
 
 - **Import/profile:** `prompts`, Agent profile.
-- **Source:** `XBotv2/prompts/plugin.py`.
+- **Source:** `XBotv2/prompts/plugin.py`, `contracts.py`.
 - **Injects/provides:** `context_builder` → `prompts` (`PromptsService`).
-- **Subscribes to events:** none.
-- **Emits:** none directly (delegates to `context_builder`).
+- **Operations / Events / Commands / Routes:** none. This is a synchronous
+  in-process service only.
 
-## Public data models
+The package exports exactly one public symbol, `PromptsPort`. `PromptsService`
+and `PromptsComponent` live in `XBotv2/prompts/plugin.py` and are not
+re-exported from the package root — import them from that module when a test
+harness needs them.
 
-### `PromptsService` (`XBotv2/prompts/plugin.py:13-30`)
+## Service contract
 
 ```python
-class PromptsService:
-    """Plugin-facing prompt-fragment registry (per-plugin namespace)."""
+class PromptsPort(Protocol):
+    def add(self, component: PromptComponent) -> None: ...
 
-    def __init__(self, context_builder: Any) -> None:
+
+class PromptsService(PromptsPort):
+    """Plugin-facing prompt component registry."""
+
+    def __init__(self, context_builder: PromptComponentRegistry) -> None:
         self._builder = context_builder
 
-    def add(
-        self,
-        stage: Any,
-        text: str,
-        *,
-        source: str | None = None,
-    ) -> None:
-        """Register one fragment for this plugin, with auto-cleanup."""
+    def add(self, component: PromptComponent) -> None:
+        plugin_name = current_plugin_name()
+        if bound_effect(partial(self.remove, plugin_name)) is False:
+            raise RuntimeError(
+                "Prompt components must be registered from within a plugin "
+                f"apply() (no owning fiber for source={component.source!r}); contribute "
+                "per-build components via CONTEXT_COMPONENTS_BUILT instead"
+            )
+        self._builder.register_component(plugin_name, component)
 
-    def remove(self, stage: Any, plugin_name: str) -> None:
-        """Remove a fragment by stage and plugin name."""
+    def remove(self, plugin_name: str) -> None:
+        self._builder.unregister_owner(plugin_name)
 ```
 
-### `stage` parameter
+`add` takes a **component object**, not a stage and text. Registration is only
+legal inside a plugin `apply()`: outside an active fiber `bound_effect` returns
+`False` and `add` raises `RuntimeError` rather than registering ownerless data.
+Per-build content does not belong here — use the `after/context-components-build`
+event (`CONTEXT_COMPONENTS_BUILT`) instead.
 
-Must be one of:
+`remove` is on the concrete service but **not** on `PromptsPort`. The owner key
+is the applying plugin's name, so one call removes every component that plugin
+registered.
+
+## Component types
+
+Components are declared by `context_builder`, not by this plugin. Import them
+from `XBotv2.context_builder`:
 
 ```python
-PromptFragmentStage = Literal[
+PromptStage = Literal[
     "system_prefix",
     "system_instructions",
     "system_rules",
     "context_suffix",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class InlinePromptComponent:
+    stage: PromptStage
+    source: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FilePromptComponent:
+    stage: PromptStage
+    source: str
+    logical_path: str
+    text: str
+
+
+PromptComponent: TypeAlias = InlinePromptComponent | FilePromptComponent
 ```
 
-Stages are ordered in the context builder assembly — `system_prefix`
-before `system_instructions` before `system_rules` before
-`context_suffix`. Plugins cannot override earlier stages with
-higher-authority content.
+`PromptComponent` is precisely the union of those two dataclasses — a
+`HistoryComponent` is not a `PromptComponent` and is rejected by
+`register_component`. There is no `PromptFragmentStage`, no
+`register_fragment`, and no `FRAGMENT_STAGES`; the real stage alias is
+`PromptStage` and the real registry methods are `register_component` /
+`unregister_owner`.
 
-## How `add()` works
+Stages are rendered in `PromptStage` order — `system_prefix`,
+`system_instructions`, `system_rules`, `context_suffix`.
+
+## Composition
 
 ```python
-def add(self, stage, text, *, source=None):
-    plugin_name = current_plugin_name()
-    self._builder.register_fragment(stage, plugin_name, text, source=source)
-    bound_effect(partial(self.remove, stage, plugin_name))
+class PromptsComponent:
+    inject = ['context_builder']
+    name = "xbot.prompts"
+
+    def apply(
+        self, ctx: Context, config: dict[str, JsonValue] | None = None
+    ) -> None:
+        ctx.set("prompts", PromptsService(ctx.context_builder))
+
+
+plugin = PromptsComponent()
 ```
 
-`bound_effect` registers `self.remove(stage, plugin_name)` as a
-cleanup callback that fires when the plugin's fiber is unloaded.
-This means fragments are **fiber-scoped** — they persist only for
-the lifetime of the plugin's activation.
+There is no `Config` model and `apply` is synchronous. The component's whole job
+is to publish the service.
 
-## How `apply()` works
+## Registering a component
 
 ```python
-def apply(self, ctx, config=None):
-    ctx.set("prompts", PromptsService(ctx.context_builder))
-```
+from XBotv2.context_builder import InlinePromptComponent
 
-The component itself does nothing beyond exposing the service.
-
-## Typical extension: register a prompt fragment
-
-```python
-from XBotv2.prompts import PromptFragmentStage
 
 class MyPlugin:
     name = "my-plugin"
-    inject = ["prompts", "context_builder"]
+    inject = ["prompts"]
 
-    def apply(self, ctx, config):
+    def apply(self, ctx, config=None):
         ctx.prompts.add(
-            stage="context_suffix",
-            text="Custom instruction text here.",
-            source="my-plugin/instructions.md",
+            InlinePromptComponent(
+                stage="context_suffix",
+                source="my-plugin",
+                text="Custom instruction text here.",
+            )
         )
 ```
 
-The `context_builder` is the actual builder; `prompts` is the
-convenience wrapper.
+`source` identifies the contributing plugin in the rendered prompt; it is a
+required field of every component, unlike the old optional `source=` keyword.
+For text that lives in a file, use `FilePromptComponent(stage=..., source=...,
+logical_path=..., text=...)`.
 
-## On-disk artifacts
+## Lifecycle
 
-None. Fragments are in-memory, fiber-scoped, and cleaned up on
-plugin unload.
+Registration is a fiber effect: the component is released when the plugin
+unloads, and a failed `apply` rolls the registration back. Nothing is written to
+disk — components are in-memory and scoped to the activation.
 
-## Cross-references
+## Who actually consumes this
 
-- Depends on: `context_builder` (delegates `register_fragment` /
-  `unregister_fragment`).
-- Depended on by: plugins that need to add prompt fragments
-  (`subagents` for subagent catalog, `skills` for skill context,
-  `workspace-instructions` for workspace rules).
-- Pairs with: `context-builder` (the actual builder),
-  `workspace-instructions` (uses `ctx.prompts` to register
-  workspace rules).
+Current XBot plugins do **not** read `ctx.prompts`. `workspace-instructions`
+subscribes to `after/context-components-build` and appends to the built
+component list instead. Treat `prompts` as a public extension point for
+third-party plugins, not as the internal path the built-ins use; do not repeat
+the claim that `subagents` or `skills` depend on it.
 
-## Common pitfalls
+## Pitfalls
 
-- **Forgetting the `source` parameter**: the `source` is rendered
-  into the prompt element attributes but is not required. Omitting
-  it means the fragment's origin is lost in debug logs.
-- **Using an invalid stage**: `context_builder.register_fragment()`
-  raises `ValueError` for stages not in `FRAGMENT_STAGES`.
-- **Not using `ctx.prompts` directly**: the `PromptsService` is the
-  intended API. Calling `ctx.context_builder.register_fragment()`
-  directly bypasses `bound_effect` auto-cleanup.
-- **Assuming fragments are session-persistent**: they are
-  fiber-scoped and cleaned up when the plugin is unloaded. For
-  session-wide fragments, use the `context_builder` directly.
-- **Registering the same stage twice from the same plugin**:
-  `register_fragment()` overwrites the previous fragment for that
-  `(stage, plugin_name)` pair.
+- Do not keep a reference to `ctx.prompts` in a long-lived domain object or call
+  it from an event callback: registration outside `apply` raises. Contribute
+  dynamic content through `after/context-components-build`.
+- Do not call `ctx.context_builder.register_component(...)` directly from a
+  plugin. Going through `ctx.prompts` is what attributes the registration to
+  your fiber and makes cleanup automatic.
+- An unknown `stage` is rejected by the builder, so a typo fails at `apply`
+  rather than silently rendering nothing.
+- Registering twice from the same plugin replaces that owner's components rather
+  than appending, because ownership is keyed by plugin name.

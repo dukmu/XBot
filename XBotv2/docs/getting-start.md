@@ -19,6 +19,14 @@ explicit data directory and workspace for tests:
 xbot once --data-dir ./run-data --workspace ./workspace "List the files"
 ```
 
+Interactive terminal use is `xbot tui` (also the default when no subcommand is
+given). It starts a local API server unless `--server URL` points to an
+existing one. `xbot serve` starts only the HTTP/SSE API; `xbot web` serves the
+compiled Web client; `xbot acp` runs the ACP carrier. Use `xbot --help` and
+`xbot <mode> --help` for the installed version's flags. TUI history paging and
+retention flags and its client plugin settings are summarized in
+[clients](clients.md).
+
 An external plugin is a normal package. Its root `plugin.py` exports one
 module-level `plugin` object; public declarations belong in `contracts.py`,
 `events.py`, and `protocol.py`:

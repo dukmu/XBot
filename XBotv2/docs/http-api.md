@@ -38,8 +38,8 @@ protocol handshake is `POST /hello`.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `ThreadMessagesResponse` |
-| GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `ThreadTrajectoryResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `HistoryPage[ConversationRecord]` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `TrajectoryRead` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
 | POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted` command submission |
 | POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutation` |
@@ -66,16 +66,17 @@ A client that does not want the whole conversation asks for a bounded window:
   cursor is `null` when the window already holds the beginning.
 - `GET .../messages?limit=N` reads the newest `N` records, and
   `GET .../messages?limit=N&cursor=C` reads the page before `C`. The response's
-  `next_cursor` is the cursor for the page before it, or `null` at the beginning.
+  `older_cursor` is the cursor for the page before it, or `null` at the beginning.
   Appending records leaves a cursor valid; a rewrite (`/history/undo`,
   `/history/clear`, compaction) invalidates it, and the read then answers
   `invalid_cursor` rather than a page from a different history.
 - History clear/undo responses return `HistoryMutation(removed_turns, history,
   stats)`. Its `history` is the same `HistoryPage` used by attach and
   `/messages`; clear also accepts the optional `history_limit` query parameter.
-- `GET .../trajectory` pages the append-only record log the same way, and also
-  accepts `before=<position>` as an absolute anchor, which is what a client uses
-  once it has released the front of its own window.
+- `GET .../trajectory` returns `TrajectoryRead(page=HistoryPage[TrajectoryEntry],
+  newest_position=...)` and also accepts `before=<position>` as an absolute
+  anchor, which is what a client uses once it has released the front of its own
+  window.
 
 `MessageRequest` supports `content`, `request_id`, `delivery` (`queue` or
 `steer`), images, and attachments. SSE envelopes carry sequence, session,
@@ -145,21 +146,21 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 
 ## Commands and Tools
 
-The command plane is **discovery plus execution of the slash vocabulary**, and it
-is a normal, typed part of the API surface. What a client may rely on is the
-resource: the catalogue's *shape* and the request's shape. What it may not rely
-on is the *content*: which commands exist is decided per session and thread by
-the plugins that are loaded there (the session plugin registers the built-ins,
-capability plugins register theirs through `ctx.commands`), so the list changes
-with the plugin tree and with the active agent. Clients therefore read it, they
-never hardcode it.
+The command plane exposes server command discovery and execution. The catalogue
+shape is stable, while entries vary by active thread and loaded plugins. Client
+commands may also appear in the catalogue, but they are local affordances and
+are not executable through these HTTP routes. In the Textual TUI, `/help` is a
+local command which lists local commands and the current server catalogue, and
+`/help <command>` shows the selected entry's usage, parameters, and examples;
+see [Clients and runtime behavior](clients.md). Third-party HTTP clients must
+not assume TUI-local handlers exist.
 
 | Field | Meaning |
 |---|---|
 | `name` / `slash` | the command and its `/` form |
-| `kind` | who runs it: `server` (this resource), `prompt` (submit the line as a message: it is a prompt template) |
+| `kind` | who runs it: `client` (local affordance), `server` (this resource), `prompt` (submit the line as a message) |
 | `description` / `usage` / `examples` / `parameters` | what the user reads |
-| `effects` | what running it can touch (`history`, `thread`, `agents`, `jobs`, `commands`, `sessions`), declared *before* it runs |
+| `effects` | what running it can touch (`history`, `thread`, `agents`, `jobs`, `commands`, `sessions`, `policy`), declared *before* it runs |
 | `exclusive` | whether it must run while nothing else is |
 
 `POST` takes **one line, exactly as typed**: `{"raw": "/model use m2"}`. The
@@ -168,17 +169,12 @@ command unchanged; a line the command cannot parse comes back as an error
 *result* (`status: "error"`, with the reason in `message`), not as a transport
 failure. There is no `kind` in the request: the catalogue already says who runs
 the line, and repeating it in every client would be a second implementation of
-the same rule.
-
-One client procedure, the same in every client (TUI, Web, and any third party):
-
-1. keep your own local commands (pure UI affordances) — they win over the
-   server's catalogue;
-2. `GET …/commands` on attach, and again after any switch that can change the
-   set (session, thread, agent, provider);
-3. a line that names a local command runs locally; a `prompt` command is sent to
-   the message endpoint; anything else is `POST`ed here as one line;
-4. show `message`; use `effects` to refresh what can have changed.
+the same rule. The route resolves against the server catalogue and dispatches
+server commands; prompt entries are submitted through the message endpoint by a
+client, and client entries never execute through this route. The returned
+`effects` are the handler-reported changes for a successful (`status: "ok"`)
+execution; error responses omit them. Do not infer effects from the command's
+name or declaration alone.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
@@ -205,7 +201,7 @@ One client procedure, the same in every client (TUI, Web, and any third party):
 | GET | `/sessions/{session_id}/threads/{thread_id}/todos` | `get_todos` | Todo response |
 | GET | `/sessions/{session_id}/threads/{thread_id}/jobs` | `list_jobs` | `JobListResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_tasks` | `JobStopResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_jobs` | `JobStopResponse` |
 
 ## Plugin configuration
 

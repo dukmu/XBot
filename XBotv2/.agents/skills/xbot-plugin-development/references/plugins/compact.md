@@ -1,270 +1,76 @@
 # `compact`
 
-Semantic conversation history compaction — summarize old turns to
-free context tokens while preserving recent conversation state.
+Semantically replaces an old conversation prefix with a summary while retaining
+recent turns. Compaction is an append-only history transition: earlier
+trajectory records remain durable, while the current conversation surface is
+replaced.
 
-- **Import/profile:** `compact`, Agent profile.
-- **Source:** `XBotv2/compact/plugin.py`,
-  `XBotv2/compact/service.py`,
-  `XBotv2/compact/contracts.py`,
-  `XBotv2/compact/commands.py`,
-  `XBotv2/compact/tools.py`,
-  `XBotv2/compact/compactor.py`,
-  `XBotv2/compact/history.py`,
-  `XBotv2/compact/summary.py`,
-  `XBotv2/compact/events.py`,
-  `XBotv2/compact/protocol.py`.
-- **Injects/provides:** `tools`, `commands`, `model`, `loop_state`,
-  `usage` → `compact` (`CompactService`).
-- **Subscribes to events:** `before/context` (manual trigger via
-  `_on_before_context`), `before/model-request` (automatic trigger).
-- **Emits:** `before/compact` (`BeforeCompact`), `after/compact`
-  (`AfterCompact`), `session/history-changed` (`HistoryChanged`).
-- **Tool:** `compact` (requests manual compaction).
-- **Command:** `/compact` (immediate compaction).
+- **Import/profile:** `XBotv2.compact`, Agent profile.
+- **Source:** `compact/contracts.py`, `service.py`, `plugin.py`, `protocol.py`,
+  `tools.py`, and `commands.py`.
+- **Injects:** `tools`, `commands`, `model`, `loop_state`, `usage`.
+- **Events:** observes context-build, model-request-ready, model-request-error,
+  model-response-observed, and turn-end stages; publishes typed compaction
+  events through the application runtime-event path.
+- **Tool:** `compact` requests one manual compaction before the next model call.
+- **Command:** `/compact` compacts the current history immediately when
+  invoked successfully.
 
-## Public data models
-
-### `CompactService` (`XBotv2/compact/service.py:37-210`)
-
-```python
-class CompactService:
-    """Own compaction runtime state, proposal generation, and commit semantics."""
-
-    def __init__(
-        self,
-        *,
-        events: CompactEventsPort,
-        model: ModelPort,
-        state: LoopState,
-        usage: UsagePort,
-        config: CompactConfig,
-    ) -> None:
-        self._events = events
-        self.model = model
-        self.state = state
-        self._usage = usage
-        self._automatic = config.automatic
-        self._output_reservation = config.output_reservation
-        self._trigger_ratio = config.trigger_ratio
-        self._keep_recent_turns = config.keep_recent_turns
-        self._summary_max_chars = config.summary_max_chars
-        self._manual_requested = False
-        self._compactions = 0
-        self._last_reason = ""
-        self._last_compaction: dict[str, Any] = {}
-
-    async def _dispose(self) -> None:
-        """Clear all mutable state. Called by ctx.dispose."""
-
-    def request_manual_compaction(self) -> None:
-        """Flag manual compaction; consumed on next BEFORE_CONTEXT."""
-
-    def _consume_manual_request(self) -> bool:
-        """Return True if a manual request was consumed."""
-
-    async def _compact_command(self, raw_args: str) -> CommandResult:
-        """Handle /compact slash command."""
-
-    async def _on_before_context(self, ctx: EventContext) -> dict[str, Any] | None:
-        """Manual compaction trigger via short-circuit."""
-
-    async def _on_before_model_request(self, ctx: EventContext) -> dict[str, Any] | None:
-        """Automatic compaction trigger — checks context token budget."""
-
-    async def _compact(
-        self,
-        ctx: EventContext,
-        messages: list[Message],
-        *,
-        reason: str,
-        context_tokens_before: int,
-        estimate_source: str,
-        request_estimate: int | None = None,
-        context_limit: int | None = None,
-        max_context_tokens: int | None = None,
-        output_reservation: int | None = None,
-        stable_prefix: Sequence[Message] | None = None,
-        removable_estimate: int | None = None,
-    ) -> dict[str, Any] | None:
-        """Build and execute a compaction proposal.
-
-        Returns the proposal dict (with compact_reason, messages,
-        compact_metrics) or None if no compaction needed.
-        """
-
-    async def _commit(
-        self,
-        ctx: EventContext,
-        proposal: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """Commit one proposal: emit PRE_COMPACT, verify, replace messages."""
-```
-
-### `CompactConfig` (`XBotv2/compact/contracts.py`)
+## Configuration
 
 ```python
 class CompactConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     automatic: bool = True
-    output_reservation: int | None = Field(default=None, ge=0)
-    trigger_ratio: float = Field(default=0.8, gt=0, le=1)
-    keep_recent_turns: int = Field(default=4, ge=1)
-    summary_max_chars: int = Field(default=8_000, ge=1)
+    output_reservation: int | None = None
+    trigger_ratio: float = 0.8
+    keep_recent_turns: int = 4
+    summary_max_chars: int = 8_000
+    summary_output_tokens: int = 2_048
 ```
 
-`trigger_ratio` is the fraction of context window that triggers
-compaction (default 80%). `keep_recent_turns` is the number of
-recent turns always preserved. `summary_max_chars` caps the summary
-text size.
+Fields are validated by the plugin's Pydantic `Config`. Automatic compaction
+can run when the prepared request approaches the configured context threshold.
+One provider-confirmed context-overflow retry may run compaction and rebuild the
+request; other provider errors are not treated as overflow. The estimate and
+reason are included in typed compaction metrics/events.
 
-The plugin consumes this model directly. Its constraints and defaults are
-also the JSON Schema exposed by the generic configuration UI.
+## Typed compaction contracts
 
-### `CompactEventsPort` / `UsagePort`
+`CompactionReason` is exactly `automatic | manual | context-overflow`.
+`CompactionSelection` carries `expected_revision` and the selected
+`source_ids`; `CompactionPlan` adds its ID, reason, summary message, and typed
+metrics. This revision/identity check prevents committing a summary against a
+history that changed after selection.
 
-```python
-class CompactEventsPort(Protocol):
-    async def serial(self, event: str, *args: object) -> object: ...
-    async def emit(self, event: str, *args: object) -> None: ...
+Runtime events include `CompactionStarted`, `CompactionCompleted`, and
+`CompactionFailed`. A completion carries its typed summary and metrics and an
+`automatic` flag for client presentation. These runtime observations do not
+replace the persistence transaction or duplicate the history summary.
 
-class UsagePort(Protocol):
-    async def add(self, usage: dict[str, object], *,
-                  update_context: bool = True) -> dict[str, int] | None: ...
-    async def update_context(self, context_tokens: int) -> dict[str, int]: ...
-```
+The durable surface replacement is recorded through the persistence/history
+owner with a `compact:<reason>` operation. Compaction transaction markers and
+the replacement are durable history records; a restart folds them to rebuild
+the current surface. Earlier trajectory records remain available for audit and
+replay. See [session-trace.md](../session-trace.md).
 
-### `BeforeCompact` / `AfterCompact`
+## Trigger behavior
 
-```python
-@dataclass(slots=True)
-class BeforeCompact:
-    messages: list[Message]
-    session: SessionInfo | None
-    reason: str
+- The `compact` Tool only requests manual compaction; it does not summarize
+  synchronously inside its Tool handler. The request is consumed at the next
+  context build.
+- `/compact` runs against the current history and returns a `CommandResult`;
+  invalid arguments or a history too short to compact are reported as command
+  results.
+- Automatic compaction uses the prepared request and active model selection.
+- Context-overflow recovery is bounded and limited to a provider error
+  explicitly classified as context overflow.
 
-@dataclass(frozen=True, slots=True)
-class AfterCompact:
-    messages: tuple[Message, ...]
-    session: SessionInfo | None
-    reason: str
-    metrics: dict[str, JsonValue]
-    previous_message_count: int
-    current_message_count: int
+## Plugin guidance
 
-PRE_COMPACT = "before/compact"
-POST_COMPACT = "after/compact"
-```
-
-`BeforeCompact` is dispatched via `ctx.serial` — the first
-non-`None` return can reject compaction by returning an error dict.
-If rejected, the commit short-circuits with
-`{"event": {"type": "error", "data": {"code": "hook_rejected", ...}}, "turn_complete": True}`.
-
-## Compaction commit semantics
-
-`_commit()` enforces strict invariants:
-
-1. `PRE_COMPACT` is fired with `ctx.serial`. The handler may modify
-   `pre.messages` (the summary replacement) but **may not change the
-   retained tail**.
-2. After `PRE_COMPACT`, `replacement = messages[:len(messages) - len(retained)]`
-   where `retained = original_messages[prefix_end:]`. The check:
-   ```python
-   if retained and (
-       len(messages) < len(retained)
-       or messages[-len(retained):] != retained
-   ):
-       raise RuntimeError("PRE_COMPACT may only change the summary replacement.")
-   ```
-3. `self.state.replace_message_range(0, prefix_end, replacement,
-   operation=f"compact:{compaction_id}", preserve_transcript=True)`
-   commits the change to the history.
-4. `POST_COMPACT` is emitted (observer), then `HISTORY_CHANGED` is
-   emitted.
-5. Usage is updated via `self._usage.update_context(...)`.
-
-## Tool — `compact`
-
-```python
-def build_compact_tool(owner: _CompactToolOwner) -> Tool:
-    async def request_compaction() -> ToolResult:
-        owner.request_manual_compaction()
-        return ToolResult.success("Conversation compaction requested.")
-    return Tool.from_function(request_compaction, name="compact")
-```
-
-The tool does **not** perform compaction directly; it sets
-`_manual_requested = True`. The next `BEFORE_CONTEXT` dispatch
-consumes the flag and triggers `_compact()`.
-
-## Command — `/compact`
-
-```python
-async def run_compact_command(
-    service: CompactService, raw_args: str
-) -> CommandResult: ...
-```
-
-Executes `_compact_current_history()` synchronously (within the
-command handler). Does not require waiting for the next turn.
-
-## How `apply()` works
-
-```python
-def apply(self, ctx, config):
-    service = CompactService(
-        events=ctx, model=ctx.model, state=ctx.loop_state,
-        usage=ctx.usage, config=config,
-    )
-    ctx.dispose(service._dispose)
-    ctx.on(Events.BEFORE_CONTEXT, service._on_before_context)
-    ctx.on(Events.BEFORE_MODEL_REQUEST, service._on_before_model_request)
-    ctx.tools.register(build_compact_tool(service))
-    ctx.commands.register(Command(
-        name="compact",
-        description="Compact conversation history immediately while idle.",
-        handler=service._compact_command,
-        usage="/compact",
-        examples=("/compact",),
-    ))
-    ctx.set("compact", service)
-```
-
-## On-disk artifacts
-
-Compaction records are written to the history via
-`self.state.history.record("compaction/summary", {...})` which
-appends to `messages.jsonl` as a `TrajectoryEventRecord`:
-
-```json
-{"schema_version": 1, "record_type": "event",
- "data": {"compaction_id": "...", "reason": "...",
-          "summary": "...", "raw_output": "...",
-          "source_node_ids": [...], "provider": "...",
-          "model": "...", "usage": {...}, "metrics": {...}},
- "position": N}
-```
-
-## Cross-references
-
-- Depends on: `tools`, `commands`, `model`, `loop_state`, `usage`,
-  `agentloop` (subscribes to `BEFORE_CONTEXT`, `BEFORE_MODEL_REQUEST`).
-- Depended on by: the Agent (tool call or slash command).
-- Pairs with: `persistence` (history owner), `llm` (summary generation).
-
-## Common pitfalls
-
-- **Calling `compact` tool repeatedly**: if automatic compaction is
-  active, manual requests are consumed on the next turn — redundant
-  calls are no-ops until the compaction completes.
-- **Expecting `BeforeCompact` to add new messages**: `PRE_COMPACT`
-  may only modify the summary replacement text, not change message
-  count or append new content.
-- **Mutating `CompactService._manual_requested` directly**: use
-  `request_manual_compaction()` which sets it atomically.
-- **Assuming `trigger_ratio=0.8` means 80% of output tokens**: it's
-  80% of `context_window * (1 - output_reservation / context_window)`.
-  The formula accounts for output reservation.
-- **Overriding `keep_recent_turns` with `0`**: validation requires
-  `>= 1`. The default `4` is conservative for most use cases.
+- Use `CompactConfig`, `CompactionPlan`, and typed events from the package
+  exports; do not construct a parallel proposal dictionary.
+- Keep history selection and commit on the persistence/history API so revision
+  checking and transaction recovery remain intact.
+- Do not describe compaction as deleting transcript or trajectory history.
+- The Tool, command, and automatic trigger have different timing; expose each
+  according to its actual user intent.

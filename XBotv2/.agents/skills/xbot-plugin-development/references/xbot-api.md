@@ -1,153 +1,120 @@
 # XBot API Reference
 
-This page is the version-matched API guide shipped with the skill. With a
-pip/uv installation, use the bundled references and inspect
-the installed package's `__init__.py`; import from package roots where the
-symbol is documented as public.
+This is the version-matched public API map for the bundled XBot runtime. Import
+cross-plugin contracts from the package that owns them. Package `__all__`
+declarations and tests are the final authority; implementation modules not
+listed as public are not plugin contracts.
 
-## Core Symbols
+## Import map
 
-```python
-from XBotv2.core import Tool, ToolCall, ToolResult, Message, ClientEvent
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.agentloop import EventContext, Events, LoopSettings
-```
-
-`Tool.from_function()` derives the provider schema from the signature and
-docstring. `ToolResult` carries model content plus errors, artifacts, images,
-and client events. `ToolCall` is the model call contract; it is not a session
-identity object.
-
-## Import Map
-
-Import a cross-plugin contract from its owning package root. This keeps the
-plugin independent of concrete built-in implementations.
-
-| Need | Public package | Typical declarations |
+| Need | Public package | Examples |
 |---|---|---|
-| Tool and messages | `XBotv2.core` | `Tool`, `ToolCall`, `ToolResult`, `Message`, `ClientEvent`, artifact/path contracts |
-| Loop hook | `XBotv2.agentloop` | `Events`, `EventContext`, loop settings/state contracts |
-| Human command | `XBotv2.commands` | `Command`, `CommandResult`, parsing/error helpers, command operations |
-| Session fact/operation | `XBotv2.session` | `SessionInfo`, lifecycle events, session operations/protocol contracts |
-| Agent definition | `XBotv2.agents` | Agent catalog/declarations and Agent-owned events |
-| Context contribution | `XBotv2.context_builder` | component contracts and context build events |
-| Permission decision | `XBotv2.permissions` | permission request/decision contracts and events |
-| Live approval channel | `XBotv2.permissions` | `ApprovalPort`, typed `ApprovalDecision`, and permission request wire data |
-| Application lifecycle | `XBotv2.application` | application initialization and typed lifecycle facts |
+| Tools, outcomes, messages, artifact/path values | `XBotv2.core` | `Tool`, `ToolCall`, `ToolOutcome`, `ToolOutput`, `ConversationMessage`, `ArtifactRef`, `RuntimeVariables` |
+| Loop event names and tool/inbox contracts | `XBotv2.agentloop` | `Events`, `SHORT_CIRCUIT_EVENTS`, `ToolSelection`, `InboxItem`, `LoopState` |
+| Human slash commands | `XBotv2.commands` | `Command`, `CommandResult`, `CommandDescription`, `split_command_args` |
+| Sessions and threads | `XBotv2.session` | `SessionRuntimeState`, `SessionSummary`, `ThreadSummary`, session operations |
+| Provider catalog and model binding | `XBotv2.llm` | `ModelPort`, `LlmConfig`, `ProviderCatalog`, selection operations |
+| Provider-neutral model request | `XBotv2.core.provider` (used by `XBotv2.llm.ModelPort`) | `ModelRequest`, `ProviderMessage`, `ToolSchema` |
+| Model stream values | `XBotv2.core` | `TextDelta`, `ReasoningDelta`, `ToolCallDelta`, `ModelCompleted`, `ModelFailed`, `ModelCancelled` |
+| Usage | `XBotv2.core` / `XBotv2.usage` | `UsageSnapshot`, `UsageDelta`, `RequestObservation`, `UsagePort`, `UsageUpdated` |
+| Permission policy and approval | `XBotv2.permissions` | `PermissionsPort`, `ApprovalPort`, `PermissionRequest`, `PermissionResponseRequest` |
+| User input | `XBotv2.interactions` | `InteractionsPort`, `UserInputRequest`, `UserInputOption`, `UserInputResponseRequest` |
+| Application lifecycle | `XBotv2.application` | `APPLICATION_INITIALIZED`, `ApplicationInitialized`, `RuntimeEvent` |
 
-If a symbol is absent from the package root and public API inventory, treat it
-as implementation detail. A plugin test may use an internal class to assemble a
-small realistic harness, but production plugin code should not make a sibling
-plugin implementation part of its contract.
+Protocol DTOs and routes remain in their semantic owner's `protocol.py`; a
+transport model should not be moved into `core` for convenient imports.
 
-## Package Boundaries
-
-Before adding a symbol, check whether one already exists in the owner package:
-
-- `XBotv2.application`: application-owned initialization and runtime events.
-- `XBotv2.agents`: Agent definitions, Agent services, and Agent events.
-- `XBotv2.context_builder`: context components and build events.
-- `XBotv2.permissions`: permission ports and permission events.
-- `XBotv2.session`: session contracts, services, and protocol models.
-- `XBotv2.commands`: human command contracts.
-- `XBotv2.core`: neutral contracts only.
-
-If the feature is transport-facing, keep request/response models and routes in
-the owning package's `protocol.py`; do not export a protocol model from core
-just to make a plugin import easier.
-
-## Public Tool Contract
+## Tool contract
 
 ```python
-ctx.tools.register(
-    Tool.from_function(my_tool, name="my-tool"),
-    namespace="plugin:example",
+from XBotv2.core import Tool, ToolCall, ToolOutcome, succeeded_text
+
+async def lookup(place: str) -> ToolOutcome:
+    """Look up a place."""
+    return succeeded_text(f"Found {place}")
+
+tool = Tool.from_function(lookup, name="lookup")
+```
+
+`Tool.from_function()` derives a JSON Schema from the callable signature and
+docstring. A Tool may declare one keyword-only `ToolCall` parameter. Core omits
+that parameter from the provider schema and supplies the final Tool call when
+invoking it. Bind other dependencies before registration; there is no generic
+dependency dictionary.
+
+`ToolOutcome` is the union of `ToolSucceeded`, `ToolFailed`, `ToolDenied`, and
+`ToolCancelled`. Success/failure output uses `ToolOutput` with typed content
+parts, optional structured output, and artifact references. `ToolExecution`
+wraps the completed `ToolMessage`, owner-produced events, and a turn directive.
+Do not return an old `ToolResult` or attach ad-hoc `client_events` fields.
+
+Register with `ctx.tools.register(...)`; the common pipeline handles the
+declared guards and dispatch. Namespace and model visibility are registration
+metadata, not an alternate executor or permission bypass.
+
+## Human command contract
+
+```python
+from XBotv2.commands import Command, CommandResult, command_usage
+
+async def greet(raw_args: str) -> CommandResult:
+    if not raw_args.strip():
+        return command_usage("/greet <name>")
+    return CommandResult(f"Hello, {raw_args.strip()}!")
+
+command = Command(
+    name="greet",
+    description="Greet one person",
+    usage="/greet <name>",
+    handler=greet,
 )
 ```
 
-Registration supports `model_visible`, `timeout_seconds`, and `namespace`.
-There is no generic dependency dictionary. Bind plugin dependencies before
-registration. A keyword-only `ToolCall` parameter is the only core-supplied
-invocation metadata and is excluded from the provider schema.
+`Command.kind` is `server`, `prompt`, or `client`. Server commands have an
+async handler receiving raw arguments. Prompt commands have no handler and are
+expanded/submitted by the client through the message boundary. Client commands
+are local affordances; the Textual TUI uses this kind for its local commands.
+The server command API accepts one raw line and resolves it against the dynamic
+server catalog; it does not accept a kind field. See the [command reference](plugins/commands.md)
+and [client runtime reference](client-runtime.md).
 
-`ToolResult` has four final statuses: `success`, `error`, `denied`, and
-`cancelled`. Prefer:
+Command handlers return `CommandResult`, never a Tool outcome. Results include
+status, message, and effects. Published `CommandDescription` entries include
+name, slash form, kind, description, usage, examples, parameters, effects, and
+exclusivity. The catalog content depends on loaded plugins and the active
+thread; clients should discover it rather than hardcode server commands.
 
-```python
-ToolResult.success("human/model-readable result", data={"stable": "json"})
-ToolResult.failure("upstream_timeout", "Weather service timed out", retryable=True)
-```
+## Typed model stream
 
-- `content` is the model-facing explanation.
-- `data` is structured JSON-compatible data, not an arbitrary Python object.
-- `artifacts` references content owned by the artifact service.
-- `images` carries supported image content.
-- `client_events` contains typed client-facing notifications.
-- `turn_complete` is exceptional control behavior; do not set it simply because
-  one Tool call finished.
+Providers implement `ModelPort.astream(request: ModelRequest)` and yield
+`ModelStreamEvent` values. `TextDelta`, `ReasoningDelta`, and `ToolCallDelta`
+carry incremental content; the stream ends with exactly one
+`ModelCompleted(response)`, `ModelFailed(error)`, or `ModelCancelled(reason)`.
+The terminal `ModelResponse` contains content parts, typed usage, observed
+context, stop information, and provider extensions. Keep native provider
+chunks and provider-specific retries/errors inside the adapter.
 
-The registered Tool name must be stable. `namespace` prevents collisions among
-functional groups but does not replace ownership: the registering fiber still
-owns automatic cleanup. `model_visible=False` keeps an operation out of the
-provider Tool schema; it does not create a permission bypass.
+## Event and operation boundaries
 
-## Human Command Contract
+Use `Events` from `XBotv2.agentloop` with typed payloads declared by the event
+owner. `ctx.on` subscribes to an event; only names in
+`SHORT_CIRCUIT_EVENTS` use serial dispatch and accept their stage's declared
+result. Do not return ad-hoc dictionaries from observer handlers or model all
+stages as one optional-field context.
 
-```python
-from XBotv2.commands import Command, CommandResult
+Use a typed `Operation` where one responder serves a stable request boundary;
+use an event when there may be multiple observers; use a direct service method
+inside a composed runtime otherwise. HTTP/SSE routes and wire DTOs live with
+the owning package.
 
-Command(
-    name="sample",
-    description="Describe the action",
-    usage="/sample <value>",
-    examples=("/sample demo",),
-    parameters={"value": "Value to use"},
-    handler=handler.run,
-)
-```
+## Configuration and state
 
-Command names use lowercase letters, digits, hyphens, and underscores. A
-server command handler is `async (raw_args: str) -> CommandResult`. A prompt
-command declares `kind="prompt"` and no handler because the client submits the
-expanded prompt through the message boundary. Tool and command execution are
-deliberately separate.
+Plugins may declare a Pydantic `Config` model. The complete plugin tree is
+resolved before `Context.start()`; XBot does not expose a runtime plugin reload
+contract. Treat plugin configuration as startup input.
 
-## Typed Events
-
-Use `ctx.on(EVENT, handler)` for observers and the event's documented payload
-type. Use `ctx.serial` only for an event whose contract explicitly supports a
-short-circuit result. Do not return an ad-hoc dictionary from an observer or
-use `EventContext` as a universal business payload.
-
-Loop hooks use the `Events` declaration and the fields documented for that
-phase. Required fields should be read directly so a malformed internal event
-fails at the responsible boundary. A field that is contractually optional may
-be checked explicitly; do not use `getattr` to make every historical payload
-shape appear supported.
-
-For plugin-owned business facts, define a dataclass payload and event constant
-in the owning package. Observers use `emit`; a policy/selection contract may
-use `serial` only when its owner documents the bail result. Client events are
-transport-visible data and should not be reused as an internal service bus.
-
-## Configuration and Tree
-
-Plugin objects may expose an XCore `Config` schema. Tree entries provide `id`,
-`name`, optional `profiles`, `disabled`, and `config`. XBot does not expose a
-runtime reload contract: compose the complete tree before `Context.start()`
-and let each mounted component own its registered effects. Schema
-defaults are documentation/runtime validation concerns; do not assume a
-service or a hidden config default exists until the mounted context provides it.
-
-## Operation and Protocol Boundaries
-
-Use a typed `Operation` when a request has one logical responder and crosses a
-stable application boundary. Use an event when there can be multiple
-observers. Use a direct service method inside one composed runtime when no
-dispatch boundary is needed. Do not add an HTTP model to core, invoke a slash
-command through a Tool, or dispatch an internal event merely to avoid passing a
-typed dependency.
-
-Transport routes, validation models, SSE payloads, and status codes live in the
-owning package's `protocol.py`. A Tool or service should return its domain
-result; the protocol adapter translates that result to the wire contract.
+Persist plugin-owned JSON-compatible values through
+`ctx.state.namespace("plugin-name")`. Do not construct the physical state path,
+write adjacent files, or persist runtime clients, waiters, or handles.
+Persist logical artifact IDs and resolve model-facing absolute paths through
+the active thread's `ArtifactStore`/`RuntimeVariables` when building requests.

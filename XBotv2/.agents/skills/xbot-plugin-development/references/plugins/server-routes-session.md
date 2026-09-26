@@ -36,13 +36,13 @@ The exact request and response models are declared in
 | `GET` | `/sessions/{session_id}/threads` | `list_threads` | `ThreadListResponse` |
 | `POST` | `/sessions/{session_id}/threads` | `open_thread` | `OpenSessionResponse` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}` | `get_thread` | `ThreadSummary` |
-| `GET` | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | `ThreadMessagesResponse` |
-| `GET` | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | `ThreadTrajectoryResponse` |
+| `GET` | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | `HistoryPage[ConversationRecord]` |
+| `GET` | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | `TrajectoryRead` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | binary artifact |
-| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
-| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutationResponse` |
-| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | SSE |
-| `POST` | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | SSE |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutation` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutation` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | `202 Accepted`; events arrive on `/events` |
+| `POST` | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted`; events arrive on `/events` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/queue` | `list_pending_inputs` | `PendingInputListResponse` |
 | `PATCH` | `/sessions/{session_id}/threads/{thread_id}/queue/{message_id}` | `update_pending_input` | `PendingInputListResponse` |
 | `GET` | `/sessions/{session_id}/threads/{thread_id}/events` | `stream_events` | SSE |
@@ -98,48 +98,38 @@ defaults; the snippet uses JSON-schema-like shorthand only for readability.
 `MessageRequest` rejects an empty text request unless an image or attachment
 is supplied. Queue `edit` requires non-empty trimmed content.
 
-## Response schemas
+## History, queue, and mutation response schemas
 
 ```python
-class ThreadMessagesResponse(WireModel):
-    session_id: str
-    thread_id: str
-    messages: list[SessionHistoryItem]
-    next_cursor: str | None = None
+HistoryPage[ConversationRecord](items=..., older_cursor=...)
 
-class ThreadTrajectoryResponse(WireModel):
-    session_id: str
-    thread_id: str
-    items: list[
-        SessionTrajectoryMessage
-        | SessionTrajectorySurfaceReplace
-        | SessionTrajectoryEvent
-    ]
-    next_cursor: str | None = None
+TrajectoryRead(
+    page=HistoryPage[TrajectoryEntry](items=..., older_cursor=...),
+    newest_position=...,
+)
 
 class PendingInputListResponse(WireModel):
     session_id: str
     thread_id: str
     items: list[PendingInputData]
 
-class HistoryMutationResponse(WireModel):
-    session_id: str
-    thread_id: str
+@dataclass(frozen=True, slots=True)
+class HistoryMutation:
     removed_turns: int
-    messages: list[SessionHistoryItem]
-    session_stats: SessionStats
-    history_cursor: str | None = None
+    history: HistoryPage[ConversationRecord]
+    stats: SessionStats
 ```
 
-`SessionTrajectoryMessage.message_id` is the stable user, assistant, or Tool
-correlation key used when a durable page overlaps event-stream replay. It is
-trajectory metadata and is intentionally not added to the legacy
-`ThreadMessagesResponse` projection.
+`GET .../messages` returns `HistoryPage[ConversationRecord]` directly, with
+the newest page in `items` and `older_cursor` for the preceding page.
+`GET .../trajectory` returns the persistence-owned trajectory read model;
+trajectory positions and conversation-record `id` values are separate
+identities.
 
-`OpenSessionResponse` and `SessionDescriptor` are Pydantic models. The
-response contains the resolved runtime descriptor, a projected history page,
-pending inputs, and unanswered client interactions; it is not the same object
-as the internal `OpenedSession`.
+`OpenSessionResponse` wraps an `OpenedThread` projection. It contains resolved
+thread metadata, a projected `HistoryPage[ConversationRecord]`, pending inputs,
+and unanswered interactions; it is not the same object as internal
+`OpenedThread` before protocol projection.
 
 `pending_interactions` replays the payload of every live interaction the
 session is still waiting on (`permission_request`, `user_input_required`).
@@ -149,12 +139,16 @@ bounded replay window evicts it.
 
 ## SSE
 
-Both message and event streams use `text/event-stream` and the shared
-`_sse_response`/`_format_sse` implementation. The session stream accepts an
-optional non-negative `after` sequence cursor. A stale cursor returns `409`
-with `session_event_cursor_expired` and `oldest_sequence` details.
+There is exactly **one** session SSE endpoint:
+`GET /sessions/{session_id}/threads/{thread_id}/events`
+(`operation_id="stream_events"`). It streams validated typed `ServerEvent`
+envelopes and accepts an optional non-negative `after` sequence cursor. A stale
+cursor returns `409` with `session_event_cursor_expired` and `oldest_sequence`
+details; a malformed one returns `400`
+`invalid_session_event_cursor`. Do not describe a separate request-scoped
+"message stream" — message delivery arrives on this same cursor-based stream.
 
-Message stream session-owned event types are:
+Session-owned event kinds observed on the stream are:
 
 ```text
 agent_configured
@@ -163,16 +157,15 @@ message
 queue_updated
 ```
 
-The general session event stream carries the validated `ClientEvent` stream,
-including Agent-loop events (`assistant_message`, deltas, tool calls/results,
-turn lifecycle, usage, input rejection, and errors). Do not treat the two
-streams as interchangeable: the message stream is request-scoped, while the
-event stream is cursor-based and thread-scoped.
+The stream also carries Agent-loop events (assistant deltas/messages, tool calls
+and executions, turn lifecycle, usage, input rejection, and errors). It is
+cursor-based and thread-scoped; `after` is a sequence number, not a message id.
 
-`assistant_message.data.id` is persisted as `xbot_message_id` and is the key
-clients use to correlate one projected message with its durable record, so it
-must be unique per response. A retried or finalizing iteration is a different
-response and must not reuse the previous iteration's id.
+`assistant_message.data.id` carries the durable record `id` and is the key
+clients use to correlate one projected message with its record, so it must be
+unique per response. A retried or finalizing iteration is a different response
+and must not reuse the previous iteration's id. The wire field is `id`; there is
+no `xbot_message_id`.
 
 ## Errors and boundaries
 

@@ -1,288 +1,76 @@
 # `interactions`
 
-Live client interaction coordination — manages model-facing
-`ask_user` input requests, `send_message` notifications, and the
-in-memory `InteractionWaiter` per engine turn.
+Owns model-facing user-input requests and non-blocking client notices. Permission
+approval is a separate capability owned by `permissions`.
 
-- **Import/profile:** `interactions`, Agent profile.
-- **Source:** `XBotv2/interactions/plugin.py`,
-  `XBotv2/interactions/interactions.py`,
-  `XBotv2/interactions/tools.py`,
-  `XBotv2/interactions/protocol.py`.
-- **Injects/provides:** `tools`, `client_events`,
-  `session_launch` → `interactions` (`InteractionsService`).
-- **Subscribes to events:** `session/close` (cancel all waiters).
-- **Emits:** `client/event` (`ClientEvent` for `user_input_required`,
-  `client_message`, `interaction_recorded`).
-- **Tools:** `ask_user`, `send_message`.
+- **Import/profile:** `XBotv2.interactions`, Agent profile.
+- **Source:** `interactions/plugin.py`, `contracts.py`, `protocol.py`, and
+  `tools.py`.
+- **Injects/provides:** `tools`, `client_events`, `session_launch` →
+  `interactions` (`InteractionsService`).
+- **Events:** typed `UserInputRequest`, `UserInputRecorded`, and `ClientNotice`
+  values use the installed client-event/interaction ports.
+- **Tools:** `ask_user` is registered only for interactive sessions;
+  `send_message` sends a non-blocking notice.
+- **Responses:**
+  `POST /sessions/{session_id}/threads/{thread_id}/interactions/user-input`.
 
-## Public data models
-
-### `InteractionsService` (`XBotv2/interactions/plugin.py:23-80`)
-
-```python
-class InteractionsService:
-    def __init__(
-        self,
-        events: ApplicationEventsPort,
-        client_events: ClientEventsPort,
-    ) -> None:
-        self._events = events
-        self._client_events = client_events
-        self._waiter = InteractionWaiter()
-
-    @property
-    def waiter(self) -> InteractionWaiter: ...
-
-    def session_closed(self, _event: EventContext) -> None:
-        self._waiter.cancel_all("session_closed")
-
-    async def request_user_input(
-        self,
-        question: str,
-        *,
-        options: list[dict[str, str]] | None = None,
-        source: str = "interaction",
-        timeout_seconds: float | None = None,
-        tool_call_id: str = "",
-    ) -> dict[str, Any]:
-        """Publish and resolve one user-input request.
-
-        Routes through the installed live sink (preferred) or the
-        fallback waiter. Without a live sink the request fails to
-        ``unsupported`` so the turn never hangs.
-        """
-```
-
-### `InteractionWaiter` (`XBotv2/interactions/interactions.py:22-105`)
-
-```python
-class InteractionWaiter:
-    def __init__(self) -> None:
-        self._pending: dict[str, asyncio.Future[InteractionResult]] = {}
-
-    def register(self, request_id: str) -> asyncio.Future[InteractionResult]: ...
-
-    async def wait(
-        self, request_id: str, timeout_seconds: float | None
-    ) -> InteractionResult: ...
-
-    async def wait_registered(
-        self,
-        request_id: str,
-        future: asyncio.Future[InteractionResult],
-        timeout_seconds: float | None,
-    ) -> InteractionResult: ...
-
-    def answer(
-        self, request_id: str, *, answer: Any = None,
-        decision: str = "", scope: str = "once"
-    ) -> InteractionResult: ...
-
-    def cancel(self, request_id: str, reason: str = "cancelled") -> InteractionResult: ...
-
-    def cancel_all(self, reason: str = "cancelled") -> list[InteractionResult]: ...
-
-    def pending_request_ids(self) -> list[str]: ...
-
-class InteractionResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    request_id: str
-    status: str                       # "answered", "timeout", "cancelled"
-    answer: JsonValue = None
-    decision: str = ""
-    scope: str = "once"
-    reason: str = ""
-```
-
-### `UserInputRequiredData` / `UserInputOption` / `InteractionRecordedData`
+## Public input contract
 
 ```python
 class UserInputOption(WireModel):
-    label: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    label: str
+    description: str
 
-class UserInputRequiredData(WireModel):
-    request_id: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    options: list[UserInputOption] = Field(default_factory=list)
-    timeout_seconds: float | None = Field(default=None, gt=0)
-    resume_supported: bool = False
-
-    # source == "ask_user" additionally requires at least two options.
-    # tool_call_id is non-empty for every wire request.
-    # resume_supported is true for live requests: open_session replays an
-    # unanswered request through pending_interactions.
-
-class UserInputResponseRequest(WireModel):
-    request_id: str = Field(min_length=1)
-    answer: JsonValue = None
-
-class InteractionRecordedData(WireModel):
-    request_id: str = Field(min_length=1)
-    status: Literal["answered", "timeout", "cancelled"]
-    decision: Literal["allow", "deny", ""] = ""
-    scope: Literal["once", "session", ""] = ""
-    answer: JsonValue = None
-    pending_interactions: list[str] = Field(default_factory=list)
-
-class InteractionResponse(WireModel):
-    request_id: str = Field(min_length=1)
-    recorded: Literal[True] = True
-    pending_interactions: list[str] = Field(default_factory=list)
-
-InteractionEventType = Literal[
-    "permission_response_recorded",
-    "user_input_recorded",
-]
-```
-
-### `ClientMessageData` / `ClientEvent`
-
-```python
-class ClientMessageData(WireModel):
-    message: str = Field(min_length=1)
-    level: Literal["info", "warning", "error"] = "info"
-    source: str = Field(min_length=1)
+class UserInputRequest(WireModel):
+    kind: Literal["user_input_required"]
+    interaction_id: str
+    source: str
     tool_call_id: str = ""
+    question: str
+    options: tuple[UserInputOption, ...] = ()
+    timeout_seconds: float | None = None
+    resume_supported: bool = False
 ```
 
-### `send_message` Tool
+Requests from `ask_user` require at least two options. The Tool parameters are
+`question`, `options` (each with `label` and `description`), and optional
+`timeout_seconds`. A keyword-only `tool_call: ToolCall` is supplied by the core
+and used to correlate the request; it is not exposed in the provider schema.
 
-```python
-send_message = Tool.from_function(
-    send_message_to_user,
-    name="send_message",
-)
+The client response body is `{request_id, answer}`. `answer` is JSON-compatible.
+The route returns a typed `InteractionResponse` that confirms the response was
+recorded and lists remaining pending IDs. The request's `interaction_id` and
+response `request_id` address the same interaction; neither is a turn ID.
 
-def send_message_to_user(
-    message: str,
-    level: Literal["info", "warning", "error"] = "info",
-) -> ToolResult:
-    """Send a non-blocking progress or diagnostic message to the client."""
-    return ToolResult(
-        content=f"Message sent to user: {message}",
-        client_events=(ClientEvent(
-            type="client_message",
-            data=ClientMessageData(message=message, level=level,
-                                  source="send_message").model_dump(),
-        ),),
-    )
-```
+## Lifecycle and persistence boundary
 
-### `ask_user` Tool
+`request_user_input()` constructs a unique interaction ID and publishes a
+typed request through the live `ClientEventsPort`. Without a live interaction
+sink, it resolves as an unsupported/cancelled result rather than leaving the
+turn blocked indefinitely. A configured timeout produces a typed timeout
+resolution. Closing the session cancels waiters.
 
-```python
-def build_ask_user_tool(interactions: Any) -> Tool:
-    async def invoke(
-        question: str,
-        options: list[dict[str, str]],
-        timeout_seconds: float | None = None,
-        *,
-        tool_call: ToolCall,
-    ) -> ToolResult: ...
+Live pending requests are included in the open/resume snapshot's
+`pending_interactions`; they are not reconstructed from an expired event cursor
+or persisted as prior user answers. Clients can rebuild an unanswered dialog
+from this snapshot. See [client-runtime.md](../client-runtime.md) for the client
+boundary and permission reference for approval interactions.
 
-    return Tool(
-        name="ask_user",
-        description=...,
-        function=invoke,
-        parameters=_ASK_USER_SCHEMA,
-        tool_call_parameter="tool_call",
-    )
-```
+## `send_message`
 
-`_ASK_USER_SCHEMA`:
+`send_message(message, level="info")` emits a non-blocking `ClientNotice` with
+level `info`, `warning`, or `error`. It does not wait for delivery and should
+not be used as the final assistant response; the normal assistant message is
+the canonical transcript reply.
 
-```python
-{
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "question": {"type": "string", "minLength": 1},
-        "options": {
-            "type": "array", "minItems": 2,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "label": {"type": "string", "minLength": 1},
-                    "description": {"type": "string", "minLength": 1},
-                },
-                "required": ["label", "description"],
-            },
-        },
-        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
-    },
-    "required": ["question", "options"],
-}
-```
+## Plugin guidance
 
-## How `apply()` works
-
-```python
-def apply(self, ctx, config=None):
-    config = config or {}
-    service = InteractionsService(ctx, ctx.client_events)
-    ctx.set("interactions", service)
-    ctx.dispose(ctx.client_events.register_waiter(
-        "user_input_required", service.waiter
-    ))
-    ctx.tools.register(send_message)
-    if ctx.session_launch.interactive:
-        ctx.tools.register(build_ask_user_tool(service))
-    ctx.on(Events.SESSION_CLOSE, service.session_closed)
-```
-
-`ask_user` is only registered in **interactive** sessions
-(`ctx.session_launch.interactive`). Non-interactive sessions get
-`send_message` only.
-
-## Interaction flow
-
-```
-ask_user() → interactions.request_user_input() →
-  emit CLIENT_EVENT with user_input_required →
-  route through live client sink OR
-  InteractionWaiter.wait(request_id, timeout) →
-  client responds → future.set_result() →
-  ask_user returns ToolResult.success(answer)
-```
-
-## Cross-references
-
-- Depends on: `tools`, `client_events`, `session_launch`,
-  `agentloop` (`SESSION_CLOSE`).
-- Depended on by: `permissions` (uses `InteractionsService`
-  for approval flow), the Agent (`ask_user` / `send_message` tools).
-- Pairs with: `permissions` (interactive approval),
-  `session` (interactive flag).
-
-## Common pitfalls
-
-- **`ask_user` not available in non-interactive sessions**: only
-  registered when `ctx.session_launch.interactive` is True.
-- **`options` requires at least 2 items**: `_ASK_USER_SCHEMA`
-  validates `minItems=2`. One-option prompts will fail schema
-  validation.
-- **`timeout_seconds` defaults to None → `unsupported`**: without
-  a live client sink and without `timeout_seconds`, the waiter
-  returns `"unsupported"` immediately. Always set `timeout_seconds`
-  when the client may not respond.
-- **Non-tool interaction sources still need an id**: the wire model requires
-  a non-empty `tool_call_id`. MCP uses its SDK `RequestContext.request_id` as
-  interaction routing metadata; it is not a synthetic ToolCall.
-- **`InteractionWaiter.register()` raises on duplicate**: if the
-  same `request_id` is registered twice, `InteractionNotPending`
-  is raised. Use unique IDs per request.
-- **`send_message` is non-blocking**: it emits a `ClientEvent`
-  but does not wait for delivery. Use `ask_user` when a response
-  is required.
-- **`session_closed` cancels all waiters**: if a session is closed
-  while a waiter is active, all pending interactions resolve to
-  `status="cancelled", reason="session_closed"`.
-- **`resume_supported` is true for live requests**: a client that
-  reloads or reconnects while a question is unanswered rebuilds the
-  dialog from `OpenSessionResponse.pending_interactions`; the request
-  is still lost if the client never re-opens the session.
+- Use `interactions.request_user_input()` when the Agent needs an answer; do not
+  implement a second prompt transport.
+- Keep client notices, user answers, and permission decisions as distinct
+  contracts.
+- `ask_user` is absent from non-interactive sessions; do not assume it is
+  always present in the Tool catalog.
+- User input supplies data to a waiting operation. It does not approve or
+  authorize a Tool call.

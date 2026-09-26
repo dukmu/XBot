@@ -1,141 +1,101 @@
-# Permissions: Tool parameter authorization
+# `permissions`
 
-Tree id/import: `permissions`, Agent profile.
-Source: `XBotv2/permissions/plugin.py`, `system.py`, `guard.py`,
-`rules.py`, `tools.py`, `approval.py`, `protocol.py`.
+Owns Tool-call authorization, permission policy, and live permission approvals.
+Sandbox policy is a separate execution ceiling. Register Tools through the
+standard `ctx.tools` path so the permission guard evaluates them.
 
-## Composition and effects
+- **Import/profile:** `XBotv2.permissions`, Agent profile.
+- **Source:** `permissions/contracts.py`, `system.py`, `guard.py`, `rules.py`,
+  `tools.py`, `approval.py`, and `protocol.py`.
+- **Provides:** `permissions` (`PermissionsPort`) and `approval` (`ApprovalPort`).
+- **Tool:** `request_permission` is registered only in interactive sessions;
+  it requests a rule for future matching calls and never invokes the named Tool.
+- **Commands:** `/permission` inspects and updates session policy/grants.
+- **Routes:** the session protocol owns
+  `POST /sessions/{session_id}/threads/{thread_id}/interactions/permission-response`.
 
-Injects `session`, `session_launch`, `parent_permissions`, `tools`,
-`client_events`, `variables`, `commands`, `settings`, `state`.
-Provides `permissions` and `approval`, and owns the live approval waiter.
-Registers the standard permission guard and human permission commands, observes
-application/Agent configuration and `POLICY_CHANGED`, and registers
-`request_permission` only for interactive sessions.
+## Policy contracts
 
-The permission service evaluates Tool names and argument regexes. Sandbox
-policy is independent and remains a hard execution ceiling.
+```python
+class PermissionRule(BaseModel):
+    tool_pattern: str
+    param_patterns: dict[str, str] = {}
+    path_scope: str | None = None
+    decision: Literal["allow", "deny", "ask"]
 
-## Configuration and matching
-
-```yaml
-- id: permissions
-  config:
-    deny:
-      - tool: shell
-        params:
-          command: "dangerous-command.*"
-    allow:
-      - tool: read
-    ask:
-      - tool: shell
+class PermissionPolicy(BaseModel):
+    rules: tuple[PermissionRule, ...] = ()
+    default_decision: Literal["allow", "deny", "ask"] = "ask"
 ```
 
-Configured `tool` and `params` values use bounded regex full matching. A missing
-constrained parameter does not match. Unspecified parameters are unrestricted.
-Precedence is deny, allow, ask, default (ask). Explicit denies always win.
-Child policy intersects with the parent policy.
+Tool names and constrained argument values use bounded full-match regular
+expressions. Every constrained parameter must exist and match; parameters not
+mentioned by the rule are unrestricted. Structured values are matched as
+canonical JSON. `path_scope` applies only to supported filesystem path
+arguments. Matching limits are enforced and a limit error stops authorization;
+it is not treated as a successful non-match.
 
-Optional `paths` applies to all filesystem path arguments. An exact runtime
-directory variable such as `${workspace}` means containment in that directory;
-other values are regexes over resolved absolute paths. Variable substitutions
-are escaped before insertion into regexes.
+Across policy layers, any applicable deny wins; absent a deny, an ask at any
+layer requires approval; calls are allowed only when every applicable layer
+allows them. Explicit grants are considered after deny rules. A one-shot grant
+is consumed by one matching permission authorization attempt. A session grant
+is persisted in the current Agent thread's `permissions` StateService namespace
+and is restored when that thread resumes. Parent permission constraints apply
+to child Agents.
 
-## Proactive authorization without execution
+`PermissionsPort.check()` is a read-only policy query.
+`check_tool_call()` is the authorization path and may consume a one-shot grant.
+Do not use it to preview a call or repeat permission checks inside Tool
+handlers. Later sandbox or other guards can still reject an allowed call.
+Approvals do not widen sandbox policy; shell sandbox escape still requires its
+separate explicit escalation contract.
 
-The Agent Tool is named `request_permission`; its approval channel and policy
-are both owned by the `permissions` plugin. There is no separate approval plugin.
+## Typed approval interaction
 
-```json
-{
-  "tool": "shell",
-  "params": {
-    "command": "git status(?: --short)?",
-    "cwd": "/work/project"
-  },
-  "reason": "Inspect status repeatedly during this task"
-}
+`PermissionRequest` is a typed live interaction with `interaction_id`,
+`source`, `reason`, `resume_supported`, and a discriminated subject:
+
+- `ToolPermission(kind="tool", tool_call=...)` describes a concrete Tool call
+  paused at an `ask` decision.
+- `NamedPermission(kind="named", tool=..., params=...)` requests a rule for
+  future calls, as used by `request_permission`.
+
+The client response contract is:
+
+```python
+class PermissionResponseRequest:
+    request_id: str
+    decision: Literal["allow", "deny"]
+    scope: Literal["once", "session"] = "once"
 ```
 
-The request Tool treats `tool` as an exact name and validates parameter regexes.
-It emits `PermissionRequestData` with `source="request_permission"` and
-`permission={tool, params}`. It never invokes the target Tool.
-A pending Tool's ask interaction instead carries its concrete `tool_call`
-and `source="permission_system"`.
+The route's `request_id` addresses the pending interaction. It is not a turn
+ID. Approval decisions are `Allowed(scope="once"|"session")` or
+`Denied(reason=...)`. Session snapshots expose pending interactions so a client
+can rebuild unanswered dialogs on reconnect; event replay alone is not their
+durable source. See [client-runtime.md](../client-runtime.md) for the client
+contract.
 
-An approval response has `decision: allow | deny` and `scope: once | session`.
-For proactive requests, once grants the next matching call; session grants all
-matching calls in the current Agent thread, including after resume. For a pending call, once authorizes
-that call. Decline leaves authorization unchanged.
+## Human command
 
-Once grants are in-memory. Session grants are persisted through
-`ctx.state.namespace("permissions")`, under the `grants` key, and restored at
-application initialization. Updates are serialized and written before becoming
-active; repeated approvals do not add duplicate rules.
-Here session means the current Agent thread (normally `agent`), not a shared
-store for all threads. Subagents use the existing parent permission chain.
-Human policy configuration is a separate persisted settings operation.
-Normal session approvals retain shell command/cwd/escape mode or filesystem
-mode/operation/path/destructive flags. File bodies are not permission patterns.
+The `/permission` command accepts:
 
-An escape request still needs `shell(sandbox_permissions="require_escalated",
-justification=...)`. A grant cannot change sandbox mounts or turn a denied
-filesystem Tool into an unsandboxed operation.
+```text
+/permission [status|list|rules|grants|set <tool> <decision>|reset <tool>|revoke <index>|clear-grants]
+```
 
-## Public service and events
+`status`, `rules`, and `list` report effective layers and the session override;
+`grants` lists persisted session grants; `set` and `reset` modify the session
+policy; `revoke` removes one indexed session grant; `clear-grants` removes all
+session grants. This command is human-facing and is separate from the Agent
+Tool and the permission-response route.
 
-Import `PermissionsPort` from `XBotv2.permissions`.
-`check` and `explicit_allow` are read-only. `check_tool_call` is the guard's
-authorization step and may consume once grants; do not call it as a preview.
-Parent/child deny checks do not consume a parent grant. A later non-permission
-guard can still reject a call after permission consumption; this is intentional
-because once covers one permission-layer authorization attempt and the sandbox
-is a separate hard ceiling.
+## Plugin guidance
 
-Human commands distinguish policy configuration from approved grants:
-
-- `/permission status` summarizes all sources;
-- `/permission rules` shows effective and session-configured rules;
-- `/permission grants` shows persisted thread grants with stable list indexes;
-- `/permission list` shows rules and grants together;
-- `/permission set <tool> <allow|deny|ask>` and `reset <tool>` edit session policy;
-- `/permission revoke <index>` and `clear-grants` remove persisted approvals.
-
-`PERMISSION_REQUESTED` carries `PermissionRequested(tool_call, client_event)`.
-`PERMISSION_DECIDED` carries decision, scope, rule, request_id, and source.
-Both approval entrypoints validate once/session responses and record terminal
-decisions; the normal guard also emits `PERMISSION_REQUESTED`. No observer should
-silently turn an approval into persisted policy or a sandbox mutation.
-
-Permission regexes use bounded `regex.VERSION0` full matches: 4096 characters
-per pattern, 1,048,576 per matched value, and 10 ms per match. A complete
-top-level policy check shares a 50 ms / 1024-match aggregate budget across
-parent, child, and explicit-escape checks. Limit failures raise and stop the
-call; they must not become a nonmatching deny rule. Structured parameter values
-use compact canonical JSON with sorted keys; strings keep unquoted matching.
-
-Register Tools through `ctx.tools.register(Tool.from_function(handler))`;
-the registry applies guards. Do not implement another approval check inside
-the handler or dispatch a synthetic ToolCall to acquire permissions.
-
-## Approval contracts
-
-Import `ApprovalPort`, `ApprovalDecision`, `PermissionRequestData`, and
-`PermissionResponseRequest` from `XBotv2.permissions`. Wire declarations live
-in `permissions/protocol.py`; they contain no policy or persistence logic.
-`ApprovalPort.request(event)` returns a validated `ApprovalDecision`, whose
-fields are `decision: allow | deny` and `scope: once | session`. HTTP responses
-add `request_id`. The client event remains named `permission_request`.
-
-ApprovalService validates raw client responses. PermissionHandlers applies the
-decision, persists session grants or installs proactive once grants, and emits
-`PERMISSION_DECIDED` only afterwards. Cancellation/invalid responses do not
-invoke the decision handler; terminal logs preserve the original failure.
-Pending calls recheck current deny rules after approval, including parent rules.
-Session close cancels pending waiters. An unanswered request is not lost while
-its turn is live: `open_session(mode="resume")` replays it through
-`pending_interactions` with `resume_supported: true`. A client that reconnects
-rebuilds the dialog from that field; deciding when to give up on an unanswered
-request is the client's responsibility, not a server-side timeout.
-
-See [sandbox.md](sandbox.md) for OS enforcement.
+- Use the standard Tool registry; do not add another approval prompt or
+  synthetic Tool execution path.
+- Use `ApprovalPort` with a typed `PermissionRequest` for a live decision.
+- Keep user-input elicitation separate: it answers a question and does not
+  authorize a Tool.
+- Keep permission grants in the owning state namespace. They are not plugin
+  configuration and do not alter the sandbox.

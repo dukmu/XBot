@@ -1,7 +1,7 @@
 # `server-routes-agents`
 
 Agent selection HTTP routes — list and switch the active Agent.
-Registered via `contribute_router()` as `xbot.http.agents`.
+Registered via `contribute_router()` as `xbot.agents.http`.
 
 - **Import/profile:** `server-routes-agents`, server profile.
 - **Source:** `XBotv2/agents/protocol.py`,
@@ -30,14 +30,7 @@ async def list_agents(session_id: str, thread_id: str) -> AgentListResponse:
     return AgentListResponse(
         active=catalog.active,
         agents=[
-            AgentInfo(
-                name=definition.name,
-                description=definition.description,
-                mode=definition.mode,
-                provider=definition.provider or "",
-                model=definition.model or "",
-                context_window=definition.context_window or 0,
-            )
+            AgentInfo.from_definition(definition)
             for definition in catalog.agents
         ],
     )
@@ -76,9 +69,12 @@ class AgentInfo(WireModel):
     name: str = Field(min_length=1)
     description: str
     mode: Literal["primary", "subagent", "all"]
-    provider: str = ""
-    model: str = ""
-    context_window: int = Field(default=0, ge=0)
+    model_policy: AgentModelPolicy
+    limits: AgentExecutionLimits
+    tool_policy: AgentToolPolicy
+
+    @classmethod
+    def from_definition(cls, definition: AgentDefinition) -> "AgentInfo": ...
 
 class AgentListResponse(WireModel):
     active: str = ""
@@ -97,6 +93,11 @@ class AgentSelectionResponse(WireModel):
     context_window: int = Field(ge=0)
 ```
 
+`AgentInfo` projects the three policy sub-models rather than flattening them, so
+its shape tracks `AgentDefinition`. Build it with
+`AgentInfo.from_definition(definition)` instead of copying fields by hand; a
+manual construction silently breaks when a policy model changes.
+
 ## Cross-references
 
 - Depends on: `server` (`contribute_router`), `sessions` (`SessionsPort`).
@@ -112,6 +113,6 @@ class AgentSelectionResponse(WireModel):
 - **`mode="primary"` agents are selectable**: `LIST_AGENTS` filters
   out hidden agents, but primary agents are included. Use `hidden=True`
   to register system-only agents.
-- **`context_window` defaults to 0**: if `AgentDefinition.context_window`
-  is None, it becomes 0 in the response. Consumers should check for
-  this as "unspecified".
+- **`context_window` is on the selection response, not on `AgentInfo`**:
+  it reports the *resolved* window for the active thread after
+  `SELECT_AGENT`. Do not read it from the catalog listing.

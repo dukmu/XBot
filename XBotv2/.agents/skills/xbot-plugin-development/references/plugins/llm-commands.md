@@ -15,7 +15,7 @@ switch the active `ModelPort` binding in the current session.
 
 ## Public data models
 
-### `build_llm_commands` (`XBotv2/llm/commands.py:18-120`)
+### `build_llm_commands` (`XBotv2/llm/commands.py`)
 
 ```python
 def build_llm_commands(

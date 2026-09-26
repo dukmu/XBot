@@ -13,7 +13,7 @@ the only core-provided invocation metadata is an optional keyword-only
 ```python
 from typing import Protocol
 
-from XBotv2.core import Tool, ToolCall, ToolResult
+from XBotv2.core import Tool, ToolCall, ToolOutcome, succeeded_text
 
 
 class WeatherClient(Protocol):
@@ -29,12 +29,11 @@ class WeatherTools:
         city: str,
         *,
         tool_call: ToolCall,
-    ) -> ToolResult:
+    ) -> ToolOutcome:
         """Return current weather for one city."""
         report = await self._client.current(city)
-        return ToolResult.success(
-            f"Weather loaded for {city}",
-            data={"call_id": tool_call.id, "report": report},
+        return succeeded_text(
+            f"Weather loaded for {city}: {report} (call {tool_call.id})"
         )
 
 
@@ -54,9 +53,10 @@ class WeatherPlugin:
 plugin = WeatherPlugin()
 ```
 
-Return `ToolResult.failure(code, message, retryable=...)` for an expected domain
+Return `ToolFailed(error=ToolError(...), output=ToolOutput())` (or the
+`failed_text(...)` helper) for an expected domain
 failure. Let programming errors propagate; do not convert every exception into
-success text. Keep `data` and `client_events` JSON-compatible. Never call the
+success text. Keep structured output JSON-compatible. Never call the
 handler directly from production Agent flow—the standard registry path owns
 schema validation, guards, permissions, dispatch, and after-call events.
 
@@ -349,14 +349,14 @@ contribution.
 
 ## Client-facing runtime events
 
-The Agent loop may emit `ClientEvent` values through the application
-`client_events` port. A plugin should publish a typed event or return a
-`ToolResult(client_events=...)` when the event is part of its user-visible
-contract; it should not invent a second socket, waiter, or polling channel.
-HTTP/SSE clients receive validated `ServerEvent` envelopes through the session
-event stream. ACP and TUI adapters consume the same event contract. Keep
-runtime-only waiters in the owning service and cancel them on
-`Events.SESSION_CLOSE`.
+Agent-loop lifecycle events, application runtime stream events, and
+client-visible interaction contracts are separate typed surfaces. Do not
+attach ad-hoc client events to a Tool outcome: `ToolOutcome` has no
+`client_events` field. For permission or user-input interactions, use the
+owning typed interaction service; for UI streaming, follow the documented
+application event producer and transport contract. Do not create a second
+socket, waiter, or polling channel. Keep runtime-only waiters in their owning
+service and cancel them when that service's lifecycle ends.
 
 ## Blocking and asynchronous handlers
 

@@ -1,5 +1,10 @@
 # Architecture Iteration Backlog
 
+> **带日期的历史迭代记录，不是当前 TODO 或实现状态清单。** 条目记录各自
+> 标注日期/分支时的观察和验证；其中 `open`、`working branch`、旧测试路径、
+> 客户端状态不能自动外推到当前代码。当前功能请查对应源码、生产路径测试及
+> 项目入口文档。
+
 This backlog tracks the next architecture iterations. It is ordered to reduce
 ambiguity before large implementation changes.
 

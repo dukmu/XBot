@@ -1,253 +1,70 @@
 # `coretools`
 
-Base filesystem, shell, and content tools — always available to the
-Agent. Replaces the previous granular wrapper tools with four merged
-tools: `read`, `edit`, `path`, `search` plus a `shell` tool.
+The Agent-profile `coretools` component registers filesystem and shell Tools
+through the shared Tool registry. Large-text externalization is owned by the
+separate `content_cache` component.
 
-- **Import/profile:** `coretools`, Agent profile.
-- **Source:** `XBotv2/coretools/plugin.py`,
-  `XBotv2/coretools/filesystem.py`,
-  `XBotv2/coretools/shell.py`,
-  `XBotv2/coretools/result_cache.py`.
-- **Injects/provides:** `tools`, `session`, `artifacts`, `sandbox`,
-  `jobs`, `workspace_root` → (none — registers Tools directly).
-- **Subscribes to events:** `after/tools` (tool result cache hook),
-  `hook` stages (workspace hooks).
+- **Source:** `XBotv2/coretools/plugin.py`, `filesystem.py`, `shell.py`,
+  `contracts.py`.
+- **Requires:** `tools`, `session`, `artifacts`, `sandbox`, `jobs`,
+  `workspace_root`; `permissions` is optional and is resolved lazily for
+  shell escalation.
+- **Provides:** registered Tools; no service.
+- **Hooks:** workspace-declared callbacks at their declared Agent-loop stage.
 
-## Public data models
+## Registered Tools
 
-### Filesystem tools (`XBotv2/coretools/filesystem.py:37-160`)
+`filesystem_tools()` registers `read`, `edit`, `path`, and `search`;
+`shell_tools()` registers `shell`, `list_shells`, `wait_shell`, `read_shell`,
+and `cancel_shell`. Handlers return the shared `ToolOutcome` union
+(`ToolSucceeded`, `ToolFailed`, `ToolDenied`, or `ToolCancelled`), not the
+retired `ToolResult` shape.
 
-```python
-async def read(
-    path: str,
-    mode: Literal["utf8", "binary", "stat", "media", "list"] = "utf8",
-    offset: int = 0,
-    limit: int = 2000,
-    char_offset: int = 0,
-    max_chars: int = 12000,
-    line_numbers: bool = False,
-    url: str | None = None,
-    data: str | None = None,
-    media_type: str | None = None,
-    recursive: bool = False,
-    max_entries: int = 500,
-    include_hidden: bool = True,
-    *,
-    sandbox=None,
-    artifacts: ArtifactStorePort | None = None,
-) -> ToolResult: ...
-```
+`read(path, mode="utf8", ...)` supports bounded text reads, binary content,
+metadata (`stat`), model-visible media (`media`), and bounded directory
+listing (`list`). Media input accepts exactly one of `path`, `url`, or `data`;
+remote reads require network capability. `edit` supports `write`, exact-text
+`replace`, and unified-diff `patch`. `path` supports `move`, `copy`, `delete`,
+and `mkdir`; `search` supports content and filename search.
 
-`mode` variants:
+`edit` uses a previously read snapshot to detect external changes. For
+`replace`, the old text must match; ambiguous replacement fails unless
+`replace_all=True`. Filesystem access remains subject to the sandbox.
 
-| mode | Behavior |
-|---|---|
-| `utf8` | Bounded UTF-8 read with line/char limits |
-| `binary` | Base64-encoded bytes + metadata |
-| `stat` | File metadata (MIME, size, SHA-256, dimensions) |
-| `media` | Image content loaded as `ImageContent` for model visibility |
-| `list` | Directory listing with bounded metadata |
+The `shell` Tool runs a command in the session workspace by default. A
+foreground call returns its result; `background=True` starts a session-owned
+job. The four `*_shell` helpers list, wait for, read, or cancel those jobs.
+Jobs and captured output are runtime-owned and do not survive session
+shutdown. `read_shell` pages output by character cursor; `wait_shell` returns
+job status/exit information, not output.
 
-### `ToolResult` for `read`
+Requesting `sandbox_permissions="require_escalated"` asks to run outside the
+sandbox. This is not an approval bypass: the permissions layer must approve
+it. If the optional approval layer is absent, the call fails closed.
 
-```python
-# utf8 mode, text file:
-ToolResult.success("<markdown content>")
+## Configuration and workspace extensions
 
-# utf8 mode, non-text file:
-ToolResult.success(
-    f"Non-text file: {path} ({media_type}, {size_bytes} bytes, "
-    f"sha256={sha256}, {width}x{height} {format})")
+`CoreToolsConfig` has three fields: `enabled_tools` (defaults to all registered
+tools), `hooks` (`HookConfig(stage, target)`), and `workspace_tools`
+(`WorkspaceToolConfig(target)`). A target uses `source:export` syntax. Hook
+targets may name an importable module or a script under `.xbot/hooks/`;
+workspace Tool targets must stay under `.xbot/tools/` and export one `Tool` or
+a sequence of `Tool` values. These declarations are loaded at application
+composition time. Hook event payloads are producer-owned typed values; consult
+the event definition for the selected stage rather than assuming a universal
+context dictionary.
 
-# binary mode:
-ToolResult.success(f"Binary file: {path} ({size_bytes} bytes, sha256={sha256}, base64 in data)")
+There is no `ToolResultCacheHook`, `AFTER_TOOLS` result-cache contract, or
+`tool_results` configuration here. Oversized accepted user input and Tool
+execution output are externalized by `content_cache` using configured policy
+and the artifact store.
 
-# stat mode:
-ToolResult.success(json.dumps({"media_type": "...", "size_bytes": 1234, "sha256": "..."}))
+## Boundaries
 
-# media mode:
-ToolResult.success(
-    f"Image content loaded: {selected} ({len(payload)} bytes)",
-    images=(ImageContent(path=ref.id, media_type=ref.media_type, size=ref.size),)
-)
-
-# list mode:
-ToolResult.success(json.dumps([{"path": "...", "type": "file"|"dir", ...}]))
-```
-
-### `edit` tool
-
-```python
-async def edit(
-    path: str,
-    mode: Literal["write", "replace", "patch"] = "replace",
-    content: str | None = None,
-    old_text: str | None = None,
-    new_text: str | None = None,
-    replace_all: bool = False,
-    patch: str | None = None,
-    *,
-    sandbox=None,
-) -> ToolResult: ...
-```
-
-| mode | Required args | Behavior |
-|---|---|---|
-| `write` | `content` | Atomic file replacement; creates parent dirs |
-| `replace` | `old_text`, `new_text` | Replace first occurrence; use `replace_all=True` for all |
-| `patch` | `patch` | Unified diff (single-file) |
-
-### `path` tool
-
-```python
-async def path(
-    operation: Literal["move", "copy", "delete", "mkdir"],
-    path: str,
-    source: str | None = None,
-    destination: str | None = None,
-    overwrite: bool = False,
-    recursive: bool = False,
-    parents: bool = False,
-    *,
-    sandbox=None,
-) -> ToolResult: ...
-```
-
-| operation | Required | Optional |
-|---|---|---|
-| `move` | `path`, `destination` | `overwrite` |
-| `copy` | `path`, `destination` | `parents`, `overwrite` |
-| `delete` | `path` | `recursive` |
-| `mkdir` | `path` | `parents` |
-
-### `search` tool
-
-```python
-async def search(
-    pattern: str,
-    path: str,
-    mode: Literal["content", "name"] = "content",
-    glob: str | None = None,
-    max_results: int = 200,
-    case_sensitive: bool = True,
-    literal: bool = False,
-    include_hidden: bool = False,
-    exclude: list[str] | None = None,
-    max_line_chars: int = 1000,
-    kind: Literal["file", "directory", "any"] = "file",
-    *,
-    sandbox=None,
-) -> ToolResult: ...
-```
-
-| mode | pattern | glob | kind |
-|---|---|---|---|
-| `content` | regex or literal | basename/dir glob | files only |
-| `name` | glob | — | file / dir / any |
-
-### `shell` tool (`XBotv2/coretools/shell.py`)
-
-```python
-async def shell(
-    command: str,
-    cwd: str | None = None,
-    background: bool = False,
-    name: str | None = None,
-    sandbox_permissions: Literal["use_default", "require_escalated"] = "use_default",
-    justification: str | None = None,
-    *,
-    sandbox=None,
-    job_registry=None,
-    default_cwd: str | None = None,
-) -> ToolResult: ...
-```
-
-`sandbox_permissions="require_escalated"` bypasses the sandbox guard
-(permissions layer still owns the approval). `background=True` starts
-a `SessionShell` job; `name` is optional label.
-
-### `ToolResultCacheHook` (`XBotv2/coretools/result_cache.py`)
-
-```python
-def make_tool_result_cache_hook(
-    artifacts: ArtifactStorePort,
-    cache_threshold_chars: int = 12_000,
-    preview_chars: int = 8_000,
-    tail_chars: int = 2_000,
-) -> Callable[[EventContext], Awaitable[None]]:
-    """After-tool cache hook. Stores oversized results in artifacts."""
-```
-
-## How `apply()` works (`CoreToolsComponent`)
-
-```python
-def apply(self, ctx, config):
-    artifacts = ctx.artifacts
-    result_config = dict(config.get("tool_results") or {})
-    cache_threshold_chars = int(result_config.get("cache_threshold_chars", 12_000))
-    preview_chars = int(result_config.get("preview_chars", 8_000))
-    tail_chars = int(result_config.get("tail_chars", 2_000))
-    workspace_xbot = Path(ctx.workspace_root) / ".xbot"
-    hooks = [...]
-    workspace_tools = [...]
-    from XBotv2.coretools.filesystem import filesystem_tools
-    from XBotv2.coretools.shell import shell_tools
-    tools = (
-        *filesystem_tools(ctx.sandbox, artifacts),
-        *shell_tools(ctx.sandbox, ctx.jobs, str(ctx.workspace_root)),
-    )
-    for tool in tools:
-        ctx.tools.register(tool)
-    ctx.on(Events.AFTER_TOOLS, make_tool_result_cache_hook(...))
-    for declaration in hooks:
-        ctx.on(declaration.stage, _resolve_hook_target(declaration))
-    for declaration in workspace_tools:
-        exported = _resolve_workspace_target(declaration, directory="tools")
-        for tool in tools:
-            ctx.tools.register(tool, namespace="workspace")
-```
-
-`filesystem_tools(sandbox, artifacts)` returns `(read, edit, path, search)`.
-`shell_tools(sandbox, jobs, workspace_root)` returns `(shell,)`.
-Each tool is registered with the standard `Tool.from_function(...)` shape.
-
-## On-disk artifacts
-
-Tool messages exceeding `cache_threshold_chars` are stored as
-`ArtifactKind.TOOL_RESULT` in the artifact store. The hook mutates each
-`Message` in `EventContext.tool_results`: it replaces `content`, sets the
-cached/display markers in `additional_kwargs`, and attaches the `ArtifactRef`
-to `message.artifact`. The original tool result is therefore persisted before
-the bounded projection is emitted.
-
-## Cross-references
-
-- Depends on: `tools`, `session`, `artifacts`, `sandbox`, `jobs`,
-  `workspace_root`, `agentloop` (`AFTER_TOOLS`).
-- Depended on by: the Agent (model-facing tools).
-- Pairs with: `sandbox` (path capability gates), `permissions`
-  (tool allow/deny gates).
-
-## Common pitfalls
-
-- **Using `read(mode=media)` with 3 sources**: exactly one of
-  `path`, `url`, `data` is required — raises
-  `"invalid_content_source"` otherwise.
-- **Passing `url` when `sandbox.network=False`**: raises
-  `"network_disabled"`. The sandbox check happens before the HTTP
-  request.
-- **Max content bytes for media**: `MAX_CONTENT_BYTES = 25 MB`.
-  Content exceeding this raises `"content_too_large"`.
-- **Supported image types**: only `image/gif`, `image/jpeg`,
-  `image/png`, `image/webp` are supported. Other MIME types raise
-  `"unsupported_image_type"`.
-- **`search(mode="name")` with `pattern="*"`**: the glob must be
-  absolute or relative to the `path` argument; `**` is not
-  automatically recursive.
-- **`edit(mode="replace")` without `old_text` matching**: raises
-  `ValueError` if the text is not found or is ambiguous (appears
-  more than once without `replace_all=True`).
-- **`shell(sandbox_permissions="require_escalated")`**: the guard
-  returns `None` (pass), but the permission layer still approves
-  or denies — sandbox bypass does not mean permission bypass.
+- Tool calls use the standard registry, guard, and execution path.
+- Filesystem and process capabilities are bounded by `sandbox`; permissions
+  adds allow/deny and approval decisions but does not replace sandbox policy.
+- Background shell jobs belong to the active session and are not durable
+  history.
+- See [content cache](content-cache.md), [permissions](permissions.md),
+  [sandbox](sandbox.md), and [jobs](jobs.md) for their respective contracts.

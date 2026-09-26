@@ -9,7 +9,7 @@ the executable package remains authoritative.
 | Area | Owner | Extension point |
 |---|---|---|
 | ReAct loop and generic Tool execution | `XBotv2/agentloop` | loop hooks and `ToolsPort` |
-| Shared messages, `Tool`, `ToolCall`, `ToolResult` | `XBotv2/core` | stable data contracts |
+| Shared messages, `Tool`, `ToolCall`, `ToolOutcome` | `XBotv2/core` | stable data contracts |
 | Session/thread identity and runtime | `XBotv2/session` | session services and protocol |
 | Agent definitions and active Agent selection | `XBotv2/agents` | Agent declarations and typed events |
 | Child application lifecycle | `XBotv2/application` | `ChildApplication*` contracts |
@@ -54,10 +54,10 @@ or share state files with configuration.
 
 ## Tool Pipeline
 
-The standard path is: `BEFORE_TOOL_CALL` rewrite -> schema validation ->
-monotonic guards (permissions and plugin guards) -> Tool dispatch ->
-`AFTER_TOOL_CALL`. A plugin Tool should enter this path, return `ToolResult`,
-and use `ToolCall` metadata only when it genuinely needs call identity.
+The standard path validates provider arguments, applies registered guards,
+dispatches the Tool, and records the resulting `ToolExecution`. A plugin Tool
+should enter this path, return a `ToolOutcome`, and use `ToolCall` metadata only
+when it genuinely needs call identity.
 
 ## Choosing an Extension
 
@@ -111,8 +111,8 @@ provider ownership.
 
 ## Session, thread, and loop identities
 
-- `SessionInfo` holds current identity/facts passed in loop events; it is not
-  an immutable historical snapshot.
+- `SessionRuntimeState` carries current runtime identity/facts in loop events;
+  client-facing summaries are separate projections.
 - `Session` is the session-level runtime object that owns variables, paths,
   commands, and the `LoopState` view.
 - `SessionManager` is the process service that opens, resumes, lists, forks,
@@ -129,40 +129,20 @@ turn boundaries (`turn/start` → context/model/tool events → `turn/end`), and
 opaque cursor; it does not replay JSONL itself. For storage fields and folding
 rules, read [session-trace.md](session-trace.md).
 
-## Event quick reference
+## Event ownership and dispatch
 
-These are the stable loop-hook names currently exposed by `Events`. Their
-payload is an `EventContext`; only fields relevant to that phase are populated.
-`SHORT_CIRCUIT_EVENTS` determines serial dispatch, not the event-name prefix:
-`before/user-message-accept`, `before/context`, `after/context`,
-`before/model-request`, `before/agent`, `before/tool-schema-bind`, `after/agent`,
-`before/tools`, `before/tool-call`, and `after/tools`. They use `ctx.serial`
-and may return the documented replacement/rejection value. Remaining loop
-events use `ctx.emit`; observers normally return `None`.
+The current loop event names are the constants in `XBotv2.agentloop.Events`.
+Payloads are producer-owned typed objects, not an `EventContext` with a bag of
+optional fields. Subscribe with `ctx.on`; observer callbacks receive their
+declared payload and return no replacement. Only names listed in
+`SHORT_CIRCUIT_EVENTS` use serial dispatch, and each has its own result type.
+The current vocabulary and stage boundary are summarized in the
+[agentloop reference](plugins/agentloop.md); do not copy older hook names from
+archived design material.
 
-| Phase | Names | Common populated fields |
-|---|---|---|
-| Session | `session/start`, `session/resume`, `session/close` | `session`, `settings`, `messages` |
-| Turn | `turn/start`, `turn/end`, `error`, `stop`, `stop/failure` | `continuation`, `turn_complete`, `error`, `stop_reason` |
-| User/context | `before/user-message-accept`, `after/user-message-accept`, `before/context`, `after/context` | `user_input`, `messages`, `context_messages`, `rebuild` |
-| Agent/model | `before/agent`, `after/agent`, `before/tool-schema-bind`, `after/tool-schema-bind`, `before/model-request`, `model/request-ready`, `after/model-response`, `model/request-error` | `model_request`, `model_response`, `agent_response`, `error` |
-| Tools | `before/tools`, `after/tools`, `tool/calls-parsed`, `before/tool-call`, `after/tool-call`, `tool/call-failure`, `tool/denied`, `tool/batch-done`, `agent/inbox/spliced` | `tool_calls`, `tool_call`, `args`, `tool_result`, `tool_results` |
-| Messages/client | `user/message`, `assistant/message`, `tool/message`, `client/event`, `state/changed` | `messages`, `client_event` |
-
-Application and owner-specific payloads are separate from `EventContext`:
-`session/init` carries `ApplicationInitialized`, `runtime/event` carries
-`RuntimeEvent`, context building uses `ContextBuildRequest`/`ContextBuilt`, and
-compaction uses `BeforeCompact`/`AfterCompact`. Session/workspace resource
-events carry their package-owned typed payloads. Import these from the owning
-package; never put a plugin implementation object in `protocol.py`.
-
-## Event payload ownership
-
-Use `EventContext` only for Agent-loop hook data: messages, session facts,
-`ModelRequest`, `ModelResponse`, Tool calls/results, and errors. The context
-builder, compact, commands, session, application, and workspace packages own
-their own typed payload classes. A new plugin event should live beside the
-producer's public contract and carry a narrow dataclass or Pydantic model.
-Do not export plugin implementation objects from `protocol.py` merely because
-a route needs them; inject the service at the route composition boundary and
-translate its domain result to a wire model there.
+Internal XCore loop events, application `RuntimeEvent` values, and validated
+client wire events are separate contracts. Context building, compaction,
+commands, session, application, and workspace packages own their business
+payloads. Define new event or operation contracts beside their semantic owner.
+Keep HTTP request/response models and routes in the owning package's
+`protocol.py`, where an adapter translates a domain result to the wire model.

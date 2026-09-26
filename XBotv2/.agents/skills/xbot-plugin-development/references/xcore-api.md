@@ -189,7 +189,6 @@ import these symbols from `xcore`, not private modules:
 | `FiberState` | `pending`, `loading`, `running`, `failed`, `unloading`, `disposed` |
 | `StateService` | atomic JSON state and namespace views |
 | `EventBus` / `Disposer` | event engine and single-shot cleanup callable type |
-| `BaseModel` | plugin-owned Pydantic configuration contract in XBot |
 | `XCoreError` | base XCore exception |
 | `InactiveEffectError` | effect registered on an inactive/disposed owner |
 | `ServiceNotFoundError` | `ctx.require` could not resolve a service |
@@ -202,6 +201,10 @@ import these symbols from `xcore`, not private modules:
 capability implementations such as a registry that must attribute a
 registration to its caller. An ordinary plugin should use Context effects and
 its returned disposers instead of inspecting the current fiber.
+
+XCore does not export a Pydantic base model. A plugin's configuration contract
+is a `pydantic.BaseModel` owned by that plugin; import `BaseModel`,
+`ConfigDict`, and `Field` from `pydantic`, not from `xcore`.
 
 ## All Plugin Shapes
 
