@@ -52,6 +52,36 @@ PNG_BYTES = base64.b64decode(
 )
 
 
+def local_command_port(app):
+    """Use the production command registration path for direct app tests."""
+    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.tui.commands import register_client_commands
+
+    commands = CommandsService(ownership="caller")
+    register_client_commands(commands, app)
+    return commands
+
+
+def tui_app(backend, **kwargs):
+    """Construct a directly driven app with the normal local command registry."""
+    from XBotv2.tui.app import TuiApp
+
+    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.tui.commands import register_client_commands
+
+    commands = CommandsService(ownership="caller")
+    app = TuiApp(backend=backend, commands=commands, **kwargs)
+    register_client_commands(commands, app)
+    return app
+
+
+def tui_command_registry():
+    from XBotv2.tui.commands import CommandRegistry
+
+    app = tui_app(backend=object())
+    return app.commands
+
+
 def snapshot(**overrides: Any) -> OpenSessionResponse:
     session_id = overrides.pop("session_id", SESSION)
     thread_id = overrides.pop("thread_id", THREAD)
@@ -280,6 +310,10 @@ class ScriptedBackend:
     session_catalog: list[Any] = field(default_factory=list)
     sent: list[dict[str, Any]] = field(default_factory=list)
     opened: list[dict[str, Any]] = field(default_factory=list)
+    opened_threads: list[dict[str, Any]] = field(default_factory=list)
+    jobs: tuple[Any, ...] = ()
+    jobs_error: BaseException | None = None
+    job_reads: list[tuple[str, str]] = field(default_factory=list)
     interrupts: int = 0
     interaction_responses: list[dict[str, Any]] = field(default_factory=list)
     interrupt_cancelled: bool = True
@@ -315,6 +349,10 @@ class ScriptedBackend:
             raise self.open_error
         return self.session
 
+    async def open_thread(self, session_id: str, **kwargs: Any) -> OpenSessionResponse:
+        self.opened_threads.append({"session_id": session_id, **kwargs})
+        return await self.open_session(session_id=session_id, **kwargs)
+
     async def close(self) -> None:
         self.closed = True
 
@@ -324,20 +362,82 @@ class ScriptedBackend:
     # --- provider / agent / effort selection --------------------------
     providers: Any = None
     providers_error: BaseException | None = None
+    provider_reads: int = 0
     agents: Any = None
     agents_error: BaseException | None = None
+    agent_reads: int = 0
+    policy: Any = None
+    policy_error: BaseException | None = None
+    policy_reads: int = 0
+    plugin_config: Any = None
+    plugin_config_error: BaseException | None = None
+    plugin_config_reads: int = 0
+    plugin_config_scopes: list[str] = field(default_factory=list)
+    plugin_config_updates: list[dict[str, Any]] = field(default_factory=list)
+    plugin_config_update_error: BaseException | None = None
+    plugin_config_update_result: Any = None
     selections: list[dict[str, Any]] = field(default_factory=list)
     selection_error: BaseException | None = None
 
     async def list_providers(self) -> Any:
+        self.provider_reads += 1
         if self.providers_error is not None:
             raise self.providers_error
         return self.providers if self.providers is not None else catalog()
 
     async def list_agents(self, session_id: str, thread_id: str) -> Any:
+        self.agent_reads += 1
         if self.agents_error is not None:
             raise self.agents_error
         return self.agents if self.agents is not None else agent_list()
+
+    async def get_session_policy(self, session_id: str) -> Any:
+        self.policy_reads += 1
+        if self.policy_error is not None:
+            raise self.policy_error
+        if self.policy is not None:
+            return self.policy
+        from XBotv2.config.protocol import SessionPolicyResponse
+
+        return SessionPolicyResponse(session_id=session_id)
+
+    async def list_plugin_config(
+        self, session_id: str, thread_id: str, *, scope: str = "workspace"
+    ) -> Any:
+        self.plugin_config_reads += 1
+        self.plugin_config_scopes.append(scope)
+        if self.plugin_config_error is not None:
+            raise self.plugin_config_error
+        if self.plugin_config is not None:
+            return self.plugin_config
+        from XBotv2.config.contracts import PluginConfigCatalog
+
+        return PluginConfigCatalog(
+            scope=scope, workspace_root="/workspace", revision="empty"
+        )
+
+    async def update_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        patch: Any,
+    ) -> Any:
+        self.plugin_config_updates.append(
+            {
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "plugin_id": plugin_id,
+                "patch": patch,
+            }
+        )
+        if self.plugin_config_update_error is not None:
+            raise self.plugin_config_update_error
+        if self.plugin_config_update_result is not None:
+            return self.plugin_config_update_result
+        return await self.list_plugin_config(
+            session_id, thread_id, scope=patch.scope
+        )
 
     def _record_selection(self, **fields: Any) -> None:
         self.selections.append(fields)
@@ -420,6 +520,16 @@ class ScriptedBackend:
         if self.thread_error is not None:
             raise self.thread_error
         return type("Threads", (), {"session_id": session_id, "threads": list(self.threads)})()
+
+    async def list_jobs(self, session_id: str, thread_id: str) -> Any:
+        self.job_reads.append((session_id, thread_id))
+        if self.jobs_error is not None:
+            raise self.jobs_error
+        return type(
+            "Jobs",
+            (),
+            {"session_id": session_id, "thread_id": thread_id, "jobs": list(self.jobs)},
+        )()
 
     # --- writes -------------------------------------------------------
     async def send_message(
@@ -562,6 +672,8 @@ class RecordingView:
     job_lists: list[Any] = field(default_factory=list)
     queues: list[Any] = field(default_factory=list)
     composers: list[Any] = field(default_factory=list)
+    interactions: list[Any] = field(default_factory=list)
+    thinking_activity: list[bool] = field(default_factory=list)
     pages: list[str] = field(default_factory=list)
     tail_calls: int = 0
     #: Whether the reader is following the tail; tests flip it to stand in for a
@@ -575,8 +687,9 @@ class RecordingView:
     def reader_at_end(self) -> bool:
         return self.at_end
 
-    async def render_transcript(self, state: Any) -> bool:
+    async def render_transcript(self, state: Any, *, thinking: bool) -> bool:
         self.transcripts.append(state)
+        self.thinking_activity.append(thinking)
         return True
 
     def render_status(self, model: Any) -> None:
@@ -590,6 +703,9 @@ class RecordingView:
 
     def render_composer(self, model: Any) -> None:
         self.composers.append(model)
+
+    async def render_interaction(self, request: Any) -> None:
+        self.interactions.append(request)
 
     async def page_older(self, state: Any) -> bool:
         self.pages.append("older")

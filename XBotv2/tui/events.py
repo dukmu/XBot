@@ -41,7 +41,7 @@ from XBotv2.interactions.protocol import (
     UserInputRecorded,
 )
 from XBotv2.jobs.contracts import JobView
-from XBotv2.jobs.protocol import JobCompletedEvent
+from XBotv2.jobs.protocol import JobCompletedEvent, JobListResponse
 from XBotv2.goal.models import GoalChanged
 from XBotv2.todolist.contracts import TaskChanged
 from XBotv2.session.contracts import ThreadSummary
@@ -89,6 +89,13 @@ class SnapshotAdopted:
     """
 
     snapshot: OpenSessionResponse
+
+
+@dataclass(frozen=True)
+class JobsReplaced:
+    """Authoritative jobs returned for the newly attached thread."""
+
+    payload: JobListResponse
 
 
 @dataclass(frozen=True)
@@ -382,6 +389,7 @@ UiEvent = Union[
     UserMessagePublished,
     RuntimeNoticePublished,
     JobUpdated,
+    JobsReplaced,
 ]
 
 
@@ -405,6 +413,7 @@ __all__ = [
     "LocalNotice",
     "TranscriptCleared",
     "JobUpdated",
+    "JobsReplaced",
     "QueueReplaced",
     "SessionConfigured",
     "SnapshotAdopted",

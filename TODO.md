@@ -27,7 +27,7 @@
 - [x] `ResourceResponse[T]` 是设计文档 §3.6 规定的 protocol wire 类型；只在 protocol 边界使用，不扩散为 Core 或插件业务返回包装。
 - [x] 不从 `XBotv2.core.tools` 或 Core 公共 API 导出 `AllTools` 等 agentloop/plugin/application 聚合对象。
 - [x] 不创建 wrapper executor、伪造 `ToolCall` 或权限旁路；工具统一经过标准 registry、permission 和 execution path。
-- [x] 不做 WebUI 工作，也不因 WebUI 测试调整主模型；本轮范围是主要代码、Core/HTTP 运行时、主线 TUI 和单列的可选 Maya TUI。
+- [x] 不做 WebUI 工作，也不因 WebUI 测试调整主模型；本轮范围是主要代码、Core/HTTP 运行时和主线 Textual TUI 插件。
 - [x] Bench 不属于本轮验收；不能证明产品行为的 bench 不修、不迁移。
 - [x] 不提交代码；保留用户现有 staged/unstaged 修改，不重置、不覆盖无关工作。
 - [x] 不通过删除有效功能测试取得绿灯；只删除锁定已删除语义、私有结构或完全重复证据的测试。
@@ -38,13 +38,35 @@
 
 以下结果只说明对应工作树当时经过了这些套件，不替代下面的逐项退出条件。
 
-- [x] 最新扩大回归证据：Core+TUI `1296 passed in 149.42s`、HTTP transport `101 passed in 78.30s`（均使用 `-s`；交互测试走真实 loopback/PTY）。
-- [x] queued fold-in 当前 `10 passed in 9.27s`；Maya plugin suite 当前 `37 passed in 2.36s`。
+- [x] 历史扩大回归证据：状态栏改动前 Core+TUI `1296 passed in 149.42s`、HTTP transport `101 passed in 78.30s`。本轮前的 Core `532 passed in 59.99s`、TUI `837 passed in 113.55s` 与 Browser `36 passed in 12.74s` 仅作为历史证据；旧 `829/834/835 passed` 均为更早结果。Settings CSS 和 transcript 后续已通过当前完整 TUI 回归，见下项。
+- [x] 2026-09-26 Claude Code 基础显示与 Think 自适应高度改造后，主线 TUI 完整套件 `846 passed in 117.77s`（`-s`，含真实 loopback/tmux PTY）；覆盖无顶部 session bar、`❯`/`●` transcript、固定 composer、单行 status/footer、Think/tool 折叠、三尺寸 provider-compatible PTY、permission/ask-user、paste/follow-up、Settings、resize/focus、session switch/resume 和 plugin/config。
+- [x] 2026-09-26 Anthropic-compatible stream 的 `content_block_start` 可合法携带 `thinking: null` / `text: null`；旧 adapter 将 null 存入内部 str state，后续 delta 执行 `+=` 触发用户所见 `NoneType + str`。TDD 先复现准确异常，再在 provider 边界归一为空字符串；adapter 全套 `15 passed`，真实形状 HTTP/SSE→server→TUI fixture 通过，并以真实 MiniMax `xbot once` 短请求得到 `OK`。
+- [x] 上述 provider/TUI 修改后的完整 Core 回归在允许本机 loopback socket 的环境中通过：`533 passed in 66.87s`；未删除 browser 或其他功能测试。沙箱内 browser 的 `PermissionError` 已识别为本机 socket 权限限制，并用沙箱外完整重跑取代该无效结果。
+- [x] 2026-09-26 对照实际 Claude Code 基础界面重排 transcript：删除顶部重复抬头和 `You/Assistant` meta 面板，用户行使用低对比背景 `❯`，assistant/tool 使用 `●`，composer 使用上下分隔线与固定 `❯`，usage/context/session/model 统一在底部单行 status，快捷键独立 footer；80x24 真实 PTY 已目视检查基础层级。复杂 interaction/permission 卡片和完整复合多轮视觉验收仍未完成。
+- [x] queued fold-in 当前 `10 passed in 9.27s`；Textual client host/commands/launcher/plugin focused suite 当前 `63 passed`，另有 loop-affinity/lifecycle focused rerun `7 passed`。
 - [x] 最新 Stage B focused runtime/persistence 集合 `39 passed in 16.91s`：覆盖 AgentLoop input/runtime、session ownership 和 persistence；包括 tool turn 的 `TURN_END` 与 durable history 顺序、provider failure 的 `ON_ERROR` 与 durable history 顺序、owner 进程 `os._exit` 后完整回合恢复、SIGKILL 期间未完成 provider stream 的丢弃与 canonical user history 保留，以及工具副作用发生后进程崩溃时不重放该工具。
 - [x] 已有真实 HTTP/TUI 证据覆盖 caption switch/resume、compact command/event/trajectory、permission 与 ask-user 回复、usage/reasoning 展示、空会话退出和首轮物化。
-- [x] 真实 PTY 已覆盖多行 Unicode 长 paste 后编辑、permission/ask-user、Think 渲染与折叠、session switch、Ctrl-C 退出；另以两个同时运行的 CLI TUI 连接同一 server 的两个会话，关闭其中一个 runtime 后由第三个 CLI 从磁盘 resume 并继续下一轮，连续稳定复跑 3 次。渲染捕获保存在 `/tmp/xbot-tui-real-run-20260925`，尚未满足包含 compact/caption/tool 的完整复合路径。
+- [x] 真实 PTY 已覆盖多行 Unicode 长 paste 后编辑、permission/ask-user、Think 折叠、session switch、Ctrl-C 退出；另以两个同时运行的 CLI TUI 连接同一 server 的两个会话，关闭其中一个 runtime 后由第三个 CLI 从磁盘 resume 并继续下一轮，连续稳定复跑 3 次。
+- [x] 2026-09-26 用户反馈后从当前 checkout 重新运行 reasoning/no-reasoning 两条 CLI→plugin→HTTP/SSE→80x24 PTY：`2 passed in 8.86s`。新 capture 在 `/tmp/xbot-current-thinking/`；reasoning fixture 显示 Think，no-reasoning fixture 仅显示临时 `Thinking…`。不能据此宣称用户配置下的 thinking 缺失已解决或整体已对齐 Claude Code。
+- [x] 2026-09-26 Settings 真 PTY capture 暴露 80x24 默认按钮/OptionList 边框过高；TDD 先使 Model action 高度断言以 3 行失败，改为 compact 单行控件后，Settings/provider picker、短屏键盘可达、Esc 保留草稿、plugin catalog 应用级测试 `4 passed`。
+- [x] Settings action rows、reasoning/Think 与 tool 折叠曾在真实 PTY 检查；历史 capture 根目录 `/tmp/pytest-of-shefrin/pytest-684/`。MiniMax-compatible stub 不代表真实供应商网络验证。
+- [x] 2026-09-26 transcript 高度缺陷按 TDD 修复：短回复在 streaming 结束后仍带 `.expanded` 固定 12 行样式，挤出 80x24 的用户 prompt，并在 100x28 展开 Think 时裁掉 Think 标题。`test_short_streamed_reply_does_not_keep_an_expanded_window` 先以 12 行失败，再限定 `.expanded` 只应用于当前可折叠 block；block suite `18 passed`，两个真实尺寸 PTY focused `2 passed in 7.58s`，全套 `843 passed in 119.81s`。完成帧与展开帧保存在 `/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr0/minimax-pty-captures/`（80x24）、`/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr1/minimax-pty-captures/`（100x28）、`/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr2/minimax-pty-captures/`（120x40）。
+- [x] 用户授权的一次短 MiniMax 真实请求已从生产 `xbot once` 入口执行，隔离数据目录下返回 `OK`；证明真实网络/provider completion 路径可用，但不把单次是否产生 reasoning 泛化为模型保证。
+- [x] 2026-09-26 真实 80x24 CLI → Textual plugin → loopback HTTP/SSE → PTY 验证：当 fixture 明确发出 reasoning delta 时，provider `Think` block 可见并在完成后保留、不重复；最新 capture：`/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th0/thinking-pty-captures/`。这不证明普通无-reasoning 回合有 Claude Code 式的 Thinking 活动态。
+- [x] 2026-09-26 无 reasoning、延迟首个正文 delta 的真实 CLI → HTTP/SSE → 80x24 PTY 复现先失败后通过：首帧显示 `✳ Thinking…`，assistant 正文开始后活动行消失；最新 capture：`/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th1/thinking-activity-pty-captures/`；focused PTY `1 passed in 5.76s`。controller 行为测试还验证活动 tool 中让位、工具结束而 turn 仍运行时恢复；该活动行不写入 timeline/history。
+- [x] 独立 context-sensitive footer pilot/渲染 focused tests `6 passed`：idle/running/interaction 提示来自 composer facts、按 terminal cell width 裁切；80x24 → 100x28 后 status/footer 行位置正确且草稿和 composer focus 保留。旧 queue/jobs 同排折叠设计已更正：job 仍折叠，queued prompt 现在默认在 composer 上方可见。
+- [x] 2026-09-26 Settings 样式修改前最后一次完整主线 TUI 回归 `837 passed in 113.55s`（`-s`）；含 chooser 单入口、Settings policy/plugin catalog typed 读取/显示与 80x24 schema 表单保存、默认 MiniMax provider-thinking 生产接线 PTY（80x24/100x28/120x40）、受控 provider Think 与无-reasoning Thinking activity、resize anchor/focus、usage/context/cache、用户轮次/工具步骤分隔、可见 queue/steer、paste、permission/interaction、session switch/resume 和提示去重。
+- [x] MiniMax reasoning production path 在当前 CLI/Textual PTY 以 80x24、100x28、120x40 重复交互；三种尺寸显示 streaming/final Think、context、usage/status、composer/footer 且无终端 cell 溢出，`3 passed in 9.85s`，capture `/tmp/xbot-minimax-layout/`。这不替代 Claude Code 并排整体布局验收。
+- [x] 2026-09-26 查清并修正默认 MiniMax-M3 Think block 缺失的上游缺陷：`thinking: adaptive` 被 `model_mode` 混成通用 reasoning effort，Anthropic adapter 随后发送无效的 `reasoning_effort=adaptive`；`_provider_arguments` 又漏掉模型 `thinking` 配置。官方 API 要求 `thinking: {type: adaptive}`。先以请求级断言复现，再修正模式投影与 request extras；LLM adapter/config focused `36 passed in 0.83s`，完整 Core `532 passed in 59.99s`，MiniMax-compatible CLI/Textual provider PTY 覆盖 80x24/100x28/120x40，样式修复前完整 TUI `837 passed in 113.55s`。多尺寸 capture 在 `/tmp/xbot-minimax-layout/`；未访问真实 MiniMax 服务。
+- [x] 在上述完整回归后，扩展的 80x24 streamed-thinking → follow-up-turn PTY 场景单独重跑通过 `1 passed in 4.31s`；这次只扩展测试场景，生产代码与上面的全套回归代码相同。
+- [x] 2026-09-26 更正 Settings API 判断：公开 client policy-read 已接入 Permissions/Sandbox 页面，pilot 覆盖读取和 typed 权限/沙箱展示；`/status` 保持只读，并断言不请求 provider/agent/policy/plugin config。当前 policy 仍只读；Plugins 已有 producer-schema 支持字段表单、scope/revision typed patch 和 80x24 pilot 保存，仅覆盖可安全映射的标量 schema；conflict 重载/再确认、所有 scopes 的真实 server 写回和 Appearance 仍未完成，不能将 Settings 整体标完成。
+- [x] Thinking 真实 PTY 检查后，TDD 删除 composer placeholder/footer 重复的 Enter/queue/steer 提示；34 项 composer/footer/status/policy Settings focused tests 通过，loopback PTY `1 passed in 5.72s`；完整 TUI 回归后的 capture `/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th1/thinking-activity-pty-captures/`。该局部排版修正不代表整体 Claude Code 布局验收完成。
+- [x] 更正 Plugins 页错误文案：公开 plugin-config catalog/update API 已存在；只读 catalog 和可支持标量字段的 schema-driven editor 已接入；scope/revision typed patch 在 80x24 pilot 走通。conflict/revision 变化后的保草稿、显式复核与真实 server 写回仍未闭环。
+- [x] 已按 TDD 接入公开 plugin-config catalog read；Settings 并发读取 workspace scope，Plugins 页面展示 scope/workspace/applicability/producer 声明的 plugin 名称、id、editable 标志和 schema 字段名，不回显 config raw values。后续加入可支持标量字段的 schema-driven 表单；Apply 固定在滚动内容外，80x24 pilot 验证可达并保存仅变化字段，携带 catalog revision。嵌套/复杂 schema 明确不可编辑；conflict 处理及真实 server 写回仍待验证。
+- [x] provider reasoning 仍只由 provider reasoning event 驱动；没有 event 时不伪造 reasoning 文本。
+- [x] 从 authoritative running facts + timeline phase 投影独立、瞬态的 `✳ Thinking…` 活动态：无 reasoning payload 时显示，assistant/活动 tool 开始后让位，完成 tool 且 turn 仍运行时恢复，turn 结束后消失；不进入 history，不新增协议事件/数据字段。80x24 无-reasoning 慢响应真实 PTY 与 controller/view 行为测试通过。
 - [x] 本环境异步测试在 pytest capture 下可能卡在 default-executor teardown；`-s` 不跳过测试或改变断言，Core/HTTP/TUI 扩大回归统一使用 `-s`。
-- [x] WebUI 未运行且不在范围内；真实供应商网络 smoke 尚未运行，不能据本地 SDK adapter 测试宣称网络互操作。
+- [x] WebUI 未运行且不在范围内；真实供应商网络 smoke 尚未运行。用户已授权一次短 MiniMax 请求，但执行路径当前受限；不能据本地 SDK adapter 测试宣称网络互操作。
 
 ## 4. 阶段 A：设计符合性与基础迁移
 
@@ -151,47 +173,77 @@
 
 先以组件/状态行为测试固定语义，再做真实 PTY。TUI 不得以本地状态掩盖 runtime/server 缺字段。
 
+当前推进顺序（用户纠偏，优先于本阶段其他未完成项）：
+
+- [x] 复核当前受控 PTY 事实：有 reasoning event 时真实 Think block 可见；无 reasoning 数据时只显示 Thinking activity。loopback 绑定需在受限 sandbox 外批准的测试执行中完成，验证仅监听本机临时端口。
+- [x] 查实 MiniMax provider 请求层 Think 缺失根因并按 TDD 修正；adapter 测试检查 wire 参数与 reasoning stream。已运行授权的真实短请求并得到 `OK`；nullable block-start 崩溃也由 adapter、真实形状 SSE 和生产 smoke 分层验证。
+- [ ] 当前第一优先级是端到端对话流程和 transcript，而不是配置入口：attach/resume → composer 编辑/多行 paste → Enter 发送 → user turn 可见 → Think/stream → tool/permission → final → follow-up → scroll/resize/session switch；逐帧检查布局层级、滚动/焦点、顺序和持久历史。
+- [x] Claude Code 基础单列结构第一轮已落地：无常驻顶部抬头；`❯` user、`●` assistant/tool；固定双分隔线 composer；单行底部 runtime/usage/context/session/model；独立快捷键 footer。80x24 真 PTY 已检查，复杂 interaction/permission、长会话和动态 resize 仍作为未完成产品验收项。
+- [x] 队列中待发送的 prompt 默认显示在 composer 上方，逐条保留服务端内容和 target，最高 4 行后可滚动；jobs 可保持紧凑摘要。80x24 真实 PTY 同时显示 queued content、next-turn/next-step 和 `queued:2`，capture：`/tmp/xbot-current-queue/test_real_cli_enter_queues_dur0/queue-pty-captures/queue-and-steer.txt`。
+- [x] Think block 行为已按 TDD 修正：reasoning stream 完成后默认折叠；stream 中手动折叠/展开会持续生效；显式展开高度为 `min(标题 + 实际内容, 12)`，仅长内容块内滚动；普通 assistant 回复不会随 Think policy 自动折叠。一行和五行 Think 的测试先以实际高度 12 失败，再分别固定为 2/6 行；长块仍受 12 行上限约束。
+- [x] Think 自适应高度已进入真实 CLI→server→tmux PTY 验收：80x24、100x28、120x40 均显示标题下一行的单行 reasoning，下一行立即进入 assistant 回复；`3 passed in 11.27s`，capture 位于 `/tmp/pytest-of-shefrin/pytest-704/test_minimax_thinking_runs_thr*/minimax-pty-captures/`。
+- [x] MiniMax-compatible production PTY 的完成帧 prompt、折叠标记和快捷键提示断言在 80x24/100x28/120x40 通过；最新 capture 见上一条。本机 stub 不代表真实供应商网络互操作。
+- [x] 真实复合 PTY 覆盖 permission→ask-user→长 paste 编辑→follow-up→session switch/back；capture `/tmp/pytest-of-shefrin/pytest-693/test_real_cli_tui_pty_complete0/pty-captures/follow-up.txt`。compact 与 reconnect/resume 尚未并入这一完整交互路径，仍开放。
+- [ ] Settings 与 `/status`/`/config` 入口布局、字段作用域、真实 mutation、保存冲突和返回 composer 体验列为次级工作；schema editor 的 Apply 已有 80x24 pilot 证据，冲突与更多页面未闭环，但不抢占当前对话流程/layout/transcript。
+- [ ] 上述主线仍须由同一真实 CLI/plugin + server + tmux PTY 复合多轮交互覆盖 compact、session switch/reconnect、resume 与退出；真实 provider Think 和整体 Claude Code 结构/视觉对照也仍待完成。不以分散场景或历史 capture 替代。
+
 - [x] provider terminal validation 错误已修复；OpenAI/Anthropic adapter 以具名 `response=` 构造 typed terminal event。
 - [x] picker index 按实际选项数有界 wrap；超过元素数的 down 后不产生虚假位置。
 - [x] 多行 Unicode paste、尾换行和 paste 后编辑只提交一条原样 input；composer 有固定高度上限。
 - [x] `/approve`、`/deny`、`/answer` 使用标准 HTTP endpoint，不伪装成普通 user message。
-- [x] Thinking 与 Tool block 可折叠；展开为固定高度只读滚动窗口，默认折叠隐藏 payload。
-- [x] usage/context/cache 的唯一 owner 是 session bar；footer 仅显示 transient status/queue/activity。
-- [x] caption 在首轮/多轮、failure retry、已有标题、session switch 和 resume 后进入 session bar。
+- [x] Thinking 与 Tool block 可折叠；展开按实际内容增长，最多 12 行后在只读块内滚动，默认折叠隐藏 payload。
+- [x] 删除重复的顶部 SessionBar；底部单一 StatusBar 显示 activity、累计 in/out/cache、context/window、session/thread、provider/model，再按优先级容纳 agent/mode/slots/cwd；footer 只显示操作提示，统计只有一个 view projection。
+- [x] caption 在首轮/多轮、failure retry、已有标题、session switch 和 resume 后进入底部 status 的 session 段。
 - [x] 空会话 Ctrl-C/HTTP close 不创建 session/catalog；首个有效 input 后才物化；SSE task cancel 会等待 reader 并关闭 generator。
 - [x] Compact 真实 server/TUI 五轮后执行 `/compact`，completion event、summary render 和 `SurfaceReplaced` trajectory 一致。
 - [x] 长多行 composer 改变布局后，提交动作明确返回 transcript 实时尾部；真实 PTY 第二轮回复不再已持久化却落在视口外。
 - [x] 两个真实 CLI TUI 同时连接同一 server 的不同 session，消息、usage、turn 与持久历史互不串线；其中一个关闭 runtime 后由新 CLI 从磁盘 resume、恢复历史和 `turn:1`，再完成 `turn:2`，另一个连接全程保持可用。
-- [ ] 验证 streaming reasoning delta → completed record 时 Think block 不重复、不丢失且保持折叠/滚动状态。
-- [ ] 在 step/turn 语义边界加入稳定间距或分隔，不依赖偶然 widget 顺序；验证长会话和窄终端。
+- [x] 历史 PTY 验证 streaming reasoning delta → completed record 时 Think block 不重复；当前控件语义更正为完成后默认折叠，流式期间的手动展开/折叠保留。完成帧 prompt 可见性已有 reducer→Textual viewport 行为断言。
+- [ ] 折叠选择的生命周期仍需在真实多轮 PTY 中确认，特别是 entry update、session switch 与 reconnect；不能在未验证前宣称其跨会话恢复或持久化。
+- [x] Jobs 以一行 disclosure 保持紧凑；queue 改为直接显示 queued prompt，限高 4 行后可滚动，不把可见性藏在计数后。
+- [x] 真实 80x24 CLI → HTTP/SSE → server 验证运行中 Enter 将后续输入排为 `next-turn`，Alt+S 将输入作为 `next-step` steer；正文、target 和 status `queued:n` 同屏可见，pending inputs 由公开 API 核对。当前 capture：`/tmp/xbot-current-queue/test_real_cli_enter_queues_dur0/queue-pty-captures/queue-and-steer.txt`。
+- [x] 状态栏 optional detail 顺序符合 activity → subagent/queue → usage/cache → agent/mode → generic slots → cwd；累计宽度统一按 terminal cell width 计算，Unicode 溢出回归覆盖。status-bar suite `70 passed`；Settings 样式变更前完整 TUI suite `837 passed in 113.55s`。
+- [x] 视图直接按已有 timeline role 投影低噪声标记：UserEntry 为背景行 `❯`，Assistant/Tool 为 `●`；不增加 turn ID 或持久化语义，也不再用整宽粗/虚分隔线吞噬 transcript 空间。
+- [x] 2026-09-26 80×24 → 50×28 的 Textual app resize pilot：非尾部阅读时窄宽 reflow 保持同一可见 timeline entry 和非尾随状态，且 composer 草稿/focus 保留；修复前 `m3` 漂到 `m2`，focused 用例通过。真实 TTY resize、Unicode/超长内容滚动仍待验收。
+- [x] Permission 与 user-input 已使用 reducer `pending_interactions` 和现有 typed response API 呈现小型 chooser/回答框；snapshot attach 可重建未完成 chooser，外部 resolution 关闭陈旧弹窗并恢复 composer focus。真实 server allow/deny/answer 与真实 tmux permission→question→final→follow-up 已通过。
+- [x] Subagent 查看按 Claude Code/Codex 的共同模式落地：主界面 jobs 保持紧凑活动摘要，`Ctrl+T` 从公开 thread catalog 切换独立 transcript；`ThreadSummary.kind=subagent` 唯一决定只读，`Esc` 返回 main，草稿与焦点保留，不从 job label 猜 thread id。
+- [x] 真实 server 生产路径实际执行 `spawn_subagent`/`wait_subagent`，TUI 查看 child transcript、返回 main，并在关闭首个 TUI 后重新 attach 同一 session 再次查看 child。该测试发现 transport 错把 child 交给 `open_session`；现已改走既有 typed `open_thread`，focused real server `1 passed`。
+- [x] 真实 CLI/tmux 100×28 已完成 subagent thread 切换与进程级 resume；child 为独立只读 transcript，状态栏显示 `subagent:reviewer-*`，footer 显示 `Esc main`。真实帧同时发现并移除 model-facing runtime XML/`job_completed` JSON 的 transcript 泄漏；typed jobs state 仍由既有事件和 jobs panel 呈现，不解析内部 prompt 文本。capture：`/tmp/pytest-of-shefrin/pytest-727/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
+- [x] 本轮最终完整 TUI suite `856 passed in 120.27s`，包含真实 uvicorn/HTTP/SSE 和 tmux；不是仅凭 scripted backend 判定完成。
+- [x] Attach/session switch/thread switch 通过公开 `list_jobs` authoritative replace reducer task state；真实双 TUI 连接同一主线程时，后连接客户端无需等新 SSE 即可显示已运行的 subagent 和 `1 task running`，切换后不保留旧 thread jobs。
+- [x] Context observation 超过声明 window 时不 clamp 或显示成正常比例；紧凑 status 使用红色 `ctx:~5.7k/4096!` 并保留精确 window，完整 Status 页写明 `over`。100 列仍同时保留 caption，真实 caption/retry `2 passed`。
+- [x] Active jobs hydration、精确 context overflow、caption 共存后的完整 TUI suite `862 passed in 121.44s`；包含真实双客户端、uvicorn/HTTP/SSE 与 tmux。最新 capture：`/tmp/pytest-of-shefrin/pytest-736/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
+- [x] Transcript 密度与 block ownership 已修正：entry/收起 tool 不再产生多余空行；final assistant reply 始终是普通 transcript，不可折叠；Think/Tool details 保持固定上限窗口。Tool call 现在有两个独立 disclosure：`● tool(key: value…)` 展开 args/params，`⎿ Done/Failed` 展开 result；shell/edit/web_search/read 均由通用参数投影回答“做什么”，无工具名分支。
+- [x] History/resume 的工具参数遵守 canonical model：不扩展 `ToolRecord.call=ToolCallRef`；TUI ToolEntry 保留计划已有语义中的独立 `call_id`，页内关联 `AssistantRecord.tool_calls`，assistant/tool 被分页边界拆开时在加载上一页后原位补齐 args；live 使用既有 `tool_calls_started`。分页/reducer/view focused `167 passed`。
+- [x] 工具执行不再因 call-id→record-id 删除/追加而跳位闪烁：Timeline 原位替换 identity，TranscriptView 复用同一 mounted widget；streamed assistant final 同样保持原顺序与控件身份。
+- [x] Permission chooser 按 Esc 走现有 typed deny API；不再仅 dismiss 后持续显示 `Approval required`。`send_message` 工具描述已禁止代替主会话 canonical final reply。
+- [x] `/help [command]` 已按动态 local+server command catalog 实现单命令详情；name/slash/alias 共用执行解析语义，description/usage/parameters/examples 只来自公开 `CommandDescription`。TDD 红测 4 项后 app/registry `140 passed`，真实 HTTP/server catalog 的 `/help undo` `1 passed`，完整 TUI（含 loopback/PTY）`876 passed in 139.33s`。
+- [x] 在 80x24 与长会话/scroll/resize 下验证分隔密度、可读性和 anchor 稳定性：手动上滚后的连续 tail update 保持同一可见 entry 与屏幕行偏移；长 paste 后第二轮自动跟随 final；permission/question 卡片在 80×24 保持完整边框。capture：`/tmp/pytest-of-shefrin/pytest-758/test_real_cli_tui_pty_complete0/pty-captures/`。
+- [ ] 按 `TEXTUAL_TUI_PLAN.md` 完成 Claude Code/Codex 风格单列对话布局：基础 transcript/composer/单行 status/footer 与 typed interaction 控件已完成；下一步是 subagent/resume 的真实 tmux render、长会话密度和同一真实路径的动态 resize/compact/reconnect/resume。完整布局须保持 80x24 可用。
+- [x] 状态栏只由 reducer facts 与公开 snapshot/event/API projection 驱动；activity → subagent/queue → usage/cache → context → session/thread → provider/model → agent/mode → generic slots → cwd 的优先级、窄屏裁切、Unicode cell-width、active jobs attach hydration 与 context overflow 均有行为测试和真实路径证据。
+- [ ] Settings overlay 覆盖只读 Status、Model、Permissions、Sandbox、schema-driven Plugins 和 Appearance；所有服务端值走现有公开 API，冲突保留草稿，未持久化的外观选项明确标为本次运行。
+- [ ] 状态栏/Settings/布局通过 80x24、100x28、动态 resize 的 pilot 和真 PTY 验收；不得只以快照断言或单元测试代替交互观察。
 - [ ] 覆盖 resize、长内容、stream update、session switch、reconnect、interrupt 后的 block/focus/scroll 状态。
-- [ ] 完成 caption 的真实 reconnect 后恢复，并确认 session picker 与 session bar 使用同一服务端 title projection。
+- [ ] 完成 caption 的真实 reconnect 后恢复，并确认 session picker 与底部 status 使用同一服务端 title projection。
 - [ ] 验证 TUI 异常进程退出、打开已有会话后退出和 reconnect 时旧订阅关闭；进程锁仍归 SessionManager/server，不由 TUI 假释放。
 - [ ] 用 Textual pilot/render snapshot 检查结构；快照只辅助定位，不能替代真实交互。
-- [ ] 启动真实 server 与真实 TUI，实际完成一条复合多轮路径：普通回复 → streaming Thinking → tool → permission/interaction → 后续追问 → compact → session switch/reconnect → 退出。
+- [ ] 启动真实 server 与真实 TUI，实际完成一条复合多轮路径：普通回复 → streaming Thinking → tool → permission/interaction → 后续追问 → compact → session switch/reconnect → 退出。Thinking 前置渲染已有独立真实 PTY 证据；本复合路径尚未完成。
 - [ ] 在上述真实会话中亲自操作键盘、长多行 paste 后编辑、picker、复制、Think/Tool 折叠与滚动，并核对 canonical history/event。
 - [ ] 保存不提交的本地截图或 terminal render capture：初始页、paste、streaming Think、Tool 折叠/展开、turn 分隔、caption、usage/context/cache 和 reconnect 恢复。
 - [ ] 退出后检查磁盘、进程、task、subscription 和 session lock，无空会话或资源残留。
+
+- [x] 当前切片完整 TUI suite `870 passed in 138.15s`，包含真实 uvicorn/HTTP/SSE 与 tmux；最后的显示语法修正后 focused `66 passed in 2.29s`；同一工作树完整 Core `533 passed in 60.50s`；`git diff --check` 通过。尚未因此勾选 compact/reconnect/resume 合并为同一复合流程、退出资源审计等更大退出条件。
+- [x] 真实 CLI/tmux 已连续完成 5 轮、手动 compact、退出 runtime、新进程 disk resume 和第 6 轮；核对 canonical history 与 `SurfaceReplaced` trajectory。该路径发现并修复 compact 后 lifetime turn 从 5 回退 4：现从 append-only HumanInput trajectory 恢复，不新增第二份 persisted counter。
+- [x] Compaction summary ownership 已纠正：canonical/persisted summary 为纯文本，provider 专用 `<historical_context>` 只在 context compiler 构建请求时产生；TUI 不解析内部 XML，真实 compact 帧仅显示可读 summary。capture：`/tmp/pytest-of-shefrin/pytest-768/test_real_cli_compaction_survi0/compact-resume-pty-captures/`。
+- [x] lifetime turn 修复后的完整 Core `533 passed in 68.82s`；新增 compact/resume 路径后的完整 TUI `871 passed in 137.80s`；其后的 summary ownership 修正通过直接受影响的 Core `37 passed` 与真实 PTY `2 passed`。
 
 阶段 C 退出条件：
 
 - [ ] TUI 全套通过；真实可控 server 完成复合多轮；render evidence 确认信息层级、固定高度、滚动、caption 和统计确实可见；退出资源检查通过。
 
-## 7. 阶段 D：可选 Maya TUI 产品轨道
+## 8. 阶段 D：最终审计与交付
 
-Maya 是独立插件产品，不阻塞 Core/HTTP/主线 TUI 退出。验收限于
-`maya-tui/README.md` 中基于现有 XBot 公共 API 的有界能力矩阵；需要新后端契约的能力只记录 blocker，不伪造实现。
-
-- [x] 能力/证据矩阵、注册 YAML、独立运行说明和 API blocker 已写入 `maya-tui/README.md`。
-- [x] 已有真实 XBot HTTP/SSE vertical test 覆盖 ask-user、edit permission、文件副作用和 reconnect backoff；插件 suite `37 passed`。
-- [x] 已实现当前 API 可支持的 `/fold`、`/follow`、stats footer、child thread、destinations、palette、OSC52 copy 和主题配置。
-- [ ] 安装真实 `maya-py` wheel 并启动 UI；当前环境缺少 wheel 时明确记录外部未验证，不以 import stub 或仿真截图替代。
-- [ ] 通过真实 Maya TTY 验证 render、keyboard、paste、picker/modal、copy、fold/scroll、resize/focus、live SSE 多轮和退出清理。
-- [ ] 能力矩阵中每个由现有 API 可实现的核心工作流都有真实交互证据；后端未支持项有具体、可核查的 contract blocker。
-
-## 8. 阶段 E：最终审计与交付
-
-- [ ] 重跑 Core、逐插件 focused suites、queued fold-in、完整 HTTP 和完整主线 TUI；Maya 独立报告。
+- [ ] 重跑 Core、逐插件 focused suites、queued fold-in、完整 HTTP 和完整主线 TUI。
 - [ ] 对 streaming、tool-call、permission/interaction、reconnect 和主线 TUI 做真实 loopback/PTY smoke；真实供应商仅在凭证可用时 opt-in。
 - [ ] 执行最终静态搜索，确认旧类型名、旧字段、动态注入、兼容 fallback 和反向依赖归零。
 - [ ] 检查 `git diff --check`、用户/开发/API 文档和注册配置；不包含 cache、log、session、截图或生成 bundle。
@@ -207,7 +259,6 @@ PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core -q -s
 PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/integration/test_foldin_queued.py -q -s
 PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/integration/test_http_transport.py -q -s
 PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/tui -q -s
-PYTHONPATH=XBotv2 .venv/bin/pytest maya-tui/tests -q -s
 git diff --check
 ```
 

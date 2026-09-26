@@ -77,6 +77,7 @@ from XBotv2.tui.events import (
     InterruptAsked,
     InterruptSettled,
     JobCompletionNotice,
+    JobsReplaced,
     GoalChangedReceived,
     TaskChangedReceived,
     JobUpdated,
@@ -561,7 +562,11 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         _publish_user_message(state, event)
 
     elif isinstance(event, RuntimeNoticePublished):
-        _append(state, _entry_from_history_item(state, event.payload))
+        # Runtime notices are model-facing inputs, not user-authored transcript
+        # turns. Their user-facing state arrives through typed events (for
+        # example JobCompletionNotice and JobUpdated), so rendering the prompt
+        # container here leaks internal XML/JSON and duplicates that state.
+        pass
 
     elif isinstance(event, JobUpdated):
         state.jobs[event.payload.id] = event.payload
@@ -570,6 +575,17 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             jobs_running=sum(
                 1
                 for job in state.jobs.values()
+                if job.state in _RUNNING_JOB_STATUSES
+            ),
+        )
+
+    elif isinstance(event, JobsReplaced):
+        state.jobs = {job.id: job for job in event.payload.jobs}
+        state.facts = replace(
+            state.facts,
+            jobs_running=sum(
+                1
+                for job in event.payload.jobs
                 if job.state in _RUNNING_JOB_STATUSES
             ),
         )
@@ -637,15 +653,17 @@ def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
         # Delta entries use a local identity; the completed record owns the
         # durable identity. Replace the streaming placeholder rather than
         # retaining both as separate transcript entries.
-        if stream_id != record.id:
-            state.timeline.remove(stream_id)
-        _append(state, replace(
+        completed = replace(
             streamed,
             id=record.id,
             content=record.content,
             reasoning=record.reasoning,
             streaming=False,
-        ))
+        )
+        if stream_id != record.id:
+            state.timeline.replace_identity(stream_id, completed)
+        else:
+            _append(state, completed)
         state.stream_entry_id = None
         return
     _append(state, AssistantEntry(
@@ -679,12 +697,14 @@ def _start_tool_calls(state: SessionState, calls, now: float) -> None:
             _append(state, replace(
                 existing,
                 name=call.name or existing.name,
+                call_id=str(call.id),
                 args=dict(call.args) or existing.args,
             ))
             continue
         _append(state, ToolEntry(
             id=call.id,
             name=call.name,
+            call_id=str(call.id),
             args=dict(call.args),
             status="running",
             started_at=now,
@@ -710,17 +730,20 @@ def _finish_tool_call(state: SessionState, record: ToolRecord, now: float) -> No
         body = outcome.reason
     else:  # pragma: no cover - ToolOutcome is closed
         raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
-    if call_id != record.id:
-        state.timeline.remove(call_id)
-    _append(state, ToolEntry(
+    completed = ToolEntry(
         id=record.id,
         name=record.call.name,
+        call_id=call_id,
         args=existing.args if known else {},
         status=status,
         result=body,
         started_at=existing.started_at if known else now,
         finished_at=now,
-    ))
+    )
+    if known and call_id != record.id:
+        state.timeline.replace_identity(call_id, completed)
+    else:
+        _append(state, completed)
 
 
 def _tool_output_text(parts: tuple[object, ...]) -> str:
@@ -784,8 +807,11 @@ def _rebuild_from_items(
     """
     state.timeline = Timeline()
     state.stream_entry_id = None
+    tool_args = _tool_args_in(items)
     for item in items:
-        state.timeline.upsert(_entry_from_history_item(state, item))
+        entry = _entry_from_history_item(state, item, tool_args=tool_args)
+        if entry is not None:
+            state.timeline.upsert(entry)
 
 
 def _prepend_from_items(
@@ -798,9 +824,23 @@ def _prepend_from_items(
     holds moves; an id that appears in both is refreshed where it stands and is
     not part of what this page added.
     """
-    return state.timeline.prepend(
-        [_entry_from_history_item(state, item) for item in items]
+    tool_args = _tool_args_in(items)
+    entries = (
+        _entry_from_history_item(state, item, tool_args=tool_args)
+        for item in items
     )
+    added = state.timeline.prepend([entry for entry in entries if entry is not None])
+    if tool_args:
+        for entry in tuple(state.timeline):
+            if (
+                isinstance(entry, ToolEntry)
+                and not entry.args
+                and entry.call_id in tool_args
+            ):
+                state.timeline.upsert(replace(
+                    entry, args=dict(tool_args[entry.call_id])
+                ))
+    return added
 
 
 def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
@@ -828,7 +868,12 @@ def release_oldest_loaded_page(state: SessionState) -> None:
     state.older = HistoryAvailable(cursor=released.cursor)
 
 
-def _entry_from_history_item(state: SessionState, item: ConversationRecord) -> Entry:
+def _entry_from_history_item(
+    state: SessionState,
+    item: ConversationRecord,
+    *,
+    tool_args: Mapping[str, Mapping[str, object]] | None = None,
+) -> Entry | None:
     """One replayed item as the entry it names.
 
     ``item.id`` is the identity of the transcript node the record sits on, so a
@@ -837,11 +882,7 @@ def _entry_from_history_item(state: SessionState, item: ConversationRecord) -> E
     """
     entry_id = item.id
     if isinstance(item, RuntimeNoticeRecord):
-        return NoticeEntry(
-            id=entry_id,
-            notice_kind="runtime",
-            text=item.content or "injected turn",
-        )
+        return None
     if isinstance(item, HumanInputRecord):
         return UserEntry(
             id=entry_id,
@@ -871,12 +912,26 @@ def _entry_from_history_item(state: SessionState, item: ConversationRecord) -> E
         return ToolEntry(
             id=entry_id,
             name=item.call.name,
+            call_id=str(item.call.id),
+            args=dict((tool_args or {}).get(str(item.call.id), {})),
             status={"succeeded": "success", "failed": "error"}.get(
                 outcome.kind, outcome.kind
             ),
             result=result,
         )
     raise TypeError(f"Unsupported conversation record: {type(item).__name__}")
+
+
+def _tool_args_in(
+    items: tuple[ConversationRecord, ...],
+) -> dict[str, Mapping[str, object]]:
+    """Index canonical assistant tool calls for the ToolRecord refs in a page."""
+    return {
+        str(call.id): call.args
+        for item in items
+        if isinstance(item, AssistantRecord)
+        for call in item.tool_calls
+    }
 
 
 # --- interactions ---------------------------------------------------------

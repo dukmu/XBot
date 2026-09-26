@@ -1,8 +1,7 @@
-"""The composer: what it says, and what Enter does.
+"""The composer: what it says, and what Enter/Ctrl+Enter do.
 
 The hint is a pure function of the facts, so the wording can be checked without a
-terminal. One of these tests exists specifically because the previous client told
-the user their message was *queued* while sending it as a *steer*.
+terminal. These tests keep the displayed delivery intent aligned with each key.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from XBotv2.tui.view.composer import (
     Composer,
     ComposerModel,
     composer_can_submit,
-    composer_delivery,
     composer_enabled,
     composer_hint,
     composer_placeholder,
@@ -36,24 +34,20 @@ def model(**overrides) -> ComposerModel:
 # --- what it says ---------------------------------------------------------
 
 
-def test_an_idle_thread_explains_the_keys() -> None:
-    hint = composer_hint(model())
-    assert "Enter" in hint
-    assert "Shift+Enter" in hint
+def test_an_idle_thread_does_not_spend_a_transcript_row_on_key_help() -> None:
+    assert composer_hint(model()) == ""
 
 
-def test_a_running_turn_says_the_message_will_steer() -> None:
-    """Not "queued": the client sends a steer, and saying otherwise was a lie."""
+def test_a_running_turn_keeps_delivery_help_in_the_footer() -> None:
     hint = composer_hint(model(facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING)))
-    assert "steer" in hint.lower()
-    assert "queue" not in hint.lower()
+    assert hint == ""
 
 
 def test_a_running_turn_is_recognised_from_the_server_answer_alone() -> None:
     hint = composer_hint(
         model(facts=StatusFacts(connection=Connection.CONNECTED, turn_open=False, server_turn=ServerTurn.RUNNING))
     )
-    assert "steer" in hint.lower()
+    assert hint == ""
 
 
 def test_a_pending_approval_asks_for_a_decision() -> None:
@@ -102,20 +96,13 @@ def test_a_pending_approval_outranks_the_running_hint() -> None:
 
 
 def test_the_placeholder_tracks_the_same_state() -> None:
-    assert "steer" in composer_placeholder(
+    assert composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING))
-    ).lower()
+    ) == ""
     assert "/approve" in composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, interaction=Interaction.PERMISSION))
     ).lower()
     assert composer_placeholder(model(read_only=True)).lower().startswith("read-only")
-
-
-def test_the_delivery_is_decided_in_one_place() -> None:
-    assert composer_delivery(model()) == "steer"
-    assert composer_delivery(
-        model(facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING))
-    ) == "steer"
 
 
 # --- what Enter does ------------------------------------------------------
@@ -125,6 +112,7 @@ class Harness(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.submitted: list[str] = []
+        self.deliveries: list[str] = []
         self.model = model()
 
     def compose(self) -> ComposeResult:
@@ -136,8 +124,9 @@ class Harness(App[None]):
         self.composer.show(self.model)
         self.composer.focus()
 
-    async def submit(self, text: str) -> None:
+    async def submit(self, text: str, delivery: str) -> None:
         self.submitted.append(text)
+        self.deliveries.append(delivery)
 
 
 async def test_enter_submits_and_clears_the_composer() -> None:
@@ -147,7 +136,29 @@ async def test_enter_submits_and_clears_the_composer() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == ["hello"]
+        assert app.deliveries == ["queue"]
         assert app.composer.text == ""
+
+
+async def test_ctrl_enter_submits_as_an_explicit_steer() -> None:
+    app = Harness()
+    async with app.run_test() as pilot:
+        app.composer.load_text("change direction")
+        await pilot.press("ctrl+enter")
+        await pilot.pause()
+        assert app.submitted == ["change direction"]
+        assert app.deliveries == ["steer"]
+        assert app.composer.text == ""
+
+
+async def test_alt_s_is_the_terminal_fallback_for_explicit_steer() -> None:
+    app = Harness()
+    async with app.run_test() as pilot:
+        app.composer.load_text("change direction")
+        await pilot.press("alt+s")
+        await pilot.pause()
+        assert app.submitted == ["change direction"]
+        assert app.deliveries == ["steer"]
 
 
 async def test_shift_enter_adds_a_line_instead_of_submitting() -> None:
@@ -218,13 +229,20 @@ def test_the_hint_reports_pending_attachments() -> None:
     assert "1 image" in hint
 
 
+def test_a_running_turn_keeps_delivery_keys_visible_with_an_attachment() -> None:
+    hint = composer_hint(
+        model(
+            pending_images=1,
+            facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING),
+        )
+    )
+    assert "Enter queues" in hint
+    assert "Ctrl+Enter/Alt+S steer" in hint
+
+
 def test_the_placeholder_reports_pending_attachments() -> None:
-    assert composer_placeholder(model(pending_images=1)) == "1 image attached"
-    assert composer_placeholder(model(pending_images=2)) == "2 images attached"
-
-
-def test_attachments_do_not_change_who_owns_the_delivery() -> None:
-    assert composer_delivery(model(pending_images=3)) == "steer"
+    assert composer_placeholder(model(pending_images=1)) == ""
+    assert composer_placeholder(model(pending_images=2)) == ""
 
 
 def test_an_empty_composer_may_still_submit_an_attachment() -> None:
@@ -245,6 +263,7 @@ async def test_enter_sends_an_image_with_no_text() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == [""], "an attached image is a message on its own"
+        assert app.deliveries == ["queue"]
 
 
 async def test_enter_still_refuses_an_empty_composer_with_no_image() -> None:

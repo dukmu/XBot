@@ -39,7 +39,12 @@ def send_message_to_user(
     message: str,
     level: Literal["info", "warning", "error"] = "info",
 ) -> ToolSucceeded:
-    """Send a non-blocking progress or diagnostic message to the client."""
+    """Send a non-blocking progress update to the client.
+
+    Never use this tool for the final answer in the main conversation. Return
+    the final answer as the assistant response so it remains the canonical
+    reply in the transcript.
+    """
     return ToolSucceeded(output=ToolOutput(parts=(TextPart(text=f"Message sent to user: {message}"),)))
 
 

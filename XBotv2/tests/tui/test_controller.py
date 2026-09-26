@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from XBotv2.jobs.contracts import JobView
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,
@@ -22,10 +23,17 @@ from XBotv2.tests.tui.factories import (
     human_record,
     snapshot,
     stream,
+    tool_record,
     thread,
 )
 from XBotv2.tui.controller import TuiController
-from XBotv2.tui.events import ConnectionChanged, ThreadRead, TurnStarted
+from XBotv2.tui.events import (
+    AssistantDelta,
+    ConnectionChanged,
+    ThreadRead,
+    TurnStarted,
+    UserMessagePublished,
+)
 from XBotv2.tui.state import HistoryAvailable, HistoryFailed
 from XBotv2.tui.status import Connection, ServerTurn, Status, derive
 from XBotv2.tui.transport import TransportConfig
@@ -55,6 +63,16 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+def job(job_id: str, state: str = "running") -> JobView:
+    return JobView(
+        id=job_id,
+        kind="subagent",
+        label="review",
+        state=state,
+        elapsed_ms=0,
+    )
 
 
 def controller(
@@ -105,6 +123,55 @@ def test_dispatching_does_not_render(backend: ScriptedBackend) -> None:
     assert control.dirty is True
 
 
+async def test_thinking_activity_requires_running_turn_before_output(
+    backend: ScriptedBackend,
+) -> None:
+    from XBotv2.agentloop.protocol import AssistantTextDelta
+
+    control, view = controller(backend)
+    control.dispatch(ConnectionChanged(Connection.CONNECTED))
+    control.dispatch(UserMessagePublished(payload=human_record("u1", "hello")))
+    control.dispatch(TurnStarted(payload=_turn(1)))
+    await control.flush()
+    assert view.thinking_activity == [True]
+
+    control.dispatch(AssistantDelta(payload=AssistantTextDelta(text="partial")))
+    await control.flush()
+    assert view.thinking_activity == [True, False]
+
+
+async def test_thinking_activity_yields_to_active_tool_then_returns_after_result(
+    backend: ScriptedBackend,
+) -> None:
+    from XBotv2.agentloop.protocol import (
+        StartedToolCall,
+        ToolCallsStarted as LoopToolCallsStarted,
+    )
+    from XBotv2.core.tools import ToolCall
+    from XBotv2.session.records import ToolRecord
+    from XBotv2.tui.events import ToolCallsStarted, ToolRecordReceived
+
+    control, view = controller(backend)
+    control.dispatch(ConnectionChanged(Connection.CONNECTED))
+    control.dispatch(UserMessagePublished(payload=human_record("u1", "hello")))
+    control.dispatch(TurnStarted(payload=_turn(1)))
+    await control.flush()
+    assert view.thinking_activity[-1] is True
+
+    call = ToolCall(id="c1", name="lookup", args={})
+    control.dispatch(ToolCallsStarted(
+        payload=LoopToolCallsStarted(calls=(StartedToolCall(call=call, category="execute"),))
+    ))
+    await control.flush()
+    assert view.thinking_activity[-1] is False
+
+    control.dispatch(ToolRecordReceived(
+        payload=ToolRecord.model_validate(tool_record("c1", "lookup", "found it"))
+    ))
+    await control.flush()
+    assert view.thinking_activity[-1] is True
+
+
 async def test_a_burst_of_events_costs_one_render(backend: ScriptedBackend) -> None:
     control, view = controller(backend)
     control.dispatch(ConnectionChanged(Connection.CONNECTED))
@@ -150,6 +217,46 @@ async def test_connecting_reads_the_thread_so_a_running_turn_is_visible(
     await control.connect()
     assert derive(control.state.facts) is Status.RUNNING
     assert "Running" in _plain(view.last_status)
+
+
+async def test_connecting_hydrates_active_jobs_from_the_public_snapshot(
+    backend: ScriptedBackend,
+) -> None:
+    backend.jobs = (job("subagent-1"),)
+    control, view = controller(backend)
+
+    await control.connect()
+
+    assert backend.job_reads == [(SESSION, THREAD)]
+    assert list(control.state.jobs) == ["subagent-1"]
+    assert control.state.facts.jobs_running == 1
+    assert view.job_lists[-1] == backend.jobs
+
+
+async def test_switching_threads_replaces_instead_of_leaking_previous_jobs(
+    backend: ScriptedBackend,
+) -> None:
+    backend.jobs = (job("parent-job"),)
+    backend.threads = (
+        thread(),
+        thread(
+            thread_id="child-1",
+            kind="subagent",
+            parent_thread_id=THREAD,
+            agent="reviewer",
+        ),
+    )
+    control, view = controller(backend)
+    await control.connect()
+    backend.jobs = ()
+    backend.session = snapshot(thread_id="child-1")
+
+    await control.switch_thread("child-1")
+
+    assert backend.job_reads[-1] == (SESSION, "child-1")
+    assert control.state.jobs == {}
+    assert control.state.facts.jobs_running == 0
+    assert view.job_lists[-1] == ()
 
 
 async def test_a_failed_connect_still_renders_the_failure(backend: ScriptedBackend) -> None:
@@ -211,12 +318,11 @@ def test_there_is_no_activity_before_a_turn(backend: ScriptedBackend) -> None:
     assert control.activity() == ""
 
 
-def test_the_composer_says_steer_while_a_turn_runs(backend: ScriptedBackend) -> None:
+def test_running_delivery_help_is_not_duplicated_inside_the_composer(backend: ScriptedBackend) -> None:
     control, _view = controller(backend)
     control.dispatch(TurnStarted(payload=_turn(1)))
     hint = _composer_hint(control.composer_model())
-    assert "steer" in hint.lower()
-    assert "queue" not in hint.lower()
+    assert hint == ""
 
 
 # --- actions delegate -----------------------------------------------------
@@ -227,16 +333,16 @@ async def test_submitting_goes_through_the_transport_with_a_client_id(
 ) -> None:
     control, _view = controller(backend)
     await control.connect()
-    input_id = await control.submit("hello")
+    input_id = await control.submit("hello", delivery="queue")
     assert backend.sent[0]["request_id"] == input_id
-    assert backend.sent[0]["delivery"] == "steer"
+    assert backend.sent[0]["delivery"] == "queue"
 
 
 async def test_submitting_renders_the_optimistic_entry(backend: ScriptedBackend) -> None:
     control, view = controller(backend)
     await control.connect()
     before = view.renders
-    await control.submit("hello")
+    await control.submit("hello", delivery="queue")
     assert view.renders > before
     assert any(
         getattr(entry, "content", "") == "hello" for entry in control.state.timeline
@@ -354,7 +460,7 @@ async def test_submitting_sends_the_attachments_and_consumes_them(
     control, _view = controller(backend)
     await control.connect()
     control.attach(image("Zm9v"))
-    await control.submit("look at this")
+    await control.submit("look at this", delivery="queue")
     assert backend.sent[-1]["images"] == [image("Zm9v")], (
         "the image travels with the message, as the repository's own model"
     )
@@ -367,7 +473,7 @@ async def test_submitting_an_attachment_with_no_text_is_allowed(
     control, _view = controller(backend)
     await control.connect()
     control.attach(image())
-    await control.submit("")
+    await control.submit("", delivery="queue")
     assert backend.sent, "an image-only message is still a message"
     assert backend.sent[-1]["content"] == ""
     assert backend.sent[-1]["images"]

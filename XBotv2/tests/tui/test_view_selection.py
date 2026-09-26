@@ -7,6 +7,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from XBotv2.commands import CommandDescription
+from XBotv2.tests.tui.factories import tui_command_registry
 from XBotv2.tui.commands import CommandRegistry
 from XBotv2.tui.view.palette import CommandPalette, command_options
 from XBotv2.tui.view.selection import MAX_ROWS, Option, SelectionModel, SelectionScreen
@@ -96,6 +97,28 @@ async def test_the_screen_shows_its_title_and_rows() -> None:
         await context.__aexit__(None, None, None)
 
 
+async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
+    screen = SelectionScreen(
+        "Permission required",
+        options("a", "b"),
+        description="Tool: edit\nApproval is required",
+        hint="↑↓ choose · Enter confirm · Esc dismiss",
+        compact=True,
+    )
+    app, pilot, context = await open_screen(screen)
+    try:
+        card = app.screen.query_one("#selection")
+        assert card.region.width <= 72
+        assert "Tool: edit" in str(
+            app.screen.query_one("#selection-description", Static).content
+        )
+        assert "Enter confirm" in str(
+            app.screen.query_one("#selection-hint", Static).content
+        )
+    finally:
+        await context.__aexit__(None, None, None)
+
+
 async def test_arrows_move_the_highlight() -> None:
     app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
     try:
@@ -143,6 +166,19 @@ async def test_escape_returns_nothing() -> None:
     finally:
         await context.__aexit__(None, None, None)
     assert app.chosen == [None]
+
+
+async def test_escape_can_return_the_owner_defined_cancellation_value() -> None:
+    screen = SelectionScreen(
+        "Permission required", options("allow", "deny"), cancel_value="deny"
+    )
+    app, pilot, context = await open_screen(screen)
+    try:
+        await pilot.press("escape")
+        await pilot.pause()
+    finally:
+        await context.__aexit__(None, None, None)
+    assert app.chosen == ["deny"]
 
 
 async def test_enter_with_no_options_returns_nothing() -> None:
@@ -194,7 +230,7 @@ async def test_a_searchable_screen_chooses_on_submit() -> None:
 
 
 def command_registry() -> CommandRegistry:
-    reg = CommandRegistry.with_builtins()
+    reg = tui_command_registry()
     reg.merge((
         CommandDescription(
             name="status",

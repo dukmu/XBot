@@ -559,7 +559,7 @@ async def test_watch_polls_on_the_configured_interval(backend: ScriptedBackend) 
 async def test_submit_binds_the_input_to_a_client_generated_id(backend: ScriptedBackend) -> None:
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    input_id = await transport.submit("hello")
+    input_id = await transport.submit("hello", delivery="queue")
     assert recorder.only(UserInputSubmitted).input_id == input_id
     assert backend.sent[0]["request_id"] == input_id
     assert backend.sent[0]["content"] == "hello"
@@ -571,7 +571,7 @@ async def test_submit_reports_a_failure_instead_of_leaving_it_pending(
     backend.send_error = RuntimeError("connection reset")
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    input_id = await transport.submit("hello")
+    input_id = await transport.submit("hello", delivery="queue")
     failure = recorder.only(UserInputFailed)
     assert failure.input_id == input_id
     assert "connection reset" in failure.error
@@ -794,6 +794,35 @@ async def test_switching_threads_asks_for_a_bounded_window_too(
     await transport.switch(session_id="s2", thread_id="other")
 
     assert backend.opened[-1]["history_limit"] == 40
+
+
+async def test_switching_to_a_subagent_uses_the_typed_thread_endpoint(
+    backend: ScriptedBackend,
+) -> None:
+    backend.threads = (
+        thread(),
+        thread(
+            thread_id="child-1",
+            kind="subagent",
+            parent_thread_id=THREAD,
+            agent="reviewer",
+        ),
+    )
+    backend.session = snapshot(thread_id="child-1")
+    recorder = Recorder()
+    transport = await connected(backend, recorder, history_window=40)
+
+    await transport.switch(session_id=SESSION, thread_id="child-1")
+
+    assert backend.opened_threads[-1] == {
+        "session_id": SESSION,
+        "thread_id": "child-1",
+        "parent_thread_id": THREAD,
+        "workspace_root": None,
+        "mode": "resume",
+        "agent": None,
+        "history_limit": 40,
+    }
 
 
 async def test_a_baseline_rebuild_keeps_the_window_bounded(

@@ -1,10 +1,9 @@
-"""The composer: one hint line, one input, and Enter sends.
+"""The composer: one hint line, one input, and explicit queue/steer keys.
 
 The hint is a pure function of the facts (``composer_hint``), so the wording can
 be checked without a terminal. Two things it must get right:
 
-* while a turn runs, the message is a *steer* -- the previous client told the user
-  it was queued while sending a steer, and the hint here states what will happen;
+* while a turn runs, Enter queues and Ctrl+Enter/Alt+S explicitly steer;
 * a blocking prompt outranks the running hint, because that is what the user has
   to act on.
 """
@@ -12,13 +11,16 @@ be checked without a terminal. Two things it must get right:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.widgets import Static, TextArea
 
 from XBotv2.tui.status import Connection, Interaction, Interrupt, ServerTurn, StatusFacts
+
+InputDelivery = Literal["queue", "steer"]
+SubmitCallback = Callable[[str, InputDelivery], Awaitable[None] | None]
 
 COMPOSER_CSS = """
 Composer {
@@ -26,11 +28,21 @@ Composer {
     width: 1fr;
 }
 Composer > .composer-hint {
-    height: 1;
+    height: auto;
     width: 1fr;
     padding: 0 1;
 }
-Composer > #composer-input {
+Composer > .composer-row {
+    height: auto;
+    width: 1fr;
+}
+Composer .composer-prompt {
+    height: 1;
+    width: 1;
+    color: $text;
+    text-style: bold;
+}
+Composer #composer-input {
     height: auto;
     min-height: 3;
     max-height: 12;
@@ -38,7 +50,7 @@ Composer > #composer-input {
 }
 """
 
-_DEFAULT_HINT = "Enter sends · Shift+Enter adds a line"
+_DEFAULT_HINT = ""
 _READ_ONLY_HINT = "viewing another thread — read-only"
 
 
@@ -69,17 +81,9 @@ def _attachment_note(count: int) -> str:
     return f"{count} image{'s' if count != 1 else ''} attached"
 
 
-def composer_delivery(model: ComposerModel) -> str:
-    """How the next message will be delivered.
-
-    Decided in one place, and stated to the user: a message sent while the agent
-    is working is a steer, not a queue.
-    """
-    return "steer"
-
-
 def composer_hint(model: ComposerModel) -> str:
     facts = model.facts
+    running = facts.server_turn is ServerTurn.RUNNING or facts.turn_open
     if model.read_only:
         return _READ_ONLY_HINT
     if facts.interaction is Interaction.PERMISSION:
@@ -90,26 +94,28 @@ def composer_hint(model: ComposerModel) -> str:
         return "Interrupting…"
     if model.submission_in_flight:
         return "Sending…"
+    if model.pending_images > 0 and running:
+        return (
+            f"{_attachment_note(model.pending_images)} — Enter queues · "
+            "Ctrl+Enter/Alt+S steer"
+        )
     if model.pending_images > 0:
         return f"{_attachment_note(model.pending_images)} — Enter sends"
-    if facts.server_turn is ServerTurn.RUNNING or facts.turn_open:
-        return "Turn running — your message is sent as a steer"
+    if running:
+        return ""
     return _DEFAULT_HINT
 
 
 def composer_placeholder(model: ComposerModel) -> str:
     facts = model.facts
+    running = facts.server_turn is ServerTurn.RUNNING or facts.turn_open
     if model.read_only:
         return "read-only"
     if facts.interaction is Interaction.PERMISSION:
         return "/approve ID | /deny ID"
     if facts.interaction is Interaction.USER_INPUT:
         return "/answer ID <text>"
-    if model.pending_images > 0:
-        return _attachment_note(model.pending_images)
-    if facts.server_turn is ServerTurn.RUNNING or facts.turn_open:
-        return "Message (steer)"
-    return "Message XBotv2"
+    return ""
 
 
 class ComposerInput(TextArea):
@@ -120,7 +126,7 @@ class ComposerInput(TextArea):
     def __init__(
         self,
         *,
-        on_submit: Callable[[str], Awaitable[None] | None],
+        on_submit: SubmitCallback,
         id: str | None = None,
         completion: Any = None,
     ) -> None:
@@ -151,10 +157,15 @@ class ComposerInput(TextArea):
                 event.prevent_default()
                 completion.dismiss()
                 return
+        if event.key in {"ctrl+enter", "alt+s"}:
+            event.stop()
+            event.prevent_default()
+            await self.submit(delivery="steer")
+            return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
-            await self.submit()
+            await self.submit(delivery="queue")
             return
         if event.key == "shift+enter":
             event.stop()
@@ -163,7 +174,7 @@ class ComposerInput(TextArea):
             return
         await super()._on_key(event)
 
-    async def submit(self) -> bool:
+    async def submit(self, *, delivery: InputDelivery) -> bool:
         """Hand the line to the app.
 
         Whether it may be *sent* is not decided here: a read-only thread view
@@ -173,7 +184,7 @@ class ComposerInput(TextArea):
         if not text.strip() and not self.may_submit_empty:
             return False
         self.load_text("")
-        result = self.on_submit(text)
+        result = self.on_submit(text, delivery)
         if result is not None:
             await result
         return True
@@ -187,7 +198,7 @@ class Composer(Vertical):
     def __init__(
         self,
         *,
-        on_submit: Callable[[str], Awaitable[None] | None],
+        on_submit: SubmitCallback,
         id: str | None = None,
         completion: Any = None,
     ) -> None:
@@ -195,13 +206,16 @@ class Composer(Vertical):
         self._on_submit = on_submit
         self._hint_text = ""
         self._hint = Static("", classes="composer-hint")
+        self._prompt = Static("❯", classes="composer-prompt")
         self._input = ComposerInput(
             on_submit=on_submit, id="composer-input", completion=completion
         )
 
     def compose(self):
         yield self._hint
-        yield self._input
+        with Horizontal(classes="composer-row"):
+            yield self._prompt
+            yield self._input
 
     @property
     def hint_text(self) -> str:
@@ -226,6 +240,7 @@ class Composer(Vertical):
         """Apply a model: hint, placeholder, and whether input is accepted."""
         self._hint_text = composer_hint(model)
         self._hint.update(self._hint_text)
+        self._hint.display = bool(self._hint_text)
         self._input.placeholder = composer_placeholder(model)
         self._input.may_submit_empty = model.pending_images > 0
 
@@ -236,7 +251,6 @@ __all__ = [
     "ComposerInput",
     "ComposerModel",
     "composer_can_submit",
-    "composer_delivery",
     "composer_enabled",
     "composer_hint",
     "composer_placeholder",

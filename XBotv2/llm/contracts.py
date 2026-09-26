@@ -63,7 +63,7 @@ class ModelConfig(BaseModel):
 
     @property
     def model_mode(self) -> str:
-        return self.reasoning_effort or self.thinking or ""
+        return self.reasoning_effort or ""
 
 
 class ProviderConfig(BaseModel):

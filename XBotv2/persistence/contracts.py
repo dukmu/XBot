@@ -96,6 +96,8 @@ class HistoryPort(Protocol):
 
     def count(self) -> int: ...
 
+    def count_turns(self) -> int: ...
+
     def page(
         self,
         *,

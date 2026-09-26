@@ -226,7 +226,11 @@ def _compile_message(
             parts.append(attachment_instruction)
         return ProviderUser(parts=tuple(parts))
     if isinstance(message, CompactionSummaryMessage):
-        return ProviderSystem(parts=(TextPart(text=message.summary),))
+        return ProviderSystem(parts=(TextPart(text=prompt_container(
+            "historical_context",
+            [prompt_element("conversation_summary", message.summary)],
+            attributes={"source": "compaction"},
+        )),))
     if isinstance(message, AssistantMessage):
         return ProviderAssistant(parts=message.parts)
     if isinstance(message, ToolMessage):

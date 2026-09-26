@@ -35,6 +35,15 @@ SelectionScreen {
     height: 1;
     text-style: bold;
 }
+#selection.compact {
+    width: 72;
+    max-width: 90%;
+}
+#selection-description {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
 #selection-list {
     height: auto;
     max-height: 12;
@@ -45,6 +54,11 @@ SelectionScreen {
 }
 .selection-row.selected {
     text-style: reverse;
+}
+#selection-hint {
+    height: 1;
+    color: $text-muted;
+    margin-top: 1;
 }
 """
 
@@ -116,17 +130,27 @@ class SelectionScreen(ModalScreen[str | None]):
         *,
         search: Callable[[str], Sequence[Option]] | None = None,
         placeholder: str = "",
+        description: str = "",
+        hint: str = "",
+        compact: bool = False,
+        cancel_value: str | None = None,
     ) -> None:
         super().__init__()
         self.title_text = title
         self.model = SelectionModel(options=tuple(options))
         self.search = search
         self.placeholder = placeholder
+        self.description_text = description
+        self.hint_text = hint
+        self.compact = compact
+        self.cancel_value = cancel_value
         self._rows: list[Static] = []
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="selection"):
+        with Vertical(id="selection", classes="compact" if self.compact else ""):
             yield Static(self.title_text, id="selection-title")
+            if self.description_text:
+                yield Static(self.description_text, id="selection-description")
             if self.search is not None:
                 yield Input(
                     placeholder=self.placeholder or "type to filter",
@@ -135,6 +159,8 @@ class SelectionScreen(ModalScreen[str | None]):
             with VerticalScroll(id="selection-list"):
                 for _ in range(min(len(self.model.options), MAX_ROWS)):
                     yield Static("", classes="selection-row")
+            if self.hint_text:
+                yield Static(self.hint_text, id="selection-hint")
 
     def on_mount(self) -> None:
         self._rows = [node for node in self.query(".selection-row")]
@@ -168,7 +194,7 @@ class SelectionScreen(ModalScreen[str | None]):
             self._choose()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.dismiss(self.cancel_value)
 
     # --- rendering ----------------------------------------------------
 

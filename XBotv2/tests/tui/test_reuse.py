@@ -33,6 +33,7 @@ from XBotv2.tui.events import (
     InterruptSettled,
     JobCompletionNotice,
     JobUpdated,
+    JobsReplaced,
     LocalNotice,
     OlderHistoryFailed,
     OlderHistoryLoaded,
@@ -87,6 +88,7 @@ SERVER_SHAPED = {
     GoalChangedReceived,
     TaskChangedReceived,
     JobUpdated,
+    JobsReplaced,
     ThreadRead,
 }
 

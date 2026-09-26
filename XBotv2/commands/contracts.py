@@ -56,7 +56,12 @@ class Command:
 class CommandsPort(Protocol):
     """Slash-command registry mounted as ``ctx.commands``."""
 
-    def register(self, command: Command) -> str: ...
+    def register(
+        self,
+        command: Command,
+        *,
+        cleanup: Literal["fiber", "caller"] | None = None,
+    ) -> str: ...
     def unregister(self, name: str) -> bool: ...
     def get(self, name: str) -> Command | None: ...
     def all(self) -> tuple[Command, ...]: ...
@@ -113,6 +118,21 @@ class CommandDescription(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def describe_command(command: Command) -> CommandDescription:
+    """Project the registry-owned command into its public catalogue model."""
+    return CommandDescription(
+        name=command.name,
+        slash=f"/{command.name}",
+        kind=command.kind,
+        description=command.description,
+        usage=command.usage or f"/{command.name}",
+        examples=command.examples,
+        parameters=command.parameters,
+        effects=command.effects,
+        exclusive=command.exclusive,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CommandCatalog:
     commands: tuple[CommandDescription, ...]
@@ -156,6 +176,7 @@ __all__ = [
     "ExecuteCommand",
     "LIST_COMMANDS",
     "command_error",
+    "describe_command",
     "command_usage",
     "guard_command",
     "split_command_args",

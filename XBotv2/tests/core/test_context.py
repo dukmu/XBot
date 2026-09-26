@@ -22,7 +22,7 @@ from XBotv2.core.domain import (
     ToolCallId,
     ToolTiming,
 )
-from XBotv2.core.messages import HumanInputMessage, ToolMessage
+from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage, ToolMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderSystem, ProviderTool, ProviderUser
 from XBotv2.core.tools import (
@@ -109,6 +109,24 @@ def test_tool_outcome_projection_is_explicit_for_output_and_no_output_variants()
     assert projected[1].parts == (
         TextPart(text="Tool execution did not produce output"),
     )
+
+
+def test_compaction_summary_is_wrapped_only_for_the_provider_request():
+    summary = CompactionSummaryMessage(
+        id=MessageId("summary-1"), summary="Plain durable summary."
+    )
+
+    [projected] = ContextBuilder.messages_from_components(
+        BuiltContext([HistoryComponent(summary)])
+    )
+
+    assert summary.summary == "Plain durable summary."
+    assert isinstance(projected, ProviderSystem)
+    text = projected.parts[0].text
+    assert '<historical_context source="compaction">' in text
+    assert "<conversation_summary>" in text
+    assert "Plain durable summary." in text
+    assert "</conversation_summary>" in text
 
 
 def test_builder_rejects_negative_turn():

@@ -44,9 +44,6 @@ from XBotv2.session.protocol import (
 )
 from XBotv2.session.records import HumanInputRecord
 from XBotv2.session.runtime import TurnEventRouter
-from XBotv2.tui.events import HistoryReplaced, SessionConfigured
-from XBotv2.tui.protocol import FrameTranslator
-from XBotv2.tui.state import SessionState, reduce
 
 
 def _decode(encoded: bytes):
@@ -66,7 +63,7 @@ def _mutation(*, removed_turns: int = 0, turns: int = 0) -> HistoryMutation:
     )
 
 
-def test_session_frame_encodes_scope_kind_and_payload_for_tui():
+def test_session_frame_encodes_scope_kind_and_payload():
     frame = SessionEventFrame(
         sequence=7,
         scope=TurnScope(TurnId("turn-17")),
@@ -80,8 +77,6 @@ def test_session_frame_encodes_scope_kind_and_payload_for_tui():
     assert event.scope.turn_id == "turn-17"
     assert event.payload["operation"] == "undo"
     assert not {"type", "data", "request_id"}.intersection(payload)
-    translated = FrameTranslator(session_id="s1", thread_id="agent").translate(event)
-    assert isinstance(translated[0], HistoryReplaced)
 
 
 def test_workspace_envelope_has_explicit_session_scope():
@@ -187,7 +182,7 @@ def test_history_mutation_response_carries_one_complete_page_and_stats_value():
     assert response.data.key.thread_id == "agent"
 
 
-def test_agent_configuration_crosses_session_and_tui_as_one_selection():
+def test_agent_configuration_crosses_session_event_boundary_as_one_selection():
     selection = ResolvedRuntimeSelection(
         agent_name="reviewer",
         prompt="review",
@@ -210,19 +205,7 @@ def test_agent_configuration_crosses_session_and_tui_as_one_selection():
     )
     assert set(configured.model_dump()) == {"kind", "runtime_selection"}
     wire_event = _decode(_format_sse(frame, session_id="s1", thread_id="agent"))
-    translated = FrameTranslator(session_id="s1", thread_id="agent").translate(
-        wire_event
+    decoded = AgentConfiguredEvent.model_validate(
+        {"kind": wire_event.kind, **wire_event.payload}
     )
-    state = SessionState()
-
-    assert len(translated) == 1 and isinstance(translated[0], SessionConfigured)
-    reduce(state, translated[0])
-
-    assert state.runtime_selection == selection
-    assert (state.agent_name, state.provider, state.model) == (
-        "reviewer",
-        "openai",
-        "o4-mini",
-    )
-    assert state.model_mode == "high"
-    assert state.context_window == 64_000
+    assert decoded.runtime_selection == selection

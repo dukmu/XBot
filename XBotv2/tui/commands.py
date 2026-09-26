@@ -1,32 +1,22 @@
-"""The slash-command registry.
-
-The catalogue entry is the repository's own :class:`CommandDescription` -- the
-same model the server publishes for its own commands -- so there is one shape for
-"a command the user can type", and no field is restated here.
-
-Two rules:
-
-* parsing never guesses. An unknown slash returns the text with no match, and the
-  caller decides whether to say "not implemented";
-* the server catalogue *replaces* the previous one, because the server is the
-  source of truth for what it offers.
-"""
+"""Textual-owned command registration and dynamic command discovery."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 
-from XBotv2.commands import CommandDescription
+from XBotv2.commands import (
+    Command,
+    CommandDescription,
+    CommandResult,
+    CommandsPort,
+    describe_command,
+)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ParsedCommand:
-    """One submitted line, resolved against the catalogue.
-
-    ``description`` is ``None`` when the slash names nothing the client knows;
-    a caller must handle that case rather than silently sending it to the server.
-    """
+    """One submitted command resolved against the current public catalog."""
 
     raw: str
     name: str
@@ -34,209 +24,183 @@ class ParsedCommand:
     description: CommandDescription | None = None
 
 
-def _builtin(
+ClientHandler = Callable[[str], Awaitable[None]]
+
+
+def _client_command(
     name: str,
     description: str,
-    *,
-    usage: str = "",
-    parameters: Mapping[str, str] | None = None,
-    exclusive: bool = False,
-) -> CommandDescription:
-    return CommandDescription(
+    usage: str,
+    handler: ClientHandler,
+) -> Command:
+    async def execute(raw_args: str) -> CommandResult:
+        await handler(raw_args)
+        return CommandResult("")
+
+    return Command(
         name=name,
-        slash=f"/{name}",
-        kind="client",
         description=description,
-        usage=usage or f"/{name}",
-        parameters=dict(parameters or {}),
-        exclusive=exclusive,
+        kind="client",
+        handler=execute,
+        usage=usage,
+        exclusive=False,
     )
 
 
-# The client's own commands, in the order they are offered when the query is
-# empty. Everything else the user can type comes from the server catalogue.
-BUILTIN_COMMANDS: tuple[CommandDescription, ...] = (
-    _builtin("help", "Show the commands this client can run", usage="/help"),
-    _builtin(
-        "status",
-        "Show what the session, runtime and model are doing",
-        usage="/status",
-    ),
-    _builtin(
-        "session",
-        "Switch to another session; with no argument, choose from a list",
-        usage="/session [session-id]",
-    ),
-    _builtin(
-        "thread",
-        "View a session thread; subagent threads are read-only",
-        usage="/thread [thread-id]",
-    ),
-    _builtin(
-        "jobs",
-        "List the background tasks this client is tracking",
-        usage="/jobs [stop <id>|stopall]",
-    ),
-    _builtin(
-        "provider",
-        "Switch provider; with no argument, choose from the catalogue",
-        usage="/provider [status|list|use <name>]",
-    ),
-    _builtin(
-        "model",
-        "Switch model; with no argument, choose from the current provider",
-        usage="/model [status|list|use [<provider>] <model>]",
-    ),
-    _builtin(
-        "effort",
-        "Switch reasoning effort; with no argument, choose from the tiers",
-        usage="/effort [<level>]",
-    ),
-    _builtin(
-        "agent",
-        "Switch agent; with no argument, choose from the list",
-        usage="/agent [status|list|use <name>|<name>]",
-    ),
-    _builtin(
-        "thinking",
-        "Show or hide the model's reasoning blocks",
-        usage="/thinking [on|off|toggle]",
-    ),
-    _builtin(
-        "details",
-        "Show or hide tool call payloads",
-        usage="/details [on|off|toggle]",
-    ),
-    _builtin(
-        "attach",
-        "Attach a local image to the next message",
-        usage="/attach <path> | /attach clear",
-    ),
-    _builtin(
-        "approve",
-        "Approve a pending permission request",
-        usage="/approve <interaction-id> [once|session]",
-    ),
-    _builtin(
-        "deny",
-        "Deny a pending permission request",
-        usage="/deny <interaction-id>",
-    ),
-    _builtin(
-        "answer",
-        "Answer a pending user-input request",
-        usage="/answer <interaction-id> <text>",
-    ),
-    _builtin("clear-screen", "Clear the visible transcript", usage="/clear-screen"),
-    _builtin("copy", "Copy the latest reply", usage="/copy"),
-    _builtin("exit", "Quit the client", usage="/exit"),
-)
-
-# Only commands this client can actually carry out are advertised. A catalogue
-# entry that answers "not implemented" is worse than not offering it, so the rest
-# arrive with their implementations (see the rewrite spec's remaining steps).
-
-# Shorthands the client owns. A server alias can never take one of these.
-BUILTIN_ALIASES: Mapping[str, str] = {
-    "/exit": "exit",
-    "/quit": "exit",
-    "/q": "exit",
-    "/cls": "clear-screen",
-}
+def register_client_commands(commands: CommandsPort, app) -> None:
+    """Register only local presentation commands in the shared command port."""
+    definitions = (
+        _client_command(
+            "help",
+            "Show all commands or detailed help for one command",
+            "/help [command]",
+            app._cmd_help,
+        ),
+        _client_command(
+            "status", "Show what the session, runtime and model are doing", "/status", app._cmd_status
+        ),
+        _client_command(
+            "settings", "Open this TUI's settings", "/settings", app._cmd_settings
+        ),
+        _client_command(
+            "session", "Switch to another session; with no argument, choose from a list", "/session [session-id]", app._cmd_session
+        ),
+        _client_command(
+            "thread", "View a session thread; subagent threads are read-only", "/thread [thread-id]", app._cmd_thread
+        ),
+        _client_command("jobs", "List the background tasks this client is tracking", "/jobs [stop <id>|stopall]", app._cmd_jobs),
+        _client_command(
+            "provider", "Switch provider; with no argument, choose from the catalogue", "/provider [status|list|use <name>]", app._cmd_provider
+        ),
+        _client_command("model", "Switch model; with no argument, choose from the current provider", "/model [status|list|use [<provider>] <model>]", app._cmd_model),
+        _client_command(
+            "effort", "Switch reasoning effort; with no argument, choose from the tiers", "/effort [<level>]", app._cmd_effort
+        ),
+        _client_command("agent", "Switch agent; with no argument, choose from the list", "/agent [status|list|use <name>|<name>]", app._cmd_agent),
+        _client_command(
+            "thinking", "Show or hide the model's reasoning blocks", "/thinking [on|off|toggle]", app._cmd_thinking
+        ),
+        _client_command(
+            "details", "Show or hide tool call payloads", "/details [on|off|toggle]", app._cmd_details
+        ),
+        _client_command(
+            "attach", "Attach a local image to the next message", "/attach <path> | /attach clear", app._cmd_attach
+        ),
+        _client_command(
+            "approve", "Approve a pending permission request", "/approve <interaction-id> [once|session]", app._cmd_approve
+        ),
+        _client_command(
+            "deny", "Deny a pending permission request", "/deny <interaction-id>", app._cmd_deny
+        ),
+        _client_command(
+            "answer", "Answer a pending user-input request", "/answer <interaction-id> <text>", app._cmd_answer
+        ),
+        _client_command(
+            "clear-screen", "Clear the visible transcript", "/clear-screen", app._cmd_clear_screen
+        ),
+        _client_command("copy", "Copy the latest reply", "/copy", app._cmd_copy),
+        _client_command("exit", "Quit the client", "/exit", app._cmd_exit),
+    )
+    for command in definitions:
+        commands.register(command)
 
 
 class CommandRegistry:
-    """The commands a client can run, local ones first."""
+    """Merge fiber-owned local commands with the current server catalog."""
 
     def __init__(
         self,
+        commands: CommandsPort,
         *,
-        builtins: Iterable[CommandDescription] = BUILTIN_COMMANDS,
-        aliases: Mapping[str, str] = BUILTIN_ALIASES,
+        aliases: Mapping[str, str] | None = None,
     ) -> None:
-        self._client_commands: dict[str, CommandDescription] = {
-            spec.name: spec for spec in builtins
-        }
-        self._client_order: tuple[str, ...] = tuple(
-            spec.name for spec in builtins
-        )
-        self._client_aliases: dict[str, str] = {
-            alias.lower(): name for alias, name in aliases.items()
+        self._commands = commands
+        self._client_aliases = {
+            alias.lower(): name
+            for alias, name in (aliases or {"/exit": "exit", "/quit": "exit", "/q": "exit", "/cls": "clear-screen"}).items()
         }
         self._server_commands: dict[str, CommandDescription] = {}
         self._server_order: tuple[str, ...] = ()
-        self._build_aliases()
 
-    @classmethod
-    def with_builtins(cls) -> "CommandRegistry":
-        return cls()
-
-    # --- catalogue ----------------------------------------------------
+    def _client_descriptions(self) -> tuple[CommandDescription, ...]:
+        return tuple(
+            describe_command(command)
+            for command in self._commands.all()
+            if command.kind == "client"
+        )
 
     def merge(self, catalog: Sequence[CommandDescription]) -> None:
-        """Replace the server catalogue.
-
-        Names and aliases the client already owns are skipped: the client's own
-        commands are not the server's to redefine.
-        """
+        """Replace the server catalog; the client port owns local precedence."""
+        local_names = {item.name for item in self._client_descriptions()}
         commands: dict[str, CommandDescription] = {}
         order: list[str] = []
         for spec in catalog:
-            if spec.name in self._client_commands or spec.name in commands:
+            if spec.name in local_names or spec.name in commands:
                 continue
             commands[spec.name] = spec
             order.append(spec.name)
         self._server_commands = commands
         self._server_order = tuple(order)
-        self._build_aliases()
 
-    def _build_aliases(self) -> None:
-        self._aliases: dict[str, str] = dict(self._client_aliases)
+    def _build_aliases(self) -> dict[str, str]:
+        aliases = dict(self._client_aliases)
         for name in self._server_order:
             spec = self._server_commands[name]
             alias = spec.slash.split(maxsplit=1)[0].lower() if spec.slash else ""
-            if not alias or alias in self._aliases:
-                continue
-            self._aliases[alias] = name
-
-    # --- lookup -------------------------------------------------------
+            if alias and alias not in aliases:
+                aliases[alias] = name
+        return aliases
 
     def names(self) -> tuple[str, ...]:
-        return self._client_order + self._server_order
+        local = tuple(item.name for item in self._client_descriptions())
+        return local + self._server_order
 
     def get(self, name: str) -> CommandDescription | None:
-        return self._client_commands.get(name) or self._server_commands.get(name)
+        local = self._commands.get(name)
+        if local is not None and local.kind == "client":
+            return describe_command(local)
+        return self._server_commands.get(name)
 
-    def is_command(self, text: str) -> bool:
+    @staticmethod
+    def is_command(text: str) -> bool:
         return text.strip().startswith("/")
 
+    def client_command(self, name: str) -> Command | None:
+        command = self._commands.get(name)
+        return command if command is not None and command.kind == "client" else None
+
+    def resolve(self, command: str) -> CommandDescription | None:
+        """Resolve one bare name, slash, or alias against the current catalog."""
+        value = command.strip()
+        if not value or any(character.isspace() for character in value):
+            return None
+        slash = value if value.startswith("/") else f"/{value}"
+        name = self._build_aliases().get(slash.lower(), "")
+        if name:
+            return self.get(name)
+        for candidate in self.names():
+            description = self.get(candidate)
+            if description is not None and (
+                candidate.lower() == value.lstrip("/").lower()
+                or description.slash.lower() == slash.lower()
+            ):
+                return description
+        return None
+
     def parse(self, text: str) -> ParsedCommand | None:
-        """Resolve one submitted line, or ``None`` when it is not a command."""
         stripped = text.strip()
         if not stripped.startswith("/"):
             return None
         head, _, tail = stripped.partition(" ")
-        name = self._aliases.get(head.lower(), "")
-        if not name:
-            # The registry also accepts a command written by its canonical name
-            # when the catalogue's slash differs from ``/name``.
-            for candidate in self.names():
-                if self.get(candidate).slash.lower() == head.lower():
-                    name = candidate
-                    break
+        description = self.resolve(head)
         return ParsedCommand(
             raw=stripped,
-            name=name or head.lstrip("/"),
+            name=description.name if description is not None else head.lstrip("/"),
             args=tail.strip(),
-            description=self.get(name) if name else None,
+            description=description,
         )
 
     def search(self, query: str) -> tuple[CommandDescription, ...]:
-        """Commands matching ``query``, best first.
-
-        A name prefix outranks a mere mention, and within a rank the declared
-        order is kept, so the list does not shuffle as the user types.
-        """
         terms = query.strip().lower().lstrip("/").split()
         ordered = [(self.get(name), index) for index, name in enumerate(self.names())]
         if not terms:
@@ -254,12 +218,6 @@ class CommandRegistry:
         return tuple(spec for _, _, spec in ranked)
 
     def complete(self, query: str) -> tuple[CommandDescription, ...]:
-        """Commands whose *name* matches what is being typed.
-
-        Deliberately narrower than :meth:`search`: a completion popup that also
-        matched descriptions would offer "copy" for the prefix ``/st`` because its
-        description contains "latest".
-        """
         term = query.strip().lower().lstrip("/")
         ranked: list[tuple[int, int, CommandDescription]] = []
         for index, name in enumerate(self.names()):
@@ -267,9 +225,7 @@ class CommandRegistry:
             if spec is None:
                 continue
             lowered = spec.name.lower()
-            if not term:
-                ranked.append((0, index, spec))
-            elif lowered.startswith(term):
+            if not term or lowered.startswith(term):
                 ranked.append((0, index, spec))
             elif term in lowered:
                 ranked.append((1, index, spec))
@@ -277,7 +233,6 @@ class CommandRegistry:
         return tuple(spec for _, _, spec in ranked)
 
     def labels(self) -> tuple[str, ...]:
-        """One line per command, for the palette and the completion popup."""
         return tuple(
             f"{spec.name}  {spec.description}"
             for spec in (self.get(name) for name in self.names())
@@ -285,9 +240,24 @@ class CommandRegistry:
         )
 
 
+def format_command_help(spec: CommandDescription) -> str:
+    """Render the public catalog entry without restating command metadata."""
+    lines = [f"{spec.slash} — {spec.description}", f"Usage: {spec.usage}"]
+    if spec.parameters:
+        lines.extend(("", "Parameters:"))
+        lines.extend(
+            f"  {name}  {description}"
+            for name, description in spec.parameters.items()
+        )
+    if spec.examples:
+        lines.extend(("", "Examples:"))
+        lines.extend(f"  {example}" for example in spec.examples)
+    return "\n".join(lines)
+
+
 __all__ = [
-    "BUILTIN_ALIASES",
-    "BUILTIN_COMMANDS",
     "CommandRegistry",
     "ParsedCommand",
+    "format_command_help",
+    "register_client_commands",
 ]

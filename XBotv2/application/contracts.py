@@ -121,6 +121,9 @@ class LoopStateView(Protocol):
     metadata: ThreadMetadataState
     history: ConversationHistory
 
+    @property
+    def turn_count(self) -> int: ...
+
 
 class AgentApplicationPort(Protocol):
     events: ApplicationEventsPort

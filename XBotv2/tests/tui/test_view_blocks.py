@@ -71,11 +71,21 @@ def test_the_cut_off_is_exactly_the_maximum() -> None:
 
 
 def test_a_streaming_body_is_shown_to_its_end() -> None:
-    """While an answer is arriving the reader wants the newest lines, not the
-    first ones -- and the block still never grows past its cap."""
+    """While a body is arriving, the default follows its newest lines."""
     plan = plan_block(many_lines(40), label="reply", streaming=True)
     assert plan.body == many_lines(40)
     assert plan.streaming is True
+
+
+def test_a_reader_can_fold_a_streaming_body() -> None:
+    plan = plan_block(
+        many_lines(40), label="Think", expanded=False, streaming=True
+    )
+    assert plan.body == "\n".join(
+        f"line {index}" for index in range(BLOCK_PREVIEW_LINES)
+    )
+    assert "streaming" in plan.head
+    assert "ctrl+e expands" in plan.head
 
 
 def test_line_counting_ignores_a_trailing_newline() -> None:
@@ -155,7 +165,7 @@ async def test_short_content_has_no_summary_row() -> None:
         assert block.head_widget is None
 
 
-async def test_expanded_short_block_uses_the_fixed_height_window() -> None:
+async def test_expanded_short_block_uses_only_its_real_height() -> None:
     block = ClampedBlock(
         "one line",
         label="Think",
@@ -168,18 +178,111 @@ async def test_expanded_short_block_uses_the_fixed_height_window() -> None:
         assert block.collapsible is True
         block.toggle()
         await pilot.pause()
-        assert block.region.height == BLOCK_MAX_LINES
+        assert block.region.height == 2, "the Think header and one content line must not reserve an empty window"
 
 
-async def test_a_long_answer_stays_open_once_it_has_streamed() -> None:
-    """The turn ending must not fold away what the reader was reading."""
+async def test_expanded_medium_block_uses_only_its_real_height() -> None:
+    block = ClampedBlock(
+        many_lines(5),
+        label="Think",
+        always_collapsible=True,
+        id="medium-block",
+    )
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        block.toggle()
+        await pilot.pause()
+        assert block.region.height == 6, "height is min(header + content, BLOCK_MAX_LINES)"
+
+
+async def test_think_block_collapses_when_streaming_finishes() -> None:
+    block = ClampedBlock(
+        many_lines(40),
+        label="Think",
+        always_collapsible=True,
+        collapse_after_streaming=True,
+        id="think",
+    )
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        block.show(many_lines(40), streaming=True)
+        await pilot.pause()
+        assert block.expanded is True
+        block.show(many_lines(41), streaming=False)
+        await pilot.pause()
+        assert block.expanded is False
+        assert block.region.height <= BLOCK_PREVIEW_LINES + 1
+        assert "line 0" in block_text(block)
+        assert "line 40" not in block_text(block)
+        assert "ctrl+e expands" in block.head_text
+
+
+async def test_a_regular_answer_remains_open_after_streaming() -> None:
     app = Harness()
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.block.show(many_lines(40), streaming=True)
-        await pilot.pause()
-        assert app.block.expanded is True
         app.block.show(many_lines(41), streaming=False)
         await pilot.pause()
-        assert app.block.expanded is True, "still open after the stream ended"
+        assert app.block.expanded is True
         assert "line 40" in block_text(app.block)
+
+
+async def test_short_streamed_reply_does_not_keep_an_expanded_window() -> None:
+    block = ClampedBlock("short reply", label="reply", streaming=True, id="reply")
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        block.show("short reply", streaming=False)
+        await pilot.pause()
+        assert block.collapsible is False
+        assert block.region.height == 1
+
+
+async def test_reader_can_keep_streaming_think_folded() -> None:
+    block = ClampedBlock(
+        many_lines(40),
+        label="Think",
+        always_collapsible=True,
+        collapse_after_streaming=True,
+        streaming=True,
+        id="think",
+    )
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert block.expanded is True
+        block.toggle()
+        block.show(many_lines(41), streaming=True)
+        await pilot.pause()
+        assert block.expanded is False
+        assert "line 40" not in block_text(block)
+        assert "streaming" in block.head_text
+        block.show(many_lines(42), streaming=False)
+        await pilot.pause()
+        assert block.expanded is False
+        assert "streaming" not in block.head_text
+
+
+async def test_manual_think_expansion_survives_stream_completion() -> None:
+    block = ClampedBlock(
+        many_lines(40),
+        label="Think",
+        always_collapsible=True,
+        collapse_after_streaming=True,
+        streaming=True,
+        id="think",
+    )
+    app = SingleBlockHarness(block)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        block.toggle()
+        block.toggle()
+        block.show(many_lines(41), streaming=True)
+        block.show(many_lines(42), streaming=False)
+        await pilot.pause()
+        assert block.expanded is True
+        assert block.region.height == BLOCK_MAX_LINES
+        assert "line 41" in block_text(block)

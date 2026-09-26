@@ -25,7 +25,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from collections.abc import Awaitable
-from typing import AsyncGenerator, Callable, Literal, Protocol, Sequence
+from typing import TYPE_CHECKING, AsyncGenerator, Callable, Literal, Protocol, Sequence
 
 from XBotv2.agents import AgentListResponse, AgentSelectionResponse
 from XBotv2.agentloop.protocol import LoopError
@@ -39,6 +39,7 @@ from XBotv2.client import XBotClientError
 from XBotv2.core.domain import Cursor
 from XBotv2.core.history import HistoryPage
 from XBotv2.interactions.protocol import InteractionResponse
+from XBotv2.jobs.protocol import JobListResponse
 from XBotv2.llm import EffortSelectionResponse, ProviderCatalog, ProviderSelectionResponse
 from XBotv2.protocol import ServerEvent
 from XBotv2.protocol.models import HelloResponse
@@ -76,6 +77,14 @@ from XBotv2.tui.protocol import (
 )
 from XBotv2.tui.status import Connection
 
+if TYPE_CHECKING:
+    from XBotv2.config import (
+        PatchPluginConfig,
+        PluginConfigCatalog,
+        PluginConfigScope,
+        SessionPolicyResponse,
+    )
+
 CURSOR_EXPIRED = "session_event_cursor_expired"
 
 #: The default window one attach asks for, and the default number of entries the
@@ -110,9 +119,43 @@ class SessionBackend(Protocol):
         history_limit: int | None,
     ) -> OpenSessionResponse: ...
 
+    async def open_thread(
+        self,
+        session_id: str,
+        *,
+        thread_id: str,
+        parent_thread_id: str,
+        workspace_root: str | None,
+        mode: SessionMode,
+        agent: str | None,
+        history_limit: int | None,
+    ) -> OpenSessionResponse: ...
+
+    async def get_session_policy(self, session_id: str) -> SessionPolicyResponse: ...
+
+    async def list_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        scope: PluginConfigScope = "workspace",
+    ) -> PluginConfigCatalog: ...
+
+    async def update_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        patch: PatchPluginConfig,
+    ) -> PluginConfigCatalog: ...
+
     async def list_sessions(self) -> SessionListResponse: ...
 
     async def list_threads(self, session_id: str) -> ThreadListResponse: ...
+
+    async def list_jobs(
+        self, session_id: str, thread_id: str
+    ) -> JobListResponse: ...
 
     async def list_commands(
         self, session_id: str, thread_id: str
@@ -362,6 +405,30 @@ class TransportSession:
         """The agents this thread can switch to."""
         return await self._backend.list_agents(self._session_id, self._thread_id)
 
+    async def list_jobs(self) -> JobListResponse:
+        """The authoritative background jobs for the attached thread."""
+        return await self._backend.list_jobs(self._session_id, self._thread_id)
+
+    async def get_session_policy(self) -> SessionPolicyResponse:
+        """Read the server-owned session policy projection."""
+        return await self._backend.get_session_policy(self._session_id)
+
+    async def list_plugin_config(
+        self, *, scope: PluginConfigScope = "workspace"
+    ) -> PluginConfigCatalog:
+        """Read producer-declared plugin configuration metadata."""
+        return await self._backend.list_plugin_config(
+            self._session_id, self._thread_id, scope=scope
+        )
+
+    async def update_plugin_config(
+        self, plugin_id: str, patch: PatchPluginConfig
+    ) -> PluginConfigCatalog:
+        """Replace one declared plugin overlay through the public API."""
+        return await self._backend.update_plugin_config(
+            self._session_id, self._thread_id, plugin_id, patch
+        )
+
     async def select_provider(
         self, name: str, model: str | None = None
     ) -> ProviderSelectionResponse:
@@ -570,9 +637,23 @@ class TransportSession:
         spelling the request out per call is how one of them ends up asking for
         the whole conversation.
         """
+        target_thread = thread_id or self._thread_id
+        if mode == "resume" and session_id:
+            listing = await self._backend.list_threads(session_id)
+            summary = _find_thread(listing.threads, target_thread)
+            if summary is not None and summary.kind == "subagent":
+                return await self._backend.open_thread(
+                    session_id,
+                    thread_id=target_thread,
+                    parent_thread_id=summary.parent_thread_id,
+                    workspace_root=self._config.workspace_root,
+                    mode=mode,
+                    agent=None,
+                    history_limit=self._config.history_window,
+                )
         return await self._backend.open_session(
             session_id=session_id,
-            thread_id=thread_id or self._thread_id,
+            thread_id=target_thread,
             workspace_root=self._config.workspace_root,
             mode=mode,
             agent=self._config.agent or None,
@@ -651,7 +732,7 @@ class TransportSession:
         self,
         text: str,
         *,
-        delivery: str = "steer",
+        delivery: Literal["queue", "steer"],
         images: Sequence[ImageInput] = (),
     ) -> str:
         """Send input, binding it to a client-generated id.

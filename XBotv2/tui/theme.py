@@ -14,6 +14,7 @@ Screen {
 #transcript {
     height: 1fr;
     width: 1fr;
+    padding: 0 1;
 }
 #completion {
     height: auto;
@@ -27,9 +28,41 @@ Screen {
 #panels.visible {
     display: block;
 }
-#jobs, #queue {
+#jobs {
     height: auto;
     max-height: 8;
+}
+#job-panel {
+    width: 1fr;
+    height: auto;
+    padding: 0;
+    border-top: none;
+}
+#queue {
+    height: auto;
+    max-height: 4;
+    width: 1fr;
+    padding: 0 1;
+    border-top: solid $primary-darken-2;
+    color: $text-muted;
+    display: none;
+}
+#composer {
+    padding: 0 1;
+    border-top: solid $primary-darken-2;
+    border-bottom: solid $primary-darken-2;
+    background: $panel;
+}
+#status {
+    background: $panel;
+    color: $text-muted;
+}
+#footer {
+    height: 1;
+    width: 1fr;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
 }
 """
 

@@ -96,8 +96,7 @@ def test_compacted_message_has_its_own_canonical_kind_and_identity():
     message = compacted_message("kept facts", reason="manual")
     assert isinstance(message, CompactionSummaryMessage)
     assert message.id.startswith("summary-")
-    assert "kept facts" in message.summary
-    assert 'reason="manual"' in message.summary
+    assert message.summary == "kept facts"
 
 
 async def _run_turn(engine, content: str) -> None:

@@ -96,6 +96,7 @@ class ToolEntry(Entry):
     formatting them is the view's job, so nothing is decoded before it is read."""
 
     name: str = "tool"
+    call_id: str = ""
     args: Mapping[str, Any] = field(default_factory=dict, hash=False)
     status: ToolStatus = "pending"
     result: JsonValue = ""
@@ -183,6 +184,20 @@ class Timeline:
 
     def remove(self, entry_id: str) -> bool:
         return self._entries.pop(entry_id, None) is not None
+
+    def replace_identity(self, previous_id: str, entry: Entry) -> None:
+        """Replace one entry and its id without changing transcript order."""
+        if previous_id == entry.id:
+            self.upsert(entry)
+            return
+        if previous_id not in self._entries:
+            raise KeyError(previous_id)
+        if entry.id in self._entries:
+            raise ValueError(f"Timeline already contains {entry.id!r}")
+        self._entries = OrderedDict(
+            (entry.id, entry) if entry_id == previous_id else (entry_id, value)
+            for entry_id, value in self._entries.items()
+        )
 
     def get(self, entry_id: str) -> Entry | None:
         return self._entries.get(entry_id)

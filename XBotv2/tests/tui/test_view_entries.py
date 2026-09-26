@@ -12,6 +12,8 @@ import pytest
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
+from textual.widgets import Static
 
 from XBotv2.tui.timeline import (
     AssistantEntry,
@@ -82,18 +84,40 @@ def test_a_streaming_answer_says_it_is_replying() -> None:
     assert "replying" in entry_header(assistant(streaming=True))
 
 
-def test_a_running_tool_shows_no_duration_yet() -> None:
+def test_a_running_tool_shows_the_call_and_no_duration_yet() -> None:
     header = entry_header(tool(status="running", finished_at=0.0))
-    assert "running" in header
-    assert header.endswith("…"), "an unfinished tool has no elapsed time to show"
+    assert header == "● bash(*)"
 
 
 def test_a_finished_tool_shows_how_long_it_took() -> None:
-    assert "2.5s" in entry_header(tool())
+    header = entry_header(tool(args={"command": "ls"}))
+    assert "bash(command: ls)" in header
+    assert "Done" not in header, "the outcome is its own expandable row"
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "visible"),
+    [
+        ("shell", {"command": "git status"}, "shell(command: git status)"),
+        ("edit", {"path": "/repo/app.py"}, "edit(path: /repo/app.py)"),
+        ("web_search", {"query": "Textual widgets"}, "web_search(query: Textual widgets)"),
+        ("read", {"path": "/repo/README.md"}, "read(path: /repo/README.md)"),
+    ],
+)
+def test_every_tool_call_says_what_it_will_act_on(
+    name: str, args: dict[str, str], visible: str
+) -> None:
+    assert visible in entry_header(tool(name=name, args=args))
 
 
 def test_notice_and_error_headers() -> None:
     assert entry_header(NoticeEntry(id="n1", notice_kind="compact", text="t")) == "compact"
+    assert entry_header(NoticeEntry(
+        id="p1", notice_kind="interaction:permission", text="request"
+    )) == "? Permission required"
+    assert entry_header(NoticeEntry(
+        id="q1", notice_kind="interaction:user_input", text="question"
+    )) == "? Question"
     assert entry_header(ErrorEntry(id="e1", message="boom")) == "error"
 
 
@@ -194,6 +218,24 @@ async def test_updating_a_widget_that_has_not_composed_reports_failure() -> None
     assert await update_entry_widget(widget, user(Delivery.ACCEPTED)) is False
 
 
+@pytest.mark.parametrize(
+    ("entry", "marker"),
+    [(user(content="hello"), "❯ hello"), (assistant("answer"), "● answer")],
+)
+async def test_conversation_entries_use_inline_claude_style_markers(
+    entry: UserEntry | AssistantEntry,
+    marker: str,
+) -> None:
+    app = EntryHarness(entry_widget(entry))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        widget = app.query_one(EntryWidget)
+        with pytest.raises(NoMatches):
+            widget.query_one(".meta", Static)
+        block = widget.query_one(".body")
+        assert str(block.content).startswith(marker)
+
+
 # --- what the reader asked to see -----------------------------------------
 
 
@@ -255,7 +297,7 @@ def blocks_of(entry_widget) -> list:
     return [child for child in entry_widget.children if isinstance(child, ClampedBlock)]
 
 
-async def test_a_long_tool_result_is_previewed_inside_a_block() -> None:
+async def test_a_long_tool_result_is_hidden_until_expanded_inside_a_block() -> None:
     from XBotv2.tui.view.blocks import BLOCK_MAX_LINES
     from XBotv2.tui.view.entries import entry_widget
 
@@ -264,31 +306,31 @@ async def test_a_long_tool_result_is_previewed_inside_a_block() -> None:
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         blocks = blocks_of(app.query_one(EntryWidget))
-        assert len(blocks) == 1, "the payload lives in one block"
-        block = blocks[0]
+        assert len(blocks) == 2, "arguments and result expand independently"
+        call_block, block = blocks
+        assert call_block.label.startswith("● bash")
+        assert block.label.startswith("  ⎿ Done")
         assert block.collapsible is True
         assert block.region.height <= BLOCK_MAX_LINES, "500 lines must not reach the screen"
-        assert "output 499" not in str(block.body_widget.content.plain)
-
-
-async def test_a_long_answer_is_folded_but_a_short_one_is_not() -> None:
-    """Both bodies are blocks; only the long one folds and grows a summary row."""
-    from XBotv2.tui.view.entries import entry_widget
-
-    short = EntryHarness(entry_widget(assistant(content="one\ntwo")))
-    async with short.run_test(size=(80, 24)) as pilot:
+        assert block.shown_text == "", "collapsed tool details do not leak partial payload"
+        block.toggle()
         await pilot.pause()
-        (block,) = blocks_of(short.query_one(EntryWidget))
-        assert block.collapsible is False
-        assert block.head_widget is None, "a summary row for two lines is noise"
+        assert block.region.height == BLOCK_MAX_LINES
+        assert "output 499" in block.shown_text
+
+
+async def test_an_answer_is_never_a_folded_diagnostic_block() -> None:
+    """The final response is transcript content, however long it is."""
+    from XBotv2.tui.view.entries import entry_widget
 
     long = EntryHarness(
         entry_widget(assistant(content="\n".join(f"para {i}" for i in range(80))))
     )
     async with long.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        (block,) = blocks_of(long.query_one(EntryWidget))
-        assert block.collapsible is True
+        entry = long.query_one(EntryWidget)
+        assert blocks_of(entry) == []
+        assert "para 79" in str(entry.query_one(".body", Static).content)
 
 
 async def test_reasoning_is_its_own_clamped_block() -> None:
@@ -321,8 +363,16 @@ async def test_short_tool_output_remains_collapsible() -> None:
     app = EntryHarness(entry_widget(tool(args={"cmd": "pwd"}, result="/repo")))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        (block,) = blocks_of(app.query_one(EntryWidget))
-        assert block.collapsible is True
+        call_block, result_block = blocks_of(app.query_one(EntryWidget))
+        assert call_block.collapsible is True
+        assert result_block.collapsible is True
+        assert call_block.shown_text == ""
+        assert result_block.shown_text == ""
+        call_block.toggle()
+        result_block.toggle()
+        await pilot.pause()
+        assert '"cmd": "pwd"' in call_block.shown_text
+        assert "/repo" in result_block.shown_text
 
 
 async def test_an_error_is_never_folded_away() -> None:

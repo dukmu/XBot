@@ -1455,6 +1455,9 @@ async def _thread_summary(
         metadata = snapshot.metadata
         parent_thread_id = metadata.parent_thread_id
         mode = metadata.runtime_selection.model.generation.mode
+        stats = conversation_stats(snapshot.messages).model_copy(
+            update={"turns": active.application.loop_state.turn_count}
+        )
         return ThreadSummary(
             session_id=session_id,
             thread_id=thread_id,
@@ -1469,7 +1472,7 @@ async def _thread_summary(
             context_window=metadata.runtime_selection.model.context_window,
             message_count=len(snapshot.messages),
             usage=snapshot.usage,
-            session_stats=conversation_stats(snapshot.messages),
+            session_stats=stats,
             pending_interactions=pending_interactions(active),
             status_slots=snapshot.status_slots,
             workspace_root=active.workspace_root,
@@ -1483,6 +1486,9 @@ async def _thread_summary(
     parent_thread_id = metadata.parent_thread_id
     mode = metadata.runtime_selection.model.generation.mode
     messages = persistence.history.load_surface()
+    stats = conversation_stats(messages).model_copy(
+        update={"turns": persistence.history.count_turns()}
+    )
     return ThreadSummary(
         session_id=session_id,
         thread_id=thread_id,
@@ -1496,7 +1502,7 @@ async def _thread_summary(
         context_window=metadata.runtime_selection.model.context_window,
         message_count=len(messages),
         usage=await _read_usage(persistence),
-        session_stats=conversation_stats(messages),
+        session_stats=stats,
         workspace_root=metadata.workspace_root,
         title=metadata.title,
     )

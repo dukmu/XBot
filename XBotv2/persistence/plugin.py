@@ -15,7 +15,6 @@ from XBotv2.core.metadata import (
 )
 from XBotv2.core.paths import SessionPaths
 from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
-from XBotv2.core.timing import conversation_stats
 from XBotv2.persistence.store import (
     DeferredThreadMetadataStore,
     ThreadMetadataStore,
@@ -73,11 +72,10 @@ class ThreadPersistenceComponent:
         }
         pending_inputs = persistence.inbox.reconcile(committed_input_ids)
         state.set_history(ConversationHistory(messages, sink=persistence.history))
-        # Restore the lifetime turn counter from the durable surface once:
-        # compaction folds ``SessionStats`` (including turns) into the summary
-        # message, so this value survives compaction and restart. History
-        # mutations never recompute it.
-        state.restore_turn_count(conversation_stats(messages).turns)
+        # The model surface may be compacted or cleared, but turn_count is a
+        # lifetime counter. The append-only trajectory remains its canonical
+        # durable source; no second counter is persisted beside it.
+        state.restore_turn_count(persistence.history.count_turns())
         if state.resumed is False and isinstance(
             persistence.metadata, DeferredThreadMetadataStore
         ):

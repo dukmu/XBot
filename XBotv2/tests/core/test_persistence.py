@@ -69,6 +69,7 @@ def test_surface_replacement_and_transcript_are_separate_projections(tmp_path):
     assert history.load_surface() == (summary, original[2])
     assert history.load_transcript() == list(original)
     assert isinstance(history.page_trajectory(limit=1).page.items[0], SurfaceReplaced)
+    assert history.count_turns() == 3
 
 
 def test_non_preserving_replacement_updates_both_projections(tmp_path):

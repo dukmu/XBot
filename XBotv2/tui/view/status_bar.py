@@ -14,7 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterator, Mapping
 
+import regex
 from rich.text import Text
+from rich.cells import cell_len
 from textual.widgets import Static
 
 from XBotv2.core.domain import ProviderMeasured, UsageSnapshot
@@ -169,11 +171,18 @@ def status_report(
     context_window = state.context_window
     context_input_tokens, estimated = _context_usage(state.usage)
     if context_window and context_input_tokens:
-        free = round(
-            100 * max(0, context_window - context_input_tokens) / context_window
-        )
         marker = "~" if estimated else ""
-        lines.append(f"  Context: {context_window} tokens, {marker}{free}% free")
+        if context_input_tokens > context_window:
+            over = context_input_tokens - context_window
+            lines.append(
+                f"  Context: {marker}{context_input_tokens}/{context_window} tokens, "
+                f"{over} over"
+            )
+        else:
+            free = round(
+                100 * (context_window - context_input_tokens) / context_window
+            )
+            lines.append(f"  Context: {context_window} tokens, {marker}{free}% free")
     return "\n".join(lines)
 
 
@@ -185,12 +194,12 @@ def render_status_line(model: StatusLine, *, width: int) -> Text:
     segments: list[tuple[str, str]] = [
         (_clip(label, width), _BADGE_STYLE.get(status, "white"))
     ]
-    used = len(segments[0][0])
+    used = cell_len(segments[0][0])
     for text, style in _optional_segments(model):
-        if used + 2 + len(text) > width:
-            continue
+        if used + 2 + cell_len(text) > width:
+            break
         segments.append((text, style))
-        used += 2 + len(text)
+        used += 2 + cell_len(text)
     rendered = Text()
     for text, style in segments:
         if rendered.plain:
@@ -201,14 +210,22 @@ def render_status_line(model: StatusLine, *, width: int) -> Text:
 
 def _optional_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
     """Detail in the order it is given up when the row runs out of room."""
+    if model.activity:
+        yield model.activity, "dim"
     if model.thread_kind == SUBAGENT_THREAD_KIND:
         # Which thread is on screen is not optional detail: the transcript, the
         # composer and the status all belong to it.
         yield f"subagent:{model.thread_id}", "magenta"
     if model.queue_depth:
         yield f"queued:{model.queue_depth}", "yellow"
-    if model.activity:
-        yield model.activity, "dim"
+    yield from _usage_segments(model)
+    context = _context_segment(model)
+    if context is not None:
+        yield context
+    if model.session_label:
+        yield f"session:{model.session_label}", "bold"
+    if model.provider or model.model:
+        yield "/".join(x for x in (model.provider, model.model) if x), "green"
     if model.agent_name:
         yield f"agent:{model.agent_name}", "blue"
     if model.model_mode:
@@ -217,6 +234,19 @@ def _optional_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
         yield f"{name}:{value}", "magenta"
     if model.workspace:
         yield f"cwd:{model.workspace}", "cyan"
+
+
+def _context_segment(model: StatusLine) -> tuple[str, str] | None:
+    if model.context_window > 0 and model.context_input_tokens > 0:
+        marker = "~" if model.context_input_estimated else ""
+        overflow = model.context_input_tokens > model.context_window
+        return (
+            f"ctx:{marker}{_compact_count(model.context_input_tokens)}"
+            f"/{model.context_window}"
+            f"{'!' if overflow else ''}",
+            "red" if overflow else "cyan",
+        )
+    return None
 
 
 def _usage_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
@@ -229,40 +259,6 @@ def _usage_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
         if cache_basis:
             cache_rate = round(100 * counters.cache_read / cache_basis)
             yield f"cache:{cache_rate}%", "green"
-    if model.context_window > 0 and model.context_input_tokens > 0:
-        marker = "~" if model.context_input_estimated else ""
-        yield (
-            f"ctx:{marker}{_compact_count(model.context_input_tokens)}"
-            f"/{model.context_window}",
-            "cyan",
-        )
-
-
-def render_session_bar(model: StatusLine, *, width: int) -> Text:
-    """Render the session identity and live model statistics on one row."""
-    width = max(1, width)
-    segments: list[tuple[str, str]] = []
-    identity = model.session_label
-    if model.thread_kind == SUBAGENT_THREAD_KIND:
-        identity = f"{identity}/{model.thread_id}"
-    if identity:
-        segments.append((f"session:{identity}", "bold"))
-    segments.extend(_usage_segments(model))
-    if model.provider or model.model:
-        segments.append(("/".join(x for x in (model.provider, model.model) if x), "green"))
-
-    result = Text()
-    for segment, style in segments:
-        separator = "  " if result.plain else ""
-        available = width - len(result.plain) - len(separator)
-        if available <= 0:
-            break
-        if len(segment) > available:
-            if not result.plain:
-                result.append(_clip(segment, width), style=style)
-            break
-        result.append(separator + segment, style=style)
-    return result
 
 
 def _compact_count(value: int) -> str:
@@ -286,11 +282,19 @@ def _clip(label: str, width: int) -> str:
     """Shorten to ``width`` columns, marking that something was cut."""
     if width <= 0:
         return ""
-    if len(label) <= width:
+    if cell_len(label) <= width:
         return label
-    if width <= 3:
-        return label[:width]
-    return f"{label[: width - 3]}..."
+    marker = "…"
+    available = max(0, width - cell_len(marker))
+    result: list[str] = []
+    used = 0
+    for cluster in regex.findall(r"\X", label):
+        cluster_width = cell_len(cluster)
+        if used + cluster_width > available:
+            break
+        result.append(cluster)
+        used += cluster_width
+    return "".join(result) + marker
 
 
 class StatusBar(Static):
@@ -302,15 +306,6 @@ class StatusBar(Static):
         self.update(render_status_line(model, width=width or self.size.width or 80))
 
 
-class SessionBar(Static):
-    """A stable session/statistics strip, independent of transient status."""
-
-    DEFAULT_CSS = STATUS_BAR_CSS
-
-    def show(self, model: StatusLine, *, width: int | None = None) -> None:
-        self.update(render_session_bar(model, width=width or self.size.width or 80))
-
-
 __all__ = [
-    "status_report", "STATUS_BAR_CSS", "SessionBar", "StatusBar", "StatusLine",
-    "render_session_bar", "render_status_line", "status_line_for"]
+    "status_report", "STATUS_BAR_CSS", "StatusBar", "StatusLine",
+    "render_status_line", "status_line_for"]

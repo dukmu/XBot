@@ -1,10 +1,10 @@
-"""Clamped blocks: a fixed-height window over content that may be huge.
+"""Clamped blocks: a content-sized window with a fixed maximum height.
 
 The transcript is a conversation, not a log viewer. A tool result, a reasoning
 trace or a long answer therefore renders as a block with a maximum height:
-collapsed it shows a summary row and a short preview, expanded it shows the
-content inside its own scroll area. Either way the transcript below it keeps its
-place, which is what "does not flood the screen" means here.
+collapsed it shows a summary row and a short preview, expanded it grows only to
+its content height and then scrolls at the maximum. This keeps short thinking
+and tool details compact while huge output cannot flood the transcript.
 
 What a block shows is a pure function of the text, so it is tested without a
 terminal; the widget only mounts what that function returns.
@@ -19,7 +19,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-#: The most lines a block may occupy, expanded or not.
+#: The most rows the complete block may occupy, expanded or not.
 BLOCK_MAX_LINES = 12
 #: How many lines a collapsed block previews.
 BLOCK_PREVIEW_LINES = 2
@@ -32,9 +32,6 @@ ClampedBlock {{
 }}
 ClampedBlock:focus {{
     border-left: thick $accent;
-}}
-ClampedBlock.expanded {{
-    height: {BLOCK_MAX_LINES};
 }}
 ClampedBlock > .block-head {{
     height: auto;
@@ -70,25 +67,30 @@ def plan_block(
     text: str,
     *,
     label: str,
-    expanded: bool = False,
+    expanded: bool | None = None,
     streaming: bool = False,
     always_collapsible: bool = False,
     max_lines: int = BLOCK_MAX_LINES,
     preview_lines: int = BLOCK_PREVIEW_LINES,
+    inline_label: bool = False,
 ) -> BlockPlan:
     """Decide the summary row and the body for one piece of content.
 
     Content that fits is shown whole and gets no summary row at all -- a header
     saying "3 lines" would be noise. Content that does not fit is collapsed
-    unless the reader expanded it; a *streaming* body is always shown to its end,
-    because that is the part being written.
+    unless the reader expanded it. By default a streaming body follows its end;
+    passing ``expanded=False`` lets the reader fold it while it is arriving.
     """
     lines = count_lines(text)
     if lines <= max_lines and not always_collapsible:
         return BlockPlan(head="", body=text, lines=lines, collapsible=False)
-    if streaming or expanded:
+    show_all = streaming if expanded is None else expanded
+    if show_all:
         return BlockPlan(
-            head=_head(label, lines, expanded=True, streaming=streaming),
+            head=_head(
+                label, lines, expanded=True, streaming=streaming,
+                inline_label=inline_label,
+            ),
             body=text,
             lines=lines,
             collapsible=True,
@@ -96,14 +98,25 @@ def plan_block(
         )
     preview = "\n".join(text.rstrip("\n").splitlines()[:preview_lines])
     return BlockPlan(
-        head=_head(label, lines, expanded=False, streaming=False),
+        head=_head(
+            label, lines, expanded=False, streaming=streaming,
+            inline_label=inline_label,
+        ),
         body=preview,
         lines=lines,
         collapsible=True,
+        streaming=streaming,
     )
 
 
-def _head(label: str, lines: int, *, expanded: bool, streaming: bool) -> str:
+def _head(
+    label: str,
+    lines: int,
+    *,
+    expanded: bool,
+    streaming: bool,
+    inline_label: bool,
+) -> str:
     """The summary row, including the key that folds and unfolds the block.
 
     It names a key that works from wherever the reader's focus is (the composer,
@@ -112,13 +125,15 @@ def _head(label: str, lines: int, *, expanded: bool, streaming: bool) -> str:
     """
     marker = "▾" if expanded else "▸"
     action = "collapses" if expanded else "expands"
+    prefix = label if inline_label else f"{marker} {label}"
+    count = f"{lines} {'line' if lines == 1 else 'lines'}"
     if streaming:
-        return f"{marker} {label} · {lines} lines streaming"
-    return f"{marker} {label} · {lines} lines · ctrl+e {action}"
+        return f"{prefix} · {count} streaming · ctrl+e {action}"
+    return f"{prefix} · {count} · ctrl+e {action}"
 
 
 class ClampedBlock(VerticalScroll):
-    """One fixed-height block of long content."""
+    """One content-sized block, clamped to a fixed maximum height."""
 
     DEFAULT_CSS = BLOCK_CSS
     can_focus = True
@@ -135,29 +150,35 @@ class ClampedBlock(VerticalScroll):
         renderable: Text | object | None = None,
         expanded: bool = False,
         streaming: bool = False,
+        collapse_after_streaming: bool = False,
         always_show_label: bool = False,
         always_collapsible: bool = False,
         max_lines: int = BLOCK_MAX_LINES,
         preview_lines: int = BLOCK_PREVIEW_LINES,
+        inline_label: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.label = label
         self.always_show_label = always_show_label
         self.always_collapsible = always_collapsible
+        self.collapse_after_streaming = collapse_after_streaming
         self._text = text
         self.max_lines = max_lines
         self.preview_lines = preview_lines
+        self.inline_label = inline_label
+        self._expanded = expanded or streaming
+        self._manual_expanded: bool | None = True if expanded else None
         self._plan = plan_block(
             text,
             label=label,
-            expanded=expanded,
+            expanded=self._expanded,
             streaming=streaming,
             always_collapsible=always_collapsible,
             max_lines=max_lines,
             preview_lines=preview_lines,
+            inline_label=inline_label,
         )
-        self._expanded = expanded or streaming
         self._renderable = renderable
         self.head_widget: Static | None = None
         self.body_widget: Static | None = None
@@ -194,9 +215,15 @@ class ClampedBlock(VerticalScroll):
             self.head_widget = Static(Text(head), classes="block-head")
             yield self.head_widget
         self.body_widget = Static(
-            Text(self._plan.body) if isinstance(self._renderable, Text) else (self._renderable or Text(self._plan.body)),
+            self._renderable
+            if (
+                self._renderable is not None
+                and (self._expanded or not self._plan.collapsible)
+            )
+            else Text(self._plan.body),
             classes="block-body",
         )
+        self.body_widget.display = bool(self._plan.body)
         yield self.body_widget
 
     # --- changing it ---------------------------------------------------
@@ -207,6 +234,7 @@ class ClampedBlock(VerticalScroll):
         if not self._plan.collapsible:
             return
         self._expanded = not self._expanded
+        self._manual_expanded = self._expanded
         self._replan()
         self._apply()
 
@@ -218,12 +246,18 @@ class ClampedBlock(VerticalScroll):
         streaming: bool = False,
     ) -> None:
         """Re-apply content: the same block, updated in place."""
+        was_streaming = self._plan.streaming
         self._text = text
         self._renderable = renderable
-        if streaming:
-            # Watching an answer arrive means reading it to its end; folding it
-            # away the moment the turn finishes would take it from the reader.
+        if streaming and self._manual_expanded is None:
             self._expanded = True
+        elif (
+            was_streaming
+            and not streaming
+            and self.collapse_after_streaming
+            and self._manual_expanded is None
+        ):
+            self._expanded = False
         self._replan(streaming=streaming)
         self._apply()
         if streaming:
@@ -242,13 +276,17 @@ class ClampedBlock(VerticalScroll):
             always_collapsible=self.always_collapsible,
             max_lines=self.max_lines,
             preview_lines=self.preview_lines,
+            inline_label=self.inline_label,
         )
 
     def _apply(self) -> None:
         head_text = Text(self._head_text())
         body_text = (
             self._renderable
-            if (self._expanded and self._renderable is not None)
+            if (
+                self._renderable is not None
+                and (self._expanded or not self._plan.collapsible)
+            )
             else Text(self._plan.body)
         )
         if self._head_text():
@@ -263,8 +301,9 @@ class ClampedBlock(VerticalScroll):
             head.remove()
         if self.body_widget is not None:
             self.body_widget.update(body_text)
+            self.body_widget.display = bool(self._plan.body)
         self.set_class(self._plan.collapsible, "collapsible")
-        self.set_class(self._expanded, "expanded")
+        self.set_class(self._expanded and self._plan.collapsible, "expanded")
 
     def _head_text(self) -> str:
         return self._plan.head or (self.label if self.always_show_label else "")

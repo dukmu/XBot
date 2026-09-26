@@ -28,7 +28,7 @@ from XBotv2.core.history import (
     page_messages,
 )
 from XBotv2.core.domain import Cursor, HistoryRevision, TransactionEnded, TransactionStarted
-from XBotv2.core.messages import ConversationMessage
+from XBotv2.core.messages import ConversationMessage, HumanInputMessage
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.persistence.contracts import (
     HistoryPort,
@@ -337,6 +337,20 @@ class MessageHistoryStore(HistoryPort):
     def load_surface(self) -> tuple[ConversationMessage, ...]:
         with _trajectory_use(self._path) as state:
             return state.surface_state().view()
+
+    def count_turns(self) -> int:
+        """Count accepted human turns in the append-only canonical trajectory.
+
+        Surface replacement may fold or clear messages, while the runtime turn
+        counter is lifetime state. Counting MessageAppended records restores
+        that counter without adding a second persisted field.
+        """
+        with _trajectory_use(self._path) as state:
+            return sum(
+                isinstance(record.entry, MessageAppended)
+                and isinstance(record.entry.message, HumanInputMessage)
+                for record in state.recorded()
+            )
 
     def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]:
         if not messages:

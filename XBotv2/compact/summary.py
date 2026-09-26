@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from XBotv2.core import prompt_container, prompt_element
+from XBotv2.core import prompt_element
 from XBotv2.core.messages import CompactionSummaryMessage, ConversationMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderMessage, ProviderSystem, ProviderUser
@@ -90,9 +90,7 @@ def limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
 def compacted_message(summary: str, *, reason: str) -> CompactionSummaryMessage:
     return CompactionSummaryMessage(
         id=f"summary-{abs(hash((summary, reason)))}",
-        summary=prompt_container("historical_context", [prompt_element(
-            "conversation_summary", summary, attributes={"reason": reason})],
-            attributes={"source": "compaction"}),
+        summary=summary,
     )
 
 

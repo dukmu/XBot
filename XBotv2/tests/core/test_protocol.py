@@ -202,7 +202,13 @@ class TestProviderConfigLoader:
 
     def test_model_mode_is_empty_without_explicit_setting(self):
         assert ModelConfig(model="plain").model_mode == ""
-        assert ModelConfig(model="r", thinking="enabled").model_mode == "enabled"
+        assert ModelConfig(model="r", thinking="enabled").model_mode == ""
+
+    def test_vendor_thinking_mode_is_not_a_reasoning_effort(self):
+        model = ModelConfig(model="m3", thinking="adaptive")
+
+        assert model.thinking == "adaptive"
+        assert model.model_mode == ""
 
     def test_effort_tiers_validate_active_reasoning_effort(self):
         config = ModelConfig(

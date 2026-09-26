@@ -1,6 +1,7 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
+import asyncio
 import types
 from pathlib import Path
 
@@ -35,6 +36,47 @@ def test_tui_has_server_defaults_for_auto_spawn():
 
     assert args.bind == "127.0.0.1"
     assert args.port == 4096
+
+
+def test_tui_dispatches_to_generic_client_host_and_passes_unix_socket(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    spawned = object()
+    monkeypatch.setattr(
+        cli,
+        "_local_server",
+        lambda _args, _prefix: ("http://localhost", "/tmp/xbot-tui.sock", spawned),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_cleanup_spawned_server",
+        lambda process, socket: captured.update(cleanup=(process, socket)),
+    )
+    from XBotv2.application import client as client_host
+
+    async def run_client_application(launch):
+        captured["launch"] = launch
+
+    def run_coroutine(coroutine):
+        with asyncio.Runner() as runner:
+            return runner.run(coroutine)
+
+    monkeypatch.setattr(client_host, "run_client_application", run_client_application)
+    monkeypatch.setattr(cli.asyncio, "run", run_coroutine)
+
+    cli._run_tui(parse([
+        "tui", "--workspace", str(tmp_path), "--session", "resume-me",
+        "--thread", "agent", "--agent", "reviewer",
+    ]))
+
+    assert captured["launch"].base_url == "http://localhost"
+    assert captured["launch"].uds_path == "/tmp/xbot-tui.sock"
+    assert captured["launch"].workspace == str(tmp_path.resolve())
+    assert captured["launch"].session_id == "resume-me"
+    assert captured["launch"].thread_id == "agent"
+    assert captured["launch"].agent == "reviewer"
+    assert captured["cleanup"] == (spawned, "/tmp/xbot-tui.sock")
 
 
 def test_workspace_defaults_to_startup_directory(monkeypatch, tmp_path):

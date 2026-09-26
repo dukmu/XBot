@@ -27,6 +27,8 @@ QueuePanel {
 QueuePanel .queue-row {
     height: auto;
     width: 1fr;
+    padding-left: 1;
+    border-left: tall $accent;
 }
 """
 
@@ -68,7 +70,7 @@ def _clip(text: str, width: int) -> str:
 
 
 class QueuePanel(VerticalScroll):
-    """A reconciled list of queued inputs."""
+    """A visible, reconciled list of queued inputs above the composer."""
 
     DEFAULT_CSS = QUEUE_PANEL_CSS
 

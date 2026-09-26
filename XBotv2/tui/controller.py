@@ -13,24 +13,41 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable, Literal, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, Sequence
 
 from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.protocol import JobListResponse
 from XBotv2.interactions.protocol import UserInputRequest
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.contracts import ImageInput
-from XBotv2.tui.events import OlderHistoryRequested, TranscriptCleared, UiEvent
+from XBotv2.tui.events import (
+    InteractionRequest,
+    JobsReplaced,
+    LocalNotice,
+    OlderHistoryRequested,
+    TranscriptCleared,
+    UiEvent,
+)
 from XBotv2.tui.state import (
     HistoryKnown,
     SessionState,
     reduce,
     release_oldest_loaded_page,
 )
-from XBotv2.tui.status import ServerTurn
+from XBotv2.tui.status import ServerTurn, Status, derive
+from XBotv2.tui.timeline import ToolEntry, UserEntry
 from XBotv2.tui.transport import TransportConfig, TransportSession
-from XBotv2.tui.view.composer import ComposerModel, composer_delivery
+from XBotv2.tui.view.composer import ComposerModel
 from XBotv2.tui.view.status_bar import StatusLine, status_line_for
+
+if TYPE_CHECKING:
+    from XBotv2.config import (
+        PatchPluginConfig,
+        PluginConfigCatalog,
+        PluginConfigScope,
+        SessionPolicyResponse,
+    )
 
 
 class ViewPort(Protocol):
@@ -41,7 +58,9 @@ class ViewPort(Protocol):
     scroll position.
     """
 
-    async def render_transcript(self, state: SessionState) -> bool: ...
+    async def render_transcript(
+        self, state: SessionState, *, thinking: bool
+    ) -> bool: ...
 
     @property
     def reader_at_end(self) -> bool: ...
@@ -53,6 +72,8 @@ class ViewPort(Protocol):
     def render_queue(self, items: Sequence[PendingInputData]) -> None: ...
 
     def render_composer(self, model: ComposerModel) -> None: ...
+
+    async def render_interaction(self, request: InteractionRequest | None) -> None: ...
 
     async def page_older(self, state: SessionState) -> bool: ...
 
@@ -123,11 +144,15 @@ class TuiController:
         if not self._dirty and not released:
             return False
         self._dirty = False
-        await self._view.render_transcript(self.state)
+        await self._view.render_transcript(
+            self.state, thinking=self.thinking_activity_visible()
+        )
         self._view.render_status(self.status_model())
         self._view.render_jobs(tuple(self.state.jobs.values()))
         self._view.render_queue(self.state.queue)
         self._view.render_composer(self.composer_model())
+        request = next(iter(self.state.pending_interactions.values()), None)
+        await self._view.render_interaction(request)
         return True
 
     def _release_held_pages(self) -> bool:
@@ -200,12 +225,28 @@ class TuiController:
         elapsed = max(0.0, self._clock() - self.state.turn_started_at)
         return f"turn:{self.state.turn} {elapsed:.1f}s"
 
+    def thinking_activity_visible(self) -> bool:
+        """Whether the transcript should show its transient work indicator.
+
+        This is only a projection of the authoritative turn status and latest
+        timeline phase. It is not provider reasoning and never enters history.
+        """
+        if derive(self.state.facts) is not Status.RUNNING:
+            return False
+        latest = self.state.timeline.get(self.state.timeline.tail_id())
+        if latest is None or isinstance(latest, UserEntry):
+            return True
+        if isinstance(latest, ToolEntry):
+            return latest.status not in {"pending", "running"}
+        return False
+
     # --- actions ------------------------------------------------------
 
     async def connect(self) -> None:
         """Attach, then show what was adopted."""
         try:
             await self.transport.connect()
+            await self._refresh_jobs()
         finally:
             await self.flush()
 
@@ -219,12 +260,12 @@ class TuiController:
     async def watch(self) -> None:
         await self.transport.watch()
 
-    async def submit(self, text: str) -> str:
-        """Send the composer contents, with whatever is attached to them."""
+    async def submit(self, text: str, *, delivery: Literal["queue", "steer"]) -> str:
+        """Send a composer submission with its explicit keyboard delivery mode."""
         images = list(self._attachments)
         input_id = await self.transport.submit(
             text,
-            delivery=composer_delivery(self.composer_model()),
+            delivery=delivery,
             images=images,
         )
         # The submission consumed the attachments; a failure is reported
@@ -247,6 +288,7 @@ class TuiController:
     ) -> None:
         """Attach to another session and redraw from its baseline."""
         await self.transport.switch(session_id=session_id, thread_id=thread_id, mode=mode)
+        await self._refresh_jobs()
         await self.flush()
 
     async def sessions(self) -> list[Any]:
@@ -258,7 +300,25 @@ class TuiController:
         await self.transport.switch(
             session_id=self.state.session_id, thread_id=thread_id
         )
+        await self._refresh_jobs()
         await self.flush()
+
+    async def _refresh_jobs(self) -> None:
+        """Replace task state after attach; never retain another thread's jobs."""
+        try:
+            response = await self.transport.list_jobs()
+        except Exception as exc:  # noqa: BLE001 — the missing state must be visible
+            self.dispatch(JobsReplaced(payload=JobListResponse(
+                session_id=self.state.session_id,
+                thread_id=self.state.thread_id,
+            )))
+            self.dispatch(LocalNotice(
+                notice_kind="jobs",
+                text=f"Could not load background tasks: {exc}",
+                level="warning",
+            ))
+            return
+        self.dispatch(JobsReplaced(payload=response))
 
     async def providers(self) -> Any:
         """The provider/model catalogue, for the pickers."""
@@ -267,6 +327,22 @@ class TuiController:
     async def agents(self) -> Any:
         """The agents this thread can switch to."""
         return await self.transport.list_agents()
+
+    async def session_policy(self) -> SessionPolicyResponse:
+        """The authoritative policy projection for the current session."""
+        return await self.transport.get_session_policy()
+
+    async def plugin_config(
+        self, *, scope: PluginConfigScope = "workspace"
+    ) -> PluginConfigCatalog:
+        """The producer-declared plugin catalog for one configuration scope."""
+        return await self.transport.list_plugin_config(scope=scope)
+
+    async def update_plugin_config(
+        self, plugin_id: str, patch: PatchPluginConfig
+    ) -> PluginConfigCatalog:
+        """Write producer-declared values and return the authoritative catalog."""
+        return await self.transport.update_plugin_config(plugin_id, patch)
 
     async def select_provider(self, name: str, model: str | None = None) -> None:
         await self.transport.select_provider(name, model)

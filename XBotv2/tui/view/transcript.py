@@ -1,8 +1,10 @@
 """The transcript view: a mounted window over a timeline, updated by id.
 
-The view holds exactly two pieces of state -- which ids are mounted, and which id
-the window is anchored at. Positions are never compiled into numbers that other
-code has to keep in step, and nothing outside the window is touched.
+The view holds the mounted entry ids and which id the window is anchored at.
+Positions are never compiled into numbers that other code has to keep in step,
+and nothing outside the window is touched. A controller-supplied thinking
+activity may be mounted after the timeline tail, but it is transient presentation
+and never becomes an entry.
 
 An entry is rendered once and afterwards only ever updated *with that same
 entry*, so a streamed answer cannot land in another message's widget.
@@ -17,7 +19,6 @@ import asyncio
 from typing import Sequence
 
 from textual.containers import VerticalScroll
-from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -28,29 +29,124 @@ from XBotv2.tui.state import (
     OlderHistory,
     SessionState,
 )
-from XBotv2.tui.timeline import Entry
-from XBotv2.tui.view.entries import BlockVisibility, entry_widget, update_entry_widget
+from XBotv2.tui.timeline import AssistantEntry, Entry, ToolEntry
+from XBotv2.tui.view.entries import (
+    BlockVisibility,
+    EntryWidget,
+    entry_widget,
+    update_entry_widget,
+)
 from XBotv2.tui.view.plan import ViewPlan, newer_anchor, older_anchor, plan_window
 
 
 class TranscriptScroll(VerticalScroll):
     """The scrolling container the transcript is mounted into.
 
-    It reports user scrolls and viewport height changes so the controller can
-    re-pin a follower to the bottom after a reflow; it holds no window state.
+    It owns the reader's stable visible-entry anchor. A resize changes wrapping
+    and therefore invalidates Textual's numeric scroll offset; the anchor lets
+    this container restore the same entry without making the timeline remember
+    presentation position.
     """
 
     can_focus = True
 
-    class Scrolled(Message):
-        """Posted after a user scroll; ``at_end`` is the resulting state."""
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._reader_anchor: Widget | None = None
+        self._tail_follow_pending = False
 
-        def __init__(self, at_end: bool) -> None:
-            self.at_end = at_end
-            super().__init__()
+    @property
+    def following_tail(self) -> bool:
+        """Whether the reader is at the tail or a post-layout tail pin is due."""
+        return self._tail_follow_pending or self.is_vertical_scroll_end
 
-    class HeightChanged(Message):
-        pass
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if old_value == new_value:
+            return
+        if self.is_vertical_scroll_end:
+            self._reader_anchor = None
+        else:
+            self.call_after_refresh(self._remember_reader_anchor)
+
+    def on_resize(self) -> None:
+        anchor = self._reader_anchor
+        if anchor is not None and anchor.parent is self:
+            self.call_after_refresh(
+                lambda: self.scroll_to_widget(
+                    anchor, top=True, animate=False, immediate=True
+                )
+            )
+        else:
+            self.call_after_refresh(self.scroll_to_tail)
+
+    def _remember_reader_anchor(self) -> None:
+        viewport = self.region
+        for child in self.children:
+            if not isinstance(child, EntryWidget):
+                continue
+            region = child.region
+            if region.y < viewport.bottom and region.bottom > viewport.y:
+                self._reader_anchor = child
+                return
+
+    def preserve_reader_position(self) -> None:
+        """Keep the same transcript row at the same screen coordinate."""
+        self._remember_reader_anchor()
+        anchor = self._reader_anchor
+        if anchor is None or anchor.parent is not self:
+            return
+        visible_y = anchor.region.y - self.scroll_y
+
+        def restore() -> None:
+            if anchor.parent is not self:
+                return
+            delta = anchor.region.y - self.scroll_y - visible_y
+            if delta:
+                self.scroll_relative(y=delta, animate=False, immediate=True)
+
+        self.call_after_refresh(restore)
+
+    def scroll_to_tail(self) -> None:
+        """Show the tail without preserving an invalid offset after shrink."""
+        if self.max_scroll_y <= 0:
+            self.scroll_home(animate=False, immediate=True)
+        else:
+            self.scroll_end(animate=False, immediate=True)
+
+    def follow_tail_after_refresh(self) -> None:
+        """Keep follow intent across the layout pass that creates the new tail."""
+        self._tail_follow_pending = True
+        remaining = 3
+
+        def follow() -> None:
+            nonlocal remaining
+            self.scroll_to_tail()
+            remaining -= 1
+            if remaining:
+                self.call_after_refresh(follow)
+            else:
+                self._tail_follow_pending = False
+
+        self.call_after_refresh(follow)
+
+class ThinkingActivity(Static):
+    """Transient turn activity; deliberately not a timeline entry."""
+
+    DEFAULT_CSS = """
+    ThinkingActivity {
+        height: 1;
+        width: 1fr;
+        margin-bottom: 0;
+        padding-left: 1;
+        border-left: thick $secondary;
+        color: $text-muted;
+        text-style: italic;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("✳ Thinking…", id="thinking-activity")
 
 
 def older_history_label(older: OlderHistory) -> str | None:
@@ -97,6 +193,7 @@ class TranscriptView:
         # above the window however far back the reader pages.
         self.older_notice = Static("", id="older-history")
         self._notice_mounted = False
+        self._thinking_activity: ThinkingActivity | None = None
         self._anchor: str | None = None
         self._rendered: dict[str, Entry] = {}
         # Two renders can be asked for at once: the frame loop flushes while a
@@ -135,7 +232,7 @@ class TranscriptView:
     @property
     def reader_at_end(self) -> bool:
         """Whether the reader is following the tail -- asked, never remembered."""
-        return bool(self.container.is_vertical_scroll_end)
+        return bool(self.container.following_tail)
 
     def widget_for(self, entry_id: str) -> Widget | None:
         return self._widgets.get(entry_id)
@@ -151,12 +248,14 @@ class TranscriptView:
 
     # --- rendering ----------------------------------------------------
 
-    async def render(self, state: SessionState) -> bool:
+    async def render(self, state: SessionState, *, thinking: bool = False) -> bool:
         """Bring the mounted window in line with ``state``; report if it moved."""
         async with self._lock:
-            return await self._render_locked(state)
+            return await self._render_locked(state, thinking=thinking)
 
-    async def _render_locked(self, state: SessionState) -> bool:
+    async def _render_locked(
+        self, state: SessionState, *, thinking: bool | None = None
+    ) -> bool:
         await self._render_older_notice(state)
         ids = state.timeline.ids()
         if self._anchor is not None and self._anchor not in ids:
@@ -171,12 +270,14 @@ class TranscriptView:
         plan = self.window(state)
         changed = await self._apply(state, plan)
         changed = await self._refresh_changed(state, plan) or changed
+        changed = await self._sync_thinking_activity(thinking) or changed
         if following:
             # The scroll target is only known after the new widgets have been
-            # laid out, so the pin happens on the next refresh.
-            self._schedule(
-                lambda: self.container.scroll_end(animate=False, immediate=True)
-            )
+            # laid out. Recompute from the post-layout range: a block collapse
+            # may leave the transcript shorter than its viewport.
+            self.container.follow_tail_after_refresh()
+        else:
+            self.container.preserve_reader_position()
         return changed
 
     async def _render_older_notice(self, state: SessionState) -> None:
@@ -199,6 +300,7 @@ class TranscriptView:
 
     async def _apply(self, state: SessionState, plan: ViewPlan) -> bool:
         changed = False
+        plan = self._reuse_transition_widget(state, plan)
         for entry_id in plan.remove:
             widget = self._widgets.pop(entry_id, None)
             self._rendered.pop(entry_id, None)
@@ -219,11 +321,92 @@ class TranscriptView:
             reference = self._reference_widget(plan.mounted, entry_id)
             if reference is not None:
                 await self.container.mount(widget, before=reference)
+            elif (
+                self._thinking_activity is not None
+                and self._thinking_activity.parent is not None
+            ):
+                await self.container.mount(widget, before=self._thinking_activity)
             else:
                 await self.container.mount(widget)
             changed = True
         self._mounted = plan.mounted
         return changed
+
+    async def _sync_thinking_activity(self, thinking: bool | None) -> bool:
+        """Mount the controller's transient activity after the timeline tail."""
+        if thinking is None:
+            return False
+        if thinking:
+            if (
+                self._thinking_activity is not None
+                and self._thinking_activity.parent is not None
+            ):
+                return False
+            self._thinking_activity = ThinkingActivity()
+            await self.container.mount(self._thinking_activity)
+            return True
+        if self._thinking_activity is None:
+            return False
+        activity = self._thinking_activity
+        self._thinking_activity = None
+        if activity.parent is None:
+            return False
+        await activity.remove()
+        return True
+
+    def _reuse_transition_widget(
+        self, state: SessionState, plan: ViewPlan
+    ) -> ViewPlan:
+        """Keep presentation state when a live row adopts its record id.
+
+        Assistant streams and running tools begin with transient ids and finish
+        with durable record ids. That data identity change is not a new visual
+        row; rebuilding it causes a visible flash and loses block state.
+        """
+        if (
+            len(plan.remove) != 1
+            or len(plan.mount) != 1
+            or not self._mounted
+            or not plan.mounted
+        ):
+            return plan
+
+        previous_id = plan.remove[0]
+        current_id = plan.mount[0]
+        if self._mounted.index(previous_id) != plan.mounted.index(current_id):
+            return plan
+
+        previous = self._rendered.get(previous_id)
+        current = state.timeline.get(current_id)
+        widget = self._widgets.get(previous_id)
+        assistant_transition = (
+            isinstance(previous, AssistantEntry)
+            and previous.streaming
+            and isinstance(current, AssistantEntry)
+            and not current.streaming
+        )
+        tool_transition = (
+            isinstance(previous, ToolEntry)
+            and previous.status in {"pending", "running"}
+            and isinstance(current, ToolEntry)
+            and current.status not in {"pending", "running"}
+            and previous.call_id == current.call_id
+        )
+        if widget is None or not (assistant_transition or tool_transition):
+            return plan
+
+        self._widgets.pop(previous_id)
+        self._rendered.pop(previous_id)
+        self._widgets[current_id] = widget
+        # Preserve the prior value as the diff baseline. The normal refresh
+        # below applies the canonical record to this same widget in place.
+        self._rendered[current_id] = previous
+        return ViewPlan(
+            mounted=plan.mounted,
+            mount=(),
+            remove=(),
+            at_tail=plan.at_tail,
+        )
 
     async def _refresh_changed(self, state: SessionState, plan: ViewPlan) -> bool:
         """Update entries in place, but only the ones whose value actually moved.
@@ -312,7 +495,7 @@ class TranscriptView:
         # the newest one and only a surrounding layout change moved the
         # viewport.
         self._schedule(
-            lambda: self.container.scroll_end(animate=False, immediate=True)
+            self.container.scroll_to_tail
         )
 
     def _keep_reader_place(self, state: SessionState, anchor_entry: str) -> None:

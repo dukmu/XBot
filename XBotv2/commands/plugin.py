@@ -16,12 +16,12 @@ from xcore import Context, bound_effect
 from XBotv2.commands.contracts import (
     Command,
     CommandCatalog,
-    CommandDescription,
     CommandExecution,
     CommandsPort,
     EXECUTE_COMMAND,
     ExecuteCommand,
     LIST_COMMANDS,
+    describe_command,
 )
 from XBotv2.commands.protocol import build_commands_router
 from XBotv2.server import contribute_router
@@ -83,17 +83,7 @@ class CommandOperations:
 
     def list_commands(self, _request: EmptyRequest) -> CommandCatalog:
         return CommandCatalog(commands=tuple(
-            CommandDescription(
-                name=command.name,
-                slash=f"/{command.name}",
-                kind=command.kind,
-                description=command.description,
-                usage=command.usage or f"/{command.name}",
-                examples=command.examples,
-                parameters=command.parameters,
-                effects=command.effects,
-                exclusive=command.exclusive,
-            )
+            describe_command(command)
             for command in self._commands.all()
         ))
 

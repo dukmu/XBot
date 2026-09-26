@@ -46,7 +46,15 @@
 
 - id: commands
   name: commands
-  profiles: [agent, server]
+  profiles: [agent, server, client]
+
+- id: client-transport
+  name: client_transport
+  profiles: [client]
+
+- id: textual-tui
+  name: tui
+  profiles: [client]
 
 - id: llm
   name: llm

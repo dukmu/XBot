@@ -8,6 +8,7 @@ import os
 from pydantic import JsonValue
 
 from XBotv2.llm.contracts import ModelConfig, ProviderConfig
+from XBotv2.llm.config import merge_request_extras
 
 logger = logging.getLogger("xbotv2.llm")
 
@@ -51,10 +52,16 @@ def _provider_arguments(
     api_key = provider_config.api_key or ""
     _require_api_key(provider_config.protocol, model_config.model, api_key)
     max_retries, retry_backoff_factor = _retry_settings()
+    derived_extra_body: dict[str, JsonValue] = {}
+    if model_config.thinking is not None:
+        derived_extra_body["thinking"] = {"type": model_config.thinking}
     return {
         "api_key": api_key,
         "base_url": provider_config.base_url,
-        "extra_body": model_config.extra_body,
+        "extra_body": merge_request_extras(
+            derived_extra_body,
+            model_config.extra_body,
+        ),
         "max_retries": max_retries,
         "retry_backoff_factor": retry_backoff_factor,
         "input_modalities": model_config.input_modalities,

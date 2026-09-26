@@ -107,10 +107,12 @@ from XBotv2.tui.events import (
     InterruptAsked,
     InterruptSettled,
     JobUpdated,
+    JobsReplaced,
     OlderHistoryFailed,
     OlderHistoryLoaded,
     OlderHistoryRequested,
     QueueReplaced,
+    RuntimeNoticePublished,
     SessionConfigured,
     SnapshotAdopted,
     StatusSlotsUpdated,
@@ -357,12 +359,14 @@ def history_user(content: str = "hello", **overrides) -> HumanInputRecord:
     return HumanInputRecord(id=message_id, content=content)
 
 
-def history_assistant(content: str = "hi", **overrides) -> AssistantRecord:
+def history_assistant(
+    content: str = "hi", *, tool_calls: tuple[ToolCall, ...] = (), **overrides
+) -> AssistantRecord:
     message_id = _node_id(overrides)
     if overrides:
         raise TypeError(f"unsupported assistant record fields: {tuple(overrides)}")
     return AssistantRecord(
-        id=message_id, content=content,
+        id=message_id, content=content, tool_calls=tool_calls,
         timing=ModelTiming(total_ms=0), stop=CompletedStop(),
     )
 
@@ -586,7 +590,12 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
             snapshot(
                 history=[
                     history_user("hello"),
-                    history_assistant("hi"),
+                    history_assistant(
+                        "hi",
+                        tool_calls=(ToolCall(
+                            id="t1", name="bash", args={"command": "pwd"}
+                        ),),
+                    ),
                     history_tool("t1", "ok", id="tool-1"),
                 ]
             )
@@ -597,9 +606,10 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
     tool = state.timeline.get("tool-1")
     assert isinstance(tool, ToolEntry)
     assert tool.status == "success"
+    assert tool.args == {"command": "pwd"}
 
 
-def test_injected_history_turn_is_a_notice_not_typed_input() -> None:
+def test_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() -> None:
     state = session(
         connected(),
         SnapshotAdopted(
@@ -608,8 +618,21 @@ def test_injected_history_turn_is_a_notice_not_typed_input() -> None:
             )])
         ),
     )
-    assert kinds(state) == [EntryKind.NOTICE]
-    assert not any(isinstance(entry, UserEntry) for entry in state.timeline)
+    assert kinds(state) == []
+
+
+def test_live_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() -> None:
+    state = session(
+        connected(),
+        RuntimeNoticePublished(payload=RuntimeNoticeRecord(
+            id="notice-1",
+            source="subagent_1",
+            event="completed",
+            content='<runtime_event><payload encoding="json">{}</payload></runtime_event>',
+        )),
+    )
+
+    assert kinds(state) == []
 
 
 def test_snapshot_replaces_a_previous_timeline_instead_of_appending() -> None:
@@ -1198,6 +1221,23 @@ def test_terminal_jobs_do_not_count_as_running() -> None:
     assert state.facts.jobs_running == 0
 
 
+def test_authoritative_job_snapshot_replaces_stale_thread_jobs() -> None:
+    from XBotv2.jobs.protocol import JobListResponse
+
+    state = session(
+        connected(),
+        JobUpdated(job("old", "running")),
+        JobsReplaced(payload=JobListResponse(
+            session_id="s1",
+            thread_id="agent",
+            jobs=[job("current", "succeeded")],
+        )),
+    )
+
+    assert list(state.jobs) == ["current"]
+    assert state.facts.jobs_running == 0
+
+
 # --- the reducer is the only writer --------------------------------------
 
 
@@ -1418,6 +1458,32 @@ def test_an_older_page_that_repeats_held_entries_does_not_duplicate_them() -> No
     )
 
     assert state.timeline.ids() == ("u1", "a2")
+
+
+def test_loading_the_assistant_page_backfills_a_split_tool_calls_arguments() -> None:
+    state = session(
+        connected(),
+        SnapshotAdopted(snapshot(
+            history=[history_tool("call-1", "done", id="tool-1")],
+            history_cursor="c1",
+        )),
+    )
+    tool = state.timeline.get("tool-1")
+    assert isinstance(tool, ToolEntry)
+    assert tool.call_id == "call-1"
+    assert tool.args == {}
+
+    reduce(state, page(history_assistant(
+        "",
+        id="assistant-1",
+        tool_calls=(ToolCall(
+            id="call-1", name="read", args={"path": "/repo/README.md"}
+        ),),
+    )))
+
+    tool = state.timeline.get("tool-1")
+    assert isinstance(tool, ToolEntry)
+    assert tool.args == {"path": "/repo/README.md"}
 
 
 def test_a_failed_older_page_is_visible_and_retryable() -> None:

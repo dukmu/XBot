@@ -8,6 +8,7 @@ widget only renders what this returns.
 from __future__ import annotations
 
 from XBotv2.commands import CommandDescription
+from XBotv2.tests.tui.factories import tui_command_registry
 from XBotv2.tui.commands import CommandRegistry
 from XBotv2.tui.view.completion import (
     accepted_text,
@@ -18,7 +19,7 @@ from XBotv2.tui.view.completion import (
 
 
 def registry() -> CommandRegistry:
-    reg = CommandRegistry.with_builtins()
+    reg = tui_command_registry()
     reg.merge(
         (
             CommandDescription(

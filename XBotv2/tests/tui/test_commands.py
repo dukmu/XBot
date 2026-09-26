@@ -13,11 +13,12 @@ from __future__ import annotations
 import pytest
 
 from XBotv2.commands import CommandDescription
+from XBotv2.tests.tui.factories import tui_command_registry
 from XBotv2.tui.commands import CommandRegistry, ParsedCommand
 
 
 def registry() -> CommandRegistry:
-    return CommandRegistry.with_builtins()
+    return tui_command_registry()
 
 
 def server_command(name: str, **overrides) -> CommandDescription:
@@ -39,6 +40,7 @@ def test_the_builtins_are_declared_in_their_search_order() -> None:
     assert registry().names() == (
         "help",
         "status",
+        "settings",
         "session",
         "thread",
         "jobs",
@@ -56,6 +58,13 @@ def test_the_builtins_are_declared_in_their_search_order() -> None:
         "copy",
         "exit",
     )
+
+
+def test_settings_documents_the_overlay_entry_point() -> None:
+    spec = registry().get("settings")
+    assert spec is not None
+    assert spec.kind == "client"
+    assert spec.slash == "/settings"
 
 
 def test_the_runtime_selections_document_their_argument_forms() -> None:
@@ -278,7 +287,7 @@ def test_a_server_alias_never_shadows_a_client_alias() -> None:
 def test_merging_nothing_keeps_the_builtins() -> None:
     reg = registry()
     reg.merge(())
-    assert reg.names() == CommandRegistry.with_builtins().names()
+    assert reg.names() == registry().names()
 
 
 def test_merging_does_not_duplicate_on_repeat() -> None:

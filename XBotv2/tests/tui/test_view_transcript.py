@@ -18,6 +18,9 @@ from typing import AsyncIterator
 import pytest
 from textual.app import App, ComposeResult
 
+from XBotv2.agentloop.protocol import AssistantReasoningDelta
+from XBotv2.core.domain import CompletedStop, ModelTiming
+from XBotv2.session.records import AssistantRecord
 from XBotv2.session.records import HumanInputRecord
 from XBotv2.tests.tui.factories import (
     assistant_record,
@@ -27,6 +30,8 @@ from XBotv2.tests.tui.factories import (
 )
 from XBotv2.tests.tui.factories import SESSION, THREAD, frames, snapshot
 from XBotv2.tui.events import (
+    AssistantCompleted,
+    AssistantDelta,
     ConnectionChanged,
     OlderHistoryLoaded,
     SnapshotAdopted,
@@ -35,7 +40,11 @@ from XBotv2.tui.protocol import FrameTranslator
 from XBotv2.tui.state import SessionState, reduce
 from XBotv2.tui.status import Connection
 from XBotv2.tui.view.entries import BlockVisibility
-from XBotv2.tui.view.transcript import TranscriptScroll, TranscriptView
+from XBotv2.tui.view.transcript import (
+    ThinkingActivity,
+    TranscriptScroll,
+    TranscriptView,
+)
 
 
 def build_state(*pairs: tuple[str, dict]) -> SessionState:
@@ -160,6 +169,50 @@ async def test_rendering_an_unchanged_state_mounts_nothing_new() -> None:
         assert app.view.widget_for("m1") is widget, "an unchanged entry is not rebuilt"
 
 
+async def test_streamed_thinking_widget_survives_canonical_completion_identity() -> None:
+    from XBotv2.tui.view.blocks import ClampedBlock
+
+    state = build_state(user("human-record-1", "explain the next step"))
+    reduce(state, AssistantDelta(
+        payload=AssistantReasoningDelta(text="checking the request")
+    ))
+    streamed_id = state.stream_entry_id
+    assert streamed_id is not None
+
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        streamed_widget = app.view.widget_for(streamed_id)
+        assert streamed_widget is not None
+        streamed_block = streamed_widget.query_one(".reasoning", ClampedBlock)
+        assert streamed_block.expanded
+
+        reduce(state, AssistantCompleted(payload=AssistantRecord(
+            id="assistant-record-1",
+            content="the answer",
+            reasoning="checking the request",
+            timing=ModelTiming(total_ms=1),
+            stop=CompletedStop(),
+        )))
+        await app.view.render(state)
+        await pilot.pause()
+
+        completed_widget = app.view.widget_for("assistant-record-1")
+        assert completed_widget is streamed_widget
+        completed_block = completed_widget.query_one(".reasoning", ClampedBlock)
+        assert not completed_block.expanded
+        assert completed_block.shown_text == "checking the request"
+        assert "ctrl+e expands" in completed_block.head_text
+
+        human_widget = app.view.widget_for("human-record-1")
+        assert human_widget is not None
+        transcript = app.view.container
+        assert (
+            human_widget.region.y < transcript.region.bottom
+            and human_widget.region.bottom > transcript.region.y
+        ), "the compact completed Think block leaves the user's prompt in view"
+
+
 async def test_an_entry_that_left_the_timeline_is_unmounted() -> None:
     state = build_state(*[user(f"m{index}", str(index)) for index in range(3)])
     async with harness(limit=5) as (app, _pilot):
@@ -183,7 +236,8 @@ async def test_a_growing_answer_updates_its_own_widget() -> None:
         await app.view.render(state)
         streaming_id = state.stream_entry_id
         widget = app.view.widget_for(streaming_id)
-        assert body_of(widget) == "thinking"
+        body = widget.query_one(".body")
+        assert body_of(widget) == "● thinking"
 
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(
@@ -193,7 +247,8 @@ async def test_a_growing_answer_updates_its_own_widget() -> None:
         await app.view.render(state)
 
         assert app.view.widget_for(streaming_id) is widget, "the same widget grows"
-        assert body_of(widget) == "thinking harder"
+        assert widget.query_one(".body") is body, "streaming updates the body in place"
+        assert body_of(widget) == "● thinking harder"
 
 
 async def test_a_growing_answer_never_writes_into_another_entry() -> None:
@@ -207,15 +262,15 @@ async def test_a_growing_answer_never_writes_into_another_entry() -> None:
     async with harness(limit=5) as (app, _pilot):
         await app.view.render(state)
         first = app.view.widget_for("a1")
-        assert body_of(first) == "first answer"
+        assert body_of(first) == "● first answer"
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(
             frames(("assistant_text_delta", {"text": " answer"}))[0]
         ):
             reduce(state, event)
         await app.view.render(state)
-        assert body_of(first) == "first answer", "the committed entry is not rewritten"
-        assert body_of(app.view.widget_for("m2")) == "steer"
+        assert body_of(first) == "● first answer", "the committed entry is not rewritten"
+        assert body_of(app.view.widget_for("m2")) == "❯ steer"
 
 
 async def test_a_tool_result_adopts_its_record_id_without_touching_other_rows() -> None:
@@ -228,6 +283,7 @@ async def test_a_tool_result_adopts_its_record_id_without_touching_other_rows() 
     )
     async with harness(limit=5) as (app, _pilot):
         await app.view.render(state)
+        running = app.view.widget_for("c1")
         last = app.view.widget_for("m3")
         translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
         for event in translator.translate(frames(tool_finished("c1", "listing"))[0]):
@@ -236,8 +292,15 @@ async def test_a_tool_result_adopts_its_record_id_without_touching_other_rows() 
         assert app.view.widget_for("c1") is None
         widget = app.view.widget_for("tool-c1")
         assert widget is not None
-        assert "listing" in body_of(widget)
-        assert body_of(last) == "and later", "the last widget is not a dumping ground"
+        assert widget is running, "completion updates the mounted tool row in place"
+        from XBotv2.tui.view.blocks import ClampedBlock
+
+        details = widget.query_one(".tool-result", ClampedBlock)
+        assert details.shown_text == "", "tool result is folded by default"
+        details.toggle()
+        await _pilot.pause()
+        assert "listing" in details.shown_text
+        assert body_of(last) == "❯ and later", "the last widget is not a dumping ground"
 
 
 # --- paging ---------------------------------------------------------------
@@ -326,6 +389,38 @@ async def test_the_reader_position_is_asked_of_the_container_not_remembered() ->
         assert app.view.reader_at_end is False, "rendering must not move the reader"
 
 
+async def test_tail_updates_do_not_move_a_reader_who_scrolled_back() -> None:
+    state = build_state(
+        *[
+            user(f"m{index}", f"message {index}\nsecond line\nthird line")
+            for index in range(20)
+        ],
+        ("turn_started", {"turn": 1}),
+        ("assistant_text_delta", {"text": "live"}),
+    )
+    async with harness(limit=30, size=(80, 10)) as (app, pilot):
+        await app.view.render(state)
+        await settle(pilot)
+        scroll = app.view.container
+        scroll.scroll_to(y=18, animate=False, immediate=True)
+        await settle(pilot)
+        scroll._remember_reader_anchor()
+        anchor = scroll._reader_anchor
+        assert anchor is not None
+        visible_y = anchor.region.y - scroll.scroll_y
+
+        translator = FrameTranslator(session_id=SESSION, thread_id=THREAD)
+        for suffix in (" result", " continues", " and finishes"):
+            for event in translator.translate(
+                frames(("assistant_text_delta", {"text": suffix}))[0]
+            ):
+                reduce(state, event)
+            await app.view.render(state)
+            await settle(pilot)
+            assert scroll._reader_anchor is anchor
+            assert anchor.region.y - scroll.scroll_y == visible_y
+
+
 async def test_an_invalid_limit_is_rejected() -> None:
     app = Harness(limit=1)
     async with app.run_test() as pilot:
@@ -383,6 +478,21 @@ async def test_reasoning_is_mounted_by_default() -> None:
         await app.view.render(state)
         widget = first_assistant(app.view)
         assert "thinking hard" in part_of(widget, ".reasoning")
+
+
+async def test_thinking_activity_is_transient_and_not_a_timeline_entry() -> None:
+    state = build_state(user("u1", "a question"))
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state, thinking=True)
+        await settle(pilot)
+        assert len(app.query(ThinkingActivity)) == 1
+        assert "Thinking" in str(app.query_one(ThinkingActivity).content)
+        assert state.timeline.ids() == ("u1",)
+
+        await app.view.render(state, thinking=False)
+        await settle(pilot)
+        assert len(app.query(ThinkingActivity)) == 0
+        assert state.timeline.ids() == ("u1",)
 
 
 async def test_hiding_reasoning_takes_it_out_of_the_mounted_window() -> None:

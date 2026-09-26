@@ -50,6 +50,11 @@ def load_acp_tree(*, paths: RuntimePaths) -> PluginTree:
     return _load_carrier_tree(paths, "acp")
 
 
+def load_client_tree(*, paths: RuntimePaths) -> PluginTree:
+    """Load the local client-plugin profile from the common plugin tree."""
+    return _load_carrier_tree(paths, "client")
+
+
 def _load_carrier_tree(paths: RuntimePaths, profile: str) -> PluginTree:
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
@@ -61,6 +66,7 @@ def _load_carrier_tree(paths: RuntimePaths, profile: str) -> PluginTree:
 __all__ = [
     "DEFAULT_TREE",
     "load_agent_tree",
+    "load_client_tree",
     "load_server_tree",
     "load_acp_tree",
 ]

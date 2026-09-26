@@ -22,10 +22,6 @@ from XBotv2.agentloop.protocol import (
 from XBotv2.core.parts import TextPart
 from XBotv2.core.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.interactions import ClientNotice
-from XBotv2.tui.transport import (
-    DEFAULT_HISTORY_RETENTION,
-    DEFAULT_HISTORY_WINDOW,
-)
 
 __version__ = "0.2.0"
 
@@ -121,20 +117,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tui.add_argument(
         "--history-window",
         type=int,
-        default=DEFAULT_HISTORY_WINDOW,
-        help=(
-            "conversation entries fetched when attaching and per older page "
-            f"(default {DEFAULT_HISTORY_WINDOW})"
-        ),
+        default=None,
+        help="conversation entries fetched when attaching and per older page",
     )
     tui.add_argument(
         "--history-retention",
         type=int,
-        default=DEFAULT_HISTORY_RETENTION,
-        help=(
-            "conversation entries kept in memory before released pages are "
-            f"dropped (default {DEFAULT_HISTORY_RETENTION})"
-        ),
+        default=None,
+        help="conversation entries kept in memory before released pages are dropped",
     )
 
     serve = commands.add_parser(
@@ -303,21 +293,23 @@ def _run_tui(args) -> None:
 
     server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
 
-    from XBotv2.tui.app import run_tui
+    from XBotv2.application.client import ClientLaunch, run_client_application
 
     session_id = getattr(args, "session", None)
     try:
         asyncio.run(
-            run_tui(
-                base_url=server_url,
-                uds_path=uds_path,
-                session_id=session_id,
-                thread_id=getattr(args, "thread", "agent"),
-                agent=getattr(args, "agent", None),
-                workspace_root=str(_workspace_root(args)),
-                mode="resume" if session_id else "new",
-                history_window=args.history_window,
-                history_retention=args.history_retention,
+            run_client_application(
+                ClientLaunch(
+                    data_dir=args.data_dir,
+                    base_url=server_url,
+                    uds_path=uds_path,
+                    workspace=str(_workspace_root(args)),
+                    session_id=session_id,
+                    thread_id=getattr(args, "thread", "agent"),
+                    agent=getattr(args, "agent", None),
+                    history_window=args.history_window,
+                    history_retention=args.history_retention,
+                )
             )
         )
     finally:

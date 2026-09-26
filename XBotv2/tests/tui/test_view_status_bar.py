@@ -8,6 +8,7 @@ from the derived facts, and that whatever it shows fits the terminal it is given
 from __future__ import annotations
 
 import pytest
+from rich.cells import cell_len
 
 from XBotv2.core.domain import (
     GenerationSettings,
@@ -33,7 +34,6 @@ from XBotv2.tui.status import (
 )
 from XBotv2.tui.view.status_bar import (
     StatusLine,
-    render_session_bar,
     render_status_line,
 )
 
@@ -115,11 +115,11 @@ def test_the_queue_depth_is_shown_only_while_something_is_queued() -> None:
     assert "queued:2" in plain(line(queue_depth=2))
 
 
-def test_session_statistics_are_not_repeated_in_the_status_line() -> None:
+def test_session_usage_totals_are_visible_in_the_status_line() -> None:
     model = line(usage=UsageSnapshot(total_counters=TokenCounters(input=100, output=20)))
     shown = plain(model)
-    assert "in:100" not in shown
-    assert "out:20" not in shown
+    assert "in:100" in shown
+    assert "out:20" in shown
 
 
 def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
@@ -148,47 +148,161 @@ def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
         context_input_tokens=350,
     ))
 
-    assert "in:300" not in shown
-    assert "out:50" not in shown
-    assert "ctx:350/4096" not in shown
-    assert "cache:25%" not in shown
+    assert "in:300" in shown
+    assert "out:50" in shown
+    assert "ctx:350/4096" in shown
+    assert "cache:25%" in shown
 
 
-def test_session_bar_keeps_usage_visible_beside_session_identity() -> None:
+def test_context_overflow_is_explicit_instead_of_looking_like_a_valid_ratio() -> None:
+    shown = plain(line(
+        context_window=4096,
+        context_input_tokens=5700,
+        context_input_estimated=True,
+    ))
+
+    assert "ctx:~5.7k/4096!" in shown
+
+
+def test_statusline_combines_session_context_and_usage() -> None:
     snapshot = UsageSnapshot(
         total_counters=TokenCounters(input=300, output=50, cache_read=100)
     )
-    shown = render_session_bar(
-        line(
-            session_label="session-1",
-            usage=snapshot,
-            context_window=4096,
-            context_input_tokens=350,
-        ),
-        width=100,
-    ).plain
+    status = plain(line(
+        session_label="session-1",
+        usage=snapshot,
+        context_window=4096,
+        context_input_tokens=350,
+    ), width=100)
+
+    assert "session:session-1" in status
+    assert "ctx:350/4096" in status
+    assert "in:300" in status
+    assert "out:50" in status
+    assert "cache:25%" in status
+
+
+def test_statusline_orders_session_context_and_model() -> None:
+    snapshot = UsageSnapshot(
+        total_counters=TokenCounters(input=300, output=50, cache_read=100)
+    )
+    shown = plain(line(
+        session_label="session-1",
+        thread_id="agent",
+        usage=snapshot,
+        context_window=4096,
+        context_input_tokens=350,
+    ), width=120)
 
     assert "session:session-1" in shown
+    assert shown.index("ctx:350/4096") < shown.index("session:session-1")
+    assert shown.index("session:session-1") < shown.index("deepseek/v4")
     assert "in:300" in shown
-    assert "out:50" in shown
-    assert "cache:25%" in shown
-    assert "ctx:350/4096" in shown
+
+
+def test_live_usage_survives_at_80_cells_ahead_of_low_priority_details() -> None:
+    model = line(
+        facts=StatusFacts(
+            connection=Connection.CONNECTED,
+            server_turn=ServerTurn.RUNNING,
+        ),
+        activity="turn:123 5.6s",
+        queue_depth=3,
+        agent_name="a-very-long-agent-name",
+        model_mode="adaptive",
+        status_slots={"goal": "ship"},
+        workspace="/workspace/with/a/long/path",
+        usage=UsageSnapshot(
+            total_counters=TokenCounters(input=12_345, output=2_000, cache_read=3_000)
+        ),
+    )
+
+    shown = plain(model, width=80)
+
+    assert "Running" in shown
+    assert "turn:123 5.6s" in shown
+    assert "queued:3" in shown
+    assert "in:12.3k" in shown
+    assert "out:2.0k" in shown
+    assert "cache:20%" in shown
+    assert "a-very-long-agent-name" not in shown
+
+
+@pytest.mark.parametrize("width", range(1, 24))
+def test_statusline_fits_terminal_cells_for_unicode(width: int) -> None:
+    model = line(
+        session_label="会话 👩‍💻 界面很长",
+        thread_id="线程-🙂",
+        provider="供应商",
+        model="模型-🧠",
+        workspace="/工作区/非常长的路径",
+    )
+
+    status = render_status_line(model, width=width).plain
+
+    assert cell_len(status) <= width
+    assert not status.endswith("\u200d")
 
 
 def test_the_activity_text_is_shown_while_a_turn_runs() -> None:
     assert "turn:3" in plain(line(activity="turn:3 1.2s"))
 
 
-def test_status_line_keeps_runtime_status_without_repeating_session_identity() -> None:
+def test_status_line_combines_runtime_and_session_context_at_the_bottom() -> None:
     shown = plain(line(model_mode="adaptive"))
     assert "XBotv2" in shown
-    assert "deepseek/v4" not in shown
-    assert "session:s1" not in shown
+    assert "deepseek/v4" in shown
+    assert "session:s1" in shown
     assert "mode:adaptive" in shown
 
 
 def test_status_slots_are_shown() -> None:
     assert "goal:ship" in plain(line(status_slots={"goal": "ship"}))
+
+
+def test_status_detail_follows_the_planned_priority_order() -> None:
+    model = line(
+        facts=StatusFacts(
+            connection=Connection.CONNECTED,
+            server_turn=ServerTurn.RUNNING,
+        ),
+        activity="turn:3 1.2s",
+        queue_depth=2,
+        agent_name="agent-a",
+        model_mode="high",
+        status_slots={"goal": "ship"},
+        workspace="/workspace",
+        usage=UsageSnapshot(
+            total_counters=TokenCounters(input=3_000, output=500, cache_read=1_000)
+        ),
+    )
+
+    shown = plain(model)
+    fields = [
+        "turn:3",
+        "queued:2",
+        "in:3.0k",
+        "out:500",
+        "cache:25%",
+        "agent:agent-a",
+        "mode:high",
+        "goal:ship",
+        "cwd:/workspace",
+    ]
+    positions = [shown.index(field) for field in fields]
+    assert positions == sorted(positions)
+
+
+def test_unicode_optional_fields_do_not_overrun_the_terminal_cell_width() -> None:
+    model = line(
+        agent_name="",
+        status_slots={"项目": "🎨"},
+        workspace="x",
+    )
+
+    rendered = render_status_line(model, width=20)
+    assert cell_len(rendered.plain) <= 20
+    assert "cwd:x" not in rendered.plain
 
 
 # --- it must fit ----------------------------------------------------------
@@ -215,7 +329,7 @@ def test_the_line_never_exceeds_the_width_it_is_given(width: int) -> None:
     )
     rendered = render_status_line(model, width=width)
     assert rendered.plain
-    assert len(rendered.plain) <= width, f"{width}: {rendered.plain!r}"
+    assert cell_len(rendered.plain) <= width, f"{width}: {rendered.plain!r}"
 
 
 @pytest.mark.parametrize("width", [20, 28, 32, 40, 60, 96, 160])

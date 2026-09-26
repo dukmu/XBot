@@ -217,15 +217,18 @@ class AnthropicProvider(BaseProvider):
                             argument_fragments=[],
                         )
                     elif block_type == "text":
-                        text = block.text
+                        # Anthropic-compatible streams may use null to mean
+                        # "no initial fragment" and deliver the text entirely
+                        # through subsequent deltas.
+                        text = block.text or ""
                         content_blocks[index] = _TextBlockState(text=text)
                         if text:
                             yield TextDelta(text=text)
                     elif block_type == "thinking":
-                        thinking = block.thinking
+                        thinking = block.thinking or ""
                         content_blocks[index] = _ThinkingBlockState(
                             text=thinking,
-                            signature=block.signature,
+                            signature=block.signature or "",
                         )
                         if thinking:
                             yield ReasoningDelta(text=thinking)
@@ -271,7 +274,8 @@ class AnthropicProvider(BaseProvider):
                             raise ValueError(
                                 "Anthropic signature delta belongs to a non-thinking block"
                             )
-                        block.signature += delta.signature
+                        if delta.signature:
+                            block.signature += delta.signature
                 elif event_type == "content_block_stop":
                     index = event.index
                     block = content_blocks.get(index)

@@ -31,7 +31,7 @@ from XBotv2.core.provider import (
     ProviderTool,
     ToolSchema,
 )
-from XBotv2.core.stream import ModelCompleted, ModelFailed
+from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta
 from XBotv2.core.tools import ToolCall
 from XBotv2.llm.anthropic import (
     AnthropicProvider,
@@ -40,6 +40,8 @@ from XBotv2.llm.anthropic import (
 )
 from XBotv2.llm.base import provider_usage
 from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args
+from XBotv2.llm.client import _provider_arguments
+from XBotv2.llm.contracts import ModelConfig, ProviderConfig
 from XBotv2.llm.openai import (
     OpenAICompatibleProvider,
     normalize_openai_usage,
@@ -345,6 +347,165 @@ async def test_anthropic_stream_completes_with_a_typed_terminal_event():
 
     assert isinstance(events[-1], ModelCompleted)
     assert "".join(part.text for part in events[-1].response.parts) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_minimax_adaptive_thinking_is_sent_and_streamed_as_reasoning():
+    model = ModelConfig(
+        model="MiniMax-M3",
+        max_output_tokens=128,
+        thinking="adaptive",
+    )
+    configured_provider = ProviderConfig(
+        protocol="anthropic",
+        api_key="test",
+        default_model=model.model,
+        models=[model],
+    )
+    provider = AnthropicProvider(
+        **_provider_arguments(configured_provider, model),
+    )
+    sent: list[dict[str, object]] = []
+
+    class MessageStream:
+        async def __aiter__(self):
+            yield RawMessageStartEvent.model_validate({
+                "type": "message_start",
+                "message": {
+                    "id": "message-1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": model.model,
+                    "usage": {"input_tokens": 1, "output_tokens": 0},
+                },
+            })
+            yield RawContentBlockStartEvent.model_validate({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": "",
+                },
+            })
+            yield RawContentBlockDeltaEvent.model_validate({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "reasoning"},
+            })
+            yield RawContentBlockStopEvent.model_validate({
+                "type": "content_block_stop",
+                "index": 0,
+            })
+            yield RawMessageDeltaEvent.model_validate({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 1},
+            })
+
+        async def close(self):
+            pass
+
+    class Messages:
+        async def create(self, **kwargs):
+            sent.append(kwargs)
+            return MessageStream()
+
+    provider.client = SimpleNamespace(messages=Messages())
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="minimax", model=model.model),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=1_000_000,
+        ),
+    )
+
+    events = [event async for event in provider.astream(request)]
+
+    assert sent[0]["extra_body"] == {"thinking": {"type": "adaptive"}}
+    assert "reasoning_effort" not in sent[0]
+    assert any(isinstance(event, ReasoningDelta) for event in events)
+    assert events[-1].response.parts[0].text == "reasoning"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_normalizes_null_initial_stream_block_text() -> None:
+    """Some Anthropic-compatible providers stream null before their deltas."""
+
+    usage = SimpleNamespace(
+        input_tokens=1,
+        output_tokens=0,
+        cache_read_input_tokens=None,
+        cache_creation_input_tokens=None,
+    )
+
+    class MessageStream:
+        async def __aiter__(self):
+            yield SimpleNamespace(
+                type="message_start",
+                message=SimpleNamespace(model="test-model", usage=usage),
+            )
+            yield SimpleNamespace(
+                type="content_block_start",
+                index=0,
+                content_block=SimpleNamespace(
+                    type="thinking", thinking=None, signature=None
+                ),
+            )
+            yield SimpleNamespace(
+                type="content_block_delta",
+                index=0,
+                delta=SimpleNamespace(type="thinking_delta", thinking="reasoning"),
+            )
+            yield SimpleNamespace(
+                type="content_block_start",
+                index=1,
+                content_block=SimpleNamespace(type="text", text=None),
+            )
+            yield SimpleNamespace(
+                type="content_block_delta",
+                index=1,
+                delta=SimpleNamespace(type="text_delta", text="answer"),
+            )
+            yield SimpleNamespace(
+                type="message_delta",
+                delta=SimpleNamespace(stop_reason="end_turn"),
+                usage=SimpleNamespace(**{**usage.__dict__, "output_tokens": 2}),
+            )
+
+        async def close(self):
+            pass
+
+    class Messages:
+        async def create(self, **_kwargs):
+            return MessageStream()
+
+    provider = AnthropicProvider(api_key="test", base_url=None)
+    provider.client = SimpleNamespace(messages=Messages())
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),),
+        tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="test-model"),
+            generation=GenerationSettings(
+                mode=StandardGenerationMode(), max_output_tokens=128
+            ),
+            context_window=4096,
+        ),
+    )
+
+    events = [event async for event in provider.astream(request)]
+
+    assert isinstance(events[-1], ModelCompleted)
+    assert [part.text for part in events[-1].response.parts] == [
+        "reasoning",
+        "answer",
+    ]
 
 
 @pytest.mark.asyncio
