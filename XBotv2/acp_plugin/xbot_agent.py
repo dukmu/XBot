@@ -70,7 +70,7 @@ from XBotv2.commands import (
 from pydantic import JsonValue
 
 from XBotv2.core import EmptyRequest
-from XBotv2.core.domain import TokenCounters, TurnId, TurnScope
+from XBotv2.core.domain import TokenCounters, TurnScope
 from XBotv2.interactions.contracts import InteractionRequest, InteractionResolution
 from XBotv2.interactions.protocol import (
     Answered,
@@ -99,7 +99,7 @@ from XBotv2.session.contracts import (
     ThreadNotActive,
 )
 from XBotv2.session.contracts import SessionsPort
-from XBotv2.session.protocol import AgentConfiguredEvent, MessagePublishedEvent
+from XBotv2.session.protocol import AgentConfiguredEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -109,7 +109,6 @@ class ActivePrompt:
     request_id: str
     mapper: ACPEventMapper
     completed: asyncio.Event
-    turn_id: TurnId | None = None
     failure: Exception | None = None
 
 
@@ -558,22 +557,16 @@ class XBotACPAgent:
             mapper = ACPEventMapper(context_size=summary.context_window)
             fallback_window = summary.context_window
             async for frame in events:
-                await self._resolve_interaction(session_id, frame.event)
+                if isinstance(frame.event, (PermissionRequest, UserInputRequest)):
+                    await self._resolve_interaction(session_id, frame.event)
                 active = self._active_prompts.get(session_id)
-                if (
-                    active is not None
-                    and active.turn_id is None
-                    and isinstance(frame.scope, TurnScope)
-                    and isinstance(frame.event, MessagePublishedEvent)
-                    and frame.event.record.root.id == active.request_id
-                ):
-                    active.turn_id = frame.scope.turn_id
+                # One prompt at a time owns a session, so every turn-scoped
+                # frame belongs to the running prompt.
                 active_prompt = (
                     active
                     if (
                         active is not None
                         and isinstance(frame.scope, TurnScope)
-                        and frame.scope.turn_id == active.turn_id
                     )
                     else None
                 )

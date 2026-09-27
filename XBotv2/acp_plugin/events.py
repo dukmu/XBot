@@ -50,6 +50,17 @@ from XBotv2.core.tools import (
     ToolSucceeded,
 )
 
+# The engine reports turn outcomes in its own vocabulary; ACP accepts a fixed
+# set of stop reasons, so the adapter translates at this boundary. Unknown
+# outcomes fall back to ``end_turn`` because the turn did stop normally from
+# the client's perspective.
+_ACP_STOP_REASONS = {
+    "completed": "end_turn",
+    "max_iterations": "max_turn_requests",
+    "error": "refusal",
+    "session_error": "refusal",
+}
+
 
 class ACPEventMapper:
     """Stateful event mapper for one ACP prompt turn."""
@@ -177,7 +188,10 @@ class ACPEventMapper:
             if isinstance(event.outcome, TurnCancelled):
                 self.stop_reason = "cancelled"
             elif isinstance(event.outcome, TurnFinished):
-                self.stop_reason = event.outcome.stop_reason
+                self.stop_reason = _ACP_STOP_REASONS.get(
+                    event.outcome.stop_reason,
+                    "end_turn",
+                )
             return []
         if isinstance(event, LoopError):
             self.error = event

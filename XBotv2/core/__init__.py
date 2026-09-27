@@ -82,6 +82,7 @@ from XBotv2.core.tokens import (
 from XBotv2.core.tools import (
     CompleteTurn,
     ContinueTurn,
+    SandboxEscape,
     Tool,
     ToolCall,
     ToolCallRef,
@@ -132,6 +133,7 @@ __all__ = [
     "RuntimeNoticeMessage",
     "RuntimePaths",
     "RuntimeVariables",
+    "SandboxEscape",
     "SessionPaths",
     "TextPart",
     "ThreadPaths",

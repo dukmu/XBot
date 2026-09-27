@@ -36,8 +36,8 @@ SelectionScreen {
     text-style: bold;
 }
 #selection.compact {
-    width: 72;
-    max-width: 90%;
+    width: 90%;
+    max-width: 72;
 }
 #selection-description {
     height: auto;

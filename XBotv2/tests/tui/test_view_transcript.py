@@ -160,6 +160,47 @@ async def test_a_new_entry_at_the_tail_replaces_the_oldest_widget() -> None:
         assert oldest is not None
 
 
+async def test_window_replacement_batches_dom_mutations_without_intermediate_repaint(
+    monkeypatch,
+) -> None:
+    """A bounded tail shift must never paint its remove-before-mount state."""
+    from textual.widget import Widget
+
+    state = build_state(*[user(f"m{index}", str(index)) for index in range(3)])
+    async with harness(limit=3) as (app, _pilot):
+        await app.view.render(state)
+        batch_depths: list[int] = []
+        original_mount = Widget.mount
+        original_remove = Widget.remove
+
+        def tracked_mount(widget, *children, **kwargs):
+            if widget is app.view.container:
+                batch_depths.append(app._batch_count)
+            return original_mount(widget, *children, **kwargs)
+
+        def tracked_remove(widget):
+            if widget in app.view.container.children:
+                batch_depths.append(app._batch_count)
+            return original_remove(widget)
+
+        monkeypatch.setattr(Widget, "mount", tracked_mount)
+        monkeypatch.setattr(Widget, "remove", tracked_remove)
+        reduce(
+            state,
+            FrameTranslator(session_id=SESSION, thread_id=THREAD).translate(
+                frames(user("m3", "three"))[0]
+            )[0],
+        )
+
+        await app.view.render(state)
+
+        assert len(batch_depths) == 2, "one old row leaves and one new row enters"
+        assert all(depth > 0 for depth in batch_depths), (
+            "Textual may repaint between awaited DOM mutations when they are not "
+            "one batch"
+        )
+
+
 async def test_rendering_an_unchanged_state_mounts_nothing_new() -> None:
     state = build_state(user("m1", "one"), user("m2", "two"))
     async with harness(limit=5) as (app, _pilot):

@@ -125,9 +125,6 @@ class PermissionsService(PermissionsPort):
             constrain_param=constrain_param,
         )
 
-    def check_tool_call(self, tool_call: ToolCall) -> tuple[str, str]:
-        return self._system.check_tool_call(tool_call)
-
     def grant_once(self, tool_name: str, param_patterns: dict[str, str]) -> None:
         self._system.grant_once(tool_name, param_patterns)
 

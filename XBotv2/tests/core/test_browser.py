@@ -301,7 +301,13 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
             "browser_click",
             "browser_screenshot",
         ]
-        assert all(isinstance(message.outcome, ToolSucceeded) for message in messages)
+        assert all(isinstance(message.outcome, ToolSucceeded) for message in messages), [
+            (
+                message.call.name,
+                getattr(getattr(message.outcome, "error", None), "message", ""),
+            )
+            for message in messages
+        ]
         assert "through Agent tool:summarize" in _text(messages[3].outcome)
         assert len(messages[4].outcome.output.artifacts) == 1
         assert [request.subject.tool_call.name for request in permission_requests] == [

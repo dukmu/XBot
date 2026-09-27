@@ -10,7 +10,6 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
-from XBotv2.core.tools import ToolCall
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.permissions.contracts import (
     PermissionDecision,
@@ -42,9 +41,11 @@ def _validate_rule(rule: PermissionRule, variables: RuntimeVariables) -> None:
     for pattern in rule.param_patterns.values():
         compile_pattern(pattern)
     if rule.path_scope is not None:
-        compile_pattern(
-            variables.expand_regex(rule.path_scope, source="permission path scope")
-        )
+        root = Path(
+            variables.expand(rule.path_scope, source="permission path scope")
+        ).expanduser()
+        if not root.is_absolute():
+            raise ValueError("Permission path scope must resolve to an absolute path")
 
 
 def _grant_rule(tool_name: str, param_patterns: Mapping[str, str]) -> PermissionRule:
@@ -212,39 +213,6 @@ class PermissionSystem:
                 for rule in candidates
             )
 
-    def check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
-        with matching_budget():
-            return self._check_tool_call(tool_call)
-
-    def _check_tool_call(self, tool_call: ToolCall) -> tuple[PermissionDecision, str]:
-        tool_name = tool_call.name
-        args = dict(tool_call.args)
-        escalated = (
-            tool_name == "shell"
-            and args.get("sandbox_permissions") == "require_escalated"
-        )
-        escape_allowed = not escalated or self.explicit_allow(
-            tool_name,
-            args,
-            constrain_param="sandbox_permissions",
-        )
-        decision = self.check(tool_name, args)
-        if escalated and decision == "allow" and not escape_allowed:
-            decision = "ask"
-        if decision == "deny":
-            return decision, f"Permission denied for tool: {tool_name}"
-        if decision == "ask" and escalated:
-            justification = str(args.get("justification") or "").strip()
-            return decision, (
-                f"Sandbox escape requires human approval: {justification}"
-                if justification
-                else "Sandbox escape requires human approval."
-            )
-        if decision == "ask":
-            return decision, f"Permission approval required for tool: {tool_name}."
-        self.consume_once(tool_name, args)
-        return decision, ""
-
     def _rule_matches(
         self,
         rule: PermissionRule,
@@ -266,7 +234,7 @@ class PermissionSystem:
 
     def _all_paths_match(
         self,
-        pattern: str,
+        scope: str,
         tool_name: str,
         args: dict[str, JsonValue],
     ) -> bool:
@@ -274,19 +242,9 @@ class PermissionSystem:
         fields = PATH_ACCESS.get(operation or "", ())
         if not fields:
             return False
-        reference = self.variables.reference_name(
-            pattern,
-            source="permission path scope",
-        )
-        root = Path(self.variables[reference]) if reference is not None else None
-        expanded = (
-            None
-            if root is not None
-            else self.variables.expand_regex(
-                pattern,
-                source="permission path scope",
-            )
-        )
+        root = Path(
+            self.variables.expand(scope, source="permission path scope")
+        ).expanduser().resolve()
         workspace = self.variables.get("workspace")
         for field, _access in fields:
             value = args.get(field)
@@ -302,10 +260,7 @@ class PermissionSystem:
                     return False
             except (OSError, RuntimeError):
                 return False
-            if root is not None:
-                if not resolved.is_relative_to(root):
-                    return False
-            elif expanded is not None and not fullmatch(expanded, str(resolved)):
+            if not resolved.is_relative_to(root):
                 return False
         return True
 

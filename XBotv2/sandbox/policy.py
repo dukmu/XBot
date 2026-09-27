@@ -336,11 +336,9 @@ class SandboxPolicy(SandboxPort):
         # approval-capable guard; here we simply exempt declared escalation
         # from path checks (an escaped shell runs outside the policy by
         # definition).
-        escalated = (
-            getattr(getattr(entry, "tool", None), "escapes_sandbox", False)
-            and args.get("sandbox_permissions") == "require_escalated"
-        )
-        if escalated:
+        tool = entry.tool
+        escape = tool.sandbox_escape(args) if tool.sandbox_escape is not None else None
+        if escape is not None:
             return None
         issues = self.check_tool_access(tool_call.name, args)
         if not issues:

@@ -1,9 +1,11 @@
 """Permission guards cannot widen policy decisions."""
 
+from dataclasses import replace
+
 import pytest
 
 from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core import Tool, ToolCall
+from XBotv2.core import SandboxEscape, Tool, ToolCall
 from XBotv2.permissions import Allowed, PermissionPolicy, PermissionRule
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.system import PermissionSystem
@@ -14,6 +16,25 @@ def _registration() -> ToolRegistration:
         return command
 
     tool = Tool.from_function(shell)
+    return ToolRegistration(tool=tool, registered_name=tool.name)
+
+
+def _escaping_registration() -> ToolRegistration:
+    async def executor(command: str, privilege: str = "sandboxed") -> str:
+        return command
+
+    tool = Tool.from_function(executor)
+    tool = replace(
+        tool,
+        sandbox_escape=lambda args: (
+            SandboxEscape(
+                argument="privilege",
+                reason="Execution outside the sandbox requires approval.",
+            )
+            if args.get("privilege") == "outside"
+            else None
+        ),
+    )
     return ToolRegistration(tool=tool, registered_name=tool.name)
 
 
@@ -80,5 +101,43 @@ async def test_explicit_allow_passes_without_approval():
     assert await guard.check(
         ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
         _registration(),
+    ) is None
+    assert approval.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_declared_sandbox_escape_requires_approval_despite_blanket_allow():
+    permissions = PermissionSystem(PermissionPolicy(rules=(
+        PermissionRule(tool_pattern="executor", decision="allow"),
+    )))
+    approval = _Approval(Allowed(scope="once"))
+    guard = PermissionGuard(permissions, approval, _emit, _identity)
+
+    assert await guard.check(
+        ToolCall(
+            id="call-escape",
+            name="executor",
+            args={"command": "pwd", "privilege": "outside"},
+        ),
+        _escaping_registration(),
+    ) is None
+    assert approval.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_non_escaping_call_uses_the_normal_permission_decision():
+    permissions = PermissionSystem(PermissionPolicy(rules=(
+        PermissionRule(tool_pattern="executor", decision="allow"),
+    )))
+    approval = _Approval(Allowed(scope="once"))
+    guard = PermissionGuard(permissions, approval, _emit, _identity)
+
+    assert await guard.check(
+        ToolCall(
+            id="call-sandboxed",
+            name="executor",
+            args={"command": "pwd", "privilege": "sandboxed"},
+        ),
+        _escaping_registration(),
     ) is None
     assert approval.calls == 0

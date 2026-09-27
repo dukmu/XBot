@@ -571,6 +571,18 @@ def _resize_tmux_window(session_name: str, width: int, height: int) -> None:
         raise AssertionError(
             f"tmux pane {session_name!r} is {actual}; expected {expected}"
         )
+    # Textual negotiates the terminal's in-band resize protocol and then
+    # deliberately ignores SIGWINCH. Detached tmux changes the PTY dimensions
+    # above but emits no negotiated resize sequence, leaving the app's old frame
+    # merely clipped by the new pane. Send the terminal-side event a real
+    # interactive resize supplies so this remains a product render test.
+    _tmux(
+        "send-keys",
+        "-t",
+        session_name,
+        "-l",
+        f"\x1b[48;{height};{width};0;0t",
+    )
 
 
 def _capture_tmux_screen(session_name: str) -> str:

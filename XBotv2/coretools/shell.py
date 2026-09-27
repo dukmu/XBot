@@ -35,7 +35,14 @@ from XBotv2.jobs import (
     parse_job_status,
 )
 from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.core.tools import (
+    SandboxEscape,
+    Tool,
+    ToolError,
+    ToolFailed,
+    ToolOutput,
+    ToolSucceeded,
+)
 from XBotv2.sandbox.contracts import SandboxPort
 
 #: Lazily-resolved approval-layer capability. The shell tool discharges
@@ -77,6 +84,16 @@ _ESCALATION_JUSTIFICATION_REQUIRED = (
     "sandbox_permissions=require_escalated requires a non-empty justification "
     "explaining why the command must run outside the sandbox"
 )
+
+
+def _sandbox_escape(args) -> SandboxEscape | None:
+    if args.get("sandbox_permissions") != "require_escalated":
+        return None
+    justification = str(args.get("justification") or "").strip()
+    reason = "Sandbox escape requires human approval."
+    if justification:
+        reason = f"Sandbox escape requires human approval: {justification}"
+    return SandboxEscape(argument="sandbox_permissions", reason=reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,7 +450,7 @@ def shell_tools(
 ) -> tuple[Tool, ...]:
     """Build the shell Tools for one session's runtime services.
 
-    The shell tool declares ``escapes_sandbox`` (its escalating capability);
+    The shell tool declares its sandbox-escape predicate;
     the approval layer is resolved lazily at call time so the mount does not
     depend on plugin-tree order.
     """
@@ -465,7 +482,7 @@ def shell_tools(
     return tuple(
         replace(
             tool,
-            escapes_sandbox=tool.name == "shell",
+            sandbox_escape=_sandbox_escape if tool.name == "shell" else None,
             kind="execute",
             grant_selectors=(
                 ("command", "cwd", "sandbox_permissions")

@@ -32,7 +32,9 @@ Tool names and constrained argument values use bounded full-match regular
 expressions. Every constrained parameter must exist and match; parameters not
 mentioned by the rule are unrestricted. Structured values are matched as
 canonical JSON. `path_scope` applies only to supported filesystem path
-arguments. Matching limits are enforced and a limit error stops authorization;
+arguments. It must resolve, after runtime-variable expansion, to an absolute
+directory root and is checked by filesystem containment rather than regex
+matching. Matching limits are enforced and a limit error stops authorization;
 it is not treated as a successful non-match.
 
 Across policy layers, any applicable deny wins; absent a deny, an ask at any
@@ -43,12 +45,14 @@ is persisted in the current Agent thread's `permissions` StateService namespace
 and is restored when that thread resumes. Parent permission constraints apply
 to child Agents.
 
-`PermissionsPort.check()` is a read-only policy query.
-`check_tool_call()` is the authorization path and may consume a one-shot grant.
-Do not use it to preview a call or repeat permission checks inside Tool
-handlers. Later sandbox or other guards can still reject an allowed call.
-Approvals do not widen sandbox policy; shell sandbox escape still requires its
-separate explicit escalation contract.
+`PermissionsPort.check()` is a read-only policy query. The registered
+permission guard owns authorization and consumes a one-shot grant only after
+its final decision is `allow`; Tool handlers must not repeat permission checks.
+Later sandbox or other guards can still reject an allowed call. Approvals do
+not widen sandbox policy. A Tool that can execute outside the sandbox declares
+its per-call `sandbox_escape` predicate on `Tool`; permission and sandbox
+plugins consume that declaration without copying Tool names or argument
+values. A general allow does not implicitly authorize a declared escape.
 
 ## Typed approval interaction
 

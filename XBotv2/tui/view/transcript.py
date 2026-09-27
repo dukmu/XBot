@@ -256,7 +256,6 @@ class TranscriptView:
     async def _render_locked(
         self, state: SessionState, *, thinking: bool | None = None
     ) -> bool:
-        await self._render_older_notice(state)
         ids = state.timeline.ids()
         if self._anchor is not None and self._anchor not in ids:
             # The anchored entry left the timeline (history rewritten, or the
@@ -268,9 +267,16 @@ class TranscriptView:
         # asking afterwards would silently stop following the tail.
         following = self.reader_at_end
         plan = self.window(state)
-        changed = await self._apply(state, plan)
-        changed = await self._refresh_changed(state, plan) or changed
-        changed = await self._sync_thinking_activity(thinking) or changed
+        # A page or bounded-tail transition can remove and mount many widgets.
+        # Every individual DOM operation is awaited; without one Textual repaint
+        # batch the terminal may draw those intermediate, incomplete trees as a
+        # visible full-window flash. State and widget identity are already
+        # diffed above -- this makes their presentation atomic as well.
+        with self.container.app.batch_update():
+            await self._render_older_notice(state)
+            changed = await self._apply(state, plan)
+            changed = await self._refresh_changed(state, plan) or changed
+            changed = await self._sync_thinking_activity(thinking) or changed
         if following:
             # The scroll target is only known after the new widgets have been
             # laid out. Recompute from the post-layout range: a block collapse

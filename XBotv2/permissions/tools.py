@@ -67,9 +67,8 @@ class RequestPermissionTool:
 
         tool: Exact registered tool name.
         params: Parameter names mapped to full-match regular expressions.
-            Omitted parameters are unconstrained. Constrain command and cwd
-            for shell access. Sandbox escape also requires an explicit
-            sandbox_permissions pattern matching require_escalated.
+            Omitted parameters are unconstrained; constrain every argument
+            that defines the intended authorization scope.
         reason: Explain why subsequent calls need this scope.
 
         Approval grants one matching future call or this Agent thread's session.

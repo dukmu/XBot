@@ -156,9 +156,8 @@ async def _execute_one(
         Draft202012Validator(tool_parameters_schema(tool)).validate(args)
     except ValidationError as exc:
         return call, ToolFailed(error=ToolError(code="invalid_arguments", message=exc.message), output=ToolOutput())
-    if (tool.escapes_sandbox
-            and args.get("sandbox_permissions") == "require_escalated"
-            and not approval_layer_active):
+    escape = tool.sandbox_escape(args) if tool.sandbox_escape is not None else None
+    if escape is not None and not approval_layer_active:
         return call, ToolDenied(reason="Sandbox escape requires an active approval layer")
     for guard in guards:
         decision = guard(call, entry)

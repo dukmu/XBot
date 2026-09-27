@@ -29,12 +29,38 @@ class PermissionGuard:
         self._emit = emit
         self._apply_decision = apply_decision
 
-    async def check(self, tool_call: ToolCall, _entry: ToolRegistration) -> GuardDecision | None:
-        decision, reason = self._permissions.check_tool_call(tool_call)
+    async def check(self, tool_call: ToolCall, entry: ToolRegistration) -> GuardDecision | None:
+        args = dict(tool_call.args)
+        escape = (
+            entry.tool.sandbox_escape(args)
+            if entry.tool.sandbox_escape is not None
+            else None
+        )
+        decision = self._permissions.check(tool_call.name, args)
+        if (
+            escape is not None
+            and decision == "allow"
+            and not self._permissions.explicit_allow(
+                tool_call.name,
+                args,
+                constrain_param=escape.argument,
+            )
+        ):
+            decision = "ask"
+        reason = (
+            f"Permission denied for tool: {tool_call.name}"
+            if decision == "deny"
+            else escape.reason
+            if decision == "ask" and escape is not None
+            else f"Permission approval required for tool: {tool_call.name}."
+            if decision == "ask"
+            else ""
+        )
         DEFAULT_RUNTIME_LOG.bind("permissions").info(
             "permission.checked", call_id=tool_call.id, tool=tool_call.name, decision=decision,
         )
         if decision == "allow":
+            self._permissions.consume_once(tool_call.name, args)
             return None
         if decision == "deny":
             return GuardDecision("deny", reason, source="permissions")

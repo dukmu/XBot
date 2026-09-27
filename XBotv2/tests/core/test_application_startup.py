@@ -562,6 +562,43 @@ plugin = NormalClosePlugin()""",
         assert "ask" not in tool_names
 
     @pytest.mark.asyncio
+    async def test_default_policy_allows_workspace_edits_and_tool_owns_escape(
+        self, temp_data_dir, temp_workspace
+    ):
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="default-permissions",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            plugin_dirs=[],
+            llm_override=MockLLM(responses=[{"content": "session title"}]),
+        )
+        try:
+            for mode in ("write", "replace", "patch"):
+                assert application.permissions.check(
+                    "edit", {"path": "ordinary.txt", "mode": mode}
+                ) == "allow"
+
+            shell = application.engine.tools.resolve("shell")
+            assert shell is not None and shell.sandbox_escape is not None
+            escape = shell.sandbox_escape({
+                "command": "pwd",
+                "sandbox_permissions": "require_escalated",
+                "justification": "inspect the host",
+            })
+            assert escape is not None
+            assert escape.argument == "sandbox_permissions"
+            assert "inspect the host" in escape.reason
+
+            assert all(
+                "sandbox_permissions" not in rule.param_patterns
+                for policy in application.settings.permission_policies()
+                for rule in policy.rules
+            ), "the default permission policy must not restate tool arguments"
+        finally:
+            await application.stop()
+
+    @pytest.mark.asyncio
     async def test_shipped_config_does_not_duplicate_tool_registry(
         self,
         temp_data_dir,

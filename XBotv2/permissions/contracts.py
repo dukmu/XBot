@@ -15,6 +15,8 @@ PermissionDecision = Literal["allow", "deny", "ask"]
 class PermissionRule(BaseModel):
     tool_pattern: str
     param_patterns: dict[str, str] = Field(default_factory=dict)
+    # Absolute directory root after RuntimeVariables expansion. Parameter
+    # values use regexes; path containment is a filesystem relation, not one.
     path_scope: str | None = None
     decision: PermissionDecision
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -84,7 +86,6 @@ class PermissionsPort(Protocol):
         *,
         constrain_param: str | None = None,
     ) -> bool: ...
-    def check_tool_call(self, tool_call: ToolCall) -> tuple[str, str]: ...
     def grant_once(self, tool_name: str, param_patterns: dict[str, str]) -> None: ...
     def consume_once(self, tool_name: str, args: dict[str, JsonValue]) -> None: ...
 

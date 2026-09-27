@@ -29,6 +29,14 @@ class GuardDecision:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class SandboxEscape:
+    """One call's tool-owned request to execute outside the sandbox."""
+
+    argument: str
+    reason: str
+
+
 class ToolCall(BaseModel):
     id: ToolCallId = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -128,13 +136,10 @@ class Tool:
     function: Callable[..., Any]
     parameters: dict[str, Any]
     tool_call_parameter: str | None = None
-    #: Declared by the owning package: this tool requests execution outside
-    #: the sandbox when its arguments ask for escalation. The tool itself
-    #: refuses to discharge escalation without an active approval layer, and
-    #: the execution pipeline requires an approval-capable guard for these
-    #: calls — the sandbox and permission layers read this declaration instead
-    #: of hard-coding tool names.
-    escapes_sandbox: bool = False
+    #: The owning package is the only place that knows which argument values
+    #: request execution outside the sandbox. Returning a requirement makes
+    #: that one call approval-gated; ``None`` is an ordinary sandboxed call.
+    sandbox_escape: Callable[[Mapping[str, JsonValue]], SandboxEscape | None] | None = None
     #: Declared by the owning package: the model-facing category of this tool
     #: (``read``/``edit``/``execute``/``search``/``fetch``/``think``/``other``).
     #: Clients such as ACP render it directly; carriers consume the
@@ -320,6 +325,7 @@ __all__ = [
     "CompleteTurn",
     "ContinueTurn",
     "GuardDecision",
+    "SandboxEscape",
     "ToolCallRef",
     "ToolExecution",
     "ToolFailed",

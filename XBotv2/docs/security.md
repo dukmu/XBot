@@ -30,10 +30,11 @@ payloads and share only the approval transport.
   through the parent permission chain.
 - `deny`: always wins over an allow at the same effective policy layer.
 
-`check()` is a read-only policy query. `check_tool_call()` is the consuming
-authorization path. It must not log raw command bodies, patch content, or
-permission regexes. Audit logs record request id, source, outcome, and failure
-class.
+`check()` is a read-only policy query. The registered permission guard owns the
+authorization attempt and consumes a matching one-shot grant only after the
+final decision is `allow`. It must not log raw command bodies, patch content,
+or permission regexes. Audit logs record request id, source, outcome, and
+failure class.
 
 While a turn is live, a client that reloads or reconnects rebuilds an
 unanswered dialog from `OpenSessionResponse.pending_interactions`; clients must
@@ -50,12 +51,21 @@ human `/sandbox` command and the authenticated session-policy route are the
 configuration surfaces for changing the policy; an Agent cannot rewrite the
 policy through shell text.
 
+The escalation parameter belongs to the shell Tool, not to permission policy.
+The shell declares a typed per-call sandbox-escape predicate on its Tool
+registration. The generic execution, permission, and sandbox layers consume
+that declaration without hard-coding the shell name or its argument values. A
+blanket Tool allow therefore still asks for approval unless an explicit allow
+rule constrains the declared escape argument.
+
 ## Paths
 
 `RuntimeVariables.for_thread(...)` and `ArtifactStore.model_path()` provide
 absolute model-facing paths. Artifact IDs remain logical and persisted. A
 relative Tool path resolves inside the workspace; `session/...` is an ordinary
 workspace path, not a virtual storage prefix.
+Permission `path_scope` is an absolute directory root after runtime-variable
+expansion; matching is filesystem containment, not a regular expression.
 
 ## Limits
 

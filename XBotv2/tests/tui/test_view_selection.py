@@ -119,6 +119,31 @@ async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
         await context.__aexit__(None, None, None)
 
 
+async def test_a_compact_prompt_stays_wholly_visible_after_a_short_resize() -> None:
+    screen = SelectionScreen(
+        "Permission required",
+        options("once", "session", "deny"),
+        description=(
+            "Tool: ask_user\n"
+            "Permission approval required for tool: ask_user."
+        ),
+        hint="↑↓ choose · Enter confirm · Esc deny",
+        compact=True,
+    )
+    app = Harness(screen)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+
+        card = app.screen.query_one("#selection")
+        title = app.screen.query_one("#selection-title")
+        assert card.region.y >= 0
+        assert card.region.bottom <= app.screen.region.bottom
+        assert title.region.y >= card.region.y
+        assert title.region.bottom <= card.region.bottom
+
+
 async def test_arrows_move_the_highlight() -> None:
     app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
     try:

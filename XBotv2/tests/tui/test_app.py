@@ -677,6 +677,35 @@ async def test_the_app_adopts_the_server_command_catalogue() -> None:
         assert parsed is not None and parsed.name == "status"
 
 
+async def test_one_pageup_loads_and_displays_the_previous_server_page() -> None:
+    from XBotv2.tests.tui.factories import history_page
+
+    backend = ScriptedBackend(
+        session=snapshot(
+            history=[human_record(f"tail-{index}", f"tail {index}") for index in range(10)],
+            history_cursor="older-cursor",
+        ),
+        pages=[history_page(*[
+            human_record(f"old-{index}", f"older {index}") for index in range(10)
+        ])],
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        assert app.view is not None
+        assert app.view.transcript.mounted_ids == tuple(
+            f"tail-{index}" for index in range(10)
+        )
+
+        await pilot.press("pageup")
+        await settle(pilot)
+
+        assert backend.page_reads[-1]["cursor"] == "older-cursor"
+        assert app.view.transcript.mounted_ids == tuple(
+            f"old-{index}" for index in range(10)
+        )
+
+
 # --- the command palette and slash commands ------------------------------
 
 

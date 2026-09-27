@@ -2327,7 +2327,8 @@ async def test_http_selects_model_within_provider(
                 "model": "alternate-model-2",
                 "max_context_tokens": 8192,
                 "max_output_tokens": 1024,
-                "thinking": "enabled",
+                "reasoning_effort": "high",
+                "effort": ["high"],
             },
         ],
     }
@@ -2346,7 +2347,7 @@ async def test_http_selects_model_within_provider(
     assert selected.status_code == 200
     assert selected.json()["provider"] == "alternate"
     assert selected.json()["model"] == "alternate-model-2"
-    assert selected.json()["model_mode"] == "enabled"
+    assert selected.json()["model_mode"] == "high"
 
     unknown = await client.put(
         "/sessions/model-switch/threads/t/provider",

@@ -198,10 +198,6 @@
       - {tool_pattern: '(?:browser_click|browser_fill|browser_press|browser_select)', decision: ask}
       - {tool_pattern: edit, decision: ask}
       - {tool_pattern: path, decision: ask}
-      - tool_pattern: shell
-        param_patterns:
-          sandbox_permissions: require_escalated
-        decision: ask
       - tool_pattern: .*
         param_patterns:
           command: rm -rf /.*

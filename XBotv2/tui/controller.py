@@ -406,6 +406,13 @@ class TuiController:
             await self.flush()
             return True
         loaded = await self.load_older()
+        if loaded:
+            # The first attempt established that the mounted window was already
+            # at the oldest entry held locally. Once the server prepends a page,
+            # apply the same navigation intent to that new state; requiring a
+            # second PageUp leaves the new rows invisible and makes the notice
+            # appear to flash without doing anything.
+            await self._view.page_older(self.state)
         await self.flush()
         return loaded
 

@@ -38,6 +38,10 @@
 
 以下结果只说明对应工作树当时经过了这些套件，不替代下面的逐项退出条件。
 
+- [x] 2026-09-27 当前工作树完整 Core `537 passed in 67.68s`；Core browser `36 passed in 13.25s`，真实 Chromium revision 与 Playwright 1.61 对齐后覆盖交互、截图生命周期、私网子资源阻断和 DNS rebinding。默认 production application 另验证 workspace 内普通 `edit` 的 write/replace/patch 均为 allow。
+- [x] 2026-09-27 权限边界移除 policy 对 `sandbox_permissions=require_escalated` 的重复编码：shell Tool 以 typed `sandbox_escape` predicate 唯一声明逃逸条件，agentloop、permissions、sandbox 消费同一声明；`path_scope` 统一为 RuntimeVariables 展开后的绝对目录根并按 filesystem containment 判断。相关 Core focused `192 passed`，静态搜索确认旧 `escapes_sandbox`/`check_tool_call`/默认 escalation rule 归零。
+- [x] 2026-09-27 当前工作树完整 Textual TUI `879 passed in 130.00s`，包含真实 uvicorn/HTTP/SSE 与 tmux。分页/长会话切换的 DOM remove/mount/refresh 统一在一次 Textual repaint batch 内提交；一次 PageUp 跨 server cursor 会加载并立即显示上一页；手动上滚的 entry+屏幕行锚点和 tail-follow 语义继续由行为测试覆盖。compact permission chooser 在 120×40→80×24 后完整保留标题、边框、选项和提示；PTY harness 按 Textual 已协商的 in-band resize 协议发送真实终端事件，避免把旧宽 frame 裁切误报为产品 render。
+- [x] 2026-09-27 当前工作树 HTTP transport `101 passed in 67.92s`、queued fold-in `10 passed in 9.39s`、ACP adapter `7 passed in 4.28s`。旧 HTTP fixture 不再把 provider `thinking` 错投影为通用 `model_mode`，改由真实 `reasoning_effort` 验证模型选择响应。
 - [x] 历史扩大回归证据：状态栏改动前 Core+TUI `1296 passed in 149.42s`、HTTP transport `101 passed in 78.30s`。本轮前的 Core `532 passed in 59.99s`、TUI `837 passed in 113.55s` 与 Browser `36 passed in 12.74s` 仅作为历史证据；旧 `829/834/835 passed` 均为更早结果。Settings CSS 和 transcript 后续已通过当前完整 TUI 回归，见下项。
 - [x] 2026-09-26 Claude Code 基础显示与 Think 自适应高度改造后，主线 TUI 完整套件 `846 passed in 117.77s`（`-s`，含真实 loopback/tmux PTY）；覆盖无顶部 session bar、`❯`/`●` transcript、固定 composer、单行 status/footer、Think/tool 折叠、三尺寸 provider-compatible PTY、permission/ask-user、paste/follow-up、Settings、resize/focus、session switch/resume 和 plugin/config。
 - [x] 2026-09-26 Anthropic-compatible stream 的 `content_block_start` 可合法携带 `thinking: null` / `text: null`；旧 adapter 将 null 存入内部 str state，后续 delta 执行 `+=` 触发用户所见 `NoneType + str`。TDD 先复现准确异常，再在 provider 边界归一为空字符串；adapter 全套 `15 passed`，真实形状 HTTP/SSE→server→TUI fixture 通过，并以真实 MiniMax `xbot once` 短请求得到 `OK`。
@@ -219,6 +223,7 @@
 - [x] Permission chooser 按 Esc 走现有 typed deny API；不再仅 dismiss 后持续显示 `Approval required`。`send_message` 工具描述已禁止代替主会话 canonical final reply。
 - [x] `/help [command]` 已按动态 local+server command catalog 实现单命令详情；name/slash/alias 共用执行解析语义，description/usage/parameters/examples 只来自公开 `CommandDescription`。TDD 红测 4 项后 app/registry `140 passed`，真实 HTTP/server catalog 的 `/help undo` `1 passed`，完整 TUI（含 loopback/PTY）`876 passed in 139.33s`。
 - [x] 在 80x24 与长会话/scroll/resize 下验证分隔密度、可读性和 anchor 稳定性：手动上滚后的连续 tail update 保持同一可见 entry 与屏幕行偏移；长 paste 后第二轮自动跟随 final；permission/question 卡片在 80×24 保持完整边框。capture：`/tmp/pytest-of-shefrin/pytest-758/test_real_cli_tui_pty_complete0/pty-captures/`。
+- [x] 分页与长会话 redraw 使用单次 repaint batch，避免 remove/mount 中间树进入终端；跨 server cursor 的首次 PageUp 同一次操作即进入上一页。真实 tmux 的 resize harness 补齐 Textual 8 已协商 in-band resize 事件，短屏 permission card 不再以旧尺寸 frame 裁切，完整 TUI `879 passed`。
 - [ ] 按 `TEXTUAL_TUI_PLAN.md` 完成 Claude Code/Codex 风格单列对话布局：基础 transcript/composer/单行 status/footer 与 typed interaction 控件已完成；下一步是 subagent/resume 的真实 tmux render、长会话密度和同一真实路径的动态 resize/compact/reconnect/resume。完整布局须保持 80x24 可用。
 - [x] 状态栏只由 reducer facts 与公开 snapshot/event/API projection 驱动；activity → subagent/queue → usage/cache → context → session/thread → provider/model → agent/mode → generic slots → cwd 的优先级、窄屏裁切、Unicode cell-width、active jobs attach hydration 与 context overflow 均有行为测试和真实路径证据。
 - [ ] Settings overlay 覆盖只读 Status、Model、Permissions、Sandbox、schema-driven Plugins 和 Appearance；所有服务端值走现有公开 API，冲突保留草稿，未持久化的外观选项明确标为本次运行。

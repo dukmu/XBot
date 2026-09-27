@@ -60,16 +60,14 @@ def test_parameter_rules_require_every_declared_parameter():
     assert permissions.check("edit", {"path": "other.md", "mode": "write"}) == "ask"
 
 
-def test_once_grant_is_consumed_only_by_checking_the_matching_call():
+def test_once_grant_is_consumed_only_for_the_matching_call():
     permissions = PermissionSystem(_policy(default="ask"))
     arguments = {"path": "report.txt", "content": "done"}
     permissions.grant_once("edit", {"path": r"report\.txt", "content": "done"})
 
     assert permissions.check("edit", {**arguments, "content": "other"}) == "ask"
-    decision, _reason = permissions.check_tool_call(
-        ToolCall(id="once", name="edit", args=arguments),
-    )
-    assert decision == "allow"
+    assert permissions.check("edit", arguments) == "allow"
+    permissions.consume_once("edit", arguments)
     assert permissions.check("edit", arguments) == "ask"
 
 
@@ -138,6 +136,12 @@ def test_invalid_patterns_are_rejected_when_policy_is_installed():
         PermissionSystem(_policy(PermissionRule(
             tool_pattern="edit",
             path_scope="${unknown}",
+            decision="allow",
+        )))
+    with pytest.raises(ValueError, match="must resolve to an absolute path"):
+        PermissionSystem(_policy(PermissionRule(
+            tool_pattern="edit",
+            path_scope="relative/path",
             decision="allow",
         )))
 

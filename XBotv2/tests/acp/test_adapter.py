@@ -49,6 +49,7 @@ from XBotv2.core.domain import (
     StructuredToolOutput,
     TokenCounters,
     TurnId,
+    TurnRequest,
     TurnScope,
     UsageDelta,
     UsageSnapshot,
@@ -76,18 +77,27 @@ from XBotv2.core.tools import (
 from XBotv2.agentloop.protocol import (
     AssistantCompleted,
     AssistantTextDelta,
+    LoopTurnEnded,
     LoopTurnStarted,
     StartedToolCall,
     ToolCallsStarted,
     ToolCompleted,
+    TurnFinished,
     UsageObserved,
+    is_loop_event,
 )
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobUpdatedEvent
-from XBotv2.interactions.protocol import UserInputOption, UserInputRequest
-from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
-from XBotv2.session.protocol import MessagePublishedEvent
-from XBotv2.session.records import HumanInputRecord
+from XBotv2.interactions.protocol import (
+    Answered,
+    UserInputOption,
+    UserInputRequest,
+)
+from XBotv2.permissions.contracts import (
+    Allowed,
+    PermissionRequest,
+    ToolPermission,
+)
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session import SessionSummary, ThreadSummary
 
@@ -96,20 +106,20 @@ def _exchange() -> ModelExchange:
     return ModelExchange(
         observation=RequestObservation(
             selection=_selection().model,
-            purpose="turn",
+            purpose=TurnRequest(turn_id=TurnId("turn-1")),
             estimated_input_tokens=0,
             observed_context=ProviderMeasured(tokens=0),
         ),
         usage=UsageDelta(counters=TokenCounters()),
-        timing=ModelTiming(),
+        timing=ModelTiming(total_ms=0),
         stop=CompletedStop(),
-        provider_extensions=ProviderExtensions(),
+        provider_extensions=ProviderExtensions(provider="default"),
     )
 
 
 def _selection() -> ResolvedRuntimeSelection:
     return ResolvedRuntimeSelection(
-        agent_name="",
+        agent_name="default",
         prompt="",
         limits=AgentExecutionLimits(),
         enabled_tools=(),
@@ -201,11 +211,16 @@ class FakeSessions:
         assert request.content == "hello"
         assert request.request_id == "acp:session-1"
         assert not request.images
+        turn_id = TurnId("turn-1")
         for event in self.events:
             self.event_sequence += 1
             await self.event_queue.put(SessionEventFrame(
                 sequence=self.event_sequence,
-                scope=SessionScope(),
+                scope=(
+                    TurnScope(turn_id)
+                    if is_loop_event(event)
+                    else SessionScope()
+                ),
                 event=event,
             ))
         return None
@@ -298,7 +313,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         )),
         ToolCallsStarted(calls=(StartedToolCall(
             call=ToolCall(id="call-1", name="shell", args={"command": "pwd"}),
-            category="shell",
+            category="execute",
         ),)),
         ToolCompleted(execution=ToolExecution(
             message=ToolMessage(
@@ -310,16 +325,14 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
             directive=ContinueTurn(),
         )),
         UsageObserved(usage=UsageDelta(counters=TokenCounters(
-            input_tokens=90,
-            output_tokens=10,
-            total_tokens=100,
-            context_tokens=80,
+            input=80,
+            output=10,
         ))),
         JobUpdatedEvent(view=JobView(
             id="task-1",
             kind="shell",
             label="pytest",
-            state="completed",
+            state="succeeded",
             elapsed_ms=0,
             summary="passed",
         )),
@@ -363,7 +376,7 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
             call=ToolCallRef(id="call-1", name="shell"),
             outcome=ToolSucceeded(output=ToolOutput(
                 parts=(TextPart(text="/workspace"),),
-                structured=StructuredToolOutput(kind="exit_code", value=0),
+                structured=StructuredToolOutput(kind="exit_code"),
                 artifacts=(ArtifactRef(id="tool_results/out.txt"),),
             )),
             timing=ToolTiming(duration_ms=0),
@@ -377,8 +390,9 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
         "tool_call_update",
     ]
     assert replayed[1].title == "Injected context · task-1 / notification"
-    assert replayed[-1].raw_output["content"] == "/workspace"
-    assert replayed[-1].raw_output["artifacts"] == [
+    output = replayed[-1].raw_output["output"]
+    assert output["parts"][0]["text"] == "/workspace"
+    assert output["artifacts"] == [
         ArtifactRef(id="tool_results/out.txt").model_dump(mode="json")
     ]
 
@@ -398,8 +412,8 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
         source="tool",
         question="Choose",
         options=(
-            UserInputOption(label="first"),
-            UserInputOption(label="second"),
+            UserInputOption(label="first", description="the first"),
+            UserInputOption(label="second", description="the second"),
         ),
     )
     permission = await agent._handle_interaction("session-1", permission_event)
@@ -407,13 +421,8 @@ async def test_interactions_use_acp_permission_and_elicitation(tmp_path) -> None
     await agent._resolve_interaction("session-1", permission_event)
     await agent._resolve_interaction("session-1", user_input_event)
 
-    assert permission == {
-        "request_id": "permission-1",
-        "status": "answered",
-        "decision": "allow",
-        "scope": "session",
-    }
-    assert answer["answer"] == "second"
+    assert permission == Allowed(scope="session")
+    assert answer == Answered(answer="second")
     host = agent.sessions
     assert isinstance(host, FakeSessions)
     assert [kind for kind, _ in host.interaction_responses] == [
@@ -432,17 +441,15 @@ class ProtocolClient:
 
 async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
     host = FakeSessions([
-        {"type": "assistant_message_delta", "data": {"content": "done"}},
-        {
-            "type": "usage",
-            "data": {
-                "input_tokens": 4,
-                "output_tokens": 1,
-                "total_tokens": 5,
-                "context_tokens": 4,
-            },
-        },
-        {"type": "turn_finished", "data": {"turn": 1}},
+        AssistantTextDelta(text="done"),
+        UsageObserved(usage=UsageDelta(counters=TokenCounters(
+            input=4,
+            output=1,
+        ))),
+        LoopTurnEnded(
+            turn=1,
+            outcome=TurnFinished(stop_reason="completed"),
+        ),
     ])
     agent = XBotACPAgent(
         sessions=host,
@@ -594,7 +601,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         if getattr(update, "content", None) is not None
     ]
     assert content_updates[0].content.text == "real runtime"
-    assert [message.content for message in forked_messages] == [
+    assert [message.parts[0].text for message in forked_messages] == [
         "hello",
         "real runtime",
     ]
@@ -658,10 +665,7 @@ async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -
             self._frame = SessionEventFrame(
                 sequence=1,
                 scope=SessionScope(),
-                event=MessagePublishedEvent(record=HumanInputRecord(
-                    id="u1",
-                    content="hi",
-                )),
+                event=AssistantTextDelta(text="hi"),
             )
 
         def __aiter__(self):
