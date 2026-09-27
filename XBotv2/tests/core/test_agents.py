@@ -102,7 +102,7 @@ def test_builtin_default_definition_is_primary_capable():
     assert isinstance(definition.tool_policy.enabled, AllTools)
 
 
-def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_path):
+def test_agent_frontmatter_expands_permission_config_before_typed_loading(tmp_path):
     path = tmp_path / "reviewer.md"
     path.write_text(
         "---\n"
@@ -110,7 +110,7 @@ def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_pa
         "permission_policy:\n"
         "  rules:\n"
         "    - tool_pattern: filesystem_read\n"
-        "      path_scope: ${workspace}\n"
+        "      path_scope: '$${workspace}/.*\\.md'\n"
         "      decision: allow\n"
         "---\n"
         "```var\n"
@@ -126,4 +126,4 @@ def test_agent_markdown_expands_prompt_but_preserves_permission_variables(tmp_pa
     definition = load_definition(path, variables)
 
     assert definition.prompt == str(tmp_path / "state/artifacts/tool_results")
-    assert definition.permission_policy.rules[0].path_scope == "${workspace}"
+    assert definition.permission_policy.rules[0].path_scope == f"{tmp_path}/workspace/.*\\.md"

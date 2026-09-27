@@ -12,12 +12,13 @@ from XBotv2.core.paths import RuntimePaths, ThreadPaths
 from XBotv2.core.artifacts import ArtifactKind
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_REFERENCE = re.compile(r"\$\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-# ``${env:NAME}`` resolves against the process environment at config-parse
-# time; runtime variables are the bare ``${name}`` references below.
-_ENV_REFERENCE = re.compile(r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
-_RUNTIME_ENV_HINT = "env reference must be expanded during configuration parsing"
+# ``$${env:NAME}`` resolves against the process environment at config-parse
+# time; runtime variables use the same marker without the ``env:`` namespace.
+# Single-dollar ``${...}`` is ordinary text, preserving regular-expression syntax.
+_ENV_REFERENCE = re.compile(r"\$\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+_RUNTIME_ENV_HINT = "environment reference must be expanded during configuration parsing"
 _MARKDOWN_VAR_BLOCK = re.compile(
     r"^```var[ \t]*\r?\n[ \t]*\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}[ \t]*"
     r"\r?\n```[ \t]*$",
@@ -26,19 +27,20 @@ _MARKDOWN_VAR_BLOCK = re.compile(
 
 
 def expand_env_refs(value: str, *, source: str = "value") -> str:
-    """Expand ``${env:NAME}`` references against the process environment.
+    """Expand ``$${env:NAME}`` references against the process environment.
 
     This is the config-parse phase of the one expansion engine: environment
     references carry an explicit ``env:`` namespace and fail closed when the
-    variable is unset. Runtime references (``${name}``) are left untouched so
-    the session phase can resolve them later.
+    variable is unset. Runtime references (``$${name}``) are left untouched so
+    the session phase can resolve them later. Single-dollar ``${...}`` text is
+    left unchanged.
     """
 
     def replacement(match: re.Match[str]) -> str:
         name = match.group(1)
         if name not in os.environ:
             raise ValueError(
-                f"Environment variable ${{{name}}} is not set in {source}"
+                f"Environment variable $${{{name}}} is not set in {source}"
             )
         return os.environ[name]
 
@@ -46,7 +48,7 @@ def expand_env_refs(value: str, *, source: str = "value") -> str:
 
 
 class RuntimeVariables(Mapping[str, str]):
-    """Immutable runtime values expanded from ``${name}`` references."""
+    """Immutable runtime values expanded from ``$${name}`` references."""
 
     __slots__ = ("_values",)
 
@@ -129,11 +131,7 @@ class RuntimeVariables(Mapping[str, str]):
         source: str = "value",
     ) -> str:
         """Expand references and reject unknown variable names."""
-        return self._replace(value, source=source, regex=False)
-
-    def expand_regex(self, value: str, *, source: str = "regex") -> str:
-        """Expand references as escaped literals inside a regular expression."""
-        return self._replace(value, source=source, regex=True)
+        return self._replace(value, source=source)
 
     def expand_markdown(self, value: str, *, source: str = "Markdown") -> str:
         """Replace explicit Markdown ``var`` blocks without touching other text."""
@@ -145,11 +143,12 @@ class RuntimeVariables(Mapping[str, str]):
         return _MARKDOWN_VAR_BLOCK.sub(replacement, value)
 
     def expand_config(self, value: object, *, source: str = "config") -> object:
-        """Expand every runtime reference in a nested JSON config in place.
+        """Expand every ``$${name}`` reference in a nested JSON config.
 
         Config values are expanded automatically once the session's runtime
         variables exist; consumers receive plain values instead of calling
-        ``expand`` themselves.
+        ``expand`` themselves. Single-dollar ``${...}`` sequences remain
+        literal, which lets regex-valued config retain its own syntax.
         """
         if isinstance(value, str):
             return self.expand(value, source=source)
@@ -176,7 +175,6 @@ class RuntimeVariables(Mapping[str, str]):
         value: str,
         *,
         source: str,
-        regex: bool,
     ) -> str:
         if _ENV_REFERENCE.search(value):
             raise ValueError(f"{_RUNTIME_ENV_HINT}: {value!r} in {source}")
@@ -184,8 +182,7 @@ class RuntimeVariables(Mapping[str, str]):
         def replacement(match: re.Match[str]) -> str:
             name = match.group(1)
             self._require(name, source)
-            result = self._values[name]
-            return re.escape(result) if regex else result
+            return self._values[name]
 
         return _REFERENCE.sub(replacement, value)
 
@@ -193,9 +190,9 @@ class RuntimeVariables(Mapping[str, str]):
         if name not in self._values:
             if name.startswith("env:"):
                 raise ValueError(
-                    f"{_RUNTIME_ENV_HINT}: ${{{name}}} in {source}"
+                    f"{_RUNTIME_ENV_HINT}: $${{{name}}} in {source}"
                 )
-            raise ValueError(f"Unknown runtime variable ${{{name}}} in {source}")
+            raise ValueError(f"Unknown runtime variable $${{{name}}} in {source}")
 
 
 __all__ = ["RuntimeVariables", "expand_env_refs"]

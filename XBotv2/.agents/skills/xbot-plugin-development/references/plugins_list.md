@@ -47,7 +47,7 @@ Textual TUI); it is not an Agent, server, or ACP process.
 | `skills` | `skills` | agent | tools, commands, sandbox, runtime paths | discovered skill Tools and prompt commands |
 | `mcp_plugin` | `mcp_plugin` | agent | tools, model, interactions, session, usage, loop state | configured MCP Tools/resources/prompts; public id in `mcp_plugin/contracts.py` |
 | `content_cache` | `content_cache` | agent | artifacts | lossless externalization of oversized accepted user input and Tool output |
-| `compact` | `compact` | agent | tools, commands, model, loop state, usage | compaction Tool/command and history events |
+| `compact` | `compact` | agent | tools, commands, model, loop state, usage, artifacts | compaction Tool/command and history events |
 | `browser` | `browser` | agent | tools, session, sandbox, artifacts | Web research and isolated browser Tools |
 | `token_manager` | `token_manager` | agent | session | request/context observation diagnostics |
 | `workspace_instructions` | `workspace_instructions` | agent | variables, workspace root | `AGENTS.md` context contribution |
@@ -140,7 +140,7 @@ context. Define new cross-plugin facts in the owning package.
 | conversation surface and append-only trajectory | `ThreadPersistence.history` / `ConversationHistory` | never copy messages into plugin state |
 | pending user inputs | `ThreadPersistence.inbox` / Agent inbox | use the inbox API; do not create a second queue |
 | artifacts | `ArtifactStore` via `ctx.artifacts` | use typed artifact references, not hand-built paths |
-| usage | `ctx.state.namespace("usage")` through `UsageService` | record deltas; do not recalculate from duplicated history |
+| usage | `ctx.state.namespace("usage")` through `UsageService` | persist cumulative counters; derive only the latest turn observation from canonical assistant messages |
 | Todo/Goal/plugin data | the owning plugin's `ctx.state.namespace(name)` | one typed snapshot per related state |
 | runtime waiters/clients/jobs | owning live service | never persist handles or Context objects |
 

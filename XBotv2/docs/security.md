@@ -10,8 +10,9 @@ references.
 
 The sandbox is a hard capability ceiling: mounts, network, workspace access,
 runtime data visibility, and host execution are decided by sandbox policy.
-The permission system is a Tool-call policy: it matches the exact Tool name
-and parameter values using bounded full-match regular expressions.
+The permission system is a Tool-call policy: it matches Tool names, parameter
+values, and supported resolved filesystem paths using bounded full-match
+regular expressions.
 
 Approval cannot widen the sandbox. If a sandbox guard rejects a call, that
 permission-layer attempt is consumed as an authorization attempt but execution
@@ -64,8 +65,12 @@ rule constrains the declared escape argument.
 absolute model-facing paths. Artifact IDs remain logical and persisted. A
 relative Tool path resolves inside the workspace; `session/...` is an ordinary
 workspace path, not a virtual storage prefix.
-Permission `path_scope` is an absolute directory root after runtime-variable
-expansion; matching is filesystem containment, not a regular expression.
+Permission `path_scope` is a bounded full-match regex over every resolved path
+argument supported by the Tool operation. Config variables use `$${NAME}` and
+are expanded by the shared configuration loader before plugin validation;
+`${...}` remains literal. Variable values are inserted verbatim, including
+regex metacharacters. See the [permission configuration guide](../.agents/skills/xbot-plugin-development/references/plugins/permissions.md#yaml-configuration-and-variable-expansion)
+for rule fields, matching, examples, and precedence.
 
 ## Limits
 

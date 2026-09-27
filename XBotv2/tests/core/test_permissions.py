@@ -118,7 +118,7 @@ def test_workspace_path_scope_checks_all_paths_and_resolves_symlinks(tmp_path):
     permissions = PermissionSystem(
         _policy(PermissionRule(
             tool_pattern="(?:read|edit|path|search)",
-            path_scope="${workspace}",
+            path_scope=re.escape(str(workspace)) + r"/.*",
             decision="allow",
         )),
         variables=RuntimeVariables({"workspace": workspace}),
@@ -132,18 +132,46 @@ def test_workspace_path_scope_checks_all_paths_and_resolves_symlinks(tmp_path):
 def test_invalid_patterns_are_rejected_when_policy_is_installed():
     with pytest.raises(ValueError, match="Invalid permission regular expression"):
         PermissionSystem(_policy(_rule("[", "allow")))
-    with pytest.raises(ValueError, match="Unknown runtime variable"):
+    with pytest.raises(ValueError, match="Invalid permission regular expression"):
         PermissionSystem(_policy(PermissionRule(
             tool_pattern="edit",
-            path_scope="${unknown}",
+            path_scope="[",
             decision="allow",
         )))
-    with pytest.raises(ValueError, match="must resolve to an absolute path"):
-        PermissionSystem(_policy(PermissionRule(
-            tool_pattern="edit",
-            path_scope="relative/path",
-            decision="allow",
-        )))
+
+
+def test_path_scope_is_a_full_match_regex_over_resolved_paths(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    permissions = PermissionSystem(_policy(PermissionRule(
+        tool_pattern="edit",
+        path_scope=re.escape(str(workspace)) + r"/notes-.*\.md",
+        decision="allow",
+    )), variables=RuntimeVariables({"workspace": workspace}))
+
+    assert permissions.check("edit", {
+        "path": str(workspace / "notes-one.md"), "mode": "write",
+    }) == "allow"
+    assert permissions.check("edit", {
+        "path": str(workspace / "notes-one.txt"), "mode": "write",
+    }) == "ask"
+
+
+def test_single_dollar_braces_survive_config_expansion_for_regex_matching(tmp_path):
+    literal_dir = tmp_path / "${workspace}"
+    literal_dir.mkdir()
+    pattern = r".*/\$\{workspace\}/literal\.md"
+    expanded = RuntimeVariables({"workspace": tmp_path}).expand_config(pattern)
+    assert expanded == pattern
+
+    permissions = PermissionSystem(_policy(PermissionRule(
+        tool_pattern="edit",
+        path_scope=expanded,
+        decision="allow",
+    )), variables=RuntimeVariables({"workspace": tmp_path}))
+    assert permissions.check("edit", {
+        "path": str(literal_dir / "literal.md"), "mode": "write",
+    }) == "allow"
 
 
 def test_shell_omitted_cwd_is_matched_against_runtime_workspace(tmp_path):

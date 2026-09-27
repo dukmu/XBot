@@ -4,8 +4,9 @@
 # service-availability driven）：每个插件声明 inject 依赖，XCore 在所需服务
 # 可用时自动激活。
 #
-# `${env:VAR}` 由插件树解析器读取环境变量；`${workspace}` 等运行时变量
-# 保持字面量并由对应配置消费者展开。Agent 选择、model override、父子关系等
+# `$${env:VAR}` 由配置加载层读取环境变量；`$${workspace}` 等运行时变量在
+# session 配置加载时由同一层展开，再将已展开配置交给插件。单 `$` 的 `${...}`
+# 保持原样，供正则等配置语法使用。Agent 选择、model override、父子关系等
 # launch facts 由 application 直接持有，不进入插件配置。
 # 配置层按固定顺序叠加：<data-dir>/config/plugins.yaml → 工作区
 # .xbot/plugins.yaml → session/<id>/config.yaml → 启动时内存覆盖。后三层
@@ -189,10 +190,10 @@
       - {tool_pattern: '(?:task_create|task_get|task_update|task_list)', decision: allow}
       - {tool_pattern: read, decision: allow}
       - tool_pattern: edit
-        path_scope: ${workspace}
+        path_scope: '$${workspace}/.*'
         decision: allow
       - tool_pattern: path
-        path_scope: ${workspace}
+        path_scope: '$${workspace}/.*'
         decision: allow
       - {tool_pattern: shell, decision: allow}
       - {tool_pattern: '(?:browser_click|browser_fill|browser_press|browser_select)', decision: ask}

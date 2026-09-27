@@ -18,12 +18,13 @@ def _tree(tmp_path, doc: str):
 def test_expand_env_refs_is_strict_and_inline(monkeypatch):
     monkeypatch.setenv("XBOT_SESSION_HEADER", "opencode-session")
     assert expand_env_refs(
-        "prompt/${env:XBOT_SESSION_HEADER}/end"
+        "prompt/$${env:XBOT_SESSION_HEADER}/end"
     ) == "prompt/opencode-session/end"
     with pytest.raises(ValueError, match="UNSET_VAR"):
-        expand_env_refs("${env:UNSET_VAR}")
+        expand_env_refs("$${env:UNSET_VAR}")
     # Runtime references are not env references: they survive pass one.
-    assert expand_env_refs("${session_id}") == "${session_id}"
+    assert expand_env_refs("$${session_id}") == "$${session_id}"
+    assert expand_env_refs(r"${env:NOT_A_REFERENCE}") == r"${env:NOT_A_REFERENCE}"
 
 
 def test_runtime_variables_keep_identities_verbatim():
@@ -47,19 +48,26 @@ def test_expand_config_recurses_and_rejects_env_at_runtime(tmp_path):
             thread_dir="/t", state_dir="/st",
         ),
         "session_id": "s1",
+        "scope_pattern": "/w/(src|tests)",
     })
     expanded = variables.expand_config({
-        "headers": {"x-opencode-session": "${session_id}"},
-        "nested": {"paths": ["${workspace}/a", "/plain"]},
+        "headers": {"x-opencode-session": "$${session_id}"},
+        "nested": {"paths": ["$${workspace}/a", "/plain"]},
+        "regex": "$${workspace}/.*\\.md",
+        "regex_value": "$${scope_pattern}/.*",
+        "literal": r"${workspace}",
         "count": 3,
     })
     assert expanded == {
         "headers": {"x-opencode-session": "s1"},
         "nested": {"paths": ["/w/a", "/plain"]},
+        "regex": "/w/.*\\.md",
+        "regex_value": "/w/(src|tests)/.*",
+        "literal": r"${workspace}",
         "count": 3,
     }
-    with pytest.raises(ValueError, match="env reference"):
-        variables.expand_config("${env:ANY}")
+    with pytest.raises(ValueError, match="environment reference"):
+        variables.expand_config("$${env:ANY}")
 
 
 def test_two_passes_expand_provider_headers_at_session_load(tmp_path, monkeypatch):
@@ -75,12 +83,12 @@ plugins:
         opencode:
           protocol: openai
           base_url: http://127.0.0.1:11435/v1
-          api_key: "${env:XBOT_PROVIDER_TOKEN}"
+          api_key: "$${env:XBOT_PROVIDER_TOKEN}"
           default_model: gpt-4
           models:
             - model: gpt-4
           headers:
-            x-opencode-session: "${session_id}"
+            x-opencode-session: "$${session_id}"
 """
     paths = _tree(tmp_path, doc)
     tree = load_plugin_tree(paths, tmp_path, session_id="s1", thread_id="agent")
@@ -93,21 +101,36 @@ plugins:
     }
 
 
-def test_permission_path_scope_resolves_against_runtime_workspace(tmp_path):
+def test_plugin_config_expands_permission_regex_before_permission_loading(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
-    policy = PermissionPolicy.model_validate({
-        "default_decision": "ask",
-        "rules": [{
-            "tool_pattern": "edit",
-            "path_scope": "${workspace}",
-            "decision": "allow",
-        }],
-    })
+    paths = _tree(
+        tmp_path / "data",
+        """
+plugins:
+  - id: permissions
+    name: permissions
+    config:
+      default_decision: ask
+      rules:
+        - tool_pattern: edit
+          path_scope: '$${workspace}/.*\\.md'
+          decision: allow
+""",
+    )
+    tree = load_plugin_tree(
+        paths, workspace, session_id="scope-test", thread_id="agent"
+    )
+    entry = next(item for item in tree.entries if item.id == "permissions")
+    expanded_scope = entry.config["rules"][0]["path_scope"]
+    assert expanded_scope == f"{workspace}/.*\\.md"
+
+    policy = PermissionPolicy.model_validate(entry.config)
     permissions = PermissionSystem(
         policy,
         variables=RuntimeVariables({"workspace": str(workspace)}),
     )
 
     assert permissions.check("edit", {"path": "report.md", "mode": "write"}) == "allow"
+    assert permissions.check("edit", {"path": "report.txt", "mode": "write"}) == "ask"
     assert permissions.check("edit", {"path": "../outside.md", "mode": "write"}) == "ask"

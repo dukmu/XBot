@@ -36,7 +36,7 @@ class TestResourcePathResolution:
         resolved = policy.resolve_resource_path("skills/test.md")
         assert Path(resolved) == temp_workspace / "data" / "skills" / "test.md"
 
-    def test_resource_path_uses_shared_runtime_variables(self, tmp_path):
+    def test_resource_path_uses_already_expanded_config(self, tmp_path):
         plugin_states = tmp_path / "session" / "plugin_states"
         variables = RuntimeVariables({
             "workspace": tmp_path / "workspace",
@@ -45,7 +45,7 @@ class TestResourcePathResolution:
         })
         config = SandboxConfig(
             resources=[
-                SandboxResourceConfig(path="${plugin_states}", access="readonly"),
+                SandboxResourceConfig(path=str(plugin_states), access="readonly"),
             ],
         )
         policy = SandboxPolicy(

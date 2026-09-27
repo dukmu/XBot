@@ -54,8 +54,14 @@ def load_definition(
     raw_metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
     if not isinstance(raw_metadata, dict):
         raise ValueError(f"Agent frontmatter must be a mapping: {path}")
+    expanded_metadata = variables.expand_config(
+        raw_metadata,
+        source=f"Agent frontmatter in {path}",
+    )
     try:
-        metadata = TypeAdapter(dict[str, JsonValue]).validate_python(raw_metadata)
+        metadata = TypeAdapter(dict[str, JsonValue]).validate_python(
+            expanded_metadata
+        )
     except ValueError as exc:
         raise ValueError(f"Agent frontmatter must contain JSON values: {path}") from exc
     unknown = set(metadata) - _FIELDS

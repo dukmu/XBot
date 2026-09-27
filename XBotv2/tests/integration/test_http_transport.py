@@ -1247,12 +1247,7 @@ async def test_todo_and_usage_survive_http_close_resume(
     assert usage["total_counters"]["prompt_cache_write"] == 9
     assert application_snapshot.usage == UsageSnapshot.model_validate(usage)
     assert usage_updates[-1].snapshot == application_snapshot.usage
-    assert [request["purpose"]["kind"] for request in usage["requests"]].count(
-        "turn"
-    ) == 2
-    assert [request["purpose"]["kind"] for request in usage["requests"]].count(
-        "auxiliary"
-    ) == 1
+    assert "requests" not in usage
     assert usage["latest_turn_observation"]["observed_context"] == {
         "kind": "provider_measured",
         "tokens": 21,
@@ -1284,7 +1279,12 @@ async def test_todo_and_usage_survive_http_close_resume(
         await client.get("/sessions/todo-recovery/threads/main")
     ).json()
     assert inactive["status"] == "inactive"
-    assert inactive["usage"] == active["usage"]
+    assert inactive["usage"]["total_counters"] == active["usage"]["total_counters"]
+    assert (
+        inactive["usage"]["latest_turn_observation"]
+        == active["usage"]["latest_turn_observation"]
+    )
+    assert "requests" not in inactive["usage"]
 
     resumed = await client.post(
         "/sessions",
@@ -1295,6 +1295,10 @@ async def test_todo_and_usage_survive_http_close_resume(
         },
     )
     assert resumed.status_code == 200
+    resumed_thread = (
+        await client.get("/sessions/todo-recovery/threads/main")
+    ).json()
+    assert resumed_thread["usage"] == inactive["usage"]
     assert any(
         item["kind"] == "tool"
         and item["call"]["name"] == "task_create"

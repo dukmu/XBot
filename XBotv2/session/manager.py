@@ -22,7 +22,13 @@ from XBotv2.core.runtime_logging import (
 from XBotv2.core.errors import OperationError
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ImageRef
-from XBotv2.core.messages import ConversationMessage, HumanInputMessage, RuntimeNoticeMessage, ToolMessage
+from XBotv2.core.messages import (
+    AssistantMessage,
+    ConversationMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
 from XBotv2.core.parts import ImagePart
 from XBotv2.core.tools import ToolFailed, ToolSucceeded
 from XBotv2.agentloop import Events
@@ -30,10 +36,15 @@ from XBotv2.agentloop.events import StateChanged
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.usage import (
-    USAGE_SNAPSHOT_KEY,
+    USAGE_COUNTERS_KEY,
     USAGE_STATE_NAMESPACE,
 )
-from XBotv2.core.domain import Cursor, ReasoningGenerationMode, UsageSnapshot
+from XBotv2.core.domain import (
+    Cursor,
+    ReasoningGenerationMode,
+    TokenCounters,
+    UsageSnapshot,
+)
 from XBotv2.core.providers import BaseProvider
 from XBotv2.permissions import Allowed, Denied, PermissionsPort
 from XBotv2.interactions import (
@@ -1512,13 +1523,28 @@ async def _read_usage(
     persistence: ThreadPersistencePort,
 ) -> UsageSnapshot:
     stored = await persistence.state.namespace(USAGE_STATE_NAMESPACE).get(
-        USAGE_SNAPSHOT_KEY
+        USAGE_COUNTERS_KEY
     )
     if stored is None:
         return UsageSnapshot()
     if not isinstance(stored, dict):
         raise TypeError("Persisted usage snapshot must be an object")
-    return UsageSnapshot.model_validate(stored)
+    if set(stored) != {"total_counters"}:
+        raise ValueError("Persisted usage must contain only total_counters")
+    counters = TokenCounters.model_validate(stored["total_counters"])
+    latest = next(
+        (
+            message.exchange.observation
+            for message in reversed(persistence.history.load_surface())
+            if isinstance(message, AssistantMessage)
+            and message.exchange.observation.purpose.kind == "turn"
+        ),
+        None,
+    )
+    return UsageSnapshot(
+        total_counters=counters,
+        latest_turn_observation=latest,
+    )
 
 
 def _upload_bytes(data: str) -> bytes:

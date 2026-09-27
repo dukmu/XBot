@@ -313,7 +313,7 @@ class TestProviderConfigLoader:
             service.provider_config("nonexistent_provider")
 
     def test_missing_env_var_is_rejected(self, tmp_path, monkeypatch):
-        """An unset ${env:NAME} fails closed at the config-load boundary."""
+        """An unset $${env:NAME} fails closed at the config-load boundary."""
         from XBotv2.config.loader import load_plugin_tree
         from XBotv2.core.paths import RuntimePaths
 
@@ -327,7 +327,7 @@ class TestProviderConfigLoader:
             "      custom:\n"
             "        protocol: openai\n"
             "        default_model: gpt-4\n"
-            "        api_key: \"${env:NONEXISTENT_VAR}\"\n",
+            "        api_key: \"$${env:NONEXISTENT_VAR}\"\n",
             encoding="utf-8",
         )
         with pytest.raises(ValueError, match="NONEXISTENT_VAR"):

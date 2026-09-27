@@ -17,11 +17,16 @@ from XBotv2.application import (
     ApplicationInitialized,
     RuntimeEvent,
 )
-from XBotv2.core.domain import RequestObservation, UsageDelta, UsageSnapshot
+from XBotv2.core.domain import (
+    RequestObservation,
+    TokenCounters,
+    UsageDelta,
+    UsageSnapshot,
+)
 from XBotv2.core.messages import AssistantMessage, ConversationMessage
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.usage.contracts import (
-    USAGE_SNAPSHOT_KEY,
+    USAGE_COUNTERS_KEY,
     USAGE_STATE_NAMESPACE,
     UsageUpdated,
 )
@@ -47,30 +52,48 @@ class UsageService:
         async with self._lock:
             if self._initialized:
                 return
-            stored = await self._store.get(USAGE_SNAPSHOT_KEY)
+            stored = await self._store.get(USAGE_COUNTERS_KEY)
             source = "history"
             if stored is None:
                 snapshot = UsageSnapshot()
+                has_exchange = False
                 for message in messages:
                     if isinstance(message, AssistantMessage):
+                        has_exchange = True
                         snapshot = snapshot.add(
                             message.exchange.observation,
                             message.exchange.usage,
                         )
                 self._snapshot = snapshot
-                if snapshot.requests:
+                if has_exchange:
                     await self._persist()
             else:
                 source = "snapshot"
                 if not isinstance(stored, Mapping):
                     raise TypeError("Persisted usage snapshot must be an object")
-                self._snapshot = UsageSnapshot.model_validate(stored)
+                if set(stored) != {"total_counters"}:
+                    raise ValueError(
+                        "Persisted usage must contain only total_counters"
+                    )
+                counters = TokenCounters.model_validate(stored["total_counters"])
+                latest = next(
+                    (
+                        message.exchange.observation
+                        for message in reversed(messages)
+                        if isinstance(message, AssistantMessage)
+                        and message.exchange.observation.purpose.kind == "turn"
+                    ),
+                    None,
+                )
+                self._snapshot = UsageSnapshot(
+                    total_counters=counters,
+                    latest_turn_observation=latest,
+                )
             self._initialized = True
             self._log.info(
                 "usage.initialized",
                 source=source,
                 messages=len(messages),
-                requests=len(self._snapshot.requests),
                 counters=self._snapshot.total_counters.model_dump(mode="json"),
             )
 
@@ -103,8 +126,12 @@ class UsageService:
 
     async def _persist(self) -> None:
         await self._store.set(
-            USAGE_SNAPSHOT_KEY,
-            self._snapshot.model_dump(mode="json"),
+            USAGE_COUNTERS_KEY,
+            {
+                "total_counters": self._snapshot.total_counters.model_dump(
+                    mode="json"
+                )
+            },
         )
 
 

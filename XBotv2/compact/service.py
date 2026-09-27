@@ -30,6 +30,7 @@ from XBotv2.core.domain import (
     UsageDelta,
 )
 from XBotv2.agentloop import Events, LoopState
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.agentloop.events import (
     BeforeContextBuild,
     KeepContextRequest,
@@ -94,17 +95,18 @@ class CompactService:
         state: LoopState,
         usage: UsagePort,
         config: CompactConfig,
+        artifacts: ArtifactStorePort,
     ) -> None:
         self._events = events
         self.model = model
         self.state = state
         self._usage = usage
+        self._artifacts = artifacts
         self._automatic = config.automatic
         self._output_reservation = config.output_reservation
         self._trigger_ratio = config.trigger_ratio
         self._keep_recent_turns = config.keep_recent_turns
         self._summary_max_chars = config.summary_max_chars
-        self._summary_output_tokens = config.summary_output_tokens
         self._manual_requested = False
         self._overflow_retries = 0
         self._overflow_owner: tuple[str, str] | None = None
@@ -200,7 +202,6 @@ class CompactService:
             context_limit=context_limit,
             max_context_tokens=selection.context_window,
             output_reservation=output_reservation,
-            summary_output_tokens=self._summary_output_tokens,
         )
         if proposal is not None:
             await self._commit(proposal)
@@ -242,7 +243,6 @@ class CompactService:
                 context_limit=max_context,
                 max_context_tokens=max_context,
                 output_reservation=request.selection.generation.max_output_tokens,
-                summary_output_tokens=self._summary_output_tokens,
                 stable_prefix=leading_system_messages(request.messages),
             )
             if proposal is None:
@@ -414,7 +414,6 @@ class CompactService:
         context_limit: int | None = None,
         max_context_tokens: int | None = None,
         output_reservation: int | None = None,
-        summary_output_tokens: int | None = None,
         stable_prefix: Sequence[ConversationMessage] | None = None,
         removable_estimate: int | None = None,
     ) -> CompactionPlan | None:
@@ -442,12 +441,9 @@ class CompactService:
             context_limit=context_limit,
             max_context_tokens=max_context_tokens,
             output_reservation=output_reservation,
-            summary_output_tokens=(
-                self._summary_output_tokens
-                if summary_output_tokens is None else summary_output_tokens
-            ),
             stable_prefix=stable,
             removable_estimate=removable_estimate,
+            artifacts=self._artifacts,
             record_trajectory=lambda event: self.state.history.record(
                 event, durable=True
             ),

@@ -128,6 +128,27 @@ def body_of(widget) -> str:
     return part_of(widget, ".body")
 
 
+def test_repeated_stream_updates_keep_only_one_tail_settle_chain(monkeypatch) -> None:
+    """Streaming reuses one layout-settle chain instead of stacking chains."""
+    scroll = TranscriptScroll()
+    callbacks = []
+    pins = []
+    monkeypatch.setattr(scroll, "call_after_refresh", callbacks.append)
+    monkeypatch.setattr(scroll, "scroll_to_tail", lambda: pins.append(True))
+
+    scroll.follow_tail_after_refresh()
+    scroll.follow_tail_after_refresh()
+    callbacks.pop(0)()
+    # A body/Think update can land while Textual is still settling the prior
+    # layout. It extends the same chain; it must not create a parallel one.
+    scroll.follow_tail_after_refresh()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert len(pins) == 4
+    assert scroll._tail_follow_pending is False
+
+
 # --- the mounted window ---------------------------------------------------
 
 

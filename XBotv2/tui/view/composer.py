@@ -67,7 +67,7 @@ class ComposerModel:
 
 
 def composer_enabled(model: ComposerModel) -> bool:
-    return not model.read_only
+    return not model.read_only and not model.facts.compaction
 
 
 def composer_can_submit(model: ComposerModel, *, text: str) -> bool:
@@ -94,6 +94,8 @@ def composer_hint(model: ComposerModel) -> str:
         return "Interrupting…"
     if model.submission_in_flight:
         return "Sending…"
+    if facts.compaction:
+        return "Compacting conversation…"
     if model.pending_images > 0 and running:
         return (
             f"{_attachment_note(model.pending_images)} — Enter queues · "
@@ -115,6 +117,8 @@ def composer_placeholder(model: ComposerModel) -> str:
         return "/approve ID | /deny ID"
     if facts.interaction is Interaction.USER_INPUT:
         return "/answer ID <text>"
+    if facts.compaction:
+        return "compacting conversation"
     return ""
 
 

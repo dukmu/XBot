@@ -16,15 +16,17 @@ from XBotv2.compact.events import PRE_COMPACT
 from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed
 from XBotv2.compact.summary import (
     compacted_message,
-    limit_summary,
     normalize_summary,
     strip_summary_heading,
     summary_request,
 )
+from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.domain import (
     InputId,
     MessageId,
     ProviderError,
+    ToolCallId,
+    ToolTiming,
     TransactionAborted,
     TransactionEnded,
     TransactionRef,
@@ -43,10 +45,15 @@ from XBotv2.core.messages import (
     ToolMessage,
 )
 from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderSystem, ProviderUser
+from XBotv2.core.provider import ProviderSystem, ProviderTool, ProviderUser
 from XBotv2.core.stream import ModelFailed
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ToolCall, ToolSucceeded
+from XBotv2.core.tools import (
+    ToolCall,
+    ToolCallRef,
+    ToolOutput,
+    ToolSucceeded,
+)
 from XBotv2.llm.mock import MockLLM
 
 
@@ -55,6 +62,26 @@ def _human(index: int, text: str) -> HumanInputMessage:
         id=MessageId(f"message-{index}"),
         input_id=InputId(f"input-{index}"),
         parts=(TextPart(text=text),),
+    )
+
+
+def _externalized_tool_message(store, text: str = "bounded provider preview") -> ToolMessage:
+    """One tool message whose complete result lives in the ArtifactStore."""
+    ref = store.put(
+        ArtifactKind.TOOL_RESULT,
+        b"the complete original tool result",
+        media_type="text/plain; charset=utf-8",
+        name="original-tool-result.txt",
+        suffix=".txt",
+    )
+    return ToolMessage(
+        id=MessageId("message-tool"),
+        call=ToolCallRef(id=ToolCallId("call-1"), name="read"),
+        outcome=ToolSucceeded(output=ToolOutput(
+            parts=(TextPart(text=text),),
+            artifacts=(ref,),
+        )),
+        timing=ToolTiming(duration_ms=1),
     )
 
 
@@ -70,17 +97,14 @@ def test_compaction_prefix_requires_at_least_one_recent_turn():
         compact_prefix_end((_human(1, "one"),), keep_recent_turns=0)
 
 
-def test_summary_normalization_removes_heading_and_hard_limits_output():
+def test_summary_normalization_removes_heading_and_keeps_full_text():
     assert strip_summary_heading("## Conversation Summary\nbody") == "body"
-    normalized, truncated = normalize_summary(
-        "## Conversation Summary\n" + "a" * 100,
-        40,
-    )
-    assert truncated and len(normalized) <= 40
+    # The summary is never truncated: an overlong answer is kept verbatim so
+    # no evidence is lost, and length stays a prompt-level instruction.
+    overlong = "## Conversation Summary\n" + "a" * 100
+    assert normalize_summary(overlong) == "a" * 100
     with pytest.raises(RuntimeError, match="empty"):
-        normalize_summary("  ", 100)
-    with pytest.raises(ValueError, match=">= 1"):
-        limit_summary("content", 0)
+        normalize_summary("  ")
 
 
 def test_summary_request_is_provider_typed_and_does_not_mutate_history():
@@ -90,6 +114,48 @@ def test_summary_request_is_provider_typed_and_does_not_mutate_history():
     assert isinstance(request[1], ProviderUser)
     assert isinstance(request[-1], ProviderUser)
     assert message.parts[0].text == "important decision"
+
+
+def test_summary_request_resolves_tool_artifacts_through_the_store(artifact_store):
+    message = _externalized_tool_message(artifact_store)
+
+    request = summary_request(
+        (message,),
+        max_chars=500,
+        artifacts=artifact_store,
+    )
+
+    tool = next(item for item in request if isinstance(item, ProviderTool))
+    prompt = "".join(part.text for part in tool.parts if isinstance(part, TextPart))
+    path = artifact_store.model_path(message.outcome.output.artifacts[0])
+    assert path in prompt
+    assert 'name="original-tool-result.txt"' in prompt
+    assert "Use filesystem or shell tools" in prompt
+    # The summary input keeps the bounded preview, never the full original.
+    assert "the complete original tool result" not in prompt
+    assert "bounded provider preview" in prompt
+
+
+def test_summary_request_requires_a_store_for_artifact_bearing_history():
+    ref = ArtifactRef(
+        id="tool_results/unresolvable.txt",
+        media_type="text/plain",
+        name="original-tool-result.txt",
+        kind=ArtifactKind.TOOL_RESULT,
+        size=1,
+    )
+    message = ToolMessage(
+        id=MessageId("message-tool"),
+        call=ToolCallRef(id=ToolCallId("call-1"), name="read"),
+        outcome=ToolSucceeded(output=ToolOutput(
+            parts=(TextPart(text="preview"),),
+            artifacts=(ref,),
+        )),
+        timing=ToolTiming(duration_ms=1),
+    )
+
+    with pytest.raises(RuntimeError, match="ArtifactStore for tool outputs"):
+        summary_request((message,), max_chars=500)
 
 
 def test_compacted_message_has_its_own_canonical_kind_and_identity():
@@ -514,7 +580,6 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
                 "trigger_ratio": 0.01,
                 "output_reservation": 1,
                 "keep_recent_turns": 1,
-                "summary_output_tokens": 16,
             },
         },
     ]
@@ -656,7 +721,6 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
                 "trigger_ratio": 1.0,
                 "output_reservation": 0,
                 "keep_recent_turns": 1,
-                "summary_output_tokens": 16,
             },
         },
     ]
@@ -890,7 +954,6 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
                     "trigger_ratio": 0.1,
                     "output_reservation": 64,
                     "keep_recent_turns": 1,
-                    "summary_output_tokens": 32,
                 },
             },
         ],
@@ -991,7 +1054,6 @@ async def test_automatic_compaction_is_triggered_before_request_and_survives_res
                 "trigger_ratio": 0.01,
                 "output_reservation": 1,
                 "keep_recent_turns": 1,
-                "summary_output_tokens": 16,
             },
         },
     ]
@@ -1090,7 +1152,6 @@ async def test_automatic_summary_failure_preserves_the_full_live_and_durable_his
                     "trigger_ratio": 0.01,
                     "output_reservation": 1,
                     "keep_recent_turns": 1,
-                    "summary_output_tokens": 16,
                 },
             },
         ],
@@ -1181,7 +1242,6 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
                 "trigger_ratio": 1.0,
                 "output_reservation": 0,
                 "keep_recent_turns": 1,
-                "summary_output_tokens": 16,
             },
         },
     ]
@@ -1318,7 +1378,6 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
                     "trigger_ratio": 0.01,
                     "output_reservation": 1,
                     "keep_recent_turns": 1,
-                    "summary_output_tokens": 16,
                 },
             },
         ],
@@ -1434,6 +1493,417 @@ async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
             for item in application.engine.messages
             if isinstance(item, AssistantMessage)
             for part in item.parts
+        )
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+async def test_compact_command_resolves_externalized_tool_artifacts(
+    temp_data_dir, temp_workspace
+):
+    """A real externalized tool result must not break the summary request."""
+    (Path(temp_workspace) / "notes.txt").write_text(
+        "original tool output " * 20,
+        encoding="utf-8",
+    )
+    provider = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "read-notes",
+                "name": "read",
+                "args": {"path": "notes.txt"},
+            }],
+        },
+        {"content": "First answer"},
+        {"content": "The user inspected notes.txt and chose decision Y."},
+    ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-artifact-e2e",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "content_cache",
+                "config": {
+                    "threshold_chars": 10,
+                    "preview_chars": 8,
+                    "tail_chars": 3,
+                },
+            },
+            {"id": "compact", "config": {"automatic": False, "keep_recent_turns": 1}},
+        ],
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(application.engine, "Read notes.txt")
+
+        externalized = [
+            item
+            for item in application.engine.messages
+            if isinstance(item, ToolMessage)
+            and isinstance(item.outcome, ToolSucceeded)
+            and item.outcome.output.artifacts
+        ]
+        assert externalized, "the tool result was not externalized into an artifact"
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        assert result.status == "ok", result.message
+        summaries = [
+            item
+            for item in application.engine.messages
+            if isinstance(item, CompactionSummaryMessage)
+        ]
+        assert len(summaries) == 1
+        assert "decision Y" in summaries[0].summary
+        assert any(
+            isinstance(event, CompactionCompleted) for event in runtime_events
+        )
+
+        # The auxiliary summary request resolved the logical ref to a real path.
+        summary_requests = [
+            request
+            for request in provider.request_history
+            if not request.tools
+        ]
+        assert summary_requests
+        tool_parts = [
+            part
+            for request in summary_requests
+            for message in request.messages
+            if isinstance(message, ProviderTool)
+            for part in message.parts
+            if isinstance(part, TextPart)
+        ]
+        assert any(
+            application.thread_persistence.artifacts.model_path(ref) in part.text
+            for ref in externalized[0].outcome.output.artifacts
+            for part in tool_parts
+        )
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_commits_over_artifact_bearing_history(
+    temp_data_dir, temp_workspace
+):
+    """Automatic compaction must not silently skip artifact-bearing history."""
+    (Path(temp_workspace) / "AGENTS.md").write_text(
+        "Follow this detailed workspace policy. " * 500,
+        encoding="utf-8",
+    )
+    (Path(temp_workspace) / "notes.txt").write_text(
+        "original tool output " * 20,
+        encoding="utf-8",
+    )
+    provider = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "read-notes",
+                "name": "read",
+                "args": {"path": "notes.txt"},
+            }],
+        },
+        {"content": "first answer"},
+        {"content": "summary retaining decision Y"},
+        {"content": "second answer"},
+    ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-artifact-automatic-e2e",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 4096,
+                                "max_output_tokens": 1024,
+                            }],
+                        },
+                    },
+                },
+            },
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "content_cache",
+                "config": {
+                    "threshold_chars": 10,
+                    "preview_chars": 8,
+                    "tail_chars": 3,
+                },
+            },
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": True,
+                    "trigger_ratio": 0.1,
+                    "output_reservation": 64,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(application.engine, "Read notes.txt")
+
+        externalized = [
+            item
+            for item in application.engine.messages
+            if isinstance(item, ToolMessage)
+            and isinstance(item.outcome, ToolSucceeded)
+            and item.outcome.output.artifacts
+        ]
+        assert externalized, "the tool result was not externalized into an artifact"
+
+        await _run_turn(application.engine, "Continue after reading notes")
+
+        completions = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert completions, f"automatic compaction did not commit: {failures}"
+        assert completions[0].reason == "automatic"
+        assert not failures
+        assert any(
+            isinstance(item, CompactionSummaryMessage)
+            and "decision Y" in item.summary
+            for item in application.engine.messages
+        )
+        assert application.thread_persistence.history.load_surface() == tuple(
+            application.engine.messages
+        )
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+async def test_compaction_summary_keeps_the_model_output_budget(
+    temp_data_dir, temp_workspace
+):
+    """A thinking model must keep its full output budget for the summary.
+
+    The auxiliary request previously narrowed ``max_output_tokens`` to a small
+    compaction cap. A reasoning model then spent that whole budget thinking and
+    returned no text, so compaction failed with an empty summary.
+    """
+    provider = MockLLM(responses=[
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        # A reasoning-only reply: the summary text is empty, which must stay a
+        # real failure rather than being silently accepted.
+        {"reasoning": "thinking only, no summary text"},
+    ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-output-budget-e2e",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {"id": "compact", "config": {"automatic": False, "keep_recent_turns": 1}},
+        ],
+    )
+    try:
+        await _run_turn(application.engine, "First task " + "a" * 100)
+        await _run_turn(application.engine, "Second task")
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        # A reasoning-only reply is still rejected: compaction never accepts an
+        # empty summary.
+        assert result.status == "error"
+        assert "empty summary" in result.message
+
+        # The auxiliary request reuses the runtime output budget unchanged.
+        summary_requests = [r for r in provider.request_history if not r.tools]
+        assert summary_requests
+        runtime_output = (
+            application.loop_state.metadata.value
+            .runtime_selection.model.generation.max_output_tokens
+        )
+        assert all(
+            request.selection.generation.max_output_tokens == runtime_output
+            for request in summary_requests
+        )
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.asyncio
+async def test_compaction_releases_context_and_the_session_continues(
+    temp_data_dir, temp_workspace, automatic
+):
+    """Compaction over the threshold returns the session to low usage.
+
+    Covers both operator paths over the same session shape: a manual /compact,
+    and automatic compaction when the prepared request crosses the threshold.
+    After either one the rebuilt request must be back under the threshold, so
+    the following turns neither overflow nor compact again.
+    """
+    provider = MockLLM(responses=[
+        {"content": "answer one"},
+        {"content": "answer two"},
+        {"content": "summary of the earlier work"},
+        {"content": "answer three"},
+        {"content": "answer four"},
+        {"content": "answer five"},
+        {"content": "answer six"},
+    ])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id=f"compact-release-{'auto' if automatic else 'manual'}",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 65_536,
+                                "max_output_tokens": 1024,
+                            }],
+                        },
+                    },
+                },
+            },
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": automatic,
+                    "trigger_ratio": 0.2,
+                    "output_reservation": 64,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    runtime_events = []
+    ready_requests: list[ModelRequestReady] = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        application.on(
+            Events.MODEL_REQUEST_READY,
+            lambda event: ready_requests.append(event),
+        )
+        model = application.loop_state.metadata.value.runtime_selection.model
+        context_limit = context_token_limit(
+            model.context_window,
+            trigger_ratio=0.2,
+            output_reservation=64,
+        )
+
+        # A large first turn plus a short second one push the request estimate
+        # over the threshold, leaving a compactable prefix behind.
+        await _run_turn(application.engine, "big " * 5_000)
+        await _run_turn(application.engine, "short follow-up")
+
+        if automatic:
+            # The over-threshold request is compacted before it is sent, and
+            # the engine rebuilds the candidate from the compacted surface.
+            assert any(
+                isinstance(event, CompactionCompleted)
+                for event in runtime_events
+            ), "automatic compaction did not run over the threshold"
+        else:
+            over = estimate_model_request_tokens(ready_requests[-1].request)
+            assert over > context_limit
+            result = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(command="compact", kind="server", raw_args=""),
+            )
+            assert result.status == "ok", result.message
+
+        completions = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        assert len(completions) == 1
+        assert completions[0].reason == ("automatic" if automatic else "manual")
+        assert (
+            completions[0].metrics.context_tokens_after_estimate
+            < completions[0].metrics.context_tokens_before
+        )
+        assert any(
+            isinstance(item, CompactionSummaryMessage)
+            for item in application.engine.messages
+        )
+
+        # Continue the session: the rebuilt request is back under the threshold.
+        await _run_turn(application.engine, "continue after compaction")
+        after_estimate = estimate_model_request_tokens(ready_requests[-1].request)
+        assert after_estimate < context_limit, (
+            f"request after compaction is {after_estimate}, still over {context_limit}"
+        )
+
+        # Later turns run normally and never compact again.
+        for text in ("question two", "question three", "question four"):
+            events = [
+                event async for event in application.engine.run_turn(
+                    InboxItem(target=InboxTarget.NEXT_TURN, input=HumanInput(content=text)),
+                )
+            ]
+            assert not [event for event in events if isinstance(event, LoopError)]
+
+        assert not [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len([
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]) == 1, "compaction ran more than once"
+        assert application.thread_persistence.history.load_surface() == tuple(
+            application.engine.messages
         )
     finally:
         await application.destroy()

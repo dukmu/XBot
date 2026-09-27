@@ -47,7 +47,7 @@ from XBotv2.session.records import AssistantRecord, HumanInputRecord
 from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
 from XBotv2.tui.app import TuiApp
 from XBotv2.tui.transport import TransportConfig
-from XBotv2.tui.view.composer import Composer
+from XBotv2.tui.view.composer import Composer, composer_can_submit
 from XBotv2.tui.view.jobs import JobPanel
 from XBotv2.tui.view.status_bar import StatusBar
 from XBotv2.tui.view.transcript import TranscriptScroll
@@ -384,7 +384,11 @@ async def base_url(
         model_responses = [
             {"content": CAPTION},
             *[{'content': f'answer {index}'} for index in range(5)],
-            {"content": "summary of the earlier discussion"},
+            {
+                "content": "summary of the earlier discussion",
+                "chunks": [{"content": "summary of the earlier discussion"}],
+                "chunk_delay_ms": 400,
+            },
             {"content": "answer after compact resume"},
         ]
     elif scenario in {"subagent", "subagent_running"}:
@@ -2009,6 +2013,16 @@ async def test_real_tui_compact_command_renders_event_and_persists_summary_traje
 
         composer.load_text("/compact")
         await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: "Compacting" in status_text(app)
+            and "Compacting" in composer.hint_text,
+            description="the server compaction state in status and composer",
+        )
+        assert app.controller is not None
+        assert not composer_can_submit(
+            app.controller.composer_model(), text="another turn"
+        )
         await wait_for(
             pilot,
             lambda: "Conversation compacted" in transcript_text(app)

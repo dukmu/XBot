@@ -138,7 +138,6 @@ def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
     )
     snapshot = UsageSnapshot(
         total_counters=TokenCounters(input=300, output=50, cache_read=100),
-        requests=(observation,),
         latest_turn_observation=observation,
     )
 

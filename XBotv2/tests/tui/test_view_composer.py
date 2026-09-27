@@ -76,6 +76,15 @@ def test_an_interrupt_in_flight_says_so() -> None:
     assert "interrupt" in hint.lower()
 
 
+def test_compaction_updates_the_input_state_without_client_owned_flags() -> None:
+    compacting = model(
+        facts=StatusFacts(connection=Connection.CONNECTED, compaction=True)
+    )
+
+    assert "compact" in composer_hint(compacting).lower()
+    assert composer_can_submit(compacting, text="new turn") is False
+
+
 def test_a_read_only_view_says_so() -> None:
     assert "read-only" in composer_hint(model(read_only=True)).lower()
     assert composer_enabled(model(read_only=True)) is False

@@ -15,8 +15,8 @@ PermissionDecision = Literal["allow", "deny", "ask"]
 class PermissionRule(BaseModel):
     tool_pattern: str
     param_patterns: dict[str, str] = Field(default_factory=dict)
-    # Absolute directory root after RuntimeVariables expansion. Parameter
-    # values use regexes; path containment is a filesystem relation, not one.
+    # Full-match regex over every resolved filesystem path argument supported
+    # by the named Tool operation. Config variables are expanded before load.
     path_scope: str | None = None
     decision: PermissionDecision
     model_config = ConfigDict(extra="forbid", frozen=True)

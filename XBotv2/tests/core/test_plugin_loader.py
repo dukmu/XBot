@@ -163,7 +163,7 @@ class TestPluginTree:
         with pytest.raises(TypeError, match="boolean"):
             PluginOverlay.parse([{
                 "id": "a",
-                "disabled": "${env:XBOT_TEST_PLUGIN_DISABLED}",
+                "disabled": "$${env:XBOT_TEST_PLUGIN_DISABLED}",
             }])
 
     def test_overlay_can_explicitly_clear_isolate_and_profiles(self):

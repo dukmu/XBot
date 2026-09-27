@@ -12,7 +12,7 @@ from XBotv2.compact.tools import build_compact_tool
 
 
 class CompactPlugin:
-    inject = ["tools", "commands", "model", "loop_state", "usage"]
+    inject = ["tools", "commands", "model", "loop_state", "usage", "artifacts"]
     name = "compact"
     Config = CompactConfig
 
@@ -23,6 +23,7 @@ class CompactPlugin:
             state=ctx.loop_state,
             usage=ctx.usage,
             config=config,
+            artifacts=ctx.artifacts,
         )
 
         ctx.dispose(service._dispose)

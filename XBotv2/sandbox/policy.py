@@ -256,7 +256,7 @@ class SandboxPolicy(SandboxPort):
     # ------------------------------------------------------------------
 
     def resolve_resource_path(self, path: str) -> str:
-        p = Path(self.variables.expand(path, source="sandbox resource path"))
+        p = Path(path)
         return str(p.resolve() if p.is_absolute() else (self.data_root / p).resolve())
 
     def resolve_read_path(self, path: str) -> Path:
@@ -414,11 +414,9 @@ class SandboxPolicy(SandboxPort):
         self.workspace_read = config.workspace_read
         self.workspace_write = config.workspace_write
         for resource in config.resources:
-            path = self.variables.expand(
-                resource.path,
-                source="sandbox resource path",
+            self._rules.append(
+                SandboxResourceRule(path=resource.path, access=resource.access)
             )
-            self._rules.append(SandboxResourceRule(path=path, access=resource.access))
 
     def export_config(self) -> dict[str, JsonValue]:
         """Serialize the live sandbox config back to the format

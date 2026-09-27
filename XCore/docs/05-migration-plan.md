@@ -18,8 +18,8 @@
 3. **声明式启动（xcore.yaml）**：默认插件树在 `XBotv2/xcore.yaml`（类似
    DeepSeek Harness 的 `cordis.patch.yml`），条目含 id/name/config/disabled；
    会话动态值（paths/workspace/state_store/provider/engine_factory…）以
-   `${name}` 引用（`${env:VAR}` 读环境变量），由组合根（bootstrap）提供运行时
-   值后由 loader 解析 —— 不在 Python 里硬编码插件列表或逐条注入配置。
+   `$${name}` 引用（`$${env:VAR}` 读环境变量），由统一配置加载层在插件 schema
+   验证前展开 —— 不在插件中重复解析，也不在 Python 里硬编码插件列表。
 4. **服务即能力，XCore 原生卸载**：`ctx.tools` / `ctx.llm` / `ctx.session` /
    `ctx.jobs` / `ctx.state` … 全部由插件注册；插件注册工具/命令/提示词即
    fiber effect —— XCore 在 apply 期间跟踪当前 fiber（`current_fiber()`），
@@ -94,9 +94,10 @@ ALLOW/CONTINUE/DENY/STOP，替代 HookDecision）。
 ## 5. 插件树（xcore.yaml，cordis.yaml 机制，服务可用性驱动）
 
 `XBotv2/xcore.yaml` 是**唯一配置文档**（插件树 + 每插件配置：权限/沙箱/
-任务限制/钩子/工具/agent 指令），动态值以 `${name}` 引用（未知引用保留字面，
-如 `${workspace}` 由权限服务运行时展开）；`loader/` 的
-`PluginTree.from_yaml(path, values=...)` 解析引用，`Loader` 导入模块 → 解析
+任务限制/钩子/工具/agent 指令），动态值以 `$${name}` 引用；共享配置加载层在
+插件 schema 验证前展开。单 `$` 的 `${...}` 保持字面量，可用于正则语法；未知
+双 `$` 变量会明确报错。`loader/` 的 `PluginTree.from_yaml(path)` 解析
+插件树，配置层负责运行时变量展开，`Loader` 导入模块 → 解析
 `plugin` 导出 → 挂载（可 isolate），`LoaderComponent` 提供 `ctx.loader`。
 
 **组合根（bootstrap）只做组装**：会话身份 + 运行时值 + 合并外部插件目录与

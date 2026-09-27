@@ -36,16 +36,12 @@ def _permission_value(value: JsonValue) -> str:
     return str(value)
 
 
-def _validate_rule(rule: PermissionRule, variables: RuntimeVariables) -> None:
+def _validate_rule(rule: PermissionRule) -> None:
     compile_pattern(rule.tool_pattern)
     for pattern in rule.param_patterns.values():
         compile_pattern(pattern)
     if rule.path_scope is not None:
-        root = Path(
-            variables.expand(rule.path_scope, source="permission path scope")
-        ).expanduser()
-        if not root.is_absolute():
-            raise ValueError("Permission path scope must resolve to an absolute path")
+        compile_pattern(rule.path_scope)
 
 
 def _grant_rule(tool_name: str, param_patterns: Mapping[str, str]) -> PermissionRule:
@@ -84,7 +80,7 @@ class PermissionSystem:
         resolved = tuple(policies)
         for policy in resolved:
             for rule in policy.rules:
-                _validate_rule(rule, self.variables)
+                _validate_rule(rule)
         self._policies = resolved
 
     def replace_session_grants(self, grants: Sequence[PermissionRule]) -> None:
@@ -92,12 +88,12 @@ class PermissionSystem:
         for rule in resolved:
             if rule.decision != "allow":
                 raise ValueError("Session permission grants must allow")
-            _validate_rule(rule, self.variables)
+            _validate_rule(rule)
         self._session_grants = resolved
 
     def grant_once(self, tool_name: str, param_patterns: dict[str, str]) -> None:
         rule = _grant_rule(tool_name, param_patterns)
-        _validate_rule(rule, self.variables)
+        _validate_rule(rule)
         self._once_grants.append(rule)
 
     def check(
@@ -242,9 +238,6 @@ class PermissionSystem:
         fields = PATH_ACCESS.get(operation or "", ())
         if not fields:
             return False
-        root = Path(
-            self.variables.expand(scope, source="permission path scope")
-        ).expanduser().resolve()
         workspace = self.variables.get("workspace")
         for field, _access in fields:
             value = args.get(field)
@@ -260,7 +253,7 @@ class PermissionSystem:
                     return False
             except (OSError, RuntimeError):
                 return False
-            if not resolved.is_relative_to(root):
+            if not fullmatch(scope, str(resolved)):
                 return False
         return True
 

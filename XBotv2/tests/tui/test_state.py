@@ -456,7 +456,6 @@ def _metrics() -> CompactionMetrics:
         history_chars_before=1,
         history_chars_after=1,
         summary_chars=1,
-        summary_truncated=False,
         messages_before=1,
         messages_after=1,
         messages_removed=0,

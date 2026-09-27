@@ -42,10 +42,10 @@ def load_plugin_tree(
 
     The two-pass variable contract:
 
-    1. ``${env:NAME}`` references were expanded while the document loaded
+    1. ``$${env:NAME}`` references were expanded while the document loaded
        (``expand_env_refs`` over the plugin tree), before a session exists;
     2. once a session identity is known this loader expands every
-       ``${name}`` runtime reference (``workspace``, ``session_id``,
+       ``$${name}`` runtime reference (``workspace``, ``session_id``,
        ``thread_id``, ...) in each plugin config with the session's
        ``RuntimeVariables``, so consumers receive plain values.
     """

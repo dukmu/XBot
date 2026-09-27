@@ -8,7 +8,7 @@ replaced.
 - **Import/profile:** `XBotv2.compact`, Agent profile.
 - **Source:** `compact/contracts.py`, `service.py`, `plugin.py`, `protocol.py`,
   `tools.py`, and `commands.py`.
-- **Injects:** `tools`, `commands`, `model`, `loop_state`, `usage`.
+- **Injects:** `tools`, `commands`, `model`, `loop_state`, `usage`, `artifacts`.
 - **Events:** observes context-build, model-request-ready, model-request-error,
   model-response-observed, and turn-end stages; publishes typed compaction
   events through the application runtime-event path.
@@ -25,7 +25,6 @@ class CompactConfig(BaseModel):
     trigger_ratio: float = 0.8
     keep_recent_turns: int = 4
     summary_max_chars: int = 8_000
-    summary_output_tokens: int = 2_048
 ```
 
 Fields are validated by the plugin's Pydantic `Config`. Automatic compaction
@@ -33,6 +32,13 @@ can run when the prepared request approaches the configured context threshold.
 One provider-confirmed context-overflow retry may run compaction and rebuild the
 request; other provider errors are not treated as overflow. The estimate and
 reason are included in typed compaction metrics/events.
+
+`summary_max_chars` is a prompt-level instruction only: it tells the model how
+long the summary should be. The returned summary is stored in full and is never
+truncated, so no evidence is lost. The auxiliary request reuses the active
+model's own output budget unchanged; compaction never narrows
+`max_output_tokens`, because a thinking model spends that budget on reasoning
+before it emits any summary text.
 
 ## Typed compaction contracts
 

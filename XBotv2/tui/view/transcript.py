@@ -54,6 +54,7 @@ class TranscriptScroll(VerticalScroll):
         super().__init__(*args, **kwargs)
         self._reader_anchor: Widget | None = None
         self._tail_follow_pending = False
+        self._tail_follow_remaining = 0
 
     @property
     def following_tail(self) -> bool:
@@ -115,15 +116,16 @@ class TranscriptScroll(VerticalScroll):
             self.scroll_end(animate=False, immediate=True)
 
     def follow_tail_after_refresh(self) -> None:
-        """Keep follow intent across the layout pass that creates the new tail."""
+        """Settle the newest layout without stacking another scroll chain."""
+        self._tail_follow_remaining = 3
+        if self._tail_follow_pending:
+            return
         self._tail_follow_pending = True
-        remaining = 3
 
         def follow() -> None:
-            nonlocal remaining
             self.scroll_to_tail()
-            remaining -= 1
-            if remaining:
+            self._tail_follow_remaining -= 1
+            if self._tail_follow_remaining:
                 self.call_after_refresh(follow)
             else:
                 self._tail_follow_pending = False

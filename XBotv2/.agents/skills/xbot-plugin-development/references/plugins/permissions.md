@@ -28,22 +28,97 @@ class PermissionPolicy(BaseModel):
     default_decision: Literal["allow", "deny", "ask"] = "ask"
 ```
 
-Tool names and constrained argument values use bounded full-match regular
-expressions. Every constrained parameter must exist and match; parameters not
-mentioned by the rule are unrestricted. Structured values are matched as
-canonical JSON. `path_scope` applies only to supported filesystem path
-arguments. It must resolve, after runtime-variable expansion, to an absolute
-directory root and is checked by filesystem containment rather than regex
-matching. Matching limits are enforced and a limit error stops authorization;
-it is not treated as a successful non-match.
+### YAML configuration and variable expansion
 
-Across policy layers, any applicable deny wins; absent a deny, an ask at any
-layer requires approval; calls are allowed only when every applicable layer
-allows them. Explicit grants are considered after deny rules. A one-shot grant
-is consumed by one matching permission authorization attempt. A session grant
-is persisted in the current Agent thread's `permissions` StateService namespace
-and is restored when that thread resumes. Parent permission constraints apply
-to child Agents.
+Permission policies are part of the normal plugin configuration tree. The
+shared configuration loader expands variables before plugin schema validation
+and before constructing `PermissionPolicy`; the permissions plugin receives
+plain, already-expanded strings and never expands variables itself.
+
+Put the `permissions` entry in the normal plugin tree. The configuration
+layers are loaded in this order: built-in tree, global
+`<data-dir>/config/plugins.yaml`, workspace `<workspace>/.xbot/plugins.yaml`,
+then the active session's `<data-dir>/sessions/<session-id>/config.yaml`.
+Later layers patch earlier entries by plugin id and recursively merge config
+mappings; later scalar/list values replace earlier values. Agent
+`permission_policy` frontmatter is also expanded by the shared variable
+service before it is validated as a policy.
+
+Use `$${NAME}` for a runtime variable and `$${env:NAME}` for an environment
+variable. Environment references resolve while configuration files are read;
+runtime references resolve when the session configuration is assembled.
+Expansion substitutes the variable value verbatim. It does not quote or escape
+the value for a regex. A single-dollar `${...}` is ordinary text and remains
+unchanged, so regex syntax containing braces is not mistaken for interpolation.
+For example, `'$${workspace}/src/.*\.py'` expands the workspace prefix and
+leaves the regex suffix for the permission matcher. The explicit Markdown
+``var`` block used in Agent prompts is a separate prompt-substitution syntax.
+
+### Rule matching
+
+`tool_pattern`, every value in `param_patterns`, and `path_scope` are bounded,
+full-match regular expressions. A rule matches only when its tool pattern
+matches, every named parameter exists and matches, and its path scope matches.
+Parameters omitted from `param_patterns` are unrestricted. Structured
+parameter values are serialized as canonical JSON before matching.
+
+`path_scope` is applied only to filesystem path arguments supported by the
+Tool operation. Each such argument is resolved to an absolute path (relative
+paths are based at the runtime workspace and symlinks are resolved), then the
+regex must full-match that resolved path. If an operation has multiple path
+arguments, all of them must match. It is a path regex, not a directory-root
+field: use `'$${workspace}/.*'` to scope all paths under the workspace, or add
+regex constraints for narrower scopes.
+
+Example plugin configuration:
+
+```yaml
+- id: permissions
+  name: permissions
+  config:
+    default_decision: ask
+    rules:
+      - tool_pattern: edit
+        param_patterns:
+          mode: '(?:write|replace|patch)'
+        path_scope: '$${workspace}/(?:src|tests)/.*\.py'
+        decision: allow
+      - tool_pattern: shell
+        param_patterns:
+          command: 'git status(?: --short)?'
+        decision: allow
+      - tool_pattern: '.*'
+        param_patterns:
+          command: 'rm -rf /.*'
+        decision: deny
+```
+
+An environment value is written in the same YAML string form, for example
+`path_scope: '$${env:PROJECT_ROOT}/src/.*'`; it must be set when configuration
+is read. Runtime references such as `$${workspace}` are resolved when the
+active session/thread's plugin tree is assembled. Expansion applies to string
+values in nested plugin configuration, not mapping keys. A reference to an
+unknown runtime variable or an unset environment variable fails loading with
+an error rather than being kept or silently treated as empty.
+
+The configuration layer expands `$${workspace}` before validation; the
+permission rule then matches the resolved absolute path. Regex metacharacters
+in the inserted value retain their regex meaning by design. Patterns are
+compiled when installed and matching has pattern-size, input-size, time, and
+aggregate-call limits. Invalid patterns or exhausted budgets raise a clear
+error; they are never treated as a non-match that grants access.
+
+### Decision precedence
+
+Within one policy, a matching explicit deny wins. Otherwise a matching allow
+wins over a matching ask; if neither matches, `default_decision` applies.
+Across policies, deny wins, then ask, and the call is allowed only when all
+policy layers allow it. Parent Agent policy is another restrictive layer.
+Matching once/session grants can satisfy a call unless an explicit deny rule
+matches; a parent layer can still reject it. A one-shot grant is consumed only
+after the execution guard reaches a final allow. A session grant is persisted
+in the current Agent thread's `permissions` StateService namespace and is
+restored when that thread resumes.
 
 `PermissionsPort.check()` is a read-only policy query. The registered
 permission guard owns authorization and consumes a one-shot grant only after
@@ -52,7 +127,10 @@ Later sandbox or other guards can still reject an allowed call. Approvals do
 not widen sandbox policy. A Tool that can execute outside the sandbox declares
 its per-call `sandbox_escape` predicate on `Tool`; permission and sandbox
 plugins consume that declaration without copying Tool names or argument
-values. A general allow does not implicitly authorize a declared escape.
+values. A general allow does not implicitly authorize a declared escape; an
+explicit allow must constrain the Tool-declared escape argument. The shell's
+`sandbox_permissions=require_escalated` argument is shell execution behavior,
+not a permission-rule field and is not duplicated in YAML policy.
 
 ## Typed approval interaction
 

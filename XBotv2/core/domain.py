@@ -181,7 +181,6 @@ class UsageDelta(BaseModel):
 
 class UsageSnapshot(BaseModel):
     total_counters: TokenCounters = Field(default_factory=TokenCounters)
-    requests: tuple[RequestObservation, ...] = ()
     latest_turn_observation: RequestObservation | None = None
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -193,7 +192,6 @@ class UsageSnapshot(BaseModel):
         )
         return UsageSnapshot(
             total_counters=self.total_counters.add(delta.counters),
-            requests=(*self.requests, observation),
             latest_turn_observation=latest,
         )
 

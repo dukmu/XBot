@@ -1,8 +1,8 @@
 # `usage`
 
-Tracks cumulative token counters and per-request context observations for one
-Agent thread. The public model is `UsageSnapshot`; provider-specific raw usage
-metadata is normalized before it reaches this capability.
+Tracks cumulative token counters and the latest turn context observation for
+one Agent thread. The public model is `UsageSnapshot`; provider-specific raw
+usage metadata is normalized before it reaches this capability.
 
 - **Import/profile:** `XBotv2.usage`, Agent profile.
 - **Source:** `usage/contracts.py`, `plugin.py`.
@@ -10,7 +10,8 @@ metadata is normalized before it reaches this capability.
   (`UsagePort`).
 - **Events:** observes `ModelResponseObserved`; emits `RuntimeEvent` containing
   `UsageUpdated(snapshot=...)` after recording.
-- **Persistence:** `ctx.state.namespace("usage")`, key `snapshot`.
+- **Persistence:** `ctx.state.namespace("usage")`, key `counters`, containing
+  only cumulative `total_counters`.
 
 ## Canonical values
 
@@ -21,9 +22,8 @@ Import shared value types from `XBotv2.core`:
 - `UsageDelta`: one response's counter increment.
 - `RequestObservation`: resolved model selection, request purpose, estimated
   input tokens, and observed context.
-- `UsageSnapshot.requests`: request observations; only a `TurnRequest` updates
-  `latest_turn_observation`. Auxiliary requests add to cumulative totals but do
-  not replace the latest turn's context reading.
+- `UsageSnapshot.latest_turn_observation`: the latest turn request's context
+  reading. Auxiliary requests add to cumulative totals but do not replace it.
 - `ObservedContext`: either `ProviderMeasured(tokens=...)` or
   `MeasurementUnavailable(reason=...)`. Unlike the other values above, this one
   is not re-exported from `XBotv2.core`; import it from `XBotv2.core.domain`,
@@ -43,11 +43,13 @@ class UsagePort(Protocol):
     ) -> UsageSnapshot: ...
 ```
 
-The service initializes from its persisted snapshot when present; otherwise it
-reconstructs counters and request observations from assistant messages in the
-current conversation surface. Recording is serialized, persisted, and then
-published as `UsageUpdated`. The owning application places this snapshot in
-thread summaries and open-thread responses.
+The service persists only cumulative counters. Per-turn observations already
+belong to `AssistantMessage.exchange` in `messages.jsonl`; initialization,
+resume, and inactive thread reads derive only the latest turn observation from
+that canonical surface. Auxiliary observations are not retained after their
+counters are accumulated. Recording is serialized, persists the updated
+counters, and then publishes `UsageUpdated`. The owning application places the
+resulting projection in thread summaries and open-thread responses.
 
 ## Extension guidance
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from XBotv2.core import prompt_element
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import CompactionSummaryMessage, ConversationMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderMessage, ProviderSystem, ProviderUser
@@ -13,7 +14,6 @@ from XBotv2.context_builder.contracts import BuiltContext, HistoryComponent
 
 
 _SUMMARY_HEADING = "## Conversation Summary"
-_TRUNCATION_MARKER = "\n\n[Middle of overlong summary omitted]\n\n"
 
 
 def summary_request(
@@ -21,6 +21,7 @@ def summary_request(
     max_chars: int,
     *,
     stable_prefix: ProviderMessage | Sequence[ProviderMessage] | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> list[ProviderMessage]:
     instruction = (
         "Summarize the supplied older conversation for future continuation. "
@@ -46,45 +47,25 @@ def summary_request(
         *stable,
         ProviderSystem(parts=(TextPart(text=prompt_element("summary_instructions", instruction)),)),
         *ContextBuilder.messages_from_components(
-            BuiltContext([HistoryComponent(message) for message in messages])
+            BuiltContext([HistoryComponent(message) for message in messages]),
+            artifacts=artifacts,
         ),
         ProviderUser(parts=(TextPart(text=prompt_element("summary_request", "Produce the conversation summary now.")),)),
     ]
 
 
-def normalize_summary(summary: str, max_chars: int) -> tuple[str, bool]:
+def normalize_summary(summary: str) -> str:
+    """Return the model's summary text with any heading it echoed removed."""
     summary = strip_summary_heading(summary.strip())
     if not summary:
         raise RuntimeError("Compaction model returned an empty summary")
-    return limit_summary(summary, max_chars)
+    return summary
 
 
 def strip_summary_heading(summary: str) -> str:
     while summary.startswith(_SUMMARY_HEADING):
         summary = summary[len(_SUMMARY_HEADING):].lstrip(" \r\n")
     return summary
-
-
-def limit_summary(summary: str, max_chars: int) -> tuple[str, bool]:
-    """Hard-limit summary length for every positive ``max_chars`` value."""
-    if max_chars < 1:
-        raise ValueError("max_chars must be >= 1")
-    if len(summary) <= max_chars:
-        return summary, False
-    if max_chars <= len(_TRUNCATION_MARKER):
-        return summary[:max_chars], True
-
-    remaining = max_chars - len(_TRUNCATION_MARKER)
-    head = remaining * 2 // 3
-    tail = remaining - head
-    limited = (
-        summary[:head].rstrip()
-        + _TRUNCATION_MARKER
-        + summary[-tail:].lstrip()
-    )
-    # rstrip/lstrip can only shorten the result, but keep the hard contract
-    # explicit if the marker changes later.
-    return limited[:max_chars], True
 
 
 def compacted_message(summary: str, *, reason: str) -> CompactionSummaryMessage:
@@ -96,7 +77,6 @@ def compacted_message(summary: str, *, reason: str) -> CompactionSummaryMessage:
 
 __all__ = [
     "compacted_message",
-    "limit_summary",
     "normalize_summary",
     "strip_summary_heading",
     "summary_request",

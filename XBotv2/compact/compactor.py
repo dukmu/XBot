@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from XBotv2.core import estimate_messages_tokens, estimate_model_request_tokens
+from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import ConversationMessage
 from XBotv2.core.domain import (
     AuxiliaryRequest,
@@ -60,6 +61,7 @@ def _summary_input(
     split: int,
     stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
+    artifacts: ArtifactStorePort | None = None,
 ) -> list:
     prefix = list(messages[:split])
     if stable_prefix:
@@ -68,6 +70,7 @@ def _summary_input(
         prefix,
         summary_max_chars,
         stable_prefix=stable_prefix,
+        artifacts=artifacts,
     )
 
 
@@ -78,12 +81,13 @@ def _fit_summary_prefix(
     stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
     max_context_tokens: int | None,
-    summary_output_tokens: int,
+    output_reservation: int,
+    artifacts: ArtifactStorePort | None = None,
 ) -> int:
     """Fit the complete auxiliary request envelope at a safe surface cut."""
     if max_context_tokens is None:
         return split
-    reserve = max(1, int(summary_output_tokens))
+    reserve = max(0, int(output_reservation))
     available = max_context_tokens - reserve
     if available < 1:
         raise RuntimeError(
@@ -94,7 +98,7 @@ def _fit_summary_prefix(
     # selected message.  Fold it once and remember the largest safe cut that
     # fits; repeatedly estimating every candidate made large histories O(n²).
     base = estimate_messages_tokens(
-        _summary_input(messages, 0, stable_prefix, summary_max_chars),
+        _summary_input(messages, 0, stable_prefix, summary_max_chars, artifacts),
     )
     boundaries = tool_pairing_boundaries(messages)
     estimate = base
@@ -133,10 +137,10 @@ async def build_compaction_plan(
     context_limit: int | None = None,
     max_context_tokens: int | None = None,
     output_reservation: int | None = None,
-    summary_output_tokens: int = 2_048,
     stable_prefix: Sequence[ConversationMessage] = (),
     removable_estimate: int | None = None,
     record_trajectory: TrajectoryRecorder | None = None,
+    artifacts: ArtifactStorePort | None = None,
 ) -> CompactionPlan | None:
     if len(source_ids) != len(messages):
         raise ValueError("Compaction source identities must match the input history")
@@ -153,7 +157,12 @@ async def build_compaction_plan(
             stable_prefix=stable_prefix,
             summary_max_chars=summary_max_chars,
             max_context_tokens=max_context_tokens,
-            summary_output_tokens=summary_output_tokens,
+            output_reservation=(
+                output_reservation
+                if output_reservation is not None
+                else selection.generation.max_output_tokens
+            ),
+            artifacts=artifacts,
         )
     except RuntimeError:
         if reason == "manual":
@@ -209,13 +218,9 @@ async def build_compaction_plan(
 
     try:
         request_messages = tuple(
-            _summary_input(messages, split, stable_prefix, summary_max_chars)
+            _summary_input(messages, split, stable_prefix, summary_max_chars, artifacts)
         )
-        auxiliary_selection = selection.model_copy(update={
-            "generation": selection.generation.model_copy(update={
-                "max_output_tokens": summary_output_tokens,
-            }),
-        })
+        auxiliary_selection = selection
         model_request = ModelRequest(
             messages=request_messages,
             tools=(),
@@ -236,9 +241,8 @@ async def build_compaction_plan(
         )
         if any(isinstance(part, ToolCall) for part in response.parts):
             raise RuntimeError("Compaction model must not call tools")
-        summary, summary_truncated = normalize_summary(
+        summary = normalize_summary(
             "".join(part.text for part in response.parts if isinstance(part, TextPart)),
-            summary_max_chars,
         )
     except asyncio.CancelledError:
         if record_trajectory is not None:
@@ -305,13 +309,11 @@ async def build_compaction_plan(
         context_limit=context_limit,
         max_context_tokens=max_context_tokens,
         output_reservation=output_reservation,
-        summary_output_tokens=summary_output_tokens,
         request_estimate=request_estimate,
         estimate_source=estimate_source,
         history_chars_before=chars_before,
         history_chars_after=history_chars(compacted_messages),
         summary_chars=len(summary),
-        summary_truncated=summary_truncated,
         messages_before=len(messages),
         messages_after=len(compacted_messages),
         messages_removed=len(messages) - len(compacted_messages),

@@ -10,7 +10,7 @@ from XBotv2.core.domain import RequestObservation, UsageDelta, UsageSnapshot
 
 
 USAGE_STATE_NAMESPACE = "usage"
-USAGE_SNAPSHOT_KEY = "snapshot"
+USAGE_COUNTERS_KEY = "counters"
 
 
 class UsageUpdated(BaseModel):
@@ -30,7 +30,7 @@ class UsagePort(Protocol):
 
 
 __all__ = [
-    "USAGE_SNAPSHOT_KEY",
+    "USAGE_COUNTERS_KEY",
     "USAGE_STATE_NAMESPACE",
     "UsagePort",
     "UsageUpdated",

@@ -33,7 +33,7 @@ entry; activation itself is dependency-driven.
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
 | mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session, usage, loop state |
 | content_cache | agent | lossless externalization of oversized current user input and Tool output text | artifacts |
-| compact | agent | append-only semantic history replacement | tools, commands, model, loop state |
+| compact | agent | append-only semantic history replacement | tools, commands, model, loop state, artifacts |
 | browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
 | token_manager | agent | request/context observation | session |
 | workspace_instructions | agent | AGENTS.md context contribution | variables, workspace root |

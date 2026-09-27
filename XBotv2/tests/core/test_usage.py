@@ -72,7 +72,7 @@ def test_token_counters_adds_each_domain_counter():
 
 
 @pytest.mark.asyncio
-async def test_usage_records_typed_deltas_and_restores_one_snapshot(tmp_path):
+async def test_usage_persists_only_counters_not_request_observations(tmp_path):
     store = StateService(path=tmp_path / "state.json").namespace("usage")
     usage = UsageService(store, Context())
     await usage.initialize(())
@@ -96,11 +96,25 @@ async def test_usage_records_typed_deltas_and_restores_one_snapshot(tmp_path):
         prompt_cache_write=1,
     )
     assert snapshot.latest_turn_observation == observation
-    assert snapshot.requests == (observation,)
+    assert "requests" not in snapshot.model_dump(mode="json")
+
+    # Per-request observations already live canonically in AssistantMessage
+    # exchanges.  The usage state owns only the cumulative counters and must
+    # not grow another request ledger beside messages.jsonl.
+    assert await store.get("counters") == {
+        "total_counters": {
+            "input": 10,
+            "output": 4,
+            "cache_read": 2,
+            "cache_create": 3,
+            "prompt_cache_write": 1,
+        },
+    }
 
     restored = UsageService(store, Context())
     await restored.initialize(())
-    assert restored.snapshot() == snapshot
+    assert restored.snapshot().total_counters == snapshot.total_counters
+    assert restored.snapshot().latest_turn_observation is None
 
 
 @pytest.mark.asyncio
@@ -122,10 +136,7 @@ async def test_auxiliary_request_accumulates_without_replacing_turn_context(tmp_
 
     assert snapshot.total_counters == TokenCounters(input=120, output=15)
     assert snapshot.latest_turn_observation == turn
-    assert snapshot.requests == (turn, auxiliary)
-    assert snapshot.requests[-1].observed_context == MeasurementUnavailable(
-        reason="provider omitted context usage",
-    )
+    assert "requests" not in snapshot.model_dump(mode="json")
 
 
 @pytest.mark.asyncio

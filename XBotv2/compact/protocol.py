@@ -44,12 +44,10 @@ class CompactionMetrics(WireModel):
     history_chars_before: int = Field(ge=0)
     history_chars_after: int = Field(ge=0)
     summary_chars: int = Field(ge=0)
-    summary_truncated: bool
     messages_before: int = Field(ge=0)
     messages_after: int = Field(ge=0)
     messages_removed: int
     model_usage: TokenCounters = Field(default_factory=TokenCounters)
-    summary_output_tokens: int = Field(default=1, ge=1)
 
 
 class CompactionCompleted(WireModel):

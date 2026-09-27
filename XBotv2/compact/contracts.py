@@ -19,7 +19,6 @@ class CompactConfig(BaseModel):
     trigger_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
     keep_recent_turns: int = Field(default=4, ge=1)
     summary_max_chars: int = Field(default=8_000, ge=1)
-    summary_output_tokens: int = Field(default=2_048, ge=1)
 
 
 class CompactionSelection(BaseModel):

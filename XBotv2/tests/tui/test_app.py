@@ -67,9 +67,14 @@ def app_for(
     )
 
 
-async def settle(pilot, seconds: float = 0.06) -> None:
-    """Let the render loop tick at least once."""
-    await asyncio.sleep(seconds)
+async def settle(pilot, seconds: float = 0) -> None:
+    """Advance workers, then flush the real controller without a fixed sleep."""
+    if seconds:
+        await asyncio.sleep(seconds)
+    await pilot.pause()
+    controller = getattr(pilot.app, "controller", None)
+    if controller is not None:
+        await controller.flush()
     await pilot.pause()
 
 

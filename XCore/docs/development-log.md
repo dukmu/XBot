@@ -170,8 +170,8 @@
     `jobs/`（ctx.jobs）、`llm/`（ctx.llm）、`session/`（ctx.session）。
   - 层次：`session/` = 活动会话（主 agent 实例 = ctx.engine + subagent 实例，
     Session.spawn_subagent）；删除 `runtime/`、`agent_runtime/`。
-  - 启动：`xcore.yaml` 声明完整插件树，动态会话值以 `${name}` 引用
-    （`${env:VAR}` 读环境变量），loader 解析；bootstrap 只提供运行时值 +
+  - 启动：`xcore.yaml` 声明完整插件树，动态会话值以 `$${name}` 引用
+    （`$${env:VAR}` 读环境变量），统一配置层解析；bootstrap 只提供运行时值 +
     合并外部插件目录与用户 plugins.yaml，不再逐条注入。
   - XCore 新增 `current_fiber()`（apply 期间跟踪当前 fiber）：能力服务把注册
     清理绑定到 fiber effect，删除 loader 侧 `_active_ctx` contextvar 耦合。
@@ -276,8 +276,8 @@
     provider 默认由 agentloop 经 `ctx.settings.provider_names()` 解析。
   - **数据目录**：默认运行时数据改 `~/.xbot/`（XBOT_DATA_DIR 可覆盖）；
     全局用户树 `~/.xbot/config/plugins.yaml`；`merged_with` 对 config 深度
-    合并（覆盖单字段无需重写动态值）；loader 对未知 `${}` 引用保留字面
-    （`${workspace}` 等运行时变量由服务展开）。
+    合并（覆盖单字段无需重写动态值）；统一配置层在插件校验前展开 `$${NAME}`，
+    未知变量报错，单 `$` 的 `${...}` 保留字面供正则等配置语法使用。
   - **工作区扩展归 workspace_instructions**：AGENTS.md 注入（已有）+ 应用
     工作区 `.xbot/plugins.yaml` 树覆盖（`loader.apply_patch`：重载受影响
     条目 / 挂载新条目 / 支持工作区禁用自身）；bootstrap 不再合并工作区

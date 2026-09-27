@@ -157,7 +157,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 - `ObservedContext = ProviderMeasured(tokens) | MeasurementUnavailable(reason)`；估算不是 observed 的 fallback 值。
 - `RequestObservation(selection: ResolvedModelSelection, purpose, estimated_input_tokens, observed_context)`，其中 purpose 为 `TurnRequest(turn_id) | AuxiliaryRequest(owner, operation_id)`；route/context window 不再复制成另一组字段。
 - `UsageDelta(counters)` 只含本次可相加计数。
-- `UsageSnapshot(total_counters, requests, latest_turn_observation)`；初始 latest 为真正的 None。auxiliary request 可以累计 counters，但绝不替换 latest turn observation。
+- `UsageSnapshot(total_counters, latest_turn_observation)`；初始 latest 为真正的 None。每次请求的 observation 只属于其 `ModelExchange`，usage snapshot 不另建 request ledger；auxiliary request 可以累计 counters，但绝不替换 latest turn observation。
 - `ModelRoute(provider, model)`；`GenerationMode = Standard | Reasoning(effort)`；显示用 `model_mode` 只能派生。
 - `ModelExchange(observation: RequestObservation, usage: UsageDelta, timing: ModelTiming, stop: ModelStop, provider_extensions: ProviderExtensions)`；这是 AssistantMessage 唯一请求侧信息。
 - `ModelTiming(total_ms, first_delta_ms: int | None)`、`ToolTiming(duration_ms)`；first_delta 为 None 只表示确实没有观察到任何 delta，不用 0 冒充测量；`decode_ms` 需要时由 `total_ms - first_delta_ms` 派生。
@@ -542,7 +542,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 
 设计：
 
-- provider metadata 先转换为 `UsageDelta` 与 `ObservedContext`；累加器只相加 `TokenCounters` 并追加 `RequestObservation`。只有 `TurnRequest` 更新 `latest_turn_observation`，auxiliary request 不覆盖它；compact、goal、session 都不直接读取任意 usage dict。
+- provider metadata 先转换为 `UsageDelta` 与 `ObservedContext`；累加器只相加 `TokenCounters`。只有 `TurnRequest` 更新 `latest_turn_observation`，auxiliary request 不覆盖它；完整 request observation 由对应的 `ModelExchange` 唯一持有，compact、goal、session 都不直接读取任意 usage dict。
 
 ### 3.24 caption
 
