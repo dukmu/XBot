@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Generic, Literal, Protocol, TypeAlias, TypeVar, overload
@@ -112,7 +112,7 @@ class ConversationHistory(Sequence[ConversationMessage]):
         self._seen_ids: set[str] = set()
         self._claim_identities(self._surface)
         self._transcript = list(self._surface)
-        self._lineage = {message.id: (message.id,) for message in self._surface}
+        self._lineage: dict[str, tuple[str, ...]] = {}
         self._sink = sink
         self._surface_revision = uuid4().hex
         self._transcript_revision = uuid4().hex
@@ -144,7 +144,6 @@ class ConversationHistory(Sequence[ConversationMessage]):
         self._claim_identities(stored)
         self._surface.extend(stored)
         self._transcript.extend(stored)
-        self._lineage.update({message.id: (message.id,) for message in stored})
 
     def replace(
         self,
@@ -176,18 +175,14 @@ class ConversationHistory(Sequence[ConversationMessage]):
                 "Transcript-preserving replacement must produce one surface record"
             )
         source = self._surface[start:end]
-        origins = tuple(
-            origin
-            for message in source
-            for origin in self._lineage.get(message.id, (message.id,))
-        )
-        transcript = list(self._transcript)
+        source_ids = tuple(message.id for message in source)
         transcript_start = None
         if not preserve_transcript:
-            transcript_start = self._transcript_span(transcript, origins)
+            origins = resolve_transcript_sources(source_ids, self._lineage)
+            transcript_start = self._transcript_span(self._transcript, origins)
         stored = (
             self._sink.replace_surface(
-                tuple(message.id for message in source),
+                source_ids,
                 replacement,
                 operation=operation,
                 preserve_transcript=preserve_transcript,
@@ -197,12 +192,10 @@ class ConversationHistory(Sequence[ConversationMessage]):
         )
         self._claim_identities(stored)
         if preserve_transcript:
-            self._lineage[stored[0].id] = origins
+            self._lineage[stored[0].id] = source_ids
         else:
             assert transcript_start is not None
-            transcript[transcript_start:transcript_start + len(origins)] = stored
-            self._lineage.update({message.id: (message.id,) for message in stored})
-            self._transcript = transcript
+            self._transcript[transcript_start:transcript_start + len(origins)] = stored
             self._transcript_revision = uuid4().hex
         self._surface[start:end] = stored
         self._surface_revision = uuid4().hex
@@ -336,6 +329,21 @@ class ConversationHistory(Sequence[ConversationMessage]):
         return repr(self._surface)
 
 
+def resolve_transcript_sources(
+    source_ids: Sequence[str], lineage: Mapping[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Expand validated summary ancestry only when a transcript span changes."""
+    pending = list(reversed(source_ids))
+    sources = []
+    while pending:
+        source = pending.pop()
+        if source in lineage:
+            pending.extend(reversed(lineage[source]))
+        else:
+            sources.append(source)
+    return tuple(sources)
+
+
 def page_messages(
     messages: Sequence[ConversationMessage],
     *,
@@ -403,4 +411,5 @@ __all__ = [
     "decode_history_cursor",
     "encode_history_cursor",
     "page_messages",
+    "resolve_transcript_sources",
 ]

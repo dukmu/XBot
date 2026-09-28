@@ -7,6 +7,7 @@ import pytest
 from XBotv2.core.domain import InputId, MessageId
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.messages import CompactionSummaryMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.session.contracts import conversation_replay
 
@@ -48,3 +49,32 @@ def test_history_replacement_preserves_only_retained_message_ids() -> None:
 
     assert [message.id for message in history.snapshot()] == ["m1", "m3"]
     assert [record.id for record in conversation_replay(history.snapshot())] == ["m1", "m3"]
+
+
+@pytest.mark.parametrize("turns", [20, 40])
+def test_nested_compaction_does_not_copy_preserved_transcript(turns):
+    traversed = 0
+
+    class MeasuredTranscript(list):
+        def __iter__(self):
+            nonlocal traversed
+            traversed += len(self)
+            return super().__iter__()
+
+    history = ConversationHistory()
+    # Instrument data traversal, not wall-clock time or the resulting cache size.
+    history._transcript = MeasuredTranscript()
+    original = []
+    for index in range(turns):
+        message = human(f"input-{index}", f"turn {index}")
+        original.append(message)
+        history.append(message)
+        history.replace_range(
+            0, len(history),
+            (CompactionSummaryMessage(id=MessageId(f"summary-{index}"), summary="context"),),
+            operation="compact", preserve_transcript=True,
+        )
+    assert traversed == 0
+    assert history.page_transcript(limit=turns).items == tuple(original)
+    history.replace_range(0, len(history), (), operation="clear")
+    assert history.page_transcript(limit=1).items == ()
