@@ -70,6 +70,15 @@ runtime the process starts for that session (a main thread and its subagent
 threads) and released when the last one closes; the kernel releases it if the
 process dies, so a crashed runtime cannot lock a session forever.
 
+Startup acquires the claim before creating thread persistence files. The
+launcher retains the claim through initialization and rollback, transferring
+its release to the Context only after initialization succeeds. Failed startup
+removes only its own newly created thread directory and empty session parents;
+it must not delete sibling-thread files or release a live parent's claim.
+Permanent disposal is `Context.destroy()` (`AgentApplication.close()` for the
+public application port); XCore's restartable `Context.stop()` is not permanent
+root-resource disposal.
+
 Readers are not blocked: history, transcript, and trajectory reads take no lock,
 which is why the torn-tail rule above exists. Ownership therefore guarantees
 "one writer", not "one process may touch the directory": tooling that writes

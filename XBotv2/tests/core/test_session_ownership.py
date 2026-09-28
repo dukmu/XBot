@@ -6,6 +6,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.errors import OperationError
 
@@ -142,3 +144,98 @@ def test_process_exit_releases_its_session_lock(tmp_path):
     owner = acquire_session(root, label="after-crash")
     assert owner.count == 1
     owner.release()
+
+
+@pytest.mark.asyncio
+async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
+    from XBotv2.application.app import start_application
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.llm.mock import MockLLM
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    parent = await start_application(
+        paths=paths, session_id="owned", thread_id="main",
+        workspace_root=tmp_path, no_plugins=True, llm_override=MockLLM(responses=[]),
+    )
+    try:
+        with pytest.raises(ValueError, match="Unknown primary agent: uninstalled-agent"):
+            await start_application(
+                paths=paths, session_id="owned", thread_id="child",
+                workspace_root=tmp_path, no_plugins=True,
+                selected_agent="uninstalled-agent", is_subagent=True,
+                llm_override=MockLLM(responses=[]),
+            )
+        refused = _try_acquire(paths.session("owned").root)
+        assert refused.returncode == 3, refused.stdout + refused.stderr
+        assert refused.stdout.strip() == "session_in_use"
+    finally:
+        await parent.destroy()
+    assert _try_acquire(paths.session("owned").root).returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_refused_start_does_not_remove_the_winning_runtime_files(tmp_path, monkeypatch):
+    import XBotv2.application.app as application
+    from XBotv2.core.paths import RuntimePaths
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    root = paths.session("contended").root
+    marker = root / "winner.txt"
+
+    def another_runtime_won(session_root, *, label):
+        # The other process materializes its session between this caller's
+        # initial path lookup and its attempt to acquire the lock.
+        root.mkdir(parents=True, exist_ok=True)
+        marker.write_text("owned by the other runtime", encoding="utf-8")
+        raise OperationError("session_in_use", "another runtime owns it")
+
+    monkeypatch.setattr(application, "acquire_session", another_runtime_won)
+    with pytest.raises(OperationError, match="another runtime owns it"):
+        await application.start_application(
+            paths=paths, session_id="contended", workspace_root=tmp_path,
+            no_plugins=True,
+        )
+    assert marker.read_text(encoding="utf-8") == "owned by the other runtime"
+
+
+@pytest.mark.asyncio
+async def test_persistence_creation_failure_releases_startup_claim(tmp_path, monkeypatch):
+    import XBotv2.application.app as application
+    from XBotv2.core.paths import RuntimePaths
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+
+    def fail_create(*args, **kwargs):
+        raise OSError("cannot create persistence")
+
+    monkeypatch.setattr(application.ThreadPersistence, "create", fail_create)
+    with pytest.raises(OSError, match="cannot create persistence"):
+        await application.start_application(
+            paths=paths, session_id="failed-create", workspace_root=tmp_path,
+            no_plugins=True,
+        )
+    assert _try_acquire(paths.session("failed-create").root).returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeypatch):
+    import XBotv2.application.app as application
+    from XBotv2.core.paths import RuntimePaths
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    session = paths.session("shared")
+    sibling_file = session.thread("sibling").root / "accepted.txt"
+
+    async def fail_boot(**kwargs):
+        sibling_file.parent.mkdir(parents=True)
+        sibling_file.write_text("another thread's data", encoding="utf-8")
+        raise RuntimeError("startup failed after sibling started")
+
+    monkeypatch.setattr(application, "boot_application", fail_boot)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await application.start_application(
+            paths=paths, session_id="shared", thread_id="failed",
+            workspace_root=tmp_path, no_plugins=True,
+        )
+    assert sibling_file.read_text(encoding="utf-8") == "another thread's data"
+    assert not session.thread("failed").root.exists()

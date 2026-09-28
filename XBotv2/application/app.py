@@ -10,6 +10,7 @@ or implement Agent policy.
 from __future__ import annotations
 
 import shutil
+from errno import EEXIST, ENOENT, ENOTEMPTY
 from pathlib import Path
 from pydantic import JsonValue
 
@@ -19,7 +20,6 @@ from XBotv2.application.boot import boot_application
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.session_lock import (
-    SessionOwnership,
     acquire_session,
 )
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
@@ -83,8 +83,6 @@ async def start_application(
         ensure_initial_config(paths)
 
     session_paths = paths.session(session_id)
-    session_preexisting = session_paths.root.exists()
-    thread_preexisting = session_paths.has_thread(thread_id)
     thread_paths = session_paths.thread(thread_id)
     plugin_ctx: Context | None = None
 
@@ -97,86 +95,87 @@ async def start_application(
         extra_plugins=extra_plugins,
         session_id=session_id,
     )
-    persistence_enabled = any(
-        entry.id == "persistence" and not entry.disabled for entry in tree.entries
+    # Claim ownership before creating any thread files; a refused startup
+    # must neither materialize nor clean up another process's session.
+    ownership = acquire_session(
+        session_paths.root,
+        label=f"{session_id}/{thread_id}",
     )
-    thread_persistence = (
-        ThreadPersistence.create(
-            thread_paths,
-            thread_id=thread_id,
-            defer_metadata=defer_persist,
+    session_preexisting = session_paths.root.exists()
+    thread_preexisting = session_paths.has_thread(thread_id)
+    try:
+        persistence_enabled = any(
+            entry.id == "persistence" and not entry.disabled for entry in tree.entries
         )
-        if persistence_enabled
-        else None
-    )
-    artifacts = (
-        thread_persistence.artifacts
-        if thread_persistence is not None
-        else ArtifactStore(
-            thread_paths,
-            DEFAULT_RUNTIME_LOG.bind(
-                "persistence",
-                session_id=session_id,
+        thread_persistence = (
+            ThreadPersistence.create(
+                thread_paths,
                 thread_id=thread_id,
-            ),
+                defer_metadata=defer_persist,
+            )
+            if persistence_enabled
+            else None
         )
-    )
+        artifacts = (
+            thread_persistence.artifacts
+            if thread_persistence is not None
+            else ArtifactStore(
+                thread_paths,
+                DEFAULT_RUNTIME_LOG.bind(
+                    "persistence",
+                    session_id=session_id,
+                    thread_id=thread_id,
+                ),
+            )
+        )
 
-    children = ChildApplications(
-        paths=paths,
-        provider_name=provider_name,
-        session_id=session_id,
-        workspace_root=workspace_root,
-        no_plugins=no_plugins,
-        plugin_dirs=plugin_dirs,
-        llm_override=llm_override,
-        parent_thread_id=thread_id,
-        interactive=interactive,
-    )
+        children = ChildApplications(
+            paths=paths,
+            provider_name=provider_name,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            no_plugins=no_plugins,
+            plugin_dirs=plugin_dirs,
+            llm_override=llm_override,
+            parent_thread_id=thread_id,
+            interactive=interactive,
+        )
 
-    agent_options = AgentCreateOptions(
-        session_id=session_id,
-        thread_id=thread_id,
-        workspace_root=str(workspace_root),
-        provider_name=provider_name,
-        agent_definition=agent_definition,
-        model_override=llm_override,
-        selected_agent=selected_agent,
-        parent_thread_id=parent_thread_id,
-        is_subagent=is_subagent,
-    )
-
-    services = {
-        "runtime_paths": paths,
-        "agent_options": agent_options,
-        "session_launch": SessionLaunch(
+        agent_options = AgentCreateOptions(
             session_id=session_id,
             thread_id=thread_id,
-            workspace_root=workspace_root,
+            workspace_root=str(workspace_root),
             provider_name=provider_name,
-            session_paths=session_paths,
-            interactive=interactive,
+            agent_definition=agent_definition,
+            model_override=llm_override,
+            selected_agent=selected_agent,
+            parent_thread_id=parent_thread_id,
             is_subagent=is_subagent,
-        ),
-        "parent_permissions": ParentPermissions(parent_permission_system),
-        "plugin_overrides": extra_plugins or [],
-        "plugin_dirs": plugin_dirs or [],
-        "no_plugins": no_plugins,
-        "client_events": ClientEventRouter(parent=client_events),
-        "child_applications": children,
-        "artifacts": artifacts,
-    }
-    if thread_persistence is not None:
-        services["thread_persistence"] = thread_persistence
-
-    ownership: SessionOwnership | None = None
-    try:
-        # One runtime owns a session: a second one must fail here instead of
-        # writing turns into the same trajectory.
-        ownership = acquire_session(
-            session_paths.root,
-            label=f"{session_id}/{thread_id}",
         )
+
+        services = {
+            "runtime_paths": paths,
+            "agent_options": agent_options,
+            "session_launch": SessionLaunch(
+                session_id=session_id,
+                thread_id=thread_id,
+                workspace_root=workspace_root,
+                provider_name=provider_name,
+                session_paths=session_paths,
+                interactive=interactive,
+                is_subagent=is_subagent,
+            ),
+            "parent_permissions": ParentPermissions(parent_permission_system),
+            "plugin_overrides": extra_plugins or [],
+            "plugin_dirs": plugin_dirs or [],
+            "no_plugins": no_plugins,
+            "client_events": ClientEventRouter(parent=client_events),
+            "child_applications": children,
+            "artifacts": artifacts,
+        }
+        if thread_persistence is not None:
+            services["thread_persistence"] = thread_persistence
+
         plugin_ctx = Context(
             data_dir=thread_paths.plugin_state_dir,
             state_service=(
@@ -185,7 +184,6 @@ async def start_application(
                 else None
             ),
         )
-        plugin_ctx.dispose(ownership.release)
         for name, service in services.items():
             plugin_ctx.set(name, service)
         plugin_ctx = await boot_application(
@@ -195,10 +193,12 @@ async def start_application(
         )
         await plugin_ctx.agent_runtime.announce_initialized()
 
+        # Startup owns the claim through rollback; only a fully initialized
+        # context takes ownership. boot_application may already destroy a
+        # failed context, so registering this earlier would release twice.
+        plugin_ctx.dispose(ownership.release)
         return plugin_ctx
     except BaseException as startup_error:
-        if ownership is not None:
-            ownership.release()
         if plugin_ctx is not None:
             try:
                 await plugin_ctx.destroy()
@@ -208,10 +208,24 @@ async def start_application(
                     f"{cleanup_error!r}"
                 )
         if not thread_preexisting:
+            try:
+                shutil.rmtree(thread_paths.root)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                startup_error.add_note(f"Thread rollback failed: {cleanup_error!r}")
             if not session_preexisting:
-                shutil.rmtree(session_paths.root, ignore_errors=True)
-            else:
-                shutil.rmtree(thread_paths.root, ignore_errors=True)
+                # Another thread in this process can share the session claim.
+                # Only empty parent directories belong to this rollback.
+                for directory in (session_paths.threads_dir, session_paths.root):
+                    try:
+                        directory.rmdir()
+                    except OSError as cleanup_error:
+                        if cleanup_error.errno not in {ENOENT, ENOTEMPTY, EEXIST}:
+                            startup_error.add_note(
+                                f"Empty session cleanup failed: {cleanup_error!r}"
+                            )
+        ownership.release()
         raise
 
 

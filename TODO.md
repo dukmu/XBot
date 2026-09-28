@@ -48,6 +48,8 @@
 - [x] server 标量参数到 overlay 的转换移到 CLI；`start_server_application` 仅接收 paths/overrides，全部调用方迁移，不保留旧参数兼容入口。两个 WebUI 验证脚本仅机械更新 server 启动调用，没有做 WebUI 功能或测试工作。
 - [x] server 宿主 overlay 入口迁移验证：CLI/server/HTTP/fold-in 队列/真实 server TUI `169 passed, 6 deselected in 178.58s`；CLI 同时验证显式值和省略值映射，以及正常/异常 serve 的同循环清理。未据此宣称完成 factory/Agent 装配。
 - [ ] application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
+- [x] Agent 启动所有权修复：复现子 Agent 初始化失败后重复释放共享 claim，导致其他进程取得仍活跃父会话的锁。改为先争锁再创建持久化资源；初始化成功才将释放责任转给 Context，失败清理完成后释放一次。回滚只删除本次新 thread 和空父目录，保留同进程兄弟线程文件。所有权/启动测试 `56 passed in 22.80s`，包含真实子进程争锁及拒绝启动/资源创建失败/兄弟线程文件保留。
+- [ ] 按用户最新要求修改插件失败语义：初始化失败默认警告并隔离清理，不使整个树失败；必需依赖/宿主入口不可用才按声明依赖规则失败，不硬编码核心插件名单。
 - [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
 - [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
 - [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。
