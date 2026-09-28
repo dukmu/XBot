@@ -233,6 +233,60 @@ async def test_inject_optional_does_not_gate():
     assert loaded == ["consumer"]
 
 
+async def test_optional_dependency_rebinds_when_provider_appears_and_disappears():
+    ctx = Context()
+    observed = []
+    disposed = []
+    database = object()
+
+    def consumer(scope, config):
+        value = scope.get("database")
+        observed.append(value)
+        scope.dispose(lambda: disposed.append(value))
+
+    consumer.inject = {"optional": ["database"]}
+
+    def provider(scope, config):
+        scope.set("database", database)
+
+    try:
+        handle = ctx.plugin(consumer)
+        await ctx.start()
+        assert observed == [None]
+        owner = ctx.plugin(provider)
+        await owner
+        await handle
+        assert observed == [None, database]
+        assert disposed == [None]
+        await owner.dispose()
+        await handle
+        assert observed == [None, database, None]
+        assert disposed == [None, database]
+    finally:
+        await ctx.destroy()
+
+
+async def test_start_settles_optional_dependency_before_returning():
+    ctx = Context()
+    database = object()
+
+    def consumer(scope, config):
+        scope.set("consumer_database", (scope.get("database"),))
+
+    consumer.inject = {"optional": ["database"]}
+
+    def provider(scope, config):
+        scope.set("database", database)
+
+    ctx.plugin(consumer)
+    ctx.plugin(provider)
+    try:
+        await ctx.start()
+        assert ctx.require("consumer_database") == (database,)
+    finally:
+        await ctx.destroy()
+
+
 async def test_required_plugin_name_dependency_waits():
     # required: list[str] is not part of cordis core; XCore uses inject for
     # service deps. This test guards the koishi-form dict (required/optional).

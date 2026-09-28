@@ -475,7 +475,7 @@ class Registry:
         """Re-evaluate every fiber that injects one of ``names``.
 
         Wakes pending/failed fibers whose required services appeared and
-        unloads running fibers whose required services disappeared (A1 fix:
+        rebinds running fibers whose dependencies changed (A1 fix:
         also called from state transitions, not only set/unset).
         """
         affected = [
@@ -557,6 +557,7 @@ class Fiber(EffectOwner):
         self._error: BaseException | None = None
         self._instance: Any = None
         self._load_seq: int | None = None
+        self._bound_dependencies: dict[str, Any] = {}
         self._settle_lock = asyncio.Lock()
         self._settle_task: asyncio.Task | None = None
         self.ctx = parent.extend(fiber=self)
@@ -619,8 +620,12 @@ class Fiber(EffectOwner):
                 if self._deps_satisfied() and self._app_active():
                     return "load"
                 return None
-            if self.state is FiberState.RUNNING and not self._deps_satisfied():
-                return "unload_pending"
+            if self.state is FiberState.RUNNING:
+                if not self._deps_satisfied() or any(
+                    self.ctx.get(name, strict=True) is not value
+                    for name, value in self._bound_dependencies.items()
+                ):
+                    return "unload_pending"
             return None
         if target == _TARGET_PENDING:
             if self.state in (
@@ -680,6 +685,9 @@ class Fiber(EffectOwner):
             )
             self.config = config
             self._error = None
+            self._bound_dependencies = {
+                name: self.ctx.get(name, strict=True) for name in self.inject
+            }
             token = _current_fiber.set(self)
             try:
                 result = self._execute_callback()

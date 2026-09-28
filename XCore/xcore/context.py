@@ -530,13 +530,13 @@ class Context:
             logger.info("application.ready plugins_running=%d", running)
 
     async def _load_fixpoint(self) -> None:
-        """Iteratively load every loadable pending/failed fiber (review B1)."""
+        """Settle pending fibers and changed bindings before startup returns."""
         while True:
             progressed = False
             for fiber in list(self._registry._all_fibers()):
-                if fiber.state is not FiberState.PENDING:
+                if fiber.state not in (FiberState.PENDING, FiberState.RUNNING):
                     continue
-                if not fiber._deps_satisfied():
+                if fiber._next_action(_TARGET_CONVERGE) is None:
                     continue
                 await fiber.settle_to(_TARGET_CONVERGE)
                 if fiber.state is FiberState.RUNNING:
@@ -621,6 +621,9 @@ class Context:
         """The app-level recoverable state service (root singleton, "state")."""
         if self._parent is not None:
             return self._root.state
+        provided = self.get("state", strict=True)
+        if provided is not None:
+            return provided
         if self._state_service is None:
             self._state_service = StateService(
                 path=self._data_dir / "state.json"
