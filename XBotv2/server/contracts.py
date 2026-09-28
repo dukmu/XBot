@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 from fastapi import APIRouter, Request
@@ -61,15 +60,6 @@ class ServerInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class ServerOptions:
-    """Composition launch facts consumed by server-side capability plugins."""
-
-    provider_name: str | None
-    workspace_root: Path
-    no_plugins: bool
-
-
-@dataclass(frozen=True, slots=True)
 class ServerStatus:
     """Capability-neutral health projection contributed by Sessions."""
 
@@ -85,7 +75,6 @@ __all__ = [
     "RouteContribution",
     "RouteEventContext",
     "ServerInfo",
-    "ServerOptions",
     "ServerStatus",
     "contribute_router",
 ]

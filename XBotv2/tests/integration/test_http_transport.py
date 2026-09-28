@@ -2363,6 +2363,44 @@ async def test_http_selects_model_within_provider(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("override", [False, True])
+async def test_session_creation_defaults_use_yaml_then_memory_overlay(http_app, override):
+    paths = http_app.state.paths
+    config_file = paths.config_dir / "plugins.yaml"
+    entries = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    entries.append({"id": "session", "config": {
+        "provider_name": "missing-provider" if override else "default",
+        "no_plugins": True,
+        "workspace_root": str(http_app.state.workspace_root / "unused")
+        if override else str(http_app.state.workspace_root),
+    }})
+    config_file.write_text(yaml.safe_dump(entries), encoding="utf-8")
+    original_config = config_file.read_bytes()
+    host = await start_server_application(
+        paths=paths,
+        workspace_root=str(http_app.state.workspace_root) if override else None,
+        provider_name="default" if override else None,
+        no_plugins=False if override else None,
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=host.server), base_url="http://test"
+        ) as client:
+            response = await client.post("/sessions", json={"session_id": "defaults"})
+            assert response.status_code == 200, response.text
+            commands = await client.get("/sessions/defaults/threads/agent/commands")
+            assert commands.status_code == 200
+            names = {command["name"] for command in commands.json()["commands"]}
+            assert ("goal" in names) is override
+            summary = await host.sessions.thread_summary("defaults", "agent")
+            assert summary.workspace_root == str(http_app.state.workspace_root)
+        assert config_file.read_bytes() == original_config
+        assert not host.has("server_options")
+    finally:
+        await host.stop()
+
+
+@pytest.mark.asyncio
 async def test_new_session_reads_updated_global_plugin_config(
     client: httpx.AsyncClient,
     http_app,

@@ -37,31 +37,39 @@ def load_agent_tree(
     )
 
 
-def load_server_tree(*, paths: RuntimePaths) -> PluginTree:
+def load_server_tree(
+    *, paths: RuntimePaths, overrides: PluginOverlay | None = None
+) -> PluginTree:
     """Load the declarative server application profile."""
-    selected = _load_carrier_tree(paths, "server")
+    selected = _load_carrier_tree(paths, "server", overrides)
     if not any(entry.id == "llm" for entry in selected.entries):
         raise ValueError("server application requires the llm profile entry")
     return selected
 
 
-def load_acp_tree(*, paths: RuntimePaths) -> PluginTree:
+def load_acp_tree(
+    *, paths: RuntimePaths, overrides: PluginOverlay | None = None
+) -> PluginTree:
     """Load the ACP carrier application profile."""
-    return _load_carrier_tree(paths, "acp")
+    return _load_carrier_tree(paths, "acp", overrides)
 
 
-def load_client_tree(*, paths: RuntimePaths, overrides: PluginOverlay | None = None) -> PluginTree:
+def load_client_tree(
+    *, paths: RuntimePaths, overrides: PluginOverlay | None = None
+) -> PluginTree:
     """Load the local client-plugin profile from the common plugin tree."""
-    tree = _load_carrier_tree(paths, "client")
-    return tree.patched_with(overrides, allow_new=False) if overrides is not None else tree
+    return _load_carrier_tree(paths, "client", overrides)
 
 
-def _load_carrier_tree(paths: RuntimePaths, profile: str) -> PluginTree:
+def _load_carrier_tree(
+    paths: RuntimePaths, profile: str, overrides: PluginOverlay | None
+) -> PluginTree:
     tree = PluginTree.from_yaml(DEFAULT_TREE)
     plugins_file = paths.config_dir / "plugins.yaml"
     if plugins_file.exists():
         tree = tree.patched_with(PluginOverlay.from_yaml(plugins_file))
-    return tree.for_profile(profile)
+    tree = tree.for_profile(profile)
+    return tree.patched_with(overrides, allow_new=False) if overrides is not None else tree
 
 
 __all__ = [

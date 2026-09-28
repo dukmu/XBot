@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from xcore import Context
 
 from XBotv2.acp_plugin import ACPLaunch
@@ -12,6 +11,7 @@ from XBotv2.application.tree import load_acp_tree
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
+from XBotv2.loader import PluginOverlay
 
 
 async def start_acp_application(
@@ -24,11 +24,12 @@ async def start_acp_application(
 ) -> Context:
     """Start the ACP carrier and its shared process-level services."""
     ensure_initial_config(paths)
-    tree = load_acp_tree(paths=paths)
+    tree = load_acp_tree(paths=paths, overrides=PluginOverlay.parse([
+        {"id": "session", "config": {"workspace_root": str(paths.data_dir)}},
+    ]))
 
     ctx = Context(data_dir=paths.data_dir)
     ctx.set("runtime_paths", paths)
-    ctx.set("workspace_root", Path(paths.data_dir).resolve())
     ctx.set("agent_application_factory", create_agent_application)
     ctx.set("acp_launch", ACPLaunch(
         provider_name=provider_name,

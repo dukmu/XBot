@@ -30,7 +30,7 @@ from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.errors import OperationError
 from XBotv2.core.domain import Cursor, ResolvedRuntimeSelection
 from XBotv2.core.history import HistoryPage, TrajectoryRead
-from XBotv2.server import ServerOptions
+from XBotv2.session.config import SessionConfig
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import (
     AttachmentInput,
@@ -374,7 +374,7 @@ async def _thread_not_active(
 def build_session_router(
     *,
     sessions: SessionsPort,
-    options: ServerOptions,
+    options: SessionConfig,
     workspace_events: WorkspaceEventCursor,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""

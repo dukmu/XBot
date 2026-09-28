@@ -43,6 +43,34 @@ entry; activation itself is dependency-driven.
 | acp_plugin | acp | ACP carrier | sessions, ACP launch, runtime log |
 | server | server | FastAPI carrier and health/hello | runtime log |
 
+## Process session defaults
+
+The `session` plugin owns process-level defaults through its declared Config:
+
+```yaml
+- id: session
+  config:
+    workspace_root: /path/to/workspace
+    provider_name: null
+    no_plugins: false
+```
+
+`workspace_root` defaults to the current directory and is resolved to an
+absolute path when mounted. `provider_name: null` leaves provider selection to
+the Agent's layered LLM configuration; a non-null value explicitly selects a
+provider for sessions opened through this server. It does not define another
+provider catalog. `no_plugins` controls optional plugins in those Agent trees,
+not the server's HTTP capabilities.
+
+Server launch arguments become an in-memory overlay of this entry. Unspecified
+CLI options preserve YAML values; supplied `--workspace`, `--provider`, and
+`--no-plugins` override them without writing the YAML file. These process
+defaults are loaded at server startup, not live-reconfigured by catalog edits.
+The session manager provides the process workspace to dependent plugins; the
+HTTP carrier does not own a separate `ServerOptions` object. ACP supplies its
+data directory through the same session configuration overlay while continuing
+to take each Agent workspace from the ACP session request.
+
 ## Composition pattern
 
 The server carrier has no synthetic Agent session or session-bound `settings`.

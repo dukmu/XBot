@@ -260,8 +260,8 @@ async def _serve(args) -> None:
     root_ctx = await start_server_application(
         paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
-        workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
+        workspace_root=args.workspace,
+        no_plugins=True if args.no_plugins else None,
     )
     try:
         uds = args.uds

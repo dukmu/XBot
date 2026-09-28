@@ -5,7 +5,6 @@ from XBotv2.server.contracts import (
     REGISTER_ROUTE,
     RouteContribution,
     ServerInfo,
-    ServerOptions,
     ServerStatus,
     contribute_router,
 )
@@ -15,7 +14,6 @@ __all__ = [
     "REGISTER_ROUTE",
     "RouteContribution",
     "ServerInfo",
-    "ServerOptions",
     "ServerStatus",
     "contribute_router",
 ]

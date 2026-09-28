@@ -7,6 +7,7 @@ but it does not create the state consumed by the loop.
 
 from __future__ import annotations
 
+from functools import partial
 from pydantic import JsonValue
 from xcore import Context
 from XBotv2.agentloop import AgentInbox, EphemeralInboxSink, LoopState
@@ -15,6 +16,7 @@ from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
 from XBotv2.session.contracts import SessionKey, SessionNotFound, ThreadNotActive
 from XBotv2.session.manager import SessionManager
+from XBotv2.session.config import SessionConfig
 from XBotv2.session.protocol import (
     _session_not_found,
     _thread_not_active,
@@ -27,7 +29,6 @@ _MANAGER_DEPENDENCIES = {
     "required": [
         "runtime_paths",
         "agent_application_factory",
-        "workspace_root",
         "runtime_log",
     ],
     "optional": ["thread_persistence_factory"],
@@ -111,7 +112,7 @@ def mount_runtime(ctx: Context) -> None:
     SessionRuntimeComponent().apply(ctx)
 
 
-def mount_manager(ctx: Context) -> None:
+def mount_manager(ctx: Context, *, config: SessionConfig) -> None:
     manager = SessionManager(
         ctx.runtime_paths,
         ctx,
@@ -120,21 +121,22 @@ def mount_manager(ctx: Context) -> None:
         runtime_log=ctx.runtime_log,
     )
     ctx.set("sessions", manager)
+    ctx.set("workspace_root", config.workspace_root)
     ctx.on(
         QUERY_STATUS,
-        SessionManagerStatus(manager, str(ctx.workspace_root)).status,
+        SessionManagerStatus(manager, str(config.workspace_root)).status,
     )
     manager.start_reaper()
     ctx.dispose(manager.close_all)
 
 
-async def mount_http(ctx: Context) -> None:
+async def mount_http(ctx: Context, *, config: SessionConfig) -> None:
     await contribute_router(
         ctx,
         owner="xbot.session.http",
         router=build_session_router(
             sessions=ctx.sessions,
-            options=ctx.server_options,
+            options=config,
             workspace_events=ctx.workspace_events,
         ),
         exception_handlers=(
@@ -161,15 +163,16 @@ class SessionPlugin:
     """Compose thread-local, process-level, and HTTP session behavior."""
 
     name = "xbot.session"
+    Config = SessionConfig
 
     def apply(
-        self, ctx: Context, config: dict[str, JsonValue] | None = None
+        self, ctx: Context, config: SessionConfig
     ) -> None:
         ctx.inject(SessionRuntimeComponent.inject, mount_runtime)
-        ctx.inject(_MANAGER_DEPENDENCIES, mount_manager)
+        ctx.inject(_MANAGER_DEPENDENCIES, partial(mount_manager, config=config))
         ctx.inject(
-            ["server", "sessions", "server_options", "workspace_events"],
-            mount_http,
+            ["server", "sessions", "workspace_events"],
+            partial(mount_http, config=config),
         )
 
 
