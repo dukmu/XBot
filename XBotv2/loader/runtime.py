@@ -55,13 +55,7 @@ def mount_plugin_tree(
                 name,
                 label if label is not True else None,
             )
-        definition = resolve_plugin(plugin)
-        if definition is None:
-            raise LoadError(f"plugin {entry.id!r} has no plugin definition")
-        handles[entry.id] = mount_ctx.plugin(
-            plugin,
-            validate_plugin_config(definition.config_schema, entry.config),
-        )
+        handles[entry.id] = mount_ctx.plugin(plugin, entry.config)
         logger.debug(
             "plugin.mounted entry=%s module=%s isolates=%s",
             entry.id,
@@ -137,7 +131,7 @@ def plugin_config_schema(entry: PluginEntry) -> Any:
     its lifecycle.  Configuration clients use this only to describe the same
     ``Config`` object that XCore validates during application boot.
     """
-    plugin = _fresh_plugin(_import_plugin(entry.name), entry)
+    plugin = _import_plugin(entry.name)
     definition = resolve_plugin(plugin)
     if definition is None:
         raise TypeError(f"plugin {entry.id!r} has no XCore plugin definition")

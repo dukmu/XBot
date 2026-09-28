@@ -9,7 +9,7 @@ import importlib
 from xcore import Context
 
 from XBotv2.application.boot import boot_application
-from XBotv2.application.client import ClientLaunch
+from XBotv2.loader import PluginOverlay
 from XBotv2.application.tree import load_client_tree
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.tui.app import TuiApp
@@ -43,22 +43,24 @@ async def test_client_profile_provides_one_api_client_and_textual_terminal(
     )
     monkeypatch.setattr(client_transport_module, "XBotClient", FakeClient)
     paths = RuntimePaths.from_data_dir(tmp_path / "state")
-    context = Context(data_dir=paths.data_dir)
-    launch = ClientLaunch(
-        data_dir=str(paths.data_dir),
-        base_url="http://127.0.0.1:4096",
-        uds_path=None,
-        workspace=str(tmp_path),
-        session_id=None,
-        thread_id="agent",
-        agent=None,
+    paths.config_dir.mkdir(parents=True)
+    (paths.config_dir / "plugins.yaml").write_text(
+        "- id: client-transport\n"
+        "  config:\n"
+        "    base_url: http://configured.example:4096\n"
+        "- id: textual-tui\n"
+        "  config:\n"
+        "    history_window: 17\n"
+        "    session_id: configured-session\n",
+        encoding="utf-8",
     )
-    context.set("runtime_paths", paths)
-    context.set("client_launch", launch)
-
+    context = Context(data_dir=paths.data_dir)
     context = await boot_application(
         ctx=context,
-        tree=load_client_tree(paths=paths),
+        tree=load_client_tree(paths=paths, overrides=PluginOverlay.parse([
+            {"id": "client-transport", "config": {"base_url": "http://127.0.0.1:4096"}},
+            {"id": "textual-tui", "config": {"workspace": str(tmp_path)}},
+        ])),
     )
     try:
         api = context.require("client_api")
@@ -78,6 +80,9 @@ async def test_client_profile_provides_one_api_client_and_textual_terminal(
         }
         assert api.base_url == "http://127.0.0.1:4096"
         assert api.uds_path is None
+        assert terminal.app.transport_config.history_window == 17
+        assert terminal.app.transport_config.session_id == "configured-session"
+        assert not context.has("client_launch")
         assert not api.closed
         await terminal.run()
     finally:

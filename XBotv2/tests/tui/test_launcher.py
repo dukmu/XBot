@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 
 import pytest
 
 import XBotv2.tui.terminal as terminal_module
-from XBotv2.application.client import ClientLaunch
 from XBotv2.commands.plugin import CommandsService
 from XBotv2.tui.config import TextualTuiConfig
 from XBotv2.tui.transport import DEFAULT_HISTORY_RETENTION, DEFAULT_HISTORY_WINDOW
@@ -23,15 +21,13 @@ def commands_port():
     return CommandsService(ownership="caller")
 
 
-def launch() -> ClientLaunch:
-    return ClientLaunch(
-        data_dir="/tmp/xbot-state",
-        base_url="http://127.0.0.1:4096",
-        uds_path="/tmp/xbot.sock",
+def launch(**overrides) -> TextualTuiConfig:
+    return TextualTuiConfig(
         workspace="/workspace",
         session_id="resume-me",
         thread_id="main",
         agent="Reviewer",
+        **overrides,
     )
 
 
@@ -71,8 +67,7 @@ async def test_adapter_builds_app_from_launch_and_plugin_config(fake_app) -> Non
     adapter = terminal_module.TextualTerminalClient(
         backend=backend,
         commands=commands_port(),
-        launch=launch(),
-        config=TextualTuiConfig(render_interval=0.25, transcript_limit=80),
+        config=launch(render_interval=0.25, transcript_limit=80),
     )
 
     await adapter.run()
@@ -98,13 +93,11 @@ async def test_adapter_uses_new_session_defaults_and_launch_overrides(fake_app) 
     adapter = terminal_module.TextualTerminalClient(
         backend=backend,
         commands=commands_port(),
-        launch=replace(
-            launch(),
-            session_id=None,
+        config=TextualTuiConfig(
+            session_id="",
             history_window=17,
             history_retention=300,
         ),
-        config=TextualTuiConfig(),
     )
 
     await adapter.run()
@@ -123,8 +116,7 @@ async def test_adapter_restores_event_loop_factory_after_textual_run(
     adapter = terminal_module.TextualTerminalClient(
         backend=FakeBackend(),
         commands=commands_port(),
-        launch=launch(),
-        config=TextualTuiConfig(),
+        config=launch(),
     )
     marker = lambda _loop, coro, **kwargs: asyncio.Task(coro, **kwargs)
     loop = asyncio.get_running_loop()
@@ -147,8 +139,7 @@ async def test_stop_request_is_forwarded_to_textual_app(fake_app) -> None:
     adapter = terminal_module.TextualTerminalClient(
         backend=FakeBackend(),
         commands=commands_port(),
-        launch=launch(),
-        config=TextualTuiConfig(),
+        config=launch(),
     )
 
     adapter.request_stop("host shutdown")

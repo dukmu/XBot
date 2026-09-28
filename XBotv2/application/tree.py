@@ -50,9 +50,10 @@ def load_acp_tree(*, paths: RuntimePaths) -> PluginTree:
     return _load_carrier_tree(paths, "acp")
 
 
-def load_client_tree(*, paths: RuntimePaths) -> PluginTree:
+def load_client_tree(*, paths: RuntimePaths, overrides: PluginOverlay | None = None) -> PluginTree:
     """Load the local client-plugin profile from the common plugin tree."""
-    return _load_carrier_tree(paths, "client")
+    tree = _load_carrier_tree(paths, "client")
+    return tree.patched_with(overrides, allow_new=False) if overrides is not None else tree
 
 
 def _load_carrier_tree(paths: RuntimePaths, profile: str) -> PluginTree:

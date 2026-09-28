@@ -66,6 +66,22 @@ async def start_plugin_tree(ctx, tree: PluginTree):
 # ------------------------------------------------------------------
 
 
+def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tmp_path):
+    from XBotv2.config.loader import load_plugin_tree
+    from XBotv2.core.paths import RuntimePaths
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.config_dir.mkdir(parents=True)
+    (paths.config_dir / "plugins.yaml").write_text(
+        yaml.safe_dump([{
+            "id": "uninstalled", "name": "not_installed_xbot_review_plugin",
+            "disabled": True,
+        }]), encoding="utf-8",
+    )
+    tree = load_plugin_tree(paths, tmp_path, session_id="review")
+    assert tree.entry("uninstalled").disabled
+
+
 class TestPluginTree:
     def test_from_dict_list_and_nested(self):
         tree = PluginTree.parse([

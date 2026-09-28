@@ -55,8 +55,9 @@ def test_tui_dispatches_to_generic_client_host_and_passes_unix_socket(
     )
     from XBotv2.application import client as client_host
 
-    async def run_client_application(launch):
-        captured["launch"] = launch
+    async def run_client_application(*, paths, overrides):
+        from XBotv2.application.tree import load_client_tree
+        captured["tree"] = load_client_tree(paths=paths, overrides=overrides)
 
     def run_coroutine(coroutine):
         with asyncio.Runner() as runner:
@@ -70,12 +71,14 @@ def test_tui_dispatches_to_generic_client_host_and_passes_unix_socket(
         "--thread", "agent", "--agent", "reviewer",
     ]))
 
-    assert captured["launch"].base_url == "http://localhost"
-    assert captured["launch"].uds_path == "/tmp/xbot-tui.sock"
-    assert captured["launch"].workspace == str(tmp_path.resolve())
-    assert captured["launch"].session_id == "resume-me"
-    assert captured["launch"].thread_id == "agent"
-    assert captured["launch"].agent == "reviewer"
+    transport = captured["tree"].entry("client-transport").config
+    tui = captured["tree"].entry("textual-tui").config
+    assert transport["base_url"] == "http://localhost"
+    assert transport["uds_path"] == "/tmp/xbot-tui.sock"
+    assert tui["workspace"] == str(tmp_path.resolve())
+    assert tui["session_id"] == "resume-me"
+    assert tui["thread_id"] == "agent"
+    assert tui["agent"] == "reviewer"
     assert captured["cleanup"] == (spawned, "/tmp/xbot-tui.sock")
 
 
@@ -236,11 +239,15 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(http, "create_app", lambda **_kwargs: _FakeApp())
     served = {}
-    monkeypatch.setattr(
-        uvicorn,
-        "run",
-        lambda app, **kwargs: served.update(app=app, **kwargs),
-    )
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+
+        async def serve(self):
+            served.update(app=self.config.app, uds=self.config.uds)
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
 
     cli._run_server(parse([
         "serve", "--uds", str(socket_path),
@@ -249,3 +256,49 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
     assert socket_path.parent.is_dir()
     assert served["uds"] == str(socket_path)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_server_plugin_tasks_live_through_serving_and_cleanup(monkeypatch, tmp_path, fail):
+    import uvicorn
+    from XBotv2.application import server as server_host
+
+    loops = []
+    workers = []
+    phases = []
+
+    async def start(**kwargs):
+        loops.append(asyncio.get_running_loop())
+        workers.append(asyncio.create_task(asyncio.Event().wait()))
+        phases.append("start")
+
+        async def stop():
+            loops.append(asyncio.get_running_loop())
+            phases.append("stop")
+            workers[0].cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        return types.SimpleNamespace(server=object(), stop=stop)
+
+    class Server:
+        def __init__(self, config):
+            pass
+
+        async def serve(self):
+            loops.append(asyncio.get_running_loop())
+            phases.append("serve")
+            assert not workers[0].done()
+            if fail:
+                raise RuntimeError("serve failed")
+
+    monkeypatch.setattr(server_host, "start_server_application", start)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    args = parse(["serve", "--data-dir", str(tmp_path)])
+    if fail:
+        with pytest.raises(RuntimeError, match="serve failed"):
+            cli._run_server(args)
+    else:
+        cli._run_server(args)
+    assert phases == ["start", "serve", "stop"]
+    assert len({id(loop) for loop in loops}) == 1
+    assert workers[0].cancelled()

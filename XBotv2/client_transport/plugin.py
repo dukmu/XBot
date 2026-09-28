@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict
 from xcore import Context
 
-from XBotv2.application.client import ClientLaunch
 from XBotv2.client import XBotClient
+
+
+class ClientTransportConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    base_url: str = "http://127.0.0.1:4096"
+    uds_path: str | None = None
 
 
 class ClientTransportPlugin:
     name = "xbot.client_transport"
-    inject = ["client_launch"]
+    Config = ClientTransportConfig
 
-    async def apply(
+    def apply(
         self,
         ctx: Context,
-        config: dict[str, JsonValue] | None = None,
+        config: ClientTransportConfig,
     ) -> None:
-        launch: ClientLaunch = ctx.require("client_launch")
-        client = XBotClient(launch.base_url, uds_path=launch.uds_path)
+        client = XBotClient(config.base_url, uds_path=config.uds_path)
         ctx.set("client_api", client)
         ctx.on("dispose", client.close)
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from xcore import Context
 
-from XBotv2.application.client import ClientLaunch
 from XBotv2.commands import CommandsPort
 from XBotv2.tui.commands import register_client_commands
 from XBotv2.tui.config import TextualTuiConfig
@@ -15,7 +14,7 @@ from XBotv2.tui.transport import SessionBackend
 class TextualTuiPlugin:
     name = "xbot.textual_tui"
     Config = TextualTuiConfig
-    inject = ["client_api", "client_launch", "commands"]
+    inject = ["client_api", "commands"]
 
     def apply(
         self,
@@ -25,7 +24,6 @@ class TextualTuiPlugin:
         terminal = TextualTerminalClient(
             backend=ctx.require("client_api"),
             commands=ctx.require("commands"),
-            launch=ctx.require("client_launch"),
             config=config,
         )
         register_client_commands(ctx.require("commands"), terminal.app)

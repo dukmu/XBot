@@ -76,6 +76,7 @@ from XBotv2.tui.protocol import (
     replay_pending_interactions,
 )
 from XBotv2.tui.status import Connection
+from XBotv2.tui.config import DEFAULT_HISTORY_WINDOW, DEFAULT_HISTORY_RETENTION
 
 if TYPE_CHECKING:
     from XBotv2.config import (
@@ -86,12 +87,6 @@ if TYPE_CHECKING:
     )
 
 CURSOR_EXPIRED = "session_event_cursor_expired"
-
-#: The default window one attach asks for, and the default number of entries the
-#: client keeps before releasing the pages the reader walked past.
-DEFAULT_HISTORY_WINDOW = 50
-DEFAULT_HISTORY_RETENTION = 2000
-
 
 class SessionBackend(Protocol):
     """The slice of the HTTP client the transport uses.

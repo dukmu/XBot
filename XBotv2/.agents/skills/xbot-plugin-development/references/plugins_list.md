@@ -26,8 +26,8 @@ Textual TUI); it is not an Agent, server, or ACP process.
 | Tree id | Import name | Profile | Dependency-gated integrations | Provides / primary role |
 |---|---|---|---|---|
 | `config` | `config` | agent, server | Agent: runtime paths and launch; server: `server`, `sessions` | Agent `settings`; policy/config HTTP routes |
-| `client-transport` | `client_transport` | client | `client_launch` | `client_api` (`XBotClient`) |
-| `textual-tui` | `tui` | client | `client_api`, `client_launch`, `commands` | `terminal_client`; Textual TUI and local command registration |
+| `client-transport` | `client_transport` | client | own `ClientTransportConfig` | `client_api` (`XBotClient`) |
+| `textual-tui` | `tui` | client | `client_api`, `commands`; own `TextualTuiConfig` | `terminal_client`; Textual TUI and local command registration |
 | `persistence` | `persistence` | agent, server, acp | Agent: loop state and thread persistence | process reader factory; Agent history/metadata hydration |
 | `usage` | `usage` | agent | `state`, `loop_state`, `runtime_log` | `usage` snapshot and usage events |
 | `agents` | `agents` | agent, server | Agent: runtime variables/catalog and loop dependencies; server: `server`, `sessions` | `agent_catalog`, `agent_runtime`, `engine`; Agent HTTP routes |
@@ -76,7 +76,6 @@ minimal integration test reports `FiberState.PENDING`:
 | `runtime_log` | boot's `RuntimeLog` | same | same | same |
 | `runtime_paths` | `RuntimePaths` for the selected `data_dir` | same | process `RuntimePaths` | process `RuntimePaths` |
 | `workspace_root` | selected workspace `Path` | not provided | server workspace `Path` | data root `Path` (carrier default) |
-| `client_launch` | not provided | `ClientLaunch` for one client run | not provided | not provided |
 | `session_launch` | `SessionLaunch` for one session/thread | not provided | not provided | not provided |
 | `agent_options` | typed Agent launch facts | not provided | not provided | not provided |
 | `thread_persistence` | `ThreadPersistence` when persistence is enabled | not provided | not provided | not provided |

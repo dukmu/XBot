@@ -248,34 +248,34 @@ def _run_server(args) -> None:
         print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    paths = RuntimePaths.from_data_dir(args.data_dir)
-    workspace_root = str(_workspace_root(args))
+    asyncio.run(_serve(args))
+
+
+async def _serve(args) -> None:
+    """Keep plugin resources, HTTP serving and teardown on the same loop."""
+    import uvicorn
+
     from XBotv2.application.server import start_server_application
 
-    root_ctx = asyncio.run(start_server_application(
-        paths=paths,
+    root_ctx = await start_server_application(
+        paths=RuntimePaths.from_data_dir(args.data_dir),
         provider_name=args.provider,
-        workspace_root=workspace_root,
+        workspace_root=str(_workspace_root(args)),
         no_plugins=args.no_plugins,
-    ))
-    app = root_ctx.server
-    uds = args.uds
+    )
     try:
+        uds = args.uds
         if uds:
             uds_path = Path(uds).expanduser()
             uds_path.parent.mkdir(parents=True, exist_ok=True)
-            uvicorn.run(
-                app,
-                uds=str(uds_path),
-                log_config=None,
-                ws="none",
-            )
-        else:
-            uvicorn.run(
-                app, host=args.bind, port=args.port, log_config=None, ws="none"
-            )
+            uds = str(uds_path)
+        config = uvicorn.Config(
+            root_ctx.server, host=args.bind, port=args.port, uds=uds,
+            log_config=None, ws="none",
+        )
+        await uvicorn.Server(config).serve()
     finally:
-        asyncio.run(root_ctx.stop())
+        await root_ctx.stop()
 
 
 def _run_tui(args) -> None:
@@ -291,25 +291,33 @@ def _run_tui(args) -> None:
         args.log_level,
     )
 
-    server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
-
-    from XBotv2.application.client import ClientLaunch, run_client_application
+    from XBotv2.application.client import run_client_application
+    from XBotv2.loader import PluginOverlay
 
     session_id = getattr(args, "session", None)
+    tui_config = {
+        "workspace": str(_workspace_root(args)),
+        "thread_id": args.thread,
+    }
+    for key, value in (
+        ("session_id", session_id), ("agent", args.agent),
+        ("history_window", args.history_window),
+        ("history_retention", args.history_retention),
+    ):
+        if value is not None:
+            tui_config[key] = value
+    server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
     try:
+        overrides = PluginOverlay.parse([
+            {"id": "client-transport", "config": {
+                "base_url": server_url, "uds_path": uds_path,
+            }},
+            {"id": "textual-tui", "config": tui_config},
+        ])
         asyncio.run(
             run_client_application(
-                ClientLaunch(
-                    data_dir=args.data_dir,
-                    base_url=server_url,
-                    uds_path=uds_path,
-                    workspace=str(_workspace_root(args)),
-                    session_id=session_id,
-                    thread_id=getattr(args, "thread", "agent"),
-                    agent=getattr(args, "agent", None),
-                    history_window=args.history_window,
-                    history_retention=args.history_retention,
-                )
+                paths=RuntimePaths.from_data_dir(args.data_dir),
+                overrides=overrides,
             )
         )
     finally:

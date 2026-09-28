@@ -68,6 +68,8 @@ def load_plugin_tree(
         )
         tree = tree_with_expanded_configs(tree, variables)
     for entry in tree.entries:
+        if entry.disabled:
+            continue
         validate_plugin_config(
             plugin_config_schema(entry),
             entry.config,

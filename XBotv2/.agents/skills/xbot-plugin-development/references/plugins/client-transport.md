@@ -8,7 +8,8 @@ composition: a terminal client plugin talks to a separately running
 - **Import/profile:** `client_transport`, client profile.
 - **Tree id:** `client-transport`.
 - **Source:** `XBotv2/client_transport/plugin.py`, `XBotv2/client.py`.
-- **Injects/provides:** `client_launch` → `client_api` (`XBotClient`).
+- **Configuration:** `ClientTransportConfig(base_url, uds_path)`.
+- **Provides:** `client_api` (`XBotClient`); no injected launch service.
 - **Owns:** the transport lifetime; it closes the client on context disposal.
 
 This is a carrier plugin, not an Agent plugin. It has no Tools, no commands, and
@@ -19,46 +20,34 @@ no HTTP routes of its own.
 ```python
 class ClientTransportPlugin:
     name = "xbot.client_transport"
-    inject = ["client_launch"]
+    Config = ClientTransportConfig
 
-    async def apply(
+    def apply(
         self,
         ctx: Context,
-        config: dict[str, JsonValue] | None = None,
+        config: ClientTransportConfig,
     ) -> None:
-        launch: ClientLaunch = ctx.require("client_launch")
-        client = XBotClient(launch.base_url, uds_path=launch.uds_path)
+        client = XBotClient(config.base_url, uds_path=config.uds_path)
         ctx.set("client_api", client)
         ctx.on("dispose", client.close)
 ```
 
-`plugin = ClientTransportPlugin()` is the root export. `apply` is async here
-because it awaits nothing else — the class form is still the object form, not
-the class-plugin form, since `apply` receives Context.
+`plugin = ClientTransportPlugin()` is the root export. XCore validates the
+declared Config before calling apply.
 
-The client is created from the launch facts and registered as `client_api`.
+The client is created from the resolved plugin config and registered as `client_api`.
 Cleanup is registered as a listener on the XCore `dispose` event, so the
 transport closes when the owning context is destroyed. A dependent client
 plugin should not close it independently.
 
-## Launch facts
+## Configuration overlays
 
-`ClientLaunch` is supplied by the CLI client host before the profile starts
-(`XBotv2/application/client.py`):
-
-```python
-@dataclass(frozen=True, slots=True)
-class ClientLaunch:
-    data_dir: str
-    base_url: str
-    uds_path: str | None
-    workspace: str
-    session_id: str | None
-    thread_id: str
-    agent: str | None
-    history_window: int | None = None
-    history_retention: int | None = None
-```
+The CLI converts connection arguments into the `client-transport` config and
+session/display arguments into the `textual-tui` config. Both are ordinary
+in-memory `PluginOverlay` patches applied after the bundled and global YAML.
+Unspecified optional CLI arguments preserve YAML values. The client host only
+loads this tree, starts the XCore context, runs `terminal_client`, and destroys
+the context. There is no separate launch service.
 
 The client connects to `base_url` over HTTP, or to `uds_path` when a Unix domain
 socket is configured.
@@ -91,7 +80,7 @@ typed `ErrorResponse`.
 ## Where the client profile goes next
 
 `textual-tui` (tree id, import name `tui`) is the other client-profile entry. It
-consumes `client_api`, `client_launch`, and `commands`, and provides
+consumes `client_api` and `commands`, and provides
 `terminal_client` — the async foreground client the CLI awaits. See the
 [client runtime reference](../client-runtime.md) for streamed events,
 interactions, command discovery, and read-only views.
