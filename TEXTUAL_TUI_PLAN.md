@@ -1,5 +1,25 @@
 # Textual TUI 插件化重建方案
 
+## 2026-09-29 持久化稳定点验证
+
+- [x] inbox 改为增量日志、canonical 输入统一身份、StateService 逐键追加后，重新运行完整 TUI。首轮 `882 passed, 1 failed`：InputsConsumed 漏登记到事件归属守卫，已补为 server-shaped；不是删除守卫或增加 payload 副本。
+- [x] 修订后完整 TUI `884 passed in 123.88s`（含本地 server 与真实 CLI/tmux）；未运行真实外部供应商请求。
+- [x] 已读取本轮 `/tmp/pytest-of-shefrin/pytest-172/` 真实 CLI/tmux 捕获：双会话恢复后输入各出现一次、Think 与 reply 可见；compact 后继续第六轮且历史保留；子代理恢复页面明确只读并显示 Esc main。使用本地可控 provider，捕获不提交。
+- [ ] 此稳定点不代替下述整体布局/复合交互验收；按用户要求，提交汇报后停止 goal，不继续扩展 TUI。
+
+## 2026-09-29 装配迁移后的真实终端复验
+
+- [x] 真实 server + CLI/tmux 三条路径 `3 passed, 37 deselected in 16.93s`：双客户端隔离与恢复、compact 后重启继续、子代理只读查看与恢复。使用可控 provider，不冒充真实供应商请求。
+- [x] 已读取本次 `/tmp/pytest-of-shefrin/pytest-152/` 捕获：`multi-pty-captures/session-a-turn-2.txt` 两轮各一条输入且无 sending 残留；`compact-resume-pty-captures/continued.txt` 原五轮 transcript 与恢复后第六轮可见；`subagent-pty-captures/child-resumed.txt` 明确只读、提供 Esc 返回主线程。临时文件可能被后续 pytest 清理。
+- [ ] 本次没有完成动态 resize、分页滚动平滑度和 permission/compact/reconnect 合并为同一复杂交互路径的最终验收。
+
+## 2026-09-29 输入投影修订
+
+- [x] human/runtime 输入使用接受后的 canonical 消息身份和内容，live/history 共用投影；拒绝输入不发布正式消息，长输入外部化后的预览和附件引用一致。
+- [x] TUI 用服务端 canonical 内容更新同 ID 临时行；复用现有 `input_consumed` 清理未确认的已消费输入，不清理其他排队输入。正常输入先收到 canonical 消息，再收到消费通知，保留原 entry/控件身份。
+- [x] 真实双客户端/resume 捕获曾揭示测试漏检的重复输入与 sending 残留；已补重复计数断言并读取修正后的实际终端帧。证据见根目录 TODO 的 2026-09-29 输入身份记录。
+- [ ] 异常部分提交后的 live 发布、取消/重连交错仍需继续验证；本节不宣告完整输入/TUI 验收完成。
+
 ## 2026-09-28 事件流审查修订
 
 本轮按 loader → XCore 生命周期/事件 → 核心插件 → session/protocol → TUI 的顺序推进。旧勾选项仅是历史记录，必须以当前实现和真实运行证据重新核验。
@@ -7,9 +27,9 @@
 - [x] Client 启动结构修订：删除 `ClientLaunch` 和 `client_launch` 服务；CLI 将参数作为内存 `PluginOverlay` 覆盖 YAML。transport 连接参数由 `ClientTransportConfig` 持有，TUI 会话/分页/显示参数由 `TextualTuiConfig` 持有，host 不再注入 launch 对象。下文旧 ClientLaunch 描述仅记录历史实现，以本项为准。
 
 - [x] 上下文注入采用已有 RuntimeNoticeRecord：默认一行 `Context · source · event`，展开查看实际内容；保留 canonical message ID，live/history 复用同一投影。旧“全部隐藏 runtime notice”的设计废止。
-- [x] runtime notice 在 inbox consumed 后从已接受的 canonical history 发布；claimed 不再提前发布原始 runtime input。notice_id 对应原 inbox ID，用于恢复时去重。
+- [x] runtime notice 从已接受的 canonical history 发布；claimed 不提前发布原始 runtime input。当前先发布 canonical message，再发消费通知；message.id 沿用 inbox ID，用于恢复去重，重复 notice_id 字段已删除。
 - [x] 真实 server/pilot 验证显示内容与 history API 一致；真实 CLI/tmux 验证 parent context 行、只读 child、退出后 disk resume。2026-09-28 capture 位于 `/tmp/xbot-context-review-final/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
-- [ ] HumanInput 的 claimed/accepted/message identity 与拒绝、外部化路径仍需统一审查；不能以 runtime notice 已修复代表所有输入完成。
+- [x] HumanInput 的 claimed/accepted/message identity 已统一，拒绝和外部化链路经生产路径验证；本次未因此宣告取消/重连交错的最终验收完成。
 - [ ] 从底层验证插件卸载、依赖重绑、事件注册所有权、异常传播及持久化完成边界，再推进主题、分页和插件特性。
 - [ ] 当前真实 parent 帧仍存在原始 `completion_notice` 标题；其与 context 注入分别代表任务结果及模型输入，需要改善展示层级。
 
