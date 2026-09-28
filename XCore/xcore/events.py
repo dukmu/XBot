@@ -118,14 +118,11 @@ class EventBus:
                 "wildcard '*' is only allowed as a full event segment "
                 f"(got {event!r})"
             )
-        if prepend:
-            self._seq -= 1
-        else:
-            self._seq += 1
+        self._seq += 1
         hook = Hook(
             event=event,
             callback=callback,
-            seq=self._seq,
+            seq=-self._seq if prepend else self._seq,
             filters=filters,
             owner=owner,
             global_=global_,
@@ -151,22 +148,30 @@ class EventBus:
         )
 
         def disposer() -> bool:
-            return self.unregister(event, callback)
+            return self._remove_hook(hook)
 
         return disposer
 
     def unregister(self, event: str, callback: Callable[..., Any]) -> bool:
         """Remove one listener by callback identity; returns whether removed."""
         for hooks in self._collect_hook_lists(event):
-            for index, hook in enumerate(hooks):
+            for hook in hooks:
                 if hook.callback is callback and not hook.disposed:
-                    hook.disposed = True
+                    return self._remove_hook(hook)
+        return False
+
+    def _remove_hook(self, hook: Hook) -> bool:
+        if hook.disposed:
+            return False
+        hook.disposed = True
+        for hooks in self._collect_hook_lists(hook.event):
+            for index, registered in enumerate(hooks):
+                if registered is hook:
                     del hooks[index]
                     logger.debug(
                         "listener.unregistered event=%s owner=%s callback=%s",
-                        event,
-                        hook.owner.fiber.name,
-                        _callback_name(callback),
+                        hook.event, hook.owner.fiber.name,
+                        _callback_name(hook.callback),
                     )
                     return True
         return False

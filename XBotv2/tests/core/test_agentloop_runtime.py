@@ -94,12 +94,11 @@ async def test_hook_can_complete_a_turn_without_sending_a_model_request(
         )
         assert isinstance(events[-1], LoopTurnEnded)
         assert events[-1].outcome.kind == "finished"
-        expected_calls = (
-            0 if boundary == Events.BEFORE_CONTEXT_BUILD else 1
-        )
-        # The request-boundary case can run the captioner's auxiliary request;
-        # neither hook permits the Agent's user-turn request to reach a model.
-        assert provider.call_count == expected_calls
+        # Caption observes before-context with prepend=True, before either
+        # short-circuit hook. Only that auxiliary request may reach the model.
+        assert provider.call_count == 1
+        assert services.loop_state.metadata.value.title == "session title"
+        assert services.usage.snapshot().latest_turn_observation is None
     finally:
         await services.stop()
 
