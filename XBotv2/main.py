@@ -256,12 +256,18 @@ async def _serve(args) -> None:
     import uvicorn
 
     from XBotv2.application.server import start_server_application
+    from XBotv2.loader import PluginOverlay
 
+    session_config = {}
+    if args.workspace is not None:
+        session_config["workspace_root"] = args.workspace
+    if args.provider is not None:
+        session_config["provider_name"] = args.provider
+    if args.no_plugins:
+        session_config["no_plugins"] = True
     root_ctx = await start_server_application(
         paths=RuntimePaths.from_data_dir(args.data_dir),
-        provider_name=args.provider,
-        workspace_root=args.workspace,
-        no_plugins=True if args.no_plugins else None,
+        overrides=PluginOverlay.parse([{"id": "session", "config": session_config}]),
     )
     try:
         uds = args.uds

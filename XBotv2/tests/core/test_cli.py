@@ -259,7 +259,10 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_server_plugin_tasks_live_through_serving_and_cleanup(monkeypatch, tmp_path, fail):
+@pytest.mark.parametrize("explicit_options", [False, True])
+def test_server_plugin_tasks_live_through_serving_and_cleanup(
+    monkeypatch, tmp_path, fail, explicit_options,
+):
     import uvicorn
     from XBotv2.application import server as server_host
 
@@ -268,6 +271,10 @@ def test_server_plugin_tasks_live_through_serving_and_cleanup(monkeypatch, tmp_p
     phases = []
 
     async def start(**kwargs):
+        assert set(kwargs) == {"paths", "overrides"}
+        assert kwargs["overrides"].patches[0].config == ({
+            "workspace_root": str(tmp_path), "provider_name": "test", "no_plugins": True,
+        } if explicit_options else {})
         loops.append(asyncio.get_running_loop())
         workers.append(asyncio.create_task(asyncio.Event().wait()))
         phases.append("start")
@@ -293,7 +300,10 @@ def test_server_plugin_tasks_live_through_serving_and_cleanup(monkeypatch, tmp_p
 
     monkeypatch.setattr(server_host, "start_server_application", start)
     monkeypatch.setattr(uvicorn, "Server", Server)
-    args = parse(["serve", "--data-dir", str(tmp_path)])
+    argv = ["serve", "--data-dir", str(tmp_path)]
+    if explicit_options:
+        argv += ["--workspace", str(tmp_path), "--provider", "test", "--no-plugins"]
+    args = parse(argv)
     if fail:
         with pytest.raises(RuntimeError, match="serve failed"):
             cli._run_server(args)

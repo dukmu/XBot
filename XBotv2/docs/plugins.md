@@ -62,7 +62,10 @@ provider for sessions opened through this server. It does not define another
 provider catalog. `no_plugins` controls optional plugins in those Agent trees,
 not the server's HTTP capabilities.
 
-Server launch arguments become an in-memory overlay of this entry. Unspecified
+The server CLI converts launch arguments to an in-memory overlay of this entry;
+`start_server_application(paths=..., overrides=...)` only loads that overlay and
+starts the carrier. Embedded callers use the same `PluginOverlay` API, with no
+parallel provider/workspace/no-plugins parameters. Unspecified
 CLI options preserve YAML values; supplied `--workspace`, `--provider`, and
 `--no-plugins` override them without writing the YAML file. These process
 defaults are loaded at server startup, not live-reconfigured by catalog edits.

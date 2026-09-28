@@ -9,6 +9,7 @@ import yaml
 from fastapi import APIRouter, FastAPI
 
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.loader import PluginOverlay
 from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution
 from XBotv2.server.plugin import WebServer, route_keys
 
@@ -124,10 +125,10 @@ async def booted_server(tmp_path: Path):
         encoding="utf-8",
     )
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(tmp_path),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(tmp_path), "no_plugins": True,
+        }}]),
     )
     try:
         yield server

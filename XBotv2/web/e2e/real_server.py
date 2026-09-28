@@ -11,6 +11,7 @@ import uvicorn
 import yaml
 
 from XBotv2.application.server import start_server_application
+from XBotv2.loader import PluginOverlay
 from XBotv2.application.app import create_agent_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
@@ -73,10 +74,10 @@ async def main() -> None:
         )
 
         application = await start_server_application(
-            provider_name="default",
             paths=RuntimePaths.from_data_dir(data_dir),
-            workspace_root=str(workspace),
-            no_plugins=True,
+            overrides=PluginOverlay.parse([{"id": "session", "config": {
+                "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
+            }}]),
         )
         application.sessions.application_factory = partial(
             create_agent_application,

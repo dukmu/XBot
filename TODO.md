@@ -45,7 +45,9 @@
 - [ ] HTTP 测试 `_real_client` 仍将 uvicorn 放在另一个线程/事件循环，与已修正的 CLI 单循环生命周期不一致；后续验证中迁移该测试宿主，不将其当成完整 CLI 生命周期证据。
 - [x] 删除 `ServerOptions/server_options`；session 插件以自己的 Config 持有进程会话默认值并提供 workspace_root。server/ACP 工作区不再由 host 手工 set；启动参数走 plugin overlay，server 未指定的 CLI 值保留 YAML，配置文件不被回写。
 - [x] session 默认值迁移回归：startup/loader/config/HTTP/ACP/CLI/真实 server TUI `245 passed, 6 deselected in 224.48s`。最后合并三种 carrier 的 overlay 加载后，client host/protocol/ACP/会话创建覆盖测试另跑 `35 passed in 6.91s`；workspace CLI 省略值及生命周期 focused `5 passed`。未运行 WebUI/真实供应商请求，未宣称本轮完成视觉验收。
-- [ ] server 标量参数到 overlay 的转换仍在 application/server.py，尚需收敛到 CLI 边界；application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
+- [x] server 标量参数到 overlay 的转换移到 CLI；`start_server_application` 仅接收 paths/overrides，全部调用方迁移，不保留旧参数兼容入口。两个 WebUI 验证脚本仅机械更新 server 启动调用，没有做 WebUI 功能或测试工作。
+- [x] server 宿主 overlay 入口迁移验证：CLI/server/HTTP/fold-in 队列/真实 server TUI `169 passed, 6 deselected in 178.58s`；CLI 同时验证显式值和省略值映射，以及正常/异常 serve 的同循环清理。未据此宣称完成 factory/Agent 装配。
+- [ ] application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
 - [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
 - [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
 - [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。

@@ -43,6 +43,7 @@ from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
+from XBotv2.loader import PluginOverlay
 from XBotv2.session.records import AssistantRecord, HumanInputRecord
 from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
 from XBotv2.tui.app import TuiApp
@@ -265,10 +266,11 @@ async def base_url(
             encoding="utf-8",
         )
     server = await start_server_application(
-        provider_name=provider_name,
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=no_plugins,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": provider_name, "workspace_root": str(workspace),
+            "no_plugins": no_plugins,
+        }}]),
     )
     answer = {
         "content": REPLY,

@@ -27,6 +27,7 @@ from XBotv2.core.tools import Tool, ToolSucceeded
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application.server import start_server_application
+from XBotv2.loader import PluginOverlay
 from XBotv2.agentloop.protocol import (
     AssistantCompleted,
     LoopError,
@@ -92,10 +93,10 @@ async def foldin_app(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
+        }}]),
     )
     server.server.state.manager = server.sessions
     server.server.state.paths = server.runtime_paths

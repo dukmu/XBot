@@ -39,6 +39,7 @@ from pydantic import ValidationError
 from XBotv2.jobs import Running
 from XBotv2.jobs.protocol import JobCompletedEvent
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.loader import PluginOverlay
 from XBotv2.agentloop import AllTools
 from XBotv2.core.tools import Tool, ToolCall, ToolCancelled, ToolDenied, ToolSucceeded
 from XBotv2.client import XBotClient, XBotClientError
@@ -754,10 +755,10 @@ async def http_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace.mkdir()
 
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
+        }}]),
     )
     app = server.server
     # Integration setup needs runtime capabilities that HTTP consumers reach
@@ -790,10 +791,11 @@ async def client(http_app) -> AsyncIterator[httpx.AsyncClient]:
 async def full_http_app(http_app):
     """HTTP app whose Agent sessions include optional built-in plugins."""
     server = await start_server_application(
-        provider_name="default",
         paths=http_app.state.paths,
-        workspace_root=str(http_app.state.workspace_root),
-        no_plugins=False,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(http_app.state.workspace_root),
+            "no_plugins": False,
+        }}]),
     )
     server.server.state.manager = server.sessions
     try:
@@ -1556,9 +1558,9 @@ async def test_http_selects_primary_agent_and_resumes_it_from_thread_metadata(
     )
     server = await start_server_application(
         paths=http_app.state.paths,
-        provider_name="default",
-        workspace_root=str(workspace),
-        no_plugins=False,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": False,
+        }}]),
     )
     app = server.server
     app.state.manager = server.sessions
@@ -1636,9 +1638,9 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
     )
     server = await start_server_application(
         paths=http_app.state.paths,
-        provider_name="default",
-        workspace_root=str(workspace),
-        no_plugins=False,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": False,
+        }}]),
     )
     app = server.server
     app.state.manager = server.sessions
@@ -2378,9 +2380,10 @@ async def test_session_creation_defaults_use_yaml_then_memory_overlay(http_app, 
     original_config = config_file.read_bytes()
     host = await start_server_application(
         paths=paths,
-        workspace_root=str(http_app.state.workspace_root) if override else None,
-        provider_name="default" if override else None,
-        no_plugins=False if override else None,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "workspace_root": str(http_app.state.workspace_root),
+            "provider_name": "default", "no_plugins": False,
+        }}]) if override else None,
     )
     try:
         async with httpx.AsyncClient(
@@ -2863,10 +2866,10 @@ async def test_http_open_session_failure_returns_stable_json_error(tmp_path: Pat
         encoding="utf-8",
     )
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(tmp_path),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(tmp_path), "no_plugins": True,
+        }}]),
     )
     app = server.server
 
@@ -2952,10 +2955,10 @@ async def test_active_attach_without_persistence_succeeds_but_rebuild_fails(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
+        }}]),
     )
     app = server.server
     server.sessions.application_factory = partial(
@@ -4561,10 +4564,10 @@ async def _real_client(
     )
 
     application = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(workspace),
-        no_plugins=no_plugins,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(workspace), "no_plugins": no_plugins,
+        }}]),
     )
     app = application.server
     application.sessions.application_factory = partial(create_agent_application, model_override=llm)
@@ -5445,10 +5448,10 @@ async def skills_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
 
     server = await start_server_application(
-        provider_name="default",
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(tmp_path),
-        no_plugins=False,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(tmp_path), "no_plugins": False,
+        }}]),
     )
     app = server.server
     app.state.manager = server.sessions
