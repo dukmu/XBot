@@ -1620,6 +1620,8 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
         (captures / "session-a-turn-2.txt").write_text(
             resumed_turn, encoding="utf-8"
         )
+        assert resumed_turn.count("alpha after resume") == 1
+        assert "sending…" not in resumed_turn
         beta_still_live = _capture_tmux_screen(tmux_b)
         (captures / "session-b-still-live.txt").write_text(
             beta_still_live, encoding="utf-8"

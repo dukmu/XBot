@@ -7,28 +7,33 @@ import threading
 from pathlib import Path
 
 import pytest
+from xcore import Context
 
 import XBotv2.application.client as client_host
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
 
 
-class FakeContext:
+class TrackedContext(Context):
     def __init__(self, *, data_dir: str) -> None:
-        self.data_dir = data_dir
-        self.values = {}
-        self.destroy_count = 0
-        self.destroy_identity = None
+        super().__init__(data_dir=data_dir)
+        self._destroy_count = 0
+        self._destroy_identity = None
+        self._order = []
 
-    def set(self, key, value) -> None:
-        self.values[key] = value
+    @property
+    def destroy_count(self):
+        return self._destroy_count
 
-    def require(self, key):
-        return self.values[key]
+    @property
+    def destroy_identity(self):
+        return self._destroy_identity
 
     async def destroy(self) -> None:
-        self.destroy_count += 1
-        self.destroy_identity = (asyncio.get_running_loop(), threading.get_ident())
+        self._destroy_count += 1
+        self._destroy_identity = (asyncio.get_running_loop(), threading.get_ident())
+        self._order.append("destroy")
+        await super().destroy()
 
 
 def launch(tmp_path: Path):
@@ -43,8 +48,9 @@ def launch(tmp_path: Path):
 async def test_host_runs_terminal_and_disposes_context_on_the_same_loop(
     monkeypatch, tmp_path
 ) -> None:
-    context = FakeContext(data_dir="")
+    context = TrackedContext(data_dir=tmp_path)
     order = []
+    context._order = order
     identity = (asyncio.get_running_loop(), threading.get_ident())
 
     class Terminal:
@@ -67,12 +73,11 @@ async def test_host_runs_terminal_and_disposes_context_on_the_same_loop(
     async def boot_application(*, ctx, tree):
         assert ctx is context
         assert tree == "client-tree"
-        assert ctx.values == {}
+        assert ctx.require("state") is ctx.state
         ctx.set("terminal_client", terminal)
         return ctx
 
     monkeypatch.setattr(client_host, "boot_application", boot_application)
-    context.destroy = lambda: _destroy(context, order, identity)
 
     await client_host.run_client_application(**launch(tmp_path))
 
@@ -82,7 +87,7 @@ async def test_host_runs_terminal_and_disposes_context_on_the_same_loop(
 
 
 async def test_host_disposes_context_when_terminal_raises(monkeypatch, tmp_path) -> None:
-    context = FakeContext(data_dir="")
+    context = TrackedContext(data_dir=tmp_path)
 
     class Terminal:
         async def run(self) -> None:
@@ -107,7 +112,7 @@ async def test_host_disposes_context_when_terminal_raises(monkeypatch, tmp_path)
 
 
 async def test_host_does_not_repeat_boot_failure_cleanup(monkeypatch, tmp_path) -> None:
-    context = FakeContext(data_dir="")
+    context = TrackedContext(data_dir=tmp_path)
 
     monkeypatch.setattr(client_host, "Context", lambda *, data_dir: context)
     monkeypatch.setattr(client_host, "load_client_tree", lambda **kwargs: "tree")
@@ -127,7 +132,7 @@ async def test_host_does_not_repeat_boot_failure_cleanup(monkeypatch, tmp_path) 
 async def test_host_disposes_context_when_terminal_is_cancelled(
     monkeypatch, tmp_path
 ) -> None:
-    context = FakeContext(data_dir="")
+    context = TrackedContext(data_dir=tmp_path)
     entered = asyncio.Event()
 
     class Terminal:
@@ -147,16 +152,14 @@ async def test_host_disposes_context_when_terminal_is_cancelled(
 
     monkeypatch.setattr(client_host, "boot_application", boot_application)
     task = asyncio.create_task(client_host.run_client_application(**launch(tmp_path)))
-    await entered.wait()
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert context.destroy_count == 1
-
-
-async def _destroy(context: FakeContext, order: list, identity) -> None:
-    order.append("destroy")
-    await FakeContext.destroy(context)
-    assert (asyncio.get_running_loop(), threading.get_ident()) == identity

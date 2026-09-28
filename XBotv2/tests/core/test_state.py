@@ -1,10 +1,11 @@
 """Tests for ThreadPersistence message persistence."""
 
 from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.domain import InputId, MessageId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.messages import HumanInputMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
+from xcore import Context
 
 
 def _session_paths(data_dir, session_id="s1"):
@@ -15,9 +16,12 @@ class TestThreadPersistenceCreation:
     """State store creation and directory layout."""
 
     def test_create_initializes_directories(self, temp_data_dir):
+        paths = _session_paths(temp_data_dir).thread("t1")
+        context = Context(data_dir=paths.plugin_state_dir)
         store = ThreadPersistence.create(
-            _session_paths(temp_data_dir),
+            paths,
             thread_id="t1",
+            state=context.state,
         )
         assert store.paths.state_dir.exists()
         assert not store.history.path.exists()
@@ -25,16 +29,15 @@ class TestThreadPersistenceCreation:
 
     def test_threads_keep_independent_state(self, temp_data_dir):
         paths = _session_paths(temp_data_dir)
-        first = ThreadPersistence.create(
+        first = ThreadPersistence.open(
             paths, thread_id="first",
         )
-        second = ThreadPersistence.create(
+        second = ThreadPersistence.open(
             paths, thread_id="second",
         )
 
         first.history.append([HumanInputMessage(
             id=MessageId("input-1"),
-            input_id=InputId("input-1"),
             parts=(TextPart(text="first thread"),),
         )])
         assert second.history.load() == []

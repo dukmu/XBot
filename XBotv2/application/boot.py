@@ -6,7 +6,7 @@ import sys
 from functools import partial
 from pathlib import Path
 
-from xcore import Context, FiberState, ServiceNotFoundError
+from xcore import Context, FiberState
 
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.loader import PluginTree
@@ -18,9 +18,8 @@ async def boot_application(
     ctx: Context,
     tree: PluginTree,
     plugin_dirs: list[Path | str] | None = None,
-    required_services: tuple[str, ...] = (),
 ) -> Context:
-    """Start the tree; only the host's required capabilities gate success."""
+    """Start the configured tree without imposing application capabilities."""
     import_paths: list[str] = []
     for plugin_dir in plugin_dirs or []:
         root = Path(plugin_dir)
@@ -28,7 +27,6 @@ async def boot_application(
             sys.path.insert(0, str(root))
             import_paths.append(str(root))
 
-    _ = ctx.state
     ctx.on("dispose", partial(_release_import_paths, import_paths))
     runtime_log = DEFAULT_RUNTIME_LOG
     application_log = runtime_log.bind("application")
@@ -40,16 +38,7 @@ async def boot_application(
         )
         handles = mount_plugin_tree(ctx, tree)
         await ctx.start()
-        mounted = ctx.registry.handles()
-        report_plugin_activation(mounted)
-        for service in required_services:
-            try:
-                ctx.require(service)
-            except ServiceNotFoundError as error:
-                for handle in mounted:
-                    if handle.error is not None:
-                        error.add_note(f"Plugin {handle.name!r} failed: {handle.error}")
-                raise
+        report_plugin_activation(ctx.registry.handles())
         application_log.info(
             "application.booted",
             plugins_running=sum(

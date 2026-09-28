@@ -8,11 +8,10 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
 
-from XBotv2.agentloop.contracts import InboxItem
-from XBotv2.core.artifacts import ArtifactStorePort
+from XBotv2.agentloop.contracts import InboxItem, InboxSink
 from XBotv2.core.history import (
-    DurableEvent,
     HistoryPage,
+    HistorySink,
     TrajectoryRead,
 )
 from XBotv2.core.domain import Cursor
@@ -67,36 +66,20 @@ class ThreadLifecycleRecord(BaseModel):
         )
 
 
-class HistoryPort(Protocol):
+class HistoryPort(HistorySink, Protocol):
     def load(self) -> list[ConversationMessage]: ...
 
     def load_surface(self) -> tuple[ConversationMessage, ...]: ...
 
     def load_transcript(self) -> list[ConversationMessage]: ...
 
-    def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]: ...
-
     def replace(self, messages: Sequence[ConversationMessage]) -> None: ...
-
-    def replace_surface(
-        self,
-        source_ids: Sequence[str],
-        messages: Sequence[ConversationMessage],
-        *,
-        operation: str,
-        preserve_transcript: bool,
-    ) -> tuple[ConversationMessage, ...]: ...
-
-    def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
-
-    def open_transactions(
-        self,
-        transaction_kind: str,
-    ) -> frozenset[str]: ...
 
     def count(self) -> int: ...
 
     def count_turns(self) -> int: ...
+
+    def committed_input_ids(self) -> set[str]: ...
 
     def page(
         self,
@@ -130,12 +113,10 @@ class MetadataPort(Protocol):
 
 
 
-class InboxPersistencePort(Protocol):
+class InboxPersistencePort(InboxSink, Protocol):
     """Durable inbox operations owned by the persistence plugin."""
 
     def load(self) -> list[InboxItem]: ...
-
-    def replace(self, items: Sequence[InboxItem]) -> None: ...
 
     def reconcile(self, committed_input_ids: set[str]) -> list[InboxItem]: ...
 
@@ -171,7 +152,6 @@ class ThreadPersistencePort(Protocol):
     thread_id: str
     history: HistoryPort
     state: StatePort
-    artifacts: ArtifactStorePort
     metadata: MetadataPort
     inbox: InboxPersistencePort
     lifecycle: ThreadLifecyclePort

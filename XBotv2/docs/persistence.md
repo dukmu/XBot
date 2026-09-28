@@ -8,8 +8,13 @@ and [session trace reference](../.agents/skills/xbot-plugin-development/referenc
 ## Ownership
 
 `ThreadPersistence` is the composition boundary for one thread. It exposes
-typed history, inbox, metadata, lifecycle, StateService, and ArtifactStore
-ports. The physical layout is derived by `RuntimePaths → SessionPaths →
+typed history, inbox, metadata, lifecycle, and StateService views. The persistence
+plugin creates this store; session restores its runtime projections and owns the
+single AgentInbox. Without a store, session uses memory state and a transient
+inbox. No application entry identifies this capability by its YAML mount ID.
+ArtifactStore
+belongs to the session plugin and remains available without conversation
+persistence; it is not a port of ThreadPersistence. The physical layout is derived by `RuntimePaths → SessionPaths →
 ThreadPaths`; plugins do not construct it themselves.
 
 ```text
@@ -17,7 +22,7 @@ ThreadPaths`; plugins do not construct it themselves.
 ├── thread.json
 └── state/
     ├── messages.jsonl
-    ├── inbox.json
+    ├── inbox.jsonl
     ├── plugin_state/state.json
     └── artifacts/<kind>/<digest>...
 ```
@@ -29,6 +34,12 @@ one record. Undo, clear, fork projections, and compact use a typed
 surface-replacement record that names source nodes and replacement messages.
 The old records remain readable and are folded into the effective surface on
 replay. A failed transition is rejected before its record is appended.
+
+Canonical message models reject empty message identities on
+construction and decoding. History checks identity uniqueness before calling
+its sink. The sink persists the supplied messages without replacing them or
+returning a second canonical representation; memory advances only after the
+write succeeds. A failed write does not reserve the attempted identities.
 
 The conversation surface and the human transcript are separate projections.
 HTTP history uses opaque cursors bound to the projection revision; clients must
@@ -82,12 +93,78 @@ root-resource disposal.
 Readers are not blocked: history, transcript, and trajectory reads take no lock,
 which is why the torn-tail rule above exists. Ownership therefore guarantees
 "one writer", not "one process may touch the directory": tooling that writes
-`messages.jsonl` directly bypasses it and is unsupported, and plugin state,
-metadata, and inbox files are replaced atomically by their own owner rather than
-coordinated by this lock.
+`messages.jsonl` or `inbox.jsonl` directly bypasses it and is unsupported.
+Plugin state uses a versioned, append-only key-change log at the existing
+`plugin_state/state.json` path (JSON-lines content, not a JSON object). It replays
+once on first access, then appends only the affected key/value or namespace-clear
+operation. Old snapshots and malformed complete records fail explicitly; only an
+unterminated tail after a valid header is uncommitted. A failed append rolls back
+its bytes and leaves the cache unchanged. The shared service owns namespace
+serialization; independent writers to the same file are unsupported.
+
+Metadata remains an atomic snapshot. Individual plugin values may themselves be
+growing snapshots; neither this change nor the inbox log redesign resolves that
+plugin-local cost. The overall append-only persistence redesign is not completed.
 
 Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
 advisory locks the runtime refuses to start rather than run without it.
+
+## History projections
+
+In-memory history and persisted transcript projection use the same iterative
+summary-source resolver. Transcript-preserving compaction stores ancestry edges
+without copying the full transcript or flattening all original IDs each time.
+Operations that actually replace transcript content resolve those edges when
+locating the affected span. This does not solve cold-history paging by itself.
+
+## Input recovery
+
+`inbox.jsonl` appends the existing typed insertion, edit, retarget, removal,
+consumption and discard events in a versioned envelope. Only insertion stores
+the complete input; other records store the changed fields or identities.
+Claims are transient and never enter this log. The writer validates each
+transition, fsyncs its append, then advances the in-memory projection; it does
+not rewrite or reread its known prefix for each input. A failed partial write
+rolls back only that uncommitted append. A newly created empty file is removed
+on failed first append. Readers ignore an incomplete final line; the next
+writer drops that fragment before appending. Old `inbox.json` snapshots are
+rejected, without a compatibility reader.
+
+On resume, inbox reconciliation reads committed input identities from append-only
+message records, not the current surface or transcript. Compaction and clear may
+hide a message but do not undo its consumption. This startup query scans the
+loaded trace once; it adds no persisted index or duplicate commit ledger.
+Retiring those inputs appends consumption IDs to the inbox log; it does not
+rewrite the remaining queue.
+
+An accepted input message retains its inbox identity in its sole `id` field;
+there is no duplicate `input_id` or `notice_id`. Old records carrying those
+fields are rejected, not silently migrated. Live message events are
+projected from accepted history on consumption, not manufactured from a claim
+before input hooks and content externalization finish. Rejected inputs do not
+become canonical conversation messages. Regenerate is a new input submission
+with a new identity; it reuses content and artifact references, not the old
+trajectory node's identity.
+
+Input claims are runtime-only and belong to one loop turn, including claims
+made at later step boundaries. At turn teardown, history-committed human inputs
+and runtime notices are removed from the inbox; uncommitted claims become
+pending again. This recovery also runs after cancellation and does not depend
+on whether an inbox persistence sink is installed. It is not a cross-file
+atomicity guarantee for process crashes.
+
+If input handling raises after accepting only a batch prefix, teardown publishes consumption
+for those committed inputs through the same event path as normal completion.
+Online clients therefore see the canonical messages without needing a reconnect;
+the unprocessed suffix remains pending rather than being reported as consumed.
+Likewise, an input hook that rejects or completes handling of a prefix item
+consumes only that processed prefix. It cannot discard later inputs in the same
+claim before their own handlers run.
+
+The inbox publishes consumption only after its sink and in-memory queue have
+been updated. A failed sink write must not announce consumption; an observer
+failure after commit does not undo it. A claim notification failure releases
+that batch's transient claim markers so the input remains retryable.
 
 ## Plugin state
 

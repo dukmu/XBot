@@ -50,7 +50,7 @@ _RUNTIME_DEPENDENCIES = [
     "tools",
     "artifacts",
     "loop_state",
-    # The durable inbox is composed by the persistence hydrate; requiring it
+    # The inbox is composed by session after state restoration; requiring it
     # here builds the engine only after restored input is on hand, with no
     # reliance on plugin-tree order.
     "agent_inbox",

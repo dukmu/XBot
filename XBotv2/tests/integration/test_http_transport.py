@@ -501,6 +501,13 @@ async def test_message_pages_artifact_download_and_regenerate_are_authoritative(
     assert "second question" in regenerated_text
     assert latest_model_path in regenerated_text
     assert 'name="latest.txt"' in regenerated_text
+    closed = await client.post("/sessions/message-api/close")
+    assert closed.status_code == 200
+    offline = await client.get(
+        "/sessions/message-api/threads/main/artifacts/" + artifact["id"]
+    )
+    assert offline.status_code == 200
+    assert offline.content == b"context"
 
 
 @pytest.mark.asyncio
@@ -2098,9 +2105,9 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert source_records[-1]["entry"]["operation"] == "undo"
     assert all(record["schema_version"] == 1 for record in source_records)
     source.plugin_state_dir.mkdir(exist_ok=True)
-    (source.plugin_state_dir / "state.json").write_text(
-        '{"sample.value": "kept"}\n'
-    )
+    from xcore import StateService
+
+    await StateService(path=source.plugin_state_file).set("sample.value", "kept")
     source.artifact_file("context/cached.txt").parent.mkdir(parents=True)
     source.artifact_file("context/cached.txt").write_text("cached")
     source_session.config_file.write_text(
@@ -2112,9 +2119,8 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     fork_session = paths.session(fork_id)
     fork_paths = fork_session.thread("t")
 
-    assert (fork_paths.plugin_state_dir / "state.json").read_text() == (
-        '{"sample.value": "kept"}\n'
-    )
+    assert fork_paths.plugin_state_file.read_bytes() == source.plugin_state_file.read_bytes()
+    assert await StateService(path=fork_paths.plugin_state_file).get("sample.value") == "kept"
     assert fork_paths.artifact_file("context/cached.txt").read_text() == "cached"
     assert fork_session.config_file.read_text() == (
         "plugins:\n- id: permissions\n  config: {}\n"
@@ -4614,6 +4620,48 @@ async def _real_client(
         server.should_exit = True
         server_thread.join(timeout=3.0)
         await application.stop()
+
+
+@pytest.mark.asyncio
+async def test_real_http_memory_only_session_streams_pages_and_attaches(tmp_path: Path) -> None:
+    llm = MockLLM(responses=[
+        {"content": "first answer", "usage_metadata": {"input_tokens": 3, "output_tokens": 2}},
+        {"content": "second answer", "usage_metadata": {"input_tokens": 5, "output_tokens": 2}},
+    ])
+    async with _real_client(
+        tmp_path, llm=llm, sandbox_enabled=False,
+        plugin_overlays=({"id": "persistence", "disabled": True},),
+    ) as (client, session_id, thread_id):
+        events = client.stream_events(session_id, thread_id, after=0)
+        try:
+            for index in range(2):
+                await client.send_message(session_id, thread_id, f"question {index}",
+                                          request_id=f"memory-{index}")
+                turn = []
+                async with asyncio.timeout(5):
+                    async for event in events:
+                        turn.append(event)
+                        if event.kind == "turn_ended":
+                            break
+                assert any(event.kind == "assistant_completed" for event in turn)
+        finally:
+            await events.aclose()
+        latest = await client.list_messages(session_id, thread_id, limit=1)
+        assert [item.content for item in latest.items] == ["second answer"]
+        older = await client.list_messages(session_id, thread_id, limit=1, cursor=latest.older_cursor)
+        assert [item.content for item in older.items] == ["question 1"]
+        attached = await client.open_session(session_id=session_id, thread_id=thread_id, mode="resume")
+        assert attached.data.key.session_id == session_id
+        assert len((await client.list_messages(session_id, thread_id)).items) == 4
+        active = await client.get_thread(session_id, thread_id)
+        assert active.usage.total_counters.input == 8
+        assert active.usage.total_counters.output == 4
+        await client.close_session(session_id)
+        with pytest.raises(XBotClientError) as error:
+            await client.open_session(session_id=session_id, thread_id=thread_id, mode="resume")
+        assert error.value.status_code == 404
+        thread = RuntimePaths.from_data_dir(tmp_path / "data").session(session_id).thread(thread_id)
+        assert not thread.state_dir.exists()
 
 
 @pytest.mark.asyncio

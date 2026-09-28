@@ -17,7 +17,7 @@ from XBotv2.agentloop.protocol import (
     LoopTurnEnded,
     TurnFinished,
 )
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget, RuntimeInput
+from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
@@ -38,7 +38,7 @@ from XBotv2.agentloop.events import ObserveInbox
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
 from XBotv2.core.history import HistoryPage
-from XBotv2.core.messages import RuntimeNoticeMessage
+from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.interactions import (
     InteractionRequest,
@@ -65,7 +65,6 @@ from XBotv2.session.protocol import (
 )
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.records import (
-    HumanInputRecord,
     InputRecordPayload,
     project_human_input,
     project_message,
@@ -221,47 +220,29 @@ class SessionRuntime(SessionPort):
             ))
         if isinstance(change, Claimed):
             claimed = InputClaimedEvent(
-                message_ids=[item.id for item in change.items]
+                message_ids=list(change.ids)
             )
             if self._active_router is not None:
                 self._active_router.emit(claimed)
             else:
                 self._publish_runtime_event(claimed)
         if isinstance(change, Consumed):
+            consumed_ids = set(change.ids)
+            for message in self.application.loop_state.messages:
+                if (
+                    isinstance(message, (HumanInputMessage, RuntimeNoticeMessage))
+                    and message.id in consumed_ids
+                ):
+                    self.publish_event(MessagePublishedEvent(
+                        record=InputRecordPayload(project_message(message))
+                    ))
             consumed = InputConsumedEvent(
-                message_ids=[item.id for item in change.items]
+                message_ids=list(change.ids)
             )
             if self._active_router is not None:
                 self._active_router.emit(consumed)
             else:
                 self._publish_runtime_event(consumed)
-            consumed_ids = {item.id for item in change.items}
-            for message in self.application.loop_state.messages:
-                if (
-                    isinstance(message, RuntimeNoticeMessage)
-                    and message.notice_id in consumed_ids
-                ):
-                    self.publish_event(MessagePublishedEvent(
-                        record=InputRecordPayload(project_message(message))
-                    ))
-        if not isinstance(change, Claimed):
-            return
-        for item in change.items:
-            if isinstance(item.input, HumanInput):
-                record = HumanInputRecord(
-                    id=item.id,
-                    content=item.input.content,
-                    images=item.input.images,
-                    artifacts=item.input.artifacts,
-                )
-            elif isinstance(item.input, RuntimeInput):
-                # A claim precedes acceptance and canonicalization. Publish
-                # model-facing inputs from committed history on consumption.
-                continue
-            else:  # pragma: no cover - InputPayload is closed
-                raise TypeError(f"Unsupported inbox input: {item.input!r}")
-            event = MessagePublishedEvent(record=InputRecordPayload(record))
-            self.publish_event(event)
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
@@ -579,7 +560,7 @@ async def start_regenerate_turn(
         runtime,
         router,
         item=InboxItem(
-            id=message.input_id or request_id or f"input-{uuid.uuid4().hex}",
+            id=request_id or f"input-{uuid.uuid4().hex}",
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(
                 content=record.content,

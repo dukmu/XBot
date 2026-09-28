@@ -52,6 +52,7 @@ from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.session.protocol import (
     AgentConfiguredData,
     HistoryUpdatedEvent,
+    InputConsumedEvent,
     OpenSessionResponse,
     QueueUpdatedData,
 )
@@ -280,6 +281,11 @@ class InteractionResolved:
 
 
 @dataclass(frozen=True)
+class InputsConsumed:
+    payload: InputConsumedEvent
+
+
+@dataclass(frozen=True)
 class UserInputSubmitted:
     input_id: str
     content: str
@@ -385,6 +391,7 @@ UiEvent = Union[
     InteractionOpened,
     InteractionResolved,
     UserInputSubmitted,
+    InputsConsumed,
     UserInputFailed,
     UserMessagePublished,
     RuntimeNoticePublished,
@@ -394,6 +401,7 @@ UiEvent = Union[
 
 
 __all__ = [
+    "InputsConsumed",
     "AssistantCompleted",
     "AssistantDelta",
     "ClientNoticeReceived",

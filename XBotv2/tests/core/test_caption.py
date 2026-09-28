@@ -28,7 +28,7 @@ from XBotv2.core.domain import (
     TokenCounters,
     UsageDelta,
 )
-from XBotv2.core.domain import InputId, MessageId, NoticeId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
 from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.parts import TextPart
@@ -41,7 +41,6 @@ from XBotv2.llm.mock import MockLLM
 def _human(text: str, index: int = 1) -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId(f"message-{index}"),
-        input_id=InputId(f"input-{index}"),
         parts=(TextPart(text=text),),
     )
 
@@ -49,7 +48,6 @@ def _human(text: str, index: int = 1) -> HumanInputMessage:
 def test_caption_request_uses_human_input_and_ignores_runtime_notices():
     notice = RuntimeNoticeMessage(
         id=MessageId("notice-message"),
-        notice_id=NoticeId("notice-1"),
         source="job",
         event="completed",
         parts=(TextPart(text="background noise"),),

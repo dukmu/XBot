@@ -15,7 +15,7 @@ from XBotv2.agentloop.events import (
     InputAccepted,
 )
 from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.domain import InputId, MessageId, ToolCallId, ToolTiming
+from XBotv2.core.domain import MessageId, ToolCallId, ToolTiming
 from XBotv2.core.messages import HumanInputMessage, ToolMessage
 from XBotv2.core.parts import TextPart
 from xcore import Context
@@ -73,7 +73,6 @@ def test_user_cache_returns_a_projection_without_mutating_canonical_history(
     source = "start α " + ("middle-secret " * 5) + "end 二"
     message = HumanInputMessage(
         id=MessageId("message-long"),
-        input_id=InputId("input-long"),
         parts=(TextPart(text=source),),
     )
 
@@ -127,7 +126,6 @@ def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
 def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, value):
     message = HumanInputMessage(
         id=MessageId("message-short"),
-        input_id=InputId("input-short"),
         parts=(TextPart(text=value),),
     )
     projected_message, input_externalized = cache_user_message(
@@ -169,7 +167,6 @@ async def test_artifact_write_failure_keeps_large_user_input_unchanged(
     source = "complete user input " + ("secret " * 5)
     message = HumanInputMessage(
         id=MessageId("message-write-failure"),
-        input_id=InputId("input-write-failure"),
         parts=(TextPart(text=source),),
     )
     service = ContentCacheService(_FailingArtifactStore(), policy())
@@ -216,7 +213,6 @@ async def test_accepted_input_replacement_persists_original_artifact(artifact_st
     source = "complete user input " + ("secret " * 5)
     message = HumanInputMessage(
         id=MessageId("message-turn-end"),
-        input_id=InputId("input-turn-end"),
         parts=(TextPart(text=source),),
     )
     service = ContentCacheService(artifact_store, policy())
@@ -235,7 +231,6 @@ async def test_accepted_input_replacement_persists_original_artifact(artifact_st
     assert result.input == accepted.input
     assert result.message is not message
     assert result.message.id == message.id
-    assert result.message.input_id == message.input_id
     assert result.message.parts[0].text != source
     assert len(result.message.artifacts) == 1
     assert artifact_store.read(result.message.artifacts[0]) == source.encode("utf-8")

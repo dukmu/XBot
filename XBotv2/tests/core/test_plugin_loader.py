@@ -92,7 +92,7 @@ plugin = Plugin()
 
 
 @pytest.mark.asyncio
-async def test_missing_host_capability_fails_and_disposes_other_plugins(tmp_path):
+async def test_failed_capability_does_not_dispose_other_plugins(tmp_path):
     from xcore import Context, ServiceNotFoundError
     from XBotv2.application.boot import boot_application
 
@@ -112,16 +112,21 @@ class Plugin:
 plugin = Plugin()
 ''')
     ctx = Context(data_dir=tmp_path / "state")
-    with pytest.raises(ServiceNotFoundError, match="required_capability") as failure:
+    try:
         await boot_application(
             ctx=ctx,
             tree=PluginTree.parse([
                 {"id": name, "name": name}
                 for name in ("missing_host_capability", "cleanup_observer")
             ]),
-            required_services=("required_capability",),
         )
-    assert any("required producer failed" in note for note in failure.value.__notes__)
+        assert ctx.is_active
+        assert not marker.exists()
+        with pytest.raises(ServiceNotFoundError, match="required_capability"):
+            ctx.require("required_capability")
+        assert ctx.is_active
+    finally:
+        await ctx.destroy()
     assert marker.read_text() == "disposed"
     assert not ctx.is_active
 

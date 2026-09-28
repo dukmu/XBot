@@ -154,6 +154,7 @@ class SessionLaunch:
     interactive: bool
     is_subagent: bool
     parent_client_events: ClientEventsPort | None = None
+    defer_persist: bool = False
 
 
 @dataclass(frozen=True, slots=True)

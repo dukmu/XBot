@@ -683,6 +683,8 @@ async def test_session_close_cancels_and_removes_owned_background_job(
 
 @pytest.mark.asyncio
 async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
+    from XBotv2.session.records import project_message
+
     runtime = await foldin_app.state.manager.open_session(
         session_id="regenerate-events",
         thread_id="t",
@@ -719,7 +721,11 @@ async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
         if isinstance(event, MessagePublishedEvent)
     ]
     assert [(record.id, record.content) for record in published_inputs] == [
-        ("original-request", "original question"),
+        ("regenerate-request", "original question"),
+    ]
+    assert published_inputs == [
+        project_message(message) for message in runtime.application.loop_state.messages
+        if message.kind == "human_input"
     ]
 
 

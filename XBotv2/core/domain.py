@@ -13,10 +13,8 @@ from typing import Annotated, Literal, Mapping, NewType, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 MessageId = NewType("MessageId", str)
-InputId = NewType("InputId", str)
 TurnId = NewType("TurnId", str)
 InteractionId = NewType("InteractionId", str)
-NoticeId = NewType("NoticeId", str)
 ToolCallId = NewType("ToolCallId", str)
 JobId = NewType("JobId", str)
 HistoryRevision = NewType("HistoryRevision", str)
@@ -295,7 +293,6 @@ __all__ = [
     "ReasoningGenerationMode",
     "GenerationSettings",
     "HistoryRevision",
-    "InputId",
     "Cursor",
     "InteractionId",
     "JobId",
@@ -306,7 +303,6 @@ __all__ = [
     "ModelRoute",
     "ModelStop",
     "ModelTiming",
-    "NoticeId",
     "ObservedContext",
     "ProviderExtensions",
     "ProviderError",

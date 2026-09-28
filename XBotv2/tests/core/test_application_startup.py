@@ -83,6 +83,148 @@ async def _run_turn(engine, content):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_session_plugin_owns_artifacts_independently_of_persistence(tmp_path, persistent):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    context = await start_application(
+        paths=paths, session_id="artifacts", thread_id="main", workspace_root=tmp_path,
+        llm_override=MockLLM(responses=[]),
+        extra_plugins=[{"id": "persistence", "disabled": not persistent}],
+    )
+    try:
+        artifact = context.artifacts.put(ArtifactKind.TOOL_RESULT, b"tool output", suffix=".txt")
+        assert context.artifacts.read(artifact) == b"tool output"
+        assert Path(context.artifacts.model_path(artifact)).read_bytes() == b"tool output"
+        await context.stop()
+        assert not context.has("artifacts")
+    finally:
+        await context.destroy()
+
+
+@pytest.mark.asyncio
+async def test_persistence_mount_identity_does_not_control_history(tmp_path, caplog):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.config_dir.mkdir(parents=True)
+    (paths.config_dir / "plugins.yaml").write_text(yaml.safe_dump([
+        {"id": "persistence", "disabled": True},
+        {"id": "caption", "disabled": True},
+        {"id": "conversation-storage", "name": "persistence"},
+    ]), encoding="utf-8")
+
+    async def start():
+        return await start_application(
+            paths=paths, session_id="custom-mount", workspace_root=tmp_path,
+            llm_override=MockLLM(responses=[{"content": "reply"}]),
+        )
+
+    application = await start()
+    try:
+        events = await _run_turn(application.engine, "remember this")
+        assert not any(event.kind == "error" for event in events)
+        assert application.require("thread_persistence").history.count_turns() == 1
+        assert application.state is application.thread_persistence.state
+        await application.state.namespace("extension").set("value", "durable")
+    finally:
+        await application.destroy()
+    resumed = await start()
+    try:
+        assert resumed.engine.messages[0].parts[0].text == "remember this"
+        assert resumed.engine.turn_count == 1
+        assert await resumed.state.namespace("extension").get("value") == "durable"
+        assert "ServiceConflictError" not in caplog.text
+    finally:
+        await resumed.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse_tree", [False, True])
+async def test_metadata_initialization_is_durable_and_resume_is_read_only(tmp_path, monkeypatch, reverse_tree):
+    import XBotv2.application.app as entry
+    from XBotv2.loader import PluginTree
+    from XBotv2.persistence.store import ThreadMetadataStore
+
+    original_tree = entry.load_agent_tree
+    original_save = ThreadMetadataStore.save
+    writes = []
+
+    def load_tree(**kwargs):
+        tree = original_tree(**kwargs)
+        return PluginTree(list(reversed(tree.entries))) if reverse_tree else tree
+
+    def save(store, metadata):
+        writes.append(metadata)
+        return original_save(store, metadata)
+
+    monkeypatch.setattr(entry, "load_agent_tree", load_tree)
+    monkeypatch.setattr(ThreadMetadataStore, "save", save)
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+
+    async def start():
+        return await entry.start_application(
+            paths=paths, session_id="metadata-once", workspace_root=tmp_path,
+            no_plugins=True, llm_override=MockLLM(responses=[]),
+        )
+
+    first = await start()
+    try:
+        expected = first.loop_state.metadata.value
+        assert writes[-1] == expected
+        assert first.thread_persistence.metadata.load() == expected
+    finally:
+        await first.destroy()
+    writes.clear()
+    resumed = await start()
+    try:
+        assert resumed.loop_state.metadata.value == expected
+        assert resumed.thread_persistence.metadata.load() == expected
+        assert writes == []
+    finally:
+        await resumed.destroy()
+
+
+@pytest.mark.asyncio
+async def test_runtime_state_is_shared_restorable_and_thread_local(tmp_path):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+
+    async def start(thread_id):
+        return await start_application(
+            paths=paths, session_id="state-owner", thread_id=thread_id,
+            workspace_root=tmp_path, llm_override=MockLLM(responses=[]),
+            defer_persist=True,
+        )
+
+    first = await start("first")
+    try:
+        assert not paths.session("state-owner").thread("first").root.exists()
+        plugin_state = first.state.namespace("extension")
+        persisted_view = first.thread_persistence.state.namespace("extension")
+        # Load both views before writing: separate caches would lose a key.
+        assert await plugin_state.all() == {}
+        assert await persisted_view.all() == {}
+        await plugin_state.set("first", 1)
+        await persisted_view.set("second", 2)
+        assert await plugin_state.all() == {"first": 1, "second": 2}
+    finally:
+        await first.destroy()
+    assert paths.session("state-owner").thread("first").metadata_file.exists()
+
+    restored = await start("first")
+    try:
+        assert await restored.state.namespace("extension").all() == {
+            "first": 1, "second": 2,
+        }
+        sibling = await start("second")
+        try:
+            assert await sibling.state.namespace("extension").all() == {}
+            assert not paths.session("state-owner").thread("second").root.exists()
+        finally:
+            await sibling.destroy()
+        assert not paths.session("state-owner").thread("second").root.exists()
+    finally:
+        await restored.destroy()
+
+
+@pytest.mark.asyncio
 async def test_interaction_routing_belongs_to_the_plugin_lifecycle(tmp_path):
     from XBotv2.interactions.protocol import Answered
 
@@ -245,6 +387,7 @@ async def test_application_resolves_logical_image_for_provider_without_persistin
         media_type=artifact.media_type,
         size=artifact.size,
     )
+    model_path = application.artifacts.model_path(artifact)
 
     try:
         events = [event async for event in application.engine.run_turn(InboxItem(
@@ -263,11 +406,11 @@ async def test_application_resolves_logical_image_for_provider_without_persistin
         )
         history = application.loop_state.history.snapshot()
     finally:
-        await application.stop()
+        await application.destroy()
 
     assert not [event for event in events if isinstance(event, LoopError)]
     assert resolved.ref == image
-    assert resolved.absolute_path == application.artifacts.model_path(artifact)
+    assert resolved.absolute_path == model_path
     assert Path(resolved.absolute_path).read_bytes() == payload
     human = next(message for message in history if isinstance(message, HumanInputMessage))
     image_part = next(part for part in human.parts if isinstance(part, ImagePart))
@@ -2015,13 +2158,16 @@ class TestApplicationStartupNoPlugins:
             {"content": "session title"},  # caption auto-titles the first message
 {"content": "in memory"}]),
         )
-        assert application.get("thread_persistence", strict=False) is None
-        assert application.artifacts is not None
-        events = await _run_turn(application.engine, "hello")
-        assert any(
-            isinstance(event, AssistantCompleted) for event in events
-        )
-        await application.stop()
+        try:
+            assert application.get("thread_persistence", strict=False) is None
+            assert application.artifacts is not None
+            events = await _run_turn(application.engine, "hello")
+            assert any(isinstance(event, AssistantCompleted) for event in events)
+            await application.state.namespace("extension").set("value", "in memory")
+            assert await application.state.namespace("extension").get("value") == "in memory"
+        finally:
+            await application.destroy()
+        assert not paths.session("memory-only").thread("t").state_dir.exists()
 
 
 class TestMemoryLoading:

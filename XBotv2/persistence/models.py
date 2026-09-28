@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from XBotv2.agentloop.contracts import InboxItem
+from XBotv2.agentloop.contracts import InboxMutation
 from XBotv2.core.history import (
     DurableEventRecorded,
     MessageAppended,
@@ -30,12 +30,12 @@ class StoredTrajectoryRecord(PersistenceRecord):
     ]
 
 
-class InboxSnapshot(PersistenceRecord):
+class StoredInboxRecord(PersistenceRecord):
     version: Literal[1] = INBOX_SCHEMA_VERSION
-    items: tuple[InboxItem, ...]
+    change: Annotated[InboxMutation, Field(discriminator="kind")]
 
 
 __all__ = [
-    "InboxSnapshot",
+    "StoredInboxRecord",
     "StoredTrajectoryRecord",
 ]

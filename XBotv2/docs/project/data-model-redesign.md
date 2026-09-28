@@ -24,12 +24,12 @@ provider 的 `system/user/assistant/tool` 是请求协议角色，不是持久�
 
 - `HumanInputMessage`
   - `id: MessageId`
-  - `input_id: InputId`
+  - 接受后沿用 inbox 的 `id`，不再保存重复的 `input_id`。
   - `parts: tuple[TextPart | ImagePart, ...]`
   - `artifacts: tuple[ArtifactRef, ...]`
 - `RuntimeNoticeMessage`
   - `id: MessageId`
-  - `notice_id: NoticeId`
+  - 接受后沿用 inbox 的 `id`，不再保存重复的 `notice_id`。
   - `source: RuntimeSource`
   - `event: RuntimeEventKind`
   - `parts: tuple[TextPart | ImagePart, ...]`
@@ -137,7 +137,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 - `GenerationSettings(mode: GenerationMode, temperature: float | None, max_output_tokens: int)`；temperature 的 None 明确表示 provider default。
 - `ProviderMessage = ProviderSystem(parts: tuple[TextPart, ...]) | ProviderUser(parts: tuple[TextPart | ResolvedImagePart, ...]) | ProviderAssistant(parts: tuple[TextPart | ReasoningPart | ToolCall, ...]) | ProviderTool(call_id, parts: tuple[TextPart | ResolvedImagePart, ...])`；`ResolvedImagePart(ref: ImageRef, absolute_path)` 仅存在于请求构建期，context compiler 使用 ArtifactStore 将 ImageRef 单向解析为它。
 - `ToolSchema(name, description, parameters)`；parameters 是 JSON Schema 这一外部标准的原始对象，只有 tool registry/provider adapter 读取。
-- `HistoryRevision(value: str)`、`Cursor(value: str)`、`MessageId/InputId/TurnId/InteractionId/NoticeId/ToolCallId` 均为不可混用的 value type。
+- `HistoryRevision(value: str)`、`Cursor(value: str)`、`MessageId/TurnId/InteractionId/ToolCallId` 为跨层身份类型。inbox 到 accepted message 沿用同一 `MessageId`，不另造 InputId/NoticeId。
 - `TransactionRef(kind, id)`、`TransactionOutcome = Committed | Aborted(reason) | TransactionFailed(error)`、`TransactionStarted(transaction: TransactionRef)` 与 `TransactionEnded(transaction: TransactionRef, outcome: TransactionOutcome)`；具体持久事件由 owner 注册 codec，不从 payload dict 抽取 id。
 - `ResolvedModelSelection(route: ModelRoute, generation: GenerationSettings, context_window: int)` 与 `AgentExecutionLimits(max_turns, max_tool_calls, timeout_seconds)`。
 - `ResolvedRuntimeSelection(agent_name, prompt, limits: AgentExecutionLimits, enabled_tools, model: ResolvedModelSelection)` 是 thread 唯一 effective runtime config；model token limits 只在 model selection 中，`limits` 只表达 agent 执行限制。它们属于 core contract，由 llm/agents service 构造。
@@ -204,7 +204,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 
 - canonical `TrajectoryEntry` 本身就是 append/replace/event 的唯一 mutation 模型。
 - `StoredTrajectoryRecord(schema_version, entry: TrajectoryEntry)` 是磁盘 envelope，不重复 entry 字段。
-- `InboxSnapshot(version, items: tuple[InboxItem, ...])`。
+- `StoredInboxRecord(version, change: InboxMutation)`：复用现有 Inserted/Edited/Retargeted/Removed/Consumed/Discarded 事件，不持久化 Claimed；仅 Inserted 携带完整输入，其余记录字段变化或 ID。删除 InboxSnapshot 及快照兼容读取。
 - `ThreadLifecycleEvent` 判别联合：`ThreadStarted(thread, parent, agent, at)`、`ThreadCompleted(thread, at)`、`ThreadFailed(thread, at, error)`、`ThreadCancelled(thread, at, reason)`。
 - `ThreadMetadata(runtime_selection, parent_thread, workspace_root, title)`；`runtime_selection` 是该 thread 唯一持久化的有效 agent/model 选择。
 - 插件 state/artifact 端口。

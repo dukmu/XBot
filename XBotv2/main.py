@@ -281,7 +281,7 @@ async def _serve(args) -> None:
             uds_path.parent.mkdir(parents=True, exist_ok=True)
             uds = str(uds_path)
         config = uvicorn.Config(
-            root_ctx.server, host=args.bind, port=args.port, uds=uds,
+            root_ctx.require("server"), host=args.bind, port=args.port, uds=uds,
             log_config=None, ws="none",
         )
         await uvicorn.Server(config).serve()

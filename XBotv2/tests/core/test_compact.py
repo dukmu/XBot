@@ -22,7 +22,6 @@ from XBotv2.compact.summary import (
 )
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.domain import (
-    InputId,
     MessageId,
     ProviderError,
     ToolCallId,
@@ -60,7 +59,6 @@ from XBotv2.llm.mock import MockLLM
 def _human(index: int, text: str) -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId(f"message-{index}"),
-        input_id=InputId(f"input-{index}"),
         parts=(TextPart(text=text),),
     )
 
@@ -1588,7 +1586,7 @@ async def test_compact_command_resolves_externalized_tool_artifacts(
             if isinstance(part, TextPart)
         ]
         assert any(
-            application.thread_persistence.artifacts.model_path(ref) in part.text
+            application.artifacts.model_path(ref) in part.text
             for ref in externalized[0].outcome.output.artifacts
             for part in tool_parts
         )

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from XBotv2.core.domain import InputId, MessageId, NoticeId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.goal.evaluator import (
@@ -18,7 +18,6 @@ from XBotv2.goal.models import ActiveGoal, GoalState, Impossible, Met, NotMet
 def _human(text: str) -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId("message-1"),
-        input_id=InputId("input-1"),
         parts=(TextPart(text=text),),
     )
 
@@ -26,7 +25,6 @@ def _human(text: str) -> HumanInputMessage:
 def test_transcript_preserves_message_kind_and_bounds_old_content():
     notice = RuntimeNoticeMessage(
         id=MessageId("notice-message"),
-        notice_id=NoticeId("notice-1"),
         source="job",
         event="complete",
         parts=(TextPart(text="verified result"),),

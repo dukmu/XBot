@@ -9,6 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, Protocol, TypeAlias
 
 from XBotv2.core.history import ConversationHistory
+from XBotv2.core.domain import MessageId
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import ConversationMessage
@@ -76,7 +77,7 @@ InputPayload = Annotated[
 class InboxItem(BaseModel):
     """One uniquely identified model-visible input."""
 
-    id: str = Field(default_factory=lambda: f"input-{uuid.uuid4().hex}")
+    id: MessageId = Field(default_factory=lambda: MessageId(f"input-{uuid.uuid4().hex}"), min_length=1)
     target: InboxTarget
     input: InputPayload
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -84,56 +85,55 @@ class InboxItem(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class Inserted:
-    kind: Literal["inserted"] = field(default="inserted", init=False)
+    kind: Literal["inserted"] = field(default="inserted", kw_only=True)
     item: InboxItem
     wake: bool
 
 
 @dataclass(frozen=True, slots=True)
 class Edited:
-    kind: Literal["edited"] = field(default="edited", init=False)
-    previous: InboxItem
-    current: InboxItem
+    kind: Literal["edited"] = field(default="edited", kw_only=True)
+    id: MessageId
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
 class Removed:
-    kind: Literal["removed"] = field(default="removed", init=False)
-    item: InboxItem
+    kind: Literal["removed"] = field(default="removed", kw_only=True)
+    id: MessageId
 
 
 @dataclass(frozen=True, slots=True)
 class Retargeted:
-    kind: Literal["retargeted"] = field(default="retargeted", init=False)
-    previous: InboxItem
-    current: InboxItem
+    kind: Literal["retargeted"] = field(default="retargeted", kw_only=True)
+    id: MessageId
+    target: InboxTarget
 
 
 @dataclass(frozen=True, slots=True)
 class Claimed:
     kind: Literal["claimed"] = field(default="claimed", init=False)
-    items: tuple[InboxItem, ...]
+    ids: tuple[MessageId, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Consumed:
-    kind: Literal["consumed"] = field(default="consumed", init=False)
-    items: tuple[InboxItem, ...]
+    kind: Literal["consumed"] = field(default="consumed", kw_only=True)
+    ids: tuple[MessageId, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Discarded:
-    kind: Literal["discarded"] = field(default="discarded", init=False)
-    items: tuple[InboxItem, ...]
+    kind: Literal["discarded"] = field(default="discarded", kw_only=True)
+    ids: tuple[MessageId, ...]
 
 
-InboxChange: TypeAlias = (
-    Inserted | Edited | Removed | Retargeted | Claimed | Consumed | Discarded
-)
+InboxMutation: TypeAlias = Inserted | Edited | Removed | Retargeted | Consumed | Discarded
+InboxChange: TypeAlias = InboxMutation | Claimed
 
 
 class InboxSink(Protocol):
-    def replace(self, items: Sequence[InboxItem]) -> None: ...
+    def append(self, change: InboxMutation) -> None: ...
 
 
 class LoopState(Service):
@@ -147,7 +147,7 @@ class LoopState(Service):
     ``turn_count`` is a lifetime counter with one owner (the loop driver): it
     increments when a turn is accepted and is preserved across compaction and
     history edits, exactly like ``SessionStats``. History mutations never
-    recompute it; hydration restores it explicitly from the durable surface.
+    recompute it; hydration restores it explicitly from the append-only trace.
     """
 
     name = "loop_state"
@@ -191,7 +191,7 @@ class LoopState(Service):
         self.session.turn_count = value
 
     def restore_turn_count(self, count: int) -> None:
-        """Restore the lifetime counter from the durable surface (hydration).
+        """Restore the lifetime counter from the append-only trace (hydration).
 
         Only the loop driver increments it; hydration restores it once on a
         resumed session.

@@ -14,15 +14,12 @@ from errno import EEXIST, ENOENT, ENOTEMPTY
 from pathlib import Path
 from pydantic import JsonValue
 
-from xcore import Context
+from xcore import Context, ServiceNotFoundError
 
 from XBotv2.application.boot import boot_application
-from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.session_lock import (
     acquire_session,
 )
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import (
     AgentApplicationPort,
@@ -102,31 +99,7 @@ async def start_application(
     session_preexisting = session_paths.root.exists()
     thread_preexisting = session_paths.has_thread(thread_id)
     try:
-        persistence_enabled = any(
-            entry.id == "persistence" and not entry.disabled for entry in tree.entries
-        )
-        thread_persistence = (
-            ThreadPersistence.create(
-                thread_paths,
-                thread_id=thread_id,
-                defer_metadata=defer_persist,
-            )
-            if persistence_enabled
-            else None
-        )
-        artifacts = (
-            thread_persistence.artifacts
-            if thread_persistence is not None
-            else ArtifactStore(
-                thread_paths,
-                DEFAULT_RUNTIME_LOG.bind(
-                    "persistence",
-                    session_id=session_id,
-                    thread_id=thread_id,
-                ),
-            )
-        )
-
+        plugin_ctx = Context(data_dir=thread_paths.plugin_state_dir)
         agent_options = AgentCreateOptions(
             session_id=session_id,
             thread_id=thread_id,
@@ -151,33 +124,21 @@ async def start_application(
                 interactive=interactive,
                 is_subagent=is_subagent,
                 parent_client_events=client_events,
+                defer_persist=defer_persist,
             ),
             "parent_permissions": ParentPermissions(parent_permission_system),
             "plugin_overrides": extra_plugins or [],
             "plugin_dirs": plugin_dirs or [],
             "no_plugins": no_plugins,
-            "artifacts": artifacts,
         }
-        if thread_persistence is not None:
-            services["thread_persistence"] = thread_persistence
-
-        plugin_ctx = Context(
-            data_dir=thread_paths.plugin_state_dir,
-            state_service=(
-                thread_persistence.state
-                if thread_persistence is not None
-                else None
-            ),
-        )
         for name, service in services.items():
             plugin_ctx.set(name, service)
         plugin_ctx = await boot_application(
             ctx=plugin_ctx,
             tree=tree,
             plugin_dirs=plugin_dirs,
-            required_services=("agent_runtime", "engine"),
         )
-        await plugin_ctx.agent_runtime.announce_initialized()
+        await plugin_ctx.require("agent_runtime").announce_initialized()
 
         # Startup owns the claim through rollback; only a fully initialized
         # context takes ownership. boot_application may already destroy a
@@ -186,6 +147,12 @@ async def start_application(
         return plugin_ctx
     except BaseException as startup_error:
         if plugin_ctx is not None:
+            if isinstance(startup_error, ServiceNotFoundError):
+                for handle in plugin_ctx.registry.handles():
+                    if handle.error is not None:
+                        startup_error.add_note(
+                            f"Plugin {handle.name!r} failed: {handle.error}"
+                        )
             try:
                 await plugin_ctx.destroy()
             except BaseException as cleanup_error:

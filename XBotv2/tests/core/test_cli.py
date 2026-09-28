@@ -285,7 +285,7 @@ def test_server_plugin_tasks_live_through_serving_and_cleanup(
             workers[0].cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-        return types.SimpleNamespace(server=object(), stop=stop)
+        return types.SimpleNamespace(require=lambda name: object(), stop=stop)
 
     class Server:
         def __init__(self, config):

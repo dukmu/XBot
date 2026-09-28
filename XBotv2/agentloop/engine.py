@@ -482,11 +482,10 @@ class Engine(AgentLoopDriverPort):
         finally:
             try:
                 await self.inbox.reconcile(
-                    [item.id for item in claimed],
                     {
-                        message.input_id
+                        message.id
                         for message in self.messages
-                        if isinstance(message, HumanInputMessage)
+                        if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage))
                     },
                 )
                 await self._publish_state_change()
@@ -731,28 +730,36 @@ class Engine(AgentLoopDriverPort):
 
             self.messages.append(response_msg)
 
-            # Check for tool calls
-            if not tool_calls:
-                # A complete response: fold any pending input so it is
-                # answered in this same turn instead of waiting for a later
-                # one. This is the no-tool-boundary path.
-                if await self._claim_step_inputs():
-                    continue
-                turn_complete = True
-                break
+            if tool_calls:
+                batch_result: _ToolBatchResult | None = None
+                async for tool_event in self._run_tool_batch(response):
+                    if isinstance(tool_event, _ToolBatchResult):
+                        batch_result = tool_event
+                    else:
+                        yield tool_event
+                if batch_result is None:
+                    raise RuntimeError("Tool batch completed without an outcome")
+                if isinstance(batch_result.directive, CompleteTurnDirective):
+                    turn_complete = True
+                    break
 
-            batch_result: _ToolBatchResult | None = None
-            async for tool_event in self._run_tool_batch(response):
-                if isinstance(tool_event, _ToolBatchResult):
-                    batch_result = tool_event
-                else:
-                    yield tool_event
-            if batch_result is None:
-                raise RuntimeError("Tool batch completed without an outcome")
-            if isinstance(batch_result.directive, CompleteTurnDirective):
-                turn_complete = True
-                break
-            await self._claim_step_inputs()
+            # Both response paths share the same input boundary. A hook may
+            # end the turn; only the processed prefix may then be consumed.
+            items = await self.inbox.claim_step()
+            for index, item in enumerate(items):
+                accepted = await self._accept_user_message(item)
+                if not accepted.proceed:
+                    await self.inbox.commit([item.id for item in items[:index + 1]])
+                    turn_complete = True
+                for event in accepted.events:
+                    yield event
+                if turn_complete:
+                    break
+            else:
+                if items:
+                    await self.inbox.commit([item.id for item in items])
+                elif not tool_calls:
+                    turn_complete = True
 
         stop_reason = (
             "max_iterations" if iteration_limit_reached else "completed"
@@ -875,14 +882,14 @@ class Engine(AgentLoopDriverPort):
             len(claimed) - 1,
         )
         events: list[LoopEvent] = []
-        for item in claimed[:primary_index]:
+        for index, item in enumerate(claimed[:primary_index]):
             accepted = await self._accept_user_message(
                 item,
             )
             events.extend(accepted.events)
             if not accepted.proceed:
                 await self.inbox.commit([
-                    claimed_item.id for claimed_item in claimed
+                    claimed_item.id for claimed_item in claimed[:index + 1]
                 ])
                 return _TurnStartResult(item.input.content, events, False)
         primary = claimed[primary_index]
@@ -1182,16 +1189,6 @@ class Engine(AgentLoopDriverPort):
             closed.append((message, call.name))
         return closed
 
-    async def _claim_step_inputs(self) -> bool:
-        """Claim and accept every input addressed to the next loop step."""
-        items = await self.inbox.claim_step()
-        if not items:
-            return False
-        for item in items:
-            await self._accept_user_message(item)
-        await self.inbox.commit([item.id for item in items])
-        return True
-
     async def _accept_user_message(
         self,
         item: InboxItem,
@@ -1207,6 +1204,10 @@ class Engine(AgentLoopDriverPort):
         events: list[LoopEvent] = []
         if isinstance(accept_result, AcceptInput):
             accepted_input = accept_result.input
+            if accepted_input.model_copy(update={"input": item.input}) != item:
+                raise ValueError("ON_TURN_INPUT cannot change input identity or target")
+            if type(accepted_input.input) is not type(item.input):
+                raise ValueError("ON_TURN_INPUT cannot change input kind")
         elif isinstance(accept_result, RejectInput):
             events.append(LoopError(
                 code="user_message_rejected",
@@ -1235,15 +1236,13 @@ class Engine(AgentLoopDriverPort):
         )
         if isinstance(payload, HumanInput):
             message = HumanInputMessage(
-                id=f"message-{uuid.uuid4().hex}",
-                input_id=accepted_input.id,
+                id=accepted_input.id,
                 parts=parts,
                 artifacts=payload.artifacts,
             )
         elif isinstance(payload, RuntimeInput):
             message = RuntimeNoticeMessage(
-                id=f"message-{uuid.uuid4().hex}",
-                notice_id=accepted_input.id,
+                id=accepted_input.id,
                 source=payload.source,
                 event=payload.event,
                 parts=parts,
@@ -1264,18 +1263,15 @@ class Engine(AgentLoopDriverPort):
             if accepted_result.input != accepted_input:
                 raise ValueError("INPUT_ACCEPTED cannot change the accepted input")
             replacement = accepted_result.message
-            if type(replacement) is not type(message) or replacement.id != message.id:
+            # Canonicalization owns content, not identity or provenance. Compare
+            # the entire envelope so all input kinds obey the same constraint.
+            if replacement.model_copy(update={
+                "parts": message.parts,
+                "artifacts": message.artifacts,
+            }) != message:
                 raise ValueError(
-                    "INPUT_ACCEPTED may only replace a message while preserving "
-                    "the accepted message type and identity"
-                )
-            if (
-                isinstance(message, HumanInputMessage)
-                and isinstance(replacement, HumanInputMessage)
-                and replacement.input_id != accepted_input.id
-            ):
-                raise ValueError(
-                    "INPUT_ACCEPTED cannot change accepted input identity"
+                    "INPUT_ACCEPTED may only change parts and artifacts; "
+                    "message identity and provenance must be preserved"
                 )
             message = replacement
 

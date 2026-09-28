@@ -87,6 +87,38 @@ def test_web_server_duplicate_path_is_rejected() -> None:
     raise AssertionError("duplicate path registration must raise")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [[], ["server"]])
+async def test_server_tree_can_start_without_session_capabilities(tmp_path, enabled):
+    from XBotv2.application.server import start_server_application
+    from XBotv2.application.tree import load_server_tree
+    from XBotv2.protocol.version import PROTOCOL_VERSION
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    tree = load_server_tree(paths=paths)
+    context = await start_server_application(
+        paths=paths,
+        overrides=PluginOverlay.parse([
+            {"id": entry.id, "disabled": entry.id not in enabled}
+            for entry in tree.entries
+        ]),
+    )
+    try:
+        assert context.is_active
+        assert not context.has("sessions")
+        if "server" in enabled:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=context.server), base_url="http://test",
+            ) as client:
+                response = await client.post("/hello", json={"protocol_version": PROTOCOL_VERSION})
+                assert response.status_code == 200
+                assert (await client.get("/sessions")).status_code == 404
+        else:
+            assert not context.has("server")
+    finally:
+        await context.destroy()
+
+
 @pytest_asyncio.fixture
 async def booted_server(tmp_path: Path):
     from XBotv2.application.server import start_server_application

@@ -9,15 +9,58 @@ The bundled tree is `XBotv2/xcore.yaml`. `id` is the overlay identity and
 `name` is the import name. Profiles determine which carrier can mount an
 entry; activation itself is dependency-driven.
 
+No plugin is mandatory merely because it is bundled. Boot starts the configured
+tree, including an empty tree, and reports failed or dependency-blocked plugins
+without rejecting unrelated capabilities. An operation checks the services it
+actually needs: serving HTTP needs `server`, and running ACP needs `acp_agent`.
+A server without the session plugin can still expose other routes; it does not
+acquire session routes or a session manager implicitly. The Agent construction
+entry still requires an initialized Agent runtime; its remaining composition
+dependencies are under review, not a universal boot rule.
+
+XCore optional dependencies do not gate activation. When a declared dependency
+appears, disappears or changes instance, XCore disposes the consumer's old
+effects and activates it against the current services. Startup settles these
+bindings before returning; a consumer must not retain undeclared optional
+service references and expect them to update.
+
+The persistence plugin constructs its own thread store and file-backed state
+from `SessionLaunch`. The launch carries the deferred-materialization choice;
+the application entry neither creates the store nor tests a plugin ID to choose
+storage. Session publishes the store's state service, or memory state when no
+store is available. It owns history/metadata restoration and inbox construction;
+persistence subscribes to subsequent metadata changes and materialization
+boundaries. Consumers use the same registered XCore state service.
+
+Input hooks apply at both turn-start and next-step boundaries. `RejectInput`
+reports rejection and stops the current turn; `CompleteTurn` publishes its
+result and stops the current turn. In a claimed batch, only the processed
+prefix (including the short-circuited input) is consumed. Unprocessed inputs
+remain pending. Neither result may be silently ignored after a tool call or a
+text-only model response.
+
+`AcceptInput` may replace the input payload, but must retain the claimed inbox
+identity, target and payload kind. `INPUT_ACCEPTED` canonicalization may change
+only message parts and artifact references; identity, message kind and runtime
+notice provenance remain unchanged. Invalid hook results fail before history
+append, leaving the original input available for retry.
+
+Inbox change payloads carry only the changed facts: `Inserted` carries the full
+input and wake flag; `Edited` carries `id/content`; `Retargeted` carries
+`id/target`; `Removed` carries `id`; `Claimed`, `Consumed` and `Discarded` carry
+`ids`. Consumers resolve accepted content from canonical history rather than
+expecting additional input copies in consumption events. Claims remain runtime
+ownership, not proof of durable consumption.
+
 | id/name | profiles | primary responsibility | important injected services |
 |---|---|---|---|
 | config | agent, server | session settings/policy; independent configuration routes | session facet: runtime paths, launch, plugin overrides/dirs, runtime log, no_plugins; HTTP facet: runtime paths, server/sessions |
 | client_transport | client | HTTP API client using its own plugin configuration | none |
 | tui | client | Textual terminal client and local command presentation using its own plugin configuration | client API, commands |
-| persistence | agent, server, acp | history/state/artifact hydration and reader factory | loop state, thread persistence, runtime log |
+| persistence | agent, server, acp | thread store, durable subscribers and reader factory | session launch; subscriber: loop state, thread persistence, runtime log |
 | usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
 | agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, sessions |
-| session | agent, server, acp | SessionManager, thread runtime, history routes | launch, paths, artifacts, commands, application factory |
+| session | agent, server, acp | SessionManager, thread runtime, hydration, inbox, artifacts, history routes | launch, paths, commands, runtime log, application factory; optional thread persistence |
 | jobs | agent, server | shell/subagent job registry | commands, engine, sessions |
 | commands | agent, server, client | human command catalog and dispatch | sessions/server where mounted |
 | llm | agent, server | provider/model directory and selection | runtime log, agent runtime, sessions |
@@ -75,6 +118,44 @@ data directory through the same session configuration overlay while continuing
 to take each Agent workspace from the ACP session request.
 
 ## Composition pattern
+
+The session plugin provides the thread ArtifactStore independently of optional
+conversation persistence. The application host does not construct or select an
+artifact service, and ThreadPersistence does not own one. Session artifact
+downloads first validate the logical reference against conversation history,
+then use the live store or an offline filesystem reader for that thread.
+
+The Agent Context owns the runtime StateService. Runtime persistence is bound
+with `ThreadPersistence.create(..., state=ctx.state)`; it does not create a
+second cache or supply the root Context's state. `ThreadPersistence.open(...)`
+is the separate offline entry point and opens its own state reader. Creating
+or reading either state view does not itself write a state file.
+
+Disabling persistence selects `StateService.memory()` for that Agent Context.
+Usage and other plugins keep their namespace API and values during the live
+session but do not write plugin-state files. Active-session attachment and
+message paging use live history; closing such a session leaves no resumable
+conversation. Tool artifacts are still available when tools need them; this
+setting is not a filesystem sandbox or a prohibition on tool-created files.
+
+New managed threads defer metadata until they have durable content. Turn
+completion flushes it; persistence-plugin teardown also flushes it when plugin
+state or inbox/history was written before the first turn. This allows a normal
+close/resume of a state-only thread without materializing an unused session.
+This teardown guarantee does not make metadata and state writes atomic across
+a process crash.
+
+Live history stores retain their shared per-path trajectory state independently
+of the bounded cache for recent offline readers. Switching among active threads
+therefore does not force an append to reread its own prefix. Appends extend the
+in-memory trace and lifetime turn count incrementally. Compaction validates its
+replacement against the current projections before writing, then folds only
+that new record after the append succeeds. Nested summaries retain ancestry
+edges rather than repeatedly copying every original message ID. Clear resolves
+those edges when it actually replaces the transcript span. Cold replay publishes
+each projection only after validation succeeds; failed reads do not expose a
+partially reconstructed view. Cold-history paging remains separate persistence
+work.
 
 The interactions plugin owns `client_events`; the application host only passes
 an optional parent client interface as a launch fact. Permission and ask-user

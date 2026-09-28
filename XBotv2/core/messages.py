@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.domain import InputId, MessageId, ModelExchange, NoticeId, ToolTiming
+from XBotv2.core.domain import MessageId, ModelExchange, ToolTiming
 from XBotv2.core.parts import ImagePart, ReasoningPart, TextPart
 from XBotv2.core.tools import ToolCall, ToolCallRef, ToolOutcome
 
@@ -21,8 +21,7 @@ AssistantContent: TypeAlias = TextPart | ReasoningPart | ToolCall
 
 class HumanInputMessage(BaseModel):
     kind: Literal["human_input"] = "human_input"
-    id: MessageId
-    input_id: InputId
+    id: MessageId = Field(min_length=1)
     parts: tuple[TextContent, ...]
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -30,8 +29,7 @@ class HumanInputMessage(BaseModel):
 
 class RuntimeNoticeMessage(BaseModel):
     kind: Literal["runtime_notice"] = "runtime_notice"
-    id: MessageId
-    notice_id: NoticeId
+    id: MessageId = Field(min_length=1)
     source: str
     event: str
     parts: tuple[TextContent, ...]
@@ -41,7 +39,7 @@ class RuntimeNoticeMessage(BaseModel):
 
 class AssistantMessage(BaseModel):
     kind: Literal["assistant"] = "assistant"
-    id: MessageId
+    id: MessageId = Field(min_length=1)
     parts: tuple[AssistantContent, ...]
     exchange: ModelExchange
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -49,7 +47,7 @@ class AssistantMessage(BaseModel):
 
 class ToolMessage(BaseModel):
     kind: Literal["tool"] = "tool"
-    id: MessageId
+    id: MessageId = Field(min_length=1)
     call: ToolCallRef
     outcome: ToolOutcome
     timing: ToolTiming
@@ -58,7 +56,7 @@ class ToolMessage(BaseModel):
 
 class CompactionSummaryMessage(BaseModel):
     kind: Literal["compaction_summary"] = "compaction_summary"
-    id: MessageId
+    id: MessageId = Field(min_length=1)
     summary: str
     model_config = ConfigDict(extra="forbid", frozen=True)
 

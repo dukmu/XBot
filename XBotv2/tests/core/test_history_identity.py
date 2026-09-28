@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from XBotv2.core.domain import InputId, MessageId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.history import ConversationHistory
-from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.messages import CompactionSummaryMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.session.contracts import conversation_replay
@@ -15,9 +16,38 @@ from XBotv2.session.contracts import conversation_replay
 def human(message_id: str, content: str) -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId(message_id),
-        input_id=InputId(f"input-{message_id}"),
         parts=(TextPart(text=content),),
     )
+
+
+@pytest.mark.parametrize("model,payload", [
+    (HumanInputMessage, {"id": "accepted-input", "parts": []}),
+    (RuntimeNoticeMessage, {"id": "accepted-input", "source": "job", "event": "done", "parts": []}),
+])
+def test_accepted_message_has_one_canonical_identity(model, payload):
+    message = model.model_validate(payload)
+    record = message.model_dump(mode="json")
+    assert record["id"] == "accepted-input"
+    assert "input_id" not in record
+    assert "notice_id" not in record
+    assert model.model_validate_json(message.model_dump_json()) == message
+    old_field = "input_id" if model is HumanInputMessage else "notice_id"
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        model.model_validate({**payload, old_field: "accepted-input"})
+
+
+@pytest.mark.parametrize("model,payload,field", [
+    (HumanInputMessage, {"id": "m", "parts": []}, "id"),
+    (RuntimeNoticeMessage, {"id": "m", "source": "test", "event": "ready", "parts": []}, "id"),
+    (CompactionSummaryMessage, {"id": "m", "summary": "context"}, "id"),
+])
+def test_canonical_message_rejects_empty_identity(model, payload, field):
+    assert model.model_validate(payload).id == "m"
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate({**payload, field: ""})
+    assert [(error["loc"], error["type"]) for error in caught.value.errors()] == [
+        ((field,), "string_too_short"),
+    ]
 
 
 def test_history_page_and_client_projection_keep_canonical_message_identity() -> None:

@@ -28,6 +28,7 @@ async def run_client_application(*, paths: RuntimePaths, overrides: PluginOverla
     successful boot, this host owns the single context-disposal path.
     """
     context = Context(data_dir=paths.data_dir)
+    _ = context.state
     context = await boot_application(
         ctx=context,
         tree=load_client_tree(paths=paths, overrides=overrides),

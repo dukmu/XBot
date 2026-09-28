@@ -42,6 +42,399 @@ def _record_text(record):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("short_circuit", ["reject", "complete"])
+async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, persistent, short_circuit):
+    from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
+    from XBotv2.agentloop.protocol import LoopError
+
+    provider = MockLLM(responses=[{"content": "answered"}])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
+        no_plugins=True, llm_override=provider,
+        extra_plugins=[{"id": "persistence", "disabled": not persistent}],
+    )
+    notice = InboxItem(
+        id="rejected-notice", target=InboxTarget.NEXT_STEP,
+        input=RuntimeInput(source="job", event="completion", content="ignore this notice"),
+    )
+    user = InboxItem(
+        id="unprocessed-user", target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content="answer this question"),
+    )
+
+    def reject_notice(event):
+        if event.input.id == notice.id:
+            if short_circuit == "complete":
+                return CompleteTurn(result=LoopError(code="input_handled", message="notice handled"))
+            return RejectInput(error="notice rejected")
+
+    try:
+        application.on(Events.ON_TURN_INPUT, reject_notice)
+        await application.engine.submit_input(InboxItem(
+            id="accepted-notice", target=InboxTarget.NEXT_STEP,
+            input=RuntimeInput(source="job", event="completion", content="accepted notice"),
+        ), wake=False)
+        await application.engine.submit_input(notice, wake=False)
+        events = [event async for event in application.engine.run_turn(user)]
+        assert any(event.kind == "error" for event in events)
+        assert provider.call_count == 0
+        assert [message.id for message in application.engine.messages] == ["accepted-notice"]
+        assert [item.id for item in application.engine.pending_inputs] == [user.id]
+        if persistent:
+            assert [item.id for item in application.thread_persistence.inbox.load()] == [user.id]
+        retried = [event async for event in application.engine.run_pending()]
+        assert any(event.kind == "assistant_completed" for event in retried)
+        assert application.engine.pending_input_count == 0
+        assert provider.call_count == 1
+        assert [message.id for message in application.engine.messages if message.kind == "human_input"] == [user.id]
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("short_circuit", ["reject", "complete"])
+@pytest.mark.parametrize("with_tool", [False, True])
+async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_path, persistent, short_circuit, with_tool):
+    from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
+    from XBotv2.agentloop.protocol import LoopError
+
+    first_response = (
+        {"tool_calls": [{"id": "call-1", "name": "observe", "args": {}}]}
+        if with_tool else {"content": "first"}
+    )
+    provider = MockLLM(responses=[first_response, {"content": "follow-up"}])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
+        no_plugins=True, llm_override=provider,
+        extra_plugins=[{"id": "persistence", "disabled": not persistent}],
+    )
+    items = [InboxItem(
+        id=identity, target=InboxTarget.NEXT_STEP, input=HumanInput(content=identity),
+    ) for identity in ("accepted-prefix", "handled-input", "pending-suffix")]
+
+    async def enqueue(_event):
+        dispose()
+        for item in items:
+            await application.engine.submit_input(item, wake=False)
+
+    def handle(event):
+        if event.input.id == "handled-input":
+            if short_circuit == "reject":
+                return RejectInput(error="rejected steering")
+            return CompleteTurn(result=LoopError(code="handled", message="handled steering"))
+
+    try:
+        async def observe() -> str:
+            """Return a deterministic tool result."""
+            return "observed"
+
+        application.engine.tools.register(Tool.from_function(observe), cleanup="caller")
+        application.permissions.replace_policies((PermissionPolicy(rules=(
+            PermissionRule(tool_pattern="observe", decision="allow"),
+        )),))
+        dispose = application.on(Events.MODEL_REQUEST_READY, enqueue)
+        application.on(Events.ON_TURN_INPUT, handle)
+        events = [event async for event in application.engine.run_turn(InboxItem(
+            id="initial", target=InboxTarget.NEXT_TURN, input=HumanInput(content="start"),
+        ))]
+        dispose()
+        expected_code = "user_message_rejected" if short_circuit == "reject" else "handled"
+        assert any(event.kind == "error" and event.code == expected_code for event in events)
+        assert provider.call_count == 1
+        assert sum(event.kind == "tool_completed" for event in events) == int(with_tool)
+        assert sum(event.kind == "turn_ended" for event in events) == 1
+        assert [item.id for item in application.engine.pending_inputs] == ["pending-suffix"]
+        assert [message.id for message in application.engine.messages if message.kind == "human_input"] == [
+            "initial", "accepted-prefix",
+        ]
+        if persistent:
+            assert [item.id for item in application.thread_persistence.inbox.load()] == ["pending-suffix"]
+        retried = [event async for event in application.engine.run_pending()]
+        assert any(event.kind == "assistant_completed" for event in retried)
+        assert provider.call_count == 2
+        assert application.engine.pending_input_count == 0
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_notice", [False, True])
+@pytest.mark.parametrize("hook", ["accept", "canonicalize"])
+async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_notice, hook):
+    from XBotv2.agentloop.events import AcceptInput, Events, InputAccepted
+
+    provider = MockLLM(responses=[{"content": "retried"}])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
+        no_plugins=True, llm_override=provider,
+    )
+    payload = RuntimeInput(source="job", event="done", content="result") if runtime_notice else HumanInput(content="question")
+    item = InboxItem(id="original-input", target=InboxTarget.NEXT_TURN, input=payload)
+
+    def replace_identity(event):
+        if hook == "accept":
+            return AcceptInput(event.input.model_copy(update={"id": "different-input"}))
+        return InputAccepted(event.input, event.message.model_copy(update={"id": "different-input"}))
+
+    try:
+        dispose = application.on(
+            Events.ON_TURN_INPUT if hook == "accept" else Events.INPUT_ACCEPTED,
+            replace_identity,
+        )
+        events = [event async for event in application.engine.run_turn(item)]
+        dispose()
+        assert any(event.kind == "error" and "identity" in event.message for event in events)
+        assert provider.call_count == 0
+        assert application.engine.messages.snapshot() == ()
+        assert application.thread_persistence.history.load_surface() == ()
+        assert application.thread_persistence.inbox.load() == [item]
+        retried = [event async for event in application.engine.run_pending()]
+        assert any(event.kind == "assistant_completed" for event in retried)
+        assert application.engine.messages[0].id == item.id
+        assert application.engine.pending_input_count == 0
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["compact", "clear"])
+async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_path, operation):
+    from XBotv2.core.messages import CompactionSummaryMessage
+    from XBotv2.persistence.store import ThreadPersistence
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+
+    async def start():
+        return await start_application(
+            paths=paths, workspace_root=tmp_path, session_id="reconcile-trace",
+            thread_id="main", no_plugins=True,
+            llm_override=MockLLM(responses=[{"content": "done"}]),
+        )
+
+    notice = InboxItem(
+        id="committed-notice", target=InboxTarget.NEXT_STEP,
+        input=RuntimeInput(source="job", event="completion", content="old notice"),
+    )
+    user = InboxItem(
+        id="committed-user", target=InboxTarget.NEXT_TURN, input=HumanInput(content="old input"),
+    )
+    pending = InboxItem(
+        id="unprocessed", target=InboxTarget.NEXT_TURN, input=HumanInput(content="new input"),
+    )
+    first = await start()
+    try:
+        await first.engine.submit_input(notice, wake=False)
+        async for _event in first.engine.run_turn(user):
+            pass
+    finally:
+        await first.destroy()
+
+    store = ThreadPersistence.open(paths.session("reconcile-trace"), thread_id="main")
+    # Model the crash boundary: history committed, inbox inputs not retired.
+    # A subsequent surface replacement must not erase that commit evidence.
+    from XBotv2.agentloop.contracts import Inserted
+    for item in (notice, user, pending):
+        store.inbox.append(Inserted(item=item, wake=False))
+    source_ids = tuple(message.id for message in store.history.load_surface())
+    replacement = (CompactionSummaryMessage(id="summary", summary="prior context"),) if operation == "compact" else ()
+    store.history.replace_surface(
+        source_ids, replacement, operation=operation, preserve_transcript=operation == "compact",
+    )
+    resumed = await start()
+    try:
+        assert [item.id for item in resumed.engine.pending_inputs] == [pending.id]
+        assert [item.id for item in store.inbox.load()] == [pending.id]
+        events = [event async for event in resumed.engine.run_pending()]
+        assert not any(event.kind == "error" for event in events)
+        assert resumed.engine.pending_input_count == 0
+        assert store.inbox.load() == []
+    finally:
+        await resumed.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rejected):
+    from XBotv2.agentloop.events import Events, RejectInput
+    from XBotv2.session.protocol import InputConsumedEvent, MessagePublishedEvent
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    context = await start_application(
+        paths=paths, workspace_root=tmp_path,
+        llm_override=MockLLM(responses=[{"content": "reply"}]),
+        extra_plugins=[
+            {"id": "caption", "disabled": True},
+            {"id": "content_cache", "config": {
+                "threshold_chars": 100, "preview_chars": 20, "tail_chars": 5,
+            }},
+        ],
+    )
+    application = await mounted_application(context)
+    runtime = SessionRuntime(paths, False, application, context.engine)
+    events = runtime.event_stream.subscribe()
+    if rejected:
+        context.on(Events.ON_TURN_INPUT, lambda _event: RejectInput(error="rejected"))
+    try:
+        original = "long user input " * 100
+        async for _event in context.engine.run_turn(InboxItem(
+            id="request-identity", target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content=original),
+        )):
+            pass
+        frames = [
+            await asyncio.wait_for(anext(events), timeout=1)
+            for _ in range(runtime.event_stream.sequence)
+        ]
+        published = [
+            frame.event.record.root for frame in frames
+            if isinstance(frame.event, MessagePublishedEvent)
+        ]
+        history = [
+            project_message(message) for message in context.thread_persistence.history.load_surface()
+            if message.kind == "human_input"
+        ]
+        assert published == history
+        consumed_at = next(
+            index for index, frame in enumerate(frames)
+            if isinstance(frame.event, InputConsumedEvent)
+        )
+        assert all(
+            index < consumed_at for index, frame in enumerate(frames)
+            if isinstance(frame.event, MessagePublishedEvent)
+        )
+        if not rejected:
+            assert len(history) == 1
+            assert history[0].id == "request-identity"
+            assert history[0].artifacts
+            assert history[0].content != original
+    finally:
+        await events.aclose()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("cancelled", [True, False])
+async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, cancelled):
+    from XBotv2.agentloop.events import Events
+    from XBotv2.core.messages import HumanInputMessage
+
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+        workspace_root=tmp_path, no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "first"}, {"content": "retried"}]),
+        extra_plugins=[{"id": "persistence", "disabled": not persistent}],
+    )
+    steer = InboxItem(
+        id="steering", target=InboxTarget.NEXT_STEP, input=HumanInput(content="correction"),
+    )
+
+    async def enqueue_while_running(_event):
+        await application.engine.submit_input(steer, wake=False)
+
+    accepting = asyncio.Event()
+
+    async def fail_steering(event):
+        if event.input.id == steer.id:
+            accepting.set()
+            if cancelled:
+                await asyncio.Event().wait()
+            raise RuntimeError("steering handler failed")
+
+    async def run():
+        return [event async for event in application.engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN, input=HumanInput(content="start"),
+        ))]
+
+    task = None
+    try:
+        dispose_enqueue = application.on(Events.MODEL_REQUEST_READY, enqueue_while_running)
+        dispose_failure = application.on(Events.ON_TURN_INPUT, fail_steering)
+        task = asyncio.create_task(run())
+        await asyncio.wait_for(accepting.wait(), timeout=5)
+        if cancelled:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            events = await task
+            assert any(event.kind == "error" and event.message == "steering handler failed" for event in events)
+        dispose_enqueue()
+        dispose_failure()
+        assert [item.id for item in application.engine.inbox.pending] == [steer.id]
+        retried = [event async for event in application.engine.run_pending()]
+        assert any(event.kind == "assistant_completed" for event in retried)
+        assert sum(
+            isinstance(message, HumanInputMessage) and message.id == steer.id
+            for message in application.engine.messages
+        ) == 1
+        if persistent:
+            assert application.thread_persistence.inbox.load() == []
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_partial_input_batch_does_not_replay_committed_notice(tmp_path, persistent):
+    from XBotv2.agentloop.events import Events
+    from XBotv2.core.messages import RuntimeNoticeMessage
+    from XBotv2.session.protocol import MessagePublishedEvent
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    application = await start_application(
+        paths=paths,
+        workspace_root=tmp_path, no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "continued"}]),
+        extra_plugins=[{"id": "persistence", "disabled": not persistent}],
+    )
+    runtime = SessionRuntime(paths, False, await mounted_application(application), application.engine)
+    stream = runtime.event_stream.subscribe()
+    notice = InboxItem(
+        id="completed-job", target=InboxTarget.NEXT_STEP,
+        input=RuntimeInput(source="job", event="completion", content="job finished"),
+    )
+    user = InboxItem(id="followup", target=InboxTarget.NEXT_TURN, input=HumanInput(content="continue"))
+
+    def fail_human_input(event):
+        if event.input.id == user.id:
+            raise RuntimeError("input handler failed")
+
+    try:
+        await application.engine.submit_input(notice, wake=False)
+        dispose = application.on(Events.ON_TURN_INPUT, fail_human_input)
+        failed = [event async for event in application.engine.run_turn(user)]
+        assert any(event.kind == "error" for event in failed)
+        dispose()
+        assert [item.id for item in application.engine.inbox.pending] == [user.id]
+        frames = [
+            await asyncio.wait_for(anext(stream), timeout=1)
+            for _ in range(runtime.event_stream.sequence)
+        ]
+        assert [
+            frame.event.record.root for frame in frames
+            if isinstance(frame.event, MessagePublishedEvent)
+        ] == [project_message(application.engine.messages[0])]
+        retried = [event async for event in application.engine.run_pending()]
+        assert not any(event.kind == "error" for event in retried)
+        messages = application.engine.messages
+        assert sum(isinstance(message, RuntimeNoticeMessage) for message in messages) == 1
+        assert application.engine.pending_input_count == 0
+        if persistent:
+            stored = application.thread_persistence.history.load_surface()
+            assert sum(isinstance(message, RuntimeNoticeMessage) for message in stored) == 1
+            assert application.thread_persistence.inbox.load() == []
+    finally:
+        await stream.aclose()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_busy_user_input_is_claimed_from_next_step_without_content_side_queue(
     temp_data_dir,
     temp_workspace,

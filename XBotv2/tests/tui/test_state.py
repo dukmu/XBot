@@ -967,16 +967,41 @@ def test_submitted_input_appears_immediately_as_pending() -> None:
     assert derive(state.facts) is Status.READY
 
 
+def test_consumed_input_retires_only_unconfirmed_matching_echo() -> None:
+    from XBotv2.core.domain import SessionScope
+    from XBotv2.protocol import server_event
+    from XBotv2.tui.protocol import FrameTranslator
+
+    state = session(
+        UserInputSubmitted(input_id="rejected", content="rejected prompt"),
+        UserInputSubmitted(input_id="accepted", content="accepted prompt"),
+        user_message("accepted", "canonical prompt"),
+        UserInputSubmitted(input_id="queued", content="later prompt"),
+    )
+    accepted = state.timeline.get("accepted")
+    frame = server_event(
+        kind="input_consumed", payload={"message_ids": ["rejected", "accepted"]},
+        session_id="s1", thread_id="agent", sequence=1, scope=SessionScope(),
+    )
+    for event in FrameTranslator().translate(frame):
+        reduce(state, event)
+    assert state.timeline.get("rejected") is None
+    assert state.submission_in_flight is False
+    assert state.timeline.get("accepted") is accepted
+    assert state.timeline.get("queued").delivery is Delivery.PENDING
+
+
 def test_published_message_upgrades_the_pending_entry_without_duplicating() -> None:
     state = session(
         connected(),
         UserInputSubmitted(input_id="in-1", content="hello"),
-        user_message("in-1", "hello"),
+        user_message("in-1", "canonical preview"),
     )
     assert state.timeline.ids() == ("in-1",)
     entry = state.timeline.get("in-1")
     assert isinstance(entry, UserEntry)
     assert entry.delivery is Delivery.ACCEPTED
+    assert entry.content == "canonical preview"
     assert state.submission_in_flight is False
 
 

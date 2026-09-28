@@ -113,7 +113,7 @@ class ThreadPaths:
 
     @property
     def inbox_file(self) -> Path:
-        return self.state_dir / "inbox.json"
+        return self.state_dir / "inbox.jsonl"
 
     @property
     def plugin_state_dir(self) -> Path:

@@ -29,6 +29,7 @@ async def start_acp_application(
     ]))
 
     ctx = Context(data_dir=paths.data_dir)
+    _ = ctx.state
     ctx.set("runtime_paths", paths)
     ctx.set("agent_application_factory", create_agent_application)
     ctx.set("acp_launch", ACPLaunch(
@@ -40,7 +41,6 @@ async def start_acp_application(
     return await boot_application(
         ctx=ctx,
         tree=tree,
-        required_services=("acp_agent",),
     )
 
 

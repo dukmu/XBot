@@ -80,7 +80,7 @@ class HistoryReader(Protocol):
 class HistorySink(Protocol):
     """Append-only trajectory boundary used by one conversation history."""
 
-    def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]: ...
+    def append(self, messages: Sequence[ConversationMessage]) -> None: ...
 
     def replace_surface(
         self,
@@ -89,7 +89,7 @@ class HistorySink(Protocol):
         *,
         operation: str,
         preserve_transcript: bool,
-    ) -> tuple[ConversationMessage, ...]: ...
+    ) -> None: ...
 
     def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
 
@@ -110,7 +110,7 @@ class ConversationHistory(Sequence[ConversationMessage]):
     ) -> None:
         self._surface = list(messages)
         self._seen_ids: set[str] = set()
-        self._claim_identities(self._surface)
+        self._seen_ids.update(self._validate_identities(self._surface))
         self._transcript = list(self._surface)
         self._lineage: dict[str, tuple[str, ...]] = {}
         self._sink = sink
@@ -140,10 +140,12 @@ class ConversationHistory(Sequence[ConversationMessage]):
         added = tuple(messages)
         if not added:
             return
-        stored = self._sink.append(added) if self._sink is not None else added
-        self._claim_identities(stored)
-        self._surface.extend(stored)
-        self._transcript.extend(stored)
+        identities = self._validate_identities(added)
+        if self._sink is not None:
+            self._sink.append(added)
+        self._seen_ids.update(identities)
+        self._surface.extend(added)
+        self._transcript.extend(added)
 
     def replace(
         self,
@@ -174,30 +176,28 @@ class ConversationHistory(Sequence[ConversationMessage]):
             raise ValueError(
                 "Transcript-preserving replacement must produce one surface record"
             )
+        identities = self._validate_identities(replacement)
         source = self._surface[start:end]
         source_ids = tuple(message.id for message in source)
         transcript_start = None
         if not preserve_transcript:
             origins = resolve_transcript_sources(source_ids, self._lineage)
             transcript_start = self._transcript_span(self._transcript, origins)
-        stored = (
+        if self._sink is not None:
             self._sink.replace_surface(
                 source_ids,
                 replacement,
                 operation=operation,
                 preserve_transcript=preserve_transcript,
             )
-            if self._sink is not None
-            else replacement
-        )
-        self._claim_identities(stored)
+        self._seen_ids.update(identities)
         if preserve_transcript:
-            self._lineage[stored[0].id] = source_ids
+            self._lineage[replacement[0].id] = source_ids
         else:
             assert transcript_start is not None
-            self._transcript[transcript_start:transcript_start + len(origins)] = stored
+            self._transcript[transcript_start:transcript_start + len(origins)] = replacement
             self._transcript_revision = uuid4().hex
-        self._surface[start:end] = stored
+        self._surface[start:end] = replacement
         self._surface_revision = uuid4().hex
 
     @staticmethod
@@ -232,14 +232,12 @@ class ConversationHistory(Sequence[ConversationMessage]):
             return frozenset()
         return self._sink.open_transactions(transaction_kind)
 
-    def _claim_identities(self, messages: Sequence[ConversationMessage]) -> None:
+    def _validate_identities(self, messages: Sequence[ConversationMessage]) -> list[str]:
         identities = [message.id for message in messages]
-        if any(not identity for identity in identities):
-            raise ValueError("Conversation messages must have identities")
         duplicates = self._seen_ids.intersection(identities)
         if len(identities) != len(set(identities)) or duplicates:
             raise ValueError("Conversation message identities must be unique")
-        self._seen_ids.update(identities)
+        return identities
 
     def page(
         self,

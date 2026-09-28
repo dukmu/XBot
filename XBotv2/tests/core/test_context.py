@@ -13,7 +13,6 @@ from XBotv2.context_builder.contracts import (
 from XBotv2.core.domain import (
     AgentExecutionLimits,
     GenerationSettings,
-    InputId,
     MessageId,
     ModelRoute,
     ResolvedModelSelection,
@@ -53,7 +52,6 @@ def _selection() -> ResolvedRuntimeSelection:
 def _human(text="hello") -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId("message-1"),
-        input_id=InputId("input-1"),
         parts=(TextPart(text=text),),
     )
 
@@ -151,7 +149,6 @@ def test_user_attachments_resolve_logical_ids_to_request_local_paths(artifact_st
     )
     message = HumanInputMessage(
         id=MessageId("message-attachment"),
-        input_id=InputId("input-attachment"),
         parts=(TextPart(text="inspect this"),),
         artifacts=(ref,),
     )

@@ -23,7 +23,7 @@ async def run_acp(
         selected_agent=selected_agent,
     )
     try:
-        await run_agent(context.acp_agent, use_unstable_protocol=True)
+        await run_agent(context.require("acp_agent"), use_unstable_protocol=True)
     finally:
         await context.destroy()
 

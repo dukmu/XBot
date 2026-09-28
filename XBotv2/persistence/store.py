@@ -11,9 +11,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from weakref import WeakValueDictionary
 
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem.atomic import write_text_atomic
 from XBotv2.core.history import (
     DurableEvent,
@@ -26,9 +25,10 @@ from XBotv2.core.history import (
     decode_history_cursor,
     encode_history_cursor,
     page_messages,
+    resolve_transcript_sources,
 )
 from XBotv2.core.domain import Cursor, HistoryRevision, TransactionEnded, TransactionStarted
-from XBotv2.core.messages import ConversationMessage, HumanInputMessage
+from XBotv2.core.messages import ConversationMessage, HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.metadata import ThreadMetadata
 from XBotv2.persistence.contracts import (
     HistoryPort,
@@ -40,9 +40,12 @@ from XBotv2.persistence.contracts import (
 from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop.contracts import InboxItem
+from XBotv2.agentloop.contracts import (
+    InboxItem, InboxMutation, InboxTarget, HumanInput,
+    Inserted, Edited, Removed, Retargeted, Consumed, Discarded,
+)
 from XBotv2.persistence.models import (
-    InboxSnapshot,
+    StoredInboxRecord,
     StoredTrajectoryRecord,
 )
 from XBotv2.persistence.contracts import (
@@ -69,11 +72,12 @@ class _SurfaceState:
         entry = record.entry
         if isinstance(entry, MessageAppended):
             message = entry.message
-            self._claim((message,), entry.position)
+            self._validate_claim((message,), entry.position)
+            self.seen_ids.add(message.id)
             self.messages.append(message)
         elif isinstance(entry, SurfaceReplaced):
+            self.validate_replacement(entry)
             replacements = list(entry.replacements)
-            self._claim(replacements, entry.position)
             _replace_messages(
                 self.messages,
                 entry.source_ids,
@@ -82,13 +86,20 @@ class _SurfaceState:
                 scope="Surface",
                 source_term="source nodes",
             )
+            self.seen_ids.update(message.id for message in replacements)
             self.revision = max(self.revision, entry.position)
 
-    def _claim(self, messages: Sequence[ConversationMessage], position: int) -> None:
+    def validate_replacement(self, entry: SurfaceReplaced) -> None:
+        self._validate_claim(entry.replacements, entry.position)
+        _replacement_start(
+            self.messages, entry.source_ids, position=entry.position,
+            scope="Surface", source_term="source nodes",
+        )
+
+    def _validate_claim(self, messages: Sequence[ConversationMessage], position: int) -> None:
         identities = [message.id for message in messages]
         if len(identities) != len(set(identities)) or self.seen_ids.intersection(identities):
             raise ValueError(f"Surface record at {position} reuses a message identity")
-        self.seen_ids.update(identities)
 
     def view(self) -> tuple[ConversationMessage, ...]:
         return tuple(self.messages)
@@ -107,32 +118,35 @@ class _TranscriptState:
         if isinstance(entry, MessageAppended):
             message = entry.message
             self.messages.append(message)
-            self.lineage[message.id] = (message.id,)
         elif isinstance(entry, SurfaceReplaced):
-            sources = tuple(
-                origin
-                for source in entry.source_ids
-                for origin in self.lineage.get(source, (source,))
-            )
+            self.validate_replacement(entry)
             replacements = list(entry.replacements)
             if entry.transcript_policy == "preserve":
-                if len(replacements) != 1:
-                    raise ValueError(
-                        "Transcript-preserving replacement must produce one surface record"
-                    )
-                self.lineage[replacements[0].id] = sources
+                # Keep edges to prior summaries; repeatedly flattening their
+                # entire ancestry would copy old transcript IDs at every compact.
+                self.lineage[replacements[0].id] = entry.source_ids
                 return
             _replace_messages(
                 self.messages,
-                sources,
+                resolve_transcript_sources(entry.source_ids, self.lineage),
                 replacements,
                 position=entry.position,
                 scope="Transcript",
                 source_term="sources",
             )
-            for message in replacements:
-                self.lineage[message.id] = (message.id,)
             self.revision = max(self.revision, entry.position)
+
+    def validate_replacement(self, entry: SurfaceReplaced) -> None:
+        if entry.transcript_policy == "preserve":
+            if len(entry.replacements) != 1:
+                raise ValueError(
+                    "Transcript-preserving replacement must produce one surface record"
+                )
+            return
+        _replacement_start(
+            self.messages, resolve_transcript_sources(entry.source_ids, self.lineage), position=entry.position,
+            scope="Transcript", source_term="sources",
+        )
 
     def view(self) -> tuple[ConversationMessage, ...]:
         return tuple(self.messages)
@@ -154,7 +168,7 @@ class _TrajectoryState:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.lock = threading.RLock()
-        self.users = 0
+        self.turn_count = 0
         self.records: list[TrajectoryRecord] | None = None
         self.surface: _SurfaceState | None = None
         self.transcript: _TranscriptState | None = None
@@ -178,15 +192,20 @@ class _TrajectoryState:
     def surface_state(self) -> _SurfaceState:
         records = self.recorded()
         if self.surface is None:
-            self.surface = _SurfaceState()
-            _apply_records(self.surface, records)
+            surface = _SurfaceState()
+            _apply_records(surface, records)
+            self.surface = surface
         return self.surface
 
     def transcript_state(self) -> _TranscriptState:
         records = self.recorded()
         if self.transcript is None:
-            self.transcript = _TranscriptState()
-            _apply_records(self.transcript, records)
+            # Validate identity and source transitions before interpreting
+            # summary ancestry; a malformed trace must not form lineage cycles.
+            self.surface_state()
+            transcript = _TranscriptState()
+            _apply_records(transcript, records)
+            self.transcript = transcript
         return self.transcript
 
     def prepare_write(self, log: RuntimeLog) -> list[TrajectoryRecord]:
@@ -209,7 +228,14 @@ class _TrajectoryState:
 
     def wrote(self, added: Sequence[TrajectoryRecord]) -> None:
         """Extend the cache after this process appended records durably."""
-        self.records = [*(self.records or ()), *added]
+        if self.records is None:
+            raise RuntimeError("Trajectory append was not prepared")
+        self.records.extend(added)
+        self.turn_count += sum(
+            isinstance(record.entry, MessageAppended)
+            and isinstance(record.entry.message, HumanInputMessage)
+            for record in added
+        )
         self.next_position = len(self.records) + 1
         self.file_size = self.read_size = self.size()
         if self.surface is not None:
@@ -217,21 +243,9 @@ class _TrajectoryState:
         if self.transcript is not None:
             _apply_records(self.transcript, added)
 
-    def replaced(
-        self,
-        prospective: list[TrajectoryRecord],
-        surface: _SurfaceState,
-        transcript: _TranscriptState,
-    ) -> None:
-        """Adopt one validated surface replacement as the cached trajectory."""
-        self.records = prospective
-        self.surface = surface
-        self.transcript = transcript
-        self.next_position = len(prospective) + 1
-        self.file_size = self.read_size = self.size()
-
     def _parse(self, size: int) -> list[TrajectoryRecord]:
         parsed: list[TrajectoryRecord] = []
+        turn_count = 0
         for index, raw in enumerate(
             _read_jsonl(self.path, "messages.jsonl"),
             start=1,
@@ -242,65 +256,58 @@ class _TrajectoryState:
                     "Trajectory positions must be contiguous and start at 1"
                 )
             parsed.append(record)
+            if isinstance(record.entry, MessageAppended) and isinstance(
+                record.entry.message, HumanInputMessage
+            ):
+                turn_count += 1
+        self.turn_count = turn_count
         self.read_size = size
         return parsed
 
 
-# Bounded cache: a long-lived server must not keep every visited session's
-# trajectory and projections in memory.
+# Live stores own their state. The weak registry preserves one lock/cache per
+# path even when a live store is evicted from the bounded recent-reader cache.
 _CACHE_LIMIT = 8
 _CACHE_RECORD_BUDGET = 60_000
 
-_trajectory_states: "OrderedDict[Path, _TrajectoryState]" = OrderedDict()
+_trajectory_states: WeakValueDictionary[Path, _TrajectoryState] = WeakValueDictionary()
+_recent_trajectories: "OrderedDict[Path, _TrajectoryState]" = OrderedDict()
 _trajectory_guard = threading.Lock()
 
 
-@contextmanager
-def _trajectory_use(path: Path) -> Iterator[_TrajectoryState]:
-    """Borrow the shared state for one operation while holding its lock."""
+def _trajectory_for(path: Path) -> _TrajectoryState:
     with _trajectory_guard:
         state = _trajectory_states.get(path)
         if state is None:
             state = _TrajectoryState(path)
             _trajectory_states[path] = state
-        else:
-            _trajectory_states.move_to_end(path)
-        state.users += 1
-        _evict_idle_states(keep=path)
-    state.lock.acquire()
-    try:
+        return state
+
+
+@contextmanager
+def _trajectory_use(state: _TrajectoryState) -> Iterator[_TrajectoryState]:
+    """Keep recent readers warm without dropping a live store's ownership."""
+    with _trajectory_guard:
+        _recent_trajectories[state.path] = state
+        _recent_trajectories.move_to_end(state.path)
+        _evict_recent_states()
+    with state.lock:
         yield state
-    finally:
-        state.lock.release()
-        with _trajectory_guard:
-            state.users -= 1
 
 
-def _evict_idle_states(*, keep: Path) -> None:
-    """Drop least recently used caches that no operation is using.
-
-    A borrowed state (``users`` above zero) is never evicted, so an operation
-    keeps working on the same object even while the cache shrinks around it.
-    Neither the registry guard nor another state's lock blocks the caller.
-    """
+def _evict_recent_states() -> None:
+    """Bound retained offline readers; live owners retain their own state."""
     while True:
         cached = sum(
-            len(state.records or ()) for state in _trajectory_states.values()
+            len(state.records or ()) for state in _recent_trajectories.values()
         )
         within_limit = (
-            len(_trajectory_states) <= _CACHE_LIMIT
+            len(_recent_trajectories) <= _CACHE_LIMIT
             and cached <= _CACHE_RECORD_BUDGET
         )
-        if within_limit or len(_trajectory_states) <= 1:
+        if within_limit or len(_recent_trajectories) <= 1:
             return
-        idle = [
-            (candidate, state)
-            for candidate, state in _trajectory_states.items()
-            if candidate != keep and state.users == 0
-        ]
-        if not idle:
-            return
-        del _trajectory_states[idle[0][0]]
+        _recent_trajectories.popitem(last=False)
 
 
 class MessageHistoryStore(HistoryPort):
@@ -312,6 +319,7 @@ class MessageHistoryStore(HistoryPort):
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._path = paths.messages_file
+        self._state = _trajectory_for(self._path)
         self._cursor_scope = f"{paths.session_id}/{paths.thread_id}"
         self._log = runtime_log
 
@@ -331,11 +339,11 @@ class MessageHistoryStore(HistoryPort):
 
     def load_transcript(self) -> list[ConversationMessage]:
         """Derive the human transcript without hiding compacted conversation."""
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             return list(state.transcript_state().view())
 
     def load_surface(self) -> tuple[ConversationMessage, ...]:
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             return state.surface_state().view()
 
     def count_turns(self) -> int:
@@ -345,17 +353,27 @@ class MessageHistoryStore(HistoryPort):
         counter is lifetime state. Counting MessageAppended records restores
         that counter without adding a second persisted field.
         """
-        with _trajectory_use(self._path) as state:
-            return sum(
-                isinstance(record.entry, MessageAppended)
-                and isinstance(record.entry.message, HumanInputMessage)
-                for record in state.recorded()
-            )
+        with _trajectory_use(self._state) as state:
+            state.recorded()
+            return state.turn_count
 
-    def append(self, messages: Sequence[ConversationMessage]) -> tuple[ConversationMessage, ...]:
+    def committed_input_ids(self) -> set[str]:
+        """Read commit evidence even when compact/clear removed its surface."""
+        committed: set[str] = set()
+        with _trajectory_use(self._state) as state:
+            for record in state.recorded():
+                entry = record.entry
+                if not isinstance(entry, MessageAppended):
+                    continue
+                message = entry.message
+                if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
+                    committed.add(message.id)
+        return committed
+
+    def append(self, messages: Sequence[ConversationMessage]) -> None:
         if not messages:
-            return ()
-        with _trajectory_use(self._path) as state:
+            return
+        with _trajectory_use(self._state) as state:
             state.prepare_write(self._log)
             existing_ids = state.surface_state().seen_ids
             added_ids = [message.id for message in messages]
@@ -376,7 +394,6 @@ class MessageHistoryStore(HistoryPort):
             messages=len(added),
             next_position=next_position,
         )
-        return tuple(messages)
 
     def replace(self, messages: Sequence[ConversationMessage]) -> None:
         surface = self.load_surface()
@@ -397,38 +414,33 @@ class MessageHistoryStore(HistoryPort):
         *,
         operation: str,
         preserve_transcript: bool,
-    ) -> tuple[ConversationMessage, ...]:
-        with _trajectory_use(self._path) as state:
-            records = state.prepare_write(self._log)
-            record = StoredTrajectoryRecord(
-                entry=SurfaceReplaced(
-                    position=state.next_position,
-                    operation=operation,
-                    transcript_policy=(
-                        "preserve" if preserve_transcript else "replace"
-                    ),
-                    source_ids=tuple(source_ids),
-                    replacements=tuple(messages),
+    ) -> None:
+        with _trajectory_use(self._state) as state:
+            state.prepare_write(self._log)
+            entry = SurfaceReplaced(
+                position=state.next_position,
+                operation=operation,
+                transcript_policy=(
+                    "preserve" if preserve_transcript else "replace"
                 ),
+                source_ids=tuple(source_ids),
+                replacements=tuple(messages),
             )
+            record = StoredTrajectoryRecord(entry=entry)
             # Both projections must accept the transition before it becomes durable.
-            prospective = [*records, record]
-            surface = _SurfaceState()
-            _apply_records(surface, prospective)
-            transcript = _TranscriptState()
-            _apply_records(transcript, prospective)
+            state.surface_state().validate_replacement(entry)
+            state.transcript_state().validate_replacement(entry)
             self._append_records((record,), state=state)
-            state.replaced(prospective, surface, transcript)
+            state.wrote((record,))
         self._log.info(
             "persistence.surface.replaced",
             operation=operation,
             source_nodes=len(source_ids),
             replacement_nodes=len(messages),
         )
-        return tuple(messages)
 
     def record(self, event: DurableEvent, *, durable: bool = False) -> None:
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             state.prepare_write(self._log)
             record = StoredTrajectoryRecord(
                 entry=DurableEventRecorded(
@@ -447,23 +459,22 @@ class MessageHistoryStore(HistoryPort):
     ) -> frozenset[str]:
         """Fold correlated start/end records without changing the surface."""
         open_ids: set[str] = set()
-        with _trajectory_use(self._path) as state:
-            records = state.recorded()
-        for record in records:
-            entry = record.entry
-            if not isinstance(entry, DurableEventRecorded):
-                continue
-            event = entry.event
-            if event.transaction.kind != transaction_kind:
-                continue
-            if isinstance(event, TransactionStarted):
-                open_ids.add(event.transaction.id)
-            elif isinstance(event, TransactionEnded):
-                open_ids.discard(event.transaction.id)
+        with _trajectory_use(self._state) as state:
+            for record in state.recorded():
+                entry = record.entry
+                if not isinstance(entry, DurableEventRecorded):
+                    continue
+                event = entry.event
+                if event.transaction.kind != transaction_kind:
+                    continue
+                if isinstance(event, TransactionStarted):
+                    open_ids.add(event.transaction.id)
+                elif isinstance(event, TransactionEnded):
+                    open_ids.discard(event.transaction.id)
         return frozenset(open_ids)
 
     def count(self) -> int:
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             return len(state.surface_state().messages)
 
     def page(
@@ -472,7 +483,7 @@ class MessageHistoryStore(HistoryPort):
         limit: int,
         cursor: Cursor | None = None,
     ) -> HistoryPage[ConversationMessage]:
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             surface = state.surface_state()
             return page_messages(
                 surface.messages,
@@ -488,7 +499,7 @@ class MessageHistoryStore(HistoryPort):
         limit: int,
         cursor: Cursor | None = None,
     ) -> HistoryPage[ConversationMessage]:
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             transcript = state.transcript_state()
             return page_messages(
                 transcript.messages,
@@ -515,7 +526,7 @@ class MessageHistoryStore(HistoryPort):
         """
         if cursor is not None and before is not None:
             raise ValueError("pass either cursor or before, not both")
-        with _trajectory_use(self._path) as state:
+        with _trajectory_use(self._state) as state:
             records = state.recorded()
             revision = HistoryRevision(f"{self._cursor_scope}:trajectory")
             if cursor is None:
@@ -556,26 +567,11 @@ class MessageHistoryStore(HistoryPort):
             json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
             for record in records
         ).encode("utf-8")
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(self._path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
-        original_size = os.fstat(descriptor).st_size
-        try:
-            view = memoryview(payload)
-            while view:
-                written = os.write(descriptor, view)
-                if written == 0:
-                    raise OSError("Trajectory append made no progress")
-                view = view[written:]
-            now = time.monotonic()
-            if sync or now - state.last_sync >= _SYNC_INTERVAL_SECONDS:
-                os.fsync(descriptor)
-                state.last_sync = now
-        except BaseException:
-            os.ftruncate(descriptor, original_size)
-            os.fsync(descriptor)
-            raise
-        finally:
-            os.close(descriptor)
+        now = time.monotonic()
+        flush = sync or now - state.last_sync >= _SYNC_INTERVAL_SECONDS
+        _append_bytes(self._path, payload, sync=flush)
+        if flush:
+            state.last_sync = now
 
 
 
@@ -599,6 +595,20 @@ def _replace_messages(
     scope: str,
     source_term: str,
 ) -> None:
+    start = _replacement_start(
+        messages, source_ids, position=position, scope=scope, source_term=source_term,
+    )
+    messages[start:start + len(source_ids)] = replacements
+
+
+def _replacement_start(
+    messages: Sequence[ConversationMessage],
+    source_ids: Sequence[str],
+    *,
+    position: int,
+    scope: str,
+    source_term: str,
+) -> int:
     if not source_ids:
         raise ValueError(f"{scope} replacement at {position} has no {source_term}")
     try:
@@ -612,7 +622,7 @@ def _replace_messages(
     current = [message.id for message in messages[start:start + len(source_ids)]]
     if current != list(source_ids):
         raise ValueError(f"{scope} replacement at {position} {source_term} are not current")
-    messages[start:start + len(source_ids)] = replacements
+    return start
 
 
 class ThreadMetadataStore(MetadataPort):
@@ -695,20 +705,39 @@ class InboxStore(InboxPersistencePort):
     ) -> None:
         self._path = paths.inbox_file
         self._log = runtime_log
+        self._items: dict[str, InboxItem] = {}
+        self._size = -1
 
     def load(self) -> list[InboxItem]:
-        raw = _read_json(self._path, "inbox snapshot")
-        if raw is None:
-            return []
-        return list(InboxSnapshot.model_validate(raw).items)
+        self._refresh()
+        return sorted(self._items.values(), key=lambda item: item.target is InboxTarget.NEXT_TURN)
 
-    def replace(self, items: Sequence[InboxItem]) -> None:
-        snapshot = InboxSnapshot(items=tuple(items))
-        write_text_atomic(
-            self._path,
-            json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
-        )
-        self._log.debug("persistence.inbox.replaced", items=len(items))
+    def _refresh(self) -> None:
+        if self._path.with_suffix(".json").exists():
+            raise ValueError("Unsupported inbox snapshot; expected append-only inbox.jsonl")
+        size = self._path.stat().st_size if self._path.exists() else 0
+        if size == self._size:
+            return
+        items: dict[str, InboxItem] = {}
+        for raw in _read_jsonl(self._path, "inbox"):
+            change = StoredInboxRecord.model_validate(raw).change
+            removed, added = _inbox_transition(items, change)
+            for identity in removed:
+                del items[identity]
+            items.update((item.id, item) for item in added)
+        self._items = items
+        self._size = size
+
+    def append(self, change: InboxMutation) -> None:
+        self._refresh()
+        removed, added = _inbox_transition(self._items, change)
+        payload = (StoredInboxRecord(change=change).model_dump_json() + "\n").encode("utf-8")
+        self._size = _drop_incomplete_tail(self._path, max(0, self._size), self._log)
+        _append_bytes(self._path, payload)
+        for identity in removed:
+            del self._items[identity]
+        self._items.update((item.id, item) for item in added)
+        self._size += len(payload)
 
     def reconcile(self, committed_input_ids: set[str]) -> list[InboxItem]:
         stored = self.load()
@@ -716,7 +745,7 @@ class InboxStore(InboxPersistencePort):
             item for item in stored if item.id not in committed_input_ids
         ]
         if len(pending) != len(stored):
-            self.replace(pending)
+            self.append(Consumed(ids=tuple(item.id for item in stored if item.id in committed_input_ids)))
         self._log.debug(
             "persistence.inbox.reconciled",
             stored=len(stored),
@@ -724,6 +753,63 @@ class InboxStore(InboxPersistencePort):
             pending=len(pending),
         )
         return pending
+
+
+def _inbox_transition(
+    items: Mapping[str, InboxItem], change: InboxMutation,
+) -> tuple[tuple[str, ...], tuple[InboxItem, ...]]:
+    """Validate a delta before writing; return only its affected entries."""
+    if isinstance(change, Inserted):
+        if change.item.id in items:
+            raise ValueError(f"Duplicate inbox input id: {change.item.id}")
+        return (), (change.item,)
+    if isinstance(change, (Consumed, Discarded)):
+        if len(set(change.ids)) != len(change.ids) or any(identity not in items for identity in change.ids):
+            raise ValueError("Inbox retirement must name distinct pending inputs")
+        if isinstance(change, Discarded) and set(change.ids) != set(items):
+            raise ValueError("Inbox discard must retire all pending inputs")
+        return change.ids, ()
+    if not isinstance(change, (Edited, Retargeted, Removed)):
+        raise TypeError("Only durable inbox mutations can be stored")
+    current = items.get(change.id)
+    if current is None:
+        raise ValueError(f"Unknown inbox input id: {change.id}")
+    if isinstance(change, Removed):
+        return (change.id,), ()
+    if isinstance(change, Edited):
+        if not isinstance(current.input, HumanInput) or not change.content.strip():
+            raise ValueError("Inbox edit requires human input and non-empty content")
+        return (), (current.model_copy(update={
+            "input": current.input.model_copy(update={"content": change.content}),
+        }),)
+    if change.target is current.target:
+        return (), ()
+    return (change.id,), (current.model_copy(update={"target": change.target}),)
+
+
+def _append_bytes(path: Path, payload: bytes, *, sync: bool = True) -> None:
+    """Append a batch; a failed write leaves the previous committed prefix."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    original_size = os.fstat(descriptor).st_size
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written == 0:
+                raise OSError("Append made no progress")
+            view = view[written:]
+        if sync:
+            os.fsync(descriptor)
+    except BaseException:
+        os.ftruncate(descriptor, original_size)
+        os.fsync(descriptor)
+        if not existed:
+            path.unlink()
+        raise
+    finally:
+        os.close(descriptor)
 
 
 class ThreadLifecycleStore(ThreadLifecyclePort):
@@ -842,7 +928,6 @@ class ThreadPersistence(ThreadPersistencePort):
         paths: ThreadPaths,
         *,
         state: StateService,
-        artifacts: ArtifactStorePort | None = None,
         metadata: ThreadMetadataStore | DeferredThreadMetadataStore | None = None,
     ) -> None:
         self.paths = paths
@@ -855,23 +940,20 @@ class ThreadPersistence(ThreadPersistencePort):
         )
         self.metadata = metadata or ThreadMetadataStore(paths, runtime_log)
         self.history = MessageHistoryStore(paths, runtime_log)
-        self.artifacts: ArtifactStorePort = (
-            artifacts
-            if artifacts is not None
-            else ArtifactStore(paths, runtime_log)
-        )
         self.inbox = InboxStore(paths, runtime_log)
         self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
         self.state = state
 
     def materialize(self) -> None:
-        """Persist buffered state now that the thread has a durable record.
+        """Flush deferred metadata only when the thread has durable state.
 
-        A new session defers metadata until it actually has a message; the
-        persistence component calls this once the first turn commits. It is a
-        no-op for every later turn and for resumed sessions.
+        Turn completion and plugin teardown both call this: plugin state can
+        be written before the first turn, but an unused session stays off disk.
         """
-        if isinstance(self.metadata, DeferredThreadMetadataStore):
+        if (
+            isinstance(self.metadata, DeferredThreadMetadataStore)
+            and self.has_persisted_state()
+        ):
             self.metadata.flush()
 
     def has_persisted_state(self) -> bool:
@@ -888,9 +970,10 @@ class ThreadPersistence(ThreadPersistencePort):
         paths: SessionPaths | ThreadPaths,
         *,
         thread_id: str,
-        artifacts: ArtifactStorePort | None = None,
+        state: StateService,
         defer_metadata: bool = False,
     ) -> "ThreadPersistence":
+        """Bind runtime persistence to the owning Context's state service."""
         thread_paths = _thread_paths(paths, thread_id)
         # A manager-opened new session is not durable until its first record.
         # Direct/resumed runtimes keep their eager persistence layout.
@@ -906,8 +989,7 @@ class ThreadPersistence(ThreadPersistencePort):
         )
         return cls(
             thread_paths,
-            state=StateService(path=thread_paths.plugin_state_file),
-            artifacts=artifacts,
+            state=state,
             metadata=metadata,
         )
 

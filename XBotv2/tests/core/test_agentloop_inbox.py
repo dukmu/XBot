@@ -16,7 +16,7 @@ from XBotv2.agentloop.contracts import (
 )
 from XBotv2.agentloop.events import Events, ObserveInbox
 from XBotv2.agentloop.inbox import AgentInbox, EphemeralInboxSink
-from XBotv2.persistence.models import InboxSnapshot
+from XBotv2.persistence.models import StoredInboxRecord
 
 
 class MemoryInboxSink:
@@ -25,10 +25,22 @@ class MemoryInboxSink:
         self.sizes = []
         self.fail = False
 
-    def replace(self, items):
+    def append(self, change):
         if self.fail:
             raise OSError("disk full")
-        self.items = list(items)
+        if isinstance(change, Inserted):
+            self.items.append(change.item)
+        elif isinstance(change, Edited):
+            self.items = [item.model_copy(update={"input": item.input.model_copy(update={"content": change.content})})
+                          if item.id == change.id else item for item in self.items]
+        elif isinstance(change, Retargeted):
+            item = next(item for item in self.items if item.id == change.id)
+            self.items.remove(item)
+            self.items.append(item.model_copy(update={"target": change.target}))
+        else:
+            ids = (change.id,) if isinstance(change, Removed) else change.ids
+            self.items = [item for item in self.items if item.id not in ids]
+        self.items.sort(key=lambda item: item.target is InboxTarget.NEXT_TURN)
         self.sizes.append(len(self.items))
 
 
@@ -50,7 +62,7 @@ def human_input(input_id, content, target=InboxTarget.NEXT_TURN):
     )
 
 
-def test_snapshot_stores_versioned_canonical_inbox_items():
+def test_inbox_records_store_existing_typed_events():
     items = (
         human_input("human", "hello"),
         InboxItem(
@@ -63,14 +75,13 @@ def test_snapshot_stores_versioned_canonical_inbox_items():
             ),
         ),
     )
-    encoded = InboxSnapshot(items=items).model_dump(mode="json")
-
-    assert encoded["version"] == 1
-    assert [item["id"] for item in encoded["items"]] == ["human", "runtime"]
-    assert encoded["items"][0]["input"]["kind"] == "human"
-    assert encoded["items"][1]["input"]["kind"] == "runtime"
-    assert "schema_version" not in encoded
-    assert InboxSnapshot.model_validate(encoded).items == items
+    for item in items:
+        record = StoredInboxRecord(change=Inserted(item=item, wake=False))
+        assert StoredInboxRecord.model_validate_json(record.model_dump_json()) == record
+    consumed = StoredInboxRecord(change=Consumed(ids=tuple(item.id for item in items)))
+    encoded = consumed.model_dump(mode="json")
+    assert encoded["change"] == {"kind": "consumed", "ids": ["human", "runtime"]}
+    assert StoredInboxRecord.model_validate(encoded) == consumed
 
 
 @pytest.mark.asyncio
@@ -94,11 +105,13 @@ async def test_typed_inputs_share_two_fifo_targets_and_wakeup_semantics():
     claimed = await inbox.claim_turn()
     assert [item.id for item in claimed] == ["notice", "steer", "followup"]
     assert isinstance(events.changes[-1], Claimed)
+    assert events.changes[-1].ids == ("notice", "steer", "followup")
     assert len(inbox) == 0
     assert len(sink.items) == 3
 
     await inbox.commit([item.id for item in claimed])
     assert isinstance(events.changes[-1], Consumed)
+    assert events.changes[-1].ids == ("notice", "steer", "followup")
     assert sink.items == []
 
 
@@ -140,7 +153,8 @@ async def test_failed_sink_write_does_not_change_pending_or_claimed_state():
     assert len(inbox) == 0
 
     sink = MemoryInboxSink()
-    inbox = AgentInbox(events=MemoryEvents(), sink=sink)
+    events = MemoryEvents()
+    inbox = AgentInbox(events=events, sink=sink)
     await inbox.submit(human_input("durable", "durable"), wake=True)
     claimed = await inbox.claim_turn()
     sink.fail = True
@@ -148,6 +162,7 @@ async def test_failed_sink_write_does_not_change_pending_or_claimed_state():
     with pytest.raises(OSError, match="disk full"):
         await inbox.commit([claimed[0].id])
 
+    assert not any(isinstance(change, Consumed) for change in events.changes)
     assert len(inbox) == 0
     assert sink.items[0].id == "durable"
     sink.fail = False
@@ -156,7 +171,54 @@ async def test_failed_sink_write_does_not_change_pending_or_claimed_state():
 
 
 @pytest.mark.asyncio
-async def test_pending_input_mutations_replace_the_authoritative_snapshot():
+@pytest.mark.parametrize("boundary", ["turn", "step"])
+async def test_failed_claim_observer_does_not_strand_input(boundary):
+    class FailingObserver(MemoryEvents):
+        fail = True
+
+        async def emit(self, event, payload):
+            if self.fail and isinstance(payload.change, Claimed):
+                raise RuntimeError("claim observer failed")
+            await super().emit(event, payload)
+
+    events = FailingObserver()
+    sink = MemoryInboxSink()
+    inbox = AgentInbox(events=events, sink=sink)
+    item = human_input("retry", "hello", InboxTarget.NEXT_STEP)
+    await inbox.submit(item, wake=False)
+    claim = inbox.claim_turn if boundary == "turn" else inbox.claim_step
+    with pytest.raises(RuntimeError, match="claim observer failed"):
+        await claim()
+    assert inbox.pending == [item]
+    assert sink.items == [item]
+    events.fail = False
+    assert await claim() == [item]
+    await inbox.commit([item.id])
+    assert sink.items == []
+
+
+@pytest.mark.asyncio
+async def test_consumption_is_committed_before_observers_run():
+    sink = MemoryInboxSink()
+
+    class FailingObserver(MemoryEvents):
+        async def emit(self, event, payload):
+            if isinstance(payload.change, Consumed):
+                assert sink.items == []
+                raise RuntimeError("observer failed after commit")
+            await super().emit(event, payload)
+
+    inbox = AgentInbox(events=FailingObserver(), sink=sink)
+    await inbox.submit(human_input("accepted", "hello"), wake=False)
+    await inbox.claim_turn()
+    with pytest.raises(RuntimeError, match="observer failed after commit"):
+        await inbox.commit(["accepted"])
+    assert await inbox.claim_turn() == []
+    assert AgentInbox(events=MemoryEvents(), items=sink.items, sink=sink).pending == []
+
+
+@pytest.mark.asyncio
+async def test_pending_input_mutations_keep_sink_and_live_queue_consistent():
     sink = MemoryInboxSink()
     events = MemoryEvents()
     inbox = AgentInbox(events=events, sink=sink)
@@ -176,8 +238,10 @@ async def test_pending_input_mutations_replace_the_authoritative_snapshot():
     assert [(item.id, item.input.content, item.target) for item in sink.items] == [
         ("edit-me", "edited", InboxTarget.NEXT_STEP),
     ]
-    assert [type(change) for change in events.changes[-3:]] == [
-        Edited, Retargeted, Removed,
+    assert events.changes[-3:] == [
+        Edited(id="edit-me", content="edited"),
+        Retargeted(id="edit-me", target=InboxTarget.NEXT_STEP),
+        Removed(id="remove-me"),
     ]
 
 

@@ -200,21 +200,37 @@ async def test_refused_start_does_not_remove_the_winning_runtime_files(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_persistence_creation_failure_releases_startup_claim(tmp_path, monkeypatch):
+async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_path, monkeypatch, caplog):
     import XBotv2.application.app as application
     from XBotv2.core.paths import RuntimePaths
+    from XBotv2.persistence.store import ThreadPersistence
+    from XBotv2.llm.mock import MockLLM
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
 
     def fail_create(*args, **kwargs):
         raise OSError("cannot create persistence")
 
-    monkeypatch.setattr(application.ThreadPersistence, "create", fail_create)
-    with pytest.raises(OSError, match="cannot create persistence"):
-        await application.start_application(
-            paths=paths, session_id="failed-create", workspace_root=tmp_path,
-            no_plugins=True,
+    monkeypatch.setattr(ThreadPersistence, "create", fail_create)
+    context = await application.start_application(
+        paths=paths, session_id="failed-create", workspace_root=tmp_path,
+        no_plugins=True, llm_override=MockLLM(responses=[]),
+    )
+    try:
+        assert any(
+            isinstance(handle.error, OSError)
+            and str(handle.error) == "cannot create persistence"
+            for handle in context.registry.handles()
         )
+        assert any(
+            record.name == "xcore.plugin" and record.levelname == "ERROR"
+            for record in caplog.records
+        )
+        assert context.get("thread_persistence", strict=False) is None
+        assert context.require("agent_runtime") is not None
+        assert _try_acquire(paths.session("failed-create").root).returncode != 0
+    finally:
+        await context.destroy()
     assert _try_acquire(paths.session("failed-create").root).returncode == 0
 
 

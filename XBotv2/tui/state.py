@@ -101,6 +101,7 @@ from XBotv2.tui.events import (
     UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
+    InputsConsumed,
     UserMessagePublished,
     ThreadRead,
 )
@@ -547,6 +548,13 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             ))
         state.submission_in_flight = True
 
+    elif isinstance(event, InputsConsumed):
+        for input_id in event.payload.message_ids:
+            entry = state.timeline.get(input_id)
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+                state.timeline.remove(input_id)
+                state.submission_in_flight = False
+
     elif isinstance(event, UserInputFailed):
         existing = state.timeline.get(event.input_id)
         if isinstance(existing, UserEntry):
@@ -754,7 +762,9 @@ def _publish_user_message(state: SessionState, event: UserMessagePublished) -> N
     message_id = event.payload.id
     existing = state.timeline.get(message_id)
     if isinstance(existing, UserEntry):
-        _append(state, replace(existing, delivery=Delivery.ACCEPTED))
+        _append(state, replace(
+            existing, content=event.payload.content, delivery=Delivery.ACCEPTED,
+        ))
     else:
         _append(state, UserEntry(
             id=message_id,

@@ -14,6 +14,7 @@ from XBotv2.agentloop.contracts import (
     HumanInput,
     InboxChange,
     InboxItem,
+    InboxMutation,
     InboxSink,
     InboxTarget,
     Inserted,
@@ -26,8 +27,8 @@ from XBotv2.agentloop.events import EventPort, Events, ObserveInbox
 class EphemeralInboxSink:
     """Explicit persistence policy for sessions without thread storage."""
 
-    def replace(self, items: Sequence[InboxItem]) -> None:
-        del items
+    def append(self, change: InboxMutation) -> None:
+        del change
 
 
 class AgentInbox:
@@ -57,10 +58,11 @@ class AgentInbox:
         async with self._lock:
             if item.id in self._ids:
                 raise ValueError(f"Duplicate inbox input id: {item.id}")
-            self._replace_snapshot([*self._items(), item])
+            change = Inserted(item=item, wake=wake)
+            self._sink.append(change)
             self._queue(item.target).append(item)
             self._ids.add(item.id)
-            await self._record(Inserted(item=item, wake=wake))
+            await self._record(change)
 
     async def claim_turn(self) -> list[InboxItem]:
         async with self._lock:
@@ -68,20 +70,26 @@ class AgentInbox:
             next_turn = next(self._unclaimed(self._next_turn), None)
             if next_turn is not None:
                 items.append(next_turn)
-            if not items:
-                return []
-            self._claimed_ids.update(item.id for item in items)
-            await self._record(Claimed(items=tuple(items)))
-            return items
+            return await self._claim(items)
 
     async def claim_step(self) -> list[InboxItem]:
         async with self._lock:
             items = list(self._unclaimed(self._next_step))
-            if not items:
-                return []
-            self._claimed_ids.update(item.id for item in items)
-            await self._record(Claimed(items=tuple(items)))
-            return items
+            return await self._claim(items)
+
+    async def _claim(self, items: list[InboxItem]) -> list[InboxItem]:
+        # Both callers hold the queue lock. A failed handoff must release only
+        # this batch, not claims already owned by the running turn.
+        if not items:
+            return []
+        claimed_ids = {item.id for item in items}
+        self._claimed_ids.update(claimed_ids)
+        try:
+            await self._record(Claimed(ids=tuple(item.id for item in items)))
+        except BaseException:
+            self._claimed_ids.difference_update(claimed_ids)
+            raise
+        return items
 
     async def commit(self, input_ids: Sequence[str]) -> None:
         committed = set(input_ids)
@@ -92,18 +100,23 @@ class AgentInbox:
             if unknown:
                 raise ValueError("Cannot commit unclaimed inbox ids: " + ", ".join(sorted(unknown)))
             items = [item for item in self._items() if item.id in committed]
-            await self._record(Consumed(items=tuple(items)))
+            change = Consumed(ids=tuple(item.id for item in items))
+            self._sink.append(change)
             self._remove_ids(committed)
             self._claimed_ids.difference_update(committed)
+            await self._record(change)
 
-    async def reconcile(self, input_ids: Sequence[str], committed_ids: set[str]) -> None:
-        requested = set(input_ids)
+    async def reconcile(self, committed_ids: set[str]) -> None:
+        """Release all outstanding claims at the end of the owning loop turn."""
         async with self._lock:
-            active = requested & self._claimed_ids
-            durable = active & committed_ids
+            durable = self._claimed_ids & committed_ids
+            consumed = tuple(item for item in self._items() if item.id in durable)
             if durable:
+                self._sink.append(Consumed(ids=tuple(item.id for item in consumed)))
                 self._remove_ids(durable)
-            self._claimed_ids.difference_update(active)
+            self._claimed_ids.clear()
+            if consumed:
+                await self._record(Consumed(ids=tuple(item.id for item in consumed)))
 
     async def edit(self, input_id: str, content: str) -> InboxItem:
         if not content.strip():
@@ -113,19 +126,21 @@ class AgentInbox:
             if not isinstance(current.input, HumanInput):
                 raise ValueError("Only human inputs can be edited")
             updated = current.model_copy(update={"input": current.input.model_copy(update={"content": content})})
-            self._replace_snapshot([updated if item.id == input_id else item for item in self._items()])
+            change = Edited(id=current.id, content=content)
+            self._sink.append(change)
             queue = self._queue(current.target)
             queue[queue.index(current)] = updated
-            await self._record(Edited(previous=current, current=updated))
+            await self._record(change)
             return updated
 
     async def remove(self, input_id: str) -> InboxItem:
         async with self._lock:
             current = self._pending_item(input_id)
-            self._replace_snapshot([item for item in self._items() if item.id != input_id])
+            change = Removed(id=current.id)
+            self._sink.append(change)
             self._queue(current.target).remove(current)
             self._ids.remove(input_id)
-            await self._record(Removed(item=current))
+            await self._record(change)
             return current
 
     async def retarget(self, input_id: str, target: InboxTarget | str) -> InboxItem:
@@ -135,14 +150,11 @@ class AgentInbox:
             if current.target is target:
                 return current
             updated = current.model_copy(update={"target": target})
-            remaining = [item for item in self._items() if item.id != input_id]
-            next_step = [item for item in remaining if item.target is InboxTarget.NEXT_STEP]
-            next_turn = [item for item in remaining if item.target is InboxTarget.NEXT_TURN]
-            (next_step if target is InboxTarget.NEXT_STEP else next_turn).append(updated)
-            self._replace_snapshot([*next_step, *next_turn])
+            change = Retargeted(id=current.id, target=target)
+            self._sink.append(change)
             self._queue(current.target).remove(current)
             self._queue(target).append(updated)
-            await self._record(Retargeted(previous=current, current=updated))
+            await self._record(change)
             return updated
 
     async def discard(self) -> list[InboxItem]:
@@ -150,12 +162,13 @@ class AgentInbox:
             items = [*self._next_step, *self._next_turn]
             if not items:
                 return []
-            self._replace_snapshot([])
+            change = Discarded(ids=tuple(item.id for item in items))
+            self._sink.append(change)
             self._next_step.clear()
             self._next_turn.clear()
             self._ids.clear()
             self._claimed_ids.clear()
-            await self._record(Discarded(items=tuple(items)))
+            await self._record(change)
             return items
 
     def _queue(self, target: InboxTarget) -> deque[InboxItem]:
@@ -175,12 +188,7 @@ class AgentInbox:
             raise KeyError(input_id)
         return item
 
-    def _replace_snapshot(self, items: Sequence[InboxItem]) -> None:
-        self._sink.replace(items)
-
     def _remove_ids(self, input_ids: set[str]) -> None:
-        remaining = [item for item in self._items() if item.id not in input_ids]
-        self._replace_snapshot(remaining)
         self._next_step = deque(item for item in self._next_step if item.id not in input_ids)
         self._next_turn = deque(item for item in self._next_turn if item.id not in input_ids)
         self._ids.difference_update(input_ids)

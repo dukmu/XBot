@@ -58,6 +58,7 @@ from XBotv2.interactions.contracts import InteractionRequest
 from XBotv2.session.protocol import (
     AgentConfiguredData,
     HistoryUpdatedEvent,
+    InputConsumedEvent,
     QueueUpdatedData,
 )
 from XBotv2.session.records import (
@@ -74,6 +75,7 @@ from XBotv2.tui.events import (
     CompactionChanged,
     ErrorFrame,
     HistoryReplaced,
+    InputsConsumed,
     InteractionOpened,
     InteractionResolved,
     JobCompletionNotice,
@@ -116,7 +118,6 @@ IGNORED_FRAMES: Mapping[str, str] = {
     ),
     "input_accepted": "queue_updated carries the resulting queue",
     "input_claimed": "queue_updated and message carry what the UI shows",
-    "input_consumed": "queue_updated and message carry what the UI shows",
     "tool_call_delta": (
         "a tool is shown once tool_calls_started delivers its final arguments"
     ),
@@ -164,6 +165,7 @@ _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
     "tool_completed": (ToolRecord, _carries(ToolRecordReceived)),
     "error": (LoopError, _carries(ErrorFrame)),
     "message": (InputRecordPayload, _published_input),
+    "input_consumed": (InputConsumedEvent, _carries(InputsConsumed)),
     "agent_configured": (AgentConfiguredData, _carries(SessionConfigured)),
     "usage_updated": (UsageUpdated, _carries(UsageSnapshotReceived)),
     "queue_updated": (QueueUpdatedData, _carries(QueueReplaced)),

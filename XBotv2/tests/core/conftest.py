@@ -11,6 +11,7 @@ from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.filesystem.artifacts import ArtifactStore
 
 
 @pytest.fixture
@@ -56,7 +57,7 @@ def mock_llm():
 @pytest.fixture
 def state_store(temp_data_dir):
     """ThreadPersistence in a temporary data directory."""
-    store = ThreadPersistence.create(
+    store = ThreadPersistence.open(
         RuntimePaths.from_data_dir(temp_data_dir).session("test-session"),
         thread_id="test-thread",
     )
@@ -65,4 +66,4 @@ def state_store(temp_data_dir):
 
 @pytest.fixture
 def artifact_store(state_store):
-    return state_store.artifacts
+    return ArtifactStore(state_store.paths)

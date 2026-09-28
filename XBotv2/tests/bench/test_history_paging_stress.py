@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from XBotv2.core.domain import InputId, MessageId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.history import HistoryCursorInvalid
 from XBotv2.core.messages import HumanInputMessage
 from XBotv2.core.parts import TextPart
@@ -28,7 +28,7 @@ MAX_TOTAL_SECONDS = 10.0
 
 
 def _persistence(tmp_path) -> ThreadPersistence:
-    return ThreadPersistence.create(
+    return ThreadPersistence.open(
         RuntimePaths.from_data_dir(tmp_path).session("stress"),
         thread_id="t1",
     )
@@ -37,7 +37,6 @@ def _persistence(tmp_path) -> ThreadPersistence:
 def _human(index: int) -> HumanInputMessage:
     return HumanInputMessage(
         id=MessageId(f"message-{index}"),
-        input_id=InputId(f"input-{index}"),
         parts=(TextPart(text=f"m{index}"),),
     )
 

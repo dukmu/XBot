@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from functools import partial
 from pydantic import JsonValue
-from xcore import Context
+from xcore import Context, StateService
 from XBotv2.agentloop import AgentInbox, EphemeralInboxSink, LoopState
 from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.history import ConversationHistory
+from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
 from XBotv2.session.contracts import SessionKey, SessionNotFound, ThreadNotActive
@@ -37,18 +39,14 @@ _MANAGER_DEPENDENCIES = {
 
 class SessionRuntimeComponent:
     inject = {
-        # ``artifacts`` is not read here, but the inject dependency set
-        # determines the scope this callback mounts into: dropping it mounts
-        # the runtime component before the session scope owns
-        # ``workspace_root`` and duplicates that registration.
-        "required": ["runtime_paths", "session_launch", "commands", "artifacts"],
+        "required": ["runtime_paths", "session_launch", "commands", "runtime_log"],
         "optional": ["thread_persistence"],
     }
     """Register the session entity and session-level runtime services."""
 
     name = "xbot.session"
 
-    def apply(
+    async def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
         launch = ctx.session_launch
@@ -59,6 +57,7 @@ class SessionRuntimeComponent:
         session_paths = launch.session_paths
 
         thread_paths = session_paths.thread(thread_id)
+        ctx.set("artifacts", ArtifactStore(thread_paths, ctx.runtime_log))
         data_root = paths.data_dir
         variables = RuntimeVariables.for_thread(
             paths, workspace_root, thread_paths
@@ -68,6 +67,7 @@ class SessionRuntimeComponent:
             thread_id=thread_id,
         )
         persistence = ctx.get("thread_persistence", strict=False)
+        ctx.set("state", persistence.state if persistence is not None else StateService.memory())
         # The loop state and its metadata register themselves on the context
         # at construction; the inbox service (durable or transient) is composed
         # separately and the loop driver requires it as a constructor argument,
@@ -79,13 +79,24 @@ class SessionRuntimeComponent:
             variables=variables,
         )
         if persistence is None:
-            # No durable store: a transient inbox keeps the loop self-contained
-            # while still handing ``agent_inbox`` to the engine composition,
-            # which depends on it whenever it mounts.
-            ctx.set("agent_inbox", AgentInbox(
-                events=ctx,
-                sink=EphemeralInboxSink(),
+            pending_inputs = ()
+            inbox_sink = EphemeralInboxSink()
+        else:
+            state.set_history(ConversationHistory(
+                persistence.history.load_surface(), sink=persistence.history,
             ))
+            state.restore_turn_count(persistence.history.count_turns())
+            state.restore_resumed(persistence.has_persisted_state())
+            stored_metadata = persistence.metadata.load()
+            if stored_metadata is not None:
+                await state.metadata.initialize(stored_metadata)
+            pending_inputs = persistence.inbox.reconcile(
+                persistence.history.committed_input_ids(),
+            )
+            inbox_sink = persistence.inbox
+        ctx.set("agent_inbox", AgentInbox(
+            events=ctx, sink=inbox_sink, items=pending_inputs,
+        ))
         session = Session(
             events=ctx,
             paths=paths,
@@ -108,8 +119,8 @@ class SessionRuntimeComponent:
 
 
 
-def mount_runtime(ctx: Context) -> None:
-    SessionRuntimeComponent().apply(ctx)
+async def mount_runtime(ctx: Context) -> None:
+    await SessionRuntimeComponent().apply(ctx)
 
 
 def mount_manager(ctx: Context, *, config: SessionConfig) -> None:

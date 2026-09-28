@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from XBotv2.core.domain import InputId, MessageId
+from XBotv2.core.domain import MessageId
 from XBotv2.core.domain import (
     AgentExecutionLimits,
     GenerationSettings,
@@ -52,13 +52,12 @@ def test_session_manager_requires_application_factory(tmp_path):
 
 
 def _session(tmp_path, session_id: str):
-    persistence = ThreadPersistence.create(
+    persistence = ThreadPersistence.open(
         RuntimePaths.from_data_dir(tmp_path).session(session_id),
         thread_id="agent",
     )
     persistence.history.append([HumanInputMessage(
         id=MessageId(f"input-{session_id}"),
-        input_id=InputId(f"input-{session_id}"),
         parts=(TextPart(text=session_id),),
     )])
     persistence.metadata.save(ThreadMetadata(

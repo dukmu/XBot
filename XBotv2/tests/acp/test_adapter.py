@@ -33,12 +33,10 @@ from XBotv2.core.domain import (
     AgentExecutionLimits,
     CompletedStop,
     GenerationSettings,
-    InputId,
     MessageId,
     ModelExchange,
     ModelRoute,
     ModelTiming,
-    NoticeId,
     ProviderExtensions,
     ProviderMeasured,
     RequestObservation,
@@ -353,12 +351,10 @@ def test_event_mapper_preserves_stream_and_structured_updates() -> None:
     replayed = replay_history(conversation_replay([
         HumanInputMessage(
             id=MessageId("1"),
-            input_id=InputId("input-1"),
             parts=(TextPart(text="inspect"),),
         ),
         RuntimeNoticeMessage(
             id=MessageId("2"),
-            notice_id=NoticeId("runtime-1"),
             source="task-1",
             event="notification",
             parts=(TextPart(text="background task completed"),),

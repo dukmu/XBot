@@ -21,6 +21,7 @@ from XBotv2.core.runtime_logging import (
 )
 from XBotv2.core.errors import OperationError
 from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ImageRef
 from XBotv2.core.messages import (
     AssistantMessage,
@@ -1030,7 +1031,7 @@ class SessionManager(SessionsPort):
         store = (
             runtime.application.artifacts
             if runtime is not None
-            else (await self._persisted_thread(session_id, thread_id)).artifacts
+            else ArtifactStore(self.paths.session(session_id).thread(thread_id), self._log)
         )
         try:
             content = store.read(ref)

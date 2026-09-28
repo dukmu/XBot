@@ -22,12 +22,12 @@ async def start_server_application(
     tree = load_server_tree(paths=paths, overrides=overrides)
 
     ctx = Context(data_dir=paths.data_dir)
+    _ = ctx.state
     ctx.set("runtime_paths", paths)
     ctx.set("agent_application_factory", create_agent_application)
     return await boot_application(
         ctx=ctx,
         tree=tree,
-        required_services=("server", "sessions"),
     )
 
 

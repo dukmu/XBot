@@ -25,7 +25,7 @@ from XBotv2.core.messages import (
     TextPart,
     ToolMessage,
 )
-from XBotv2.core.domain import InputId, MessageId, ToolCallId
+from XBotv2.core.domain import MessageId, ToolCallId
 from XBotv2.core.tools import ToolCallRef, ToolSucceeded, text_output
 from XBotv2.core.timing import SessionStats, conversation_stats
 
@@ -68,7 +68,6 @@ def test_conversation_stats_derive_turn_model_and_tool_timing():
     messages = (
         HumanInputMessage(
             id=MessageId("input-1"),
-            input_id=InputId("input-1"),
             parts=(TextPart(text="question"),),
         ),
         assistant,

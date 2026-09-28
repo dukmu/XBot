@@ -7,14 +7,13 @@ the real StateService implementation.
 """
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
 
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.paths import RuntimePaths
-from xcore import Context
+from xcore import Context, StateService
 
 
 def _state_file(tmp_path) -> Path:
@@ -25,7 +24,7 @@ def _state_file(tmp_path) -> Path:
 
 
 def _core_store(tmp_path) -> ThreadPersistence:
-    return ThreadPersistence.create(
+    return ThreadPersistence.open(
         RuntimePaths.from_data_dir(tmp_path).session("s"),
         thread_id="t",
     )
@@ -44,16 +43,16 @@ async def test_mutations_are_persisted_immediately(tmp_path) -> None:
     store = ctx.state.namespace("sample")
 
     await store.set("enabled", True)
-    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    state = await StateService(path=_state_file(tmp_path)).all()
     assert state["sample.enabled"] is True
 
     await store.delete("enabled")
-    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    state = await StateService(path=_state_file(tmp_path)).all()
     assert "sample.enabled" not in state
 
     await store.set("value", 1)
     await store.clear()
-    state = json.loads(_state_file(tmp_path).read_text(encoding="utf-8"))
+    state = await StateService(path=_state_file(tmp_path)).all()
     assert not any(key.startswith("sample.") for key in state)
 
 
