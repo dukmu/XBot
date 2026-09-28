@@ -1,5 +1,12 @@
 # Textual TUI 插件化重建方案
 
+## 2026-09-29 启动 404 修复
+
+- [x] 原因已由真实 server 红测复现：StateService 错改日志格式后，已有进程 JSON 状态令 workspaces 初始化失败，依赖 workspace_events 的 session HTTP 路由不挂载，启动请求 /sessions 返回 404。恢复 KV 单 JSON 原子快照，无路由旁路或兼容双读。
+- [x] 真实 CLI/tmux 双客户端隔离/发送/恢复新增启动前已有 JSON 状态参数，与空状态路径合计 `2 passed, 39 deselected in 11.23s`。查看本次 `/tmp/pytest-of-shefrin/pytest-178/test_two_real_cli_tuis_keep_se1/multi-pty-captures/session-a-turn-2.txt`，两轮 prompt/Think/reply 和 Ready turn:2 正常，无启动 404 或 sending 残留。本地可控 provider，不宣称真实外部 provider 验证。
+- [x] 下节 StateService 追加日志的设计结论已撤回；其全新目录测试未覆盖已有状态，不能作为此次缺陷不存在的证据。
+- [x] 最终完整 TUI + ACP `892 passed in 131.36s`，包含已有 JSON 状态的真实 CLI/tmux 双会话路径；修复与测试、文档一起提交。未调用外部 provider，未宣称其他未勾选布局任务完成。
+
 ## 2026-09-29 持久化稳定点验证
 
 - [x] inbox 改为增量日志、canonical 输入统一身份、StateService 逐键追加后，重新运行完整 TUI。首轮 `882 passed, 1 failed`：InputsConsumed 漏登记到事件归属守卫，已补为 server-shaped；不是删除守卫或增加 payload 副本。

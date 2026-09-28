@@ -119,6 +119,28 @@ async def test_server_tree_can_start_without_session_capabilities(tmp_path, enab
         await context.destroy()
 
 
+@pytest.mark.asyncio
+async def test_existing_process_state_keeps_tui_session_routes_available(tmp_path):
+    from XBotv2.application.server import start_server_application
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.data_dir.mkdir()
+    state_path = paths.data_dir / "state.json"
+    state_path.write_text('{"unrelated.setting": "preserved"}\n', encoding="utf-8")
+    context = await start_server_application(paths=paths)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=context.server), base_url="http://test",
+        ) as client:
+            assert (await client.get("/sessions")).status_code == 200
+            assert (await client.get("/workspaces")).status_code == 200
+        assert await context.state.get("unrelated.setting") == "preserved"
+        from xcore import StateService
+        assert await StateService(path=state_path).get("unrelated.setting") == "preserved"
+    finally:
+        await context.destroy()
+
+
 @pytest_asyncio.fixture
 async def booted_server(tmp_path: Path):
     from XBotv2.application.server import start_server_application

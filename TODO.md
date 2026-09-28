@@ -36,10 +36,19 @@
 
 ## 3. 当前权威基线
 
+### 2026-09-29 启动 404 与 StateService 职责纠正
+
+- [x] 新增真实 server 启动回归：启动前已有合法 JSON 对象 state.json，GET /sessions 必须可用。红测准确复现 404：日志化 StateService 拒绝原 JSON → workspaces 初始化失败 → workspace_events 缺失 → session HTTP 路由未挂载。先前只以全新目录验证，遗漏该生产路径。
+- [x] 撤回通用 StateService 的 append-only 改造，恢复单 JSON 当前状态的原子保存；删除操作日志/重放实现及仅锁定该错误设计的测试，保留 namespace、memory、服务绑定修复。补充覆盖写后不累积历史、replace/fsync 失败保留磁盘和缓存、已有进程状态启动。未增加双格式读取、未删除或转换用户状态文件。会话 trace/inbox 的追加机制不受此纠正影响。
+- [x] 恢复后 XCore `107 passed in 1.58s`；server/plugin-state/workspaces focused `22 passed in 1.70s`。下节日志化设计说明与其 114 项绿测仅记录已撤回的错误稳定点，不再是当前设计或当前验证依据。
+- [x] 真实 CLI/tmux 双客户端启动、消息、隔离及恢复：新增已有 JSON 状态参数，与空目录路径合计 `2 passed, 39 deselected in 11.23s`。已查看 pytest-178 中已有状态路径的恢复后第二轮渲染；不以原来的全新目录 green suite 代替已有状态验证。
+- [x] 扩大回归 `PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core XBotv2/tests/integration/test_http_transport.py XBotv2/tests/integration/test_foldin_queued.py -q -s -k 'not web' --tb=short`：`733 passed, 17 deselected in 146.56s`。未运行外部 provider 或 WebUI。
+- [x] 最终收口补跑完整 TUI + ACP：`PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/tui XBotv2/tests/acp -q -s --tb=short` → `892 passed in 131.36s`；XCore 再次 `107 passed in 1.56s`。提交前核对无兼容双读、新框架或用户数据改写；`git diff --check` 通过。按用户要求将修复、回归测试和更正文档一起提交，不再停留于未提交状态；goal 保持暂停。
+
 ### 2026-09-29 稳定点收口（按用户要求提交后停止 goal）
 
 - [x] 本次只收口已在进行的运行时、持久化与状态服务改动，不展开 metadata 新格式、插件新功能或 TUI 新布局。文档不是 gold truth；以实际职责和可验证行为核对，不能凭测试通过宣布全部重构完成。
-- [x] StateService 删除整份状态 deepcopy/原子快照重写，改为版本 header 加逐键 set/delete/clear 追加；公开 namespace/get/set/delete/clear API 不变。原 state.json 路径现为 JSON-lines 内容，旧快照明确拒绝，未新增兼容解析器、后台压缩、多 writer 或存储框架。
+- [x] 历史错误，现已撤回：曾将 StateService 改为版本 header 加逐键操作追加，并把 state.json 内容改为 JSON-lines。该做法混淆状态与 trace，且导致已有进程状态启动失败；当前恢复单 JSON 对象，不以“不兼容”为该错误设计辩护。
 - [x] 状态写入只在 append/fsync 成功后更新缓存；首次失败不留空文件，部分写入和 fsync 失败恢复旧前缀。损坏 header、非法完整记录不静默恢复；仅有效 header 后的未结束尾行可丢弃，包含 UTF-8 字符中途断写。20/40 键增长、重启、命名空间、失败重试均有测试；完整 XCore `114 passed in 1.55s`。
 - [x] Core + HTTP + queued-foldin + ACP 联合验证 `756 passed in 162.62s`：`PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core XBotv2/tests/integration/test_http_transport.py XBotv2/tests/integration/test_foldin_queued.py XBotv2/tests/acp -q -s -k 'not webui' --tb=short`。该过滤仍包含 Core 中少量名称为 web 的 CLI/server 用例，均通过；未运行 WebUI 专属套件或改动 WebUI。
 - [x] TUI 首轮 `882 passed, 1 failed in 126.43s`，失败为类型归属守卫遗漏 InputsConsumed；将它登记为携带既有 InputConsumedEvent 的 server-shaped 投影，保留全部守卫断言，无产品旁路。

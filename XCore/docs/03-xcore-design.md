@@ -28,7 +28,7 @@
 4. **生命周期**：`start() / stop() / restart() / destroy()`、迭代不动点加载、
    `ready` / `dispose` 事件（active 期间注册 ready 立即执行）、stop 永不抛出、
    `ExceptionGroup` 仅用于调用方显式聚合（parallel）。
-5. **可恢复状态**：`StateService`（`ctx.state`，逐键追加 JSON-lines、共享缓存 + 锁、
+5. **可恢复状态**：`StateService`（`ctx.state`，JSON 原子写、共享缓存 + 锁、
    命名空间，崩溃/重启/stop→start 恢复）—— 注意：这是 **XCore 相对 Cordis 的一等
    公民扩展**（Cordis/Koishi 无持久 KV 状态服务，见 §14.7）。
 6. **插件配置**：配置模型由插件拥有（Pydantic `BaseModel`）；Fiber 只调用标准
@@ -51,7 +51,7 @@ XCore/
     events.py       # EventBus：Hook、匹配、六派发 + 同步内部派发、过滤
     service.py      # Service 基类 + ServiceStore（(label, name) 键控、通知）
     plugin.py       # 插件归一化、Registry、Fiber 状态机、effect、PluginHandle
-    state.py        # StateService：追加日志持久 KV + 命名空间
+    state.py        # StateService：JSON 原子写持久 KV + 命名空间
     context.py      # Context：组合上述一切 + 生命周期 + 中间件
   tests/            # test_events/services/plugins/lifecycle/state/schema/middleware/public_api
   docs/             # 本文档体系
@@ -361,7 +361,7 @@ class StateService:
     @classmethod
     def memory(cls) -> StateService                  # 显式内存存储，不读写文件
     async def get(self, key, default=None) -> Any
-    async def set(self, key, value) -> None            # 校验 JSON 可序列化；追加并 fsync
+    async def set(self, key, value) -> None            # 校验 JSON 可序列化；立即原子落盘
     async def delete(self, key) -> None
     async def clear(self) -> None
     async def keys(self) -> list[str]
@@ -369,11 +369,11 @@ class StateService:
     def namespace(self, prefix: str) -> StateService   # 前缀视图，共享缓存与锁
 ```
 
-- **共享缓存 + 锁**（E1）：同一服务全部视图（含 namespace）共享存储、缓存与锁；
-  `set/delete/clear` 持锁追加逐键操作并 fsync，再更新缓存。独立服务不支持同时写同一文件。
+- **共享缓存 + 锁**（E1）：同一服务的全部视图（含 namespace）共享 storage、data 与锁；
+  `set/delete/clear` 持锁构造更新后的状态，文件存储用临时文件 + fsync + `os.replace`
+  原子保存，再更新缓存。独立服务不共享锁和缓存，不支持同时写同一文件。
 - 惰性读盘（首次访问）；文件损坏 → 抛 `RuntimeError`（不静默恢复，XBot 纪律）。
-- 崩溃恢复：有效版本 header 后只重放完整行，未结束尾行下次追加前截去；
-  header 损坏、完整记录损坏、旧快照格式均明确失败。细节见 `features/state.md`。
+- 崩溃恢复：原子写保证无半写文件；测试用「残留临时文件」模拟。
 - **注册为服务**（E2）：root Context 首次访问 `ctx.state` 时创建并以 root fiber
   `set("state", svc)` —— 于是 `inject: ["state"]` 可用、`ctx.state` 与 `ctx.get`
   一致。
@@ -381,7 +381,7 @@ class StateService:
   `PluginStore` 迁移映射）。
 - `StateService.memory()` 使用相同的 JSON 校验、namespace、共享缓存和锁；同一 Context
   stop/start 保留值，新建服务不继承值。宿主可通过 `Context(state_service=...)` 显式选择
-  内存状态，插件无需按是否持久化分支。文件存储使用版本化 JSON-lines 操作日志。
+  内存状态，插件无需按是否持久化分支。文件存储仍保持原子 JSON 快照语义。
 
 ## 9. 插件配置
 

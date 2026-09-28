@@ -2,9 +2,9 @@
 
 XCore's first-class answer to "recoverable state" (a Cordis extension: the JS
 framework persists via database/config, not a KV state service).  Backed by a
-versioned JSON-lines log of key changes. Restart replays complete records;
-only an unterminated tail following a valid header is uncommitted.
-``StateService.memory()`` instead keeps values only for its lifetime.
+single JSON file written atomically (temp file + ``os.replace``), so a crash
+never leaves a half-written file and a restart recovers the last persisted
+state. ``StateService.memory()`` instead keeps values only for its lifetime.
 
 Design notes (from the design review, E1/E2):
 
@@ -23,6 +23,7 @@ import copy
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,67 +43,48 @@ class _FileStorage:
 
     async def load(self) -> dict[str, Any]:
         path = self.path
-        data: dict[str, Any] = {}
-        if not path.exists():
-            return data
-        try:
-            with path.open("rb") as stream:
-                header = stream.readline()
-                if not header.endswith(b"\n"):
-                    raise ValueError("missing complete state header")
-                record = json.loads(header)
-                if record != {"version": 1} or type(record["version"]) is not int:
-                    raise ValueError("unsupported state format")
-                for line in stream:
-                    if not line.endswith(b"\n"):
-                        break
-                    record = json.loads(line)
-                    _validate_jsonable(record)
-                    _apply_change(data, record)
-        except (ValueError, TypeError, KeyError) as exc:
-            raise RuntimeError(f"state file {path} is corrupted or unsupported") from exc
-        except OSError as exc:
-            raise RuntimeError(f"cannot read state file {path}: {exc}") from exc
+        if path.exists():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise RuntimeError(f"cannot read state file {path}: {exc}") from exc
+            if not text.strip():
+                data: dict[str, Any] = {}
+            else:
+                try:
+                    loaded = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"state file {path} is corrupted: {exc}"
+                    ) from exc
+                if not isinstance(loaded, dict):
+                    raise RuntimeError(
+                        f"state file {path} must contain a JSON object"
+                    )
+                data = loaded
+        else:
+            data = {}
         return data
 
-    async def append(self, change: dict[str, Any]) -> None:
+    async def save(self, data: dict[str, Any]) -> None:
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = (json.dumps(change, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-        existed = path.exists()
-        descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_RDWR, 0o600)
-        offset = os.fstat(descriptor).st_size
+        descriptor, temporary = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+        )
         try:
-            # Complete lines are committed; discard only an interrupted tail.
-            end = offset
-            while offset:
-                length = min(offset, 4096)
-                offset -= length
-                os.lseek(descriptor, offset, os.SEEK_SET)
-                newline = os.read(descriptor, length).rfind(b"\n")
-                if newline >= 0:
-                    offset += newline + 1
-                    break
-            if offset != end:
-                os.ftruncate(descriptor, offset)
-            if offset == 0:
-                payload = b'{"version":1}\n' + payload
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
             try:
-                remaining = memoryview(payload)
-                while remaining:
-                    written = os.write(descriptor, remaining)
-                    if written == 0:
-                        raise OSError("State append made no progress")
-                    remaining = remaining[written:]
-                os.fsync(descriptor)
-            except BaseException:
-                os.ftruncate(descriptor, offset)
-                os.fsync(descriptor)
-                if not existed:
-                    path.unlink()
-                raise
-        finally:
-            os.close(descriptor)
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
 
 
 @dataclass(frozen=True)
@@ -110,30 +92,8 @@ class _MemoryStorage:
     async def load(self) -> dict[str, Any]:
         return {}
 
-    async def append(self, change: dict[str, Any]) -> None:
+    async def save(self, data: dict[str, Any]) -> None:
         pass
-
-
-def _apply_change(data: dict[str, Any], change: dict[str, Any]) -> None:
-    if not isinstance(change, dict):
-        raise ValueError("state change must be an object")
-    operation = change.get("op")
-    if operation == "clear":
-        if set(change) != {"op", "prefix"} or not isinstance(change["prefix"], str):
-            raise ValueError("invalid state clear")
-        for key in tuple(data):
-            if key.startswith(change["prefix"]):
-                del data[key]
-    elif operation in {"set", "delete"}:
-        fields = {"op", "key", "value"} if operation == "set" else {"op", "key"}
-        if set(change) != fields or not isinstance(change["key"], str) or not change["key"]:
-            raise ValueError("invalid state key change")
-        if operation == "set":
-            data[change["key"]] = change["value"]
-        else:
-            del data[change["key"]]
-    else:
-        raise ValueError("unknown state operation")
 
 
 @dataclass
@@ -148,7 +108,7 @@ class _Shared:
 class StateService:
     """JSON state with namespace views and an explicit storage lifetime.
 
-    File-backed construction appends key changes. ``memory()`` retains the
+    File-backed construction uses atomic writes. ``memory()`` retains the
     same state semantics for one service lifetime without filesystem access.
     """
 
@@ -179,8 +139,8 @@ class StateService:
             )
         return self._shared.data
 
-    async def _persist(self, change: dict[str, Any]) -> None:
-        await self._shared.storage.append(change)
+    async def _persist(self, data: dict[str, Any]) -> None:
+        await self._shared.storage.save(data)
 
     # -- public API ---------------------------------------------------------
 
@@ -201,15 +161,16 @@ class StateService:
         full_key = self._full_key(key)
         async with self._shared.lock:
             data = await self._ensure_loaded()
-            copied = copy.deepcopy(value)
-            await self._persist({"op": "set", "key": full_key, "value": copied})
-            data[full_key] = copied
+            updated = copy.deepcopy(data)
+            updated[full_key] = copy.deepcopy(value)
+            await self._persist(updated)
+            self._shared.data = updated
             logger.debug(
                 "state.persisted operation=set storage=%s namespace=%s key=%s keys=%d",
                 self._shared.storage,
                 self._prefix,
                 key,
-                len(data),
+                len(updated),
             )
 
     async def delete(self, key: str) -> None:
@@ -218,28 +179,36 @@ class StateService:
         async with self._shared.lock:
             data = await self._ensure_loaded()
             if full_key in data:
-                await self._persist({"op": "delete", "key": full_key})
-                del data[full_key]
+                updated = copy.deepcopy(data)
+                del updated[full_key]
+                await self._persist(updated)
+                self._shared.data = updated
                 logger.debug(
                     "state.persisted operation=delete storage=%s namespace=%s key=%s keys=%d",
                     self._shared.storage,
                     self._prefix,
                     key,
-                    len(data),
+                    len(updated),
                 )
 
     async def clear(self) -> None:
         """Remove every key in this view's namespace and persist."""
         async with self._shared.lock:
             data = await self._ensure_loaded()
-            change = {"op": "clear", "prefix": self._prefix}
-            await self._persist(change)
-            _apply_change(data, change)
+            updated = copy.deepcopy(data)
+            if self._prefix:
+                affected = [k for k in updated if k.startswith(self._prefix)]
+                for key in affected:
+                    del updated[key]
+            else:
+                updated.clear()
+            await self._persist(updated)
+            self._shared.data = updated
             logger.debug(
                 "state.persisted operation=clear storage=%s namespace=%s keys=%d",
                 self._shared.storage,
                 self._prefix,
-                len(data),
+                len(updated),
             )
 
     async def keys(self) -> list[str]:

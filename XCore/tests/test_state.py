@@ -63,23 +63,44 @@ async def test_persisted_across_instances(tmp_path):
     assert await recovered.get("key") == "value"
 
 
-@pytest.mark.parametrize("count", [20, 40])
-async def test_growing_state_appends_only_changed_keys(tmp_path, count):
+async def test_state_file_contains_current_values_not_mutation_history(tmp_path):
+    path = _path(tmp_path)
+    path.write_text('{"kept": 1, "value": "initial"}\n', encoding="utf-8")
+    state = StateService(path=path)
+    for index in range(30):
+        await state.set("value", str(index))
+    await state.set("removed", True)
+    await state.delete("removed")
+    assert json.loads(path.read_text(encoding="utf-8")) == {"kept": 1, "value": "29"}
+    assert await StateService(path=path).all() == {"kept": 1, "value": "29"}
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["replace", "fsync"])
+async def test_failed_snapshot_publish_preserves_disk_and_cache(tmp_path, monkeypatch, existing, failure):
     path = _path(tmp_path)
     state = StateService(path=path)
-    await state.set("key-0", "payload" * 100)
-    prefix = path.read_bytes()
-    for index in range(1, count):
-        await state.set(f"key-{index}", "payload" * 100)
-    assert path.read_bytes().startswith(prefix)
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert records[0] == {"version": 1}
-    assert len(records) == count + 1
-    assert records[-1] == {"op": "set", "key": f"key-{count - 1}", "value": "payload" * 100}
-    assert len(await StateService(path=path).all()) == count
+    if existing:
+        await state.set("stable", 1)
+    prefix = path.read_bytes() if existing else b""
+
+    def fail(*args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, failure, fail)
+        with pytest.raises(OSError, match="disk full"):
+            await state.set("new", 2)
+    assert path.exists() == existing
+    assert sorted(tmp_path.iterdir()) == ([path] if existing else [])
+    if existing:
+        assert path.read_bytes() == prefix
+    assert await state.all() == ({"stable": 1} if existing else {})
+    await state.set("new", 2)
+    assert await StateService(path=path).all() == await state.all()
 
 
-async def test_append_leaves_no_temp_file(tmp_path):
+async def test_atomic_write_leaves_no_temp_file(tmp_path):
     state = StateService(path=_path(tmp_path))
     await state.set("a", 1)
     files = [p.name for p in tmp_path.iterdir()]
@@ -149,70 +170,14 @@ async def test_concurrent_namespace_writes_lose_no_keys(tmp_path):
 
 
 async def test_crash_residue_does_not_corrupt_state(tmp_path):
+    # simulate a crash mid-write: a stale .tmp file must be ignored
     path = _path(tmp_path)
     state = StateService(path=path)
     await state.set("k", "v")
-    prefix = path.read_bytes()
-    # A crash can split a UTF-8 code point, not just a JSON token.
-    with path.open("ab") as stream:
-        stream.write(b'{"op":"set","key":"k","value":"\xe4')
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("{garbage", encoding="utf-8")
     recovered = StateService(path=path)
     assert await recovered.get("k") == "v"
-    await recovered.set("next", 2)
-    assert path.read_bytes().startswith(prefix)
-    assert await StateService(path=path).all() == {"k": "v", "next": 2}
-
-
-@pytest.mark.parametrize("payload", [b'', b'{"old":1}', b'{"old":1}\n',
-    b'{"version":true}\n', b'{"version":1}\n{broken}\n',
-    b'{"version":1}\n{"op":"delete","key":"missing"}\n'])
-async def test_invalid_committed_state_is_not_silently_replaced(tmp_path, payload):
-    path = _path(tmp_path)
-    path.write_bytes(payload)
-    with pytest.raises(RuntimeError, match="corrupted or unsupported"):
-        await StateService(path=path).set("new", 2)
-    assert path.read_bytes() == payload
-
-
-@pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("failure", ["write", "fsync"])
-async def test_append_failure_preserves_disk_and_cache(tmp_path, monkeypatch, existing, failure):
-    path = _path(tmp_path)
-    state = StateService(path=path)
-    if existing:
-        await state.set("stable", 1)
-    prefix = path.read_bytes() if existing else b""
-    write = os.write
-    fsync = os.fsync
-    calls = 0
-
-    def fail_after_partial(fd, data):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return write(fd, data[:7])
-        raise OSError("disk full")
-
-    def fail_first_sync(fd):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise OSError("disk full")
-        return fsync(fd)
-
-    with monkeypatch.context() as patch:
-        if failure == "write":
-            patch.setattr(os, "write", fail_after_partial)
-        else:
-            patch.setattr(os, "fsync", fail_first_sync)
-        with pytest.raises(OSError, match="disk full"):
-            await state.set("new", 2)
-    assert path.exists() == existing
-    if existing:
-        assert path.read_bytes() == prefix
-    assert await state.all() == ({"stable": 1} if existing else {})
-    await state.set("new", 2)
-    assert await StateService(path=path).all() == await state.all()
 
 
 async def test_failed_write_does_not_change_cached_state(tmp_path, monkeypatch):
@@ -292,6 +257,5 @@ async def test_context_uses_explicit_state_service(tmp_path):
 async def test_json_file_is_valid_utf8(tmp_path):
     state = StateService(path=_path(tmp_path))
     await state.set("greeting", "你好，世界")
-    raw = _path(tmp_path).read_text(encoding="utf-8")
-    assert "你好，世界" in raw
-    assert await StateService(path=_path(tmp_path)).get("greeting") == "你好，世界"
+    raw = json.loads(_path(tmp_path).read_text(encoding="utf-8"))
+    assert raw["greeting"] == "你好，世界"

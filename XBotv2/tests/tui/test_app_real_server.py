@@ -73,7 +73,7 @@ async def base_url(
     data_dir = tmp_path / "data"
     scenario = getattr(request, "param", "core")
     no_plugins = scenario in {
-        "core", "permission", "permission_deny", "interaction", "thinking_stream",
+        "core", "existing_state", "permission", "permission_deny", "interaction", "thinking_stream",
         "thinking_activity", "queue_stream", "minimax_thinking",
     }
     upstream_http: uvicorn.Server | None = None
@@ -264,6 +264,10 @@ async def base_url(
         (workspace / ".agents" / "reviewer.md").write_text(
             "---\ndescription: Review a change\nmode: subagent\n---\nReview.",
             encoding="utf-8",
+        )
+    if scenario == "existing_state":
+        (data_dir / "state.json").write_text(
+            '{"unrelated.setting":"preserved"}\n', encoding="utf-8",
         )
     server = await start_server_application(
         paths=RuntimePaths.from_data_dir(data_dir),
@@ -1469,7 +1473,7 @@ async def test_real_cli_enter_queues_during_a_running_turn_and_renders_the_queue
             pass
 
 
-@pytest.mark.parametrize("base_url", ["core"], indirect=True)
+@pytest.mark.parametrize("base_url", ["core", "existing_state"], indirect=True)
 async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
     real_client: XBotClient,
     base_url: str,

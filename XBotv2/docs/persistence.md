@@ -94,17 +94,17 @@ Readers are not blocked: history, transcript, and trajectory reads take no lock,
 which is why the torn-tail rule above exists. Ownership therefore guarantees
 "one writer", not "one process may touch the directory": tooling that writes
 `messages.jsonl` or `inbox.jsonl` directly bypasses it and is unsupported.
-Plugin state uses a versioned, append-only key-change log at the existing
-`plugin_state/state.json` path (JSON-lines content, not a JSON object). It replays
-once on first access, then appends only the affected key/value or namespace-clear
-operation. Old snapshots and malformed complete records fail explicitly; only an
-unterminated tail after a valid header is uncommitted. A failed append rolls back
-its bytes and leaves the cache unchanged. The shared service owns namespace
-serialization; independent writers to the same file are unsupported.
+Plugin state is current-value KV storage, not a conversation trace.
+`plugin_state/state.json` remains one JSON object, atomically replaced when
+values change; cache changes become visible only after a successful save.
+Namespaces share one service cache and lock, not independent file writers.
+The same StateService also holds process workspace state; it must not inherit
+conversation-specific trace semantics or keep an unbounded mutation history.
 
-Metadata remains an atomic snapshot. Individual plugin values may themselves be
-growing snapshots; neither this change nor the inbox log redesign resolves that
-plugin-local cost. The overall append-only persistence redesign is not completed.
+Metadata also remains an atomic snapshot. Growing conversation history belongs
+in its trace, not in ever-growing StateService values. Per-plugin ownership and
+cold-history reader costs still need review; reverting KV journaling does not
+claim to resolve those costs.
 
 Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
 advisory locks the runtime refuses to start rather than run without it.
