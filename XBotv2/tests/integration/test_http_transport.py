@@ -2601,7 +2601,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
     request_id: str,
     expected_value: str,
 ) -> None:
-    from XBotv2.application.client_events import ClientEventRouter
+    from XBotv2.interactions.router import ClientEventRouter
     from XBotv2.interactions.contracts import InteractionRegistration
     from XBotv2.interactions.interactions import InteractionWaiter
     from XBotv2.interactions.protocol import (

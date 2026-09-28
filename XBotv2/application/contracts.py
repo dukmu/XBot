@@ -153,6 +153,7 @@ class SessionLaunch:
     session_paths: SessionPaths
     interactive: bool
     is_subagent: bool
+    parent_client_events: ClientEventsPort | None = None
 
 
 @dataclass(frozen=True, slots=True)

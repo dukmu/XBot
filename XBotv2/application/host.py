@@ -55,25 +55,32 @@ class MountedAgentApplication:
         await self._context.destroy()
 
 
-def mounted_application(context: Context) -> MountedAgentApplication:
-    """Project a fully initialized XCore context to its host contract."""
-    return MountedAgentApplication(
-        _context=context,
-        events=context,
-        driver=context.engine,
-        artifacts=context.artifacts,
-        client_events=context.client_events,
-        history=context.session,
-        history_pages=(
-            _TranscriptPages(context.thread_persistence.history)
-            if context.has("thread_persistence")
-            else _TranscriptPages(context.loop_state.history)
-        ),
-        usage=context.usage,
-        loop_state=context.loop_state,
-        parent_permissions=context.permissions,
-        persistence_available=context.has("thread_persistence"),
-    )
+async def mounted_application(context: Context) -> MountedAgentApplication:
+    """Transfer a mounted Context to its public handle, or dispose on failure."""
+    try:
+        return MountedAgentApplication(
+            _context=context,
+            events=context,
+            driver=context.require("engine"),
+            artifacts=context.require("artifacts"),
+            client_events=context.require("client_events"),
+            history=context.require("session"),
+            history_pages=(
+                _TranscriptPages(context.thread_persistence.history)
+                if context.has("thread_persistence")
+                else _TranscriptPages(context.loop_state.history)
+            ),
+            usage=context.require("usage"),
+            loop_state=context.require("loop_state"),
+            parent_permissions=context.require("permissions"),
+            persistence_available=context.has("thread_persistence"),
+        )
+    except BaseException as error:
+        try:
+            await context.destroy()
+        except BaseException as cleanup_error:
+            error.add_note(f"Application handoff cleanup failed: {cleanup_error!r}")
+        raise
 
 
 class _TranscriptPages:

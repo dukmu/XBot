@@ -524,7 +524,7 @@ async def _run_once(args):
         selected_agent=getattr(args, "agent", None),
         interactive=False,
     )
-    application = mounted_application(context)
+    application = await mounted_application(context)
     engine = application.driver
     await engine.start_session()
     session = context.loop_state.session

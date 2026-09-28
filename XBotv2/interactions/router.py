@@ -1,4 +1,4 @@
-"""Application-owned routing for live client events.
+"""Interaction-plugin-owned routing for live client events.
 
 Feature services publish their own event payloads and register their own
 waiters. Transports install one live sink through ``install`` (which
@@ -25,7 +25,7 @@ from XBotv2.interactions.contracts import (
 class ClientEventRouter(ClientEventsPort):
     """Route client events without coupling transports to feature services."""
 
-    def __init__(self, parent: "ClientEventRouter | None" = None) -> None:
+    def __init__(self, parent: ClientEventsPort | None = None) -> None:
         self._parent = parent
         self._sink: ClientEventSink | None = None
         self._interactions: dict[str, InteractionRegistration] = {}

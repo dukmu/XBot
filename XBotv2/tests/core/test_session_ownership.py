@@ -240,3 +240,70 @@ async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeyp
         )
     assert sibling_file.read_text(encoding="utf-8") == "another thread's data"
     assert not session.thread("failed").root.exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_application_handle_creation_releases_the_runtime(tmp_path):
+    from XBotv2.application.app import create_agent_application
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.llm.mock import MockLLM
+    from XBotv2.session.contracts import AgentApplicationOptions
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.config_dir.mkdir(parents=True)
+    (paths.config_dir / "plugins.yaml").write_text(
+        "- id: usage\n  name: uninstalled_usage_for_handoff_test\n", encoding="utf-8",
+    )
+    # The loop can mount without usage, but the public Agent application port
+    # requires a usage reader. Rejection must close the already-started runtime.
+    with pytest.raises(ServiceNotFoundError, match="usage"):
+        await create_agent_application(AgentApplicationOptions(
+            paths=paths, provider_name=None, session_id="handoff", thread_id="main",
+            workspace_root=tmp_path, no_plugins=True,
+            model_override=MockLLM(responses=[]),
+        ))
+    allowed = _try_acquire(paths.session("handoff").root)
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+
+
+@pytest.mark.asyncio
+async def test_failed_child_start_record_does_not_leak_the_child_runtime(tmp_path):
+    from XBotv2.application.app import start_application
+    from XBotv2.application.child import ChildApplications
+    from XBotv2.application.contracts import ChildApplicationRequest
+    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.llm.mock import MockLLM
+
+    (tmp_path / ".agents").mkdir()
+    (tmp_path / ".agents" / "reviewer.md").write_text(
+        "---\ndescription: Review\nmode: subagent\n---\nReview.", encoding="utf-8",
+    )
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    llm = MockLLM(responses=[])
+    parent = await start_application(
+        paths=paths, session_id="record-failed", thread_id="main",
+        workspace_root=tmp_path, llm_override=llm,
+    )
+
+    class FailedLifecycle:
+        def append(self, record):
+            raise OSError("lifecycle write failed")
+
+    try:
+        definition = parent.agent_catalog.get("reviewer")
+        assert definition is not None
+        children = ChildApplications(
+            paths=paths, provider_name=None, session_id="record-failed",
+            workspace_root=tmp_path, no_plugins=False, plugin_dirs=[],
+            llm_override=llm, parent_thread_id="main", interactive=False,
+        )
+        with pytest.raises(OSError, match="lifecycle write failed"):
+            await children.spawn(ChildApplicationRequest(
+                definition=definition, thread_id="child", prompt="Review",
+                parent_permissions=parent.permissions, client_events=None,
+            ), FailedLifecycle())
+        assert _try_acquire(paths.session("record-failed").root).returncode == 3
+    finally:
+        await parent.destroy()
+    allowed = _try_acquire(paths.session("record-failed").root)
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr

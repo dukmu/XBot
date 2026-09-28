@@ -23,8 +23,6 @@ from XBotv2.core.filesystem.session_lock import (
     acquire_session,
 )
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
-from XBotv2.application.child import ChildApplications
-from XBotv2.application.client_events import ClientEventRouter
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import (
     AgentApplicationPort,
@@ -129,18 +127,6 @@ async def start_application(
             )
         )
 
-        children = ChildApplications(
-            paths=paths,
-            provider_name=provider_name,
-            session_id=session_id,
-            workspace_root=workspace_root,
-            no_plugins=no_plugins,
-            plugin_dirs=plugin_dirs,
-            llm_override=llm_override,
-            parent_thread_id=thread_id,
-            interactive=interactive,
-        )
-
         agent_options = AgentCreateOptions(
             session_id=session_id,
             thread_id=thread_id,
@@ -164,13 +150,12 @@ async def start_application(
                 session_paths=session_paths,
                 interactive=interactive,
                 is_subagent=is_subagent,
+                parent_client_events=client_events,
             ),
             "parent_permissions": ParentPermissions(parent_permission_system),
             "plugin_overrides": extra_plugins or [],
             "plugin_dirs": plugin_dirs or [],
             "no_plugins": no_plugins,
-            "client_events": ClientEventRouter(parent=client_events),
-            "child_applications": children,
             "artifacts": artifacts,
         }
         if thread_persistence is not None:
@@ -265,7 +250,7 @@ async def create_agent_application(
         interactive=options.interactive,
         defer_persist=options.defer_persist,
     )
-    return mounted_application(context)
+    return await mounted_application(context)
 
 
 def _validate_identifier(field: str, value: str) -> None:

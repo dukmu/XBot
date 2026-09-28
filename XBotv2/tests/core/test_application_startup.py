@@ -83,6 +83,46 @@ async def _run_turn(engine, content):
 
 
 @pytest.mark.asyncio
+async def test_interaction_routing_belongs_to_the_plugin_lifecycle(tmp_path):
+    from XBotv2.interactions.protocol import Answered
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    parent = await start_application(
+        paths=paths, session_id="routing", thread_id="parent",
+        workspace_root=tmp_path, llm_override=MockLLM(responses=[]),
+    )
+    received = []
+
+    async def answer(request):
+        received.append(request.question)
+        return Answered(answer="continue")
+
+    dispose_sink = parent.client_events.install(answer)
+    child = None
+    try:
+        child = await start_application(
+            paths=paths, session_id="routing", thread_id="child",
+            workspace_root=tmp_path, llm_override=MockLLM(responses=[]),
+            is_subagent=True, parent_thread_id="parent",
+            client_events=parent.client_events,
+        )
+        response = await child.interactions.request_user_input("child question")
+        assert response == Answered(answer="continue")
+        assert received == ["child question"]
+        await child.stop()
+        assert not child.has("client_events")
+        # Unloading the child must not remove the parent's routing capability.
+        response = await parent.interactions.request_user_input("parent question")
+        assert response == Answered(answer="continue")
+        assert received == ["child question", "parent question"]
+    finally:
+        if child is not None:
+            await child.destroy()
+        dispose_sink()
+        await parent.destroy()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["import", "apply", "config", "dependency"])
 async def test_optional_plugin_failure_does_not_prevent_an_agent_turn(tmp_path, failure):
     name = f"optional_failure_{failure}"
@@ -254,7 +294,10 @@ async def test_agent_application_factory_model_override_precedence(
         return object()
 
     monkeypatch.setattr(application_app, "start_application", capture_start_application)
-    monkeypatch.setattr(application_app, "mounted_application", lambda context: context)
+    async def capture_handle(context):
+        return context
+
+    monkeypatch.setattr(application_app, "mounted_application", capture_handle)
 
     options = AgentApplicationOptions(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),

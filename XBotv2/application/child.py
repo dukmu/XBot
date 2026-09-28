@@ -65,14 +65,22 @@ class ChildApplications:
             client_events=request.client_events if self.interactive else None,
         )
         child = ChildApplicationSession(
-            application=mounted_application(child_ctx),
+            application=await mounted_application(child_ctx),
             prompt=request.prompt,
             agent=request.definition.name,
             thread_id=request.thread_id,
             parent_thread_id=self.parent_thread_id,
             lifecycle=lifecycle,
         )
-        child.record_started()
+        try:
+            child.record_started()
+        except BaseException as error:
+            # Until spawn returns, the caller cannot release this application.
+            try:
+                await child.application.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"Child startup cleanup failed: {cleanup_error!r}")
+            raise
         return child
 
 

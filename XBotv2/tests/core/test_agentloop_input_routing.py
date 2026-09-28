@@ -76,7 +76,7 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         PermissionRule(tool_pattern=".*", decision="allow"),
     )),))
     engine.tools.register(Tool.from_function(blocker), cleanup="caller")
-    application = mounted_application(services)
+    application = await mounted_application(services)
     runtime = SessionRuntime(paths, False, application, engine)
 
     async def collect(content: str, request_id: str):
@@ -120,7 +120,7 @@ async def test_injected_notification_is_durable_and_does_not_wake(
         llm_override=MockLLM(),
     )
     engine = services.engine
-    application = mounted_application(services)
+    application = await mounted_application(services)
     runtime = SessionRuntime(paths, False, application, engine)
     await engine.submit_input(
         InboxItem(
@@ -690,7 +690,7 @@ async def test_runtime_close_propagates_engine_failure_after_releasing_resources
         plugin_dirs=[],
         llm_override=MockLLM(),
     )
-    application = mounted_application(services)
+    application = await mounted_application(services)
     runtime = SessionRuntime(paths, False, application, services.engine)
     subscription = runtime.event_stream.subscribe()
     application_closed = False

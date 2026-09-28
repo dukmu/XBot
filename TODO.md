@@ -48,6 +48,11 @@
 - [x] server 标量参数到 overlay 的转换移到 CLI；`start_server_application` 仅接收 paths/overrides，全部调用方迁移，不保留旧参数兼容入口。两个 WebUI 验证脚本仅机械更新 server 启动调用，没有做 WebUI 功能或测试工作。
 - [x] server 宿主 overlay 入口迁移验证：CLI/server/HTTP/fold-in 队列/真实 server TUI `169 passed, 6 deselected in 178.58s`；CLI 同时验证显式值和省略值映射，以及正常/异常 serve 的同循环清理。未据此宣称完成 factory/Agent 装配。
 - [ ] application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
+- [x] ChildApplications 由唯一消费者 subagents 插件构造，移除 application 宿主的 child_applications 手工服务注入；其余持久化/artifacts 装配迁移仍未完成。
+- [x] interactions 插件拥有 client_events 路由，宿主仅通过 SessionLaunch 传父接口；实现移到 interactions/router.py，不留旧模块兼容。真实父子运行时验证请求转发、子插件停用撤销服务且父路由仍可用；权限等待/中断/重连 HTTP focused `8 passed`。
+- [x] 修复公开 Agent 接口构造失败和子 Agent started 记录写入失败时的运行时交接泄漏：交接成功前由构造方负责销毁，保留原始错误。两条路径均先用真实子进程争锁复现残留，再验证释放；子 Agent 失败不能提前释放父会话锁。所有权/startup/input-routing/subagents 回归 `74 passed in 33.38s`，未运行 WebUI 或真实供应商请求。
+- [x] 上述交接和路由迁移最终扩大回归：完整 core + HTTP transport `673 passed in 152.94s`（core 目录包含既有 web-server/CLI 入口用例，未做 WebUI 开发或视觉验收）。受限沙箱 focused 在 `80 passed` 后退出阶段停顿，中断取证；独立 interaction 文件同样超时。纯标准库 `asyncio.run(asyncio.to_thread(lambda: None))` 沙箱内退出超时、沙箱外立即完成，证实不依赖 XBot；没有改业务代码或删除测试来绕过它。
+- [ ] 持久化装配迁移前解除 StateService 所有权反向依赖（目前 ThreadPersistence 创建、Context 复用），并梳理 session 的 durable/ephemeral inbox 选择；不能以插件执行先后或增加判空分支实现装配。
 - [x] Agent 启动所有权修复：复现子 Agent 初始化失败后重复释放共享 claim，导致其他进程取得仍活跃父会话的锁。改为先争锁再创建持久化资源；初始化成功才将释放责任转给 Context，失败清理完成后释放一次。回滚只删除本次新 thread 和空父目录，保留同进程兄弟线程文件。所有权/启动测试 `56 passed in 22.80s`，包含真实子进程争锁及拒绝启动/资源创建失败/兄弟线程文件保留。
 - [x] 插件导入/构造/Config/apply/inject 激活失败默认隔离；XCore 原 error 日志不改，loader 记录 skip，不再遍历任何失败即抛出。宿主按 Context.require 检查实际入口，Agent 声明 permissions 依赖防止 guard 缺失仍启动。移除 server profile 对 llm 插件 ID 的特殊检查及通用配置读取的跨插件预校验；编辑配置仍在写入边界验证。
 - [x] 失败隔离功能证据：顶层/嵌套 apply 部分服务、监听器、资源被清理，健康插件及真实 Agent 单轮继续；import/config/缺依赖同样不阻断无关能力。必需服务失败仍清理宿主，HTTP/CLI 保留原始错误原因；新增权限失效/禁用的 fail-closed 验证。取消信号和运行期事件回调错误不作为可忽略的插件激活异常。

@@ -14,6 +14,7 @@ import uuid
 from pydantic import JsonValue
 
 from XBotv2.interactions.interactions import InteractionWaiter
+from XBotv2.interactions.router import ClientEventRouter
 from XBotv2.interactions.contracts import (
     InteractionReceipt,
     InteractionRegistration,
@@ -128,15 +129,17 @@ class InteractionsService(InteractionsPort):
 class InteractionsComponent:
     """Register the interactions service as ``ctx.interactions``."""
 
-    inject = ["tools", "client_events", "session_launch"]
+    inject = ["tools", "session_launch"]
     name = "xbot.interactions"
 
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        service = InteractionsService(ctx, ctx.client_events)
+        client_events = ClientEventRouter(parent=ctx.session_launch.parent_client_events)
+        ctx.set("client_events", client_events)
+        service = InteractionsService(ctx, client_events)
         ctx.set("interactions", service)
-        ctx.dispose(ctx.client_events.register_interaction(
+        ctx.dispose(client_events.register_interaction(
             InteractionRegistration(
                 kind="user_input_required",
                 request_type=UserInputRequest,

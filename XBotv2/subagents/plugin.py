@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from xcore import Context
 
+from XBotv2.application.child import ChildApplications
 from XBotv2.subagents.service import (
     SubagentCatalogPrompt,
     SubagentLauncher,
@@ -18,7 +19,11 @@ class SubagentsRuntimeComponent:
     inject = [
         "session",
         "agent_catalog",
-        "child_applications",
+        "runtime_paths",
+        "session_launch",
+        "agent_options",
+        "no_plugins",
+        "plugin_dirs",
         "permissions",
         "client_events",
         "jobs",
@@ -45,7 +50,17 @@ class SubagentsRuntimeComponent:
             launcher=SubagentLauncher(
                 catalog=ctx.agent_catalog,
                 session=ctx.session,
-                children=ctx.child_applications,
+                children=ChildApplications(
+                    paths=ctx.runtime_paths,
+                    provider_name=ctx.session_launch.provider_name,
+                    session_id=ctx.session_launch.session_id,
+                    workspace_root=ctx.session_launch.workspace_root,
+                    no_plugins=ctx.no_plugins,
+                    plugin_dirs=ctx.plugin_dirs,
+                    llm_override=ctx.agent_options.model_override,
+                    parent_thread_id=ctx.session_launch.thread_id,
+                    interactive=ctx.session_launch.interactive,
+                ),
                 lifecycle=ctx.thread_persistence.lifecycle,
                 parent_permissions=ctx.permissions,
                 client_events=ctx.client_events,

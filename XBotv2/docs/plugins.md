@@ -27,7 +27,7 @@ entry; activation itself is dependency-driven.
 | sandbox | agent | filesystem/process/network ceiling | paths, session, tools, settings |
 | permissions | agent | regex Tool policy and approval flow | tools, interactions, state, settings |
 | coretools | agent | filesystem and shell Tools; workspace extension hooks | tools, session, sandbox, artifacts, jobs, workspace root |
-| subagents | agent | child Agent Tools and jobs | child applications, catalog, permissions, jobs, tools |
+| subagents | agent | child Agent application lifecycle, Tools and jobs | runtime paths, session launch, Agent options, catalog, permissions, jobs, tools |
 | goal | agent | durable objective and `/goal` | tools, loop state, commands, engine, model, state, usage |
 | todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
@@ -37,7 +37,7 @@ entry; activation itself is dependency-driven.
 | browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
 | token_manager | agent | request/context observation | session |
 | workspace_instructions | agent | AGENTS.md context contribution | variables, workspace root |
-| interactions | agent | ask-user and client input waiters | tools, client events, session launch |
+| interactions | agent | live client event routing, ask-user and input waiters | tools, session launch |
 | caption | agent | session title Tool and automatic first-message caption | tools, model, loop state, session, agent options, usage |
 | workspaces | server, acp | workspace/session catalog and directory API | sessions, state, workspace root |
 | acp_plugin | acp | ACP carrier | sessions, ACP launch, runtime log |
@@ -75,6 +75,19 @@ data directory through the same session configuration overlay while continuing
 to take each Agent workspace from the ACP session request.
 
 ## Composition pattern
+
+The interactions plugin owns `client_events`; the application host only passes
+an optional parent client interface as a launch fact. Permission and ask-user
+services register their request types on that shared routing capability;
+transports install a live sink through the public interface. A child without
+its own sink forwards requests to its parent. Unloading the child removes only
+its plugin-owned services, not the parent's routing capability.
+
+The subagents plugin constructs its child application launcher rather than
+receiving a host-assembled `child_applications` service. Application startup
+retains ownership until it can return a public handle: a failed handle
+construction or failed child-start record closes the runtime before raising
+the original error, so the caller is not left with an unreachable session lock.
 
 Plugin import/construction and activation failures are isolated by default.
 The loader warns and skips entries it cannot mount; XCore rolls back registered
