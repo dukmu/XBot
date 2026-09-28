@@ -27,6 +27,7 @@ async def start_server_application(
     return await boot_application(
         ctx=ctx,
         tree=tree,
+        required_services=("server", "sessions"),
     )
 
 

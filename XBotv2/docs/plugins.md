@@ -76,6 +76,27 @@ to take each Agent workspace from the ACP session request.
 
 ## Composition pattern
 
+Plugin import/construction and activation failures are isolated by default.
+The loader warns and skips entries it cannot mount; XCore rolls back registered
+effects when Config validation or `apply` fails, including nested `inject`
+mounts. Its error log is diagnostic, not a request to terminate the whole tree.
+Dependents whose required services are unavailable remain pending, while
+unrelated plugins can run.
+
+Hosts gate startup on capabilities they actually consume, using XCore
+`Context.require`: Agent runtime/engine, HTTP server/sessions, ACP agent, and
+the terminal client. There is no loader-maintained list of critical plugin
+names. Capability owners must declare real dependencies: for example, the
+Agent runtime requires the permission service so failed policy initialization
+cannot silently turn into unguarded Tool execution. Missing required services
+abort that host and clean it up; CLI/HTTP diagnostics retain activation errors.
+
+Malformed tree declarations still fail parsing. Explicit configuration edits
+still validate the selected plugin schema before writing; generic tree reads
+do not import and prevalidate every plugin. Cancellation and process-exit
+signals propagate. This policy concerns plugin activation, not arbitrary
+runtime event handlers: the existing event dispatch error semantics remain.
+
 The server carrier has no synthetic Agent session or session-bound `settings`.
 The config plugin mounts those settings only when an actual session launch is
 available. Its HTTP facet uses runtime paths for plugin configuration catalogs

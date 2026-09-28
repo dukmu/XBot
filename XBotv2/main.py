@@ -10,6 +10,9 @@ import subprocess
 import sys
 import webbrowser
 from pathlib import Path
+from traceback import format_exception_only
+
+from xcore import ServiceNotFoundError
 
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.agentloop.protocol import (
@@ -224,6 +227,8 @@ def main(argv: list[str] | None = None):
             parser.print_help()
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
+    except ServiceNotFoundError as exc:
+        parser.exit(2, "Error: " + "".join(format_exception_only(exc)))
 
 
 def _run_server(args) -> None:

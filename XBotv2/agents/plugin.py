@@ -42,6 +42,9 @@ _RUNTIME_DEPENDENCIES = [
     "agent_catalog",
     "agent_loop_factory",
     "settings",
+    # A conversational runtime must not become usable before its tool policy
+    # guard is installed; a failed policy plugin is not an allow-all mode.
+    "permissions",
     "llm",
     "model",
     "tools",

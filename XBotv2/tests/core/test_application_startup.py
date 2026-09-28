@@ -58,6 +58,7 @@ def _write_runtime_config(data_dir, config):
 
 from XBotv2.core.paths import RuntimePaths
 import yaml
+from xcore import ServiceNotFoundError
 
 from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
@@ -79,6 +80,75 @@ async def _run_turn(engine, content):
         input=HumanInput(content=content),
     )
     return [event async for event in engine.run_turn(item)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["import", "apply", "config", "dependency"])
+async def test_optional_plugin_failure_does_not_prevent_an_agent_turn(tmp_path, failure):
+    name = f"optional_failure_{failure}"
+    plugin_root = tmp_path / "plugins"
+    package = plugin_root / name
+    package.mkdir(parents=True)
+    source = {
+        "import": 'raise RuntimeError("optional import failed")\n',
+        "apply": '''
+class Plugin:
+    def apply(self, ctx, config):
+        raise RuntimeError("optional apply failed")
+plugin = Plugin()
+''',
+        "config": '''
+from pydantic import BaseModel
+class Config(BaseModel):
+    required_integer: int
+class Plugin:
+    Config = Config
+    def apply(self, ctx, config):
+        pass
+plugin = Plugin()
+''',
+        "dependency": '''
+class Plugin:
+    inject = ["unavailable_optional_service"]
+    def apply(self, ctx, config):
+        raise AssertionError("must not activate")
+plugin = Plugin()
+''',
+    }[failure]
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+    llm = MockLLM(responses=[{"content": "healthy reply"}])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+        workspace_root=tmp_path, plugin_dirs=[plugin_root], llm_override=llm,
+        extra_plugins=[
+            {"id": name, "name": name},
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+        ],
+    )
+    try:
+        events = await _run_turn(application.engine, "hello")
+        assert not [event for event in events if isinstance(event, LoopError)]
+        completed = next(event for event in events if isinstance(event, AssistantCompleted))
+        assert [part.text for part in completed.message.parts if isinstance(part, TextPart)] == ["healthy reply"]
+        assert len(llm.request_history) == 1
+    finally:
+        await application.destroy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy_entry", [
+    {"id": "permissions", "disabled": True},
+    {"id": "permissions", "config": {"default_decision": "not-a-decision"}},
+])
+async def test_agent_cannot_activate_without_its_permission_guard(tmp_path, policy_entry):
+    llm = MockLLM(responses=[{"content": "must not run"}])
+    with pytest.raises(ServiceNotFoundError, match="agent_runtime"):
+        await start_application(
+            paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+            workspace_root=tmp_path, llm_override=llm,
+            extra_plugins=[policy_entry],
+        )
+    assert not llm.request_history
 
 
 @pytest.mark.asyncio
@@ -249,7 +319,7 @@ class TestApplicationStartupBasics:
 
     @pytest.mark.asyncio
     async def test_application_startup_rejects_unknown_provider(self, temp_data_dir):
-        with pytest.raises(ValueError, match="Unknown provider config: typo"):
+        with pytest.raises(ServiceNotFoundError, match="Unknown provider config: typo"):
             await start_application(
                 paths=RuntimePaths.from_data_dir(temp_data_dir),
                 provider_name="typo",
@@ -359,10 +429,10 @@ class TestApplicationStartupBasics:
         captured = capsys.readouterr()
         assert exc_info.value.code == 2
         assert captured.out == ""
-        assert captured.err == (
-            "Error: Unknown provider config: typo. "
-            "Configured providers: minimax, deepseek, openai, anthropic, lmstudio.\n"
-        )
+        assert captured.err.startswith("Error:")
+        assert "service not found: 'agent_runtime'" in captured.err
+        assert "Unknown provider config: typo" in captured.err
+        assert "Configured providers:" in captured.err
         assert "Traceback" not in captured.err
 
     @pytest.mark.asyncio

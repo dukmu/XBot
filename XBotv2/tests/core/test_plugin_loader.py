@@ -11,7 +11,7 @@ from XBotv2.loader.contracts import PluginOverlay
 from XBotv2.loader.runtime import (
     mount_plugin_tree,
     resolve_plugin_from_module,
-    validate_mounted_tree,
+    report_plugin_activation,
 )
 
 
@@ -57,13 +57,73 @@ def make_plugin_ctx(tmp_path):
 async def start_plugin_tree(ctx, tree: PluginTree):
     handles = mount_plugin_tree(ctx, tree)
     await ctx.start()
-    validate_mounted_tree(handles)
+    report_plugin_activation(ctx.registry.handles())
     return handles
 
 
 # ------------------------------------------------------------------
 # PluginTree parsing
 # ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancelled_initialization_does_not_return_a_live_host(tmp_path):
+    import asyncio
+    from xcore import Context
+    from XBotv2.application.boot import boot_application
+
+    marker = tmp_path / "cancelled-disposed"
+    _write_plugin(tmp_path, "cancelled_initialization", f'''
+import asyncio
+from pathlib import Path
+class Plugin:
+    def apply(self, ctx, config):
+        ctx.dispose(lambda: Path({str(marker)!r}).write_text("disposed"))
+        raise asyncio.CancelledError()
+plugin = Plugin()
+''')
+    ctx = Context(data_dir=tmp_path / "state")
+    with pytest.raises(asyncio.CancelledError):
+        await boot_application(ctx=ctx, tree=PluginTree.parse([
+            {"id": "cancelled", "name": "cancelled_initialization"},
+        ]))
+    assert marker.read_text() == "disposed"
+    assert not ctx.is_active
+
+
+@pytest.mark.asyncio
+async def test_missing_host_capability_fails_and_disposes_other_plugins(tmp_path):
+    from xcore import Context, ServiceNotFoundError
+    from XBotv2.application.boot import boot_application
+
+    marker = tmp_path / "healthy-disposed"
+    _write_plugin(tmp_path, "missing_host_capability", '''
+class Plugin:
+    def apply(self, ctx, config):
+        ctx.set("required_capability", "partial")
+        raise RuntimeError("required producer failed")
+plugin = Plugin()
+''')
+    _write_plugin(tmp_path, "cleanup_observer", f'''
+from pathlib import Path
+class Plugin:
+    def apply(self, ctx, config):
+        ctx.dispose(lambda: Path({str(marker)!r}).write_text("disposed"))
+plugin = Plugin()
+''')
+    ctx = Context(data_dir=tmp_path / "state")
+    with pytest.raises(ServiceNotFoundError, match="required_capability") as failure:
+        await boot_application(
+            ctx=ctx,
+            tree=PluginTree.parse([
+                {"id": name, "name": name}
+                for name in ("missing_host_capability", "cleanup_observer")
+            ]),
+            required_services=("required_capability",),
+        )
+    assert any("required producer failed" in note for note in failure.value.__notes__)
+    assert marker.read_text() == "disposed"
+    assert not ctx.is_active
 
 
 def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tmp_path):
@@ -80,6 +140,61 @@ def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tm
     )
     tree = load_plugin_tree(paths, tmp_path, session_id="review")
     assert tree.entry("uninstalled").disabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_failed_optional_plugin_is_cleaned_without_stopping_healthy_plugins(
+    tmp_path, caplog, nested,
+):
+    from xcore import Context
+    from XBotv2.application.boot import boot_application
+
+    marker = tmp_path / "failed-plugin-disposed"
+    _write_plugin(tmp_path, "optional_broken", f'''
+from pathlib import Path
+def fail(ctx):
+    ctx.set("partial_service", "must not escape")
+    ctx.on("probe", lambda: "failed listener")
+    ctx.dispose(lambda: Path({str(marker)!r}).write_text("disposed"))
+    raise RuntimeError("optional initialization failed")
+class Plugin:
+    def apply(self, ctx, config):
+        if {nested!r}:
+            ctx.inject(["healthy"], fail)
+        else:
+            fail(ctx)
+plugin = Plugin()
+''')
+    _write_plugin(tmp_path, "optional_dependent", '''
+class Plugin:
+    inject = ["partial_service"]
+    def apply(self, ctx, config):
+        ctx.set("dependent", "must not activate")
+plugin = Plugin()
+''')
+    _write_plugin(tmp_path, "healthy_plugin", '''
+class Plugin:
+    def apply(self, ctx, config):
+        ctx.set("healthy", "usable")
+        ctx.on("probe", lambda: "healthy listener")
+plugin = Plugin()
+''')
+    ctx = Context(data_dir=tmp_path / "state")
+    try:
+        await boot_application(ctx=ctx, tree=PluginTree.parse([
+            {"id": name, "name": name}
+            for name in ("optional_broken", "optional_dependent", "healthy_plugin")
+        ]))
+        assert ctx.require("healthy") == "usable"
+        assert not ctx.has("partial_service")
+        assert not ctx.has("dependent")
+        assert await ctx.bail("probe") == "healthy listener"
+        assert marker.read_text() == "disposed"
+        assert any(record.levelname == "WARNING" and "failed" in record.message
+                   for record in caplog.records)
+    finally:
+        await ctx.destroy()
 
 
 class TestPluginTree:

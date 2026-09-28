@@ -6,11 +6,11 @@ import sys
 from functools import partial
 from pathlib import Path
 
-from xcore import Context
+from xcore import Context, FiberState, ServiceNotFoundError
 
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.loader import PluginTree
-from XBotv2.loader.runtime import mount_plugin_tree, validate_mounted_tree
+from XBotv2.loader.runtime import mount_plugin_tree, report_plugin_activation
 
 
 async def boot_application(
@@ -18,8 +18,9 @@ async def boot_application(
     ctx: Context,
     tree: PluginTree,
     plugin_dirs: list[Path | str] | None = None,
+    required_services: tuple[str, ...] = (),
 ) -> Context:
-    """Mount and start a host-prepared XCore application context."""
+    """Start the tree; only the host's required capabilities gate success."""
     import_paths: list[str] = []
     for plugin_dir in plugin_dirs or []:
         root = Path(plugin_dir)
@@ -39,10 +40,21 @@ async def boot_application(
         )
         handles = mount_plugin_tree(ctx, tree)
         await ctx.start()
-        validate_mounted_tree(handles, nested=ctx.registry.handles())
+        mounted = ctx.registry.handles()
+        report_plugin_activation(mounted)
+        for service in required_services:
+            try:
+                ctx.require(service)
+            except ServiceNotFoundError as error:
+                for handle in mounted:
+                    if handle.error is not None:
+                        error.add_note(f"Plugin {handle.name!r} failed: {handle.error}")
+                raise
         application_log.info(
             "application.booted",
-            plugins_running=len(handles),
+            plugins_running=sum(
+                handle.state is FiberState.RUNNING for handle in handles.values()
+            ),
         )
         return ctx
     except BaseException as startup_error:

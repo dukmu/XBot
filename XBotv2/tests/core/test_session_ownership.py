@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from xcore import ServiceNotFoundError
 
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.errors import OperationError
@@ -158,7 +159,7 @@ async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
         workspace_root=tmp_path, no_plugins=True, llm_override=MockLLM(responses=[]),
     )
     try:
-        with pytest.raises(ValueError, match="Unknown primary agent: uninstalled-agent"):
+        with pytest.raises(ServiceNotFoundError, match="Unknown primary agent: uninstalled-agent"):
             await start_application(
                 paths=paths, session_id="owned", thread_id="child",
                 workspace_root=tmp_path, no_plugins=True,

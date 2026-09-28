@@ -46,27 +46,30 @@ def test_session_config_rejects_aggregate_document(temp_data_dir, temp_workspace
         load_plugin_tree(paths, temp_workspace, "session")
 
 
-def test_config_rejects_invalid_cache_policy_and_removed_coretools_policy(
+@pytest.mark.parametrize(("plugin_id", "config", "error"), [
+    ("content_cache", {"threshold_chars": 100, "preview_chars": 101}, "preview_chars"),
+    ("coretools", {"tool_results": {"cache_threshold_chars": 100}}, "tool_results"),
+])
+def test_config_edit_rejects_invalid_plugin_policy_without_writing(
+    temp_data_dir, temp_workspace, plugin_id, config, error,
+):
+    from XBotv2.config.contracts import PatchPluginConfig
+    from XBotv2.config.plugin_catalog import plugin_config_catalog, update_plugin_config
+
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    catalog = plugin_config_catalog(paths, temp_workspace, "global")
+    with pytest.raises(ValueError, match=error):
+        update_plugin_config(
+            paths, temp_workspace, plugin_id,
+            PatchPluginConfig(scope="global", revision=catalog.revision, config=config),
+        )
+    assert not (paths.config_dir / "plugins.yaml").exists()
+
+
+def test_config_rejects_removed_entry_fields(
     temp_data_dir, temp_workspace
 ):
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    _write_yaml(paths.config_dir / "plugins.yaml", [{
-        "id": "content_cache",
-        "config": {
-            "threshold_chars": 100,
-            "preview_chars": 101,
-        },
-    }])
-    with pytest.raises(ValueError, match="preview_chars"):
-        load_plugin_tree(paths, temp_workspace)
-
-    _write_yaml(paths.config_dir / "plugins.yaml", [{
-        "id": "coretools",
-        "config": {"tool_results": {"cache_threshold_chars": 100}},
-    }])
-    with pytest.raises(ValueError, match="tool_results"):
-        load_plugin_tree(paths, temp_workspace)
-
     _write_yaml(paths.config_dir / "plugins.yaml", [{"agent_name": "legacy"}])
     with pytest.raises(ValueError, match="agent_name"):
         load_plugin_tree(paths, temp_workspace)

@@ -11,6 +11,7 @@ import logging
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
+from traceback import format_exception_only
 from typing import AsyncIterator, Literal, Protocol, TypeAlias
 from urllib.parse import quote
 
@@ -430,7 +431,7 @@ def build_session_router(
         except Exception as exc:  # noqa: BLE001
             logger.exception("Session open failed for %s", raw_session_id or "<new>")
             raise HttpServerError(
-                "session_open_failed", str(exc), status=500
+                "session_open_failed", "".join(format_exception_only(exc)).strip(), status=500
             ) from exc
         page = await _requested_history_page(
             sessions,

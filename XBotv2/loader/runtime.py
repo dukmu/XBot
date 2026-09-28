@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from xcore import Context, FiberState, PluginHandle
 from xcore.plugin import resolve_plugin
 
-from XBotv2.loader.contracts import LoadError, PluginEntry, PluginTree
+from XBotv2.loader.contracts import PluginEntry, PluginTree
 
 logger = logging.getLogger("xbotv2.loader")
 
@@ -48,14 +48,21 @@ def mount_plugin_tree(
         if entry.disabled:
             logger.debug("plugin.skipped entry=%s reason=disabled", entry.id)
             continue
-        plugin = _fresh_plugin(_import_plugin(entry.name), entry)
-        mount_ctx = ctx
-        for name, label in (entry.isolate or {}).items():
-            mount_ctx = mount_ctx.isolate(
-                name,
-                label if label is not True else None,
+        try:
+            plugin = _fresh_plugin(_import_plugin(entry.name), entry)
+            mount_ctx = ctx
+            for name, label in (entry.isolate or {}).items():
+                mount_ctx = mount_ctx.isolate(
+                    name,
+                    label if label is not True else None,
+                )
+            handles[entry.id] = mount_ctx.plugin(plugin, entry.config)
+        except Exception:
+            logger.warning(
+                "plugin.mount.failed entry=%s module=%s; skipping",
+                entry.id, entry.name, exc_info=True,
             )
-        handles[entry.id] = mount_ctx.plugin(plugin, entry.config)
+            continue
         logger.debug(
             "plugin.mounted entry=%s module=%s isolates=%s",
             entry.id,
@@ -65,50 +72,22 @@ def mount_plugin_tree(
     return handles
 
 
-def validate_mounted_tree(
-    handles: dict[str, PluginHandle],
-    *,
-    nested: tuple[PluginHandle, ...] = (),
-) -> None:
-    """Fail startup when a mounted plugin failed or has unmet dependencies."""
-    for entry_id, handle in handles.items():
+def report_plugin_activation(handles: tuple[PluginHandle, ...]) -> None:
+    """Report deferred capabilities; XCore isolates and logs failed fibers."""
+    for handle in handles:
         if handle.state is FiberState.FAILED:
-            assert handle.error is not None
-            raise handle.error
-    for handle in nested:
-        if handle.state is FiberState.FAILED:
-            assert handle.error is not None
-            raise handle.error
-    # Nested inject mounts (capability mounts such as subagents, skills, or
-    # HTTP contributions) may legitimately stay pending when a composition
-    # does not need them (e.g. headless runs without a server). They are
-    # reported distinguishably so a typo'd dependency ("blocked") is not
-    # silently indistinguishable from "not needed".
-    blocked_nested = [
-        handle for handle in nested
-        if handle.state is not FiberState.RUNNING
-    ]
-    if blocked_nested:
-        logger.info(
-            "plugin.activation.deferred nested=%s",
-            ", ".join(
-                f"{handle.name}(state={handle.state.value}, "
-                f"missing={list(handle.missing_dependencies)})"
-                for handle in blocked_nested
-            ),
-        )
-    for entry_id, handle in handles.items():
-        if handle.state is not FiberState.RUNNING:
-            logger.error(
-                "plugin.activation.blocked entry=%s state=%s missing_dependencies=%s",
-                entry_id,
-                handle.state.value,
-                list(handle.missing_dependencies),
+            # Cancellation and process-exit signals are not optional-plugin
+            # failures. Do not turn a cancelled boot into a running host.
+            if handle.error is not None and not isinstance(handle.error, Exception):
+                raise handle.error
+            logger.warning(
+                "plugin.activation.failed name=%s; skipping: %s",
+                handle.name, handle.error,
             )
-            raise LoadError(
-                f"plugin {entry_id!r} did not activate; "
-                "unmet inject dependencies: "
-                f"{list(handle.missing_dependencies)}"
+        elif handle.state is not FiberState.RUNNING:
+            logger.info(
+                "plugin.activation.deferred name=%s state=%s missing_dependencies=%s",
+                handle.name, handle.state.value, list(handle.missing_dependencies),
             )
 
 
@@ -139,10 +118,10 @@ def plugin_config_schema(entry: PluginEntry) -> Any:
 
 
 def validate_plugin_config(schema: Any, raw_config: Any) -> Any:
-    """Validate a plugin-owned Pydantic config before mounting it.
+    """Validate an explicit configuration edit against the producer's schema.
 
-    XCore remains dependency-free; XBot-owned plugins use Pydantic models and
-    are validated here before the plugin is mounted.
+    Activation validation belongs to XCore; generic tree reads do not call
+    this across every plugin, which would defeat activation failure isolation.
     """
     if isinstance(schema, type) and issubclass(schema, BaseModel):
         return schema.model_validate(raw_config or {})
@@ -203,5 +182,5 @@ __all__ = [
     "plugin_config_schema",
     "resolve_plugin_from_module",
     "validate_plugin_config",
-    "validate_mounted_tree",
+    "report_plugin_activation",
 ]

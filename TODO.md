@@ -49,7 +49,10 @@
 - [x] server 宿主 overlay 入口迁移验证：CLI/server/HTTP/fold-in 队列/真实 server TUI `169 passed, 6 deselected in 178.58s`；CLI 同时验证显式值和省略值映射，以及正常/异常 serve 的同循环清理。未据此宣称完成 factory/Agent 装配。
 - [ ] application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
 - [x] Agent 启动所有权修复：复现子 Agent 初始化失败后重复释放共享 claim，导致其他进程取得仍活跃父会话的锁。改为先争锁再创建持久化资源；初始化成功才将释放责任转给 Context，失败清理完成后释放一次。回滚只删除本次新 thread 和空父目录，保留同进程兄弟线程文件。所有权/启动测试 `56 passed in 22.80s`，包含真实子进程争锁及拒绝启动/资源创建失败/兄弟线程文件保留。
-- [ ] 按用户最新要求修改插件失败语义：初始化失败默认警告并隔离清理，不使整个树失败；必需依赖/宿主入口不可用才按声明依赖规则失败，不硬编码核心插件名单。
+- [x] 插件导入/构造/Config/apply/inject 激活失败默认隔离；XCore 原 error 日志不改，loader 记录 skip，不再遍历任何失败即抛出。宿主按 Context.require 检查实际入口，Agent 声明 permissions 依赖防止 guard 缺失仍启动。移除 server profile 对 llm 插件 ID 的特殊检查及通用配置读取的跨插件预校验；编辑配置仍在写入边界验证。
+- [x] 失败隔离功能证据：顶层/嵌套 apply 部分服务、监听器、资源被清理，健康插件及真实 Agent 单轮继续；import/config/缺依赖同样不阻断无关能力。必需服务失败仍清理宿主，HTTP/CLI 保留原始错误原因；新增权限失效/禁用的 fail-closed 验证。取消信号和运行期事件回调错误不作为可忽略的插件激活异常。
+- [x] 失败隔离最终验证：非 WebUI Core/integration/ACP `674 passed, 11 deselected in 165.10s`；另跑完整 XCore/browser 工具/HTTP carrier `139 passed in 17.22s`，补齐名字含 web 而被前一命令筛掉的非 WebUI 用例。TUI 缩窗 + HTTP 错误诊断独立复测 `2 passed in 6.03s`。曾将两个测试树一起收集而出现同名模块冲突，已分开运行；没有删除测试解决收集问题。
+- [ ] 2026-09-28 扩大回归中真实 tmux 提问卡 120×40 → 80×24 出现一次右边框裁切，独立复测通过，原因未定；不得把单独重跑通过写成问题修复。loader 顺序完成后继续 TUI resize/渲染验收。
 - [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
 - [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
 - [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from pydantic import JsonValue
 
@@ -17,9 +17,6 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.loader import resolve_agent_tree
 from XBotv2.loader.contracts import PluginTree
-from XBotv2.loader.runtime import plugin_config_schema, validate_plugin_config
-
-
 
 
 def load_plugin_tree(
@@ -67,13 +64,6 @@ def load_plugin_tree(
             paths, workspace, paths.session(session_id).thread(thread_id)
         )
         tree = tree_with_expanded_configs(tree, variables)
-    for entry in tree.entries:
-        if entry.disabled:
-            continue
-        validate_plugin_config(
-            plugin_config_schema(entry),
-            entry.config,
-        )
     return tree
 
 

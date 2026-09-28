@@ -41,10 +41,7 @@ def load_server_tree(
     *, paths: RuntimePaths, overrides: PluginOverlay | None = None
 ) -> PluginTree:
     """Load the declarative server application profile."""
-    selected = _load_carrier_tree(paths, "server", overrides)
-    if not any(entry.id == "llm" for entry in selected.entries):
-        raise ValueError("server application requires the llm profile entry")
-    return selected
+    return _load_carrier_tree(paths, "server", overrides)
 
 
 def load_acp_tree(

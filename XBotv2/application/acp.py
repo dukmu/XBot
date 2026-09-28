@@ -40,6 +40,7 @@ async def start_acp_application(
     return await boot_application(
         ctx=ctx,
         tree=tree,
+        required_services=("acp_agent",),
     )
 
 

@@ -190,6 +190,7 @@ async def start_application(
             ctx=plugin_ctx,
             tree=tree,
             plugin_dirs=plugin_dirs,
+            required_services=("agent_runtime", "engine"),
         )
         await plugin_ctx.agent_runtime.announce_initialized()
 
