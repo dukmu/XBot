@@ -25,6 +25,36 @@ async def test_roundtrip_and_defaults(tmp_path):
     assert await state.get("k") is None
 
 
+async def test_memory_state_namespaces_share_values_without_creating_files(tmp_path):
+    state = StateService.memory()
+    ctx = Context(data_dir=tmp_path / "unused", state_service=state)
+    await ctx.start()
+    try:
+        source = {"items": ["one"]}
+        await ctx.state.namespace("goal").set("value", source)
+        source["items"].append("outside")
+        assert await state.namespace("goal").get("value") == {"items": ["one"]}
+        await asyncio.gather(*(
+            state.namespace("todo").set(str(index), index) for index in range(10)
+        ))
+        assert await ctx.state.namespace("todo").all() == {
+            str(index): index for index in range(10)
+        }
+        await state.namespace("todo").delete("0")
+        assert "0" not in await state.namespace("todo").keys()
+        await state.namespace("todo").clear()
+        assert await state.namespace("todo").all() == {}
+        await ctx.stop()
+        await ctx.start()
+        assert await ctx.state.namespace("goal").get("value") == {"items": ["one"]}
+        with pytest.raises(TypeError):
+            await state.set("bad", object())
+    finally:
+        await ctx.destroy()
+    assert list(tmp_path.iterdir()) == []
+    assert await StateService.memory().all() == {}
+
+
 async def test_persisted_across_instances(tmp_path):
     path = _path(tmp_path)
     await StateService(path=path).set("key", "value")

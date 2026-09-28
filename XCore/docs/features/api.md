@@ -37,7 +37,7 @@
 - `PluginHandle`：可 `await`（加载完成/失败重抛）；`dispose() -> Awaitable[None]`；
   `state: FiberState`；`error: BaseException | None`；
   `missing_dependencies: tuple[str, ...]`；`restart() -> Awaitable[None]`。
-- `StateService`：`get/set/delete/clear/keys/all` 全 async；`namespace(prefix) -> StateService`。
+- `StateService`：`get/set/delete/clear/keys/all` 全 async；`namespace(prefix) -> StateService`。`StateService(path=...)` 使用原子 JSON 文件；`StateService.memory()` 显式创建仅内存状态，两者 namespace/校验/共享锁语义相同。
 - `Service`：子类定义 `name`；`__init__(ctx, *, name=None)`。
 - 插件配置：插件的 `Config` 必须是提供 `model_validate` 和
   `model_json_schema` 的 Pydantic 模型；XCore 只调用 `model_validate`，不拥有配置

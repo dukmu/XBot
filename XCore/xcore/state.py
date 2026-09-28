@@ -1,10 +1,10 @@
-"""StateService: recoverable persisted key-value storage.
+"""StateService: shared JSON state with explicit file or memory storage.
 
 XCore's first-class answer to "recoverable state" (a Cordis extension: the JS
 framework persists via database/config, not a KV state service).  Backed by a
 single JSON file written atomically (temp file + ``os.replace``), so a crash
 never leaves a half-written file and a restart recovers the last persisted
-state.
+state. ``StateService.memory()`` instead keeps values only for its lifetime.
 
 Design notes (from the design review, E1/E2):
 
@@ -37,37 +37,12 @@ def _validate_jsonable(value: Any) -> None:
     json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
-@dataclass
-class _Shared:
-    """Per-file shared state: cache, lock, and write target."""
-
+@dataclass(frozen=True)
+class _FileStorage:
     path: Path
-    data: dict[str, Any] | None = None
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-
-class StateService:
-    """Persisted key-value store with atomic writes and namespace views.
-
-    All methods are async; reads load lazily on first access, writes persist
-    immediately (await the call for durability).
-    """
-
-    def __init__(self, *, path: Path | str) -> None:
-        self._shared = _Shared(path=Path(path))
-        self._prefix = ""
-
-    # -- internal -----------------------------------------------------------
-
-    def _full_key(self, key: str) -> str:
-        if not isinstance(key, str) or not key:
-            raise ValueError("state key must be a non-empty string")
-        return f"{self._prefix}{key}"
-
-    async def _ensure_loaded(self) -> dict[str, Any]:
-        if self._shared.data is not None:
-            return self._shared.data
-        path = self._shared.path
+    async def load(self) -> dict[str, Any]:
+        path = self.path
         if path.exists():
             try:
                 text = path.read_text(encoding="utf-8")
@@ -89,16 +64,10 @@ class StateService:
                 data = loaded
         else:
             data = {}
-        self._shared.data = data
-        logger.debug(
-            "state.loaded path=%s keys=%d",
-            path,
-            len(data),
-        )
         return data
 
-    async def _persist(self, data: dict[str, Any]) -> None:
-        path = self._shared.path
+    async def save(self, data: dict[str, Any]) -> None:
+        path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             dir=path.parent,
@@ -117,6 +86,62 @@ class StateService:
                 pass
             raise
 
+
+@dataclass(frozen=True)
+class _MemoryStorage:
+    async def load(self) -> dict[str, Any]:
+        return {}
+
+    async def save(self, data: dict[str, Any]) -> None:
+        pass
+
+
+@dataclass
+class _Shared:
+    """One cache and lock shared by every namespace of a state service."""
+
+    storage: _FileStorage | _MemoryStorage
+    data: dict[str, Any] | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class StateService:
+    """JSON state with namespace views and an explicit storage lifetime.
+
+    File-backed construction uses atomic writes. ``memory()`` retains the
+    same state semantics for one service lifetime without filesystem access.
+    """
+
+    def __init__(self, *, path: Path | str) -> None:
+        self._shared = _Shared(storage=_FileStorage(Path(path)))
+        self._prefix = ""
+
+    @classmethod
+    def memory(cls) -> "StateService":
+        """Create non-durable state; namespace views share its cache and lock."""
+        service = object.__new__(cls)
+        service._shared = _Shared(storage=_MemoryStorage())
+        service._prefix = ""
+        return service
+
+    def _full_key(self, key: str) -> str:
+        if not isinstance(key, str) or not key:
+            raise ValueError("state key must be a non-empty string")
+        return f"{self._prefix}{key}"
+
+    async def _ensure_loaded(self) -> dict[str, Any]:
+        if self._shared.data is None:
+            self._shared.data = await self._shared.storage.load()
+            logger.debug(
+                "state.loaded storage=%s keys=%d",
+                self._shared.storage,
+                len(self._shared.data),
+            )
+        return self._shared.data
+
+    async def _persist(self, data: dict[str, Any]) -> None:
+        await self._shared.storage.save(data)
+
     # -- public API ---------------------------------------------------------
 
     async def get(self, key: str, default: Any = None) -> Any:
@@ -131,7 +156,7 @@ class StateService:
             return copy.deepcopy(value)
 
     async def set(self, key: str, value: Any) -> None:
-        """Write one key and persist immediately. Rejects non-JSON values."""
+        """Commit one key to the configured storage. Reject non-JSON values."""
         _validate_jsonable(value)
         full_key = self._full_key(key)
         async with self._shared.lock:
@@ -141,8 +166,8 @@ class StateService:
             await self._persist(updated)
             self._shared.data = updated
             logger.debug(
-                "state.persisted operation=set path=%s namespace=%s key=%s keys=%d",
-                self._shared.path,
+                "state.persisted operation=set storage=%s namespace=%s key=%s keys=%d",
+                self._shared.storage,
                 self._prefix,
                 key,
                 len(updated),
@@ -159,8 +184,8 @@ class StateService:
                 await self._persist(updated)
                 self._shared.data = updated
                 logger.debug(
-                    "state.persisted operation=delete path=%s namespace=%s key=%s keys=%d",
-                    self._shared.path,
+                    "state.persisted operation=delete storage=%s namespace=%s key=%s keys=%d",
+                    self._shared.storage,
                     self._prefix,
                     key,
                     len(updated),
@@ -180,8 +205,8 @@ class StateService:
             await self._persist(updated)
             self._shared.data = updated
             logger.debug(
-                "state.persisted operation=clear path=%s namespace=%s keys=%d",
-                self._shared.path,
+                "state.persisted operation=clear storage=%s namespace=%s keys=%d",
+                self._shared.storage,
                 self._prefix,
                 len(updated),
             )
@@ -209,7 +234,7 @@ class StateService:
     def namespace(self, prefix: str) -> "StateService":
         """Return a view whose keys are namespaced under ``prefix``.
 
-        Views share the file, the in-memory cache, and the lock, so concurrent
+        Views share the storage, the in-memory cache, and the lock, so concurrent
         writes across namespaces are safe. Used for per-plugin isolation.
         """
         if not isinstance(prefix, str) or not prefix:

@@ -358,6 +358,8 @@ pending → loading → running ──依赖丢失/stop──→ unloading → p
 ```python
 class StateService:
     def __init__(self, *, path: Path) -> None          # path 必填（生产显式传 data_dir/state.json）
+    @classmethod
+    def memory(cls) -> StateService                  # 显式内存存储，不读写文件
     async def get(self, key, default=None) -> Any
     async def set(self, key, value) -> None            # 校验 JSON 可序列化；立即原子落盘
     async def delete(self, key) -> None
@@ -377,6 +379,9 @@ class StateService:
   一致。
 - 命名空间：`namespace("goal")` → 键 `"goal.<key>"`，per-plugin 隔离（对应 XBotv2
   `PluginStore` 迁移映射）。
+- `StateService.memory()` 使用相同的 JSON 校验、namespace、共享缓存和锁；同一 Context
+  stop/start 保留值，新建服务不继承值。宿主可通过 `Context(state_service=...)` 显式选择
+  内存状态，插件无需按是否持久化分支。文件存储仍保持原子 JSON 快照语义。
 
 ## 9. 插件配置
 
