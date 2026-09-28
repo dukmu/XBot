@@ -29,7 +29,7 @@
 - [x] 不创建 wrapper executor、伪造 `ToolCall` 或权限旁路；工具统一经过标准 registry、permission 和 execution path。
 - [x] 不做 WebUI 工作，也不因 WebUI 测试调整主模型；本轮范围是主要代码、Core/HTTP 运行时和主线 Textual TUI 插件。
 - [x] Bench 不属于本轮验收；不能证明产品行为的 bench 不修、不迁移。
-- [x] 不提交代码；保留用户现有 staged/unstaged 修改，不重置、不覆盖无关工作。
+- [x] 用户最新授权允许在稳定节点提交；保留用户现有 staged/unstaged 修改，不重置、不覆盖无关工作，不把无关工作混入提交。
 - [x] 不通过删除有效功能测试取得绿灯；只删除锁定已删除语义、私有结构或完全重复证据的测试。
 - [x] 真实供应商网络 smoke 仅在凭证和网络可用时 opt-in；未运行时记录原因。真实 SDK 类型、adapter contract 和本地真实 server 路径仍是必需证据。
 - [x] Browser 安全验收限定为已声明的 policy、关键协议互操作和资源清理；无界远程/攻击组合矩阵另列安全 backlog，不阻塞本轮。
@@ -40,6 +40,10 @@
 
 - [ ] 第一阶段 loader：统一 YAML/内存配置解析和覆盖入口；CLI 参数按规则成为最后一层内存 overlay。application/CLI 不再手工组装插件服务；持久化、artifacts、child applications、client router 等由所属插件声明并提供，XCore 管依赖和生命周期。
 - [ ] 查清 agent/server/client/acp 当前各入口的 launch facts、对象依赖及资源所有权，逐条迁移生产入口；不把旧 bootstrap 换个名字后继续手工组装，不添加第二个 DI/事件框架。
+- [x] 删除 server 的伪造 `SessionLaunch("server")` 及配套 plugin_overrides/plugin_dirs/no_plugins 服务。config 的 session settings 与 HTTP facet 独立依赖挂载；HTTP 直接使用已有配置目录函数，权限操作仍分发至真实线程。删除 SettingsPort/ConfigService 的目录转发方法，无新增 service 或兼容路径。
+- [x] 该节点验证：startup/config-catalog/loader/HTTP 共 182 项中，受限沙箱 `171 passed, 11 failed`（socket 创建被拒）；随后允许 loopback 原样重跑失败项 `11 passed in 13.01s`。覆盖配置目录 revision、真实会话权限持久化、SSE 中断、交互恢复和 compact；未运行 WebUI 或真实供应商请求。
+- [ ] HTTP 测试 `_real_client` 仍将 uvicorn 放在另一个线程/事件循环，与已修正的 CLI 单循环生命周期不一致；后续验证中迁移该测试宿主，不将其当成完整 CLI 生命周期证据。
+- [ ] server 的 ServerOptions、application factory、workspace 所有权以及 Agent/ACP 装配仍未迁移完，不能据局部启动测试通过关闭 loader 阶段。
 - [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
 - [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
 - [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。

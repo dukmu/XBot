@@ -1,4 +1,4 @@
-"""Runtime configuration service (``ctx.config``).
+"""Session configuration service (``ctx.settings``).
 
 Provides the user context resolved by the config plugin from its tree config
 and path-bound runtime config parsing for applications.  Provider
@@ -13,17 +13,13 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from XBotv2.config.loader import load_plugin_tree as resolve_plugin_tree
-from XBotv2.config.plugin_catalog import update_plugin_config
 from XBotv2.config.policy import load_session_policy, patch_session_policy
 
 logger = logging.getLogger("xbotv2.config")
 
 from XBotv2.config.contracts import (
     ConfigPluginConfig,
-    PatchPluginConfig,
     PatchPolicy,
-    PluginConfigCatalog,
-    PluginConfigScope,
     PolicySnapshot,
     SettingsPort,
     UserContext,
@@ -169,31 +165,6 @@ class ConfigService(SettingsPort):
             policy=policy,
             effective_permissions=permissions,
             effective_sandbox=sandbox,
-        )
-
-    def plugin_config_catalog(
-        self,
-        workspace: Path,
-        scope: PluginConfigScope,
-        session_id: str,
-    ) -> PluginConfigCatalog:
-        from XBotv2.config.plugin_catalog import plugin_config_catalog
-
-        return plugin_config_catalog(self.paths, workspace, scope, session_id)
-
-    def update_plugin_config(
-        self,
-        workspace: Path,
-        plugin_id: str,
-        patch: PatchPluginConfig,
-        session_id: str,
-    ) -> PluginConfigCatalog:
-        return update_plugin_config(
-            self.paths,
-            workspace,
-            plugin_id,
-            patch,
-            session_id,
         )
 
 

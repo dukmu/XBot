@@ -1,4 +1,4 @@
-"""Config component: the configuration parsing service (``ctx.config``)."""
+"""Session settings and independently mounted configuration HTTP routes."""
 
 from __future__ import annotations
 
@@ -16,42 +16,41 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.config.http",
-        router=build_router(sessions=ctx.sessions, settings=ctx.settings),
+        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths),
     )
 
 
+def mount_settings(ctx: Context) -> None:
+    """Mount policy operations only in an actual Agent session."""
+    settings = ConfigService(
+        ctx.runtime_paths,
+        session_id=ctx.session_launch.session_id,
+        workspace_root=ctx.session_launch.workspace_root,
+        events=ctx,
+        runtime_log=ctx.runtime_log,
+        extra_plugins=ctx.plugin_overrides,
+        plugin_dirs=ctx.plugin_dirs,
+        is_subagent=ctx.session_launch.is_subagent,
+        no_plugins=ctx.no_plugins,
+    )
+    ctx.set("settings", settings)
+    operations = ConfigOperations(settings)
+    ctx.on(GET_POLICY.name, operations.get_policy)
+    ctx.on(UPDATE_POLICY.name, settings.update_policy)
+
+
 class ConfigPlugin:
-    """Provide session-bound settings and the configuration HTTP routes."""
+    """Compose independent session settings and configuration HTTP routes."""
 
     name = "xbot.config"
     Config = ConfigPluginConfig
-    inject = [
-        "runtime_log", "runtime_paths", "session_launch",
-        "plugin_overrides", "plugin_dirs",
-        "no_plugins",
-    ]
 
-    def apply(
-        self,
-        ctx: Context,
-        config: ConfigPluginConfig,
-    ) -> None:
-        settings = ConfigService(
-            ctx.runtime_paths,
-            session_id=ctx.session_launch.session_id,
-            workspace_root=ctx.session_launch.workspace_root,
-            events=ctx,
-            runtime_log=ctx.runtime_log,
-            extra_plugins=ctx.plugin_overrides,
-            plugin_dirs=ctx.plugin_dirs,
-            is_subagent=ctx.session_launch.is_subagent,
-            no_plugins=ctx.no_plugins,
-        )
-        ctx.set("settings", settings)
-        operations = ConfigOperations(settings)
-        ctx.on(GET_POLICY.name, operations.get_policy)
-        ctx.on(UPDATE_POLICY.name, settings.update_policy)
-        ctx.inject(["server", "sessions", "settings"], mount_http)
+    def apply(self, ctx: Context, config: ConfigPluginConfig) -> None:
+        ctx.inject([
+            "runtime_log", "runtime_paths", "session_launch",
+            "plugin_overrides", "plugin_dirs", "no_plugins",
+        ], mount_settings)
+        ctx.inject(["server", "sessions", "runtime_paths"], mount_http)
 
 
 class ConfigOperations:

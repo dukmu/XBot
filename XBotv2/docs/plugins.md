@@ -11,9 +11,9 @@ entry; activation itself is dependency-driven.
 
 | id/name | profiles | primary responsibility | important injected services |
 |---|---|---|---|
-| config | agent, server | settings, policy and configuration routes | runtime paths, launch, plugin overrides/dirs, server/sessions |
-| client_transport | client | HTTP API client bound to the resolved client launch | client launch |
-| tui | client | Textual terminal client and local command presentation | client API, client launch, commands |
+| config | agent, server | session settings/policy; independent configuration routes | session facet: runtime paths, launch, plugin overrides/dirs, runtime log, no_plugins; HTTP facet: runtime paths, server/sessions |
+| client_transport | client | HTTP API client using its own plugin configuration | none |
+| tui | client | Textual terminal client and local command presentation using its own plugin configuration | client API, commands |
 | persistence | agent, server, acp | history/state/artifact hydration and reader factory | loop state, thread persistence, runtime log |
 | usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
 | agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, sessions |
@@ -44,6 +44,11 @@ entry; activation itself is dependency-driven.
 | server | server | FastAPI carrier and health/hello | runtime log |
 
 ## Composition pattern
+
+The server carrier has no synthetic Agent session or session-bound `settings`.
+The config plugin mounts those settings only when an actual session launch is
+available. Its HTTP facet uses runtime paths for plugin configuration catalogs
+and writes; session policy requests dispatch to the addressed Agent thread.
 
 The root `plugin.py` is the only registration object. It can define named
 dependency-gated mount functions for catalog, runtime, commands, and HTTP.

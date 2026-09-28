@@ -114,19 +114,6 @@ class SettingsPort(Protocol):
     def permission_policies(self) -> tuple[PermissionPolicy, ...]: ...
     def policy(self) -> PolicySnapshot: ...
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot: ...
-    def plugin_config_catalog(
-        self,
-        workspace: Path,
-        scope: PluginConfigScope,
-        session_id: str,
-    ) -> PluginConfigCatalog: ...
-    def update_plugin_config(
-        self,
-        workspace: Path,
-        plugin_id: str,
-        patch: PatchPluginConfig,
-        session_id: str,
-    ) -> PluginConfigCatalog: ...
 
 
 GET_POLICY = Operation("config/policy/get", EmptyRequest, PolicySnapshot)

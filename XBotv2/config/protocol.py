@@ -17,10 +17,11 @@ from XBotv2.config.contracts import (
     PluginConfigConflict,
     PluginConfigScope,
     PluginConfigUnavailable,
-    SettingsPort,
 )
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.config.plugin_catalog import plugin_config_catalog, update_plugin_config
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.permissions import PermissionPolicy
@@ -109,7 +110,7 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter:
+def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
     router = APIRouter()
 
     async def _main_thread_id(session_id: str) -> str:
@@ -176,8 +177,8 @@ def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter
     ) -> PluginConfigCatalog:
         thread = await sessions.thread_summary(session_id, thread_id)
         try:
-            return settings.plugin_config_catalog(
-                thread.workspace_root, scope, session_id
+            return plugin_config_catalog(
+                paths, thread.workspace_root, scope, session_id
             )
         except ValueError as exc:
             raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
@@ -195,7 +196,8 @@ def build_router(*, sessions: SessionsPort, settings: SettingsPort) -> APIRouter
     ) -> PluginConfigCatalog:
         thread = await sessions.thread_summary(session_id, thread_id)
         try:
-            return settings.update_plugin_config(
+            return update_plugin_config(
+                paths,
                 thread.workspace_root,
                 plugin_id,
                 PatchPluginConfig(

@@ -6266,6 +6266,11 @@ async def test_http_plugin_config_catalog_is_schema_driven_and_revisioned(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
+    # A carrier has no conversation: configuration routes must not require a
+    # fabricated session or register thread-local policy handlers on the host.
+    host = http_app.state.test_context
+    assert not host.has("session_launch")
+    assert not host.has("settings")
     opened = await client.post(
         "/sessions", json={"session_id": "plugin-config", "thread_id": "t"}
     )
