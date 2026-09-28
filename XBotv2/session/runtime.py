@@ -38,6 +38,7 @@ from XBotv2.agentloop.events import ObserveInbox
 from XBotv2.core.timing import conversation_stats
 from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
 from XBotv2.core.history import HistoryPage
+from XBotv2.core.messages import RuntimeNoticeMessage
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.interactions import (
     InteractionRequest,
@@ -66,8 +67,8 @@ from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.records import (
     HumanInputRecord,
     InputRecordPayload,
-    RuntimeNoticeRecord,
     project_human_input,
+    project_message,
 )
 
 
@@ -234,6 +235,15 @@ class SessionRuntime(SessionPort):
                 self._active_router.emit(consumed)
             else:
                 self._publish_runtime_event(consumed)
+            consumed_ids = {item.id for item in change.items}
+            for message in self.application.loop_state.messages:
+                if (
+                    isinstance(message, RuntimeNoticeMessage)
+                    and message.notice_id in consumed_ids
+                ):
+                    self.publish_event(MessagePublishedEvent(
+                        record=InputRecordPayload(project_message(message))
+                    ))
         if not isinstance(change, Claimed):
             return
         for item in change.items:
@@ -245,14 +255,9 @@ class SessionRuntime(SessionPort):
                     artifacts=item.input.artifacts,
                 )
             elif isinstance(item.input, RuntimeInput):
-                record = RuntimeNoticeRecord(
-                    id=item.id,
-                    source=item.input.source,
-                    event=item.input.event,
-                    content=item.input.content,
-                    images=item.input.images,
-                    artifacts=item.input.artifacts,
-                )
+                # A claim precedes acceptance and canonicalization. Publish
+                # model-facing inputs from committed history on consumption.
+                continue
             else:  # pragma: no cover - InputPayload is closed
                 raise TypeError(f"Unsupported inbox input: {item.input!r}")
             event = MessagePublishedEvent(record=InputRecordPayload(record))

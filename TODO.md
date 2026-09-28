@@ -36,6 +36,24 @@
 
 ## 3. 当前权威基线
 
+### 2026-09-28 用户确认的推进顺序
+
+- [ ] 第一阶段 loader：统一 YAML/内存配置解析和覆盖入口；CLI 参数按规则成为最后一层内存 overlay。application/CLI 不再手工组装插件服务；持久化、artifacts、child applications、client router 等由所属插件声明并提供，XCore 管依赖和生命周期。
+- [ ] 查清 agent/server/client/acp 当前各入口的 launch facts、对象依赖及资源所有权，逐条迁移生产入口；不把旧 bootstrap 换个名字后继续手工组装，不添加第二个 DI/事件框架。
+- [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
+- [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
+- [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。
+- [ ] 第二阶段 agentloop / 核心模型 / event bus：统一输入接受、短路、消费、模型调用和消息发布时序；核对 live 与 history 的身份及内容一致性。
+- [ ] 第三阶段 persistence/resume：验证 inbox 与 history 提交关联、崩溃恢复去重、surface/transcript 投影、分页和持久字段的唯一来源。
+- [ ] 第四阶段各插件：核对 compact、goal、todo 等的声明式依赖、事件语义与用户可观察行为；删除补丁式 fallback 和重复业务状态。
+- [ ] 第五阶段 TUI：完成主题、分页 transcript、/thread 子代理只读查看、上下文注入、复合真实交互；以运行帧和持久记录验收，不以旧计划打勾代替。
+
+- [x] 2026-09-28 底层审查复现并修复 XCore prepend/append 混用顺序错误，以及共用回调的两个订阅在 disposal 时卸载错对象；XCore `98 passed`。
+- [x] 2026-09-28 禁用插件不再被 config loader 导入；挂载配置验证交回 XCore，schema 查询不额外构造插件实例；loader/startup/config focused `81 passed`。
+- [x] 2026-09-28 上下文注入恢复可见：Context 行默认折叠、展开完整 payload，runtime notice 从 consumed 后 canonical history 发布；修复 notice_id 与 inbox ID 断链。TUI state/entries `138 passed`，真实 server + CLI/tmux subagent/resume `2 passed`。
+- [x] 2026-09-28 非 WebUI 扩大回归 `1546 passed, 1 failed in 324.00s`；唯一失败为旧测试假定 caption 的 prepend 观察者不运行。按正确事件顺序改为验证唯一模型调用产生 caption、latest turn observation 仍为空，两种短路边界 focused `2 passed`。未把旧失败运行写成全绿。
+- [ ] 继续 loader/XCore 到插件的职责和事件链路审查；HumanInput 发布时机、持久化投影、compact/goal/todo、分页/主题整体效果尚未完成。
+
 以下结果只说明对应工作树当时经过了这些套件，不替代下面的逐项退出条件。
 
 - [x] 2026-09-27 当前工作树完整 Core `537 passed in 67.68s`；Core browser `36 passed in 13.25s`，真实 Chromium revision 与 Playwright 1.61 对齐后覆盖交互、截图生命周期、私网子资源阻断和 DNS rebinding。默认 production application 另验证 workspace 内普通 `edit` 的 write/replace/patch 均为 allow。

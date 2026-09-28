@@ -2423,6 +2423,29 @@ async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
             await asyncio.sleep(0.02)
         assert child_id, "the production subagent created a public child thread"
 
+        from XBotv2.session.records import RuntimeNoticeRecord
+        from XBotv2.tui.view.blocks import ClampedBlock
+
+        history = await real_client.list_messages(SESSION_ID, THREAD_ID)
+        notices = [item for item in history.items if isinstance(item, RuntimeNoticeRecord)]
+        assert notices, "subagent completion must reach the canonical model context"
+        assert app.view is not None
+        for notice in notices:
+            await wait_for(
+                pilot,
+                lambda: app.view.transcript.widget_for(notice.id) is not None,
+                description=f"context injection {notice.source}/{notice.event}",
+            )
+            widget = app.view.transcript.widget_for(notice.id)
+            assert widget is not None
+            block = widget.query_one(ClampedBlock)
+            assert f"Context · {notice.source} · {notice.event}" in block.head_text
+            assert block.shown_text == ""
+            block.toggle()
+            await pilot.pause()
+            assert block.shown_text == notice.content
+            block.toggle()
+
         composer.load_text("parent draft survives inspection")
         await pilot.press("ctrl+t")
         await wait_for(
@@ -2649,6 +2672,7 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
         )
         assert "<runtime_event" not in parent
         assert '"kind": "job_completed"' not in parent
+        assert "Context ·" in parent
         assert "ctx:~" in parent and "!" in parent
         (captures / "parent-complete.txt").write_text(parent, encoding="utf-8")
 
@@ -2690,6 +2714,7 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
         )
         assert "<runtime_event" not in resumed_parent
         assert '"kind": "job_completed"' not in resumed_parent
+        assert "Context ·" in resumed_parent
         assert "ctx:~" in resumed_parent and "!" in resumed_parent
         (captures / "parent-resumed.txt").write_text(
             resumed_parent, encoding="utf-8"

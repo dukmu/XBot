@@ -1243,7 +1243,7 @@ class Engine(AgentLoopDriverPort):
         elif isinstance(payload, RuntimeInput):
             message = RuntimeNoticeMessage(
                 id=f"message-{uuid.uuid4().hex}",
-                notice_id=f"notice-{uuid.uuid4().hex}",
+                notice_id=accepted_input.id,
                 source=payload.source,
                 event=payload.event,
                 parts=parts,

@@ -1,5 +1,19 @@
 # Textual TUI 插件化重建方案
 
+## 2026-09-28 事件流审查修订
+
+本轮按 loader → XCore 生命周期/事件 → 核心插件 → session/protocol → TUI 的顺序推进。旧勾选项仅是历史记录，必须以当前实现和真实运行证据重新核验。
+
+- [x] Client 启动结构修订：删除 `ClientLaunch` 和 `client_launch` 服务；CLI 将参数作为内存 `PluginOverlay` 覆盖 YAML。transport 连接参数由 `ClientTransportConfig` 持有，TUI 会话/分页/显示参数由 `TextualTuiConfig` 持有，host 不再注入 launch 对象。下文旧 ClientLaunch 描述仅记录历史实现，以本项为准。
+
+- [x] 上下文注入采用已有 RuntimeNoticeRecord：默认一行 `Context · source · event`，展开查看实际内容；保留 canonical message ID，live/history 复用同一投影。旧“全部隐藏 runtime notice”的设计废止。
+- [x] runtime notice 在 inbox consumed 后从已接受的 canonical history 发布；claimed 不再提前发布原始 runtime input。notice_id 对应原 inbox ID，用于恢复时去重。
+- [x] 真实 server/pilot 验证显示内容与 history API 一致；真实 CLI/tmux 验证 parent context 行、只读 child、退出后 disk resume。2026-09-28 capture 位于 `/tmp/xbot-context-review-final/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
+- [ ] HumanInput 的 claimed/accepted/message identity 与拒绝、外部化路径仍需统一审查；不能以 runtime notice 已修复代表所有输入完成。
+- [ ] 从底层验证插件卸载、依赖重绑、事件注册所有权、异常传播及持久化完成边界，再推进主题、分页和插件特性。
+- [ ] 当前真实 parent 帧仍存在原始 `completion_notice` 标题；其与 context 注入分别代表任务结果及模型输入，需要改善展示层级。
+
+
 ## 当前优先级纠偏（2026-09-26）
 
 本节高于后续低优先级功能切片；不能把历史局部通过等同于整体完成。当前主线是用户实际走过的多轮对话流程、单列布局和 transcript，不是 `/status` / `/config` 入口收敛。
@@ -77,7 +91,7 @@
 - [x] Textual 目录与测试已从当前分支 `HEAD` 恢复到工作树；没有从旧 worktree 回退或覆盖。
 - `.worktrees/tui-rewrite@827dd03` 早于 `ba5a2ad`，只用于历史比较，不是代码或协议基线。
 - [x] `ba5a2ad` 中的 Textual 基线已经包含纯 reducer、stable-id timeline、分页历史、SSE 恢复、命令目录、权限/用户输入、compaction、真实 uvicorn、Textual pilot 和 tmux 真终端测试资产。
-- [x] 当前通用边界已落地为 `ClientLaunch`、异步 `TerminalClient`、`run_client_application()`、`load_client_tree()` 与 `client_transport`；没有 `_ClientLoop`、`ClientRuntimePort`、`client_runtime` 或 `run_coroutine_threadsafe()` 生产路径。
+- [x] 当前通用边界为内存 `PluginOverlay`、异步 `TerminalClient`、`run_client_application()`、`load_client_tree()` 与 `client_transport`；客户端连接和会话参数由各插件 Config 持有。
 - [x] `client_transport` 创建唯一 `XBotClient` 并通过 `client_api` 发布；Textual plugin 只从公开服务取依赖。
 - [x] CLI TUI 分支只在最外层调用一次 `asyncio.run()`；`TextualTerminalClient.run()` 直接 await `TuiApp.run_async()`。Textual 8.2.8 会更改 loop task factory，adapter 在退出时恢复原值。
 - [x] XCore `boot_application()`、`Context.start()` / `Context.destroy()`、`XBotClient.close()` 和 Textual unmount 均有异步生命周期，因此可在 CLI 主线程的同一个 `asyncio.run()` 内顺序完成。
@@ -109,7 +123,8 @@
 
 ```text
 xbot tui
-  -> asyncio.run(application.client.run_client_application(ClientLaunch))
+  -> CLI args -> PluginOverlay
+  -> asyncio.run(application.client.run_client_application(paths, overrides))
   -> load_client_tree(profile="client")
        -> commands
        -> client_transport       # 唯一 XBotClient owner
@@ -137,7 +152,6 @@ xbot tui
 `TextualTuiPlugin` 只依赖以下公开服务：
 
 - `client_api`
-- `client_launch`
 - `commands`
 
 它只需要发布：
@@ -197,7 +211,7 @@ class TerminalClient(Protocol):
     async def run(self) -> None: ...
     def request_stop(self, reason: str) -> None: ...
 
-async def run_client_application(launch: ClientLaunch) -> None:
+async def run_client_application(*, paths: RuntimePaths, overrides: PluginOverlay) -> None:
     context: Context | None = None
     try:
         context = await boot_application(...)
@@ -437,7 +451,7 @@ XBotv2/tui/
 ### 阶段 1：插件装配与生命周期
 
 - [x] 增加 `tui/plugin.py`、typed config 和 terminal adapter。
-- [x] 将 generic `run_client_application(ClientLaunch)` 改为 async，并让 CLI 只在最外层执行一次 `asyncio.run(...)`。
+- [x] `run_client_application(paths=..., overrides=...)` 为 async；CLI 只在最外层执行一次 `asyncio.run(...)`，启动参数通过 plugin config overlay 提供。
 - [x] 将 `TerminalClient.run` 改为 async protocol；Textual adapter 直接 `await app.run_async()`。
 - [x] 删除 `_ClientLoop` / `ClientRuntimePort` / `client_runtime` service 以及 Maya 需要的 Future/thread 调度代码，不为同步 terminal client 保留兼容分支。
 - [x] `xcore.yaml` client profile 用 `textual-tui` 替换 `maya-tui`。

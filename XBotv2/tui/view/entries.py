@@ -154,6 +154,8 @@ def entry_body(entry: Entry, *, visibility: BlockVisibility | None = None) -> st
             parts.append(f"result: {format_payload(entry.result)}")
         return "\n".join(parts)
     if isinstance(entry, NoticeEntry):
+        if entry.notice_kind == "context":
+            return entry.detail
         return f"{entry.text}\n{entry.detail}".strip() if entry.detail else entry.text
     if isinstance(entry, ErrorEntry):
         return entry.message
@@ -251,6 +253,9 @@ def entry_widget(
     if isinstance(entry, ToolEntry):
         children.extend(_tool_blocks(entry, visibility=visibility))
         return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
+    if isinstance(entry, NoticeEntry) and entry.notice_kind == "context":
+        children.append(_body_block(entry, entry.detail))
+        return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
     if not isinstance(entry, (UserEntry, AssistantEntry)):
         children.append(Static(_header(entry, assistant_label), classes="meta"))
     reasoning = entry_reasoning(entry, visibility=visibility)
@@ -271,6 +276,11 @@ def entry_widget(
 
 
 def _body_block(entry: Entry, body: str) -> Widget:
+    if isinstance(entry, NoticeEntry) and entry.notice_kind == "context":
+        return ClampedBlock(
+            body, label=entry.text, classes="body",
+            always_collapsible=True, preview_lines=0,
+        )
     if not clamped(entry):
         return Static(entry_body_renderable(entry, body=body), classes="body")
     preview_lines = 0 if isinstance(entry, ToolEntry) else BLOCK_PREVIEW_LINES

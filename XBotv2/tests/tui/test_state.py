@@ -608,7 +608,7 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
     assert tool.args == {"command": "pwd"}
 
 
-def test_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() -> None:
+def test_runtime_input_history_is_an_inspectable_context_notice() -> None:
     state = session(
         connected(),
         SnapshotAdopted(
@@ -617,10 +617,14 @@ def test_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() -> No
             )])
         ),
     )
-    assert kinds(state) == []
+    assert kinds(state) == [EntryKind.NOTICE]
+    notice = state.timeline.get("notice-1")
+    assert isinstance(notice, NoticeEntry)
+    assert notice.text == "Context · goal · round"
+    assert notice.detail == "reminder"
 
 
-def test_live_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() -> None:
+def test_live_runtime_input_matches_history_without_creating_a_user_turn() -> None:
     state = session(
         connected(),
         RuntimeNoticePublished(payload=RuntimeNoticeRecord(
@@ -631,7 +635,13 @@ def test_live_model_facing_runtime_input_is_not_rendered_as_a_transcript_turn() 
         )),
     )
 
-    assert kinds(state) == []
+    assert kinds(state) == [EntryKind.NOTICE]
+    live = state.timeline.get("notice-1")
+    replayed = session(SnapshotAdopted(snapshot(history=[RuntimeNoticeRecord(
+        id="notice-1", source="subagent_1", event="completed",
+        content='<runtime_event><payload encoding="json">{}</payload></runtime_event>',
+    )])))
+    assert live == replayed.timeline.get("notice-1")
 
 
 def test_snapshot_replaces_a_previous_timeline_instead_of_appending() -> None:

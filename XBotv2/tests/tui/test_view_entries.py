@@ -346,6 +346,24 @@ async def test_reasoning_is_its_own_clamped_block() -> None:
         assert "60 lines" in str(blocks[0].head_widget.content.plain)
 
 
+async def test_context_injection_is_one_collapsed_row_with_exact_inspectable_content() -> None:
+    content = '<system_reminder source="goal">\ncontinue working\n</system_reminder>'
+    app = EntryHarness(entry_widget(NoticeEntry(
+        id="notice-1", notice_kind="context", text="Context · goal · round",
+        detail=content,
+    )))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        entry = app.query_one(EntryWidget)
+        (block,) = blocks_of(entry)
+        assert entry.region.height == 1
+        assert "Context · goal · round" in block.head_text
+        assert block.shown_text == ""
+        block.toggle()
+        await pilot.pause()
+        assert block.shown_text == content
+
+
 async def test_short_reasoning_remains_a_collapsible_think_block() -> None:
     app = EntryHarness(entry_widget(assistant(reasoning="brief thought")))
     async with app.run_test(size=(80, 24)) as pilot:

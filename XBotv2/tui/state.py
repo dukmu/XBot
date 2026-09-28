@@ -562,11 +562,7 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         _publish_user_message(state, event)
 
     elif isinstance(event, RuntimeNoticePublished):
-        # Runtime notices are model-facing inputs, not user-authored transcript
-        # turns. Their user-facing state arrives through typed events (for
-        # example JobCompletionNotice and JobUpdated), so rendering the prompt
-        # container here leaks internal XML/JSON and duplicates that state.
-        pass
+        _append(state, _context_notice(event.payload))
 
     elif isinstance(event, JobUpdated):
         state.jobs[event.payload.id] = event.payload
@@ -868,6 +864,15 @@ def release_oldest_loaded_page(state: SessionState) -> None:
     state.older = HistoryAvailable(cursor=released.cursor)
 
 
+def _context_notice(item: RuntimeNoticeRecord) -> NoticeEntry:
+    return NoticeEntry(
+        id=item.id,
+        notice_kind="context",
+        text=f"Context · {item.source} · {item.event}",
+        detail=item.content,
+    )
+
+
 def _entry_from_history_item(
     state: SessionState,
     item: ConversationRecord,
@@ -882,7 +887,7 @@ def _entry_from_history_item(
     """
     entry_id = item.id
     if isinstance(item, RuntimeNoticeRecord):
-        return None
+        return _context_notice(item)
     if isinstance(item, HumanInputRecord):
         return UserEntry(
             id=entry_id,
