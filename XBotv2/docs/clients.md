@@ -89,7 +89,12 @@ turn status, runtime selection, usage, and status slots. The Textual TUI can
 switch between threads and inspect subagent threads in read-only mode; that UI
 mode is a client behavior, not a claim that every transport rejects writes to a
 subagent thread. Background tasks and subagent threads have separate lifecycle
-and read models.
+and read models. The TUI reads a thread summary once when it attaches, then
+uses the watchdog only while a submission or turn is unsettled. An idle client
+does not poll the HTTP thread listing. The `/session` chooser starts on the
+current session, shows both title and stable session ID, and windows long
+catalogues while the selection moves instead of hiding rows past the display
+limit.
 
 Opening a persisted session/thread in `resume` mode hydrates its durable history,
 plugin state, and runtime selection according to the owning stores. It does not

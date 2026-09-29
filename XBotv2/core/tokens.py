@@ -24,7 +24,7 @@ from XBotv2.core.provider import (
     ProviderUser,
     ToolSchema,
 )
-from XBotv2.core.tools import Tool, ToolCall, ToolFailed, ToolSucceeded
+from XBotv2.core.tools import Tool, ToolCall, tool_outcome_parts
 
 
 class TokenBudget(BaseModel):
@@ -73,8 +73,7 @@ def estimate_messages_tokens(
             total += _parts_tokens(message.parts)
         elif isinstance(message, ToolMessage):
             total += estimate_text_tokens(message.call.name)
-            if isinstance(message.outcome, (ToolSucceeded, ToolFailed)):
-                total += _parts_tokens(message.outcome.output.parts)
+            total += _parts_tokens(tool_outcome_parts(message.outcome))
         elif isinstance(message, CompactionSummaryMessage):
             total += estimate_text_tokens(message.summary)
         elif isinstance(

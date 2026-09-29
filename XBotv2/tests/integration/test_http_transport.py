@@ -6285,6 +6285,22 @@ async def test_goal_agent_tools_create_read_and_complete_real_state(
                     r"Goal: ([a-f0-9]+) revision (\d+)", text
                 )[-1]
                 response = {"tool_calls": [{
+                    "id": "stale", "name": "update_goal",
+                    "args": {
+                        "goal_id": identity[0],
+                        "revision": int(identity[1]) + 1,
+                        "status": terminal_status,
+                        "reason": "Deliberately stale update.",
+                    },
+                }]}
+            elif self.phase == 4:
+                text = _goal_request_text(request)
+                assert "Tool error [stale_goal]" in text
+                assert "Goal id or revision is no longer current" in text
+                identity = re.findall(
+                    r"Goal: ([a-f0-9]+) revision (\d+)", text
+                )[-1]
+                response = {"tool_calls": [{
                     "id": "complete", "name": "update_goal",
                     "args": {
                         "goal_id": identity[0],
@@ -6317,7 +6333,7 @@ async def test_goal_agent_tools_create_read_and_complete_real_state(
         ).json()["items"]
         assert [
             item["call"]["name"] for item in messages if item["kind"] == "tool"
-        ] == ["create_goal", "get_goal", "update_goal"]
+        ] == ["create_goal", "get_goal", "update_goal", "update_goal"]
         if terminal_status == "blocked":
             resumed = await skills_client.post(
                 "/sessions/goal-agent-tools/threads/t/commands",

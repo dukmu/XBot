@@ -366,6 +366,7 @@ def anthropic_messages(
                 "type": "tool_result",
                 "tool_use_id": message.call_id,
                 "content": _parts_to_anthropic(message.parts),
+                "is_error": message.is_error,
             })
             target_role = "user"
         elif isinstance(message, ProviderAssistant):

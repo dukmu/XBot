@@ -219,6 +219,35 @@ async def test_connecting_reads_the_thread_so_a_running_turn_is_visible(
     assert "Running" in _plain(view.last_status)
 
 
+async def test_idle_watchdog_does_not_issue_periodic_http_reads(
+    backend: ScriptedBackend,
+) -> None:
+    sleep = FakeSleep()
+    control, _view = controller(backend, sleep=sleep)
+    await control.connect()
+    reads_after_connect = len(backend.read_threads)
+    sleep.on_tick = lambda: control.stop() if sleep.ticks >= 2 else None
+
+    await control.watch()
+
+    assert len(backend.read_threads) == reads_after_connect
+
+
+async def test_running_watchdog_keeps_checking_for_a_missing_terminal_frame(
+    backend: ScriptedBackend,
+) -> None:
+    sleep = FakeSleep()
+    backend.threads = (thread(turn_status="running"),)
+    control, _view = controller(backend, sleep=sleep)
+    await control.connect()
+    reads_after_connect = len(backend.read_threads)
+    sleep.on_tick = lambda: control.stop() if sleep.ticks >= 2 else None
+
+    await control.watch()
+
+    assert len(backend.read_threads) == reads_after_connect + 1
+
+
 async def test_connecting_hydrates_active_jobs_from_the_public_snapshot(
     backend: ScriptedBackend,
 ) -> None:

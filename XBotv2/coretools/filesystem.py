@@ -442,10 +442,11 @@ async def edit(
       ``replace_all`` is set.
     - ``patch``: apply a validated single-file unified diff in ``patch``.
 
-    A file observed earlier in this runtime is protected against external
-    changes by its last runtime snapshot; external modification invalidates
-    that snapshot and returns ``content_changed``. Reading the file again
-    refreshes it.
+    A file observed earlier by ``read`` in utf8 or stat mode is protected
+    against external changes by its last content hash. External modification
+    returns ``content_changed``; either read mode refreshes the hash. Replace
+    always matches ``old_text`` against the file's current content, not against
+    a stored copy.
 
     Args:
         path: Existing text file to edit.

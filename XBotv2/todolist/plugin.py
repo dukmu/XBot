@@ -191,10 +191,13 @@ class TaskService:
             description: Replacement description.
             active_form: Replacement present-continuous label.
             owner: Agent that claimed the task.
-            add_blocks: Task ids this task must be completed before.
-            add_blocked_by: Task ids that must be completed before this one.
-            remove_blocks: Remove this task as a prerequisite of these tasks.
-            remove_blocked_by: Remove these prerequisites when revising the plan.
+            add_blocks: Exact string ids this task must be completed before,
+                for example ["2"]. Do not prefix ids with "#".
+            add_blocked_by: Exact string ids that must be completed before this
+                one, for example ["1"]. Do not prefix ids with "#".
+            remove_blocks: Exact string ids from which to remove this task as a
+                prerequisite.
+            remove_blocked_by: Exact string ids of prerequisites to remove.
         """
         try:
             parsed_id = parse_task_id(taskId)

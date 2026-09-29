@@ -607,6 +607,11 @@ class TuiApp(App[None]):
             title="Sessions",
             load=self._load_sessions,
             apply=self._apply_session,
+            initial_value=(
+                self.controller.state.session_id
+                if self.controller is not None
+                else None
+            ),
         )
 
     async def _cmd_status(self, args: str) -> None:
@@ -898,7 +903,10 @@ class TuiApp(App[None]):
     # --- rows, and what choosing one does ---------------------------------
     async def _load_sessions(self):
         assert self.controller is not None
-        return session_options(await self.controller.sessions())
+        return session_options(
+            await self.controller.sessions(),
+            current=self.controller.state.session_id,
+        )
 
     async def _load_threads(self):
         assert self.controller is not None

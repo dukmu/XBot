@@ -44,14 +44,28 @@ def _detail(*parts: str) -> str:
     return " ".join(str(part) for part in parts if part)
 
 
-def session_options(items: Sequence[SessionSummary]) -> tuple[Option, ...]:
+def session_options(
+    items: Sequence[SessionSummary], *, current: str = ""
+) -> tuple[Option, ...]:
     """Rows for ``/session``: one per stored session."""
     return tuple(
         Option(
             value=item.session_id,
-            label=item.title or item.session_id,
+            label=(
+                f"{item.title} · {item.session_id}"
+                if item.title and item.title != item.session_id
+                else item.session_id
+            ),
             detail=_detail(
-                item.workspace_root or item.status
+                "current" if item.session_id == current else "",
+                "damaged" if item.unreadable else item.status,
+                "empty" if item.blank else "",
+                (
+                    f"{item.thread_count} threads"
+                    if item.thread_count > 1
+                    else ""
+                ),
+                item.workspace_root,
             ),
         )
         for item in items

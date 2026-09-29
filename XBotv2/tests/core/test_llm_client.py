@@ -35,6 +35,7 @@ from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta
 from XBotv2.core.tools import ToolCall
 from XBotv2.llm.anthropic import (
     AnthropicProvider,
+    anthropic_messages,
     anthropic_request_messages,
     anthropic_tool_schema,
 )
@@ -123,6 +124,20 @@ def test_anthropic_projection_separates_system_and_groups_user_tool_messages():
     assert len(projected) == 1
     assert projected[0]["role"] == "user"
     assert projected[0]["content"][1]["type"] == "tool_result"
+
+
+def test_anthropic_projection_marks_failed_tool_results():
+    messages = (
+        ProviderTool(
+            call_id="call-1",
+            parts=(TextPart(text="Tool error [failed]: broken"),),
+            is_error=True,
+        ),
+    )
+
+    projected = anthropic_messages(messages)
+
+    assert projected[0]["content"][0]["is_error"] is True
 
 
 def test_tool_schemas_are_derived_from_one_provider_neutral_schema():

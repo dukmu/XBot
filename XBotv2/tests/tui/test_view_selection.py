@@ -97,6 +97,38 @@ async def test_the_screen_shows_its_title_and_rows() -> None:
         await context.__aexit__(None, None, None)
 
 
+async def test_the_visible_window_follows_a_selection_beyond_the_row_cap() -> None:
+    screen = SelectionScreen(
+        "Sessions",
+        options(*[f"v{index}" for index in range(MAX_ROWS + 2)]),
+    )
+    app, pilot, context = await open_screen(screen)
+    try:
+        for _ in range(MAX_ROWS):
+            await pilot.press("down")
+        await pilot.pause()
+
+        assert len(screen.rendered_rows) == MAX_ROWS
+        assert screen.rendered_rows[0].startswith("  V1")
+        assert screen.rendered_rows[-1].startswith(f"▸ V{MAX_ROWS}")
+    finally:
+        await context.__aexit__(None, None, None)
+
+
+async def test_an_initial_selection_beyond_the_row_cap_is_visible() -> None:
+    values = options(*[f"v{index}" for index in range(MAX_ROWS + 2)])
+    screen = SelectionScreen(
+        "Sessions",
+        values,
+        initial_value=values[-1].value,
+    )
+    app, _pilot, context = await open_screen(screen)
+    try:
+        assert screen.rendered_rows[-1].startswith(f"▸ V{MAX_ROWS + 1}")
+    finally:
+        await context.__aexit__(None, None, None)
+
+
 async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
     screen = SelectionScreen(
         "Permission required",

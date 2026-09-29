@@ -260,7 +260,15 @@ class TuiController:
             await self.flush()
 
     async def watch(self) -> None:
-        await self.transport.watch()
+        await self.transport.watch(self._watchdog_needed)
+
+    def _watchdog_needed(self) -> bool:
+        facts = self.state.facts
+        return (
+            facts.turn_open
+            or facts.server_turn is ServerTurn.RUNNING
+            or self.state.submission_in_flight
+        )
 
     async def submit(self, text: str, *, delivery: Literal["queue", "steer"]) -> str:
         """Send a composer submission with its explicit keyboard delivery mode."""

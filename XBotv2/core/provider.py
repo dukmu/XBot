@@ -41,6 +41,7 @@ class ProviderTool(BaseModel):
     role: Literal["tool"] = "tool"
     call_id: str = Field(min_length=1)
     parts: tuple[TextPart | ResolvedImagePart, ...]
+    is_error: bool = False
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 

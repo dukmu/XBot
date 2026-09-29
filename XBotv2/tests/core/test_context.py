@@ -26,7 +26,11 @@ from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderSystem, ProviderTool, ProviderUser
 from XBotv2.core.tools import (
     ToolCallRef,
+    ToolCancelled,
     ToolDenied,
+    ToolError,
+    ToolFailed,
+    ToolOutput,
     ToolSucceeded,
     text_output,
 )
@@ -80,7 +84,7 @@ def test_builder_orders_system_components_before_canonical_history():
     assert messages[1].parts == (TextPart(text="hello"),)
 
 
-def test_tool_outcome_projection_is_explicit_for_output_and_no_output_variants():
+def test_tool_outcome_projection_preserves_every_terminal_semantic():
     call = ToolCallRef(id=ToolCallId("call-1"), name="probe")
     succeeded = ToolMessage(
         id=MessageId("tool-1"),
@@ -94,19 +98,42 @@ def test_tool_outcome_projection_is_explicit_for_output_and_no_output_variants()
         outcome=ToolDenied(reason="policy"),
         timing=ToolTiming(duration_ms=1),
     )
+    failed = ToolMessage(
+        id=MessageId("tool-3"),
+        call=call,
+        outcome=ToolFailed(
+            error=ToolError(code="stale_goal", message="Goal revision is stale"),
+            output=ToolOutput(),
+        ),
+        timing=ToolTiming(duration_ms=1),
+    )
+    cancelled = ToolMessage(
+        id=MessageId("tool-4"),
+        call=call,
+        outcome=ToolCancelled(reason="client interrupt"),
+        timing=ToolTiming(duration_ms=1),
+    )
 
     projected = ContextBuilder.messages_from_components(
         BuiltContext([
             HistoryComponent(succeeded),
             HistoryComponent(denied),
+            HistoryComponent(failed),
+            HistoryComponent(cancelled),
         ]),
     )
 
     assert all(isinstance(message, ProviderTool) for message in projected)
     assert projected[0].parts == (TextPart(text="done"),)
-    assert projected[1].parts == (
-        TextPart(text="Tool execution did not produce output"),
+    assert projected[0].is_error is False
+    assert projected[1].parts == (TextPart(text="Tool denied: policy"),)
+    assert projected[1].is_error is True
+    assert projected[2].parts == (
+        TextPart(text="Tool error [stale_goal]: Goal revision is stale"),
     )
+    assert projected[2].is_error is True
+    assert projected[3].parts == (TextPart(text="Tool cancelled: client interrupt"),)
+    assert projected[3].is_error is True
 
 
 def test_compaction_summary_is_wrapped_only_for_the_provider_request():

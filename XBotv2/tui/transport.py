@@ -708,13 +708,14 @@ class TransportSession:
             self._emit(StatusSlotsUpdated(dict(summary.status_slots)))
         return True
 
-    async def watch(self) -> None:
-        """Poll the thread on the configured interval while the client runs."""
+    async def watch(self, should_poll: Callable[[], bool]) -> None:
+        """Check an unsettled turn until its authoritative terminal state arrives."""
         while not self._stopped:
             await self._sleep(self._config.watchdog_seconds)
             if self._stopped:
                 return
-            await self.watchdog_once()
+            if should_poll():
+                await self.watchdog_once()
 
     def _note_watchdog_failure(self, message: str) -> None:
         if self._watchdog_failures == 0:

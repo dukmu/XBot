@@ -36,10 +36,16 @@ def summary(session_id: str = "s1", **overrides):
 
 
 def test_session_rows_carry_the_id_the_client_switches_to() -> None:
-    options = session_options([summary("s1", title="work"), summary("s2")])
+    options = session_options(
+        [summary("s1", title="work"), summary("s2")],
+        current="s1",
+    )
     assert [option.value for option in options] == ["s1", "s2"]
-    assert options[0].label == "work"
+    assert options[0].label == "work · s1"
     assert options[1].label == "s2", "a session without a title is named by its id"
+    assert "current" in options[0].detail
+    assert "active" in options[0].detail
+    assert "/w" in options[0].detail
 
 
 # --- threads --------------------------------------------------------------

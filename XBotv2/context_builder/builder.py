@@ -33,7 +33,7 @@ from XBotv2.core.provider import (
     ResolvedImagePart,
 )
 from XBotv2.core.artifacts import ArtifactRef, ArtifactStorePort
-from XBotv2.core.tools import ToolFailed, ToolSucceeded
+from XBotv2.core.tools import ToolFailed, ToolSucceeded, tool_outcome_parts
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.core.variables import RuntimeVariables
 
@@ -239,8 +239,8 @@ def _compile_message(
     if isinstance(message, AssistantMessage):
         return ProviderAssistant(parts=message.parts)
     if isinstance(message, ToolMessage):
+        parts = list(tool_outcome_parts(message.outcome))
         if isinstance(message.outcome, (ToolSucceeded, ToolFailed)):
-            parts = list(message.outcome.output.parts)
             attachment_instruction = _artifact_instruction(
                 message.outcome.output.artifacts,
                 artifacts,
@@ -250,9 +250,11 @@ def _compile_message(
             )
             if attachment_instruction is not None:
                 parts.append(attachment_instruction)
-        else:
-            parts = (TextPart(text="Tool execution did not produce output"),)
-        return ProviderTool(call_id=str(message.call.id), parts=tuple(parts))
+        return ProviderTool(
+            call_id=str(message.call.id),
+            parts=tuple(parts),
+            is_error=not isinstance(message.outcome, ToolSucceeded),
+        )
     raise TypeError(f"Unsupported conversation message: {type(message).__name__}")
 
 

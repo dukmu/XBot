@@ -155,6 +155,8 @@ class SelectionScreen(ModalScreen[str | None]):
         self.compact = compact
         self.cancel_value = cancel_value
         self._rows: list[Static] = []
+        self._window_start = 0
+        self._query = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="selection", classes="compact" if self.compact else ""):
@@ -196,6 +198,9 @@ class SelectionScreen(ModalScreen[str | None]):
     def on_input_changed(self, event: Input.Changed) -> None:
         if self.search is None:
             return
+        if event.value == self._query:
+            return
+        self._query = event.value
         self.model = self.model.with_options(self.search(event.value))
         self._render_options()
 
@@ -213,14 +218,25 @@ class SelectionScreen(ModalScreen[str | None]):
         self.dismiss(current.value if current is not None else None)
 
     def _render_options(self) -> None:
-        visible = self.model.options[:MAX_ROWS]
+        if self.model.index < self._window_start:
+            self._window_start = self.model.index
+        elif self.model.index >= self._window_start + MAX_ROWS:
+            self._window_start = self.model.index - MAX_ROWS + 1
+        maximum_start = max(0, len(self.model.options) - MAX_ROWS)
+        self._window_start = min(self._window_start, maximum_start)
+        visible = self.model.rows[
+            self._window_start : self._window_start + MAX_ROWS
+        ]
         for position, row in enumerate(self._rows):
             if position >= len(visible):
                 row.display = False
                 continue
             row.display = True
-            row.set_class(position == self.model.index, "selected")
-            row.update(Text(self.model.rows[position]))
+            row.set_class(
+                self._window_start + position == self.model.index,
+                "selected",
+            )
+            row.update(Text(visible[position]))
 
     @property
     def rendered_rows(self) -> tuple[str, ...]:

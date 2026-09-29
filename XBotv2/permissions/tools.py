@@ -71,7 +71,8 @@ class RequestPermissionTool:
             that defines the intended authorization scope.
         reason: Explain why subsequent calls need this scope.
 
-        Approval grants one matching future call or this Agent thread's session.
+        The human chooses whether approval covers one matching future call or
+        this Agent thread's session; the Agent does not choose that scope.
         Session grants survive resume; once grants are not persisted.
         It does not change sandbox policy or override deny rules.
         """

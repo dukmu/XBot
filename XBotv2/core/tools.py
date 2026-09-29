@@ -94,6 +94,20 @@ class ToolCancelled(BaseModel):
 ToolOutcome: TypeAlias = ToolSucceeded | ToolFailed | ToolDenied | ToolCancelled
 
 
+def tool_outcome_parts(outcome: ToolOutcome) -> tuple[TextPart | ImagePart, ...]:
+    """Return the complete model-facing result without duplicating stored data."""
+    if isinstance(outcome, ToolSucceeded):
+        return outcome.output.parts
+    if isinstance(outcome, ToolFailed):
+        error = TextPart(
+            text=f"Tool error [{outcome.error.code}]: {outcome.error.message}"
+        )
+        return (error, *outcome.output.parts)
+    if isinstance(outcome, ToolDenied):
+        return (TextPart(text=f"Tool denied: {outcome.reason}"),)
+    return (TextPart(text=f"Tool cancelled: {outcome.reason}"),)
+
+
 def text_output(text: str, *, artifacts: tuple[ArtifactRef, ...] = ()) -> ToolOutput:
     """Create the canonical textual tool output."""
     return ToolOutput(parts=(TextPart(text=text),), artifacts=artifacts)
@@ -326,21 +340,13 @@ __all__ = [
     "ContinueTurn",
     "GuardDecision",
     "SandboxEscape",
-    "ToolCallRef",
-    "ToolExecution",
-    "ToolFailed",
-    "ToolOutput",
-    "ToolOutcome",
-    "ToolSucceeded",
-    "ToolDenied",
-    "ToolCancelled",
-    "TurnDirective",
     "Tool",
     "ToolCall",
     "ToolError",
     "ToolCallRef",
     "ToolCancelled",
     "ToolDenied",
+    "ToolExecution",
     "ToolFailed",
     "ToolOutput",
     "ToolOutcome",
@@ -349,6 +355,7 @@ __all__ = [
     "failed_text",
     "succeeded_text",
     "text_output",
+    "tool_outcome_parts",
     "tool_parameters_schema",
     "provider_tool_schema",
 ]

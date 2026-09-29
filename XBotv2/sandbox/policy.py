@@ -398,7 +398,11 @@ class SandboxPolicy(SandboxPort):
             available = "available" if self.backend_available else "unavailable"
             return (
                 f"Sandbox enabled (bwrap: {available}). Workspace: {self.workspace_root}. "
-                f"All file I/O and shell commands run inside bubblewrap."
+                f"Workspace access: read={self.workspace_read}, "
+                f"write={self.workspace_write}. External access: "
+                f"read={self.external_read}, write={self.external_write}. "
+                "Readable paths may be visible without being writable. "
+                "All file I/O and shell commands run inside bubblewrap."
             )
         return f"Sandbox disabled. Workspace: {self.workspace_root}."
 

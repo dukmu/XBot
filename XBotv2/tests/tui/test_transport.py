@@ -548,9 +548,32 @@ async def test_watch_polls_on_the_configured_interval(backend: ScriptedBackend) 
             transport.stop()
 
     recorder.on_event = stop_after_three
-    await transport.watch()
+    await transport.watch(lambda: True)
     assert slept == [2.5, 2.5, 2.5]
     assert len(recorder.of(ThreadRead)) == 3
+
+
+async def test_watch_does_not_read_http_while_the_thread_is_idle(
+    backend: ScriptedBackend,
+) -> None:
+    slept: list[float] = []
+    recorder = Recorder()
+    active = False
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == 3:
+            transport.stop()
+
+    transport = await connected(
+        backend, recorder, sleep=record_sleep, watchdog_seconds=2.5
+    )
+    reads_after_connect = len(backend.read_threads)
+
+    await transport.watch(lambda: active)
+
+    assert slept == [2.5, 2.5, 2.5]
+    assert len(backend.read_threads) == reads_after_connect
 
 
 # --- writes ---------------------------------------------------------------

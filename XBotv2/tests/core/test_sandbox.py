@@ -26,6 +26,17 @@ class TestSandboxPolicyBasics:
         policy = SandboxPolicy(enabled=enabled, workspace_root=str(temp_workspace))
         assert ("enabled" if enabled else "disabled") in policy.describe().lower()
 
+    def test_enabled_description_distinguishes_visibility_from_write_access(
+        self, temp_workspace,
+    ):
+        policy = SandboxPolicy(workspace_root=str(temp_workspace))
+
+        description = policy.describe()
+
+        assert "Workspace access: read=allow, write=allow" in description
+        assert "External access: read=readonly, write=deny" in description
+        assert "visible without being writable" in description
+
 
 class TestResourcePathResolution:
     def test_resolve_resource_path(self, temp_workspace):

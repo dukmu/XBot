@@ -115,7 +115,7 @@ class GoalService:
         return await self._create(objective, start_now=False, allow_replace=False)
 
     async def get_goal(self) -> ToolOutcome:
-        """Read the exact current goal, revision, activation, usage, and status."""
+        """Read the exact current goal, revision, activation, and status."""
         return await self.status()
 
     async def update_goal(
@@ -540,7 +540,6 @@ def _format_snapshot(snapshot: GoalSnapshot) -> str:
     lines = [
         f"[{state.kind}] {state.objective}",
         f"Goal: {state.goal_id} revision {state.revision} · continuation {snapshot.activation}",
-        f"Rounds: {state.stats.rounds_started} · {_format_stats(state.stats)}",
     ]
     if isinstance(state, (PausedGoal, BlockedGoal, CompleteGoal)):
         lines.append(f"Reason: {state.reason}")

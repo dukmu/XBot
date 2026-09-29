@@ -15,6 +15,7 @@ from XBotv2.agentloop.events import OnTurnInput, RejectInput, SessionLifecycle, 
 from XBotv2.application.app import start_application
 from XBotv2.core.domain import TokenCounters, UsageSnapshot
 from XBotv2.core.messages import RuntimeNoticeMessage
+from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.goal.models import ActiveGoal, GoalState
 from XBotv2.goal.plugin import GoalService
@@ -120,6 +121,12 @@ async def test_control_update_is_cas_and_removes_queued_continuation(tmp_path: P
     assert snapshot.state.revision == 2
     assert snapshot.state.reason == "pytest passed"
     assert engine.pending_inputs == []
+    text = "".join(
+        part.text for part in result.output.parts if isinstance(part, TextPart)
+    )
+    assert "Rounds:" not in text
+    assert "tokens" not in text
+    assert "tool calls" not in text
 
 
 @pytest.mark.asyncio

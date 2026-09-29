@@ -1581,7 +1581,7 @@ plugin = ConfiguredPlugin()
                 for message in request.messages
                 if isinstance(message, ProviderTool)
             ]
-            assert "Tool execution did not produce output" in child_tool_results
+            assert "Tool denied: Permission denied for tool: read" in child_tool_results
             assert all("parent-only content" not in text for text in child_tool_results)
             child = await host.sessions.thread_summary(
                 "subagent-e2e", job.spec.thread_id

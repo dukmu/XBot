@@ -138,7 +138,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 - `ToolError(code: str, message: str, retryable: bool, details: Mapping[str, JsonValue])`：details 只属于外部工具错误扩展，业务层不以 key 分支。
 - `ModelStop = Completed | LengthLimited(limit_kind) | ToolCallsRequested`；cancel/failure 是 stream terminal event，不能伪装成已完成 response 的 stop reason。
 - `GenerationSettings(mode: GenerationMode, temperature: float | None, max_output_tokens: int)`；temperature 的 None 明确表示 provider default。
-- `ProviderMessage = ProviderSystem(parts: tuple[TextPart, ...]) | ProviderUser(parts: tuple[TextPart | ResolvedImagePart, ...]) | ProviderAssistant(parts: tuple[TextPart | ReasoningPart | ToolCall, ...]) | ProviderTool(call_id, parts: tuple[TextPart | ResolvedImagePart, ...])`；`ResolvedImagePart(ref: ImageRef, absolute_path)` 仅存在于请求构建期，context compiler 使用 ArtifactStore 将 ImageRef 单向解析为它。
+- `ProviderMessage = ProviderSystem(parts: tuple[TextPart, ...]) | ProviderUser(parts: tuple[TextPart | ResolvedImagePart, ...]) | ProviderAssistant(parts: tuple[TextPart | ReasoningPart | ToolCall, ...]) | ProviderTool(call_id, parts: tuple[TextPart | ResolvedImagePart, ...], is_error)`；`ResolvedImagePart(ref: ImageRef, absolute_path)` 仅存在于请求构建期，context compiler 使用 ArtifactStore 将 ImageRef 单向解析为它。`is_error` 是请求期对规范 `ToolOutcome` 的投影，Anthropic adapter 将它映射到原生 `tool_result.is_error`；错误正文从 `ToolFailed.error` 构建，不复制进持久化的 `ToolOutput`。
 - `ToolSchema(name, description, parameters)`；parameters 是 JSON Schema 这一外部标准的原始对象，只有 tool registry/provider adapter 读取。
 - `HistoryRevision(value: str)`、`Cursor(value: str)`、`MessageId/TurnId/InteractionId/ToolCallId` 为跨层身份类型。inbox 到 accepted message 沿用同一 `MessageId`，不另造 InputId/NoticeId。
 - `TransactionRef(kind, id)`、`TransactionOutcome = Committed | Aborted(reason) | TransactionFailed(error)`、`TransactionStarted(transaction: TransactionRef)` 与 `TransactionEnded(transaction: TransactionRef, outcome: TransactionOutcome)`；具体持久事件由 owner 注册 codec，不从 payload dict 抽取 id。
@@ -430,6 +430,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 
 - 不保留 evaluator 的 verdict、重试、定时检查或空 GoalConfig；不读取旧字段别名。具体设计取舍与验证状态见 `../goal-todo-design.md`。
 - 目标状态与 todo 完成数无隐式关系。执行模型通过标准工具明确更新目标，插件经既有 inbox 驱动原会话，不另发全量会话判断请求。
+- GoalStats 是运行时观测数据，通过 typed event/status slots 供客户端展示；goal 工具的模型结果不包含 rounds、token 或 tool-call 计数，避免模型把统计值解释成进度条件。
 - pending_input_id 只标识已预留的续跑输入；控制变更撤销它，既有输入接受事件拒绝陈旧输入。不复制 inbox 内容或增加另一份历史。
 
 ### 3.16 todolist

@@ -980,6 +980,29 @@ async def test_slash_session_without_an_argument_opens_a_picker() -> None:
         assert values == ["one", "two"]
 
 
+async def test_slash_session_starts_on_the_current_session_in_a_long_catalog() -> None:
+    from XBotv2.tui.view.selection import MAX_ROWS, SelectionScreen
+
+    sessions = [summary(f"old-{index}") for index in range(MAX_ROWS + 1)]
+    sessions.append(summary("s1", title="Current work", status="active"))
+    backend = ScriptedBackend(session_catalog=sessions)
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("/session")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        assert isinstance(app.screen, SelectionScreen)
+        assert app.screen.model.current is not None
+        assert app.screen.model.current.value == "s1"
+        assert any(
+            row.startswith("▸ Current work · s1")
+            for row in app.screen.rendered_rows
+        )
+
+
 async def test_picking_a_session_from_the_picker_switches_to_it() -> None:
     from XBotv2.tests.tui.factories import snapshot
 

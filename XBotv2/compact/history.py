@@ -6,7 +6,7 @@ from typing import Sequence
 
 from XBotv2.core.messages import AssistantMessage, ConversationMessage, HumanInputMessage, ToolMessage
 from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import ToolCall, ToolFailed, ToolSucceeded
+from XBotv2.core.tools import ToolCall, tool_outcome_parts
 
 
 def history_chars(messages: Sequence[ConversationMessage]) -> int:
@@ -15,12 +15,11 @@ def history_chars(messages: Sequence[ConversationMessage]) -> int:
         if isinstance(message, (HumanInputMessage, AssistantMessage)):
             total += sum(len(part.text) for part in message.parts if isinstance(part, TextPart))
         if isinstance(message, ToolMessage):
-            if isinstance(message.outcome, (ToolSucceeded, ToolFailed)):
-                total += sum(
-                    len(part.text)
-                    for part in message.outcome.output.parts
-                    if isinstance(part, TextPart)
-                )
+            total += sum(
+                len(part.text)
+                for part in tool_outcome_parts(message.outcome)
+                if isinstance(part, TextPart)
+            )
     return total
 
 
