@@ -206,7 +206,7 @@ def _compile_message(
         if isinstance(message, HumanInputMessage) and message.steering:
             parts.append(TextPart(text=(
                 "[Temporary supplemental input] Continue the current task; "
-                "do not interrupt or abandon it unless this input explicitly asks you to do so."
+                "do not interrupt or abandon it unless this input explicitly asks you to do so.\n\n"
             )))
         for part in message.parts:
             if isinstance(part, TextPart):

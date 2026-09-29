@@ -3637,11 +3637,15 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     first_events, second_events = await asyncio.gather(first_task, second_task)
 
     assert llm.call_count == 2
-    assert [
-        "".join(part.text for part in message.parts if isinstance(part, TextPart))
+    user_parts = [
+        [part.text for part in message.parts if isinstance(part, TextPart)]
         for message in llm.request_history[1].messages
         if isinstance(message, ProviderUser)
-    ] == ["start the tool", "also include this"]
+    ]
+    assert user_parts[0] == ["start the tool"]
+    assert user_parts[1][1:] == ["also include this"]
+    assert "temporary" in user_parts[1][0].lower()
+    assert "unless" in user_parts[1][0].lower()
     # The folded-in request is notified on the shared event stream (id +
     # content), and both request subscriptions observe the response events.
     async with asyncio.timeout(1):
