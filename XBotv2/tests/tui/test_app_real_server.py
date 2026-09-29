@@ -381,7 +381,10 @@ async def base_url(
             },
         ]
     elif scenario == "unicode_tool":
-        payload = "漢字🙂 café é " * 80
+        # Long enough to wrap both the JSON argument and tool output several
+        # times at 80 columns while keeping both disclosures inspectable in one
+        # compact terminal frame.
+        payload = "漢字🙂 café é " * 12
         model_responses = [
             {
                 "tool_calls": [{
@@ -1261,7 +1264,12 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
         _tmux("send-keys", "-t", session_name, "C-e")
         expanded = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "ctrl+e collapses" in screen and "漢字" in screen,
+            lambda screen: (
+                "shell(command:" in screen
+                and '"command":' in screen
+                and "Unicode complete" in screen
+                and "漢字" in screen
+            ),
             description="the Unicode tool disclosure to expand",
         )
         assert all(cell_len(line) <= 80 for line in expanded.splitlines())
