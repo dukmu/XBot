@@ -30,7 +30,7 @@ def footer_hint_text(model: ComposerModel) -> str:
         return "Waiting for interrupt · ? shortcuts · Ctrl+C copy/quit"
     if facts.server_turn is ServerTurn.RUNNING or facts.turn_open:
         return (
-            "Esc interrupt · Enter queues · Alt+S steer · ? shortcuts"
+            "Esc interrupt · Enter/Alt+S steer · ? shortcuts"
         )
     return "? for shortcuts · Ctrl+P commands · Ctrl+T agents · F2 settings"
 

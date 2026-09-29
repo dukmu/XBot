@@ -1,9 +1,9 @@
-"""The composer: one hint line, one input, and explicit queue/steer keys.
+"""The composer: one hint line, one input, and explicit delivery keys.
 
 The hint is a pure function of the facts (``composer_hint``), so the wording can
 be checked without a terminal. Two things it must get right:
 
-* while a turn runs, Enter queues and Ctrl+Enter/Alt+S explicitly steer;
+* while a turn runs, Enter and Ctrl+Enter/Alt+S steer the next model step;
 * a blocking prompt outranks the running hint, because that is what the user has
   to act on.
 """
@@ -98,8 +98,8 @@ def composer_hint(model: ComposerModel) -> str:
         return "Compacting conversation…"
     if model.pending_images > 0 and running:
         return (
-            f"{_attachment_note(model.pending_images)} — Enter queues · "
-            "Ctrl+Enter/Alt+S steer"
+            f"{_attachment_note(model.pending_images)} — "
+            "Enter/Ctrl+Enter/Alt+S steer"
         )
     if model.pending_images > 0:
         return f"{_attachment_note(model.pending_images)} — Enter sends"
@@ -169,7 +169,7 @@ class ComposerInput(TextArea):
         if event.key == "enter":
             event.stop()
             event.prevent_default()
-            await self.submit(delivery="queue")
+            await self.submit(delivery="steer")
             return
         if event.key == "shift+enter":
             event.stop()

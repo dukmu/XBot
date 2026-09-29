@@ -49,6 +49,7 @@ from XBotv2.tui.events import InteractionOpened, InteractionResolved, SnapshotAd
 def app_for(
     backend: ScriptedBackend, *, new_input_id=None, workspace="", **overrides
 ) -> TuiApp:
+    transcript_limit = overrides.pop("transcript_limit", 10)
     fields = {
         "session_id": SESSION,
         "thread_id": THREAD,
@@ -61,7 +62,7 @@ def app_for(
         backend,
         config=TransportConfig(**fields),
         render_interval=0.01,
-        transcript_limit=10,
+        transcript_limit=transcript_limit,
         new_input_id=new_input_id,
         workspace=workspace,
     )
@@ -190,18 +191,26 @@ async def test_scrolled_transcript_keeps_its_visible_entry_when_width_changes() 
                 if app.view.transcript.widget_for(entry_id) is not None
             ),
         )
+        anchor_widget = app.view.transcript.widget_for(anchor)
+        assert anchor_widget is not None
+        visible_y = anchor_widget.region.y - scroll.region.y
         assert app.view is not None
         assert app.view.transcript.reader_at_end is False
         composer = app.query_one("#composer", Composer)
         composer.load_text("draft survives reflow")
         composer.focus()
+        composer.input.selection = ((0, 0), (0, 5))
 
         await pilot.resize_terminal(50, 28)
         await settle(pilot)
 
         assert first_visible_entry() == anchor
+        resized_anchor = app.view.transcript.widget_for(anchor)
+        assert resized_anchor is not None
+        assert resized_anchor.region.y - scroll.region.y == visible_y
         assert app.view.transcript.reader_at_end is False
         assert composer.text == "draft survives reflow"
+        assert composer.input.selected_text == "draft"
         assert app.screen.focused is composer.input
 
 
@@ -505,7 +514,7 @@ async def test_enter_in_the_composer_sends_a_message() -> None:
         await settle(pilot)
         assert backend.sent, "the message must reach the server"
         assert backend.sent[0]["content"] == "please look at this"
-        assert backend.sent[0]["delivery"] == "queue"
+        assert backend.sent[0]["delivery"] == "steer"
         assert composer.text == ""
 
 
@@ -519,8 +528,7 @@ async def test_ctrl_enter_steers_through_the_production_app_path() -> None:
         await settle(pilot)
         composer = app.query_one("#composer", Composer)
         footer = app.query_one("#footer", FooterBar)
-        assert "Enter queues" in str(footer.content)
-        assert "Alt+S steer" in str(footer.content)
+        assert "Enter/Alt+S steer" in str(footer.content)
         composer.load_text("change direction")
         await pilot.press("ctrl+enter")
         await settle(pilot)
@@ -709,6 +717,49 @@ async def test_one_pageup_loads_and_displays_the_previous_server_page() -> None:
         assert app.view.transcript.mounted_ids == tuple(
             f"old-{index}" for index in range(10)
         )
+
+
+async def test_pageup_reveals_loaded_history_when_both_pages_fit_the_window() -> None:
+    """The production 50-record page must work with its 100-entry DOM window."""
+    from XBotv2.tests.tui.factories import history_page
+
+    backend = ScriptedBackend(
+        session=snapshot(
+            history=[
+                human_record(f"tail-{index}", f"tail {index}: " + "recent " * 8)
+                for index in range(25)
+            ],
+            history_cursor="older-cursor",
+        ),
+        pages=[history_page(*[
+            human_record(f"old-{index}", f"older {index}: " + "history " * 8)
+            for index in range(25)
+        ])],
+    )
+    app = app_for(backend, transcript_limit=100)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+
+        await pilot.press("pageup")
+        await settle(pilot)
+
+        assert backend.page_reads[-1]["cursor"] == "older-cursor"
+        old = app.view.transcript.widget_for("old-0")
+        viewport = app.view.transcript.container.region
+        assert old is not None
+        assert old.region.y < viewport.bottom and old.region.bottom > viewport.y, (
+            old.region,
+            viewport,
+            app.view.transcript.container.scroll_y,
+            app.view.transcript.container.max_scroll_y,
+        )
+
+        await pilot.press("pagedown")
+        await settle(pilot)
+
+        tail = app.view.transcript.widget_for("tail-24")
+        assert tail is not None
+        assert tail.region.y < viewport.bottom and tail.region.bottom > viewport.y
 
 
 # --- the command palette and slash commands ------------------------------

@@ -149,6 +149,31 @@ def test_repeated_stream_updates_keep_only_one_tail_settle_chain(monkeypatch) ->
     assert scroll._tail_follow_pending is False
 
 
+def test_a_cancelled_tail_callback_cannot_join_a_new_follow_chain(monkeypatch) -> None:
+    scroll = TranscriptScroll()
+    callbacks = []
+    pins = []
+    monkeypatch.setattr(scroll, "call_after_refresh", callbacks.append)
+    monkeypatch.setattr(scroll, "scroll_to_tail", lambda: pins.append(True))
+
+    scroll.follow_tail_after_refresh()
+    old_follow = callbacks.pop(0)
+    scroll.cancel_tail_follow()
+    scroll.follow_tail_after_refresh()
+    new_follow = callbacks.pop(0)
+
+    old_follow()
+    assert pins == []
+    assert callbacks == []
+
+    new_follow()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert len(pins) == 3
+    assert scroll._tail_follow_pending is False
+
+
 # --- the mounted window ---------------------------------------------------
 
 

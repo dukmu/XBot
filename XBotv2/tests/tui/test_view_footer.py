@@ -37,7 +37,7 @@ def test_running_footer_promotes_interrupt_and_steer() -> None:
     shown = render(model)
 
     assert "Esc interrupt" in shown
-    assert "Enter queues" in shown
+    assert "Enter/Alt+S steer" in shown
     assert "Alt+S steer" in shown
 
 
@@ -54,8 +54,7 @@ def test_running_delivery_keys_are_shown_once_in_the_footer() -> None:
     footer = render(model)
 
     assert composer == ""
-    assert "Enter queues" in footer
-    assert "Alt+S steer" in footer
+    assert "Enter/Alt+S steer" in footer
 
 
 def test_interaction_footer_does_not_offer_turn_interrupt() -> None:

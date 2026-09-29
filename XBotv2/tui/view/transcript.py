@@ -55,6 +55,8 @@ class TranscriptScroll(VerticalScroll):
         self._reader_anchor: Widget | None = None
         self._tail_follow_pending = False
         self._tail_follow_remaining = 0
+        self._tail_follow_generation = 0
+        self._reader_restore_generation = 0
 
     @property
     def following_tail(self) -> bool:
@@ -93,6 +95,8 @@ class TranscriptScroll(VerticalScroll):
 
     def preserve_reader_position(self) -> None:
         """Keep the same transcript row at the same screen coordinate."""
+        self._reader_restore_generation += 1
+        generation = self._reader_restore_generation
         self._remember_reader_anchor()
         anchor = self._reader_anchor
         if anchor is None or anchor.parent is not self:
@@ -100,6 +104,8 @@ class TranscriptScroll(VerticalScroll):
         visible_y = anchor.region.y - self.scroll_y
 
         def restore() -> None:
+            if generation != self._reader_restore_generation:
+                return
             if anchor.parent is not self:
                 return
             delta = anchor.region.y - self.scroll_y - visible_y
@@ -107,6 +113,10 @@ class TranscriptScroll(VerticalScroll):
                 self.scroll_relative(y=delta, animate=False, immediate=True)
 
         self.call_after_refresh(restore)
+
+    def cancel_reader_restore(self) -> None:
+        """Invalidate deferred anchor restores before explicit navigation."""
+        self._reader_restore_generation += 1
 
     def scroll_to_tail(self) -> None:
         """Show the tail without preserving an invalid offset after shrink."""
@@ -121,8 +131,15 @@ class TranscriptScroll(VerticalScroll):
         if self._tail_follow_pending:
             return
         self._tail_follow_pending = True
+        self._tail_follow_generation += 1
+        generation = self._tail_follow_generation
 
         def follow() -> None:
+            if (
+                not self._tail_follow_pending
+                or generation != self._tail_follow_generation
+            ):
+                return
             self.scroll_to_tail()
             self._tail_follow_remaining -= 1
             if self._tail_follow_remaining:
@@ -131,6 +148,13 @@ class TranscriptScroll(VerticalScroll):
                 self._tail_follow_pending = False
 
         self.call_after_refresh(follow)
+
+    def cancel_tail_follow(self) -> None:
+        """Cancel deferred tail pins before explicit reader navigation."""
+        self._tail_follow_pending = False
+        self._tail_follow_remaining = 0
+        self._tail_follow_generation += 1
+
 
 class ThinkingActivity(Static):
     """Transient turn activity; deliberately not a timeline entry."""
@@ -494,6 +518,31 @@ class TranscriptView:
             await self._render_locked(state)
         return True
 
+    def reveal_loaded_older(self, state: SessionState, boundary_id: str) -> None:
+        """Move into a prepended page when it still fits the mounted window.
+
+        The server's default history page is smaller than the transcript DOM
+        window.  In that case prepending does not create an older window for
+        :meth:`page_older` to select, but the PageUp action must still expose
+        the rows that arrived above the reader.
+        """
+        ids = state.timeline.ids()
+        try:
+            boundary = ids.index(boundary_id)
+        except ValueError:
+            return
+        if boundary == 0:
+            return
+        target = self._widgets.get(ids[0])
+        if target is not None:
+            self.container.cancel_tail_follow()
+            self.container.cancel_reader_restore()
+            self._schedule(
+                lambda: self.container.scroll_to(
+                    y=target.virtual_region.y, animate=False, immediate=True
+                )
+            )
+
     async def go_to_tail(self, state: SessionState) -> None:
         self._anchor = None
         async with self._lock:
@@ -502,6 +551,7 @@ class TranscriptView:
         # the reader at the live tail even when the mounted window was already
         # the newest one and only a surrounding layout change moved the
         # viewport.
+        self.container.cancel_reader_restore()
         self._schedule(
             self.container.scroll_to_tail
         )

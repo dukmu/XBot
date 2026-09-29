@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -74,7 +75,8 @@ async def base_url(
     scenario = getattr(request, "param", "core")
     no_plugins = scenario in {
         "core", "existing_state", "permission", "permission_deny", "interaction", "thinking_stream",
-        "thinking_activity", "queue_stream", "minimax_thinking",
+        "thinking_activity", "queue_stream", "long_history_stream",
+        "minimax_thinking",
     }
     upstream_http: uvicorn.Server | None = None
     upstream_serving: asyncio.Task | None = None
@@ -386,6 +388,18 @@ async def base_url(
             },
             {"content": "queued follow-up complete"},
         ]
+    elif scenario == "long_history_stream":
+        model_responses = [
+            *([answer] * 30),
+            {
+                **answer,
+                "chunks": [
+                    {"reasoning": "Checking the long conversation."},
+                    {"content": "streamed tail reply"},
+                ],
+                "chunk_delay_ms": 900,
+            },
+        ]
     elif scenario == "compact":
         model_responses = [
             {"content": CAPTION},
@@ -547,6 +561,9 @@ async def wait_for(
 
 
 def _tmux(*args: str) -> str:
+    if args and args[0] == "new-session" and os.environ.get("PYTHONPATH"):
+        child_env = shlex.join(["env", f"PYTHONPATH={os.environ['PYTHONPATH']}"])
+        args = (*args[:-1], f"{child_env} {args[-1]}")
     result = subprocess.run(
         ["tmux", *args],
         capture_output=True,
@@ -1362,7 +1379,7 @@ async def test_real_cli_settings_overlay_uses_f2_and_preserves_draft(
 
 
 @pytest.mark.parametrize("base_url", ["queue_stream"], indirect=True)
-async def test_real_cli_enter_queues_during_a_running_turn_and_renders_the_queued_prompt(
+async def test_real_cli_enter_steers_during_a_running_turn_and_renders_the_pending_prompt(
     real_client: XBotClient,
     base_url: str,
     tmp_path: Path,
@@ -1424,10 +1441,10 @@ async def test_real_cli_enter_queues_during_a_running_turn_and_renders_the_queue
             session_name,
             lambda screen: (
                 "queued follow-up" in screen
-                and "next-turn" in screen
+                and "next-step" in screen
                 and "Running" in screen
             ),
-            description="the queued prompt visible above the composer during the first turn",
+            description="the steered prompt visible above the composer during the first turn",
         )
         (captures / "queue-strip.txt").write_text(strip, encoding="utf-8")
         pending = await real_client.list_pending_inputs(SESSION_ID, THREAD_ID)
@@ -1448,20 +1465,20 @@ async def test_real_cli_enter_queues_during_a_running_turn_and_renders_the_queue
                 )
             await asyncio.sleep(0.05)
         assert [(item.content, item.target) for item in pending.items] == [
+            ("queued follow-up", "next-step"),
             ("steer request", "next-step"),
-            ("queued follow-up", "next-turn"),
         ]
         steered = await _wait_for_tmux_screen(
             session_name,
             lambda screen: (
                 "steer request" in screen
                 and "queued follow-up" in screen
-                and "Alt+S steer" in screen
+                and "Enter/Alt+S steer" in screen
             ),
             description="the accepted Alt+S steer alongside the queued input",
         )
         (captures / "queue-and-steer.txt").write_text(steered, encoding="utf-8")
-        assert "Alt+S steer" in steered
+        assert "Enter/Alt+S steer" in steered
     finally:
         try:
             await _stop_tmux_tui(session_name)
@@ -1471,6 +1488,145 @@ async def test_real_cli_enter_queues_during_a_running_turn_and_renders_the_queue
             _tmux("kill-session", "-t", session_name)
         except AssertionError:
             pass
+
+
+@pytest.mark.parametrize("base_url", ["long_history_stream"], indirect=True)
+async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
+    real_client: XBotClient,
+    base_url: str,
+    tmp_path: Path,
+) -> None:
+    """Exercise server paging and reader anchoring through the production PTY."""
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is required for the real TTY interaction smoke")
+
+    session_id = "pty-long-history"
+    opened = await real_client.open_session(
+        session_id=session_id,
+        thread_id=THREAD_ID,
+        mode="new",
+        history_limit=1,
+    )
+    cursor = opened.data.event_cursor
+    for index in range(30):
+        await real_client.send_message(
+            session_id,
+            THREAD_ID,
+            f"history turn {index}",
+            request_id=f"history-{index}",
+        )
+        async for frame in real_client.stream_events(
+            session_id, THREAD_ID, after=cursor
+        ):
+            cursor = frame.sequence
+            if frame.kind == "turn_ended":
+                break
+
+    session_name = f"xbot-history-{uuid.uuid4().hex[:10]}"
+    repo_root = Path(__file__).resolve().parents[3]
+    xbot = Path(sys.executable).with_name("xbot")
+    command = shlex.join([
+        str(xbot),
+        "tui",
+        "--server",
+        base_url,
+        "--no-plugins",
+        "--session",
+        session_id,
+        "--thread",
+        THREAD_ID,
+    ])
+    captures = tmp_path / "long-history-pty-captures"
+    captures.mkdir()
+    try:
+        _tmux(
+            "new-session", "-d", "-s", session_name, "-x", "80", "-y", "24",
+            "-c", str(repo_root), command,
+        )
+        _resize_tmux_window(session_name, 80, 24)
+        tail = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "Ready  turn:30" in screen and "history turn 29" in screen,
+            description="the long-history TUI to attach at its tail",
+        )
+        (captures / "tail.txt").write_text(tail, encoding="utf-8")
+
+        _tmux("send-keys", "-t", session_name, "PageUp")
+        older = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "history turn 0" in screen and "Ready  turn:30" in screen,
+            description="one PageUp to load and reveal the earlier server page",
+        )
+        (captures / "older-page.txt").write_text(older, encoding="utf-8")
+
+        _tmux("send-keys", "-t", session_name, "C-e")
+        expanded = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "history turn 0" in screen and "ctrl+e collapses" in screen,
+            description="folded blocks to expand without losing the older page",
+        )
+        (captures / "older-expanded.txt").write_text(expanded, encoding="utf-8")
+
+        _tmux("send-keys", "-t", session_name, "-l", "stream while reading history")
+        _tmux("send-keys", "-t", session_name, "Enter")
+        streaming = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: (
+                "history turn 0" in screen
+                and "Running  turn:31" in screen
+                and "Checking the long conversation" not in screen
+            ),
+            description="the older reader anchor while the off-screen tail streams",
+        )
+        (captures / "streaming-anchor-80x24.txt").write_text(
+            streaming, encoding="utf-8"
+        )
+
+        _resize_tmux_window(session_name, 100, 28)
+        resized = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: (
+                "history turn 0" in screen
+                and "Running  turn:31" in screen
+                and max(map(cell_len, screen.splitlines()), default=0) == 100
+            ),
+            description="the reader anchor after a live resize",
+        )
+        assert all(cell_len(line) <= 100 for line in resized.splitlines())
+        (captures / "streaming-anchor-100x28.txt").write_text(
+            resized, encoding="utf-8"
+        )
+        _resize_tmux_window(session_name, 80, 24)
+
+        completed_anchored = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "history turn 0" in screen and "Ready  turn:31" in screen,
+            description="the older reader anchor after streaming completes",
+            seconds=12,
+        )
+        (captures / "completed-anchor-80x24.txt").write_text(
+            completed_anchored, encoding="utf-8"
+        )
+
+        _tmux("send-keys", "-t", session_name, "PageDown")
+        live_tail = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: (
+                "stream while reading history" in screen
+                and REPLY in screen
+                and "Ready  turn:31" in screen
+            ),
+            description="PageDown to return to the live tail",
+        )
+        (captures / "returned-tail.txt").write_text(live_tail, encoding="utf-8")
+    finally:
+        try:
+            await _stop_tmux_tui(session_name)
+        finally:
+            try:
+                _tmux("kill-session", "-t", session_name)
+            except AssertionError:
+                pass
 
 
 @pytest.mark.parametrize("base_url", ["core", "existing_state"], indirect=True)

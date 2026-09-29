@@ -715,6 +715,9 @@ class RecordingView:
         self.pages.append("newer")
         return True
 
+    def reveal_loaded_older(self, state: Any, boundary_id: str) -> None:
+        self.pages.append("loaded-older")
+
     async def go_to_tail(self, state: Any) -> None:
         self.pages.append("tail")
 

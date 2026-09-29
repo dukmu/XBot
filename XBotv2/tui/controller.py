@@ -79,6 +79,8 @@ class ViewPort(Protocol):
 
     async def page_newer(self, state: SessionState) -> bool: ...
 
+    def reveal_loaded_older(self, state: SessionState, boundary_id: str) -> None: ...
+
     async def go_to_tail(self, state: SessionState) -> None: ...
 
 
@@ -405,15 +407,22 @@ class TuiController:
         if await self._view.page_older(self.state):
             await self.flush()
             return True
+        ids = self.state.timeline.ids()
+        previous_oldest = ids[0] if ids else ""
         loaded = await self.load_older()
+        reveal_boundary = ""
         if loaded:
             # The first attempt established that the mounted window was already
             # at the oldest entry held locally. Once the server prepends a page,
             # apply the same navigation intent to that new state; requiring a
             # second PageUp leaves the new rows invisible and makes the notice
             # appear to flash without doing anything.
-            await self._view.page_older(self.state)
+            moved = await self._view.page_older(self.state)
+            if not moved and previous_oldest:
+                reveal_boundary = previous_oldest
         await self.flush()
+        if reveal_boundary:
+            self._view.reveal_loaded_older(self.state, reveal_boundary)
         return loaded
 
     async def load_older(self) -> bool:
@@ -432,8 +441,12 @@ class TuiController:
 
     async def page_newer(self) -> bool:
         moved = await self._view.page_newer(self.state)
+        if not moved:
+            await self.flush()
+            await self._view.go_to_tail(self.state)
+            return True
         await self.flush()
-        return moved
+        return True
 
     async def go_to_tail(self) -> None:
         await self._view.go_to_tail(self.state)

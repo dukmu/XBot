@@ -137,6 +137,9 @@ class TextualViewAdapter:
     async def page_newer(self, state: SessionState) -> bool:
         return await self.transcript.page_newer(state)
 
+    def reveal_loaded_older(self, state: SessionState, boundary_id: str) -> None:
+        self.transcript.reveal_loaded_older(state, boundary_id)
+
     async def go_to_tail(self, state: SessionState) -> None:
         await self.transcript.go_to_tail(state)
 

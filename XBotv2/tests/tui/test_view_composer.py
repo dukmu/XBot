@@ -145,7 +145,7 @@ async def test_enter_submits_and_clears_the_composer() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == ["hello"]
-        assert app.deliveries == ["queue"]
+        assert app.deliveries == ["steer"]
         assert app.composer.text == ""
 
 
@@ -245,8 +245,7 @@ def test_a_running_turn_keeps_delivery_keys_visible_with_an_attachment() -> None
             facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING),
         )
     )
-    assert "Enter queues" in hint
-    assert "Ctrl+Enter/Alt+S steer" in hint
+    assert "Enter/Ctrl+Enter/Alt+S steer" in hint
 
 
 def test_the_placeholder_reports_pending_attachments() -> None:
@@ -272,7 +271,7 @@ async def test_enter_sends_an_image_with_no_text() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.submitted == [""], "an attached image is a message on its own"
-        assert app.deliveries == ["queue"]
+        assert app.deliveries == ["steer"]
 
 
 async def test_enter_still_refuses_an_empty_composer_with_no_image() -> None:
