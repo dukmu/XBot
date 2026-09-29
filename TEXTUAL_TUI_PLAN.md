@@ -25,7 +25,7 @@
 - [x] `0ce4cc6` 修复 `history_window=50` 小于 `transcript_limit=100` 时 PageUp 加载却不显示旧页，以及 PageDown 不回 live tail；局部 generation 阻止已取消 scroll callback 复活。
 - [x] 真实 30 轮历史后，第 31 轮流式期间保持旧页；80×24 ↔ 100×28 resize 保留 anchor、fold、composer focus/selection，完成后仍留旧页，PageDown 回尾。
 - [x] `b72e668` 的完成帧同时等待 collapsed Think marker、preview、final 和 Ready；它强化证据，不改变 block 语义。
-- [x] 最近集成 TUI + ACP：`895 passed in 141.51s`。证据包含本地真实 uvicorn/HTTP/SSE 和 tmux；不代表外部 provider 或中途断网已验收。
+- [x] 最近集成 `bb88087` 的 TUI + ACP：`895 passed in 143.59s`。包含真实 uvicorn/HTTP/SSE、tmux 及 permission pending 中途断网；主代理读取 `/tmp/xbot-integrated-tui-20260929-final/` 当轮渲染。不代表外部 provider 或其他断网状态已验收。
 
 ## 当前验收矩阵
 
@@ -42,7 +42,8 @@
 - [x] PageUp 从真实 server 加载到历史开头；加载页小于 DOM window 时仍立即显示新页，分页期间不闪回尾部。
 - [x] session switch、已有 JSON 状态启动、双客户端隔离、compact 后退出/新进程 resume 和继续第六轮已有真 PTY 证据。
 - [x] switch/rebuild 后 authoritative thread read 恢复 turn count、runtime selection、usage、jobs、pending inputs/interactions 和 event cursor。
-- [ ] 在真实 CLI/tmux 中主动断开并恢复 socket，覆盖 stream 中、permission/question 中和 idle 三种状态；检查无重复 entry、重复响应或 sending 残留。
+- [x] `bb88087` 在真实 CLI/tmux 的 permission pending 阶段主动切断 TCP，服务端/session 不重启；新连接恢复后原选区可操作，继续 question/reply/follow-up，公开 history 无重复。转发器仅位于测试侧，无生产测试 API。
+- [ ] 补 stream 中、question pending 与 idle 的真实 socket 中断；permission 场景不能替代其他状态。长历史测试一次未捕获瞬时 Running 帧，重跑通过，未宣称已消除时序波动。
 - [ ] 覆盖 reconnect 与 session switch 交错、失败 switch 保持原 stream、cursor expiry baseline rebuild 后 reader intent 明确重置或保留。
 
 ### Resize、focus、selection 与 overlay
@@ -60,6 +61,7 @@
 - [ ] 对 plugin config revision conflict 实现 reload/重试选择；复杂 schema 不猜测、不提供 raw JSON 逃生口。
 - [ ] 未有公开持久化入口的 Appearance 只允许当前实例预览，不能声称跨进程保存；未实现页明确标注 unavailable。
 - [ ] 复核 80×24 的导航可发现性、键盘可达、返回焦点/草稿和 status/footer 单行优先级。
+- [ ] 当前 permission capture 中 modal 已可操作，但 composer 仍提示手工 `/approve ID`，与 modal/状态提示重复；后续按公开交互模型整理，不增硬编码命令或客户端旁路。
 
 ### Commands、queue 与 subagent 展示
 
@@ -71,7 +73,7 @@
 ## 下一执行顺序
 
 - [ ] 先等待底层数据模型、运行时恢复、持久化和插件职责收口；TUI 不为未稳定 contract 建兼容层。
-- [ ] 第一 TUI 切片：真实 socket 中断/reconnect 的三状态矩阵，并读取当轮 capture 与 canonical history。
+- [ ] 第一 TUI 切片：继续真实 socket 中断/reconnect 未覆盖状态，并读取当轮 capture 与 canonical history。
 - [ ] 第二 TUI 切片：Settings scope、mutation、revision conflict 和返回会话可用性。
 - [ ] 第三 TUI 切片：Unicode/长代码/超长 tool output 与超窄终端限制。
 - [ ] 若发现服务端/协议缺口，提交最小生产证据并回到 owner 修复；不得在 TUI 旁路公开 API。

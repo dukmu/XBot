@@ -24,6 +24,9 @@
 
 ## 1. 底层架构与数据模型收口（对应用户旧项 6，当前最高优先级）
 
+- [x] `fbac3f1` 删除 AgentCreateOptions 的重复启动身份/上下文；SessionLaunch 为唯一来源，前者仅保留 Agent 选择/定义/model override。真实启动、恢复、caption、子应用相关验证通过，无兼容字段。
+- [x] `13e1a9f` 将 assistant history 提交置于完成事件之前，覆盖无持久化、持久化及写入失败；`6917e73` 删除该切片顺带增加的状态通知，未放宽原事件次数测试。`5b5de7b` 删除 SSE 内建插件事件名单，保留 canonical 特殊投影与客户端未知事件校验。
+- [x] `d1d0e9b` 拒绝 cold resume 的 workspace 冲突；直接 application 启动也在 session 水合边界校验，避免 metadata 与变量/配置分叉，不新增兼容路径。active attach 仍复用既有 runtime。
 - [ ] 逐项核对设计文档第 2–5 节：每个领域事实只有一个权威类型、owner 和持久化来源；删除重复 DTO、动态语义、旧入口、兼容导出及隐式 callback。
 - [ ] 从 application → loader/XCore → session/runtime → protocol/client 做依赖审计；Core 不聚合插件对象、不硬编码插件名，protocol 只表达 transport contract。
 - [ ] 核对 lifecycle 的唯一 owner：boot、apply、start、failure rollback、dispose、process/session/thread close 均只有一次明确清理，不依赖析构或静默 fallback。
@@ -33,6 +36,7 @@
 
 ## 2. 运行时失败与恢复（对应用户旧项 2）
 
+- [x] `d9f96cb` 修复关闭期间仍接受输入/启动回合，以及 inbox discard 失败跳过资源清理；复用现有 submission lock 和 closing 状态，保留首个失败。与启动事实迁移合并后 Core + HTTP/fold-in `743 passed, 17 deselected in 172.46s`。
 - [ ] 建立 production runtime 失败矩阵：启动中插件失败、provider/tool 异常、hook 异常、task cancellation、interrupt、close 与并发提交；验证未提交输入可重试且资源只清理一次。
 - [ ] 覆盖 pending interaction 的恢复与竞争：permission/question 在断连、重连、取消、外部 resolution 和重复响应下只能完成一次，陈旧请求不可重新出现。
 - [ ] 覆盖多条 pending input 的 FIFO、claim/commit/rollback 与 turn 边界；steer 在安全 step 领取但不自动 interrupt，显式 queue 留到下一 turn。
@@ -42,8 +46,10 @@
 
 ## 3. 持久化与复杂度（对应用户旧项 3）
 
+- [x] 当前普通对话生产路径量测 10/20/40 回合：history 为 10,501/21,049/42,147 bytes，KV 累计写入 1,931/3,701/7,241 bytes，metadata 均 3 次写入；未发现新 O(N²)，不据此更换存储格式。此证据不覆盖所有插件/大目录场景。临时测量脚本 `/tmp/runtime_persistence_audit.py` 未提交。
 - [x] 区分职责：StateService 是 KV 快照；session trajectory/inbox 是追加记录。撤回的 StateService JSONL 设计不再作为候选方案。
 - [x] 外部 trace writer 的已知前缀可增量读取，损坏后缀不发布部分结果；缓存丢弃后的重试重新验证磁盘事实。
+- [x] usage 累计快照包含辅助请求及已实际消耗的 provider usage，不等于成功写入 messages 的用量之和；history 写入失败不应回滚已消耗的 usage。未据此新增日志或更改统计语义。
 - [ ] 审计 metadata、usage、插件状态、transcript 和 trajectory 是否重复持有同一权威事实；静态身份只存一次，动态变化沿用现有事件，避免第二份日志。
 - [ ] 测量生产读写的记录数与字节数：追加、分页、compact、外部 writer、缓存轮换、close/reopen、多 session；累计 n 次交互不得因完整历史复制或重放形成 O(n²)。
 - [ ] 验证冷历史首次加载、损坏完整记录、部分尾写、fsync/replace 失败、进程恢复及 cursor 连续性；不能用热缓存耗时阈值代替。
@@ -51,6 +57,8 @@
 
 ## 4. 插件职责与生命周期（对应用户旧项 4）
 
+- [x] `5848db3` 修复 skills 注册 namespace 与 guard 不一致导致无法连续加载 Skill；生产 factory/标准工具路径验证，普通未允许工具仍被拒绝。`1d2a180` 保存真实 MCP stdio 自动回归：发现→模型工具调用→结果→销毁后子进程退出。
+- [ ] goal/todo 用户反馈仍未复现；已有通知链核对不构成该反馈已解决的证明，不为此新增通知框架。
 - [ ] 按主线插件实际职责建立最小证据表：注册/依赖、成功路径、关键失败、事件、可选持久化、卸载；不存在的能力不虚构测试或列为缺陷。
 - [ ] 核对 compact、goal、todolist、subagents、skills、MCP、browser 的公开服务与事件 ownership；插件不得读写 runtime 私有状态或让 Core 识别插件名。
 - [ ] 复核 compact/goal/todolist 完成通知不会重复创建 turn、恢复后不会重复投递；只有真实复现的缺陷才修改实现。
@@ -62,7 +70,8 @@
 - [x] 真实 CLI/tmux 已覆盖 permission→question→长 paste/follow-up、session switch、已有状态 resume、compact→新进程 resume、长历史分页、流式 anchor、折叠和动态 resize。
 - [x] Enter 默认使用现有 `delivery="steer"`，Shift+Enter 换行；显式 queue/interrupt 独立，不改用户原文、不发送额外事件。
 - [x] 当前产品契约保留分页历史、只读 `/thread`、紧凑单列布局、受限 Think/tool 展开窗口、永不折叠 final reply、可见 context trace、typed permission/question modal，以及 usage/context/cache 状态。
-- [ ] 在真实 PTY 中主动制造中途 socket 断网，验证 reconnect 后 transcript、pending interaction、cursor、focus、selection、折叠与 scroll anchor 不重复、不跳尾。
+- [x] `bb88087` 真实 CLI/tmux 在 permission pending 时主动切断 TCP，重连后选区及待回答交互保留，继续 question/reply/follow-up，公开 history 无重复；只增加测试侧透明转发器，无生产后门。主代理已读取本次稳定 permission-reconnected capture。
+- [ ] 继续验证 streaming/idle socket 断网、switch/reconnect 交错及滚动意图；permission 路径通过不代表全部重连矩阵完成。长历史测试一次未捕获 Running 帧，独立重跑通过但原因未定。
 - [ ] 完成 Settings 可用性闭环：真实数据来源与 scope、可发现导航、支持的 schema mutation、revision conflict/reload、返回会话后的草稿与 focus；未实现页面明确标注。
 - [ ] 继续核对 80×24、100×28 和宽屏的 Unicode、长代码、超长 tool output 与信息优先级；不追求像素仿制，也不复制 Claude 命令表。
 - [ ] 若凭证与网络可用，单独记录一次 reasoning-capable 外部 provider smoke；受控 loopback 不冒充供应商互操作。
@@ -81,6 +90,8 @@
 
 ## 最终交付门槛
 
+- [x] 本次集成代码截至 `bb88087`（最终生产代码 `6917e73`，其后仅测试/文档）：Core `632 passed, 17 deselected in 85.12s`；AgentLoop + 完整 HTTP/fold-in `138 passed in 92.35s`；完整 TUI + ACP `895 passed in 143.59s`。Core 使用 `-k 'not web'`，未运行 WebUI 或外部 provider。
+- [x] 扩大回归曾为 `750 passed, 1 failed`：额外状态通知改变既有事件次数。删除额外通知后重新验证上述套件，未改原断言。已读取集成后的 `/tmp/xbot-integrated-tui-20260929-final/` permission 重连渲染；本地产物不提交。
 - [ ] 1–5 的未完成项均有实现证据或明确排除理由；第 6 节按用户后续授权单独推进。
 - [ ] focused、Core、关键 integration、TUI/ACP 均在同一最终提交上运行；任何代码变更后受影响结果重新验证。
 - [ ] 记录未运行的外部 provider、WebUI 或安全矩阵及原因；不以旧 capture、旧 PNG 或历史测试数作为当前证据。
