@@ -23,6 +23,42 @@ prefix work for a live reader. The earlier 10/20/40-turn production measurement
 showed linear history bytes and constant-size per-turn StateService snapshots;
 this audit does not replace those measured results with timing claims.
 
+### Complexity boundaries checked
+
+- **Warm compaction:**
+  `test_compaction_folds_only_the_new_record_on_warm_projections` exercises
+  prefixes of 10 and 100 records and three nested compactions. The observed
+  fold count stays at no more than six records: one new record for each of the
+  surface and transcript projections per compaction. The prefix is neither
+  reread nor cloned. Appended JSONL bytes are the new replacement record only.
+- **Cache rotation and multiple paths:**
+  `test_live_threads_append_and_page_without_rereading_their_prefix` keeps 12
+  live thread paths, beyond the recent-reader limit of eight, for 20 and 40
+  turns. Reads of known prefixes remain zero and measured write bytes equal the
+  final trajectory sizes. A live store owns its `_TrajectoryState` even after
+  recent-cache eviction. An inactive, unreferenced path may be evicted and its
+  next open is one O(records) cold validation; it is then warm again.
+- **Foreign append and paging:**
+  `test_reader_folds_only_external_append_suffix` warms all three projections,
+  then applies a compaction plus ten foreign appends. Measured read bytes equal
+  exactly the file-size suffix after the original prefix. Paging does not
+  reread that prefix.
+- **Close and reopen:**
+  close releases the live store; the bounded recent cache may still retain its
+  state. Reopening after eviction performs one linear parse/fold.
+  `test_automatic_compaction_is_triggered_before_request_and_survives_resume`
+  verifies the compacted surface restores once, and
+  `test_todo_and_usage_survive_http_close_resume` verifies the atomic task and
+  usage snapshots restore without replay writes. This is cold O(records), not
+  O(pages × records), because the reopened store caches the validated result.
+- **Multiple sessions:** every cache key is the absolute `messages.jsonl` path,
+  and every metadata, artifact, inbox, and StateService path is derived from
+  `SessionPaths → ThreadPaths`. Sessions therefore share neither a trajectory
+  projection nor usage counters. The 12-live-path byte test proves the
+  path-local append behavior; changing the session component changes only the
+  key prefix and not the algorithm. No process-global multi-session usage or
+  compaction counter exists to merge or scan.
+
 ## Capability plugins
 
 | Plugin | Public owner and observable paths | Persistence and feedback | Teardown or partial failure |
@@ -40,6 +76,15 @@ state after reconnect; neither plugin turns a status-only notification into an
 extra user turn. Skills, MCP, and browser do not persist live registries,
 transports, processes, pages, or permission scopes.
 
+No raw historical user-feedback reproduction was available for the earlier
+goal/todo concern, so this audit does **not** claim that an observed feedback
+incident was reproduced and fixed. It closes the currently public chain only:
+state changes are visible through `GoalChanged`/`TaskChanged`, durable state is
+visible after close/resume, goal rounds intentionally wake autonomous work,
+and todo/compaction reminders are persisted without waking a turn. A future
+report with a missing or duplicate client event still needs its own event trace
+and reproduction.
+
 ## Verification commands
 
 All commands use the repository virtual environment and an absolute worktree
@@ -49,7 +94,16 @@ All commands use the repository virtual environment and an absolute worktree
 - Metadata/usage: `python -m pytest XBotv2/tests/core/test_usage.py XBotv2/tests/core/test_application_startup.py::test_metadata_initialization_is_durable_and_resume_is_read_only XBotv2/tests/core/test_application_startup.py::test_runtime_state_is_shared_restorable_and_thread_local -q` — 8 passed.
 - Compaction: `python -m pytest XBotv2/tests/core/test_compact.py -q` — 28 passed.
 - Goal/todo/skills: `python -m pytest XBotv2/tests/core/test_goal.py XBotv2/tests/core/test_todolist.py XBotv2/tests/core/test_skills.py -q` — 33 passed.
-- HTTP goal/todo/skills production paths: eight selected tests in `test_http_transport.py` — 9 passed (one is parameterized).
+- HTTP goal/todo/skills production paths — 9 passed because one of these eight
+  tests is parameterized:
+  `test_todo_and_usage_survive_http_close_resume`,
+  `test_http_goal_command_runs_the_evaluator_loop`,
+  `test_goal_close_cancels_evaluator_and_resume_restarts_active_goal`,
+  `test_goal_close_cancels_scheduled_retry_timer`,
+  `test_terminal_goal_persists_usage_tool_and_todolist_stats`,
+  `test_http_goal_impossible_verdict_persists_failed_state`,
+  `test_http_goal_interrupt_pauses_and_persists_goal`, and
+  `test_http_skill_prompt_is_expanded_before_model_input`.
 - MCP: `python -m pytest XBotv2/tests/core/test_mcp.py -q` — 5 passed with a real stdio child.
 - Browser: `python -m pytest XBotv2/tests/core/test_browser.py -q` — 36 passed with local sockets and installed Chromium.
 - Artifacts/content cache: `python -m pytest XBotv2/tests/core/test_content_cache.py -q` — 10 passed.
