@@ -1,407 +1,87 @@
-# XBotv2 中期开发计划
+# XBotv2 当前执行计划
 
-> 本文件只记录当前可执行任务、当前权威证据和完成门槛，不作为历史日志。
-> 数据模型、字段和依赖方向唯一以
-> [`XBotv2/docs/project/data-model-redesign.md`](XBotv2/docs/project/data-model-redesign.md)
-> 为准；旧实现、旧测试与 `HANDOVER.md` 都不是设计依据。
+> 本文件只保留当前事实、优先级和完成门槛，不是历史日志或设计 gold
+> truth。设计文档和生产代码都是待审查材料；判断依据是用户约束、明确的
+> owner，以及从生产路径得到的可观察行为证据。
 
-## 1. 目标与总完成条件
+## 已确定要求（不代表已全面验证）
 
-目标是完成 XBotv2 的底层数据模型迁移，证明并修复 Core、主线插件、HTTP
-运行时和主线 TUI。不得以兼容层、动态注入、判空、放宽校验或删除有效测试换取绿灯。
+- [x] 主线是 `XBotv2`；不恢复旧实现、兼容双读/双写、wrapper executor 或协议副本。
+- [x] Core、protocol、provider、tool、plugin、client 各自拥有自己的语义；不因 UI 或插件需求向底层模型填字段。
+- [x] 持久化是可选能力；缺少持久化不得阻断实时 Agent、工具、事件流和客户端。
+- [x] StateService 当前是命名空间 KV 的单 JSON 原子快照，不是 append-only log；`d988e4c` 恢复该职责并覆盖已有状态启动。
+- [x] 本轮不做 WebUI、bench 驱动优化、外部供应商矩阵或新框架。
+- [ ] 每个切片先核对 owner 和真实生产入口，再写失败测试、最小修复、focused 验证及相称的扩大回归。
 
-- [ ] 设计文档第 2、3 节定义的每个领域语义只有一个权威类型和 owner；其他层仅持有明确投影或 envelope。
-- [ ] 设计文档第 4 节列出的重复类型、动态语义和旧入口全部归零，不保留兼容导出、别名、双读或双写。
-- [ ] 依赖遵守设计文档第 5 节；Core 不导出插件聚合对象、不硬编码插件名、不接受插件注入 callback。
-- [ ] Core 运行时矩阵有正常、关键失败、恢复和清理证据，测试经过真实 production factory/registry/persistence 路径。
-- [ ] 每个主线插件按其**实际职责**验证适用的注册、依赖、成功、失败、恢复、事件、持久化和卸载能力；不存在的 Agent Tool、持久化或资源生命周期不强制虚构测试。
-- [ ] HTTP 的关键 streaming、tool、permission/interaction、interrupt、reconnect 和恢复路径由真实 loopback server/client 验证。
-- [ ] 主线 TUI 完成真实多轮 PTY、键盘、paste、选择、折叠、滚动、session switch/reconnect、退出和渲染验收。
-- [ ] 非法内部状态在 owner 边界明确失败；不得用 `None`、`getattr`、宽泛字典或静默 fallback 表达另一种语义。
-- [ ] 最终结论逐项核对生产入口和产物；不能仅以全套测试通过宣告完成。
+## 当前稳定基线
 
-## 2. 固定约束
+- [x] 启动与状态：`d988e4c` 修复已有 JSON KV 状态导致 `/sessions` 404；不得重新把 StateService 日志化。
+- [x] 输入语义：`1f81dc5` 保留 steer 身份并只在 model context 添加临时补充说明；原始内容和客户端投影不变，steer 不等于 interrupt。
+- [x] 持久化读取：`a5ac52b` 让活跃 reader 增量读取外部追加的 trace 后缀；失败后丢弃缓存并明确重试，不复制完整投影。冷读仍需完整读取。
+- [x] jobs：`b989548` 覆盖 runner 启动前取消、唯一终态/通知、wait 释放，以及父代理读取并发子应用的 cancelled/failed 结果。
+- [x] TUI：`0ce4cc6` 覆盖默认 Enter steer、真实长历史分页、流式阅读 anchor、80×24 ↔ 100×28 resize、PageDown 回尾和陈旧滚动回调失效；`b72e668` 只强化完成帧断言。集成 TUI + ACP 为 `895 passed in 141.51s`。
+- [x] 真实 HTTP 测试宿主已由 `f2286f0` 收回同一 event loop；steer HTTP 投影断言由 `5270207` 覆盖。局部绿测不等于总体迁移完成。
 
-- [x] 不修改 `data-model-redesign.md`；发现歧义时记录证据，不自行发明新模型。
-- [x] 不保留向后兼容；旧调用方迁移完成后直接删除旧字段、旧事件、旧 policy 和旧导入路径。
-- [x] `ResourceResponse[T]` 是设计文档 §3.6 规定的 protocol wire 类型；只在 protocol 边界使用，不扩散为 Core 或插件业务返回包装。
-- [x] 不从 `XBotv2.core.tools` 或 Core 公共 API 导出 `AllTools` 等 agentloop/plugin/application 聚合对象。
-- [x] 不创建 wrapper executor、伪造 `ToolCall` 或权限旁路；工具统一经过标准 registry、permission 和 execution path。
-- [x] 不做 WebUI 工作，也不因 WebUI 测试调整主模型；本轮范围是主要代码、Core/HTTP 运行时和主线 Textual TUI 插件。
-- [x] Bench 不属于本轮验收；不能证明产品行为的 bench 不修、不迁移。
-- [x] 用户最新授权允许在稳定节点提交；保留用户现有 staged/unstaged 修改，不重置、不覆盖无关工作，不把无关工作混入提交。
-- [x] 不通过删除有效功能测试取得绿灯；只删除锁定已删除语义、私有结构或完全重复证据的测试。
-- [x] 真实供应商网络 smoke 仅在凭证和网络可用时 opt-in；未运行时记录原因。真实 SDK 类型、adapter contract 和本地真实 server 路径仍是必需证据。
-- [x] Browser 安全验收限定为已声明的 policy、关键协议互操作和资源清理；无界远程/攻击组合矩阵另列安全 backlog，不阻塞本轮。
+## 1. 底层架构与数据模型收口（对应用户旧项 6，当前最高优先级）
 
-## 3. 当前权威基线
+- [ ] 逐项核对设计文档第 2–5 节：每个领域事实只有一个权威类型、owner 和持久化来源；删除重复 DTO、动态语义、旧入口、兼容导出及隐式 callback。
+- [ ] 从 application → loader/XCore → session/runtime → protocol/client 做依赖审计；Core 不聚合插件对象、不硬编码插件名，protocol 只表达 transport contract。
+- [ ] 核对 lifecycle 的唯一 owner：boot、apply、start、failure rollback、dispose、process/session/thread close 均只有一次明确清理，不依赖析构或静默 fallback。
+- [ ] 核对 human、runtime input/notice、tool、interaction、completion、workspace/session event 的身份与恢复语义；不能因“都像消息”共享错误路径。
+- [ ] 建立剩余迁移清单时只记录实际重复或错误职责；不得从旧 TODO checkbox 反推需要新增抽象。
+- [ ] 完成后运行 Core 与关键 layering/contract 测试，并记录仍未迁移的具体类型/入口，而非只报告数量。
 
-### 2026-09-29 独立 worktree 并行推进
+## 2. 运行时失败与恢复（对应用户旧项 2）
 
-- [x] 用户授权三个 GPT-5.6 sol 子代理独立开发，统一从已验证 `d988e4c` 分出 worktree；保留旧 `.worktrees/tui-rewrite`，不改共享依赖环境，不做 WebUI。
-- [x] `fix-persistence-read-recovery` / `.worktrees/persistence-audit`：外部 writer 追加后 reader 只读取新后缀，不再反复从头解析或复制完整投影；损坏后缀不发布部分结果，丢弃投影缓存后明确重试失败。已审阅集成为 `a5ac52b`。冷读仍需完整读取，不宣称所有持久化成本已解决；StateService 仍是 KV 快照。
-- [x] `fix-plugin-notification-lifecycle` / `.worktrees/plugin-events`：修复 job runner 尚未启动就取消导致永不完成；验证取消终态/完成通知唯一、wait 释放、两个真实子应用取消及失败子应用由父代理读取。已审阅集成为 `b989548`，不新增通知框架。
-- [ ] goal/todo 用户反馈的通知问题本次未复现，不能标为已修复；现有生产路径覆盖不意外唤醒、恢复不重复等行为。运行中 job 输出新能力不属于已确认缺陷，未扩展实现。
-- [x] `fix-tui-interaction-acceptance` / `.worktrees/tui-acceptance`：真实 30 轮历史后，第 31 轮流式期间留在旧页，80×24 ↔ 100×28 resize 保留阅读位置；修复加载旧页却回尾、PageDown 无法回尾和已取消滚动回调复活。分支完整 TUI `888 passed`，审阅后集成为 `0ce4cc6`；集成验证与 Think 完成帧核查仍见下项。
-- [x] 集成完整 TUI/ACP `895 passed in 141.51s`。主代理读取本轮真实长历史流式/resize/回尾及 steer 捕获；Think 收起保留最多两行 preview 是现有明确契约，并非正文泄漏。增强真实 PTY 完成帧等待，核对收起标记、预览、final 和 Ready 同时出现（`b72e668`），不改生产显示语义。
-- [x] 主代理完成本次三个分支的范围管理、提交审阅与集成，核验 worktree 导入及真实终端捕获；拒绝完整投影复制/重复事务实现，采用失败后丢弃缓存的简单方案。根计划统一更新，不将旧未勾选项直接扩展为新功能。
-- [ ] 输入发布/恢复剩余失败边界、多待处理交互与取消/重连矩阵、metadata 增长、冷历史首次加载及整体模型/插件职责审查未全部完成。
-- [x] 真实 HTTP 测试宿主原先跨线程事件循环运行应用和 provider；红测复现 loop-owned Future 报错，宿主改为与应用同一事件循环运行真实 uvicorn。提交 `f2286f0`，当时 HTTP/fold-in `115 passed`，没有修改生产运行时绕过测试问题。
-- [x] 用户最新要求：忙碌输入默认 steer；canonical human input 记录 steering 事实，context compiler 添加临时补充、不主动打断工作的简短说明，原文和客户端展示不变，resume 后语义保留。运行时与恢复验证已提交 `1f81dc5`；TUI Enter 的默认行为由 TUI 分支同步落实，显式 queue 保持下一轮语义。
-- [x] 合并 persistence/jobs/steer 后 Core + HTTP/fold-in 首轮 `740 passed, 1 failed, 17 deselected`；唯一失败为 HTTP 用例仍断言模型输入只有原文。保留工具批次与发布验证，改为分别验证说明和未改动的原文；加换行避免 provider 拼接文字时相连。最终完整 HTTP/fold-in `116 passed in 86.72s`，提交 `5270207`；不把首轮结果描述成全绿。
-- [x] 最终测试提交 `b72e668` 后真实长历史 PTY + block 验证 `20 passed in 7.72s`。未运行 WebUI、外部 provider 或真实 PTY 中途断网；这些结果不代表全部长期任务完成。
+- [ ] 建立 production runtime 失败矩阵：启动中插件失败、provider/tool 异常、hook 异常、task cancellation、interrupt、close 与并发提交；验证未提交输入可重试且资源只清理一次。
+- [ ] 覆盖 pending interaction 的恢复与竞争：permission/question 在断连、重连、取消、外部 resolution 和重复响应下只能完成一次，陈旧请求不可重新出现。
+- [ ] 覆盖多条 pending input 的 FIFO、claim/commit/rollback 与 turn 边界；steer 在安全 step 领取但不自动 interrupt，显式 queue 留到下一 turn。
+- [x] jobs 已覆盖 runner 尚未启动时取消及 cancelled/failed 子应用结果读取；后续只补实际缺失的竞争路径，不造通知框架。
+- [ ] 用真实 loopback HTTP/SSE 验证 sequence gap、cursor expiry、watchdog reconnect、恢复后的 authoritative snapshot 和清理；不得以 scripted backend 代替关键断线行为。
+- [ ] 运行相称的 Core + HTTP + fold-in 回归，并逐项说明失败注入点与可观察结果。
 
-### 2026-09-29 启动 404 与 StateService 职责纠正
+## 3. 持久化与复杂度（对应用户旧项 3）
 
-- [x] 新增真实 server 启动回归：启动前已有合法 JSON 对象 state.json，GET /sessions 必须可用。红测准确复现 404：日志化 StateService 拒绝原 JSON → workspaces 初始化失败 → workspace_events 缺失 → session HTTP 路由未挂载。先前只以全新目录验证，遗漏该生产路径。
-- [x] 撤回通用 StateService 的 append-only 改造，恢复单 JSON 当前状态的原子保存；删除操作日志/重放实现及仅锁定该错误设计的测试，保留 namespace、memory、服务绑定修复。补充覆盖写后不累积历史、replace/fsync 失败保留磁盘和缓存、已有进程状态启动。未增加双格式读取、未删除或转换用户状态文件。会话 trace/inbox 的追加机制不受此纠正影响。
-- [x] 恢复后 XCore `107 passed in 1.58s`；server/plugin-state/workspaces focused `22 passed in 1.70s`。下节日志化设计说明与其 114 项绿测仅记录已撤回的错误稳定点，不再是当前设计或当前验证依据。
-- [x] 真实 CLI/tmux 双客户端启动、消息、隔离及恢复：新增已有 JSON 状态参数，与空目录路径合计 `2 passed, 39 deselected in 11.23s`。已查看 pytest-178 中已有状态路径的恢复后第二轮渲染；不以原来的全新目录 green suite 代替已有状态验证。
-- [x] 扩大回归 `PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core XBotv2/tests/integration/test_http_transport.py XBotv2/tests/integration/test_foldin_queued.py -q -s -k 'not web' --tb=short`：`733 passed, 17 deselected in 146.56s`。未运行外部 provider 或 WebUI。
-- [x] 最终收口补跑完整 TUI + ACP：`PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/tui XBotv2/tests/acp -q -s --tb=short` → `892 passed in 131.36s`；XCore 再次 `107 passed in 1.56s`。提交前核对无兼容双读、新框架或用户数据改写；`git diff --check` 通过。按用户要求将修复、回归测试和更正文档一起提交，不再停留于未提交状态；goal 保持暂停。
+- [x] 区分职责：StateService 是 KV 快照；session trajectory/inbox 是追加记录。撤回的 StateService JSONL 设计不再作为候选方案。
+- [x] 外部 trace writer 的已知前缀可增量读取，损坏后缀不发布部分结果；缓存丢弃后的重试重新验证磁盘事实。
+- [ ] 审计 metadata、usage、插件状态、transcript 和 trajectory 是否重复持有同一权威事实；静态身份只存一次，动态变化沿用现有事件，避免第二份日志。
+- [ ] 测量生产读写的记录数与字节数：追加、分页、compact、外部 writer、缓存轮换、close/reopen、多 session；累计 n 次交互不得因完整历史复制或重放形成 O(n²)。
+- [ ] 验证冷历史首次加载、损坏完整记录、部分尾写、fsync/replace 失败、进程恢复及 cursor 连续性；不能用热缓存耗时阈值代替。
+- [ ] 明确每个 persisted artifact 的格式、owner、恢复投影和清理边界；格式变化必须有迁移决策，不暗加兼容双读。
 
-### 2026-09-29 稳定点收口（按用户要求提交后停止 goal）
+## 4. 插件职责与生命周期（对应用户旧项 4）
 
-- [x] 本次只收口已在进行的运行时、持久化与状态服务改动，不展开 metadata 新格式、插件新功能或 TUI 新布局。文档不是 gold truth；以实际职责和可验证行为核对，不能凭测试通过宣布全部重构完成。
-- [x] 历史错误，现已撤回：曾将 StateService 改为版本 header 加逐键操作追加，并把 state.json 内容改为 JSON-lines。该做法混淆状态与 trace，且导致已有进程状态启动失败；当前恢复单 JSON 对象，不以“不兼容”为该错误设计辩护。
-- [x] 状态写入只在 append/fsync 成功后更新缓存；首次失败不留空文件，部分写入和 fsync 失败恢复旧前缀。损坏 header、非法完整记录不静默恢复；仅有效 header 后的未结束尾行可丢弃，包含 UTF-8 字符中途断写。20/40 键增长、重启、命名空间、失败重试均有测试；完整 XCore `114 passed in 1.55s`。
-- [x] Core + HTTP + queued-foldin + ACP 联合验证 `756 passed in 162.62s`：`PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core XBotv2/tests/integration/test_http_transport.py XBotv2/tests/integration/test_foldin_queued.py XBotv2/tests/acp -q -s -k 'not webui' --tb=short`。该过滤仍包含 Core 中少量名称为 web 的 CLI/server 用例，均通过；未运行 WebUI 专属套件或改动 WebUI。
-- [x] TUI 首轮 `882 passed, 1 failed in 126.43s`，失败为类型归属守卫遗漏 InputsConsumed；将它登记为携带既有 InputConsumedEvent 的 server-shaped 投影，保留全部守卫断言，无产品旁路。
-- [x] 修订后完整 TUI `884 passed in 123.88s`，命令 `PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/tui -q -s --tb=short`，包含本地 server 与真实 CLI/tmux。新增的第 884 项为该投影必须携带原协议模型的既有参数化守卫。未运行外部 provider（本轮无需新增付费请求）或 bench 性能验收；bench 文件仅迁移已删除的构造参数/身份字段。
-- [x] 提交前检查：无新依赖/通用存储框架/兼容双读；公开格式变化已写明；测试覆盖实际追加、恢复、故障和客户端链路，而非只断言类型结构；`git diff --check` 通过。XCore 稳定点 `33c899d`，XBot 运行时和计划记录分开提交，最终提交号以 git 记录和交付回复为准。
-- [x] 本次验证对应的完整代码提交为 `e78ee8c`（包含前置 XCore `33c899d`）；随后仅更新根目录计划记录，不改代码。本轮按用户要求收口并暂停 goal，不把其余未完成项标记完成。
-- [x] 查看本次真实 CLI/tmux 捕获 `/tmp/pytest-of-shefrin/pytest-172/`：双会话恢复后第二轮输入与 Think/reply、Ready turn:2；compact 后继续第六轮并保留原 transcript；子代理恢复页面显示结果和只读 composer/Esc main 提示。使用本地可控 provider，不是外部供应商互操作证据；临时捕获不提交。
-- [ ] 总体 append-only 目标未完成：metadata 仍为快照；插件单个值可能仍随会话增长；冷历史分页与外部 writer 追加后的 reader 重读成本仍待审查。当前优化仅保证已实现 live append 路径不重复写整个集合，不泛称所有读写均无 O(N²)。
-- [ ] 后续插件阶段：compact/goal/todo 的通知和生产路径验收；TUI 复合流程、Settings/窄屏/动态 resize 等未完成项仍保持未勾选。此次按用户要求停止，不自动继续这些任务。
+- [ ] 按主线插件实际职责建立最小证据表：注册/依赖、成功路径、关键失败、事件、可选持久化、卸载；不存在的能力不虚构测试或列为缺陷。
+- [ ] 核对 compact、goal、todolist、subagents、skills、MCP、browser 的公开服务与事件 ownership；插件不得读写 runtime 私有状态或让 Core 识别插件名。
+- [ ] 复核 compact/goal/todolist 完成通知不会重复创建 turn、恢复后不会重复投递；只有真实复现的缺陷才修改实现。
+- [ ] 验证插件卸载、依赖重绑和部分 apply 失败后的 disposer 顺序；健康能力继续可用，失败诊断保留原始 owner 信息。
+- [ ] Browser 只验收已声明 policy、关键协议互操作和资源清理；无界攻击矩阵留作独立安全 backlog。
 
-### 2026-09-28 用户确认的推进顺序
+## 5. Textual TUI 产品验收（对应用户旧项 5）
 
-- [x] 撤回将 application 入口包装为插件的错误改动，包括 YAML 注册及强加插件生命周期的测试。application 保持入口职责；不能把所有入口依赖都插件化来替代职责审查。
-- [x] 通用 boot 删除固定 required_services 门槛；server/ACP CLI 在实际运行操作处获取能力。空 server profile、仅 HTTP 插件握手与无 session 路由可运行，失败插件不销毁健康插件。Agent 初始化错误仍保留原始插件失败诊断；loader/startup/server/CLI/ACP `121 passed in 24.72s`。这不代表 Agent 内部依赖审查已经完成。
-- [x] 真实 Agent 批量输入复现 runtime notice 已写入历史、后续 human input 处理失败时通知重新入队；异常收尾现在同时识别 notice_id/input_id，不新增事件或持久字段。开启/关闭持久化均验证重试后通知仅出现一次，未处理的输入仍可重试。
-- [x] 上述输入恢复修复通过 input-routing/inbox/persistence/真实 queued fold-in `45 passed in 20.25s`；本轮未运行 TUI 渲染、完整 HTTP 或真实供应商验证，未据此关闭后续事件流和恢复审查。
-- [x] 后续输入审查复现 step 边界领取泄漏：中途追加输入的 hook 失败后 pending 为空且无法重试。AgentInbox 在单回合结束时统一核对全部未提交领取，不再依赖仅含初始批次的 ID 列表。真实 Agent 运行中 enqueue 后，分别用 hook 异常和实际 task.cancel 验证重试成功，覆盖有/无持久化；input-routing/inbox/queued fold-in `30 passed in 20.28s`。
-- [x] 当前启动门槛和输入恢复改动后的完整 HTTP transport `104 passed in 73.52s`；测试期间未修改运行时代码。未运行本切片 TUI 渲染或真实供应商验证，整体模型/持久化审查仍未完成。
-- [ ] 持久化是可选插件；缺少该插件不阻断实时 Agent、工具、事件流和 TUI。历史落盘/跨进程 resume 才依赖持久化能力，不能把持久化改为必需来规避装配问题。
-- [ ] 持久化以 append-only trace 为权威记录，静态身份只记录一次，动态变化追加事件；metadata、usage、插件状态及 transcript 不应成为重复存储同一事实的另一份权威数据。先审查真实消费者，再统一字段和读取投影，不照搬 DSH 的全部框架。
-- [ ] 复杂度验收覆盖生产读写路径：累计 n 次交互不得产生 O(n²) 的持久化读写/历史复制。测量实际读取和写入的记录数/字节数，覆盖追加、分页、多会话缓存轮换、compact、关闭/reopen；不用单一耗时阈值或热缓存样例代替证据。
-- [ ] DSH 本地对照：`output/deepseek-harness/packages/session/session-persistence-jsonl/src/{index,format}.ts` 的单次 immutable header、首次 header+events 原子物化、后续 append batch、列表只读 header；`session-persistence/src/{index,coordinator}.ts` 的可选持久化边界与连续序号。仍须核对其事件模型，不能从局部源码推定它所有路径都满足本项目复杂度要求。
-- [x] 活跃轨迹所有权和增量追加：12 个线程轮流追加/分页，旧实现 20 轮发生 456 次历史文件读取。HistoryStore 现在持有共享轨迹状态，弱注册表保持同路径锁/状态唯一，有界近期缓存不再决定活跃状态寿命；追加原地 extend、turn_count 增量投影，不新增持久化计数。20/40 轮真实文件 I/O 测试验证已知前缀零重读、写入总字节恰等于最终 trace 大小，同时新开 reader 读到最新末页；持久化/identity/cursor `18 passed`。
-- [x] `replace_surface` 改为在当前投影上预检，追加成功后只折叠新增事件；不再重放整个 trace 或复制完整记录列表。嵌套摘要保存关联边，clear 才展开实际 transcript 来源。10/100 条历史连续 compact 3 次，旧实现分别折叠 72/612 条，修复后均仅 6 条；非法替换、写入失败/部分写入失败不污染文件和投影，同 ID 可重试。
-- [x] 修复冷重放失败后缓存半成品投影的问题：先在局部完成校验再发布。损坏的 compact 来源在连续 surface/transcript 读取中均报错，不会第二次读取变成成功。
-- [x] 本轮证据：活跃轨迹所有权改动后 startup/compact/persistence/ownership/完整 HTTP `210 passed in 107.59s`；增量 compact 后完整 HTTP 与相关核心 `153 passed in 82.45s`。最后补充冷重放发布修复及部分写入失败用例后，persistence/compact/identity/cursor `52 passed in 10.38s`、受影响的真实 HTTP compact/history/resume `15 passed in 13.21s`。未提交，未运行本轮 TUI 视觉或真实供应商验收。
-- [ ] 剩余已定位的偏差：冷会话多路分页仍可能逐出后全读。metadata/插件 state 与 trace 分文件改写，退出时补 metadata 仅修正常退出恢复，不能视作 append-only 或崩溃一致性目标完成。持久化关闭时插件 state 的落盘也须统一审查，不能只验证 messages.jsonl 不存在。Core 内存 history 的投影实现还要与持久化一起整理，不能据本轮局部算法修正宣称统一完成。
+- [x] 真实 CLI/tmux 已覆盖 permission→question→长 paste/follow-up、session switch、已有状态 resume、compact→新进程 resume、长历史分页、流式 anchor、折叠和动态 resize。
+- [x] Enter 默认使用现有 `delivery="steer"`，Shift+Enter 换行；显式 queue/interrupt 独立，不改用户原文、不发送额外事件。
+- [x] 当前产品契约保留分页历史、只读 `/thread`、紧凑单列布局、受限 Think/tool 展开窗口、永不折叠 final reply、可见 context trace、typed permission/question modal，以及 usage/context/cache 状态。
+- [ ] 在真实 PTY 中主动制造中途 socket 断网，验证 reconnect 后 transcript、pending interaction、cursor、focus、selection、折叠与 scroll anchor 不重复、不跳尾。
+- [ ] 完成 Settings 可用性闭环：真实数据来源与 scope、可发现导航、支持的 schema mutation、revision conflict/reload、返回会话后的草稿与 focus；未实现页面明确标注。
+- [ ] 继续核对 80×24、100×28 和宽屏的 Unicode、长代码、超长 tool output 与信息优先级；不追求像素仿制，也不复制 Claude 命令表。
+- [ ] 若凭证与网络可用，单独记录一次 reasoning-capable 外部 provider smoke；受控 loopback 不冒充供应商互操作。
+- [ ] 最终读取当轮 capture 和 canonical server history，确认实际产物后才能关闭 TUI 验收。
 
-- [ ] 第一阶段 loader：统一 YAML/内存配置解析和覆盖入口；CLI 参数按规则成为最后一层内存 overlay。application/CLI 不再手工组装插件服务；持久化、artifacts、child applications、client router 等由所属插件声明并提供，XCore 管依赖和生命周期。
-- [ ] 查清 agent/server/client/acp 当前各入口的 launch facts、对象依赖及资源所有权，逐条迁移生产入口；不把旧 bootstrap 换个名字后继续手工组装，不添加第二个 DI/事件框架。
-- [x] 删除 server 的伪造 `SessionLaunch("server")` 及配套 plugin_overrides/plugin_dirs/no_plugins 服务。config 的 session settings 与 HTTP facet 独立依赖挂载；HTTP 直接使用已有配置目录函数，权限操作仍分发至真实线程。删除 SettingsPort/ConfigService 的目录转发方法，无新增 service 或兼容路径。
-- [x] 该节点验证：startup/config-catalog/loader/HTTP 共 182 项中，受限沙箱 `171 passed, 11 failed`（socket 创建被拒）；随后允许 loopback 原样重跑失败项 `11 passed in 13.01s`。覆盖配置目录 revision、真实会话权限持久化、SSE 中断、交互恢复和 compact；未运行 WebUI 或真实供应商请求。
-- [ ] HTTP 测试 `_real_client` 仍将 uvicorn 放在另一个线程/事件循环，与已修正的 CLI 单循环生命周期不一致；后续验证中迁移该测试宿主，不将其当成完整 CLI 生命周期证据。
-- [x] 删除 `ServerOptions/server_options`；session 插件以自己的 Config 持有进程会话默认值并提供 workspace_root。server/ACP 工作区不再由 host 手工 set；启动参数走 plugin overlay，server 未指定的 CLI 值保留 YAML，配置文件不被回写。
-- [x] session 默认值迁移回归：startup/loader/config/HTTP/ACP/CLI/真实 server TUI `245 passed, 6 deselected in 224.48s`。最后合并三种 carrier 的 overlay 加载后，client host/protocol/ACP/会话创建覆盖测试另跑 `35 passed in 6.91s`；workspace CLI 省略值及生命周期 focused `5 passed`。未运行 WebUI/真实供应商请求，未宣称本轮完成视觉验收。
-- [x] server 标量参数到 overlay 的转换移到 CLI；`start_server_application` 仅接收 paths/overrides，全部调用方迁移，不保留旧参数兼容入口。两个 WebUI 验证脚本仅机械更新 server 启动调用，没有做 WebUI 功能或测试工作。
-- [x] server 宿主 overlay 入口迁移验证：CLI/server/HTTP/fold-in 队列/真实 server TUI `169 passed, 6 deselected in 178.58s`；CLI 同时验证显式值和省略值映射，以及正常/异常 serve 的同循环清理。未据此宣称完成 factory/Agent 装配。
-- [ ] application factory、runtime_paths 对象依赖及 Agent/ACP 其余装配仍未迁移完，不能据局部测试通过关闭 loader 阶段。
-- [x] ChildApplications 由唯一消费者 subagents 插件构造，移除 application 宿主的 child_applications 手工服务注入；其余持久化装配迁移仍未完成。
-- [x] interactions 插件拥有 client_events 路由，宿主仅通过 SessionLaunch 传父接口；实现移到 interactions/router.py，不留旧模块兼容。真实父子运行时验证请求转发、子插件停用撤销服务且父路由仍可用；权限等待/中断/重连 HTTP focused `8 passed`。
-- [x] 修复公开 Agent 接口构造失败和子 Agent started 记录写入失败时的运行时交接泄漏：交接成功前由构造方负责销毁，保留原始错误。两条路径均先用真实子进程争锁复现残留，再验证释放；子 Agent 失败不能提前释放父会话锁。所有权/startup/input-routing/subagents 回归 `74 passed in 33.38s`，未运行 WebUI 或真实供应商请求。
-- [x] 上述交接和路由迁移最终扩大回归：完整 core + HTTP transport `673 passed in 152.94s`（core 目录包含既有 web-server/CLI 入口用例，未做 WebUI 开发或视觉验收）。受限沙箱 focused 在 `80 passed` 后退出阶段停顿，中断取证；独立 interaction 文件同样超时。纯标准库 `asyncio.run(asyncio.to_thread(lambda: None))` 沙箱内退出超时、沙箱外立即完成，证实不依赖 XBot；没有改业务代码或删除测试来绕过它。
-- [x] 当前工作树解除运行期 StateService 所有权反向依赖：Context 创建，ThreadPersistence.create 显式接收；离线 open 单独创建。无缺参兼容回退。修复首轮前已有插件 state、正常退出却缺 metadata 的恢复失败；仍是现有格式的中间修复，不是最终 trace 设计。focused `94 passed`、HTTP 空会话/resume/usage `16 passed`、核心过滤回归 `558 passed, 11 deselected in 71.65s`；未提交。
-- [x] 复现并修复 persistence 禁用后插件 state 仍写盘：XCore StateService 增加显式 `memory()`，namespace/JSON 校验/共享锁沿用同一实现，文件和内存存储是明确类型；不要求插件自行判断是否持久化。完整 XCore `99 passed`；真实 HTTP 两轮 streaming、分页、活跃会话重新连接、usage、关闭无状态目录及不能离线 resume 已验证。工具确有需要的 artifacts 不属于禁止文件操作，不能把无会话持久化等同于工具无文件系统。
-- [x] 内存状态能力单独提交为 `c5ad879`（仅 XCore 代码/文档/测试）。XBot 当前工作树累计改动另经核心过滤回归 `566 passed, 11 deselected in 71.85s`、HTTP memory-only/usage/resume `16 passed in 14.86s`；XBot 持久化层尚未提交，未运行本轮 TUI 渲染或真实供应商测试。
-- [x] artifacts 归 session 插件：移除宿主的 ArtifactStore 构造及 persistence 有无分支，删除 ThreadPersistence/Port 的 artifacts 字段及构造参数，不留兼容转发。SessionRuntime 按真实依赖挂载并提供服务，移除旧 artifacts 依赖的作用域规避注释；SessionManager 校验历史引用后读取离线产物。开启/关闭 persistence 都可写读产物，停用插件后服务撤销。
-- [x] artifacts 迁移回归：startup/compact/context/content-cache/ACP/完整 HTTP 首轮 `210 passed, 1 failed`，失败是图片测试停止 Context 后继续读取已撤销服务；改为生命周期内取得期望路径，保留实际图片解析和持久化断言。最终图片/附件/无持久化 focused `7 passed in 5.00s`，新增关闭会话后离线下载附件验证；新用例曾误用 DELETE，已按协议改为 POST close 后核对产物。无生产代码改动用于掩盖这些测试用法错误，未提交。
-- [ ] 继续梳理可选 persistence 的 durable/ephemeral inbox 选择及 application factory 所有权；不能以插件执行先后或增加判空分支实现装配。上面的 state 迁移也不意味着可选插件应负责或强制所有插件 state 落盘。
-- [x] Agent 启动所有权修复：复现子 Agent 初始化失败后重复释放共享 claim，导致其他进程取得仍活跃父会话的锁。改为先争锁再创建持久化资源；初始化成功才将释放责任转给 Context，失败清理完成后释放一次。回滚只删除本次新 thread 和空父目录，保留同进程兄弟线程文件。所有权/启动测试 `56 passed in 22.80s`，包含真实子进程争锁及拒绝启动/资源创建失败/兄弟线程文件保留。
-- [x] 插件导入/构造/Config/apply/inject 激活失败默认隔离；XCore 原 error 日志不改，loader 记录 skip，不再遍历任何失败即抛出。宿主按 Context.require 检查实际入口，Agent 声明 permissions 依赖防止 guard 缺失仍启动。移除 server profile 对 llm 插件 ID 的特殊检查及通用配置读取的跨插件预校验；编辑配置仍在写入边界验证。
-- [x] 失败隔离功能证据：顶层/嵌套 apply 部分服务、监听器、资源被清理，健康插件及真实 Agent 单轮继续；import/config/缺依赖同样不阻断无关能力。必需服务失败仍清理宿主，HTTP/CLI 保留原始错误原因；新增权限失效/禁用的 fail-closed 验证。取消信号和运行期事件回调错误不作为可忽略的插件激活异常。
-- [x] 失败隔离最终验证：非 WebUI Core/integration/ACP `674 passed, 11 deselected in 165.10s`；另跑完整 XCore/browser 工具/HTTP carrier `139 passed in 17.22s`，补齐名字含 web 而被前一命令筛掉的非 WebUI 用例。TUI 缩窗 + HTTP 错误诊断独立复测 `2 passed in 6.03s`。曾将两个测试树一起收集而出现同名模块冲突，已分开运行；没有删除测试解决收集问题。
-- [ ] 2026-09-28 扩大回归中真实 tmux 提问卡 120×40 → 80×24 出现一次右边框裁切，独立复测通过，原因未定；不得把单独重跑通过写成问题修复。loader 顺序完成后继续 TUI resize/渲染验收。
-- [x] Server CLI 已统一插件启动、uvicorn serve、stop 到同一 async 生命周期；验证插件后台任务在 serving 时仍存活，正常退出/serve 异常均关闭插件。启动失败和取消仍需在入口迁移中扩大验证。
-- [x] Client CLI 删除 `ClientLaunch/client_launch` 手工注入；参数通过 PluginOverlay 覆盖 YAML，由 transport/TUI 自己的 Config 消费。插件装配测试验证 CLI 指定连接覆盖 YAML、未指定会话及分页保留 YAML 值，host/CLI/plugin/adapter focused `21 passed`。
-- [x] 2026-09-28 上述启动链迁移后：XCore/loader/startup/AgentLoop/config-catalog `195 passed in 33.90s`，完整 TUI + client-host + 非 WebUI CLI `896 passed in 143.43s`（5 项 Web 入口用例未运行）。包含真实 server/PTY、上下文注入、subagent 查看和 resume；未据此关闭 agent/server/ACP 装配迁移。
-- [ ] 第二阶段 agentloop / 核心模型 / event bus：统一输入接受、短路、消费、模型调用和消息发布时序；核对 live 与 history 的身份及内容一致性。
-- [ ] 第三阶段 persistence/resume：验证 inbox 与 history 提交关联、崩溃恢复去重、surface/transcript 投影、分页和持久字段的唯一来源。
-- [ ] 第四阶段各插件：核对 compact、goal、todo 等的声明式依赖、事件语义与用户可观察行为；删除补丁式 fallback 和重复业务状态。
-- [ ] 后续插件阶段专项排查 todo/goal 通知（用户新反馈，尚未复现）：核对触发、投递、TUI 展示、重复通知及是否意外唤醒新 turn；沿生产链路验证，不中断当前启动与输入恢复工作。
-- [ ] 第五阶段 TUI：完成主题、分页 transcript、/thread 子代理只读查看、上下文注入、复合真实交互；以运行帧和持久记录验收，不以旧计划打勾代替。
+## 6. 子代理 `send_message`（对应用户旧项 1，后置）
 
-- [x] 2026-09-28 底层审查复现并修复 XCore prepend/append 混用顺序错误，以及共用回调的两个订阅在 disposal 时卸载错对象；XCore `98 passed`。
-- [x] 2026-09-28 禁用插件不再被 config loader 导入；挂载配置验证交回 XCore，schema 查询不额外构造插件实例；loader/startup/config focused `81 passed`。
-- [x] 2026-09-28 上下文注入恢复可见：Context 行默认折叠、展开完整 payload，runtime notice 从 consumed 后 canonical history 发布；修复 notice_id 与 inbox ID 断链。TUI state/entries `138 passed`，真实 server + CLI/tmux subagent/resume `2 passed`。
-- [x] 2026-09-28 非 WebUI 扩大回归 `1546 passed, 1 failed in 324.00s`；唯一失败为旧测试假定 caption 的 prepend 观察者不运行。按正确事件顺序改为验证唯一模型调用产生 caption、latest turn observation 仍为空，两种短路边界 focused `2 passed`。未把旧失败运行写成全绿。
-- [ ] 继续 loader/XCore 到插件的职责和事件链路审查；HumanInput 发布时机、持久化投影、compact/goal/todo、分页/主题整体效果尚未完成。
-- [x] 2026-09-29 输入发布改为复用 Consumed，从 canonical history 投影 human/runtime 输入，移除 Claimed 阶段手工构造 HumanInputRecord；真实运行时复现并修复 rejected 输入仍发布、长输入 live/history 内容与 artifact 不一致。输入消息沿用 inbox ID，不再生成第二个随机身份；regenerate 是新输入，不能复用旧轨迹节点身份。
-- [x] 真实 PTY 验证曾“通过”但本次 capture 出现 canonical 行和 sending 临时行重复；补充重复行/残留 sending 断言，并修复身份与 TUI canonical 内容更新。加强后的 queue/双客户端隔离/resume `2 passed in 10.13s`，已实际读取 `/tmp/pytest-of-shefrin/pytest-104/test_two_real_cli_tuis_keep_se0/multi-pty-captures/session-a-turn-2.txt` 确认两轮各一条输入、无 sending 残留。该证据不代表全部 TUI 验收完成。
-- [x] 输入身份/发布及 regenerate 修正后：input-routing + TUI state/timeline + 完整 HTTP `229 passed in 91.68s`；Core 排除 test_web_server.py 且过滤 test_web_ `578 passed, 11 deselected in 82.36s`。未运行真实供应商、完整 TUI 或 WebUI，本轮未提交。
-- [ ] 继续核对输入事件失败边界：被拒绝输入的客户端 optimistic 行清理、异常部分提交后的 live 发布、claim 观察者异常，以及 compact/clear 后崩溃恢复的提交身份来源；不把正常路径一致性当成完整恢复证明。
-- [x] 消费事件顺序修复：sink 写入失败不再先发 Consumed，观察者收到事件时队列已经提交；观察者失败不回滚已提交消费。turn/step claim 观察者失败时释放本批领取标记，不让输入永久隐藏。保留并加强 regenerate 单次发布测试，核对新输入 ID 与 canonical history 一致；inbox/input-routing/queued fold-in `35 passed in 20.23s`。其余异常发布和客户端清理仍未完成。
-- [x] resume 去重不再依赖当前模型 surface：从 append-only MessageAppended 读取 human/runtime 输入提交身份，compact/clear 不撤销消费事实。受控构造“历史已提交、inbox 快照未退休”状态后真实重启 Agent，两种替换下均只恢复真正未处理输入；这是确定性的恢复边界测试，不冒充真实进程崩溃证据。启动时一次线性扫描，不增加持久化索引/ledger；input-routing/inbox/persistence/compact/queued fold-in `84 passed in 31.69s`。
-- [x] TUI 不再忽略既有 input_consumed：清理相应未确认的 optimistic 输入，不影响其他排队输入或已确认 entry。服务端先发 canonical message 再发消费通知，避免正常输入删建控件；拒绝路径消除永久 sending。状态/协议/实际 runtime/queued fold-in/真实 server+PTY `197 passed, 3 deselected in 89.01s`，排除的是外部 MiniMax 请求。已读取本次 `/tmp/pytest-of-shefrin/pytest-113/` 的双客户端 resume 和 queue 捕获；旧 pytest 临时证据可能被自动清理，本次不冒充旧运行。
-- [x] 异常部分提交后的在线发布：真实 SessionRuntime 订阅复现“notice 已写入 history，随后 human hook 报错，live 没收到 notice”。reconcile 完成队列清理后复用 Consumed 发布已提交前缀，无新服务端事件；有/无持久化均验证，未处理输入仍可重试。inbox/input-routing/queued fold-in/完整 HTTP `141 passed in 90.69s`。
-- [x] 修复批量输入短路导致后续用户输入丢失：RejectInput/CompleteTurn 仅消费实际处理过的前缀，不再整批 commit。真实 Agent 中先接受 notice、再短路下一 notice、最后保留未处理 human 输入；有/无持久化均验证重试成功、短路前无 provider 调用、重试仅调用一次。input-routing/inbox/runtime/queued fold-in `57 passed in 28.09s`。
-- [x] Core ConversationHistory 消除 compact 的整段 transcript 复制和祖先 ID 反复展开，普通消息不再保存 self-lineage。20/40 次连续 compact 旧路径遍历 210/820 项，现为 0；保留 transcript 分页与嵌套 compact 后 clear 行为。纯来源解析由 Core 拥有，持久化投影复用，不新增类型或持久字段。history/cursor/persistence/compact/input-routing `75 passed in 22.34s`；Core 与其测试单独提交 `fa3adec`，其他工作树改动未混入。
-- [x] 删除持久化投影中纯转发的来源解析方法后，history identity/persistence/compact `52 passed in 9.95s`。该复用改动仍在工作树；冷分页、统一 trace 格式和其余装配尚未完成。
-- [x] 历史写入不再由 sink 返回另一份 canonical 消息：HistorySink 只负责副作用，HistoryPort 复用该契约。空消息/输入身份由 canonical model 拒绝（新增 5 项红测先复现），历史层写盘前验证唯一性、成功后才占用身份。identity/persistence `35 passed in 1.61s`，包括坏 JSONL 恢复拒绝、重复身份不改变磁盘、append/replace 写失败后原身份重试成功；不声称解决所有崩溃原子性问题。
-- [x] 上述契约修正后非 WebUI Core 回归：`PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core --ignore=XBotv2/tests/core/test_web_server.py -k 'not test_web_' -q --tb=short`，`600 passed, 11 deselected in 69.74s`；`git diff --check` 通过。本切片未重跑完整 HTTP/TUI 或真实供应商，不据此关闭整体重构目标。
-- [x] 下一步输入不再丢弃 RejectInput/CompleteTurn：4 项红测复现 hook 结果未发布、模型继续调用；删除返回 bool 的 `_claim_step_inputs`，工具后与纯文本后的输入统一处理，先消费已处理前缀再发布短路结果，保留未处理尾部。扩大为工具/纯文本 × 持久化开关 × 两种短路的 8 项真实 Agent 测试，核对 provider 调用次数、唯一 turn_ended、磁盘 inbox 与下一轮重试；input-routing/runtime/inbox/queued-foldin `65 passed in 29.78s`。更新插件行为说明，未新增类型或事件；本修正后尚未重跑完整 Core/HTTP/TUI。
-- [x] 输入 hook 不得切断消费关联：3 项红测复现 AcceptInput 改 inbox ID、INPUT_ACCEPTED 改 notice_id 后仍入历史。接受阶段仅允许替换同种 payload，canonicalization 仅允许 parts/artifacts 变化，删除 human 专用身份检查并统一比较消息 envelope。实际 Agent 测试确认错误结果不写历史、不调用 provider，原输入仍持久排队且可重试；input-routing/content-cache/skills/queued-foldin `62 passed in 24.16s`，合法 Skill 展开和长输入 externalization 保持通过。
-- [x] 移除 application 对 persistence 挂载 ID 的判断与 ThreadPersistence 手工创建：存储插件提供线程存储和持久状态，session 发布共享状态并统一恢复 history/metadata、构造 inbox；没有存储时使用内存状态与临时 inbox。XCore 属性访问复用已注册 state，不偷偷构造另一份状态。
-- [ ] 装配迁移进行中，尚不可提交：ThreadPersistence 创建已移入 persistence 插件，defer_persist 由 SessionLaunch 传递；入口仍按 id 选择 StateService，未完成解耦。新增 YAML 别名挂载并实际运行/重启的测试揭示晚挂载时 session 先提供临时 inbox、persistence 再注册导致冲突；完整 application-startup 当前 `57 passed, 1 failed in 19.04s`。必须统一 inbox 初始化所有权，不能通过判空跳过 hydration、强制插件顺序或强制挂载 persistence 修复。最初测试错误地用禁止新增项的内存 overlay 注册别名，已改为支持新增项的全局 YAML；该次失败不算架构缺陷红测。
-- [x] 继续定位晚挂载失败：XCore 未重绑定已运行消费者的可选依赖，且启动 fixpoint 忽略已运行但依赖发生变化的消费者。独立红测复现；现按依赖实例变化卸载旧 effects、重新激活，启动返回前完成收敛。XCore `101 passed in 1.55s`，包括运行中服务出现/消失和启动结束时投影；别名 persistence 的实际回合+重启恢复通过。没有新增启动事件或按插件名称强制排序。
-- [x] 该轮非 WebUI Core `612 passed, 1 failed, 11 deselected in 75.87s`，唯一失败为 ownership 测试引用已从 application 移除的 ThreadPersistence 符号。迁移故障注入至实际存储类，并验证可选插件创建失败告警、活跃运行时仍占锁、销毁后释放；保留其他启动失败释放锁测试。ownership+application-startup 最终 `69 passed in 23.23s`，`git diff --check` 通过。未声称最终全量 Core/HTTP/TUI 已重跑；StateService 的挂载 ID 耦合和 inbox 所有权整体整理仍未完成。
-- [x] 随后扩展别名 persistence 测试，复现历史恢复成功但插件状态丢失；移除入口 ID 分支后同一状态实例正确持久化并恢复。统一 inbox 创建后断言晚挂载/恢复无 ServiceConflictError；XCore `102 passed in 1.48s`，application-startup/input-routing/session-ownership `102 passed in 38.81s`。静态搜索确认 application 不再引用 ThreadPersistence/StateService，agent_inbox 仅由 session 注册。
-- [ ] 继续审计 metadata 初始化事件与持久化订阅的先后关系，确保与挂载顺序无关且 hydration 不重复写已有元数据；此项不能由一次正常 resume 或当前 suite 全绿推断完成。
-- [x] 对正序/反序插件树增加实际启动与恢复测试，观察 ThreadMetadataStore 写入：初次启动最终配置落盘，恢复既有 metadata 不再次调用 save；focused `2 passed in 2.13s`。最初“初始化只允许一笔写入”的断言忽略了工具注册造成的真实配置变化，已改为验证最终状态和只读恢复，该最初失败不当作产品缺陷证据。尚不据此关闭所有异步挂载/元数据订阅边界。
-- [x] 装配迁移后真实 server+CLI/tmux 三条隔离/compact/subagent-resume 路径 `3 passed, 37 deselected in 16.93s`。已读取本次 pytest-152 的两轮输入、compact 后续轮和子代理只读恢复捕获，确认无重复输入或 sending 残留；同步更新 TEXTUAL_TUI_PLAN.md，完整布局/resize/复合交互仍未完成。
-- [x] 最终非 WebUI Core 重跑 `615 passed, 11 deselected in 75.92s`。前次 `614 passed, 1 failed` 为日志异常原文断言受格式影响；现在直接验证 registry 保留的原始 OSError，并独立验证失败日志存在，不依赖可能被脱敏的异常字符串。logging+ownership `17 passed in 4.94s`；未删除生命周期测试。未运行真实外部 provider 或完整 TUI suite，未提交。
-- [x] canonical 输入只保留一个身份：删除 HumanInputMessage.input_id、RuntimeNoticeMessage.notice_id 及无消费者的 InputId/NoticeId；InboxItem 与接受后的消息沿用同一 MessageId。恢复去重、在线投影、失败 reconcile 统一读 message.id，删除重复 human/notice 身份分支；不保留兼容 alias，旧字段明确拒绝。两项新模型红测先复现旧 schema 仍强制重复 ID，生产路径 focused `84 passed in 23.24s`；最终非 WebUI Core `614 passed, 11 deselected in 85.82s`、完整 HTTP+queued-foldin `114 passed in 81.98s`。测试数量变化来自已删除字段的参数用例合并，接受、恢复、hook 身份拒绝行为仍覆盖；docs/project/data-model-redesign.md 与 persistence.md 同步更新。
-- [ ] trace 后续重点仍是不可变 header 与动态 metadata 的边界、队列/插件状态 append-only、冷历史分页及外部追加读取复杂度。本轮身份字段唯一化不代表这些存储要求已经完成，也未在身份变更后重跑完整 TUI 或外部 provider。
-- [x] 为 inbox 追加记录整理现有事件数据，不新增平行事件：Edited 仅 id/content、Retargeted 仅 id/target、Removed 仅 id，Claimed/Consumed/Discarded 仅 ids，Inserted 保留完整输入。删除前后输入副本及消费时正文副本，SessionRuntime 继续从 canonical history 投影接受内容。inbox/input-routing/queued-foldin `53 passed in 24.31s`；加强实际事件字段断言后 inbox `10 passed in 0.05s`。没有声称磁盘已改为追加格式。
-- [x] InboxSink 改为 append(InboxMutation)，删除 replace(snapshot)、InboxSnapshot 与内存队列构造整份快照的持久化路径。inbox.jsonl 使用现有事件的版本化 envelope；编辑/目标/退休仅存增量，claim 不持久化；恢复去重追加消费 IDs，旧 inbox.json 明确拒绝，不兼容读取。实际队列 20/40 次入队红测测得旧累计写入 186415/726785 字节（最终快照17726/35426）；新实现累计写入恰等于最终日志大小，且重放、旧前缀不变均验证。
-- [x] inbox 追加前验证转移、写成功后推进缓存/内存，失败或部分写入仅撤销未提交尾部；首次失败不留下会被误判为已持久化的空文件。消息 trace 与 inbox 共用原有 append/write-all/fsync/rollback 逻辑提取的底层函数，无第二套 append 实现。生产 input-routing/queued-foldin focused `79 passed`；非 WebUI Core `620 passed, 11 deselected in 82.40s`，完整 HTTP+queued-foldin `114 passed in 80.94s`；最后增补非法转移与断尾恢复测试后 persistence/inbox `42 passed in 1.73s`。`git diff --check` 通过；未在本次格式变更后重跑真实 TUI 或外部 provider。
-- [ ] inbox 每个 live writer 的正常追加已不重读已知前缀，但跨进程追加后的离线 reader 更新、冷分页、统一 immutable header、metadata 与插件状态仍须继续整理，不能把 inbox 单项迁移当作整体 append-only 要求完成。
-- [x] session 统一 inbox 初始化后的完整 HTTP/SSE `104 passed in 73.27s`。同次非 WebUI Core 在 client-host 出现 3 个测试替身缺 state 属性的失败，随后取消测试无限等候启动信号；确认原因后 Ctrl-C 停止，结果 `225 passed, 3 failed, 11 deselected`，不算完整回归。将 FakeContext 改为真实 Context 的销毁观测子类，并给启动等待加入 timeout/finally 回收任务；保留正常/异常/启动失败/取消四种生命周期，focused `4 passed in 0.07s`。完整 Core 需重新运行。
+- [x] 当前事实：interactions 的同名工具只是用户进度通知；ChildApplicationSession 单轮后释放应用，尚不支持交互式代理通信。
+- [ ] 由 subagents 拥有 `send_message(target, message, delivery="steer")`；target 使用 spawn 返回的稳定 thread ID，不以 definition、display name 或某次 job ID 充当身份。
+- [ ] 复用 InboxTarget：运行时 steer 在安全 step 边界领取且不取消当前 provider/tool；queue 在当前 turn 后运行；interrupt/cancel 始终独立。
+- [ ] 子代理 thread 可继续，但每次执行 job 保持单向终态；完成后新消息恢复原 thread 并创建新 job，不复活旧 job。提交、结束和关闭由唯一 runtime owner 串行化。
+- [ ] 使用现有 RuntimeInput/RuntimeNotice 与 inbox persistence，记录发送者、目标、delivery 和消息身份；不伪装 HumanInput、不增加第二份消息日志。
+- [ ] 工具成功只表示接受投递，并返回 target thread、input ID 和关联 job；未知目标、越权、关闭竞争明确失败。默认只允许父代理到其子代理。
+- [ ] TUI 只根据标准工具结果和既有事件显示 interaction；`/thread` 保持只读，主会话不复制 child transcript，不增加客户端业务分发。
+- [ ] 红测覆盖运行中 steer、queue、已完成 child 继续、多消息 FIFO、结束竞争、无重复消费、权限/取消/恢复，以及 wait/read 指向新执行结果；再做真实 server/PTY 验收。
 
-以下结果只说明对应工作树当时经过了这些套件，不替代下面的逐项退出条件。
+## 最终交付门槛
 
-- [x] 2026-09-27 当前工作树完整 Core `537 passed in 67.68s`；Core browser `36 passed in 13.25s`，真实 Chromium revision 与 Playwright 1.61 对齐后覆盖交互、截图生命周期、私网子资源阻断和 DNS rebinding。默认 production application 另验证 workspace 内普通 `edit` 的 write/replace/patch 均为 allow。
-- [x] 2026-09-27 权限边界移除 policy 对 `sandbox_permissions=require_escalated` 的重复编码：shell Tool 以 typed `sandbox_escape` predicate 唯一声明逃逸条件，agentloop、permissions、sandbox 消费同一声明。后续配置语义校正为 `$${NAME}` 由统一配置加载层展开、`${...}` 保留；`path_scope` 是对已解析绝对路径执行的 full-match regex，不是路径 containment 字段。
-- [x] 2026-09-27 当前工作树完整 Textual TUI `879 passed in 130.00s`，包含真实 uvicorn/HTTP/SSE 与 tmux。分页/长会话切换的 DOM remove/mount/refresh 统一在一次 Textual repaint batch 内提交；一次 PageUp 跨 server cursor 会加载并立即显示上一页；手动上滚的 entry+屏幕行锚点和 tail-follow 语义继续由行为测试覆盖。compact permission chooser 在 120×40→80×24 后完整保留标题、边框、选项和提示；PTY harness 按 Textual 已协商的 in-band resize 协议发送真实终端事件，避免把旧宽 frame 裁切误报为产品 render。
-- [x] 2026-09-27 当前工作树 HTTP transport `101 passed in 67.92s`、queued fold-in `10 passed in 9.39s`、ACP adapter `7 passed in 4.28s`。旧 HTTP fixture 不再把 provider `thinking` 错投影为通用 `model_mode`，改由真实 `reasoning_effort` 验证模型选择响应。
-- [x] 2026-09-27 compact 不再裁断模型返回摘要或缩小 reasoning model 的输出预算；artifact-bearing Tool history 通过 canonical ArtifactStore 进入 summary request。真实 server/SSE/Textual 慢 summary 路径验证既有 `CompactionStarted/Completed/Failed` 会同步驱动状态栏与 composer，无新增客户端状态。usage 插件只持累计 counters 与 latest turn observation；完整 observation 由对应 AssistantMessage exchange 唯一持有，不再维护无界 requests 列表或第二份 persisted ledger。TUI tail-follow 将连续流式/工具更新合并到唯一的三帧 layout-settle 链，并从最后一次更新重计稳定窗口，不再为每次 delta 并行累积滚动回调。最终工作树非 WebUI 完整回归：Core `546 passed in 75.65s`、Integration `111 passed in 89.06s`、TUI+ACP `888 passed in 140.74s`。
-- [x] 历史扩大回归证据：状态栏改动前 Core+TUI `1296 passed in 149.42s`、HTTP transport `101 passed in 78.30s`。本轮前的 Core `532 passed in 59.99s`、TUI `837 passed in 113.55s` 与 Browser `36 passed in 12.74s` 仅作为历史证据；旧 `829/834/835 passed` 均为更早结果。Settings CSS 和 transcript 后续已通过当前完整 TUI 回归，见下项。
-- [x] 2026-09-26 Claude Code 基础显示与 Think 自适应高度改造后，主线 TUI 完整套件 `846 passed in 117.77s`（`-s`，含真实 loopback/tmux PTY）；覆盖无顶部 session bar、`❯`/`●` transcript、固定 composer、单行 status/footer、Think/tool 折叠、三尺寸 provider-compatible PTY、permission/ask-user、paste/follow-up、Settings、resize/focus、session switch/resume 和 plugin/config。
-- [x] 2026-09-26 Anthropic-compatible stream 的 `content_block_start` 可合法携带 `thinking: null` / `text: null`；旧 adapter 将 null 存入内部 str state，后续 delta 执行 `+=` 触发用户所见 `NoneType + str`。TDD 先复现准确异常，再在 provider 边界归一为空字符串；adapter 全套 `15 passed`，真实形状 HTTP/SSE→server→TUI fixture 通过，并以真实 MiniMax `xbot once` 短请求得到 `OK`。
-- [x] 上述 provider/TUI 修改后的完整 Core 回归在允许本机 loopback socket 的环境中通过：`533 passed in 66.87s`；未删除 browser 或其他功能测试。沙箱内 browser 的 `PermissionError` 已识别为本机 socket 权限限制，并用沙箱外完整重跑取代该无效结果。
-- [x] 2026-09-26 对照实际 Claude Code 基础界面重排 transcript：删除顶部重复抬头和 `You/Assistant` meta 面板，用户行使用低对比背景 `❯`，assistant/tool 使用 `●`，composer 使用上下分隔线与固定 `❯`，usage/context/session/model 统一在底部单行 status，快捷键独立 footer；80x24 真实 PTY 已目视检查基础层级。复杂 interaction/permission 卡片和完整复合多轮视觉验收仍未完成。
-- [x] queued fold-in 当前 `10 passed in 9.27s`；Textual client host/commands/launcher/plugin focused suite 当前 `63 passed`，另有 loop-affinity/lifecycle focused rerun `7 passed`。
-- [x] 最新 Stage B focused runtime/persistence 集合 `39 passed in 16.91s`：覆盖 AgentLoop input/runtime、session ownership 和 persistence；包括 tool turn 的 `TURN_END` 与 durable history 顺序、provider failure 的 `ON_ERROR` 与 durable history 顺序、owner 进程 `os._exit` 后完整回合恢复、SIGKILL 期间未完成 provider stream 的丢弃与 canonical user history 保留，以及工具副作用发生后进程崩溃时不重放该工具。
-- [x] 已有真实 HTTP/TUI 证据覆盖 caption switch/resume、compact command/event/trajectory、permission 与 ask-user 回复、usage/reasoning 展示、空会话退出和首轮物化。
-- [x] 真实 PTY 已覆盖多行 Unicode 长 paste 后编辑、permission/ask-user、Think 折叠、session switch、Ctrl-C 退出；另以两个同时运行的 CLI TUI 连接同一 server 的两个会话，关闭其中一个 runtime 后由第三个 CLI 从磁盘 resume 并继续下一轮，连续稳定复跑 3 次。
-- [x] 2026-09-26 用户反馈后从当前 checkout 重新运行 reasoning/no-reasoning 两条 CLI→plugin→HTTP/SSE→80x24 PTY：`2 passed in 8.86s`。新 capture 在 `/tmp/xbot-current-thinking/`；reasoning fixture 显示 Think，no-reasoning fixture 仅显示临时 `Thinking…`。不能据此宣称用户配置下的 thinking 缺失已解决或整体已对齐 Claude Code。
-- [x] 2026-09-26 Settings 真 PTY capture 暴露 80x24 默认按钮/OptionList 边框过高；TDD 先使 Model action 高度断言以 3 行失败，改为 compact 单行控件后，Settings/provider picker、短屏键盘可达、Esc 保留草稿、plugin catalog 应用级测试 `4 passed`。
-- [x] Settings action rows、reasoning/Think 与 tool 折叠曾在真实 PTY 检查；历史 capture 根目录 `/tmp/pytest-of-shefrin/pytest-684/`。MiniMax-compatible stub 不代表真实供应商网络验证。
-- [x] 2026-09-26 transcript 高度缺陷按 TDD 修复：短回复在 streaming 结束后仍带 `.expanded` 固定 12 行样式，挤出 80x24 的用户 prompt，并在 100x28 展开 Think 时裁掉 Think 标题。`test_short_streamed_reply_does_not_keep_an_expanded_window` 先以 12 行失败，再限定 `.expanded` 只应用于当前可折叠 block；block suite `18 passed`，两个真实尺寸 PTY focused `2 passed in 7.58s`，全套 `843 passed in 119.81s`。完成帧与展开帧保存在 `/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr0/minimax-pty-captures/`（80x24）、`/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr1/minimax-pty-captures/`（100x28）、`/tmp/pytest-of-shefrin/pytest-693/test_minimax_thinking_runs_thr2/minimax-pty-captures/`（120x40）。
-- [x] 用户授权的一次短 MiniMax 真实请求已从生产 `xbot once` 入口执行，隔离数据目录下返回 `OK`；证明真实网络/provider completion 路径可用，但不把单次是否产生 reasoning 泛化为模型保证。
-- [x] 2026-09-26 真实 80x24 CLI → Textual plugin → loopback HTTP/SSE → PTY 验证：当 fixture 明确发出 reasoning delta 时，provider `Think` block 可见并在完成后保留、不重复；最新 capture：`/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th0/thinking-pty-captures/`。这不证明普通无-reasoning 回合有 Claude Code 式的 Thinking 活动态。
-- [x] 2026-09-26 无 reasoning、延迟首个正文 delta 的真实 CLI → HTTP/SSE → 80x24 PTY 复现先失败后通过：首帧显示 `✳ Thinking…`，assistant 正文开始后活动行消失；最新 capture：`/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th1/thinking-activity-pty-captures/`；focused PTY `1 passed in 5.76s`。controller 行为测试还验证活动 tool 中让位、工具结束而 turn 仍运行时恢复；该活动行不写入 timeline/history。
-- [x] 独立 context-sensitive footer pilot/渲染 focused tests `6 passed`：idle/running/interaction 提示来自 composer facts、按 terminal cell width 裁切；80x24 → 100x28 后 status/footer 行位置正确且草稿和 composer focus 保留。旧 queue/jobs 同排折叠设计已更正：job 仍折叠，queued prompt 现在默认在 composer 上方可见。
-- [x] 2026-09-26 Settings 样式修改前最后一次完整主线 TUI 回归 `837 passed in 113.55s`（`-s`）；含 chooser 单入口、Settings policy/plugin catalog typed 读取/显示与 80x24 schema 表单保存、默认 MiniMax provider-thinking 生产接线 PTY（80x24/100x28/120x40）、受控 provider Think 与无-reasoning Thinking activity、resize anchor/focus、usage/context/cache、用户轮次/工具步骤分隔、可见 queue/steer、paste、permission/interaction、session switch/resume 和提示去重。
-- [x] MiniMax reasoning production path 在当前 CLI/Textual PTY 以 80x24、100x28、120x40 重复交互；三种尺寸显示 streaming/final Think、context、usage/status、composer/footer 且无终端 cell 溢出，`3 passed in 9.85s`，capture `/tmp/xbot-minimax-layout/`。这不替代 Claude Code 并排整体布局验收。
-- [x] 2026-09-26 查清并修正默认 MiniMax-M3 Think block 缺失的上游缺陷：`thinking: adaptive` 被 `model_mode` 混成通用 reasoning effort，Anthropic adapter 随后发送无效的 `reasoning_effort=adaptive`；`_provider_arguments` 又漏掉模型 `thinking` 配置。官方 API 要求 `thinking: {type: adaptive}`。先以请求级断言复现，再修正模式投影与 request extras；LLM adapter/config focused `36 passed in 0.83s`，完整 Core `532 passed in 59.99s`，MiniMax-compatible CLI/Textual provider PTY 覆盖 80x24/100x28/120x40，样式修复前完整 TUI `837 passed in 113.55s`。多尺寸 capture 在 `/tmp/xbot-minimax-layout/`；未访问真实 MiniMax 服务。
-- [x] 在上述完整回归后，扩展的 80x24 streamed-thinking → follow-up-turn PTY 场景单独重跑通过 `1 passed in 4.31s`；这次只扩展测试场景，生产代码与上面的全套回归代码相同。
-- [x] 2026-09-26 更正 Settings API 判断：公开 client policy-read 已接入 Permissions/Sandbox 页面，pilot 覆盖读取和 typed 权限/沙箱展示；`/status` 保持只读，并断言不请求 provider/agent/policy/plugin config。当前 policy 仍只读；Plugins 已有 producer-schema 支持字段表单、scope/revision typed patch 和 80x24 pilot 保存，仅覆盖可安全映射的标量 schema；conflict 重载/再确认、所有 scopes 的真实 server 写回和 Appearance 仍未完成，不能将 Settings 整体标完成。
-- [x] Thinking 真实 PTY 检查后，TDD 删除 composer placeholder/footer 重复的 Enter/queue/steer 提示；34 项 composer/footer/status/policy Settings focused tests 通过，loopback PTY `1 passed in 5.72s`；完整 TUI 回归后的 capture `/tmp/pytest-of-shefrin/pytest-663/test_real_cli_tui_pty_shows_th1/thinking-activity-pty-captures/`。该局部排版修正不代表整体 Claude Code 布局验收完成。
-- [x] 更正 Plugins 页错误文案：公开 plugin-config catalog/update API 已存在；只读 catalog 和可支持标量字段的 schema-driven editor 已接入；scope/revision typed patch 在 80x24 pilot 走通。conflict/revision 变化后的保草稿、显式复核与真实 server 写回仍未闭环。
-- [x] 已按 TDD 接入公开 plugin-config catalog read；Settings 并发读取 workspace scope，Plugins 页面展示 scope/workspace/applicability/producer 声明的 plugin 名称、id、editable 标志和 schema 字段名，不回显 config raw values。后续加入可支持标量字段的 schema-driven 表单；Apply 固定在滚动内容外，80x24 pilot 验证可达并保存仅变化字段，携带 catalog revision。嵌套/复杂 schema 明确不可编辑；conflict 处理及真实 server 写回仍待验证。
-- [x] provider reasoning 仍只由 provider reasoning event 驱动；没有 event 时不伪造 reasoning 文本。
-- [x] 从 authoritative running facts + timeline phase 投影独立、瞬态的 `✳ Thinking…` 活动态：无 reasoning payload 时显示，assistant/活动 tool 开始后让位，完成 tool 且 turn 仍运行时恢复，turn 结束后消失；不进入 history，不新增协议事件/数据字段。80x24 无-reasoning 慢响应真实 PTY 与 controller/view 行为测试通过。
-- [x] 本环境异步测试在 pytest capture 下可能卡在 default-executor teardown；`-s` 不跳过测试或改变断言，Core/HTTP/TUI 扩大回归统一使用 `-s`。
-- [x] WebUI 未运行且不在范围内；真实供应商网络 smoke 尚未运行。用户已授权一次短 MiniMax 请求，但执行路径当前受限；不能据本地 SDK adapter 测试宣称网络互操作。
-
-## 4. 阶段 A：设计符合性与基础迁移
-
-阶段 A 合并原“建立账本”和“消除剩余重复语义”。每个 vertical slice 都执行：定位 owner/consumer → 写行为测试 → 迁移完整生产链 → 删除旧定义 → 静态搜索归零 → 扩大回归。不得先建立第二套模型再等待以后迁移消费者。
-
-- [ ] **消息 / 工具 / 历史**：核对 canonical message、parts、`ToolOutcome`、`ToolExecution`、history/trajectory、persistence codec、session record 和客户端投影；删除旧 message 字段、平行 history 列表和重复 record payload。
-- [ ] **provider / usage / token / timing**：核对 `ModelRequest`、stream terminal、`ModelExchange`、`RequestObservation`、usage、token budget 和 timing 的单向数据流；删除 metadata 注水、第二份 measurement 和 context fallback 链。
-- [ ] **event / interaction / permission**：核对 typed Loop/plugin events、application registry、session frame、SSE codec、interaction request/resolution 和 permission policy；删除 `type/data`、动态 payload 和互斥 optional 字段。
-- [ ] **job / subagent / shell**：核对 `JobIdentity/JobState/JobView`、owner spec/result、shell artifact 输出和 child application result；删除 metadata 业务语义、重复 job snapshot 和重复 child result。
-- [ ] **config / agent / runtime**：核对各层配置、唯一 `ResolvedRuntimeSelection`、thread metadata、application/session attach 和 permission/sandbox 单调合成；删除 effective config、route/model/context 的副本。
-- [ ] **独立插件 slices**：goal、todolist、workspaces、commands、loader、browser、skills/MCP 等逐个从 parser/store 到 event/client 闭环；每个 slice 只验证实际拥有的能力。
-- [ ] 完成 Core/session/application/protocol/server/LLM 的 forbidden-pattern 搜索：重复模型、`dict[str, Any]` 承载已知结构、动态属性、判空切换语义、旧 envelope、兼容 alias/re-export 和反向依赖。
-- [ ] 为每个发现保留“设计小节 + owner + 可观察行为 + 当前调用者”四项证据；运行时路径图与 owner/consumer 清单合并为同一份账本，不重复维护两个视图。
-
-当前已闭环的设计切片：
-
-- [x] `ModelRequest` 仅由 `core.provider` 定义；agentloop 重导出已删除。
-- [x] `AllTools/ToolSelection` 已从 Core 迁到 agentloop owner，现存消费者已迁移。
-- [x] LLM service 构造期持有 typed `LlmConfig(default_provider, providers)`；raw config 副本、可选 configure 和 parser 重导出已删除。
-- [x] 图片只在 ContextBuilder 成为 `ResolvedImagePart`；provider 不再持有或动态注入 ArtifactStore。
-- [x] OpenAI/Anthropic stream 状态、terminal 和 SDK error 解码已收口到 provider adapter 边界，未知结构不再靠 `getattr` 猜测。
-- [x] Browser 使用唯一 `BrowserConfig(SearchPolicy, NetworkPolicy, BrowserSessionPolicy)`；平行网络配置和旧字段已删除。
-- [x] Content cache 复用已有 `INPUT_ACCEPTED`，没有新增输入事件；长输入 canonicalization 只产生带逻辑 `ArtifactRef` 的新 message。
-- [x] SessionManager 的 application factory 是构造期必需依赖，不再以 optional callback 延迟失败。
-- [x] `TokenCounters` 和 `SessionStats` 使用 owner-defined typed addition，不再遍历字段或动态读取属性。
-- [x] Compact transaction end 使用 `TransactionOutcome` 判别联合，不再用 optional error + bool 推导语义。
-- [ ] 上述完成项仍需纳入最终全量 consumer/forbidden-pattern 审计；局部搜索不能替代阶段 A 退出。
-
-阶段 A 退出条件：
-
-- [ ] 五个基础工作组和全部在范围插件均完成 vertical slice；每个旧模型引用归零，生产者、持久化、transport 和消费者只使用 canonical model 或单向投影。
-- [ ] 设计文档第 4 节每个禁止项都有可复核搜索结果；同一概念不存在第二份数据或解释逻辑。
-- [ ] Core 公共 API 只暴露 Core 拥有的概念，依赖方向符合设计文档第 5 节。
-
-## 5. 阶段 B：Core、HTTP 与插件运行时证据
-
-### B1. Core 运行时矩阵
-
-- [x] AgentLoop 覆盖纯文本、stream reasoning/text/usage、单/多工具、typed 工具失败后继续、provider failure、输出前 retry、partial 后不 retry、retry exhaustion、中断和同 runtime 恢复。
-- [x] queued fold-in 覆盖 busy turn 多消息入队、顺序消费、合并回复、regenerate 不重复提交和 interrupt 后恢复；HTTP edit/remove/steer 会改变实际 `ModelRequest` 与 canonical history。
-- [x] tool turn 的 `TURN_END` hook 观察到完整 durable conversation，顺序为 human → assistant tool call → tool → final assistant。
-- [x] provider failure 的 `ON_ERROR` hook 观察到与 durable history 相同的错误时点和内容，随后同 runtime 可恢复。
-- [x] 完整回合写入后 owner 进程 `os._exit`，新 application 可 hydration canonical history 并完成下一轮真实 provider request。
-- [x] 超长用户输入与 Tool result 先完整写 ArtifactStore，再以 preview + 逻辑 ref 进入 canonical history；多轮、restart、Skills expansion、写失败保留原文均有 E2E。
-- [x] 大型嵌套 Agent-authored tool args 不被 externalize/truncate；附件仅在请求构建期解析绝对路径，持久消息只保留逻辑 ID。
-- [x] RuntimeNotice 与 HumanInput 保持不同持久类型；后台 completion 不独立唤醒模型，下一真实用户回合只消费一次。
-- [x] reconnect、resume、mailbox delivery 和 persisted history 有各自语义与行为测试，不因都包含 message 而合并。
-- [x] session ownership 覆盖进程内引用计数、并发启动共享 owner、真实 subprocess 跨进程排他和 owner 退出后锁释放。
-- [x] persistence 覆盖 message identity round-trip、重复 ID、surface/transcript、trajectory cursor/page 和 malformed JSON 明确失败。
-- [x] 进程终止时的未完成 provider turn、工具调用和 durable pending inbox 已由真实 subprocess + 新 application/SessionManager resume 验证：SIGKILL 发生在 provider stream 等待中时，stream 不自动重放，已接受 HumanInput 保留在 canonical history 并进入下一次 follow-up ModelRequest；独立的未消费 durable NEXT_TURN item 经 `SessionManager.open_session(mode="resume")` 自动恢复、执行一次并清空；另在工具外部副作用已落盘而 ToolMessage 尚未落盘时杀死 owner，resume 会追加 `ToolFailed(session_restarted)` 而不再次执行该工具。此语义是 at-most-once，不能保证崩溃前工具副作用与 ToolMessage 原子提交，因此外部副作用结果在该窗口内仍可能不确定。
-- [x] session open/close/reopen、不可读 catalog 隔离、undo/regenerate、interrupt、并发 message 已由 production manager/HTTP 路径覆盖；产品没有 redo 操作，不虚构该语义。单 session 多 thread 关闭现会在一个 close 失败后继续释放其余 runtime，按 thread identity 去重并最终聚合错误。
-- [x] trajectory fold 对 position gap、unknown replacement source、duplicate message identity 和无 `entry` envelope 的 legacy flat record 均拒绝；新 writer 的 envelope/schema 由 HTTP 持久化路径断言，未增加兼容 decoder。证据：`tests/core/test_persistence.py` 与 `tests/integration/test_http_transport.py::test_typed_history_undo_fork_and_clear_persist_atomically`。
-- [x] `SessionRuntime.close()` 的 engine lifecycle hook 失败会传播给调用方，同时仍销毁 mounted application、关闭 event stream、设为 `closed` 并释放 session ownership；由真实 application + runtime 测试验证。
-- [x] `SessionManager.close_all()` 在一个 runtime close 失败后仍继续关闭其他 runtime、清理无记录 session 并停止 reaper，最后以 `ExceptionGroup` 报告失败；`test_close_all_finishes_every_runtime_and_stops_reaper_after_close_error` 覆盖多 runtime 行为。
-- [x] 异常退出、正常退出、启动后立即退出、打开已有会话后退出均有 runtime/HTTP/subprocess/真实 TUI 证据；覆盖 owner `os._exit`/SIGKILL 后 lease 恢复、空 session 清理、resume 后关闭、task/event stream 清理，以及单 runtime、单 session 多 thread、全 manager 三层关闭错误传播。
-- [x] provider usage/timing/cache/context → canonical exchange → service snapshot/event → HTTP/TUI consumer 已做同值断言；真实 socket HTTP 测试覆盖两步 model + shell tool、五类 token、SSE/history/resume 的 timing/usage 一致，token manager 从 production application service 读取实际最终 exchange diagnostics，compact 只按最终待 invoke `ModelRequest` 自行估算。
-
-### B2. Interaction 与 HTTP 边界
-
-- [x] 真实 loopback 覆盖 streaming、tool、permission 等待、ask-user、中断、reconnect snapshot/cursor replay、重复回答拒绝和最终 canonical history 顺序。
-- [x] multi-tool permission 覆盖首项 deny 无副作用、后续独立 allow 继续执行，并按序产生 typed response、tool outcome 和 history。
-- [x] policy patch 以 typed schema 持久化并在 reopen 后保持语义；HTTP command/goal/skills/history/trajectory 使用当前 wire contract。
-- [ ] 覆盖多个同时 pending interaction/permission 的 replay、断连、拒绝、cancel 和 waiter error；断言 durable outcome/event，不断言私有 Future 容器。
-- [ ] 审计 HTTP fixture/helper 和实际 response/event，清除旧 envelope、旧字段和动态 payload 构造。
-
-### B3. 唯一插件证据账本
-
-状态只依据插件**适用能力**；表中缺口是唯一插件待办，不在其他章节重复扩写。
-
-| 插件/边界 | 当前生产路径证据 | 尚未完成 | 状态 |
-|---|---|---|---|
-| `compact` | application/AgentLoop command、Agent Tool、自动阈值、context-overflow、veto/cancel、transaction、history/reopen、HTTP event 和真实 TUI trajectory 闭环；`test_automatic_compaction*` 走最终 `MODEL_REQUEST_READY` 的待 invoke `ModelRequest`，只由 compact hook 估算一次 | 无 | [x] |
-| `interactions` | typed request/answer、wait、interrupt、reconnect replay、duplicate resolution | 多 pending 和其余 waiter failure/cancel durable/event 组合 | [ ] |
-| `permissions` | typed policy、allow/deny/interrupt、multi-tool 顺序、reopen | 多 permission replay/断连和 waiter error 组合 | [ ] |
-| `jobs` | shell Agent Tool、成功/失败/cancel、单次 notice、session-close、HTTP list/stop/error、typed `OutputPage` | 运行中输出读取；共享 ArtifactStore 生命周期项 | [ ] |
-| `subagents` | parent 标准 spawn/wait/read → child application；success/provider failure/cancel 和 lease cleanup | 多 child 并发/同时取消；失败/cancel 后 parent read 语义 | [ ] |
-| `goal` | achieved/impossible/interrupt、typed retry、round cap、clear、close/resume、terminal stats | 恢复失败边界 | [ ] |
-| `todolist` | production application factory/registry 下的 create、typed failure 后继续、config schema/limit、依赖阻塞/循环；runtime notice 真实进入 AgentLoop step 并持久化；stale counter 与任务 snapshot close/resume；真实 compact command 触发 unfinished-task reminder，第二次完成后 compaction 不重复注入，trajectory 经 ThreadPersistence reopen 验证 | 最终扩大回归 | [x] |
-| `caption` | canonical request、auto/access 组合、failure retry、Tool get/set、server→TUI title/switch/resume | metadata 持久化失败；真实 reconnect 后标题 UI 恢复 | [ ] |
-| `usage` | 五类 counter、auxiliary request、event/snapshot、close/resume、真实 socket 两步 model + tool timing/usage 同值、TUI display | 最终扩大回归 | [ ] |
-| `context_builder` / `prompts` / `workspace_instructions` | logical artifact/image 解析、Skill slash、AGENTS.md reload/disabled/invalid UTF-8 | 完整 component 顺序、身份和最终 request；OS read failure/cleanup | [ ] |
-| `token_manager` | typed `ModelRequest` estimate、tool schema、provider observation、output reservation、negative remaining、unload；production application service 可读取实际最终 exchange diagnostics；compact 按最终待 invoke 请求估算 | 最终扩大回归 | [ ] |
-| `coretools` | filesystem malformed boundary、standard tool path、shell artifact/output page | 按各工具实际能力核对 config→registry→permission/sandbox→result/cleanup | [ ] |
-| `browser` | canonical policy、Agent fetch/search、Chromium interaction/screenshot、sandbox、DNS pinning、client cleanup | HTTPS CONNECT 互操作；cancel/异常 close teardown；不扩展成无界攻击矩阵 | [ ] |
-| `content_cache` | user/tool externalization、完整原文、multi-turn/restart/Skills、write failure、identity | ArtifactStore orphan/GC/corruption 的共享策略；plugin unload | [ ] |
-| `sandbox` | policy focused tests及 Browser 子资源禁网 | 真实 filesystem/shell 的 workspace allow、越界 deny、提权和资源清理 | [ ] |
-| `skills` | registry/service 与 HTTP prompt expansion | discovery/load → slash/model tool → schema/args → failure/unload | [ ] |
-| `mcp_plugin` | focused contract tests | config/discovery/handshake/schema/args、disconnect/timeout/reconnect cleanup | [ ] |
-| `workspaces` | focused catalog 与 SSE | add/remove/switch、membership/event、exit/reopen consistency | [ ] |
-| `agents` / `llm` / `persistence` / `session` / `application` / `server` | focused tests、真实 factory、SDK-typed adapters、完整 HTTP carrier | 完整 factory→request→trajectory→carrier 失败/恢复矩阵；真实 provider 仅 opt-in | [ ] |
-
-共享缺口：
-
-- [ ] 定义并验证 ArtifactStore 对 content cache、job output、browser screenshot 等 owner 的统一 orphan/GC/corruption 策略，避免每个插件发明一套生命周期。
-- [ ] 对每个插件审计现存测试：保留证明当前领域行为的用例；删除只验证旧模型、私有结构或完全重复的用例；缺口按上表新增行为测试。
-
-阶段 B 退出条件：
-
-- [ ] B1、B2 的未完成矩阵全部闭环；Core 与 HTTP 全套在当前生产代码上通过。
-- [ ] 插件账本每行的适用成功、关键失败、恢复/清理均有生产入口证据；无适用能力时明确记为“不适用”，不得虚构测试。
-- [ ] 审阅者可从每个测试指出实际经过的 factory、registry、provider/tool、persistence/event 或 HTTP 边界。
-
-## 6. 阶段 C：主线 TUI 产品验收
-
-先以组件/状态行为测试固定语义，再做真实 PTY。TUI 不得以本地状态掩盖 runtime/server 缺字段。
-
-当前推进顺序（用户纠偏，优先于本阶段其他未完成项）：
-
-- [x] 复核当前受控 PTY 事实：有 reasoning event 时真实 Think block 可见；无 reasoning 数据时只显示 Thinking activity。loopback 绑定需在受限 sandbox 外批准的测试执行中完成，验证仅监听本机临时端口。
-- [x] 查实 MiniMax provider 请求层 Think 缺失根因并按 TDD 修正；adapter 测试检查 wire 参数与 reasoning stream。已运行授权的真实短请求并得到 `OK`；nullable block-start 崩溃也由 adapter、真实形状 SSE 和生产 smoke 分层验证。
-- [ ] 当前第一优先级是端到端对话流程和 transcript，而不是配置入口：attach/resume → composer 编辑/多行 paste → Enter 发送 → user turn 可见 → Think/stream → tool/permission → final → follow-up → scroll/resize/session switch；逐帧检查布局层级、滚动/焦点、顺序和持久历史。
-- [x] Claude Code 基础单列结构第一轮已落地：无常驻顶部抬头；`❯` user、`●` assistant/tool；固定双分隔线 composer；单行底部 runtime/usage/context/session/model；独立快捷键 footer。80x24 真 PTY 已检查，复杂 interaction/permission、长会话和动态 resize 仍作为未完成产品验收项。
-- [x] 队列中待发送的 prompt 默认显示在 composer 上方，逐条保留服务端内容和 target，最高 4 行后可滚动；jobs 可保持紧凑摘要。80x24 真实 PTY 同时显示 queued content、next-turn/next-step 和 `queued:2`，capture：`/tmp/xbot-current-queue/test_real_cli_enter_queues_dur0/queue-pty-captures/queue-and-steer.txt`。
-- [x] Think block 行为已按 TDD 修正：reasoning stream 完成后默认折叠；stream 中手动折叠/展开会持续生效；显式展开高度为 `min(标题 + 实际内容, 12)`，仅长内容块内滚动；普通 assistant 回复不会随 Think policy 自动折叠。一行和五行 Think 的测试先以实际高度 12 失败，再分别固定为 2/6 行；长块仍受 12 行上限约束。
-- [x] Think 自适应高度已进入真实 CLI→server→tmux PTY 验收：80x24、100x28、120x40 均显示标题下一行的单行 reasoning，下一行立即进入 assistant 回复；`3 passed in 11.27s`，capture 位于 `/tmp/pytest-of-shefrin/pytest-704/test_minimax_thinking_runs_thr*/minimax-pty-captures/`。
-- [x] MiniMax-compatible production PTY 的完成帧 prompt、折叠标记和快捷键提示断言在 80x24/100x28/120x40 通过；最新 capture 见上一条。本机 stub 不代表真实供应商网络互操作。
-- [x] 真实复合 PTY 覆盖 permission→ask-user→长 paste 编辑→follow-up→session switch/back；capture `/tmp/pytest-of-shefrin/pytest-693/test_real_cli_tui_pty_complete0/pty-captures/follow-up.txt`。compact 与 reconnect/resume 尚未并入这一完整交互路径，仍开放。
-- [ ] Settings 与 `/status`/`/config` 入口布局、字段作用域、真实 mutation、保存冲突和返回 composer 体验列为次级工作；schema editor 的 Apply 已有 80x24 pilot 证据，冲突与更多页面未闭环，但不抢占当前对话流程/layout/transcript。
-- [ ] 上述主线仍须由同一真实 CLI/plugin + server + tmux PTY 复合多轮交互覆盖 compact、session switch/reconnect、resume 与退出；真实 provider Think 和整体 Claude Code 结构/视觉对照也仍待完成。不以分散场景或历史 capture 替代。
-
-- [x] provider terminal validation 错误已修复；OpenAI/Anthropic adapter 以具名 `response=` 构造 typed terminal event。
-- [x] picker index 按实际选项数有界 wrap；超过元素数的 down 后不产生虚假位置。
-- [x] 多行 Unicode paste、尾换行和 paste 后编辑只提交一条原样 input；composer 有固定高度上限。
-- [x] `/approve`、`/deny`、`/answer` 使用标准 HTTP endpoint，不伪装成普通 user message。
-- [x] Thinking 与 Tool block 可折叠；展开按实际内容增长，最多 12 行后在只读块内滚动，默认折叠隐藏 payload。
-- [x] 删除重复的顶部 SessionBar；底部单一 StatusBar 显示 activity、累计 in/out/cache、context/window、session/thread、provider/model，再按优先级容纳 agent/mode/slots/cwd；footer 只显示操作提示，统计只有一个 view projection。
-- [x] caption 在首轮/多轮、failure retry、已有标题、session switch 和 resume 后进入底部 status 的 session 段。
-- [x] 空会话 Ctrl-C/HTTP close 不创建 session/catalog；首个有效 input 后才物化；SSE task cancel 会等待 reader 并关闭 generator。
-- [x] Compact 真实 server/TUI 五轮后执行 `/compact`，completion event、summary render 和 `SurfaceReplaced` trajectory 一致。
-- [x] 长多行 composer 改变布局后，提交动作明确返回 transcript 实时尾部；真实 PTY 第二轮回复不再已持久化却落在视口外。
-- [x] 两个真实 CLI TUI 同时连接同一 server 的不同 session，消息、usage、turn 与持久历史互不串线；其中一个关闭 runtime 后由新 CLI 从磁盘 resume、恢复历史和 `turn:1`，再完成 `turn:2`，另一个连接全程保持可用。
-- [x] 历史 PTY 验证 streaming reasoning delta → completed record 时 Think block 不重复；当前控件语义更正为完成后默认折叠，流式期间的手动展开/折叠保留。完成帧 prompt 可见性已有 reducer→Textual viewport 行为断言。
-- [ ] 折叠选择的生命周期仍需在真实多轮 PTY 中确认，特别是 entry update、session switch 与 reconnect；不能在未验证前宣称其跨会话恢复或持久化。
-- [x] Jobs 以一行 disclosure 保持紧凑；queue 改为直接显示 queued prompt，限高 4 行后可滚动，不把可见性藏在计数后。
-- [x] 真实 80x24 CLI → HTTP/SSE → server 验证运行中 Enter 将后续输入排为 `next-turn`，Alt+S 将输入作为 `next-step` steer；正文、target 和 status `queued:n` 同屏可见，pending inputs 由公开 API 核对。当前 capture：`/tmp/xbot-current-queue/test_real_cli_enter_queues_dur0/queue-pty-captures/queue-and-steer.txt`。
-- [x] 状态栏 optional detail 顺序符合 activity → subagent/queue → usage/cache → agent/mode → generic slots → cwd；累计宽度统一按 terminal cell width 计算，Unicode 溢出回归覆盖。status-bar suite `70 passed`；Settings 样式变更前完整 TUI suite `837 passed in 113.55s`。
-- [x] 视图直接按已有 timeline role 投影低噪声标记：UserEntry 为背景行 `❯`，Assistant/Tool 为 `●`；不增加 turn ID 或持久化语义，也不再用整宽粗/虚分隔线吞噬 transcript 空间。
-- [x] 2026-09-26 80×24 → 50×28 的 Textual app resize pilot：非尾部阅读时窄宽 reflow 保持同一可见 timeline entry 和非尾随状态，且 composer 草稿/focus 保留；修复前 `m3` 漂到 `m2`，focused 用例通过。真实 TTY resize、Unicode/超长内容滚动仍待验收。
-- [x] Permission 与 user-input 已使用 reducer `pending_interactions` 和现有 typed response API 呈现小型 chooser/回答框；snapshot attach 可重建未完成 chooser，外部 resolution 关闭陈旧弹窗并恢复 composer focus。真实 server allow/deny/answer 与真实 tmux permission→question→final→follow-up 已通过。
-- [x] Subagent 查看按 Claude Code/Codex 的共同模式落地：主界面 jobs 保持紧凑活动摘要，`Ctrl+T` 从公开 thread catalog 切换独立 transcript；`ThreadSummary.kind=subagent` 唯一决定只读，`Esc` 返回 main，草稿与焦点保留，不从 job label 猜 thread id。
-- [x] 真实 server 生产路径实际执行 `spawn_subagent`/`wait_subagent`，TUI 查看 child transcript、返回 main，并在关闭首个 TUI 后重新 attach 同一 session 再次查看 child。该测试发现 transport 错把 child 交给 `open_session`；现已改走既有 typed `open_thread`，focused real server `1 passed`。
-- [x] 真实 CLI/tmux 100×28 已完成 subagent thread 切换与进程级 resume；child 为独立只读 transcript，状态栏显示 `subagent:reviewer-*`，footer 显示 `Esc main`。真实帧同时发现并移除 model-facing runtime XML/`job_completed` JSON 的 transcript 泄漏；typed jobs state 仍由既有事件和 jobs panel 呈现，不解析内部 prompt 文本。capture：`/tmp/pytest-of-shefrin/pytest-727/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
-- [x] 本轮最终完整 TUI suite `856 passed in 120.27s`，包含真实 uvicorn/HTTP/SSE 和 tmux；不是仅凭 scripted backend 判定完成。
-- [x] Attach/session switch/thread switch 通过公开 `list_jobs` authoritative replace reducer task state；真实双 TUI 连接同一主线程时，后连接客户端无需等新 SSE 即可显示已运行的 subagent 和 `1 task running`，切换后不保留旧 thread jobs。
-- [x] Context observation 超过声明 window 时不 clamp 或显示成正常比例；紧凑 status 使用红色 `ctx:~5.7k/4096!` 并保留精确 window，完整 Status 页写明 `over`。100 列仍同时保留 caption，真实 caption/retry `2 passed`。
-- [x] Active jobs hydration、精确 context overflow、caption 共存后的完整 TUI suite `862 passed in 121.44s`；包含真实双客户端、uvicorn/HTTP/SSE 与 tmux。最新 capture：`/tmp/pytest-of-shefrin/pytest-736/test_real_cli_subagent_thread_0/subagent-pty-captures/`。
-- [x] Transcript 密度与 block ownership 已修正：entry/收起 tool 不再产生多余空行；final assistant reply 始终是普通 transcript，不可折叠；Think/Tool details 保持固定上限窗口。Tool call 现在有两个独立 disclosure：`● tool(key: value…)` 展开 args/params，`⎿ Done/Failed` 展开 result；shell/edit/web_search/read 均由通用参数投影回答“做什么”，无工具名分支。
-- [x] History/resume 的工具参数遵守 canonical model：不扩展 `ToolRecord.call=ToolCallRef`；TUI ToolEntry 保留计划已有语义中的独立 `call_id`，页内关联 `AssistantRecord.tool_calls`，assistant/tool 被分页边界拆开时在加载上一页后原位补齐 args；live 使用既有 `tool_calls_started`。分页/reducer/view focused `167 passed`。
-- [x] 工具执行不再因 call-id→record-id 删除/追加而跳位闪烁：Timeline 原位替换 identity，TranscriptView 复用同一 mounted widget；streamed assistant final 同样保持原顺序与控件身份。
-- [x] Permission chooser 按 Esc 走现有 typed deny API；不再仅 dismiss 后持续显示 `Approval required`。`send_message` 工具描述已禁止代替主会话 canonical final reply。
-- [x] `/help [command]` 已按动态 local+server command catalog 实现单命令详情；name/slash/alias 共用执行解析语义，description/usage/parameters/examples 只来自公开 `CommandDescription`。TDD 红测 4 项后 app/registry `140 passed`，真实 HTTP/server catalog 的 `/help undo` `1 passed`，完整 TUI（含 loopback/PTY）`876 passed in 139.33s`。
-- [x] 在 80x24 与长会话/scroll/resize 下验证分隔密度、可读性和 anchor 稳定性：手动上滚后的连续 tail update 保持同一可见 entry 与屏幕行偏移；长 paste 后第二轮自动跟随 final；permission/question 卡片在 80×24 保持完整边框。capture：`/tmp/pytest-of-shefrin/pytest-758/test_real_cli_tui_pty_complete0/pty-captures/`。
-- [x] 分页与长会话 redraw 使用单次 repaint batch，避免 remove/mount 中间树进入终端；跨 server cursor 的首次 PageUp 同一次操作即进入上一页。真实 tmux 的 resize harness 补齐 Textual 8 已协商 in-band resize 事件，短屏 permission card 不再以旧尺寸 frame 裁切，完整 TUI `879 passed`。
-- [ ] 按 `TEXTUAL_TUI_PLAN.md` 完成 Claude Code/Codex 风格单列对话布局：基础 transcript/composer/单行 status/footer 与 typed interaction 控件已完成；下一步是 subagent/resume 的真实 tmux render、长会话密度和同一真实路径的动态 resize/compact/reconnect/resume。完整布局须保持 80x24 可用。
-- [x] 状态栏只由 reducer facts 与公开 snapshot/event/API projection 驱动；activity → subagent/queue → usage/cache → context → session/thread → provider/model → agent/mode → generic slots → cwd 的优先级、窄屏裁切、Unicode cell-width、active jobs attach hydration 与 context overflow 均有行为测试和真实路径证据。
-- [ ] Settings overlay 覆盖只读 Status、Model、Permissions、Sandbox、schema-driven Plugins 和 Appearance；所有服务端值走现有公开 API，冲突保留草稿，未持久化的外观选项明确标为本次运行。
-- [ ] 状态栏/Settings/布局通过 80x24、100x28、动态 resize 的 pilot 和真 PTY 验收；不得只以快照断言或单元测试代替交互观察。
-- [ ] 覆盖 resize、长内容、stream update、session switch、reconnect、interrupt 后的 block/focus/scroll 状态。
-- [ ] 完成 caption 的真实 reconnect 后恢复，并确认 session picker 与底部 status 使用同一服务端 title projection。
-- [ ] 验证 TUI 异常进程退出、打开已有会话后退出和 reconnect 时旧订阅关闭；进程锁仍归 SessionManager/server，不由 TUI 假释放。
-- [ ] 用 Textual pilot/render snapshot 检查结构；快照只辅助定位，不能替代真实交互。
-- [ ] 启动真实 server 与真实 TUI，实际完成一条复合多轮路径：普通回复 → streaming Thinking → tool → permission/interaction → 后续追问 → compact → session switch/reconnect → 退出。Thinking 前置渲染已有独立真实 PTY 证据；本复合路径尚未完成。
-- [ ] 在上述真实会话中亲自操作键盘、长多行 paste 后编辑、picker、复制、Think/Tool 折叠与滚动，并核对 canonical history/event。
-- [ ] 保存不提交的本地截图或 terminal render capture：初始页、paste、streaming Think、Tool 折叠/展开、turn 分隔、caption、usage/context/cache 和 reconnect 恢复。
-- [ ] 退出后检查磁盘、进程、task、subscription 和 session lock，无空会话或资源残留。
-
-- [x] 当前切片完整 TUI suite `870 passed in 138.15s`，包含真实 uvicorn/HTTP/SSE 与 tmux；最后的显示语法修正后 focused `66 passed in 2.29s`；同一工作树完整 Core `533 passed in 60.50s`；`git diff --check` 通过。尚未因此勾选 compact/reconnect/resume 合并为同一复合流程、退出资源审计等更大退出条件。
-- [x] 真实 CLI/tmux 已连续完成 5 轮、手动 compact、退出 runtime、新进程 disk resume 和第 6 轮；核对 canonical history 与 `SurfaceReplaced` trajectory。该路径发现并修复 compact 后 lifetime turn 从 5 回退 4：现从 append-only HumanInput trajectory 恢复，不新增第二份 persisted counter。
-- [x] Compaction summary ownership 已纠正：canonical/persisted summary 为纯文本，provider 专用 `<historical_context>` 只在 context compiler 构建请求时产生；TUI 不解析内部 XML，真实 compact 帧仅显示可读 summary。capture：`/tmp/pytest-of-shefrin/pytest-768/test_real_cli_compaction_survi0/compact-resume-pty-captures/`。
-- [x] lifetime turn 修复后的完整 Core `533 passed in 68.82s`；新增 compact/resume 路径后的完整 TUI `871 passed in 137.80s`；其后的 summary ownership 修正通过直接受影响的 Core `37 passed` 与真实 PTY `2 passed`。
-
-阶段 C 退出条件：
-
-- [ ] TUI 全套通过；真实可控 server 完成复合多轮；render evidence 确认信息层级、固定高度、滚动、caption 和统计确实可见；退出资源检查通过。
-
-## 8. 阶段 D：最终审计与交付
-
-- [ ] 重跑 Core、逐插件 focused suites、queued fold-in、完整 HTTP 和完整主线 TUI。
-- [ ] 对 streaming、tool-call、permission/interaction、reconnect 和主线 TUI 做真实 loopback/PTY smoke；真实供应商仅在凭证可用时 opt-in。
-- [ ] 执行最终静态搜索，确认旧类型名、旧字段、动态注入、兼容 fallback 和反向依赖归零。
-- [ ] 检查 `git diff --check`、用户/开发/API 文档和注册配置；不包含 cache、log、session、截图或生成 bundle。
-- [ ] 回答 AGENTS.md 的五个提交前问题，但本轮不执行 commit。
-- [ ] 输出验证报告：命令、结果、production path、真实交互观察、未运行项及原因、残余风险。任何缺少证据的项目保持未完成。
-
-## 9. 验证命令
-
-在仓库根目录使用 `.venv`；Core/HTTP/TUI 使用 `-s` 规避本环境 capture teardown hang：
-
-```bash
-PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core -q -s
-PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/integration/test_foldin_queued.py -q -s
-PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/integration/test_http_transport.py -q -s
-PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/tui -q -s
-git diff --check
-```
-
-## 10. 每个切片的记录规则
-
-以下是每个切片都必须满足的检查项；完成单个切片时记录证据，最终审计确认所有切片均满足后统一勾选。
-
-- [ ] 写明要证明的用户可观察行为、对应设计小节和 owner。
-- [ ] 先取得命中预期缺陷的失败测试证据；fixture 或测试自身错误不算红测。
-- [ ] 只修改拥有该语义的边界，并删除被替代旧路径。
-- [ ] 记录 focused 与扩大回归的准确命令和结果。
-- [ ] 记录静态搜索结果，证明没有留下第二种定义或 fallback。
-- [ ] 汇报新增测试真正证明的 production path、删除的旧语义、未运行验证和原因。
+- [ ] 1–5 的未完成项均有实现证据或明确排除理由；第 6 节按用户后续授权单独推进。
+- [ ] focused、Core、关键 integration、TUI/ACP 均在同一最终提交上运行；任何代码变更后受影响结果重新验证。
+- [ ] 记录未运行的外部 provider、WebUI 或安全矩阵及原因；不以旧 capture、旧 PNG 或历史测试数作为当前证据。
+- [ ] 最终检查无多余抽象、兼容路径、生成产物或无关用户修改，`git diff --check` 通过。
