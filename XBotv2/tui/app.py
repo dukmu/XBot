@@ -23,7 +23,7 @@ from textual.widgets import Collapsible, TextArea
 
 from XBotv2.jobs.contracts import JobView
 from XBotv2.interactions.models import UserInputRequest
-from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission
+from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.commands import CommandDescription, CommandsPort, split_command_args
 from XBotv2.tui.attachments import load_image
@@ -489,27 +489,15 @@ class TuiApp(App[None]):
         self,
         request: InteractionRequest,
     ) -> SelectionScreen | InteractionInputScreen | None:
-        """Build presentation directly from the public typed request."""
+        """Build presentation from the request's public typed shape.
+
+        ``PermissionRequest`` is the one protocol for every approval — a
+        gated tool call, a sandbox escape, a sandbox resource — so it has
+        one rendering: the subject, its arguments, why it was raised, and
+        which code path raised it. Nothing branches on the subject kind.
+        """
         if isinstance(request, PermissionRequest):
-            if isinstance(request.subject, ToolPermission):
-                subject = request.subject.tool_call.name
-            elif isinstance(request.subject, NamedPermission):
-                subject = request.subject.tool
-            else:  # pragma: no cover - PermissionSubject is closed
-                return None
-            return self._selection_screen(
-                "Permission required",
-                (
-                    Option("once", "Allow once"),
-                    Option("session", "Allow for this session"),
-                    Option("deny", "Deny"),
-                ),
-                searchable=False,
-                description=f"Tool: {subject}\n{request.reason}".strip(),
-                hint="↑↓ choose · Enter confirm · Esc deny",
-                compact=True,
-                cancel_value="deny",
-            )
+            return self._permission_screen(request)
         if isinstance(request, UserInputRequest) and request.options:
             return self._selection_screen(
                 "Question",
@@ -529,6 +517,34 @@ class TuiApp(App[None]):
         if isinstance(request, UserInputRequest):
             return InteractionInputScreen(request.question, source=request.source)
         return None
+
+    def _permission_screen(
+        self, request: PermissionRequest,
+    ) -> SelectionScreen:
+        """One prompt for every permission request, whatever raised it."""
+        if isinstance(request.subject, ToolPermission):
+            subject = request.subject.tool_call.name
+            arguments = request.subject.tool_call.args
+        else:
+            subject = request.subject.tool
+            arguments = request.subject.params
+        lines = [f"Tool: {subject}"]
+        if arguments:
+            lines.append(f"Args: {arguments}")
+        lines.append(f"Reason: {request.reason}")
+        return self._selection_screen(
+            "Permission required",
+            (
+                Option("once", "Allow once"),
+                Option("session", "Allow for this session"),
+                Option("deny", "Deny"),
+            ),
+            searchable=False,
+            description="\n".join(lines),
+            hint="↑↓ choose · Enter confirm · Esc deny",
+            compact=True,
+            cancel_value="deny",
+        )
 
     async def _cmd_help(self, raw_args: str) -> None:
         try:

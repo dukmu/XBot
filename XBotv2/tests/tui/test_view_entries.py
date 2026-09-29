@@ -400,9 +400,7 @@ async def test_goal_event_renders_status_execution_and_usage_at_80x24(
         svg = app.export_screenshot(title="Goal status at 80x24")
         (tmp_path / "goal-status-80x24.svg").write_text(svg, encoding="utf-8")
         rendered = html.unescape(re.sub(r"<[^>]+>", "", svg)).replace("\xa0", " ")
-        assert "Goal resume required: Ship the release" in rendered
-        assert "Executions: 3" in rendered
-        assert "Usage: 120 in / 30 out / 150 total" in rendered
+        assert "Goal paused · Ship the release" in rendered
 
 
 async def test_short_reasoning_remains_a_collapsible_think_block() -> None:

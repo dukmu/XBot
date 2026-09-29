@@ -361,21 +361,15 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             detail = ""
         else:
             status = state_value.kind
-            reason = "" if state_value.kind == "active" else state_value.reason
             if status == "active" and snapshot.activation == "disarmed":
-                status = "resume required"
-                reason = "Goal is not running; resume is required."
-            text = f"Goal {status}: {state_value.objective}"
-            stats = state_value.stats
-            usage = (
-                f"Usage: {stats.input_tokens} in / {stats.output_tokens} out / "
-                f"{stats.total_tokens} total"
-            )
-            activity = (
-                f"Executions: {stats.rounds_started} · "
-                f"tool calls: {stats.tool_calls} · {usage}"
-            )
-            detail = f"{reason}\n{activity}" if reason else activity
+                # An armed goal the runtime is not driving: say so, because
+                # "active" would otherwise imply progress is happening.
+                status = "paused"
+            text = f"Goal {status} · {state_value.objective}"
+            # A finished or paused goal's reason explains *why* it stopped,
+            # which is part of the status. A running goal's counters are not.
+            # ``ActiveGoal`` has no reason field, so it reads as empty here.
+            detail = getattr(state_value, "reason", "")
         _append(state, NoticeEntry(
             id="goal:active",
             notice_kind="goal",

@@ -647,13 +647,10 @@ def test_goal_notice_shows_public_state_executions_and_usage() -> None:
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
-    assert notice.text == "Goal active: Ship the release"
-    assert notice.detail == (
-        "Executions: 3 · tool calls: 7 · Usage: 120 in / 30 out / 150 total"
-    )
+    assert notice.text == "Goal active · Ship the release"
 
 
-def test_disarmed_active_goal_is_explicitly_resume_required() -> None:
+def test_disarmed_active_goal_reads_as_paused() -> None:
     state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
         state=ActiveGoal(
             goal_id="goal-1",
@@ -666,11 +663,10 @@ def test_disarmed_active_goal_is_explicitly_resume_required() -> None:
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
-    assert notice.text == "Goal resume required: Ship the release"
-    assert notice.detail.startswith("Goal is not running; resume is required.\n")
+    assert notice.text == "Goal paused · Ship the release"
 
 
-def test_terminal_goal_notice_keeps_its_owner_reason() -> None:
+def test_terminal_goal_notice_names_the_state_and_objective() -> None:
     state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
         state=CompleteGoal(
             goal_id="goal-1",
@@ -685,8 +681,7 @@ def test_terminal_goal_notice_keeps_its_owner_reason() -> None:
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
-    assert notice.text == "Goal complete: Ship the release"
-    assert notice.detail.startswith("Release published\nExecutions: 3")
+    assert notice.text == "Goal complete · Ship the release"
 
 
 def test_live_runtime_input_matches_history_without_creating_a_user_turn() -> None:

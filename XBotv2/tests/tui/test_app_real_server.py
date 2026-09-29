@@ -2242,10 +2242,12 @@ async def test_real_goal_runs_two_executions_and_completes_on_screen(
         await wait_for(
             pilot,
             lambda: (
-                "Goal complete: verify the release" in transcript_text(app)
+                "complete · verify the release" in transcript_text(app)
                 and "Goal verification complete." in transcript_text(app)
-                and "Executions: 2" in transcript_text(app)
-                and "Usage: 24 in / 9 out / 33 total" in transcript_text(app)
+                # The model's closing line is the last thing to arrive; it
+                # doubles as the barrier that keeps this wait from returning
+                # before the second execution is fully rendered.
+                and "Verified through the real TUI flow." in transcript_text(app)
                 and "Ready" in status_text(app)
             ),
             description="the real goal to finish its second execution",
