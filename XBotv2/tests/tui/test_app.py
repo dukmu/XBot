@@ -28,6 +28,8 @@ from XBotv2.tests.tui.factories import (
     thread,
     tui_app,
 )
+from XBotv2.client import XBotClientError
+from XBotv2.protocol.models import ErrorResponse
 from textual.screen import Screen
 
 from XBotv2.interactions.protocol import Answered, UserInputRecorded, UserInputRequest
@@ -2164,6 +2166,64 @@ async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revisio
     assert patch.scope == "workspace"
     assert patch.revision == "rev-1"
     assert patch.config == {"workers": 2, "enabled": False}
+
+
+async def test_plugin_revision_conflict_preserves_draft_and_restores_focus() -> None:
+    from XBotv2.config.contracts import PluginConfigCatalog, PluginConfigDescriptor
+
+    catalog = PluginConfigCatalog(
+        scope="workspace",
+        workspace_root="/workspace/project",
+        revision="rev-1",
+        plugins=[
+            PluginConfigDescriptor(
+                plugin_id="example",
+                name="Example",
+                editable=True,
+                config_schema={
+                    "type": "object",
+                    "properties": {"enabled": {"type": "boolean"}},
+                },
+                scope_config={"enabled": True},
+                effective_config={"enabled": True},
+            )
+        ],
+    )
+    backend = ScriptedBackend(
+        plugin_config=catalog,
+        plugin_config_update_error=XBotClientError(
+            409,
+            ErrorResponse(
+                code="plugin_config_conflict",
+                message="catalog revision changed",
+            ),
+        ),
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        app.query_one("#composer", Composer).load_text("draft survives settings")
+        await pilot.press("f2")
+        await settle(pilot)
+        nav = app.screen.query_one("#settings-nav", OptionList)
+        nav.focus()
+        await pilot.press("down", "down", "down", "down", "enter")
+        await pilot.pause()
+        enabled = app.screen.query_one("#plugin-config-field-0", Checkbox)
+        await pilot.click(enabled)
+        await pilot.click("#plugin-config-apply")
+        await settle(pilot)
+
+        message = app.screen.query_one("#settings-plugin-message", Static)
+        assert "catalog changed" in str(message.content).lower()
+        assert app.screen.query_one("#plugin-config-field-0", Checkbox).value is False
+        assert backend.plugin_config_updates[-1]["patch"].revision == "rev-1"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        composer = app.query_one("#composer", Composer)
+        assert composer.text == "draft survives settings"
+        assert app.screen.focused is composer.input
 
 
 async def test_settings_keeps_the_agent_catalog_when_provider_catalog_fails() -> None:

@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from textual.widgets import Static
 
-from XBotv2.client import XBotClient
+from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.core.domain import ProviderError
 from XBotv2.core.history import SurfaceReplaced
 from XBotv2.core.messages import CompactionSummaryMessage
@@ -46,7 +46,7 @@ from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
-from XBotv2.session.records import AssistantRecord, HumanInputRecord
+from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
 from XBotv2.tui.app import TuiApp
 from XBotv2.tui.transport import TransportConfig
@@ -59,6 +59,7 @@ SESSION_ID = "tui-e2e"
 THREAD_ID = "agent"
 REPLY = "hello from the real server"
 CAPTION = "A title from the caption plugin"
+_LONG_HISTORY_GATE: asyncio.Event | None = None
 
 
 @pytest_asyncio.fixture
@@ -72,12 +73,15 @@ async def base_url(
     completes. Driving a real uvicorn server is therefore the only way to test the
     client's event reader and everything built on it.
     """
+    global _LONG_HISTORY_GATE
+    _LONG_HISTORY_GATE = None
     data_dir = tmp_path / "data"
     scenario = getattr(request, "param", "core")
     no_plugins = scenario in {
         "core", "existing_state", "permission", "permission_deny", "interaction", "thinking_stream",
         "thinking_activity", "queue_stream", "long_history_stream",
         "minimax_thinking",
+        "unicode_tool",
     }
     upstream_http: uvicorn.Server | None = None
     upstream_serving: asyncio.Task | None = None
@@ -376,6 +380,21 @@ async def base_url(
                 "chunk_delay_ms": 2500,
             },
         ]
+    elif scenario == "unicode_tool":
+        payload = "漢字🙂 café é " * 80
+        model_responses = [
+            {
+                "tool_calls": [{
+                    "id": "unicode-shell",
+                    "name": "shell",
+                    "args": {"command": f"printf %s {shlex.quote(payload)}"},
+                }],
+            },
+            {
+                "content": "Unicode complete:\n```text\n漢字🙂 café é\n```",
+                "reasoning": "Checking cell widths before the final reply.",
+            },
+        ]
     elif scenario == "queue_stream":
         model_responses = [
             {
@@ -401,6 +420,19 @@ async def base_url(
                 "chunk_delay_ms": 900,
             },
         ]
+
+        class GatedLongHistoryMockLLM(MockLLM):
+            async def _astream_once(self, model_request):
+                first = True
+                async for event in super()._astream_once(model_request):
+                    yield event
+                    if self.call_count == 31 and first:
+                        first = False
+                        assert _LONG_HISTORY_GATE is not None
+                        await _LONG_HISTORY_GATE.wait()
+
+        _LONG_HISTORY_GATE = asyncio.Event()
+        model_factory = GatedLongHistoryMockLLM
     elif scenario == "compact":
         model_responses = [
             {"content": CAPTION},
@@ -489,6 +521,8 @@ async def base_url(
         port = http.servers[0].sockets[0].getsockname()[1]
         yield f"http://127.0.0.1:{port}"
     finally:
+        if _LONG_HISTORY_GATE is not None:
+            _LONG_HISTORY_GATE.set()
         http.should_exit = True
         await asyncio.gather(serving, return_exceptions=True)
         await server.stop()
@@ -539,6 +573,14 @@ class SocketCutProxy:
             return_exceptions=True,
         )
         return accepted
+
+    async def cut_and_wait_for_reconnect(self, *, timeout: float = 10.0) -> None:
+        accepted = await self.cut_connections()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while self.accepted <= accepted:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("the CLI did not reconnect after its socket was cut")
+            await asyncio.sleep(0.02)
 
     async def stop(self) -> None:
         if self._connections:
@@ -808,12 +850,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
             permission_screen, encoding="utf-8"
         )
 
-        accepted_before_cut = await socket_cut_proxy[1].cut_connections()
-        deadline = asyncio.get_running_loop().time() + 10
-        while socket_cut_proxy[1].accepted <= accepted_before_cut:
-            if asyncio.get_running_loop().time() > deadline:
-                raise AssertionError("the CLI did not reconnect after its socket was cut")
-            await asyncio.sleep(0.02)
+        await socket_cut_proxy[1].cut_and_wait_for_reconnect()
         permission_reconnected = await _wait_for_tmux_screen(
             session_name,
             lambda screen: (
@@ -897,6 +934,21 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         assert "Enter confirm · Esc dismiss" in question_screen
         (captures / "question.txt").write_text(question_screen, encoding="utf-8")
 
+        await socket_cut_proxy[1].cut_and_wait_for_reconnect()
+        question_reconnected = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: (
+                "Which deployment window?" in screen
+                and "▸ Tuesday" in screen
+                and "Enter confirm · Esc dismiss" in screen
+            ),
+            description="the selected question after a real socket reconnect",
+        )
+        assert question_reconnected.count("❯ ask me a question") == 1
+        (captures / "question-reconnected.txt").write_text(
+            question_reconnected, encoding="utf-8"
+        )
+
         _resize_tmux_window(session_name, 80, 24)
         question_compact = await _wait_for_tmux_screen(
             session_name,
@@ -935,6 +987,17 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
             description="the completed answer and Think block",
         )
         (captures / "answer.txt").write_text(answer_screen, encoding="utf-8")
+
+        await socket_cut_proxy[1].cut_and_wait_for_reconnect()
+        idle_reconnected = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: REPLY in screen and "Ready  turn:1" in screen,
+            description="the completed turn after an idle socket reconnect",
+        )
+        assert idle_reconnected.count("❯ ask me a question") == 1
+        (captures / "idle-reconnected.txt").write_text(
+            idle_reconnected, encoding="utf-8"
+        )
 
         long_tail = ("second pasted line 二 " + ("long paste word " * 100)).rstrip()
         _tmux(
@@ -1014,6 +1077,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
             description="switching sessions from the real TUI",
         )
         (captures / "switch-away.txt").write_text(other_screen, encoding="utf-8")
+        await socket_cut_proxy[1].cut_and_wait_for_reconnect()
         _tmux("send-keys", "-t", session_name, "-l", f"/session {session_id}")
         _tmux("send-keys", "-t", session_name, "Enter")
         restored_screen = await _wait_for_tmux_screen(
@@ -1037,7 +1101,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
 
 @pytest.mark.parametrize("base_url", ["thinking_stream"], indirect=True)
 async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
-    base_url: str,
+    socket_cut_proxy: tuple[str, SocketCutProxy],
     tmp_path: Path,
 ) -> None:
     """The thinking block must be visible before the assistant completes."""
@@ -1051,7 +1115,7 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
         str(xbot),
         "tui",
         "--server",
-        base_url,
+        socket_cut_proxy[0],
         "--no-plugins",
     ])
     captures = tmp_path / "thinking-pty-captures"
@@ -1096,6 +1160,8 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
             streaming, encoding="utf-8"
         )
         assert not any("█ █ ▾ Think" in line for line in streaming.splitlines())
+
+        await socket_cut_proxy[1].cut_and_wait_for_reconnect()
 
         completed = await _wait_for_tmux_screen(
             session_name,
@@ -1145,6 +1211,76 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
             await _stop_tmux_tui(session_name)
         except AssertionError:
             pass
+        try:
+            _tmux("kill-session", "-t", session_name)
+        except AssertionError:
+            pass
+
+
+@pytest.mark.parametrize("base_url", ["unicode_tool"], indirect=True)
+async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
+    real_client: XBotClient,
+    base_url: str,
+    tmp_path: Path,
+) -> None:
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is required for the real TTY interaction smoke")
+
+    session_name = f"xbot-unicode-{uuid.uuid4().hex[:10]}"
+    repo_root = Path(__file__).resolve().parents[3]
+    xbot = Path(sys.executable).with_name("xbot")
+    captures = tmp_path / "unicode-pty-captures"
+    captures.mkdir()
+    command = shlex.join([
+        str(xbot), "tui", "--server", base_url, "--no-plugins",
+    ])
+    try:
+        _tmux(
+            "new-session", "-d", "-s", session_name, "-x", "80", "-y", "24",
+            "-c", str(repo_root), command,
+        )
+        _resize_tmux_window(session_name, 80, 24)
+        await _wait_for_tmux_screen(
+            session_name, lambda screen: "Ready" in screen,
+            description="the Unicode payload TUI to connect",
+        )
+        _tmux("send-keys", "-t", session_name, "-l", "render 漢字🙂 and long code")
+        _tmux("send-keys", "-t", session_name, "Enter")
+        completed = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "Unicode complete" in screen and "Ready  turn:1" in screen,
+            description="the long Unicode tool turn to complete",
+        )
+        assert len(completed.splitlines()) == 24
+        assert all(cell_len(line) <= 80 for line in completed.splitlines())
+        assert "❯" in completed and "default/test" in completed
+        (captures / "unicode-completed-80x24.txt").write_text(
+            completed, encoding="utf-8"
+        )
+
+        _tmux("send-keys", "-t", session_name, "C-e")
+        expanded = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: "ctrl+e collapses" in screen and "漢字" in screen,
+            description="the Unicode tool disclosure to expand",
+        )
+        assert all(cell_len(line) <= 80 for line in expanded.splitlines())
+        (captures / "unicode-tool-expanded-80x24.txt").write_text(
+            expanded, encoding="utf-8"
+        )
+
+        sessions = await real_client.list_sessions()
+        session_id = sessions.sessions[0].session_id
+        history = await real_client.list_messages(session_id, THREAD_ID, limit=20)
+        tools = [item for item in history.items if isinstance(item, ToolRecord)]
+        assert len(tools) == 1
+        assert tools[0].call.name == "shell"
+        assert any(
+            "漢字🙂" in getattr(part, "text", "")
+            for part in tools[0].outcome.output.parts
+        )
+        await _stop_tmux_tui(session_name)
+    finally:
         try:
             _tmux("kill-session", "-t", session_name)
         except AssertionError:
@@ -1707,6 +1843,8 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
             resized, encoding="utf-8"
         )
         _resize_tmux_window(session_name, 80, 24)
+        assert _LONG_HISTORY_GATE is not None
+        _LONG_HISTORY_GATE.set()
 
         completed_anchored = await _wait_for_tmux_screen(
             session_name,
@@ -2508,6 +2646,48 @@ async def test_the_real_sequence_has_no_gaps(real_client: XBotClient) -> None:
             e for e in timeline
             if isinstance(e, NoticeEntry) and e.notice_kind == "stream_gap"
         ]
+
+
+async def test_public_sse_reports_a_naturally_expired_cursor(
+    real_client: XBotClient,
+) -> None:
+    """Prove the recovery trigger without reaching into the server runtime."""
+    session_id = "tui-natural-cursor-expiry"
+    opened = await real_client.open_session(
+        session_id=session_id, thread_id=THREAD_ID, mode="new"
+    )
+    stale_cursor = opened.data.event_cursor
+    cursor = stale_cursor
+
+    # Completed turns are the ordinary public producer of session events. Keep
+    # making them until they have naturally moved beyond the server's bounded
+    # SSE replay window; no event-stream internals or test-only API are used.
+    for index in range(100):
+        await real_client.send_message(
+            session_id,
+            THREAD_ID,
+            f"cursor turn {index}",
+            request_id=f"cursor-{index}",
+        )
+        async for frame in real_client.stream_events(
+            session_id, THREAD_ID, after=cursor
+        ):
+            cursor = frame.sequence
+            if frame.kind == "turn_ended":
+                break
+        if cursor - stale_cursor > 512:
+            break
+    assert cursor - stale_cursor > 512
+
+    with pytest.raises(XBotClientError) as raised:
+        async for _frame in real_client.stream_events(
+            session_id, THREAD_ID, after=stale_cursor
+        ):
+            pass
+    assert raised.value.status_code == 409
+    assert raised.value.code == "session_event_cursor_expired"
+    assert raised.value.retryable is True
+    assert int(raised.value.details["oldest_sequence"]) > stale_cursor
 
 
 async def test_two_real_turns_in_a_row(real_client: XBotClient) -> None:
