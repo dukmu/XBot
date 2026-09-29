@@ -172,10 +172,10 @@ class TaskService:
         description: str | None = None,
         active_form: str | None = None,
         owner: str | None = None,
-        add_blocks: list[str] | None = None,
-        add_blocked_by: list[str] | None = None,
-        remove_blocks: list[str] | None = None,
-        remove_blocked_by: list[str] | None = None,
+        add_blocks: list[str | int] | None = None,
+        add_blocked_by: list[str | int] | None = None,
+        remove_blocks: list[str | int] | None = None,
+        remove_blocked_by: list[str | int] | None = None,
     ) -> ToolOutcome:
         """Update one task: status, text, owner, or dependency edges.
 
@@ -191,13 +191,14 @@ class TaskService:
             description: Replacement description.
             active_form: Replacement present-continuous label.
             owner: Agent that claimed the task.
-            add_blocks: Exact string ids this task must be completed before,
-                for example ["2"]. Do not prefix ids with "#".
-            add_blocked_by: Exact string ids that must be completed before this
-                one, for example ["1"]. Do not prefix ids with "#".
-            remove_blocks: Exact string ids from which to remove this task as a
+            add_blocks: Ids of tasks this task must be completed before.
+                Each id may be a string (e.g. ``"2"``) or an integer; values
+                are normalized to strings. Do not prefix ids with ``"#"``.
+            add_blocked_by: Ids of tasks that must be completed before this
+                one. Same string-or-integer format as ``add_blocks``.
+            remove_blocks: Ids from which to remove this task as a
                 prerequisite.
-            remove_blocked_by: Exact string ids of prerequisites to remove.
+            remove_blocked_by: Ids of prerequisites to remove.
         """
         try:
             parsed_id = parse_task_id(taskId)

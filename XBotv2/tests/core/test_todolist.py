@@ -658,3 +658,44 @@ async def test_compaction_restates_unfinished_tasks_once(
         assert [task.status for task in tasks.tasks] == ["completed", "completed"]
     finally:
         await resumed.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Regression: dependency-graph args accept integer ids (model often serialises
+# them as ints; the schema must accept either form).  See _annotation_schema
+# in XBotv2/core/tools.py for the corresponding anyOf emission.
+# ---------------------------------------------------------------------------
+
+
+def test_dependency_ids_accept_integer_strings():
+    """``parse_task_ids`` normalises ints to strings before storing."""
+    assert parse_task_ids([9, 10], field="add_blocks") == ("9", "10")
+    assert parse_task_ids(["9", 10], field="add_blocks") == ("9", "10")
+    assert parse_task_ids([], field="add_blocks") == ()
+    assert parse_task_ids(None, field="add_blocks") == ()
+
+
+def test_task_update_parameters_schema_accepts_integer_id_lists():
+    """Schema validation must allow int-id arrays, not just strings."""
+    from XBotv2.core.tools import tool_parameters_schema
+    from XBotv2.todolist.plugin import TaskService, _task_tool, TaskConfig
+    from jsonschema import Draft202012Validator
+
+    cfg = TaskConfig()
+
+    class _FakeService:
+        _config = cfg
+        _agent_name = "test"
+
+    import types as _types
+
+    tool = _task_tool(
+        _types.MethodType(TaskService.task_update, _FakeService()), cfg,
+    )
+    schema = tool_parameters_schema(tool)
+    Draft202012Validator(schema).validate({"taskId": "11", "add_blocked_by": [9]})
+    Draft202012Validator(schema).validate({"taskId": "11", "add_blocked_by": [9, 10]})
+    Draft202012Validator(schema).validate({"taskId": "11", "add_blocks": ["2"]})
+    Draft202012Validator(schema).validate({"taskId": "11", "add_blocks": ["2", 3]})
+    Draft202012Validator(schema).validate({"taskId": "11", "add_blocked_by": None})
+    Draft202012Validator(schema).validate({"taskId": "11"})

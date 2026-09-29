@@ -428,3 +428,35 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
         assert untouched_service.title == "A user-selected title"
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# Regression: the caption tool's ``action`` parameter must be constrained to
+# ``"get" | "set"`` at the schema level so that arbitrary strings are rejected
+# before the tool body runs.
+# ---------------------------------------------------------------------------
+
+
+def test_caption_tool_action_schema_is_enum_constrained():
+    from XBotv2.caption.contracts import CaptionResult
+    from XBotv2.caption.tools import build_caption_tool
+
+    class _Owner:
+        async def caption_get(self) -> CaptionResult:
+            return CaptionResult(title="hello")
+
+        async def caption_set(self, title: str) -> CaptionResult:
+            return CaptionResult(title=title)
+
+    from jsonschema import Draft202012Validator
+
+    tool = build_caption_tool(_Owner())
+    action_schema = tool.parameters["properties"]["action"]
+    assert action_schema == {"type": "string", "enum": ["get", "set"]}
+
+    validator = Draft202012Validator(tool.parameters)
+    validator.validate({"action": "get"})
+    validator.validate({"action": "set", "title": "x"})
+
+    invalid = list(validator.iter_errors({"action": "read"}))
+    assert invalid and "'read' is not one of" in invalid[0].message

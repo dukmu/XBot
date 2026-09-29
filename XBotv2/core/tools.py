@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, TypeAlias, get_args, get_origin, get_type_hints
@@ -319,6 +320,14 @@ def _annotation_schema(annotation: Any) -> dict[str, Any]:
         }
     if origin in {tuple, set}:
         return {"type": "object"}
+    if origin is types.UnionType:
+        branches = [
+            {"type": "null"} if arg is type(None) else _annotation_schema(arg)
+            for arg in args
+        ]
+        if len(branches) == 1:
+            return branches[0]
+        return {"anyOf": branches}
     if origin is not None and type(None) in args:
         non_null = [
             _annotation_schema(arg)
