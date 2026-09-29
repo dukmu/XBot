@@ -1115,3 +1115,50 @@ async def test_runtime_close_propagates_engine_failure_after_releasing_resources
         label="test/close-failure-released",
     )
     ownership.release()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_releases_resources_after_inbox_discard_failure(
+    temp_data_dir,
+    temp_workspace,
+    monkeypatch,
+):
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    services = await start_application(
+        paths=paths,
+        session_id="discard-close-failure",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=MockLLM(),
+    )
+    application = await mounted_application(services)
+    runtime = SessionRuntime(paths, False, application, services.engine)
+    subscription = runtime.event_stream.subscribe()
+    application_closed = False
+
+    async def fail_discard():
+        raise RuntimeError("inbox discard failed")
+
+    monkeypatch.setattr(services.engine, "discard_inputs", fail_discard)
+    original_application_close = type(application).close
+
+    async def record_application_close(instance):
+        nonlocal application_closed
+        await original_application_close(instance)
+        application_closed = True
+
+    monkeypatch.setattr(type(application), "close", record_application_close)
+
+    with pytest.raises(RuntimeError, match="inbox discard failed"):
+        await runtime.close("test_discard_failure")
+
+    assert application_closed
+    assert application.loop_state.session.status == "closed"
+    with pytest.raises(StopAsyncIteration):
+        await subscription.__anext__()
+    ownership = acquire_session(
+        paths.session("discard-close-failure").root,
+        label="test/discard-close-failure-released",
+    )
+    ownership.release()

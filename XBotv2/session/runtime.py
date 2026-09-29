@@ -292,6 +292,12 @@ class SessionRuntime(SessionPort):
             artifacts=tuple(artifacts or ()),
         )
         async with self._submission_lock:
+            status = self.application.loop_state.session.status
+            if status != "active":
+                raise OperationError(
+                    "session_closing",
+                    f"Cannot accept input while the session is {status}.",
+                )
             if not self.turn_lock.locked():
                 try:
                     await start_turn(
@@ -332,6 +338,9 @@ class SessionRuntime(SessionPort):
 
     def _request_wakeup(self) -> None:
         """Wake the loop driver for followup/steer; inject never calls this."""
+        if self.application.loop_state.session.status != "active":
+            self._wakeup_requested = False
+            return
         self._wakeup_requested = True
         if self.turn_lock.locked() or self.wakeup_task is not None:
             return
@@ -348,6 +357,9 @@ class SessionRuntime(SessionPort):
                 await task
         except SessionBusy:
             pass
+        except OperationError as exc:
+            if exc.code != "session_closing":
+                raise
         finally:
             self.wakeup_task = None
             if self._wakeup_requested and not self.turn_lock.locked():
@@ -355,7 +367,9 @@ class SessionRuntime(SessionPort):
 
     async def close(self, reason: str = "session_closed") -> None:
         self.close_reason = reason
-        self.application.loop_state.session.status = "closing"
+        async with self._submission_lock:
+            self.application.loop_state.session.status = "closing"
+            self._wakeup_requested = False
         task = self.turn_task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -370,18 +384,34 @@ class SessionRuntime(SessionPort):
             continuation.cancel()
             await asyncio.gather(continuation, return_exceptions=True)
         self.wakeup_task = None
-        await self.engine.discard_inputs()
+        failure: BaseException | None = None
         try:
-            await self.engine.close_session()
-        finally:
+            try:
+                await self.engine.discard_inputs()
+            except BaseException as exc:
+                failure = exc
+            try:
+                await self.engine.close_session()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Engine close also failed: {exc!r}")
             # The session owns the XCore application lifetime. Engine only
             # closes its loop lifecycle; unloading plugin fibers belongs to
             # the surrounding application context.
             try:
                 await self.application.close()
-            finally:
-                self.event_stream.close()
-                self.application.loop_state.session.status = "closed"
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Application close also failed: {exc!r}")
+            self.event_stream.close()
+        finally:
+            self.application.loop_state.session.status = "closed"
+        if failure is not None:
+            raise failure
 
 
 class TurnEventRouter:
@@ -516,6 +546,11 @@ async def start_turn(
     interactive: bool | None = None,
 ) -> None:
     """Start a turn whose authoritative output is the Session event stream."""
+    if runtime.application.loop_state.session.status != "active":
+        raise OperationError(
+            "session_closing",
+            "Cannot start a turn while the session is closing.",
+        )
     if runtime.turn_lock.locked():
         raise SessionBusy(runtime.session_id)
     await runtime.turn_lock.acquire()
@@ -545,33 +580,41 @@ async def start_regenerate_turn(
     interactive: bool | None = None,
 ) -> None:
     """Start regeneration with output published on the Session event stream."""
-    if runtime.turn_lock.locked():
-        raise SessionBusy(runtime.session_id)
-    await runtime.turn_lock.acquire()
-    try:
-        message = await runtime.application.history.regenerate_history()
-        record = project_human_input(message)
-        router = TurnEventRouter(runtime, TurnId(uuid.uuid4().hex))
-        runtime._active_router = router
-    except BaseException:
-        runtime.turn_lock.release()
-        raise
-    task = asyncio.create_task(_execute_turn(
-        runtime,
-        router,
-        item=InboxItem(
-            id=request_id or f"input-{uuid.uuid4().hex}",
-            target=InboxTarget.NEXT_TURN,
-            input=HumanInput(
-                content=record.content,
-                images=record.images,
-                artifacts=record.artifacts,
+    async with runtime._submission_lock:
+        if runtime.application.loop_state.session.status != "active":
+            raise OperationError(
+                "session_closing",
+                "Cannot regenerate while the session is closing.",
+            )
+        if runtime.turn_lock.locked():
+            raise SessionBusy(runtime.session_id)
+        await runtime.turn_lock.acquire()
+        try:
+            message = await runtime.application.history.regenerate_history()
+            record = project_human_input(message)
+            router = TurnEventRouter(runtime, TurnId(uuid.uuid4().hex))
+            runtime._active_router = router
+        except BaseException:
+            runtime.turn_lock.release()
+            raise
+        task = asyncio.create_task(_execute_turn(
+            runtime,
+            router,
+            item=InboxItem(
+                id=request_id or f"input-{uuid.uuid4().hex}",
+                target=InboxTarget.NEXT_TURN,
+                input=HumanInput(
+                    content=record.content,
+                    images=record.images,
+                    artifacts=record.artifacts,
+                ),
             ),
-        ),
-        request_id=request_id,
-        interactive=interactive,
-    ))
-    runtime.turn_task = task
+            request_id=request_id,
+            interactive=interactive,
+        ))
+        runtime.turn_task = task
+
+
 __all__ = [
     "SessionBusy",
     "SessionRuntime",

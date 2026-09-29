@@ -39,6 +39,7 @@ from pydantic import ValidationError
 from XBotv2.jobs import Running
 from XBotv2.jobs.protocol import JobCompletedEvent
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.errors import OperationError
 from XBotv2.loader import PluginOverlay
 from XBotv2.agentloop import AllTools
 from XBotv2.core.tools import Tool, ToolCall, ToolCancelled, ToolDenied, ToolSucceeded
@@ -637,6 +638,51 @@ async def test_session_close_cancels_turn_before_closing_engine(http_app) -> Non
     assert task.cancelled()
     assert runtime.turn_task is None
     assert runtime.application.loop_state.session.status == "closed"
+    assert not runtime.turn_lock.locked()
+    assert runtime.engine.pending_input_count == 0
+
+
+@pytest.mark.asyncio
+async def test_session_close_rejects_input_accepted_during_teardown(
+    http_app,
+    monkeypatch,
+) -> None:
+    runtime = await http_app.state.manager.open_session(
+        session_id="closing-input-race",
+        thread_id="main",
+        provider_name="default",
+        workspace_root=str(http_app.state.workspace_root),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{
+            "chunks": ["must not run after close begins"],
+            "chunk_delay_ms": 5_000,
+        }]),
+    )
+    discard_started = asyncio.Event()
+    allow_discard = asyncio.Event()
+    original_discard = runtime.engine.discard_inputs
+
+    async def pause_discard() -> None:
+        discard_started.set()
+        await allow_discard.wait()
+        await original_discard()
+
+    monkeypatch.setattr(runtime.engine, "discard_inputs", pause_discard)
+    closing = asyncio.create_task(runtime.close())
+    await asyncio.wait_for(discard_started.wait(), timeout=5)
+
+    try:
+        with pytest.raises(OperationError, match="closing"):
+            await runtime.send_message("too late", "closing-race")
+    finally:
+        allow_discard.set()
+        await asyncio.wait_for(closing, timeout=5)
+        if runtime.turn_task is not None:
+            runtime.turn_task.cancel()
+            await asyncio.gather(runtime.turn_task, return_exceptions=True)
+
+    assert runtime.application.loop_state.session.status == "closed"
+    assert runtime.turn_task is None
     assert not runtime.turn_lock.locked()
 
 
