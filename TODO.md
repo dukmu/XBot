@@ -36,6 +36,21 @@
 
 ## 3. 当前权威基线
 
+### 2026-09-29 独立 worktree 并行推进
+
+- [x] 用户授权三个 GPT-5.6 sol 子代理独立开发，统一从已验证 `d988e4c` 分出 worktree；保留旧 `.worktrees/tui-rewrite`，不改共享依赖环境，不做 WebUI。
+- [x] `fix-persistence-read-recovery` / `.worktrees/persistence-audit`：外部 writer 追加后 reader 只读取新后缀，不再反复从头解析或复制完整投影；损坏后缀不发布部分结果，丢弃投影缓存后明确重试失败。已审阅集成为 `a5ac52b`。冷读仍需完整读取，不宣称所有持久化成本已解决；StateService 仍是 KV 快照。
+- [x] `fix-plugin-notification-lifecycle` / `.worktrees/plugin-events`：修复 job runner 尚未启动就取消导致永不完成；验证取消终态/完成通知唯一、wait 释放、两个真实子应用取消及失败子应用由父代理读取。已审阅集成为 `b989548`，不新增通知框架。
+- [ ] goal/todo 用户反馈的通知问题本次未复现，不能标为已修复；现有生产路径覆盖不意外唤醒、恢复不重复等行为。运行中 job 输出新能力不属于已确认缺陷，未扩展实现。
+- [x] `fix-tui-interaction-acceptance` / `.worktrees/tui-acceptance`：真实 30 轮历史后，第 31 轮流式期间留在旧页，80×24 ↔ 100×28 resize 保留阅读位置；修复加载旧页却回尾、PageDown 无法回尾和已取消滚动回调复活。分支完整 TUI `888 passed`，审阅后集成为 `0ce4cc6`；集成验证与 Think 完成帧核查仍见下项。
+- [x] 集成完整 TUI/ACP `895 passed in 141.51s`。主代理读取本轮真实长历史流式/resize/回尾及 steer 捕获；Think 收起保留最多两行 preview 是现有明确契约，并非正文泄漏。增强真实 PTY 完成帧等待，核对收起标记、预览、final 和 Ready 同时出现（`b72e668`），不改生产显示语义。
+- [x] 主代理完成本次三个分支的范围管理、提交审阅与集成，核验 worktree 导入及真实终端捕获；拒绝完整投影复制/重复事务实现，采用失败后丢弃缓存的简单方案。根计划统一更新，不将旧未勾选项直接扩展为新功能。
+- [ ] 输入发布/恢复剩余失败边界、多待处理交互与取消/重连矩阵、metadata 增长、冷历史首次加载及整体模型/插件职责审查未全部完成。
+- [x] 真实 HTTP 测试宿主原先跨线程事件循环运行应用和 provider；红测复现 loop-owned Future 报错，宿主改为与应用同一事件循环运行真实 uvicorn。提交 `f2286f0`，当时 HTTP/fold-in `115 passed`，没有修改生产运行时绕过测试问题。
+- [x] 用户最新要求：忙碌输入默认 steer；canonical human input 记录 steering 事实，context compiler 添加临时补充、不主动打断工作的简短说明，原文和客户端展示不变，resume 后语义保留。运行时与恢复验证已提交 `1f81dc5`；TUI Enter 的默认行为由 TUI 分支同步落实，显式 queue 保持下一轮语义。
+- [x] 合并 persistence/jobs/steer 后 Core + HTTP/fold-in 首轮 `740 passed, 1 failed, 17 deselected`；唯一失败为 HTTP 用例仍断言模型输入只有原文。保留工具批次与发布验证，改为分别验证说明和未改动的原文；加换行避免 provider 拼接文字时相连。最终完整 HTTP/fold-in `116 passed in 86.72s`，提交 `5270207`；不把首轮结果描述成全绿。
+- [x] 最终测试提交 `b72e668` 后真实长历史 PTY + block 验证 `20 passed in 7.72s`。未运行 WebUI、外部 provider 或真实 PTY 中途断网；这些结果不代表全部长期任务完成。
+
 ### 2026-09-29 启动 404 与 StateService 职责纠正
 
 - [x] 新增真实 server 启动回归：启动前已有合法 JSON 对象 state.json，GET /sessions 必须可用。红测准确复现 404：日志化 StateService 拒绝原 JSON → workspaces 初始化失败 → workspace_events 缺失 → session HTTP 路由未挂载。先前只以全新目录验证，遗漏该生产路径。

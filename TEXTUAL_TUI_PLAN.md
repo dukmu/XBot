@@ -1,5 +1,14 @@
 # Textual TUI 插件化重建方案
 
+## 2026-09-29 默认 steer 与长历史阅读
+
+- [x] 忙碌时 Enter 默认 steer，Alt+S/Ctrl+Enter 保留同样语义；显式 queue API 仍可用于下一轮。模型收到临时补充、除非明确要求否则继续当前工作的说明，原文展示不变；服务端恢复测试覆盖语义保留。
+- [x] 真实 PageUp 发现 server page 小于 mounted window 时虽已加载旧页却仍留在尾部；现在显式显示新加载页，PageDown 可回 live tail。局部 generation 使过期 tail-follow/reader-restore 回调失效，不引入滚动调度框架。
+- [x] worktree 分支完整 TUI `888 passed in 137.82s`；真实 30 轮历史 + 第 31 轮流式、80×24 ↔ 100×28 resize、折叠和 composer 选择保持。tmux 子进程显式采用当前 worktree PYTHONPATH，避免误测根工作区旧代码；已集成 `0ce4cc6`。
+- [x] 根分支完整 TUI/ACP `895 passed in 141.51s`（生产代码 `5270207`）。主代理读取本轮真实终端帧；Think 折叠语义是标题加最多两行 preview，一行正文可见符合现有契约，不是折叠失效。补充稳定等待收起标记/preview/final/Ready 同时存在的 PTY 断言 `b72e668`；原始 capture 保留本地，不提交。
+- [x] `b72e668` 最终复验：真实长历史 CLI/tmux + block suite `20 passed in 7.72s`，无后续生产代码变化。
+- [ ] 同一真实 PTY 中途断网重连、Settings 及整体复合交互尚未完整验收；本轮未调用外部 provider。
+
 ## 2026-09-29 启动 404 修复
 
 - [x] 原因已由真实 server 红测复现：StateService 错改日志格式后，已有进程 JSON 状态令 workspaces 初始化失败，依赖 workspace_events 的 session HTTP 路由不挂载，启动请求 /sessions 返回 404。恢复 KV 单 JSON 原子快照，无路由旁路或兼容双读。
