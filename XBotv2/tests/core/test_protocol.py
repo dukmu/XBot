@@ -11,7 +11,7 @@ from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
 from XBotv2.core.history import HistoryPage
 from XBotv2.core.timing import SessionStats
 from XBotv2.session.contracts import HistoryMutation, SessionEventFrame
-from XBotv2.session.protocol import HistoryUpdatedEvent
+from XBotv2.session.events import HistoryUpdatedEvent
 
 
 class _TrackingEventSubscription(AsyncIterator[SessionEventFrame]):

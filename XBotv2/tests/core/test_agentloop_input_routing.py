@@ -258,7 +258,7 @@ async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_pat
 @pytest.mark.parametrize("rejected", [False, True])
 async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rejected):
     from XBotv2.agentloop.events import Events, RejectInput
-    from XBotv2.session.protocol import InputConsumedEvent, MessagePublishedEvent
+    from XBotv2.session.events import InputConsumedEvent, MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     context = await start_application(
@@ -384,7 +384,7 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
 async def test_partial_input_batch_does_not_replay_committed_notice(tmp_path, persistent):
     from XBotv2.agentloop.events import Events
     from XBotv2.core.messages import RuntimeNoticeMessage
-    from XBotv2.session.protocol import MessagePublishedEvent
+    from XBotv2.session.events import MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     application = await start_application(

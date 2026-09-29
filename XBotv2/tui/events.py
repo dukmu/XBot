@@ -49,13 +49,13 @@ from XBotv2.core.domain import Cursor
 from XBotv2.core.history import HistoryPage
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.permissions.protocol import PermissionResponseRecorded
-from XBotv2.session.protocol import (
-    AgentConfiguredData,
+from XBotv2.session.events import (
+    AgentConfiguredEvent,
     HistoryUpdatedEvent,
     InputConsumedEvent,
-    OpenSessionResponse,
-    QueueUpdatedData,
+    QueueReplacedEvent,
 )
+from XBotv2.session.protocol import OpenSessionResponse
 from XBotv2.session.records import (
     AssistantRecord,
     HumanInputRecord,
@@ -101,7 +101,7 @@ class JobsReplaced:
 
 @dataclass(frozen=True)
 class SessionConfigured:
-    payload: AgentConfiguredData
+    payload: AgentConfiguredEvent
 
 
 @dataclass(frozen=True)
@@ -259,7 +259,7 @@ class CompactionChanged:
 
 @dataclass(frozen=True)
 class QueueReplaced:
-    payload: QueueUpdatedData
+    payload: QueueReplacedEvent
 
 
 # --- interactions ---------------------------------------------------------

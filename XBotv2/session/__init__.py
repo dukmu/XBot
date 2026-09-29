@@ -24,6 +24,7 @@ from XBotv2.session.contracts import (
     SESSION_RESOURCE_CHANGED,
     SESSION_RESOURCE_REMOVED,
     SessionEventFrame,
+    SessionEvent,
     SessionExists,
     SessionKey,
     SessionRuntimeState,
@@ -49,13 +50,19 @@ from XBotv2.session.records import (
     ToolRecord,
     project_message,
 )
-from XBotv2.session.protocol import (
-    AgentConfiguredData,
+from XBotv2.session.events import (
     AgentConfiguredEvent,
+    HistoryUpdatedEvent,
+    InputAcceptedEvent,
+    InputClaimedEvent,
+    InputConsumedEvent,
+    MessagePublishedEvent,
+    QueueReplacedEvent,
+)
+from XBotv2.session.protocol import (
     CloseResponse,
     DeleteSessionResponse,
     ForkResponse,
-    HistoryUpdatedEvent,
     InterruptResponse,
     MessageRequest,
     OpenSessionRequest,
@@ -64,22 +71,14 @@ from XBotv2.session.protocol import (
     PendingInputListResponse,
     PendingInputUpdateRequest,
     RegenerateRequest,
-    InputAcceptedEvent,
-    InputClaimedEvent,
-    InputConsumedEvent,
-    MessagePublishedEvent,
-    QueueReplacedEvent,
-    SessionEvent,
     SessionListResponse,
     ThreadListResponse,
     UndoRequest,
-    session_error_event,
 )
 
 __all__ = [
     "AgentApplicationFactory",
     "AgentApplicationOptions",
-    "AgentConfiguredData",
     "AgentConfiguredEvent",
     "AttachmentInput",
     "ArtifactPayload",
@@ -145,5 +144,4 @@ __all__ = [
     "ThreadSummary",
     "new_session_id",
     "UndoRequest",
-    "session_error_event",
 ]

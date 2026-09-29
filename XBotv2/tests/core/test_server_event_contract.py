@@ -36,9 +36,11 @@ from XBotv2.session.contracts import (
     ThreadMetadata,
 )
 from XBotv2.core.domain import UsageSnapshot
-from XBotv2.session.protocol import (
+from XBotv2.session.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,
+)
+from XBotv2.session.protocol import (
     _format_sse,
     _open_session_response,
 )

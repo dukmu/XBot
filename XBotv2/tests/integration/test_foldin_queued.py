@@ -37,7 +37,7 @@ from XBotv2.agentloop.protocol import (
 )
 from XBotv2.core.parts import TextPart
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
-from XBotv2.session.protocol import MessagePublishedEvent
+from XBotv2.session.events import MessagePublishedEvent
 from XBotv2.session.runtime import start_regenerate_turn
 from XBotv2.usage import UsageUpdated
 

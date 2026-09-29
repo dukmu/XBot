@@ -29,9 +29,10 @@ from XBotv2.permissions import PermissionResponseRequest
 from XBotv2.protocol import ResourceResponse, ServerEvent, WireModel
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.errors import OperationError
-from XBotv2.core.domain import Cursor, ResolvedRuntimeSelection
+from XBotv2.core.domain import Cursor
 from XBotv2.core.history import HistoryPage, TrajectoryRead
 from XBotv2.session.config import SessionConfig
+from XBotv2.session.events import MessagePublishedEvent
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import (
     AttachmentInput,
@@ -56,7 +57,7 @@ from XBotv2.session.contracts import (
     ThreadSummary,
     conversation_replay,
 )
-from XBotv2.session.records import ConversationRecord, InputRecordPayload
+from XBotv2.session.records import ConversationRecord
 
 logger = logging.getLogger("xbotv2.api")
 
@@ -121,10 +122,6 @@ class DeleteSessionResponse(WireModel):
     status: Literal["deleted"] = "deleted"
 
 
-class AgentConfiguredData(WireModel):
-    runtime_selection: ResolvedRuntimeSelection
-
-
 class PendingInputListResponse(WireModel):
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
@@ -140,69 +137,6 @@ class PendingInputUpdateRequest(WireModel):
         if self.action == "edit" and not self.content.strip():
             raise ValueError("queue edit requires non-empty content")
         return self
-
-
-class QueueUpdatedData(WireModel):
-    items: list[PendingInputData] = Field(default_factory=list)
-
-
-class InputDeliveryData(WireModel):
-    message_ids: list[str] = Field(default_factory=list)
-    target: Literal["next-turn", "next-step"] | None = None
-
-
-class AgentConfiguredEvent(AgentConfiguredData):
-    kind: Literal["agent_configured"] = "agent_configured"
-
-
-class HistoryUpdatedEvent(WireModel):
-    kind: Literal["history_updated"] = "history_updated"
-    operation: str = Field(min_length=1)
-    mutation: HistoryMutation
-
-
-class MessagePublishedEvent(WireModel):
-    kind: Literal["message"] = "message"
-    record: InputRecordPayload
-
-
-class QueueReplacedEvent(QueueUpdatedData):
-    kind: Literal["queue_updated"] = "queue_updated"
-
-
-class InputAcceptedEvent(InputDeliveryData):
-    kind: Literal["input_accepted"] = "input_accepted"
-
-
-class InputClaimedEvent(WireModel):
-    kind: Literal["input_claimed"] = "input_claimed"
-    message_ids: list[str] = Field(default_factory=list)
-
-
-class InputConsumedEvent(WireModel):
-    kind: Literal["input_consumed"] = "input_consumed"
-    message_ids: list[str] = Field(default_factory=list)
-
-
-SessionEvent = (
-    AgentConfiguredEvent
-    | HistoryUpdatedEvent
-    | MessagePublishedEvent
-    | QueueReplacedEvent
-    | InputAcceptedEvent
-    | InputClaimedEvent
-    | InputConsumedEvent
-)
-
-
-def session_error_event(
-    code: str,
-    message: str,
-) -> object:
-    """Return the loop's canonical error event for a session failure."""
-    from XBotv2.agentloop.protocol import LoopError
-
-    return LoopError(code=code, message=message)
 
 
 class MessageRequest(WireModel):
@@ -290,15 +224,6 @@ def _session_event_payload(event: object) -> dict[str, JsonValue]:
 
     if isinstance(event, MessagePublishedEvent):
         return event.record.root.model_dump(mode="json")
-    if isinstance(event, (
-        AgentConfiguredEvent,
-        HistoryUpdatedEvent,
-        QueueReplacedEvent,
-        InputAcceptedEvent,
-        InputClaimedEvent,
-        InputConsumedEvent,
-    )):
-        return event.model_dump(mode="json", exclude={"kind"})
     if isinstance(event, AssistantCompleted):
         return project_message(event.message).model_dump(mode="json")
     if isinstance(event, ToolCompleted):
@@ -821,7 +746,6 @@ def build_session_router(
 
 
 __all__ = [
-    "AgentConfiguredData",
     "AttachmentInput",
     "CloseResponse",
     "DeleteSessionResponse",
@@ -834,18 +758,9 @@ __all__ = [
     "OpenThreadRequest",
     "SessionListResponse",
     "SessionMode",
-    "AgentConfiguredEvent",
-    "HistoryUpdatedEvent",
-    "InputAcceptedEvent",
-    "InputClaimedEvent",
-    "InputConsumedEvent",
-    "MessagePublishedEvent",
-    "QueueReplacedEvent",
-    "SessionEvent",
     "SessionSummary",
     "ThreadListResponse",
     "ThreadSummary",
     "UndoRequest",
     "build_session_router",
-    "session_error_event",
 ]

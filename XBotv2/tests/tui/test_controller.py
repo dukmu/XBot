@@ -545,13 +545,13 @@ async def test_the_thread_list_comes_from_the_server(backend: ScriptedBackend) -
 
 async def test_the_queue_is_rendered_from_state(backend: ScriptedBackend) -> None:
     from XBotv2.tui.events import QueueReplaced
-    from XBotv2.session.protocol import QueueUpdatedData
+    from XBotv2.session.events import QueueReplacedEvent
 
     control, view = controller(backend)
     await control.connect()
     control.dispatch(
         QueueReplaced(
-            payload=QueueUpdatedData(
+            payload=QueueReplacedEvent(
                 items=[
                     {
                         "message_id": "q1",

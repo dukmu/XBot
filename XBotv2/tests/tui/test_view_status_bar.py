@@ -437,7 +437,7 @@ def test_the_report_carries_the_derived_status_not_a_guess() -> None:
 
 def test_the_report_counts_what_the_server_queued() -> None:
     """Being submitted is not being queued: only the server's queue counts."""
-    from XBotv2.session.protocol import QueueUpdatedData
+    from XBotv2.session.events import QueueReplacedEvent
     from XBotv2.tui.events import QueueReplaced
     from XBotv2.tui.state import reduce
     from XBotv2.tui.view.status_bar import status_report
@@ -446,7 +446,7 @@ def test_the_report_counts_what_the_server_queued() -> None:
     reduce(
         state,
         QueueReplaced(
-            payload=QueueUpdatedData(
+            payload=QueueReplacedEvent(
                 items=[{"message_id": "q1", "content": "later", "target": "next-turn"}]
             )
         ),

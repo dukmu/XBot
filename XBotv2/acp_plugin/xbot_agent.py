@@ -99,7 +99,7 @@ from XBotv2.session.contracts import (
     ThreadNotActive,
 )
 from XBotv2.session.contracts import SessionsPort
-from XBotv2.session.protocol import AgentConfiguredEvent
+from XBotv2.session.events import AgentConfiguredEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 

@@ -72,7 +72,7 @@ from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderUser
 from XBotv2.core.artifacts import ArtifactRef
 from XBotv2.core.domain import TokenCounters, TurnScope, UsageSnapshot
-from XBotv2.session.protocol import (
+from XBotv2.session.events import (
     InputAcceptedEvent,
     InputClaimedEvent,
     InputConsumedEvent,
@@ -3604,7 +3604,7 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
                 )
                 and any(
                     isinstance(event, InputAcceptedEvent)
-                    and event.message_ids == ["req-second"]
+                    and event.message_ids == ("req-second",)
                     for event in observed
                 )
             ):
@@ -3617,7 +3617,7 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         accepted = next(
             event for event in observed
             if isinstance(event, InputAcceptedEvent)
-            and event.message_ids == ["req-second"]
+            and event.message_ids == ("req-second",)
         )
         assert accepted.target == "next-turn"
         assert ctx.pending_inputs()[0].target == "next-turn"
@@ -3633,7 +3633,7 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
                 )
                 and any(
                     isinstance(event, InputConsumedEvent)
-                    and event.message_ids == ["req-second"]
+                    and event.message_ids == ("req-second",)
                     for event in observed
                 )
             ):
@@ -3650,12 +3650,12 @@ async def test_queued_input_enters_transcript_only_when_the_next_turn_claims_it(
         assert queue_drained_at < message_at
         assert sum(
             isinstance(event, InputClaimedEvent)
-            and event.message_ids == ["req-second"]
+            and event.message_ids == ("req-second",)
             for event in observed
         ) == 1
         assert sum(
             isinstance(event, InputConsumedEvent)
-            and event.message_ids == ["req-second"]
+            and event.message_ids == ("req-second",)
             for event in observed
         ) == 1
         assert any(isinstance(event, AssistantCompleted) for event in queued_events)

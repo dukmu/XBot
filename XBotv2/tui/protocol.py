@@ -55,11 +55,11 @@ from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.protocol import ServerEvent
 from XBotv2.interactions.contracts import InteractionRequest
-from XBotv2.session.protocol import (
-    AgentConfiguredData,
+from XBotv2.session.events import (
+    AgentConfiguredEvent,
     HistoryUpdatedEvent,
     InputConsumedEvent,
-    QueueUpdatedData,
+    QueueReplacedEvent,
 )
 from XBotv2.session.records import (
     AssistantRecord,
@@ -166,9 +166,9 @@ _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
     "error": (LoopError, _carries(ErrorFrame)),
     "message": (InputRecordPayload, _published_input),
     "input_consumed": (InputConsumedEvent, _carries(InputsConsumed)),
-    "agent_configured": (AgentConfiguredData, _carries(SessionConfigured)),
+    "agent_configured": (AgentConfiguredEvent, _carries(SessionConfigured)),
     "usage_updated": (UsageUpdated, _carries(UsageSnapshotReceived)),
-    "queue_updated": (QueueUpdatedData, _carries(QueueReplaced)),
+    "queue_updated": (QueueReplacedEvent, _carries(QueueReplaced)),
     "history_updated": (HistoryUpdatedEvent, _carries(HistoryReplaced)),
     "tool_calls_started": (LoopToolCallsStarted, _carries(ToolCallsStarted)),
     "compaction_started": (CompactionStarted, _carries(CompactionChanged)),

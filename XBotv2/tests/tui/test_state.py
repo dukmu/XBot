@@ -88,12 +88,8 @@ from XBotv2.session.records import (
     ToolRecord,
 )
 from XBotv2.usage import UsageUpdated
-from XBotv2.session.protocol import (
-    AgentConfiguredData,
-    HistoryUpdatedEvent,
-    OpenSessionResponse,
-    QueueUpdatedData,
-)
+from XBotv2.session.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
+from XBotv2.session.protocol import OpenSessionResponse
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
@@ -264,7 +260,7 @@ def user_message(message_id: str = "m1", content: str = "hi") -> UserMessagePubl
 
 
 def queue(*items: PendingInputData) -> QueueReplaced:
-    return QueueReplaced(payload=QueueUpdatedData(items=list(items)))
+    return QueueReplaced(payload=QueueReplacedEvent(items=list(items)))
 
 
 def history(
@@ -303,7 +299,7 @@ def configured(*, agent_name: str = "XBotv2", provider: str = "p", model: str = 
             context_window=context_window,
         ),
     )
-    return SessionConfigured(payload=AgentConfiguredData(runtime_selection=selection))
+    return SessionConfigured(payload=AgentConfiguredEvent(runtime_selection=selection))
 
 
 def notice(text: str = "heads up", level: str = "info") -> ClientNotice:

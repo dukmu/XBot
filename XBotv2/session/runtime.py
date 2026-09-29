@@ -53,7 +53,7 @@ from XBotv2.session.contracts import (
     conversation_replay,
 )
 from XBotv2.session.event_stream import SessionEventStream
-from XBotv2.session.protocol import (
+from XBotv2.session.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,
     InputAcceptedEvent,
@@ -61,7 +61,6 @@ from XBotv2.session.protocol import (
     InputConsumedEvent,
     MessagePublishedEvent,
     QueueReplacedEvent,
-    session_error_event,
 )
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.records import (
@@ -215,12 +214,12 @@ class SessionRuntime(SessionPort):
         self._publish_runtime_event(splice_event)
         if isinstance(change, Inserted):
             self._publish_runtime_event(InputAcceptedEvent(
-                message_ids=[change.item.id],
-                target=change.item.target.value,
+                message_ids=(change.item.id,),
+                target=change.item.target,
             ))
         if isinstance(change, Claimed):
             claimed = InputClaimedEvent(
-                message_ids=list(change.ids)
+                message_ids=change.ids
             )
             if self._active_router is not None:
                 self._active_router.emit(claimed)
@@ -237,7 +236,7 @@ class SessionRuntime(SessionPort):
                         record=InputRecordPayload(project_message(message))
                     ))
             consumed = InputConsumedEvent(
-                message_ids=list(change.ids)
+                message_ids=change.ids
             )
             if self._active_router is not None:
                 self._active_router.emit(consumed)
@@ -514,9 +513,9 @@ async def _execute_turn(
             request_id=request_id,
             error_type=type(exc).__name__,
         )
-        router.emit(session_error_event(
-            "turn_failed",
-            str(exc) or type(exc).__name__,
+        router.emit(LoopError(
+            code="turn_failed",
+            message=str(exc) or type(exc).__name__,
         ))
         if turn_open:
             # Only a turn that reached its started boundary receives a
