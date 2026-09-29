@@ -359,6 +359,30 @@ class SessionManager(SessionsPort):
                 task = opening
             else:
                 workspace = Path(workspace_root).expanduser().resolve()
+                if mode == "resume":
+                    session_paths = self.paths.session(session_id)
+                    if not session_paths.has_thread(thread_id):
+                        raise SessionNotFound(f"{session_id}/{thread_id}")
+                    persistence = self._thread_persistence(
+                        session_paths,
+                        thread_id=thread_id,
+                    )
+                    metadata = persistence.metadata.load()
+                    if metadata is None:
+                        raise OperationError(
+                            "thread_metadata_missing",
+                            f"Thread {session_id}/{thread_id} has no runtime metadata",
+                        )
+                    persisted_workspace = Path(
+                        metadata.workspace_root
+                    ).expanduser().resolve()
+                    if workspace != persisted_workspace:
+                        raise OperationError(
+                            "workspace_conflict",
+                            f"Thread {session_id}/{thread_id} belongs to workspace "
+                            f"{persisted_workspace}, not {workspace}",
+                        )
+                    workspace = persisted_workspace
                 if not workspace.is_dir():
                     raise OperationError(
                         "workspace_not_found",

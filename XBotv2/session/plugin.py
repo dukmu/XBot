@@ -8,10 +8,12 @@ but it does not create the state consumed by the loop.
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 from pydantic import JsonValue
 from xcore import Context, StateService
 from XBotv2.agentloop import AgentInbox, EphemeralInboxSink, LoopState
 from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.errors import OperationError
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.session.session import Session
@@ -55,6 +57,19 @@ class SessionRuntimeComponent:
         thread_id = launch.thread_id
         workspace_root = launch.workspace_root
         session_paths = launch.session_paths
+        persistence = ctx.get("thread_persistence", strict=False)
+        stored_metadata = persistence.metadata.load() if persistence is not None else None
+        if stored_metadata is not None:
+            launch_workspace = Path(workspace_root).expanduser().resolve()
+            persisted_workspace = Path(
+                stored_metadata.workspace_root
+            ).expanduser().resolve()
+            if launch_workspace != persisted_workspace:
+                raise OperationError(
+                    "workspace_conflict",
+                    f"Thread {session_id}/{thread_id} belongs to workspace "
+                    f"{persisted_workspace}, not {launch_workspace}",
+                )
 
         thread_paths = session_paths.thread(thread_id)
         ctx.set("artifacts", ArtifactStore(thread_paths, ctx.runtime_log))
@@ -66,7 +81,6 @@ class SessionRuntimeComponent:
             session_id=session_id,
             thread_id=thread_id,
         )
-        persistence = ctx.get("thread_persistence", strict=False)
         ctx.set("state", persistence.state if persistence is not None else StateService.memory())
         # The loop state and its metadata register themselves on the context
         # at construction; the inbox service (durable or transient) is composed
@@ -87,7 +101,6 @@ class SessionRuntimeComponent:
             ))
             state.restore_turn_count(persistence.history.count_turns())
             state.restore_resumed(persistence.has_persisted_state())
-            stored_metadata = persistence.metadata.load()
             if stored_metadata is not None:
                 await state.metadata.initialize(stored_metadata)
             pending_inputs = persistence.inbox.reconcile(

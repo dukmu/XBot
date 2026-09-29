@@ -1841,8 +1841,8 @@ async def test_http_resume_leftover_thread_dir_does_not_create_empty_session(
             },
         )
 
-    assert response.status_code == 404
-    assert response.json()["code"] == "session_not_found"
+    assert response.status_code == 400
+    assert response.json()["code"] == "thread_metadata_missing"
 
 
 @pytest.mark.asyncio
@@ -1934,6 +1934,53 @@ async def test_http_session_listing_and_resume_preserve_main_thread_workspace(
     assert resumed.json()["data"]["metadata"]["workspace_root"] == str(
         workspace.resolve()
     )
+
+
+@pytest.mark.asyncio
+async def test_cold_resume_uses_one_persisted_workspace(
+    client: httpx.AsyncClient,
+    http_app,
+    tmp_path: Path,
+) -> None:
+    persisted = tmp_path / "persisted-workspace"
+    requested = tmp_path / "requested-workspace"
+    persisted.mkdir()
+    requested.mkdir()
+    manager = http_app.state.manager
+    runtime = await manager.open_session(
+        session_id="workspace-resume",
+        thread_id="main",
+        provider_name="default",
+        workspace_root=str(persisted),
+        no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "stored"}]),
+    )
+    await _drain_stream(_runtime_command(runtime, "persist", "workspace-persist"))
+    await manager.close_session("workspace-resume", reason="test")
+
+    with pytest.raises(OperationError, match="belongs to workspace") as rejected:
+        await manager.open_session(
+            session_id="workspace-resume",
+            thread_id="main",
+            provider_name="default",
+            workspace_root=str(requested),
+            mode="resume",
+            no_plugins=True,
+            llm_override=MockLLM(responses=[]),
+        )
+
+    assert rejected.value.code == "workspace_conflict"
+    response = await client.post(
+        "/sessions",
+        json={
+            "session_id": "workspace-resume",
+            "thread_id": "main",
+            "workspace_root": str(requested),
+            "mode": "resume",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "workspace_conflict"
 
 
 @pytest.mark.asyncio
