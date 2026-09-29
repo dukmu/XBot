@@ -724,11 +724,11 @@ class Engine(AgentLoopDriverPort):
                 ModelResponseObserved(exchange),
                 short_circuit=False,
             )
+            self.messages.append(response_msg)
+            await self._publish_state_change()
             yield AssistantCompleted(message=response_msg)
             if response.usage.counters.output or response.usage.counters.input:
                 yield UsageObserved(usage=response.usage)
-
-            self.messages.append(response_msg)
 
             if tool_calls:
                 batch_result: _ToolBatchResult | None = None

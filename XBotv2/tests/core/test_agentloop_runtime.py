@@ -40,6 +40,83 @@ from XBotv2.session.records import (
 from XBotv2.session.contracts import conversation_replay
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_assistant_completion_is_committed_before_it_is_published(
+    temp_data_dir, temp_workspace, persistent
+):
+    services = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id=f"assistant-commit-before-publish-{persistent}",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        llm_override=MockLLM(responses=[{"content": "committed answer"}]),
+        extra_plugins=[
+            {"id": "persistence", "disabled": not persistent},
+            {"id": "caption", "config": {"auto": False}},
+        ],
+    )
+    stream = services.engine.run_turn(InboxItem(
+        target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content="answer once"),
+    ))
+    try:
+        completed = None
+        async for event in stream:
+            if isinstance(event, AssistantCompleted):
+                completed = event
+                history_ids = {
+                    message.id for message in services.loop_state.history.snapshot()
+                }
+                assert event.message.id in history_ids
+                persistence = services.get("thread_persistence", strict=False)
+                if persistent:
+                    assert persistence is not None
+                    assert event.message.id in {
+                        message.id for message in persistence.history.load()
+                    }
+                else:
+                    assert persistence is None
+        assert completed is not None
+    finally:
+        await stream.aclose()
+        await services.stop()
+
+
+@pytest.mark.asyncio
+async def test_assistant_persistence_failure_prevents_completed_event(
+    temp_data_dir, temp_workspace, monkeypatch
+):
+    from XBotv2.persistence.store import MessageHistoryStore
+
+    services = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="assistant-commit-failure",
+        thread_id="agent",
+        workspace_root=temp_workspace,
+        llm_override=MockLLM(responses=[{"content": "must not publish"}]),
+        extra_plugins=[{"id": "caption", "config": {"auto": False}}],
+    )
+    original_append = MessageHistoryStore.append
+
+    def fail_assistant_append(self, messages):
+        if any(isinstance(message, AssistantMessage) for message in messages):
+            raise OSError("assistant persistence failed")
+        return original_append(self, messages)
+
+    monkeypatch.setattr(MessageHistoryStore, "append", fail_assistant_append)
+    try:
+        events = [event async for event in services.engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content="trigger persistence failure"),
+        ))]
+        assert not any(isinstance(event, AssistantCompleted) for event in events)
+        error = next(event for event in events if isinstance(event, LoopError))
+        assert "assistant persistence failed" in error.message
+    finally:
+        await services.stop()
+
+
 @pytest.mark.parametrize("boundary", [
     Events.BEFORE_CONTEXT_BUILD,
     Events.BEFORE_MODEL_REQUEST,
