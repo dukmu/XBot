@@ -27,7 +27,7 @@ from typing import Any
 from pydantic import JsonValue
 
 from XBotv2.agentloop.inbox import AgentInbox
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     AssistantReasoningDelta,
     AssistantTextDelta,
@@ -301,7 +301,7 @@ class Engine(AgentLoopDriverPort):
             await self._resume_loaded_state()
             return
         await self._dispatch(
-            Events.SESSION_START, SessionLifecycle(self.session), short_circuit=False
+            Events.SESSION_START, SessionLifecycle(), short_circuit=False
         )
 
     async def _resume_loaded_state(self) -> None:
@@ -317,14 +317,14 @@ class Engine(AgentLoopDriverPort):
             )
         )
         await self._dispatch(
-            Events.SESSION_RESUME, SessionLifecycle(self.session), short_circuit=False
+            Events.SESSION_RESUME, SessionLifecycle(), short_circuit=False
         )
         await self._publish_state_change()
 
     async def close_session(self) -> None:
         """Dispatch the loop lifecycle close boundary."""
         await self._dispatch(
-            Events.SESSION_CLOSE, SessionLifecycle(self.session), short_circuit=False
+            Events.SESSION_CLOSE, SessionLifecycle(), short_circuit=False
         )
         await self._publish_state_change()
 
@@ -450,7 +450,7 @@ class Engine(AgentLoopDriverPort):
                 )
             if not turn_ended:
                 await self._dispatch(Events.TURN_END, TurnEnded(
-                    self.session, tuple(self.messages), "client_interrupt"
+                    tuple(self.messages), "client_interrupt"
                 ),
                     short_circuit=False,
                 )
@@ -466,7 +466,7 @@ class Engine(AgentLoopDriverPort):
                 turn=self.turn_count,
                 error_type=type(exc).__name__,
             )
-            failure_ctx = LoopFailure(self.session, tuple(self.messages), exc)
+            failure_ctx = LoopFailure(tuple(self.messages), exc)
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
             await self._dispatch(Events.ON_ERROR, failure_ctx, short_circuit=False)
             yield LoopError(
@@ -860,7 +860,7 @@ class Engine(AgentLoopDriverPort):
             return accepted
         user_input = accepted.user_input
         await self._dispatch(Events.TURN_START, TurnStarted(
-            self.session, tuple(self.messages)
+            tuple(self.messages)
         ),
             short_circuit=False,
         )
@@ -1035,7 +1035,7 @@ class Engine(AgentLoopDriverPort):
             turn=self.turn_count,
             reason=stop_reason,
         )
-        turn_event = TurnEnded(self.session, tuple(self.messages), stop_reason)
+        turn_event = TurnEnded(tuple(self.messages), stop_reason)
         await self._dispatch(Events.TURN_END, turn_event,
             short_circuit=False,
         )
@@ -1044,7 +1044,7 @@ class Engine(AgentLoopDriverPort):
                 short_circuit=False,
             )
         except BaseException as exc:
-            failure_ctx = LoopFailure(self.session, tuple(self.messages), exc)
+            failure_ctx = LoopFailure(tuple(self.messages), exc)
             await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx,
                 short_circuit=False,
             )

@@ -15,7 +15,7 @@ from traceback import format_exception_only
 from xcore import ServiceNotFoundError
 
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,

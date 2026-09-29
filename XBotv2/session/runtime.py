@@ -11,7 +11,7 @@ from typing import AsyncIterator
 
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop import AgentLoopDriverPort, Claimed, Consumed, Inserted
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     LoopError,
     LoopTurnStarted,
     LoopTurnEnded,

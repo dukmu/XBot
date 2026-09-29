@@ -213,7 +213,7 @@ async def _interaction_response(
 
 def _session_event_payload(event: object) -> dict[str, JsonValue]:
     """Encode a typed internal event at the sole SSE boundary."""
-    from XBotv2.agentloop.protocol import (
+    from XBotv2.agentloop.outputs import (
         AssistantCompleted,
         LoopEvent,
         ToolCompleted,

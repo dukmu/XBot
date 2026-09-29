@@ -28,7 +28,7 @@ from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,
@@ -284,7 +284,7 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
 async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldin_app):
     from XBotv2.core.messages import HumanInputMessage, ToolMessage
     from XBotv2.core.provider import ProviderUser
-    from XBotv2.agentloop.protocol import TurnCancelled
+    from XBotv2.agentloop.outputs import TurnCancelled
 
     llm = MockLLM(responses=[
         {"tool_calls": [{"id": "wait-steer", "name": "wait_for_release", "args": {"value": "finished"}}]},

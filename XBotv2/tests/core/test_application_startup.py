@@ -64,7 +64,7 @@ from XBotv2.application.app import start_application
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.contracts import AgentApplicationOptions
 from XBotv2.agentloop import InboxItem, InboxTarget, HumanInput
-from XBotv2.agentloop.protocol import AssistantCompleted, LoopError, ToolCompleted
+from XBotv2.agentloop.outputs import AssistantCompleted, LoopError, ToolCompleted
 from XBotv2.core.parts import TextPart
 from XBotv2.core.tools import ToolSucceeded
 from XBotv2.core.artifacts import ArtifactKind, ImageRef

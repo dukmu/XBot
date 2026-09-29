@@ -61,7 +61,7 @@ from XBotv2.session import (
 )
 from XBotv2.session.contracts import SessionEvent
 from XBotv2.session.contracts import SessionResourceChanged
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,

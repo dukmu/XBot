@@ -72,7 +72,7 @@ from XBotv2.core.tools import (
     ToolTiming,
     text_output,
 )
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     AssistantTextDelta,
     LoopTurnEnded,

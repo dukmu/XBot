@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
-from XBotv2.agentloop.protocol import LoopError, ToolCompleted
+from XBotv2.agentloop.outputs import LoopError, ToolCompleted
 from XBotv2.agentloop.events import Events, ModelRequestReady
 from XBotv2.application.app import start_application
 from XBotv2.application import RUNTIME_EVENT

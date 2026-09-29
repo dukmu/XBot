@@ -20,7 +20,7 @@ from XBotv2.persistence import (
 from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,

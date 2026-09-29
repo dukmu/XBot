@@ -11,7 +11,7 @@ import pytest
 
 from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
 from XBotv2.agentloop.events import Events, LoopFailure, TurnEnded
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     AssistantReasoningDelta,
     AssistantTextDelta,
@@ -130,7 +130,7 @@ async def test_hook_can_complete_a_turn_without_sending_a_model_request(
     plugin_dir.mkdir()
     (plugin_dir / "__init__.py").write_text(
         "from XBotv2.agentloop.events import CompleteTurn, Events\n"
-        "from XBotv2.agentloop.protocol import LoopError\n"
+        "from XBotv2.agentloop.outputs import LoopError\n"
         "\n"
         "class HookPlugin:\n"
         "    def apply(self, ctx, _config):\n"
@@ -331,7 +331,7 @@ import os
 import sys
 from pathlib import Path
 from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
-from XBotv2.agentloop.protocol import LoopTurnEnded
+from XBotv2.agentloop.outputs import LoopTurnEnded
 from XBotv2.application.app import start_application
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM

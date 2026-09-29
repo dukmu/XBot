@@ -28,7 +28,7 @@ from XBotv2.core.tools import (
 from XBotv2.session.contracts import SessionKey, SessionRuntimeState
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop.protocol import LoopEvent
+    from XBotv2.agentloop.outputs import LoopEvent
     from XBotv2.agentloop.events import EventPort
     from XBotv2.agentloop.inbox import AgentInbox
     from XBotv2.llm.contracts import ModelPort

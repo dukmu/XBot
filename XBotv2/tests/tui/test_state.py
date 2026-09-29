@@ -20,7 +20,7 @@ import itertools
 
 import pytest
 
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,

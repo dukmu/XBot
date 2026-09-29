@@ -159,7 +159,7 @@ async def test_task_tool_failures_are_typed_and_the_turn_continues(
     Production path: application factory → plugin tree mount →
     ``ctx.tools.register`` → engine tool dispatch → durable history.
     """
-    from XBotv2.agentloop.protocol import LoopError
+    from XBotv2.agentloop.outputs import LoopError
     from XBotv2.core.messages import AssistantMessage, ToolMessage
     from XBotv2.core.parts import TextPart
     from XBotv2.core.tools import ToolFailed, ToolSucceeded

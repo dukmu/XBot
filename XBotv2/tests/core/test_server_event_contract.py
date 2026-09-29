@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 from pydantic import TypeAdapter, ValidationError
 
-from XBotv2.agentloop.protocol import LoopEvent, LoopTurnStarted, is_loop_event
+from XBotv2.agentloop.outputs import LoopEvent, LoopTurnStarted, is_loop_event
 from XBotv2.core.domain import (
     AgentExecutionLimits,
     Cursor,

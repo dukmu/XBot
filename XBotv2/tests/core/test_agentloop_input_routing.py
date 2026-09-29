@@ -46,7 +46,7 @@ def _record_text(record):
 @pytest.mark.parametrize("short_circuit", ["reject", "complete"])
 async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, persistent, short_circuit):
     from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
-    from XBotv2.agentloop.protocol import LoopError
+    from XBotv2.agentloop.outputs import LoopError
 
     provider = MockLLM(responses=[{"content": "answered"}])
     application = await start_application(
@@ -98,7 +98,7 @@ async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, 
 @pytest.mark.parametrize("with_tool", [False, True])
 async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_path, persistent, short_circuit, with_tool):
     from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
-    from XBotv2.agentloop.protocol import LoopError
+    from XBotv2.agentloop.outputs import LoopError
 
     first_response = (
         {"tool_calls": [{"id": "call-1", "name": "observe", "args": {}}]}

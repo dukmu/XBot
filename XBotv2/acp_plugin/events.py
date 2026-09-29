@@ -15,7 +15,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantCompleted,
     AssistantReasoningDelta,
     AssistantTextDelta,

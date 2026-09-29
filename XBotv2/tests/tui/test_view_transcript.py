@@ -18,7 +18,7 @@ from typing import AsyncIterator
 import pytest
 from textual.app import App, ComposeResult
 
-from XBotv2.agentloop.protocol import AssistantReasoningDelta
+from XBotv2.agentloop.outputs import AssistantReasoningDelta
 from XBotv2.core.domain import CompletedStop, ModelTiming
 from XBotv2.session.records import AssistantRecord
 from XBotv2.session.records import HumanInputRecord

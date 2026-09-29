@@ -6,7 +6,7 @@ import xcore
 import pytest
 
 from XBotv2.agentloop.events import BeforeContextBuild
-from XBotv2.agentloop.protocol import LoopError
+from XBotv2.agentloop.outputs import LoopError
 from XBotv2.caption import CaptionConfig, CaptionRequest, CaptionResult
 from XBotv2.caption.service import (
     CaptionService,

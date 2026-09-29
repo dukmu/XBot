@@ -28,7 +28,7 @@ from collections.abc import Awaitable
 from typing import TYPE_CHECKING, AsyncGenerator, Callable, Literal, Protocol, Sequence
 
 from XBotv2.agents import AgentListResponse, AgentSelectionResponse
-from XBotv2.agentloop.protocol import LoopError
+from XBotv2.agentloop.outputs import LoopError
 from XBotv2.commands import (
     CommandDescription,
     CommandExecution,

@@ -34,11 +34,8 @@ from XBotv2.agentloop.events import (
     SHORT_CIRCUIT_EVENTS,
 )
 from XBotv2.agentloop.inbox import AgentInbox, EphemeralInboxSink
-from XBotv2.agentloop.protocol import (
-    LoopEvent,
-    ToolInfo,
-    ToolListResponse,
-)
+from XBotv2.agentloop.outputs import LoopEvent
+from XBotv2.agentloop.protocol import ToolInfo, ToolListResponse
 __all__ = [
     "AgentInbox",
     "EphemeralInboxSink",

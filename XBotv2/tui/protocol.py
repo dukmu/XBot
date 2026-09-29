@@ -28,7 +28,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import BaseModel, ValidationError
 
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,

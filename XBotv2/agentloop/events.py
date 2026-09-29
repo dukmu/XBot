@@ -14,14 +14,13 @@ from typing import Any, Protocol
 
 from XBotv2.agentloop.contracts import InboxChange, InboxItem
 from XBotv2.core.provider import ModelRequest
-from XBotv2.agentloop.protocol import LoopEvent
+from XBotv2.agentloop.outputs import LoopEvent
 from XBotv2.context_builder.events import ContextBuildRequest
 from XBotv2.core.domain import ModelExchange
 from XBotv2.core.messages import ConversationMessage
 from XBotv2.core.provider import ProviderMessage
 from XBotv2.core.stream import ModelResponse
 from XBotv2.core.tools import ToolCall, ToolExecution
-from XBotv2.session.contracts import SessionRuntimeState
 
 
 class Events:
@@ -72,25 +71,24 @@ class EventPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class SessionLifecycle:
-    session: SessionRuntimeState
+    """Synchronous lifecycle boundary; live state stays owned by LoopState."""
+
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class TurnStarted:
-    session: SessionRuntimeState
     history: tuple[ConversationMessage, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class TurnEnded:
-    session: SessionRuntimeState
     history: tuple[ConversationMessage, ...]
     stop_reason: str
 
 
 @dataclass(frozen=True, slots=True)
 class LoopFailure:
-    session: SessionRuntimeState
     history: tuple[ConversationMessage, ...]
     error: BaseException
 
@@ -114,19 +112,16 @@ class OnTurnInput:
 @dataclass(frozen=True, slots=True)
 class AcceptInput:
     input: InboxItem
-    kind: str = "accept"
 
 
 @dataclass(frozen=True, slots=True)
 class RejectInput:
     error: str
-    kind: str = "reject"
 
 
 @dataclass(frozen=True, slots=True)
 class CompleteTurn:
     result: LoopEvent
-    kind: str = "complete"
 
 
 OnTurnInputResult = AcceptInput | RejectInput | CompleteTurn
@@ -147,13 +142,12 @@ class BeforeContextBuild:
 
 @dataclass(frozen=True, slots=True)
 class KeepContextRequest:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceContextRequest:
     request: ContextBuildRequest
-    kind: str = "replace"
 
 
 BeforeContextBuildResult = KeepContextRequest | ReplaceContextRequest | CompleteTurn
@@ -166,13 +160,12 @@ class AfterContextBuild:
 
 @dataclass(frozen=True, slots=True)
 class KeepContext:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceContext:
     context: tuple[ProviderMessage, ...]
-    kind: str = "replace"
 
 
 AfterContextBuildResult = KeepContext | ReplaceContext | CompleteTurn
@@ -185,13 +178,12 @@ class BeforeModelRequest:
 
 @dataclass(frozen=True, slots=True)
 class KeepRequest:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceRequest:
     request: ModelRequest
-    kind: str = "replace"
 
 
 BeforeModelRequestResult = KeepRequest | ReplaceRequest | CompleteTurn
@@ -205,13 +197,12 @@ class AfterModelResponse:
 
 @dataclass(frozen=True, slots=True)
 class KeepResponse:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceResponse:
     response: ModelResponse
-    kind: str = "replace"
 
 
 AfterModelResponseResult = KeepResponse | ReplaceResponse | CompleteTurn
@@ -225,13 +216,12 @@ class OnModelFailure:
 
 @dataclass(frozen=True, slots=True)
 class PropagateFailure:
-    kind: str = "propagate"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class RetryRequest:
     request: ModelRequest
-    kind: str = "retry"
 
 
 OnModelFailureResult = PropagateFailure | RetryRequest | CompleteTurn
@@ -265,13 +255,12 @@ class BeforeToolCall:
 
 @dataclass(frozen=True, slots=True)
 class KeepToolCall:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceToolCall:
     call: ToolCall
-    kind: str = "replace"
 
 
 BeforeToolCallResult = KeepToolCall | ReplaceToolCall | CompleteTurn
@@ -284,13 +273,12 @@ class AfterToolExecution:
 
 @dataclass(frozen=True, slots=True)
 class KeepExecution:
-    kind: str = "keep"
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReplaceExecution:
     execution: ToolExecution
-    kind: str = "replace"
 
 
 AfterToolExecutionResult = KeepExecution | ReplaceExecution | CompleteTurn
@@ -309,6 +297,7 @@ SHORT_CIRCUIT_EVENTS = frozenset({
     Events.BEFORE_CONTEXT_BUILD,
     Events.AFTER_CONTEXT_BUILD,
     Events.BEFORE_MODEL_REQUEST,
+    Events.AFTER_MODEL_RESPONSE,
     Events.MODEL_REQUEST_ERROR,
     Events.BEFORE_TOOL_CALL,
     Events.AFTER_TOOL_CALL,

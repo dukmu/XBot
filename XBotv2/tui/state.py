@@ -31,7 +31,7 @@ from XBotv2.compact.protocol import (
     CompactionFailed,
     CompactionStarted,
 )
-from XBotv2.agentloop.protocol import (
+from XBotv2.agentloop.outputs import (
     AssistantReasoningDelta,
     TurnCancelled as CancelledOutcome,
 )
