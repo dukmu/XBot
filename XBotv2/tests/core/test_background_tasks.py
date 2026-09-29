@@ -74,6 +74,68 @@ async def test_job_failure_and_cancellation_are_distinct_terminal_states():
 
 
 @pytest.mark.asyncio
+async def test_cancel_before_runner_is_scheduled_completes_each_job_once():
+    class _Publisher:
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, name, view):
+            self.events.append((name, view.id, view.state))
+
+    publisher = _Publisher()
+    registry = JobRegistry(publisher=publisher)
+    first = await registry.create(spec=_Spec(kind="subagent"), owner="test")
+    second = await registry.create(spec=_Spec(kind="subagent"), owner="test")
+    registry.start(first.id, _Runner())
+    registry.start(second.id, _Runner())
+
+    # Do not yield between ``start`` and the first cancellation: this is the
+    # shutdown window where the scheduled coroutine has not entered _execute.
+    results = [
+        await registry.cancel(first.id),
+        await registry.cancel(second.id),
+    ]
+    waited = await registry.wait([first.id, second.id], timeout=0.1)
+
+    assert all(result.cancelled for result in results)
+    assert first.status == "cancelled_before_start"
+    assert second.status in {"cancelled_before_start", "cancelled_running"}
+    assert waited.pending == ()
+    assert {view.id for view in waited.ready} == {first.id, second.id}
+    for job in (first, second):
+        terminal_updates = [
+            event for event in publisher.events
+            if event == ("job/updated", job.id, job.status)
+        ]
+        completions = [
+            event for event in publisher.events
+            if event == ("job/completed", job.id, job.status)
+        ]
+        assert len(terminal_updates) == 1
+        assert len(completions) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_does_not_overwrite_result_that_finishes_during_cancel():
+    class _FinishesOnCancel(_Runner):
+        async def cancel(self, _job):
+            self.release.set()
+            await asyncio.sleep(0)
+
+    registry = JobRegistry()
+    job = await registry.create(spec=_Spec(), owner="test")
+    runner = _FinishesOnCancel(_Result("won race"))
+    registry.start(job.id, runner)
+    await runner.started.wait()
+
+    result = await registry.cancel(job.id)
+
+    assert result.cancelled is False
+    assert job.status == "succeeded"
+    assert job.result == _Result("won race")
+
+
+@pytest.mark.asyncio
 async def test_kind_limit_serializes_job_execution():
     registry = JobRegistry(limits={"probe": 1})
     first = await registry.create(spec=_Spec(), owner="test")

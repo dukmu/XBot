@@ -1570,6 +1570,181 @@ plugin = ConfiguredPlugin()
             owner_observer.release()
 
     @pytest.mark.asyncio
+    async def test_multiple_subagents_cancel_together_and_release_every_child(
+        self, temp_data_dir, temp_workspace
+    ):
+        import asyncio
+
+        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.core.filesystem.session_lock import acquire_session
+
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+        both_children_started = asyncio.Event()
+
+        class ConcurrentChildrenLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.parent_calls = 0
+                self.child_calls = 0
+
+            async def _astream_once(self, request):
+                self._state.request_history.append(request)
+                system_text = "\n".join(
+                    part.text for part in request.messages[0].parts
+                )
+                if "Review." in system_text:
+                    self.child_calls += 1
+                    if self.child_calls == 2:
+                        both_children_started.set()
+                    await asyncio.Event().wait()
+
+                responses = [
+                    {"content": "session title"},
+                    {"tool_calls": [
+                        {
+                            "id": "spawn-first",
+                            "name": "spawn_subagent",
+                            "args": {"agent": "reviewer", "prompt": "First."},
+                        },
+                        {
+                            "id": "spawn-second",
+                            "name": "spawn_subagent",
+                            "args": {"agent": "reviewer", "prompt": "Second."},
+                        },
+                    ]},
+                    {"content": "Both reviews started."},
+                ]
+                response = responses[self.parent_calls]
+                self.parent_calls += 1
+                yield ModelCompleted(response=self.to_response(response))
+
+        paths = RuntimePaths.from_data_dir(temp_data_dir)
+        application = await start_application(
+            paths=paths,
+            session_id="subagent-concurrent-cancel",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=ConcurrentChildrenLLM(),
+        )
+        owner_observer = acquire_session(
+            paths.session("subagent-concurrent-cancel").root,
+            label="subagent-concurrent-cancel-observer",
+        )
+        try:
+            await _run_turn(application.engine, "Start both reviewers.")
+            await asyncio.wait_for(both_children_started.wait(), timeout=3)
+            jobs = application.jobs
+            children = [job for job in jobs.all() if job.kind == "subagent"]
+            assert len(children) == 2
+            assert owner_observer.count == 4
+
+            stopped = await jobs.stop_all()
+            waited = await jobs.wait([job.id for job in children], timeout=1)
+
+            assert {view.state for view in stopped} == {"cancelled_running"}
+            assert waited.pending == ()
+            assert {view.state for view in waited.ready} == {"cancelled_running"}
+            records = application.thread_persistence.lifecycle.load()
+            child_records = [record for record in records if record.thread_id != "main"]
+            assert [record.event for record in child_records].count("started") == 2
+            assert [record.event for record in child_records].count("cancelled") == 2
+            assert owner_observer.count == 2
+        finally:
+            await application.stop()
+            owner_observer.release()
+
+    @pytest.mark.asyncio
+    async def test_parent_reads_failed_subagent_and_continues_the_turn(
+        self, temp_data_dir, temp_workspace
+    ):
+        from XBotv2.core.domain import ProviderError
+        from XBotv2.core.stream import ModelCompleted, ModelFailed
+        from XBotv2.core.tools import ToolFailed
+
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+
+        class FailedChildLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.parent_responses = iter([
+                    {"content": "session title"},
+                    {"tool_calls": [{
+                        "id": "spawn-reviewer",
+                        "name": "spawn_subagent",
+                        "args": {"agent": "reviewer", "prompt": "Inspect."},
+                    }]},
+                    {"tool_calls": [{
+                        "id": "wait-reviewer",
+                        "name": "wait_subagent",
+                        "args": {"ids": ["subagent_1"]},
+                    }]},
+                    {"tool_calls": [{
+                        "id": "read-reviewer",
+                        "name": "read_subagent",
+                        "args": {"id": "subagent_1"},
+                    }]},
+                    {"content": "The reviewer failed; I handled the failure."},
+                ])
+
+            async def _astream_once(self, request):
+                self._state.request_history.append(request)
+                system_text = "\n".join(
+                    part.text for part in request.messages[0].parts
+                )
+                if "Review." in system_text:
+                    yield ModelFailed(error=ProviderError(
+                        code="review_provider_failed",
+                        message="review provider failed",
+                        retryable=False,
+                        category="provider",
+                    ))
+                    return
+                yield ModelCompleted(
+                    response=self.to_response(next(self.parent_responses))
+                )
+
+        application = await start_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="subagent-parent-read-failure",
+            thread_id="main",
+            workspace_root=temp_workspace,
+            llm_override=FailedChildLLM(),
+        )
+        try:
+            events = await _run_turn(
+                application.engine,
+                "Ask the reviewer and handle a failed review.",
+            )
+            tools = [
+                event.execution.message
+                for event in events if isinstance(event, ToolCompleted)
+            ]
+            assert [message.call.name for message in tools] == [
+                "spawn_subagent", "wait_subagent", "read_subagent",
+            ]
+            assert isinstance(tools[-1].outcome, ToolFailed)
+            assert tools[-1].outcome.error.code == "child_application_failed"
+            assert "review provider failed" in tools[-1].outcome.error.message
+            assert any(
+                isinstance(event, AssistantCompleted)
+                and "handled the failure" in "".join(
+                    part.text for part in event.message.parts
+                    if isinstance(part, TextPart)
+                )
+                for event in events
+            )
+        finally:
+            await application.stop()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("evaluation_failure", ["malformed", "transport"])
     async def test_goal_evaluator_retries_only_after_the_retry_round_finishes(
         self, temp_data_dir, temp_workspace, evaluation_failure

@@ -179,6 +179,18 @@ class JobRegistry(JobsPort):
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        # A task cancelled before its coroutine is first scheduled never
+        # enters _execute, so its exception handler/finally block cannot
+        # publish a terminal state or release waiters.  Cancellation owns
+        # that narrow pre-start transition after the task is known done.
+        if not job.terminal:
+            now = time.time()
+            if isinstance(job.state, Running):
+                job.state = CancelledRunning(job.state.started_at, now, "cancelled")
+            else:
+                job.state = CancelledBeforeStart(now, "cancelled")
+            await self._notify(job)
+            await self._complete(job)
         cancelled = isinstance(job.state, (CancelledBeforeStart, CancelledRunning))
         return CancelResult(job_id, job.status, cancelled)
 
@@ -235,10 +247,13 @@ class JobRegistry(JobsPort):
                 semaphore.release()
             await self._notify(job)
             if job.terminal:
-                event = self._completion_events.get(job.id)
-                if event is not None:
-                    event.set()
-                await self._notify_complete(job)
+                await self._complete(job)
+
+    async def _complete(self, job: Job) -> None:
+        event = self._completion_events.get(job.id)
+        if event is not None:
+            event.set()
+        await self._notify_complete(job)
 
     async def _notify(self, job: Job) -> None:
         if self._publisher is None or self._closing:
