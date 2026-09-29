@@ -47,6 +47,10 @@ not manufacture or compare cursor internals.
 
 Both projections are folded incrementally and cached per trajectory path inside
 the process, so a runtime reuses the parsed records of the current file version.
+The first cold parse also folds both projections once before publishing the
+record cache. The trajectory paging API therefore exposes only a canonical,
+semantically valid trace; it cannot return an invalid replacement merely
+because no surface reader happened to run first.
 Local and external appends read and fold only complete records after the last
 validated byte offset; a malformed suffix is fully rejected before records or
 either projection advance. Shrinking below that offset is a truncation error.
@@ -105,9 +109,14 @@ The same StateService also holds process workspace state; it must not inherit
 conversation-specific trace semantics or keep an unbounded mutation history.
 
 Metadata also remains an atomic snapshot. Growing conversation history belongs
-in its trace, not in ever-growing StateService values. Per-plugin ownership and
-cold reads after a process has discarded its trajectory cache still need
-review; reverting KV journaling does not claim to resolve those costs.
+in its trace, not in ever-growing StateService values. A cold read after the
+bounded process cache discards a trajectory is linear in that trajectory's
+records; paging and later reads reuse the validated cache. StateService remains
+unrelated to that cache and keeps its atomic KV snapshot format.
+
+The session-level `threads.jsonl` lifecycle trace uses the same append helper as
+the thread traces: short writes continue until complete, and a failed append is
+truncated back to its prior committed size before the error is propagated.
 
 Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
 advisory locks the runtime refuses to start rather than run without it.
@@ -118,7 +127,7 @@ In-memory history and persisted transcript projection use the same iterative
 summary-source resolver. Transcript-preserving compaction stores ancestry edges
 without copying the full transcript or flattening all original IDs each time.
 Operations that actually replace transcript content resolve those edges when
-locating the affected span. This does not solve cold-history paging by itself.
+locating the affected span.
 
 ## Input recovery
 

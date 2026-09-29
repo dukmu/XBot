@@ -254,6 +254,8 @@ class _TrajectoryState:
 
     def _parse(self, size: int) -> list[TrajectoryRecord]:
         parsed: list[TrajectoryRecord] = []
+        surface = _SurfaceState()
+        transcript = _TranscriptState()
         turn_count = 0
         raw_records, durable_size = _read_jsonl_from(
             self.path, "messages.jsonl", offset=0, first_line=1,
@@ -264,12 +266,16 @@ class _TrajectoryState:
                 raise ValueError(
                     "Trajectory positions must be contiguous and start at 1"
                 )
+            surface.apply(record)
+            transcript.apply(record)
             parsed.append(record)
             if isinstance(record.entry, MessageAppended) and isinstance(
                 record.entry.message, HumanInputMessage
             ):
                 turn_count += 1
         self.turn_count = turn_count
+        self.surface = surface
+        self.transcript = transcript
         self.read_size = durable_size
         self.observed_size = size
         return parsed
@@ -876,24 +882,10 @@ class ThreadLifecycleStore(ThreadLifecyclePort):
         self._log = runtime_log
 
     def append(self, record: ThreadLifecycleRecord) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = (
             json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
         ).encode("utf-8")
-        descriptor = os.open(
-            self._path,
-            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
-            0o644,
-        )
-        try:
-            written = os.write(descriptor, payload)
-            if written != len(payload):
-                raise OSError(
-                    f"Incomplete lifecycle append: {written}/{len(payload)} bytes"
-                )
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        _append_bytes(self._path, payload)
         self._log.debug(
             "persistence.lifecycle.appended",
             bytes=len(payload),

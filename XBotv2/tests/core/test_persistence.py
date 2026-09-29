@@ -17,6 +17,7 @@ from XBotv2.core.history import ConversationHistory, HistoryCursorInvalid, Messa
 from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
+from XBotv2.persistence.contracts import ThreadLifecycleRecord
 from XBotv2.persistence.models import StoredTrajectoryRecord
 from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
 
@@ -538,6 +539,24 @@ def test_trajectory_only_reader_validates_external_projection_suffix(tmp_path):
             reader.history.page_trajectory(limit=10)
 
 
+def test_cold_trajectory_reader_validates_projection_transitions(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1),))
+    corrupt = StoredTrajectoryRecord(entry=SurfaceReplaced(
+        position=2,
+        operation="replace",
+        transcript_policy="replace",
+        source_ids=(MessageId("missing-source"),),
+        replacements=(_human(2),),
+    ))
+    with persistence.history.path.open("a", encoding="utf-8") as stream:
+        stream.write(corrupt.model_dump_json() + "\n")
+
+    reader = _independent_reopen(persistence)
+    with pytest.raises(ValueError, match="not current"):
+        reader.history.page_trajectory(limit=10)
+
+
 def test_trajectory_paging_reports_tail_and_validates_anchor(tmp_path):
     history = _store(tmp_path).history
     history.append(tuple(_human(index) for index in range(1, 6)))
@@ -670,3 +689,38 @@ def test_trajectory_rejects_legacy_flat_record_without_entry_envelope(tmp_path):
     reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="entry"):
         reopened.history.load_surface()
+
+
+def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monkeypatch):
+    persistence = _store(tmp_path)
+    first = ThreadLifecycleRecord.create(
+        "started",
+        thread_id="child-1",
+        parent_thread_id="agent",
+        agent="worker",
+    )
+    second = ThreadLifecycleRecord.create(
+        "failed",
+        thread_id="child-1",
+        parent_thread_id="agent",
+        agent="worker",
+        error="startup failed",
+    )
+    raw_write = os.write
+    writes = 0
+
+    def short_write(descriptor, payload):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return raw_write(descriptor, payload[:-1])
+        if writes == 2:
+            raise OSError("simulated lifecycle write failure")
+        return raw_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", short_write)
+    with pytest.raises(OSError, match="simulated lifecycle write failure"):
+        persistence.lifecycle.append(first)
+    persistence.lifecycle.append(second)
+
+    assert persistence.lifecycle.load() == [second]
