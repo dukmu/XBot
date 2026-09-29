@@ -8,6 +8,7 @@ construct them, while other layers only carry or project them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Annotated, Literal, Mapping, NewType, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -19,6 +20,11 @@ ToolCallId = NewType("ToolCallId", str)
 JobId = NewType("JobId", str)
 HistoryRevision = NewType("HistoryRevision", str)
 Cursor = NewType("Cursor", str)
+
+
+class InboxTarget(str, Enum):
+    NEXT_TURN = "next-turn"
+    NEXT_STEP = "next-step"
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +301,7 @@ __all__ = [
     "HistoryRevision",
     "Cursor",
     "InteractionId",
+    "InboxTarget",
     "JobId",
     "LengthLimitedStop",
     "MeasurementUnavailable",

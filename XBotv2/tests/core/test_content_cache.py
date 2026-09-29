@@ -9,13 +9,13 @@ from XBotv2.content_cache.content_cache import (
 )
 from XBotv2.content_cache.contracts import ContentCachePolicy
 from XBotv2.content_cache.plugin import ContentCacheService
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.agentloop.events import (
     AfterToolExecution,
     InputAccepted,
 )
 from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.domain import MessageId, ToolCallId, ToolTiming
+from XBotv2.core.domain import InboxTarget, MessageId, ToolCallId, ToolTiming
 from XBotv2.core.messages import HumanInputMessage, ToolMessage
 from XBotv2.core.parts import TextPart
 from xcore import Context

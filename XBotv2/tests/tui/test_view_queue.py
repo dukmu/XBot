@@ -44,7 +44,8 @@ class Harness(App[None]):
 def test_a_row_shows_the_position_the_text_and_the_target() -> None:
     row = queue_row(pending(content="run the tests"), position=1)
     assert "run the tests" in row
-    assert "next-turn" in row
+    assert "[next-turn]" in row
+    assert "InboxTarget" not in row
     assert row.strip().startswith("1"), "the position is where the item waits"
 
 

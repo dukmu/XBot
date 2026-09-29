@@ -10,7 +10,8 @@ from pathlib import Path
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
 from XBotv2.application import ChildApplicationError, ChildApplicationResult
-from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop import HumanInput, InboxItem
+from XBotv2.core.domain import InboxTarget
 from XBotv2.persistence import (
     ThreadCancelled,
     ThreadCompleted,

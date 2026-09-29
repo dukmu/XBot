@@ -16,10 +16,10 @@ from XBotv2.agentloop import (
     EventPort,
     Events,
     InboxItem,
-    InboxTarget,
     RuntimeInput,
 )
 from XBotv2.agentloop.events import SessionLifecycle
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.prompts import prompt_container, prompt_element
 from XBotv2.jobs.commands import build_jobs_commands
 from XBotv2.jobs.contracts import JOB_COMPLETED, JOB_UPDATED

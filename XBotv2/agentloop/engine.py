@@ -82,11 +82,11 @@ from XBotv2.agentloop.contracts import (
     DEFAULT_MAX_ITERATIONS,
     HumanInput,
     InboxItem,
-    InboxTarget,
     LoopState,
     RuntimeInput,
 )
 from XBotv2.agentloop.contracts import AgentLoopDriverPort, ToolsPort
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.history import ConversationHistory
 from XBotv2.core.messages import (
     AssistantMessage,

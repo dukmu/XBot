@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 import uuid
 from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, Protocol, TypeAlias
 
 from XBotv2.core.history import ConversationHistory
-from XBotv2.core.domain import MessageId
+from XBotv2.core.domain import InboxTarget, MessageId
 from XBotv2.core.variables import RuntimeVariables
 from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import ConversationMessage
@@ -45,9 +44,6 @@ class AllTools(BaseModel):
 
 
 ToolSelection: TypeAlias = tuple[str, ...] | AllTools
-class InboxTarget(str, Enum):
-    NEXT_TURN = "next-turn"
-    NEXT_STEP = "next-step"
 
 
 class HumanInput(BaseModel):
@@ -348,7 +344,6 @@ __all__ = [
     "DEFAULT_MAX_ITERATIONS",
     "InboxItem",
     "InboxSink",
-    "InboxTarget",
     "InboxChange",
     "Inserted",
     "Edited",

@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
+from XBotv2.core.domain import InboxTarget
 from XBotv2.agentloop.events import Events, LoopFailure, TurnEnded
 from XBotv2.agentloop.outputs import (
     AssistantCompleted,
@@ -330,9 +331,10 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.agentloop.outputs import LoopTurnEnded
 from XBotv2.application.app import start_application
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.records import project_message

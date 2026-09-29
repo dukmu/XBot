@@ -17,7 +17,7 @@ from XBotv2.agentloop.outputs import (
     LoopTurnEnded,
     TurnFinished,
 )
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.application import (
     RUNTIME_EVENT,
     AgentApplicationPort,
@@ -28,6 +28,7 @@ from XBotv2.core.artifacts import ImageRef
 from XBotv2.core.errors import OperationError
 from XBotv2.core.domain import (
     EventScope,
+    InboxTarget,
     SessionScope,
     TurnId,
     TurnScope,

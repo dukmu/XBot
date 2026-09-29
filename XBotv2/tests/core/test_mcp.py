@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop import HumanInput, InboxItem
+from XBotv2.core.domain import InboxTarget
 from XBotv2.agentloop.outputs import ToolCompleted
 from XBotv2.application.app import start_application
 from XBotv2.core.paths import RuntimePaths

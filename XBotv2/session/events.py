@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from XBotv2.core.domain import MessageId, ResolvedRuntimeSelection
+from XBotv2.core.domain import InboxTarget, MessageId, ResolvedRuntimeSelection
 from XBotv2.session.contracts import HistoryMutation, PendingInputData
 from XBotv2.session.records import InputRecordPayload
 
@@ -39,7 +39,7 @@ class QueueReplacedEvent(_SessionEventModel):
 class InputAcceptedEvent(_SessionEventModel):
     kind: Literal["input_accepted"] = "input_accepted"
     message_ids: tuple[MessageId, ...] = Field(min_length=1)
-    target: Literal["next-turn", "next-step"]
+    target: InboxTarget
 
 
 class InputClaimedEvent(_SessionEventModel):

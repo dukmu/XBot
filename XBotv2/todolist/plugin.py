@@ -15,7 +15,6 @@ from XBotv2.agentloop import (
     AgentLoopDriverPort,
     Events,
     InboxItem,
-    InboxTarget,
     RuntimeInput,
 )
 from XBotv2.agentloop.events import TurnStarted
@@ -25,6 +24,7 @@ from XBotv2.application import (
     RuntimeEvent,
 )
 from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.server import contribute_router
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged

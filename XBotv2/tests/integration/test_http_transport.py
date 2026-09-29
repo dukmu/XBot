@@ -67,11 +67,11 @@ from XBotv2.agentloop.outputs import (
     LoopTurnEnded,
     LoopTurnStarted,
 )
-from XBotv2.agentloop.contracts import InboxItem, InboxTarget, RuntimeInput
+from XBotv2.agentloop.contracts import InboxItem, RuntimeInput
 from XBotv2.core.parts import TextPart
 from XBotv2.core.provider import ProviderUser
 from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.domain import TokenCounters, TurnScope, UsageSnapshot
+from XBotv2.core.domain import InboxTarget, TokenCounters, TurnScope, UsageSnapshot
 from XBotv2.session.events import (
     InputAcceptedEvent,
     InputClaimedEvent,

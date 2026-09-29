@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 from xcore import Context
 
-from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop import HumanInput, InboxItem
+from XBotv2.core.domain import InboxTarget
 from XBotv2.agentloop.events import ModelRequestReady, ModelResponseObserved
 from XBotv2.application.app import start_application
 from XBotv2.core.domain import (

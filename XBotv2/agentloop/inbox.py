@@ -16,12 +16,12 @@ from XBotv2.agentloop.contracts import (
     InboxItem,
     InboxMutation,
     InboxSink,
-    InboxTarget,
     Inserted,
     Removed,
     Retargeted,
 )
 from XBotv2.agentloop.events import EventPort, Events, ObserveInbox
+from XBotv2.core.domain import InboxTarget
 
 
 class EphemeralInboxSink:

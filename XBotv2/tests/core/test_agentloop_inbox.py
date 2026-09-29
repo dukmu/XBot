@@ -8,12 +8,12 @@ from XBotv2.agentloop.contracts import (
     Edited,
     HumanInput,
     InboxItem,
-    InboxTarget,
     Inserted,
     Removed,
     Retargeted,
     RuntimeInput,
 )
+from XBotv2.core.domain import InboxTarget
 from XBotv2.agentloop.events import Events, ObserveInbox
 from XBotv2.agentloop.inbox import AgentInbox, EphemeralInboxSink
 from XBotv2.persistence.models import StoredInboxRecord

@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget, RuntimeInput
+from XBotv2.agentloop.contracts import HumanInput, InboxItem, RuntimeInput
+from XBotv2.core.domain import InboxTarget
 from XBotv2.session.records import (
     AssistantRecord,
     HumanInputRecord,
@@ -662,8 +663,9 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 
@@ -788,8 +790,9 @@ async def test_inflight_provider_stream_is_discarded_but_input_history_survives_
 import asyncio
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.records import project_message
@@ -922,8 +925,9 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tools import Tool
 from XBotv2.llm.mock import MockLLM

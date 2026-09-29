@@ -119,7 +119,8 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
     automatic_response,
     automatic_title,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.agentloop import HumanInput, InboxItem
+    from XBotv2.core.domain import InboxTarget
     from XBotv2.application.app import start_application
     from XBotv2.core.messages import ToolMessage
     from XBotv2.core.paths import RuntimePaths
@@ -183,7 +184,8 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
     auto,
     allow_access,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.agentloop import HumanInput, InboxItem
+    from XBotv2.core.domain import InboxTarget
     from XBotv2.application.app import start_application
     from XBotv2.core.paths import RuntimePaths
     from XBotv2.permissions.contracts import PermissionPolicy
@@ -243,7 +245,8 @@ async def test_caption_agent_tool_is_not_registered_for_a_child_application(
     temp_data_dir,
     temp_workspace,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.agentloop import HumanInput, InboxItem
+    from XBotv2.core.domain import InboxTarget
     from XBotv2.application.app import start_application
     from XBotv2.core.paths import RuntimePaths
 
@@ -281,7 +284,8 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
     temp_workspace,
     invalid_title,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.agentloop import HumanInput, InboxItem
+    from XBotv2.core.domain import InboxTarget
     from XBotv2.application.app import start_application
     from XBotv2.core.messages import ToolMessage
     from XBotv2.core.paths import RuntimePaths

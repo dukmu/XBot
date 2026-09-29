@@ -46,8 +46,7 @@ def queue_row(
     transcript it is waiting behind.
     """
     head = f"{position:>2}  {item.content.replace(chr(10), ' ').strip()}"
-    if item.target:
-        head = f"{head}  [{item.target}]"
+    head = f"{head}  [{item.target.value}]"
     extras = []
     if item.image_count:
         noun = "image" if item.image_count == 1 else "images"

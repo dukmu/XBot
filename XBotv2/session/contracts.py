@@ -31,7 +31,7 @@ from XBotv2.core.operations import Operation
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.timing import SessionStats
 from XBotv2.core.tools import ToolCall
-from XBotv2.core.domain import Cursor, EventScope, UsageSnapshot
+from XBotv2.core.domain import Cursor, EventScope, InboxTarget, UsageSnapshot
 from XBotv2.session.records import ConversationRecord, project_message
 from XBotv2.interactions.contracts import InteractionReceipt
 from XBotv2.interactions.models import UserInputRequest
@@ -256,7 +256,7 @@ class ArtifactPayload:
 class PendingInputData(BaseModel):
     message_id: str
     content: str
-    target: Literal["next-turn", "next-step"]
+    target: InboxTarget
     image_count: int = 0
     artifact_count: int = 0
     model_config = ConfigDict(extra="forbid", frozen=True)

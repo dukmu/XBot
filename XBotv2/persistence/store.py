@@ -41,9 +41,10 @@ from pydantic import JsonValue, TypeAdapter
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.contracts import (
-    InboxItem, InboxMutation, InboxTarget, HumanInput,
+    InboxItem, InboxMutation, HumanInput,
     Inserted, Edited, Removed, Retargeted, Consumed, Discarded,
 )
+from XBotv2.core.domain import InboxTarget
 from XBotv2.persistence.models import (
     StoredInboxRecord,
     StoredTrajectoryRecord,

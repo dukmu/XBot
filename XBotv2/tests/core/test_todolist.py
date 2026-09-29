@@ -109,7 +109,8 @@ def _prompt(request) -> str:
 
 
 async def _run_turn(engine, content: str) -> list:
-    from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+    from XBotv2.agentloop import HumanInput, InboxItem
+    from XBotv2.core.domain import InboxTarget
 
     item = InboxItem(
         target=InboxTarget.NEXT_TURN,

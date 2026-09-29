@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
+from XBotv2.agentloop import HumanInput, InboxItem
 from XBotv2.agentloop.outputs import LoopError, ToolCompleted
 from XBotv2.agentloop.events import Events, ModelRequestReady
 from XBotv2.application.app import start_application
@@ -22,6 +22,7 @@ from XBotv2.compact.summary import (
 )
 from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.domain import (
+    InboxTarget,
     MessageId,
     ProviderError,
     ToolCallId,

@@ -26,7 +26,6 @@ from XBotv2.agentloop import (
     AgentLoopDriverPort,
     Events,
     InboxItem,
-    InboxTarget,
     RuntimeInput,
 )
 from XBotv2.agentloop.events import (
@@ -43,6 +42,7 @@ from XBotv2.application import (
     StatusSlots,
 )
 from XBotv2.commands import Command, CommandEffect, CommandResult
+from XBotv2.core.domain import InboxTarget
 from XBotv2.core import Tool, ToolOutcome, ToolFailed, ToolSucceeded, failed_text, succeeded_text
 from XBotv2.core.messages import RuntimeNoticeMessage
 from XBotv2.core.parts import TextPart

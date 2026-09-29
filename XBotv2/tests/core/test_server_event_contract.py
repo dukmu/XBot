@@ -9,6 +9,7 @@ from XBotv2.core.domain import (
     AgentExecutionLimits,
     Cursor,
     GenerationSettings,
+    InboxTarget,
     ModelRoute,
     ReasoningGenerationMode,
     ResolvedModelSelection,
@@ -34,11 +35,13 @@ from XBotv2.session.contracts import (
     SessionEventFrame,
     SessionKey,
     ThreadMetadata,
+    PendingInputData,
 )
 from XBotv2.core.domain import UsageSnapshot
 from XBotv2.session.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,
+    InputAcceptedEvent,
 )
 from XBotv2.session.protocol import (
     _format_sse,
@@ -211,3 +214,17 @@ def test_agent_configuration_crosses_session_event_boundary_as_one_selection():
         {"kind": wire_event.kind, **wire_event.payload}
     )
     assert decoded.runtime_selection == selection
+
+
+def test_inbox_target_has_one_cross_layer_owner():
+    pending = PendingInputData(
+        message_id="input-1", content="later", target="next-turn"
+    )
+    accepted = InputAcceptedEvent(
+        message_ids=("input-1",), target="next-step"
+    )
+
+    assert pending.target is InboxTarget.NEXT_TURN
+    assert accepted.target is InboxTarget.NEXT_STEP
+    assert pending.model_dump(mode="json")["target"] == "next-turn"
+    assert accepted.model_dump(mode="json")["target"] == "next-step"
