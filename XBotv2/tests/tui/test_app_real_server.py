@@ -1615,8 +1615,10 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
                 "stream while reading history" in screen
                 and REPLY in screen
                 and "Ready  turn:31" in screen
+                and "▸ Think · 1 line · ctrl+e expands" in screen
+                and "I am checking the request before answering." in screen
             ),
-            description="PageDown to return to the live tail",
+            description="PageDown to return to the settled collapsed tail preview",
         )
         (captures / "returned-tail.txt").write_text(live_tail, encoding="utf-8")
     finally:
