@@ -725,7 +725,6 @@ class Engine(AgentLoopDriverPort):
                 short_circuit=False,
             )
             self.messages.append(response_msg)
-            await self._publish_state_change()
             yield AssistantCompleted(message=response_msg)
             if response.usage.counters.output or response.usage.counters.input:
                 yield UsageObserved(usage=response.usage)
