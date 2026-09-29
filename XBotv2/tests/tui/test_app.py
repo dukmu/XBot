@@ -998,7 +998,7 @@ async def test_slash_session_starts_on_the_current_session_in_a_long_catalog() -
         assert app.screen.model.current is not None
         assert app.screen.model.current.value == "s1"
         assert any(
-            row.startswith("▸ Current work · s1")
+            row.startswith("▸ s1 · Current work")
             for row in app.screen.rendered_rows
         )
 

@@ -208,18 +208,7 @@ def _compile_message(
                 "[Temporary supplemental input] Continue the current task; "
                 "do not interrupt or abandon it unless this input explicitly asks you to do so.\n\n"
             )))
-        for part in message.parts:
-            if isinstance(part, TextPart):
-                parts.append(part)
-                continue
-            if artifacts is None:
-                raise RuntimeError("Context compilation requires an ArtifactStore for images")
-            ref = ArtifactRef(
-                id=part.image.artifact_id,
-                media_type=part.image.media_type,
-                size=part.image.size,
-            )
-            parts.append(ResolvedImagePart(ref=part.image, absolute_path=artifacts.model_path(ref)))
+        parts.extend(_resolve_parts(message.parts, artifacts))
         attachment_instruction = _artifact_instruction(
             message.artifacts,
             artifacts,
@@ -239,7 +228,7 @@ def _compile_message(
     if isinstance(message, AssistantMessage):
         return ProviderAssistant(parts=message.parts)
     if isinstance(message, ToolMessage):
-        parts = list(tool_outcome_parts(message.outcome))
+        parts = list(_resolve_parts(tool_outcome_parts(message.outcome), artifacts))
         if isinstance(message.outcome, (ToolSucceeded, ToolFailed)):
             attachment_instruction = _artifact_instruction(
                 message.outcome.output.artifacts,
@@ -256,6 +245,26 @@ def _compile_message(
             is_error=not isinstance(message.outcome, ToolSucceeded),
         )
     raise TypeError(f"Unsupported conversation message: {type(message).__name__}")
+
+
+def _resolve_parts(
+    parts: Sequence[TextPart | ImagePart],
+    artifacts: ArtifactStorePort | None,
+) -> tuple[TextPart | ResolvedImagePart, ...]:
+    resolved: list[TextPart | ResolvedImagePart] = []
+    for part in parts:
+        if isinstance(part, TextPart):
+            resolved.append(part)
+            continue
+        if artifacts is None:
+            raise RuntimeError(
+                "Context compilation requires an ArtifactStore for images"
+            )
+        resolved.append(ResolvedImagePart(
+            ref=part.image,
+            absolute_path=artifacts.model_path(part.image.artifact_id),
+        ))
+    return tuple(resolved)
 
 
 def _artifact_instruction(

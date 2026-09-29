@@ -41,11 +41,18 @@ def test_session_rows_carry_the_id_the_client_switches_to() -> None:
         current="s1",
     )
     assert [option.value for option in options] == ["s1", "s2"]
-    assert options[0].label == "work · s1"
+    assert options[0].label == "s1 · work"
     assert options[1].label == "s2", "a session without a title is named by its id"
     assert "current" in options[0].detail
     assert "active" in options[0].detail
     assert "/w" in options[0].detail
+
+
+def test_a_long_session_title_cannot_hide_the_stable_session_id() -> None:
+    [option] = session_options([
+        summary("20260929-184532-ae5e", title="很长的会话标题" * 20),
+    ])
+    assert option.label.startswith("20260929-184532-ae5e · ")
 
 
 # --- threads --------------------------------------------------------------

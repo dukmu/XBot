@@ -1,5 +1,6 @@
 """Tests for application startup and instance construction."""
 
+import base64
 import json
 import sys
 from dataclasses import replace
@@ -73,9 +74,9 @@ from XBotv2.agentloop.outputs import AssistantCompleted, LoopError, ToolComplete
 from XBotv2.core.parts import TextPart
 from XBotv2.core.tools import ToolCall, ToolSucceeded
 from XBotv2.core.artifacts import ArtifactKind, ImageRef
-from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.messages import HumanInputMessage, ToolMessage
 from XBotv2.core.parts import ImagePart
-from XBotv2.core.provider import ProviderUser, ResolvedImagePart
+from XBotv2.core.provider import ProviderTool, ProviderUser, ResolvedImagePart
 
 
 async def _run_turn(engine, content):
@@ -489,6 +490,83 @@ async def test_application_resolves_logical_image_for_provider_without_persistin
     image_part = next(part for part in human.parts if isinstance(part, ImagePart))
     assert image_part.image == image
     assert resolved.absolute_path not in str(human.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
+async def test_read_media_tool_result_reaches_the_follow_up_model_request(
+    temp_data_dir,
+    temp_workspace,
+):
+    """Exercise the production tool loop that exposed image-result validation."""
+    payload = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        "AAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+    )
+    image_path = temp_workspace / "pixel.png"
+    image_path.write_bytes(payload)
+    llm = MockLLM(responses=[
+        {"tool_calls": [{
+            "id": "call-read-image",
+            "name": "read",
+            "args": {"path": "pixel.png", "mode": "media"},
+        }]},
+        {"content": "The image was received."},
+    ], input_modalities=["text", "image"])
+    application = await start_application(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="tool-image-context-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        provider_name="mock",
+        llm_override=llm,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "mock",
+                    "providers": {
+                        "mock": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_output_tokens": 1024,
+                                "input_modalities": ["text", "image"],
+                            }],
+                        },
+                    },
+                },
+            },
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+        ],
+    )
+
+    try:
+        events = await _run_turn(application.engine, "Inspect pixel.png as media.")
+        provider_tool = next(
+            message
+            for message in llm.request_history[-1].messages
+            if isinstance(message, ProviderTool)
+        )
+        resolved = next(
+            part for part in provider_tool.parts
+            if isinstance(part, ResolvedImagePart)
+        )
+        tool_message = next(
+            message for message in application.loop_state.history.snapshot()
+            if isinstance(message, ToolMessage)
+        )
+        logical = next(
+            part for part in tool_message.outcome.output.parts
+            if isinstance(part, ImagePart)
+        )
+    finally:
+        await application.destroy()
+
+    assert not [event for event in events if isinstance(event, LoopError)]
+    assert Path(resolved.absolute_path).read_bytes() == payload
+    assert resolved.ref == logical.image
+    assert resolved.absolute_path not in str(tool_message.model_dump(mode="json"))
 
 
 def _system_prompt(provider, request_index=-1):

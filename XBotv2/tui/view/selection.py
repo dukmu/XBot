@@ -12,7 +12,7 @@ from typing import Callable, Sequence
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
-from textual.events import Key
+from textual.events import Key, Resize
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -53,7 +53,9 @@ SelectionScreen {
     width: 1fr;
 }
 .selection-row.selected {
-    text-style: reverse;
+    background: $primary-darken-2;
+    color: $text;
+    text-style: bold;
 }
 #selection-hint {
     height: 1;
@@ -180,6 +182,10 @@ class SelectionScreen(ModalScreen[str | None]):
         if self.search is not None:
             self.query_one("#selection-input", Input).focus()
 
+    def on_resize(self, _event: Resize) -> None:
+        if self._rows:
+            self.call_after_refresh(self._render_options)
+
     # --- input --------------------------------------------------------
 
     def on_key(self, event: Key) -> None:
@@ -236,7 +242,11 @@ class SelectionScreen(ModalScreen[str | None]):
                 self._window_start + position == self.model.index,
                 "selected",
             )
-            row.update(Text(visible[position]))
+            rendered = Text(visible[position])
+            width = row.content_size.width
+            if width:
+                rendered.truncate(width, overflow="ellipsis")
+            row.update(rendered)
 
     @property
     def rendered_rows(self) -> tuple[str, ...]:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from XBotv2.core.artifacts import ArtifactKind
+from XBotv2.core.artifacts import ArtifactKind, ImageRef
 from XBotv2.config.contracts import UserContext
 from XBotv2.context_builder.builder import ContextBuilder
 from XBotv2.context_builder.contracts import (
@@ -22,8 +22,13 @@ from XBotv2.core.domain import (
     ToolTiming,
 )
 from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage, ToolMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderSystem, ProviderTool, ProviderUser
+from XBotv2.core.parts import ImagePart, TextPart
+from XBotv2.core.provider import (
+    ProviderSystem,
+    ProviderTool,
+    ProviderUser,
+    ResolvedImagePart,
+)
 from XBotv2.core.tools import (
     ToolCallRef,
     ToolCancelled,
@@ -134,6 +139,42 @@ def test_tool_outcome_projection_preserves_every_terminal_semantic():
     assert projected[2].is_error is True
     assert projected[3].parts == (TextPart(text="Tool cancelled: client interrupt"),)
     assert projected[3].is_error is True
+
+
+def test_tool_image_is_resolved_only_for_the_provider_request(artifact_store):
+    stored = artifact_store.put(
+        ArtifactKind.MEDIA,
+        b"png bytes",
+        media_type="image/png",
+        name="pixel.png",
+    )
+    image = ImageRef(
+        artifact_id=stored.id,
+        media_type=stored.media_type,
+        size=stored.size,
+    )
+    message = ToolMessage(
+        id=MessageId("tool-image"),
+        call=ToolCallRef(id=ToolCallId("call-image"), name="read"),
+        outcome=ToolSucceeded(output=ToolOutput(parts=(
+            TextPart(text="Image content loaded"),
+            ImagePart(image=image),
+        ))),
+        timing=ToolTiming(duration_ms=1),
+    )
+
+    [projected] = ContextBuilder.messages_from_components(
+        BuiltContext([HistoryComponent(message)]),
+        artifacts=artifact_store,
+    )
+
+    assert isinstance(projected, ProviderTool)
+    assert projected.parts[0] == TextPart(text="Image content loaded")
+    assert projected.parts[1] == ResolvedImagePart(
+        ref=image,
+        absolute_path=artifact_store.model_path(stored),
+    )
+    assert isinstance(message.outcome.output.parts[1], ImagePart)
 
 
 def test_compaction_summary_is_wrapped_only_for_the_provider_request():

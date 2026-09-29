@@ -196,7 +196,7 @@
         path_scope: '$${workspace}/.*'
         decision: allow
       - {tool_pattern: shell, decision: allow}
-      - {tool_pattern: '(?:browser_click|browser_fill|browser_press|browser_select)', decision: ask}
+      - {tool_pattern: '(?:browser_click|browser_fill|browser_press|browser_select)', decision: allow}
       - {tool_pattern: edit, decision: ask}
       - {tool_pattern: path, decision: ask}
       - tool_pattern: .*

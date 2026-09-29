@@ -52,7 +52,7 @@ def session_options(
         Option(
             value=item.session_id,
             label=(
-                f"{item.title} · {item.session_id}"
+                f"{item.session_id} · {item.title}"
                 if item.title and item.title != item.session_id
                 else item.session_id
             ),

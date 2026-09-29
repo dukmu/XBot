@@ -97,6 +97,37 @@ async def test_the_screen_shows_its_title_and_rows() -> None:
         await context.__aexit__(None, None, None)
 
 
+async def test_the_selected_row_uses_visible_terminal_independent_colours() -> None:
+    """The highlight must not rely on the terminal's reverse-video support."""
+    app, _pilot, context = await open_screen(
+        SelectionScreen("Sessions", options("a", "b"))
+    )
+    try:
+        selected = app.screen.query_one(".selection-row.selected", Static)
+        style = selected.rich_style
+        assert style.reverse is not True
+        assert style.color != style.bgcolor
+    finally:
+        await context.__aexit__(None, None, None)
+
+
+async def test_a_long_selected_title_remains_visible_in_its_single_line_row() -> None:
+    title = (
+        "分析一下给你提供的goal和todo工具是怎么工作的，不允许你翻看代码。"
+        "你可以自己试试使用，然后根据你自己的上下文分析。"
+    )
+    app, _pilot, context = await open_screen(
+        SelectionScreen(
+            "Sessions",
+            (Option("current", title, "current active 4 threads /workspace"),),
+        )
+    )
+    try:
+        assert "分析一下" in app.export_screenshot()
+    finally:
+        await context.__aexit__(None, None, None)
+
+
 async def test_the_visible_window_follows_a_selection_beyond_the_row_cap() -> None:
     screen = SelectionScreen(
         "Sessions",
