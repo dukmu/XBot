@@ -278,7 +278,7 @@ class Engine(AgentLoopDriverPort):
         """Dispatch one runtime event on the plugin context.
 
         Short-circuit events use ``ctx.serial``: listeners run in registration
-        order and the first non-``None`` dict answer wins, so later listeners
+        order and the first non-``None`` typed hook result wins, so later listeners
         do not run. Independent observers of a short-circuit event must
         therefore register with ``prepend=True`` (they never answer) — that
         is the explicit priority contract for these events; observers of

@@ -25,7 +25,7 @@ from XBotv2.core.tools import ToolCall
 from XBotv2.core.domain import AuxiliaryRequest, RequestObservation, ResolvedModelSelection
 from XBotv2.core.tokens import estimate_request_tokens
 from XBotv2.interactions.contracts import InteractionsPort
-from XBotv2.interactions.protocol import Answered
+from XBotv2.interactions.models import Answered
 from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
 from XBotv2.session.contracts import SessionPort

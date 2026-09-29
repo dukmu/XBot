@@ -49,7 +49,7 @@ from httpx import ASGITransport
 
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import OpenAICompatibleProvider
-from XBotv2.interactions.protocol import Answered
+from XBotv2.interactions.models import Answered
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
@@ -2703,7 +2703,7 @@ async def test_live_interaction_is_pending_before_event_is_published(
     from XBotv2.interactions.router import ClientEventRouter
     from XBotv2.interactions.contracts import InteractionRegistration
     from XBotv2.interactions.interactions import InteractionWaiter
-    from XBotv2.interactions.protocol import (
+    from XBotv2.interactions.models import (
         Answered,
         InputCancelled,
         InputTimedOut,

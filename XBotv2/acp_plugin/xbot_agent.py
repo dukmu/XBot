@@ -72,7 +72,7 @@ from pydantic import JsonValue
 from XBotv2.core import EmptyRequest
 from XBotv2.core.domain import TokenCounters, TurnScope
 from XBotv2.interactions.contracts import InteractionRequest, InteractionResolution
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     Answered,
     InputCancelled,
     InputTimedOut,

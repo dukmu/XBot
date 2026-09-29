@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, S
 
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobListResponse
-from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.interactions.models import UserInputRequest
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.contracts import ImageInput

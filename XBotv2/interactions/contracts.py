@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from XBotv2.interactions.protocol import UserInputOption
+    from XBotv2.interactions.models import UserInputOption
 
 class InteractionNotPending(RuntimeError):
     """Raised when a response targets no live interaction request."""

@@ -86,7 +86,7 @@ from XBotv2.agentloop.outputs import (
 )
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobUpdatedEvent
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     Answered,
     UserInputOption,
     UserInputRequest,

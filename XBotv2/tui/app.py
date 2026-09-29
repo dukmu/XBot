@@ -22,7 +22,7 @@ from textual import on
 from textual.widgets import Collapsible, TextArea
 
 from XBotv2.jobs.contracts import JobView
-from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.interactions.models import UserInputRequest
 from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.commands import CommandDescription, CommandsPort, split_command_args

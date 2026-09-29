@@ -69,7 +69,7 @@ from XBotv2.core.tools import (
 )
 from XBotv2.core.history import HistoryPage
 from XBotv2.core.timing import SessionStats
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     Answered,
     ClientNotice as ClientNoticeModel,
     UserInputOption,

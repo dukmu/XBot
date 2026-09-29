@@ -268,7 +268,7 @@ async def test_runtime_state_is_shared_restorable_and_thread_local(tmp_path):
 
 @pytest.mark.asyncio
 async def test_interaction_routing_belongs_to_the_plugin_lifecycle(tmp_path):
-    from XBotv2.interactions.protocol import Answered
+    from XBotv2.interactions.models import Answered
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     parent = await start_application(

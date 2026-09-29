@@ -40,7 +40,7 @@ from XBotv2.core.history import SurfaceReplaced
 from XBotv2.core.messages import CompactionSummaryMessage
 from XBotv2.core.stream import ModelCompleted, ModelFailed
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.interactions.models import UserInputRequest
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.application.app import create_agent_application

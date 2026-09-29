@@ -57,6 +57,8 @@ async def ask_user_for_input(
     tool_call_id: str = "",
 ) -> ToolSucceeded | ToolFailed:
     """Pause this tool call until the client answers one necessary question."""
+    if len(options) < 2:
+        raise ValueError("ask_user requires at least two options")
     result = await interactions.request_user_input(
         question,
         options=options,

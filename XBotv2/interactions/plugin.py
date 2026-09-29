@@ -27,7 +27,7 @@ from XBotv2.agentloop import Events
 from XBotv2.agentloop.events import SessionLifecycle
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
 from XBotv2.interactions.tools import build_ask_user_tool, send_message
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     Answered,
     InputCancelled,
     InputTimedOut,

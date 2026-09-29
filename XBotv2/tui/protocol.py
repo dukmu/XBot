@@ -43,7 +43,7 @@ from XBotv2.compact.protocol import (
     CompactionStarted,
 )
 from XBotv2.usage import UsageUpdated
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     ClientNotice,
     UserInputRequest,
     UserInputRecorded,

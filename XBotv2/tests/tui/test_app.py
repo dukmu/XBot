@@ -32,7 +32,7 @@ from XBotv2.client import XBotClientError
 from XBotv2.protocol.models import ErrorResponse
 from textual.screen import Screen
 
-from XBotv2.interactions.protocol import Answered, UserInputRecorded, UserInputRequest
+from XBotv2.interactions.models import Answered, UserInputRecorded, UserInputRequest
 from XBotv2.permissions.contracts import NamedPermission, PermissionRequest
 from XBotv2.tui.app import TuiApp
 from XBotv2.tui.view.interaction import InteractionInputScreen

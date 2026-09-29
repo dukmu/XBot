@@ -41,7 +41,7 @@ from XBotv2.core.domain import (
     ResolvedRuntimeSelection,
     UsageSnapshot,
 )
-from XBotv2.interactions.protocol import UserInputRecorded, UserInputRequest
+from XBotv2.interactions.models import UserInputRecorded, UserInputRequest
 from XBotv2.goal.models import ActiveGoal, NoGoal
 from XBotv2.jobs.contracts import JobView
 from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission

@@ -48,6 +48,7 @@ from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     HistoryChanged,
     HistoryMutation,
+    SessionEvent,
     SessionPort,
     SessionKey,
     conversation_replay,
@@ -172,7 +173,7 @@ class SessionRuntime(SessionPort):
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
         page = self.application.history_pages.page(limit=160)
-        self._publish_runtime_event(HistoryUpdatedEvent(
+        self.publish_event(HistoryUpdatedEvent(
             operation=event.operation,
             mutation=HistoryMutation(
                 removed_turns=event.turns,
@@ -186,16 +187,13 @@ class SessionRuntime(SessionPort):
 
     async def _on_agent_configured(self, event: AgentConfigured) -> None:
         """Publish the effective selection without flattening its fields."""
-        self._publish_runtime_event(AgentConfiguredEvent(
+        self.publish_event(AgentConfiguredEvent(
             runtime_selection=event.runtime_selection,
         ))
 
-    def _publish_runtime_event(self, event) -> None:
-        self.publish_event(event)
-
     def publish_event(
         self,
-        event,
+        event: SessionEvent,
         *,
         scope: EventScope = SessionScope(),
     ) -> None:
@@ -211,9 +209,9 @@ class SessionRuntime(SessionPort):
         splice_event = QueueReplacedEvent(items=self.pending_inputs())
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
-        self._publish_runtime_event(splice_event)
+        self.publish_event(splice_event)
         if isinstance(change, Inserted):
-            self._publish_runtime_event(InputAcceptedEvent(
+            self.publish_event(InputAcceptedEvent(
                 message_ids=(change.item.id,),
                 target=change.item.target,
             ))
@@ -224,7 +222,7 @@ class SessionRuntime(SessionPort):
             if self._active_router is not None:
                 self._active_router.emit(claimed)
             else:
-                self._publish_runtime_event(claimed)
+                self.publish_event(claimed)
         if isinstance(change, Consumed):
             consumed_ids = set(change.ids)
             for message in self.application.loop_state.messages:
@@ -241,11 +239,11 @@ class SessionRuntime(SessionPort):
             if self._active_router is not None:
                 self._active_router.emit(consumed)
             else:
-                self._publish_runtime_event(consumed)
+                self.publish_event(consumed)
 
     def _on_runtime_event(self, event: RuntimeEvent) -> None:
         self.touch()
-        self._publish_runtime_event(event.event)
+        self.publish_event(event.event)
 
     def pending_inputs(self) -> tuple[PendingInputData, ...]:
         return tuple(_pending_input_snapshot(item) for item in self.engine.pending_inputs)

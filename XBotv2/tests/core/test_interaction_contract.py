@@ -8,8 +8,9 @@ from XBotv2.agentloop.events import ReplaceToolCall
 from XBotv2.agentloop.tool_registry import ToolRegistry
 from XBotv2.agentloop.tool_runtime import execute_tools
 from XBotv2.interactions import Answered, InteractionNotPending, UserInputOption
+from XBotv2.interactions.models import UserInputRequest
 from XBotv2.interactions.interactions import InteractionWaiter
-from XBotv2.interactions.tools import build_ask_user_tool
+from XBotv2.interactions.tools import ask_user_for_input, build_ask_user_tool
 from XBotv2.core.tools import Tool
 
 
@@ -67,6 +68,23 @@ async def test_ask_user_rejects_malformed_options_at_plugin_boundary() -> None:
                 "options": [{"label": "yes"}, {"label": "no"}],
             },
             tool_call=ToolCall(id="call-1", name="ask_user"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_generic_user_input_does_not_apply_ask_user_option_policy() -> None:
+    request = UserInputRequest(
+        interaction_id="generic-1",
+        source="custom_plugin",
+        question="Continue?",
+    )
+    assert request.options == ()
+
+    with pytest.raises(ValueError, match="at least two options"):
+        await ask_user_for_input(
+            "Continue?",
+            (UserInputOption(label="yes", description="Continue"),),
+            interactions=_InteractionRecorder(),  # type: ignore[arg-type]
         )
 
 

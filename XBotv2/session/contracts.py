@@ -34,7 +34,7 @@ from XBotv2.core.tools import ToolCall
 from XBotv2.core.domain import Cursor, EventScope, UsageSnapshot
 from XBotv2.session.records import ConversationRecord, project_message
 from XBotv2.interactions.contracts import InteractionReceipt
-from XBotv2.interactions.protocol import UserInputRequest
+from XBotv2.interactions.models import UserInputRequest
 from XBotv2.permissions.contracts import PermissionRequest
 
 if TYPE_CHECKING:

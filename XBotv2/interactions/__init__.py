@@ -9,18 +9,17 @@ from XBotv2.interactions.contracts import (
     InteractionWaiterPort,
     InteractionsPort,
 )
-from XBotv2.interactions.protocol import (
+from XBotv2.interactions.models import (
     Answered,
     ClientNotice,
     InputCancelled,
     InputTimedOut,
-    InteractionResponse,
     UserInputOption,
     UserInputRequest,
-    UserInputResponseRequest,
     UserInputRecorded,
     UserInputResolution,
 )
+from XBotv2.interactions.protocol import InteractionResponse, UserInputResponseRequest
 
 __all__ = [
     "Answered",
