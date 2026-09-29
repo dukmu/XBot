@@ -2,6 +2,11 @@
 
 import pytest
 
+from XBotv2.application.app import start_application
+from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.tools import Tool, ToolCall, ToolDenied, ToolSucceeded
+from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.skills.permission_scope import SkillPermissionScope, validate_tool_patterns
 from XBotv2.skills.registry import SkillRegistry
 from XBotv2.skills.skill_tool import load_skill
@@ -94,3 +99,48 @@ async def test_shell_injection_requires_explicit_enabled_sandbox(tmp_path):
     assert "enabled sandbox required" in await load_skill(
         "review", skill_registry=registry,
     )
+
+
+@pytest.mark.asyncio
+async def test_active_skill_scope_keeps_other_skill_tools_callable(tmp_path):
+    async def mutate_workspace() -> str:
+        """Mutate the workspace."""
+        return "changed"
+
+    workspace = tmp_path / "workspace"
+    (workspace / ".git").mkdir(parents=True)
+    _write_skill(
+        workspace,
+        name="review",
+        frontmatter="allowed-tools:\n  - read\n",
+    )
+    _write_skill(workspace, name="verify")
+    context = await start_application(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+        session_id="skill-chaining",
+        thread_id="main",
+        workspace_root=workspace,
+        llm_override=MockLLM(),
+    )
+    try:
+        context.permissions.replace_policies((PermissionPolicy(rules=(
+            PermissionRule(tool_pattern=".*", decision="allow"),
+        )),))
+        context.tools.register(
+            Tool.from_function(mutate_workspace), cleanup="caller",
+        )
+        first = await context.tools.execute_all([
+            ToolCall(id="load-review", name="review", args={}),
+        ])
+        second = await context.tools.execute_all([
+            ToolCall(id="load-verify", name="verify", args={}),
+        ])
+        ordinary = await context.tools.execute_all([
+            ToolCall(id="mutate", name="mutate_workspace", args={}),
+        ])
+
+        assert isinstance(first[0].message.outcome, ToolSucceeded)
+        assert isinstance(second[0].message.outcome, ToolSucceeded)
+        assert isinstance(ordinary[0].message.outcome, ToolDenied)
+    finally:
+        await context.destroy()

@@ -262,7 +262,7 @@ class SkillsPlugin:
     ) -> GuardDecision | None:
         if not self._active_skills:
             return
-        if entry is not None and entry.namespace == "skills":
+        if entry.namespace.startswith("skills:"):
             # The plugin's own skill-invocation tools stay callable while a
             # skill's allowlist is in force (they are the door into a skill,
             # not tools the skill itself exercises).
