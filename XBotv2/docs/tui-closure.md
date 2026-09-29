@@ -14,8 +14,9 @@ public API contracts or a claim that every terminal and provider was tested.
 | Cleanup | PTY cases leave through the normal quit path and fixture teardown closes proxy relays, clients, server tasks, and tmux sessions. |
 
 The stable local captures for the complete closure run are under
-`/tmp/xbot-tui-product-closure-full`; the two final Unicode cases are under
-`/tmp/xbot-tui-product-closure-final-focused`. They are intentionally not committed:
+`/tmp/xbot-tui-product-closure-full`; post-migration long-history and both
+Unicode cases are under `/tmp/xbot-tui-product-closure-post-outputs`. They are
+intentionally not committed:
 the question reconnect frame shows one question and the selected Tuesday row;
 the streaming history frames show turn 0 at both terminal sizes while turn 31
 is running; and the Unicode expanded frame remains 80 cells wide.
