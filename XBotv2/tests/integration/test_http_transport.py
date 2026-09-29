@@ -4492,9 +4492,6 @@ async def _real_client(
     generous: ``open_session`` cold-starts a full XBot application, which can
     exceed a 100 ms client budget under load; 30 s matches the production client.
     """
-    import socket
-    import threading
-
     import uvicorn
 
     data_dir = tmp_path / "data"
@@ -4578,34 +4575,26 @@ async def _real_client(
     app = application.server
     application.sessions.application_factory = partial(create_agent_application, model_override=llm)
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
     server = uvicorn.Server(
         uvicorn.Config(
             app,
             host="127.0.0.1",
-            port=port,
+            port=0,
             log_level="warning",
             ws="none",
         )
     )
-    server_thread = threading.Thread(target=server.run, daemon=True)
-    server_thread.start()
-    base_url = f"http://127.0.0.1:{port}"
+    serving = asyncio.create_task(server.serve(), name="http-integration-server")
     client: XBotClient | None = None
     try:
-        async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as probe:
-            for _ in range(50):
-                try:
-                    response = await probe.get("/health")
-                    if response.status_code == 200:
-                        break
-                except httpx.RequestError:
-                    await asyncio.sleep(0.1)
-            else:
-                raise RuntimeError("uvicorn server failed to start")
-
+        async with asyncio.timeout(10):
+            while not server.started:
+                if serving.done():
+                    await serving
+                    raise RuntimeError("uvicorn exited before startup")
+                await asyncio.sleep(0.01)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}"
         client = XBotClient(base_url, timeout=timeout)
         await client.open_session(
             session_id="default",
@@ -4615,11 +4604,46 @@ async def _real_client(
         )
         yield client, "default", "agent"
     finally:
-        if client is not None:
-            await client.close()
-        server.should_exit = True
-        server_thread.join(timeout=3.0)
-        await application.stop()
+        try:
+            if client is not None:
+                await client.close()
+        finally:
+            server.should_exit = True
+            try:
+                await asyncio.wait_for(serving, timeout=10)
+            finally:
+                await application.destroy()
+
+
+@pytest.mark.asyncio
+async def test_real_http_stream_uses_provider_resources_on_the_owning_loop(tmp_path):
+    from XBotv2.core.stream import TextDelta
+
+    response_ready = asyncio.get_running_loop().create_future()
+
+    class GatedProvider(MockLLM):
+        async def _astream_once(self, request):
+            yield TextDelta(text="waiting for resource")
+            await response_ready
+            async for event in super()._astream_once(request):
+                yield event
+
+    provider = GatedProvider(responses=[{"content": "resource completed"}])
+    async with _real_client(
+        tmp_path, llm=provider, sandbox_enabled=False,
+    ) as (client, session_id, thread_id):
+        await client.send_message(session_id, thread_id, "continue", request_id="loop-resource")
+        frames = []
+        async with asyncio.timeout(10):
+            async for frame in client.stream_events(session_id, thread_id, after=0):
+                frames.append(frame)
+                if frame.kind == "assistant_text_delta" and not response_ready.done():
+                    response_ready.set_result(None)
+                if frame.kind == "turn_ended":
+                    break
+        assert not [frame for frame in frames if frame.kind == "error"]
+        history = await client.list_messages(session_id, thread_id)
+        assert history.items[-1].content == "resource completed"
 
 
 @pytest.mark.asyncio
