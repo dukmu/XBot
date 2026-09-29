@@ -42,7 +42,7 @@ from XBotv2.core.domain import (
     UsageSnapshot,
 )
 from XBotv2.interactions.models import UserInputRecorded, UserInputRequest
-from XBotv2.goal.models import ActiveGoal, NoGoal
+from XBotv2.goal.models import NoGoal
 from XBotv2.jobs.contracts import JobView
 from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission
 from XBotv2.permissions.protocol import PermissionResponseRecorded
@@ -354,14 +354,28 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         ))
 
     elif isinstance(event, GoalChangedReceived):
-        goal = event.payload.snapshot
-        state_value = goal.state
+        snapshot = event.payload.snapshot
+        state_value = snapshot.state
         if isinstance(state_value, NoGoal):
             text = "Goal cleared"
             detail = ""
         else:
-            text = f"Goal {state_value.kind}: {state_value.condition}"
-            detail = "" if isinstance(state_value, ActiveGoal) else state_value.reason
+            status = state_value.kind
+            reason = "" if state_value.kind == "active" else state_value.reason
+            if status == "active" and snapshot.activation == "disarmed":
+                status = "resume required"
+                reason = "Goal is not running; resume is required."
+            text = f"Goal {status}: {state_value.objective}"
+            stats = state_value.stats
+            usage = (
+                f"Usage: {stats.input_tokens} in / {stats.output_tokens} out / "
+                f"{stats.total_tokens} total"
+            )
+            activity = (
+                f"Executions: {stats.rounds_started} · "
+                f"tool calls: {stats.tool_calls} · {usage}"
+            )
+            detail = f"{reason}\n{activity}" if reason else activity
         _append(state, NoticeEntry(
             id="goal:active",
             notice_kind="goal",

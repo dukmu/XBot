@@ -1,4 +1,4 @@
-"""Canonical Goal state and evaluator verdicts."""
+"""Canonical state for the optional same-session Goal plugin."""
 
 from __future__ import annotations
 
@@ -6,36 +6,15 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-MAX_GOAL_CONDITION_CHARS = 4_000
-
-
-class GoalConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    checkin_seconds: float = Field(default=1_800.0, gt=0)
-    checkin_max_factor: float = Field(default=4.0, ge=1.0)
-    max_retries: int = Field(default=3, ge=0)
-    retry_seconds: float = Field(default=30.0, gt=0)
-    stall_turns: int = Field(default=3, ge=1)
-    max_idle_checkins: int = Field(default=3, ge=0)
-    max_rounds: int = Field(default=20, ge=1)
-
-
-class GoalProgress(BaseModel):
-    turns_evaluated: int = Field(default=0, ge=0)
-    retries: int = Field(default=0, ge=0)
-    tool_less_turns: int = Field(default=0, ge=0)
-    idle_checkins: int = Field(default=0, ge=0)
-    stalled: bool = False
-    model_config = ConfigDict(extra="forbid", frozen=True)
+MAX_GOAL_OBJECTIVE_CHARS = 4_000
+GoalActivation: TypeAlias = Literal["armed", "disarmed", "none"]
 
 
 class GoalStats(BaseModel):
+    rounds_started: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
-    todo_items: int = Field(default=0, ge=0)
-    todo_completed: int = Field(default=0, ge=0)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @property
@@ -43,92 +22,61 @@ class GoalStats(BaseModel):
         return self.input_tokens + self.output_tokens
 
 
-class GoalCheckinPolicy(BaseModel):
-    backoff_factor: float = Field(default=1.0, ge=1.0)
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
 class NoGoal(BaseModel):
     kind: Literal["none"] = "none"
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class _GoalWithCondition(BaseModel):
-    condition: str = Field(min_length=1, max_length=MAX_GOAL_CONDITION_CHARS)
+class _Goal(BaseModel):
+    goal_id: str = Field(min_length=1)
+    revision: int = Field(ge=1)
+    objective: str = Field(min_length=1, max_length=MAX_GOAL_OBJECTIVE_CHARS)
     started_at: float
     stats: GoalStats = Field(default_factory=GoalStats)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    @field_validator("condition")
+    @field_validator("objective")
     @classmethod
-    def _strip_condition(cls, value: str) -> str:
+    def _strip_objective(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("Goal condition must be a non-empty string")
+            raise ValueError("Goal objective must be a non-empty string")
         return value
 
 
-class ActiveGoal(_GoalWithCondition):
+class ActiveGoal(_Goal):
     kind: Literal["active"] = "active"
-    progress: GoalProgress = Field(default_factory=GoalProgress)
-    checkin_policy: GoalCheckinPolicy = Field(default_factory=GoalCheckinPolicy)
+    pending_input_id: str | None = None
 
 
-class PausedGoal(_GoalWithCondition):
+class PausedGoal(_Goal):
     kind: Literal["paused"] = "paused"
     paused_at: float
-    reason: str
-    progress: GoalProgress
-    checkin_policy: GoalCheckinPolicy
+    reason: str = Field(min_length=1)
 
 
-class AchievedGoal(_GoalWithCondition):
-    kind: Literal["achieved"] = "achieved"
+class BlockedGoal(_Goal):
+    kind: Literal["blocked"] = "blocked"
+    blocked_at: float
+    reason: str = Field(min_length=1)
+
+
+class CompleteGoal(_Goal):
+    kind: Literal["complete"] = "complete"
     finished_at: float
-    reason: str
-    progress: GoalProgress
-
-
-class FailedGoal(_GoalWithCondition):
-    kind: Literal["failed"] = "failed"
-    finished_at: float
-    reason: str
-    progress: GoalProgress
+    reason: str = Field(min_length=1)
 
 
 GoalState: TypeAlias = Annotated[
-    NoGoal | ActiveGoal | PausedGoal | AchievedGoal | FailedGoal,
+    NoGoal | ActiveGoal | PausedGoal | BlockedGoal | CompleteGoal,
     Field(discriminator="kind"),
 ]
 
 
 class GoalSnapshot(BaseModel):
     state: GoalState
+    activation: GoalActivation = "none"
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class NotMet(BaseModel):
-    kind: Literal["not_met"] = "not_met"
-    reason: str
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class Met(BaseModel):
-    kind: Literal["met"] = "met"
-    reason: str
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class Impossible(BaseModel):
-    kind: Literal["impossible"] = "impossible"
-    reason: str
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-GoalVerdict: TypeAlias = Annotated[
-    NotMet | Met | Impossible,
-    Field(discriminator="kind"),
-]
 
 
 class GoalChanged(BaseModel):
@@ -138,21 +86,15 @@ class GoalChanged(BaseModel):
 
 
 __all__ = [
-    "AchievedGoal",
     "ActiveGoal",
-    "FailedGoal",
+    "BlockedGoal",
+    "CompleteGoal",
+    "GoalActivation",
     "GoalChanged",
-    "GoalCheckinPolicy",
-    "GoalConfig",
-    "GoalProgress",
     "GoalSnapshot",
     "GoalState",
     "GoalStats",
-    "GoalVerdict",
-    "Impossible",
-    "MAX_GOAL_CONDITION_CHARS",
-    "Met",
+    "MAX_GOAL_OBJECTIVE_CHARS",
     "NoGoal",
-    "NotMet",
     "PausedGoal",
 ]

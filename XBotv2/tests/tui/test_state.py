@@ -77,6 +77,13 @@ from XBotv2.interactions.models import (
     UserInputRequest,
 )
 from XBotv2.jobs.contracts import JobView
+from XBotv2.goal.models import (
+    ActiveGoal,
+    CompleteGoal,
+    GoalChanged,
+    GoalSnapshot,
+    GoalStats,
+)
 from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
 from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.session.contracts import HistoryMutation, PendingInputData, ThreadSummary
@@ -97,6 +104,7 @@ from XBotv2.tui.events import (
     CompactionChanged,
     ConnectionChanged,
     ErrorFrame,
+    GoalChangedReceived,
     HistoryReplaced,
     InteractionOpened,
     InteractionResolved,
@@ -618,6 +626,67 @@ def test_runtime_input_history_is_an_inspectable_context_notice() -> None:
     assert isinstance(notice, NoticeEntry)
     assert notice.text == "Context · goal · round"
     assert notice.detail == "reminder"
+
+
+def test_goal_notice_shows_public_state_executions_and_usage() -> None:
+    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+        state=ActiveGoal(
+            goal_id="goal-1",
+            revision=2,
+            objective="Ship the release",
+            started_at=1.0,
+            stats=GoalStats(
+                rounds_started=3,
+                tool_calls=7,
+                input_tokens=120,
+                output_tokens=30,
+            ),
+        ),
+        activation="armed",
+    ))))
+
+    notice = state.timeline.get("goal:active")
+    assert isinstance(notice, NoticeEntry)
+    assert notice.text == "Goal active: Ship the release"
+    assert notice.detail == (
+        "Executions: 3 · tool calls: 7 · Usage: 120 in / 30 out / 150 total"
+    )
+
+
+def test_disarmed_active_goal_is_explicitly_resume_required() -> None:
+    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+        state=ActiveGoal(
+            goal_id="goal-1",
+            revision=2,
+            objective="Ship the release",
+            started_at=1.0,
+        ),
+        activation="disarmed",
+    ))))
+
+    notice = state.timeline.get("goal:active")
+    assert isinstance(notice, NoticeEntry)
+    assert notice.text == "Goal resume required: Ship the release"
+    assert notice.detail.startswith("Goal is not running; resume is required.\n")
+
+
+def test_terminal_goal_notice_keeps_its_owner_reason() -> None:
+    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+        state=CompleteGoal(
+            goal_id="goal-1",
+            revision=3,
+            objective="Ship the release",
+            started_at=1.0,
+            finished_at=4.0,
+            reason="Release published",
+            stats=GoalStats(rounds_started=3),
+        ),
+    ))))
+
+    notice = state.timeline.get("goal:active")
+    assert isinstance(notice, NoticeEntry)
+    assert notice.text == "Goal complete: Ship the release"
+    assert notice.detail.startswith("Release published\nExecutions: 3")
 
 
 def test_live_runtime_input_matches_history_without_creating_a_user_turn() -> None:

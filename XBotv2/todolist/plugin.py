@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import re
 from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
@@ -57,9 +56,9 @@ _STALE_NAG = (
     "NEVER mention this reminder to the user"
 )
 _VERIFICATION_NUDGE = (
-    "NOTE: you closed out the whole task list and none of the tasks was a "
-    "verification step. Spawn a subagent to verify the work independently "
-    "before reporting it done."
+    "Before reporting completion, check the observed evidence against the "
+    "acceptance criteria. A completed checklist is not proof that the goal "
+    "was achieved. Reopen any task whose result remains unverified."
 )
 
 
@@ -147,8 +146,6 @@ class TaskService:
         await self._write(updated)
         return await self._result(
             f"Created task #{task.id}: {task.subject}",
-            updated,
-            changes={task.id},
         )
 
     async def task_get(self, taskId: str) -> ToolOutcome:
@@ -177,6 +174,8 @@ class TaskService:
         owner: str | None = None,
         add_blocks: list[str] | None = None,
         add_blocked_by: list[str] | None = None,
+        remove_blocks: list[str] | None = None,
+        remove_blocked_by: list[str] | None = None,
     ) -> ToolOutcome:
         """Update one task: status, text, owner, or dependency edges.
 
@@ -194,6 +193,8 @@ class TaskService:
             owner: Agent that claimed the task.
             add_blocks: Task ids this task must be completed before.
             add_blocked_by: Task ids that must be completed before this one.
+            remove_blocks: Remove this task as a prerequisite of these tasks.
+            remove_blocked_by: Remove these prerequisites when revising the plan.
         """
         try:
             parsed_id = parse_task_id(taskId)
@@ -235,45 +236,76 @@ class TaskService:
                 add_blocked_by,
                 field="add_blocked_by",
             )
+            unblocks = parse_task_ids(remove_blocks, field="remove_blocks")
+            unblocked_by = parse_task_ids(
+                remove_blocked_by, field="remove_blocked_by",
+            )
         except TaskValidationError as exc:
             return failed_text(exc.code, str(exc))
 
         if new_status is not None:
             if new_status == "in_progress":
-                unfinished = _blocking_tasks(current, task)
-                if unfinished:
-                    return failed_text(
-                        "blocked",
-                        "Task #" f"{task.id} is blocked by "
-                        + ", ".join(f"#{value}" for value in unfinished),
-                    )
                 if not changes.get("owner") and not task.owner and self._agent_name:
                     changes["owner"] = self._agent_name
             changes["status"] = new_status
 
-        if not changes and not blocks and not blocked_by:
+        if not (changes or blocks or blocked_by or unblocks or unblocked_by):
             return failed_text(
                 "invalid_task_update",
                 "Provide at least one field to update",
             )
 
+        additions = (
+            *(DependencyEdge(prerequisite=task.id, dependent=value) for value in blocks),
+            *(DependencyEdge(prerequisite=value, dependent=task.id) for value in blocked_by),
+        )
+        removals = (
+            *(DependencyEdge(prerequisite=task.id, dependent=value) for value in unblocks),
+            *(DependencyEdge(prerequisite=value, dependent=task.id) for value in unblocked_by),
+        )
+        if set(additions).intersection(removals):
+            return failed_text(
+                "invalid_task_update", "Cannot add and remove the same dependency",
+            )
+        for value in (*blocks, *blocked_by, *unblocks, *unblocked_by):
+            if current.find(value) is None:
+                return _unknown_task(value)
+        edges = tuple(edge for edge in current.edges if edge not in removals)
+        edges += tuple(edge for edge in additions if edge not in edges)
         updated_task = task.model_copy(update=changes)
-        updated = current.replace(updated_task)
-        for target_id in blocks:
-            error, updated = _link(updated, from_id=task.id, to_id=target_id)
-            if error is not None:
-                return error
-        for target_id in blocked_by:
-            error, updated = _link(updated, from_id=target_id, to_id=task.id)
-            if error is not None:
-                return error
+        if updated_task == task and edges == current.edges:
+            return succeeded_text(f"Task #{task.id} is unchanged.")
+        try:
+            updated = TaskList(
+                version=current.version + 1,
+                next_id=current.next_id,
+                tasks=tuple(
+                    updated_task if item.id == task.id else item
+                    for item in current.tasks
+                ),
+                edges=edges,
+            )
+        except ValueError as exc:
+            return failed_text("invalid_task_dependency", str(exc))
+        for candidate in updated.tasks:
+            if candidate.status == "in_progress":
+                unfinished = _blocking_tasks(updated, candidate)
+                if unfinished:
+                    return failed_text(
+                        "blocked",
+                        f"Task #{candidate.id} is blocked by "
+                        + ", ".join(f"#{value}" for value in unfinished),
+                    )
 
         await self._write(updated)
-        content = f"Updated task #{task.id}: {_describe_update(updated.find(task.id))}"
-        nudge = _verification_nudge(updated, self._config)
-        if nudge:
-            content = f"{content}\n{nudge}"
-        return await self._result(content, updated, changes={task.id, *blocks, *blocked_by})
+        content = f"Updated task #{task.id}: {_describe_update(updated_task)}"
+        if (
+            self._config.verification_nudge
+            and _has_unfinished(current)
+            and not _has_unfinished(updated)
+        ):
+            content = f"{content}\n{_VERIFICATION_NUDGE}"
+        return await self._result(content)
 
     async def task_delete(self, task_id: str) -> ToolOutcome:
         """Delete one task and all dependency edges connected to it."""
@@ -288,8 +320,6 @@ class TaskService:
         await self._write(updated)
         return await self._result(
             f"Deleted task #{parsed_id}.",
-            updated,
-            changes={parsed_id},
         )
 
     async def task_list(self) -> ToolOutcome:
@@ -368,14 +398,7 @@ class TaskService:
         stored = await self._store.get(_STALE_TURNS_KEY)
         return stored if isinstance(stored, int) and stored > 0 else 0
 
-    async def _result(
-        self,
-        content: str,
-        tasks: TaskList,
-        *,
-        changes: set[str] | None = None,
-    ) -> ToolOutcome:
-        del changes
+    async def _result(self, content: str) -> ToolOutcome:
         # Any mutation of the list resets the "tools not used recently" nudge.
         await self._store.set(_STALE_TURNS_KEY, 0)
         return succeeded_text(content)
@@ -388,41 +411,6 @@ def _blocking_tasks(tasks: TaskList, task: Task) -> list[str]:
         for value in tasks.prerequisites(task.id)
         if (blocker := tasks.find(value)) is None or blocker.status != "completed"
     ]
-
-
-def _link(
-    tasks: TaskList,
-    *,
-    from_id: str,
-    to_id: str,
-) -> tuple[ToolOutcome | None, TaskList]:
-    """Add one canonical prerequisite-to-dependent edge."""
-    source = tasks.find(from_id)
-    target = tasks.find(to_id)
-    if source is None or target is None:
-        missing = from_id if source is None else to_id
-        return (_unknown_task(missing), tasks)
-    try:
-        return None, tasks.add_edge(
-            DependencyEdge(prerequisite=from_id, dependent=to_id)
-        )
-    except ValueError as exc:
-        return failed_text("invalid_task_dependency", str(exc)), tasks
-
-
-def _verification_nudge(tasks: TaskList, config: TaskConfig) -> str:
-    if not config.verification_nudge or not config.verification_hint:
-        return ""
-    if len(tasks.tasks) < 3:
-        return ""
-    if any(task.status != "completed" for task in tasks.tasks):
-        return ""
-    if any(
-        re.search(config.verification_hint, task.subject, re.IGNORECASE)
-        for task in tasks.tasks
-    ):
-        return ""
-    return _VERIFICATION_NUDGE
 
 
 def _unknown_task(task_id: str) -> ToolOutcome:

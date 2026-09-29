@@ -1793,325 +1793,47 @@ plugin = ConfiguredPlugin()
             await application.stop()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("evaluation_failure", ["malformed", "transport"])
-    async def test_goal_evaluator_retries_only_after_the_retry_round_finishes(
-        self, temp_data_dir, temp_workspace, evaluation_failure
+    async def test_goal_provider_error_disarms_without_retrying_forever(
+        self, temp_data_dir, temp_workspace
     ):
-        import asyncio
-
-        from XBotv2.application.events import RUNTIME_EVENT
         from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
         from XBotv2.core.domain import ProviderError
-        from XBotv2.core.stream import ModelCompleted, ModelFailed
-        from XBotv2.goal.models import AchievedGoal, GoalChanged
+        from XBotv2.core.stream import ModelFailed
+        from XBotv2.goal.models import ActiveGoal
 
-        class GoalRetryMockLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.retry_round_started = asyncio.Event()
-                self.retry_round_release = asyncio.Event()
-                self.retry_round_finished = asyncio.Event()
-                self.retry_evaluation_started = asyncio.Event()
-                self.first_evaluation_returned = asyncio.Event()
-                self.retry_evaluation_saw_new_round = False
-                self.evaluations = 0
-                self.rounds = 0
-                self.order = []
-
+        class FailingGoalLLM(MockLLM):
             async def _astream_once(self, request):
-                texts = [
-                    part.text
-                    for message in request.messages
-                    for part in message.parts
-                    if isinstance(part, TextPart)
-                ]
-                prompt = "\n".join(texts)
                 self._state.request_history.append(request)
-                if "You judge whether a completion condition has been met." in prompt:
-                    self.evaluations += 1
-                    if self.evaluations == 1:
-                        self.order.append("evaluation_failed")
-                        self.first_evaluation_returned.set()
-                        if evaluation_failure == "transport":
-                            yield ModelFailed(error=ProviderError(
-                                code="goal_evaluator_unavailable",
-                                message="Goal evaluator is unavailable.",
-                                retryable=False,
-                                category="provider",
-                            ))
-                            return
-                        yield ModelCompleted(
-                            response=self.to_response({"content": "not a verdict"})
-                        )
-                        return
-                    self.retry_evaluation_started.set()
-                    self.retry_evaluation_saw_new_round = (
-                        self.retry_round_finished.is_set()
-                    )
-                    self.order.append("retry_evaluation")
-                    yield ModelCompleted(response=self.to_response({
-                        "content": '{"verdict":"met","reason":"verified"}',
-                    }))
-                    return
+                yield ModelFailed(error=ProviderError(
+                    code="provider_failed",
+                    message="provider failed",
+                    retryable=False,
+                    category="provider",
+                ))
 
-                if '<system_reminder source="goal" event="round"' in prompt:
-                    self.rounds += 1
-                    if self.rounds == 2:
-                        self.order.append("retry_round_started")
-                        self.retry_round_started.set()
-                        await self.retry_round_release.wait()
-                        self.retry_round_finished.set()
-                        self.order.append("retry_round_finished")
-                    yield ModelCompleted(response=self.to_response({
-                        "content": f"Goal work round {self.rounds}.",
-                    }))
-                    return
-
-                yield ModelCompleted(response=self.to_response({
-                    "content": "Session title.",
-                }))
-
-        llm = GoalRetryMockLLM()
+        llm = FailingGoalLLM(responses=[])
         application = await start_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="goal-retry-order",
+            session_id="goal-provider-error",
             thread_id="main",
             workspace_root=temp_workspace,
             llm_override=llm,
-            extra_plugins=[{
-                "id": "goal",
-                "config": {"max_retries": 1, "retry_seconds": 0.01},
-            }],
+            extra_plugins=[{"id": "goal"}],
         )
-        goal_events = []
-        application.on(
-            RUNTIME_EVENT,
-            lambda event: goal_events.append(event.event)
-            if isinstance(event.event, GoalChanged)
-            else None,
-        )
-
-        async def run_pending_turn():
-            async for _ in application.engine.run_pending():
-                pass
-
-        retry_turn = None
         try:
             result = await application.serial(
                 EXECUTE_COMMAND.name,
                 ExecuteCommand(
-                    command="goal",
-                    kind="server",
-                    raw_args="finish the API",
+                    command="goal", kind="server", raw_args="finish the API"
                 ),
             )
             assert result.status == "ok"
-            await run_pending_turn()
-            await asyncio.wait_for(
-                llm.first_evaluation_returned.wait(), timeout=3
-            )
-            async with asyncio.timeout(3):
-                while application.engine.pending_input_count == 0:
-                    await asyncio.sleep(0.001)
-
-            retry_turn = asyncio.create_task(run_pending_turn())
-            await asyncio.wait_for(llm.retry_round_started.wait(), timeout=3)
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(
-                    llm.retry_evaluation_started.wait(), timeout=0.05
-                )
-            llm.retry_round_release.set()
-            await asyncio.wait_for(retry_turn, timeout=3)
-            await asyncio.wait_for(llm.retry_evaluation_started.wait(), timeout=3)
-            assert llm.retry_evaluation_saw_new_round
-            assert llm.order.index("retry_round_finished") < llm.order.index(
-                "retry_evaluation"
-            )
-            assert any(
-                isinstance(event.snapshot.state, AchievedGoal)
-                for event in goal_events
-            )
-        finally:
-            llm.retry_round_release.set()
-            if retry_turn is not None and not retry_turn.done():
-                await asyncio.gather(retry_turn, return_exceptions=True)
-            await application.stop()
-
-    @pytest.mark.asyncio
-    async def test_goal_clear_cancels_scheduled_evaluator_retry(
-        self, temp_data_dir, temp_workspace
-    ):
-        import asyncio
-
-        from XBotv2.application.events import RUNTIME_EVENT
-        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
-        from XBotv2.core.stream import ModelCompleted
-        from XBotv2.goal.models import ActiveGoal, GoalChanged
-
-        class RetryCancellationLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.rounds = 0
-                self.evaluations = 0
-
-            async def _astream_once(self, request):
-                texts = [
-                    part.text
-                    for message in request.messages
-                    for part in message.parts
-                    if isinstance(part, TextPart)
-                ]
-                prompt = "\n".join(texts)
-                if "You judge whether a completion condition has been met." in prompt:
-                    self.evaluations += 1
-                    yield ModelCompleted(response=self.to_response({
-                        "content": "malformed evaluator output",
-                    }))
-                    return
-                if '<system_reminder source="goal" event="round"' in prompt:
-                    self.rounds += 1
-                yield ModelCompleted(response=self.to_response({
-                    "content": f"Work round {self.rounds}.",
-                }))
-
-        llm = RetryCancellationLLM()
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="goal-retry-clear",
-            thread_id="main",
-            workspace_root=temp_workspace,
-            llm_override=llm,
-            extra_plugins=[{
-                "id": "goal",
-                "config": {"max_retries": 1, "retry_seconds": 0.2},
-            }],
-        )
-        retry_scheduled = asyncio.Event()
-
-        def observe_goal(event):
-            if (
-                isinstance(event.event, GoalChanged)
-                and isinstance(event.event.snapshot.state, ActiveGoal)
-                and event.event.snapshot.state.progress.retries == 1
-            ):
-                retry_scheduled.set()
-
-        application.on(RUNTIME_EVENT, observe_goal)
-
-        async def run_pending_turn():
-            async for _ in application.engine.run_pending():
-                pass
-
-        try:
-            created = await application.serial(
-                EXECUTE_COMMAND.name,
-                ExecuteCommand(
-                    command="goal",
-                    kind="server",
-                    raw_args="finish the API",
-                ),
-            )
-            assert created.status == "ok"
-            await run_pending_turn()
-            await asyncio.wait_for(retry_scheduled.wait(), timeout=3)
-            # Let _evaluation_failed finish scheduling its owned timer before
-            # clearing the condition through the public command path.
-            await asyncio.sleep(0.02)
-
-            cleared = await application.serial(
-                EXECUTE_COMMAND.name,
-                ExecuteCommand(
-                    command="goal",
-                    kind="server",
-                    raw_args="clear",
-                ),
-            )
-            assert cleared.status == "ok"
-            await asyncio.sleep(0.25)
-
-            assert llm.rounds == 1
-            assert llm.evaluations == 1
-            assert application.engine.pending_input_count == 0
-        finally:
-            await application.stop()
-
-    @pytest.mark.asyncio
-    async def test_goal_round_cap_pauses_without_starting_another_round(
-        self, temp_data_dir, temp_workspace
-    ):
-        import asyncio
-
-        from XBotv2.application.events import RUNTIME_EVENT
-        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
-        from XBotv2.core.stream import ModelCompleted
-        from XBotv2.goal.models import GoalChanged, PausedGoal
-
-        class RoundCapLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.rounds = 0
-
-            async def _astream_once(self, request):
-                texts = [
-                    part.text
-                    for message in request.messages
-                    for part in message.parts
-                    if isinstance(part, TextPart)
-                ]
-                prompt = "\n".join(texts)
-                if "You judge whether a completion condition has been met." in prompt:
-                    yield ModelCompleted(response=self.to_response({
-                        "content": '{"verdict":"not_yet_met","reason":"More work remains."}',
-                    }))
-                    return
-                if '<system_reminder source="goal" event="round"' in prompt:
-                    self.rounds += 1
-                yield ModelCompleted(response=self.to_response({
-                    "content": f"Work round {self.rounds}.",
-                }))
-
-        llm = RoundCapLLM()
-        application = await start_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="goal-round-cap",
-            thread_id="main",
-            workspace_root=temp_workspace,
-            llm_override=llm,
-            extra_plugins=[{
-                "id": "goal",
-                "config": {"max_rounds": 1},
-            }],
-        )
-        paused = asyncio.Event()
-        paused_states = []
-
-        def observe_goal(event):
-            if (
-                isinstance(event.event, GoalChanged)
-                and isinstance(event.event.snapshot.state, PausedGoal)
-            ):
-                paused_states.append(event.event.snapshot.state)
-                paused.set()
-
-        application.on(RUNTIME_EVENT, observe_goal)
-        try:
-            created = await application.serial(
-                EXECUTE_COMMAND.name,
-                ExecuteCommand(
-                    command="goal",
-                    kind="server",
-                    raw_args="finish the API",
-                ),
-            )
-            assert created.status == "ok"
-            async for _ in application.engine.run_pending():
-                pass
-            await asyncio.wait_for(paused.wait(), timeout=3)
-
-            assert llm.rounds == 1
-            assert len(paused_states) == 1
-            assert paused_states[0].progress.turns_evaluated == 1
-            assert paused_states[0].reason == "Round cap reached (1/1); set the goal again to continue."
+            events = [event async for event in application.engine.run_pending()]
+            assert events
+            snapshot = await application.require("goal").snapshot()
+            assert isinstance(snapshot.state, ActiveGoal)
+            assert snapshot.activation == "disarmed"
+            assert len(llm.request_history) == 1
             assert application.engine.pending_input_count == 0
         finally:
             await application.stop()

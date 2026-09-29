@@ -416,20 +416,19 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 
 - `GoalState` 判别联合：
   - `NoGoal`
-  - `ActiveGoal(condition, started_at, progress, stats, checkin_policy)`
-  - `PausedGoal(condition, started_at, paused_at, reason, progress, stats, checkin_policy)`
-  - `AchievedGoal(condition, started_at, finished_at, reason, progress, stats)`
-  - `FailedGoal(condition, started_at, finished_at, reason, progress, stats)`
-- `GoalProgress(turns_evaluated, retries, tool_less_turns, idle_checkins, stalled)`。
-- `GoalStats(tool_calls, input_tokens, output_tokens, todo_items, todo_completed)`。
-- `GoalSnapshot(state: GoalState)`。
-- `GoalVerdict = NotMet(reason) | Met(reason) | Impossible(reason)`。
+  - `ActiveGoal(goal_id, revision, objective, started_at, stats, pending_input_id)`
+  - `PausedGoal(goal_id, revision, objective, started_at, paused_at, reason, stats)`
+  - `CompleteGoal(goal_id, revision, objective, started_at, finished_at, reason, stats)`
+  - `BlockedGoal(goal_id, revision, objective, started_at, blocked_at, reason, stats)`
+- `GoalStats(rounds_started, tool_calls, input_tokens, output_tokens)`。
+- `GoalSnapshot(state: GoalState, activation)`；activation 是本次运行的续跑许可，不持久化。
 - `GoalChanged(snapshot)` typed event。
 
 设计：
 
-- persistence schema migration只在 goal store；service 不读取旧字段别名 `objective/condition`、`summary/reason`。
-- 状态变体决定时间、reason、progress 是否存在；不再持久化 status + 0.0 哨兵组合。snapshot 直接包裹 GoalState，不复制 progress/stats。
+- 不保留 evaluator 的 verdict、重试、定时检查或空 GoalConfig；不读取旧字段别名。具体设计取舍与验证状态见 `../goal-todo-design.md`。
+- 目标状态与 todo 完成数无隐式关系。执行模型通过标准工具明确更新目标，插件经既有 inbox 驱动原会话，不另发全量会话判断请求。
+- pending_input_id 只标识已预留的续跑输入；控制变更撤销它，既有输入接受事件拒绝陈旧输入。不复制 inbox 内容或增加另一份历史。
 
 ### 3.16 todolist
 

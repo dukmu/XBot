@@ -27,6 +27,7 @@ from XBotv2.tui.events import (
     ClientNoticeReceived,
     CompactionChanged,
     ErrorFrame,
+    GoalChangedReceived,
     HistoryReplaced,
     InteractionOpened,
     InteractionResolved,
@@ -113,6 +114,31 @@ def test_malformed_payload_is_rejected() -> None:
 
 def test_stream_end_is_not_a_state_event() -> None:
     assert translator().translate(frame("end", {"status": "closed"})) == ()
+
+
+def test_goal_changed_keeps_owner_state_activation_and_usage() -> None:
+    event = only("goal_changed", {
+        "snapshot": {
+            "activation": "disarmed",
+            "state": {
+                "kind": "active",
+                "goal_id": "goal-1",
+                "revision": 2,
+                "objective": "Ship the release",
+                "started_at": 1.0,
+                "stats": {
+                    "rounds_started": 3,
+                    "tool_calls": 7,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                },
+            },
+        },
+    })
+
+    assert isinstance(event, GoalChangedReceived)
+    assert event.payload.snapshot.activation == "disarmed"
+    assert event.payload.snapshot.state.stats.total_tokens == 150
 
 
 # --- turn lifecycle -------------------------------------------------------

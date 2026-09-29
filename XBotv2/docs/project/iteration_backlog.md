@@ -653,27 +653,14 @@ Implement these as public-API consumers and reference plugins, in this order:
 
 ### Goal
 
-- The goal is set and judged, never self-certified: the human `/goal
-  <condition>` path and the Agent-facing `create_goal` start one, `get_goal`
-  reads it, and an independent evaluator model call returns `met` /
-  `not_yet_met` / `impossible` with a reason after every turn. No Agent tool
-  can end a goal.
-- A versioned `GoalSnapshot` in the Goal namespace retains the condition,
-  status (`active`/`achieved`/`failed`/`paused`/`cleared`), the latest reason,
-  turns evaluated, duration, retries, stall and check-in counters, and derived
-  consumption statistics. Setting a condition starts a turn with the condition
-  as the directive; `not_yet_met` starts the next turn with the reason as
-  guidance.
-- The loop follows Claude Code's failure policy: unrecoverable errors clear the
-  goal, other errors retry with backoff and then pause, a hard `max_rounds` cap
-  pauses at the limit, several tool-less turns stall the loop, background work
-  defers evaluation with backoff check-ins, and resume restores an active goal
-  with its counters reset. The goal reaches the model only through its
-  persisted, self-contained round prompts (objective, round number, evaluator
-  reason) and one post-compaction state block; there is no per-request
-  projection. Goal reads task progress for its statistics without making tasks
-  depend on it, and terminal transitions publish `goal_updated` plus status
-  slots for TUI/WebUI.
+- The current redesign replaces the separate per-turn evaluator with explicit
+  Agent-facing goal updates and same-session continuation through the existing
+  inbox. Todo completion does not determine goal completion. The Goal plugin
+  no longer depends on an auxiliary model or owns retry/check-in timers.
+- Goal identity and revision protect state updates; durable state and live
+  continuation authority are separate. Cold resume does not silently restart
+  work or reset statistics. Source comparisons, exact current scope and pending
+  verification are maintained in [goal-todo-design.md](../goal-todo-design.md).
 
 Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
 structured tool-result tests, public API boundary tests, and current

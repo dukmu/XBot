@@ -8,6 +8,10 @@ structured tool payload shown readably.
 
 from __future__ import annotations
 
+import html
+import re
+from pathlib import Path
+
 import pytest
 from rich.markdown import Markdown
 from rich.text import Text
@@ -15,6 +19,9 @@ from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
+from XBotv2.goal.models import ActiveGoal, GoalChanged, GoalSnapshot, GoalStats
+from XBotv2.tui.events import GoalChangedReceived
+from XBotv2.tui.state import SessionState, reduce
 from XBotv2.tui.timeline import (
     AssistantEntry,
     Delivery,
@@ -362,6 +369,40 @@ async def test_context_injection_is_one_collapsed_row_with_exact_inspectable_con
         block.toggle()
         await pilot.pause()
         assert block.shown_text == content
+
+
+async def test_goal_event_renders_status_execution_and_usage_at_80x24(
+    tmp_path: Path,
+) -> None:
+    state = SessionState()
+    reduce(state, GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+        state=ActiveGoal(
+            goal_id="goal-1",
+            revision=2,
+            objective="Ship the release",
+            started_at=1.0,
+            stats=GoalStats(
+                rounds_started=3,
+                tool_calls=7,
+                input_tokens=120,
+                output_tokens=30,
+            ),
+        ),
+        activation="disarmed",
+    ))))
+    notice = state.timeline.get("goal:active")
+    assert isinstance(notice, NoticeEntry)
+    app = EntryHarness(entry_widget(notice))
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        entry = app.query_one(EntryWidget)
+        assert entry.region.bottom <= app.screen.region.bottom
+        svg = app.export_screenshot(title="Goal status at 80x24")
+        (tmp_path / "goal-status-80x24.svg").write_text(svg, encoding="utf-8")
+        rendered = html.unescape(re.sub(r"<[^>]+>", "", svg)).replace("\xa0", " ")
+        assert "Goal resume required: Ship the release" in rendered
+        assert "Executions: 3" in rendered
+        assert "Usage: 120 in / 30 out / 150 total" in rendered
 
 
 async def test_short_reasoning_remains_a_collapsible_think_block() -> None:

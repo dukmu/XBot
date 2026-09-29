@@ -85,7 +85,7 @@ ownership, not proof of durable consumption.
 | permissions | agent | regex Tool policy and approval flow | tools, interactions, state, settings |
 | coretools | agent | filesystem and shell Tools; workspace extension hooks | tools, session, sandbox, artifacts, jobs, workspace root |
 | subagents | agent | child Agent application lifecycle, Tools and jobs | runtime paths, session launch, Agent options, catalog, permissions, jobs, tools |
-| goal | agent | durable objective and `/goal` | tools, loop state, commands, engine, model, state, usage |
+| goal | agent | durable objective, explicit goal tools, same-session continuation and `/goal` | tools, commands, engine, state, usage; optional jobs |
 | todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
 | mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session, usage, loop state |

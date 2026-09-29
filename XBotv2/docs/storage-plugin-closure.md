@@ -5,6 +5,12 @@ the storage and capability-plugin boundaries. It is deliberately narrower than
 a feature roadmap: unsupported multi-writer storage, new indexes, garbage
 collection, and compatibility readers are not implied.
 
+The Goal entries and named evaluator tests below describe the earlier
+`8d61769` checkpoint, not the current Goal redesign. The working tree replaces
+that evaluator with same-session continuation and explicit goal tools; current
+behavior and verification are tracked in [goal-todo-design.md](goal-todo-design.md).
+Do not use the historical counts below as acceptance evidence for that rewrite.
+
 ## Storage boundaries
 
 | Scope | Owner and path | Production evidence | Closure |

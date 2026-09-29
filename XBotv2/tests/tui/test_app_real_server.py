@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -251,6 +252,7 @@ async def base_url(
             for plugin_id in disabled_plugins
             if not (
                 (scenario == "compact" and plugin_id == "compact")
+                or (scenario == "goal" and plugin_id == "goal")
                 or (
                     scenario in {"subagent", "subagent_running"}
                     and plugin_id == "subagents"
@@ -419,6 +421,51 @@ async def base_url(
             {"content": "Recovered after the failed tool."},
             answer,
         ]
+    elif scenario == "goal":
+        class GoalLifecycleMockLLM(MockLLM):
+            async def _astream_once(self, model_request):
+                self._state.request_history.append(model_request)
+                call = self._state.call_count
+                self._state.call_count += 1
+                if call == 0:
+                    response = {
+                        "content": "First execution finished; continuing to verify.",
+                        "usage_metadata": {"input_tokens": 11, "output_tokens": 4},
+                    }
+                elif call == 1:
+                    response = {"tool_calls": [{
+                        "id": "read-current-goal",
+                        "name": "get_goal",
+                        "args": {},
+                    }]}
+                elif call == 2:
+                    visible = "\n".join(
+                        part.text
+                        for message in model_request.messages
+                        for part in message.parts
+                        if hasattr(part, "text")
+                    )
+                    match = re.search(r"Goal: ([^\s]+) revision (\d+)", visible)
+                    assert match is not None, visible
+                    response = {"tool_calls": [{
+                        "id": "complete-current-goal",
+                        "name": "update_goal",
+                        "args": {
+                            "goal_id": match.group(1),
+                            "revision": int(match.group(2)),
+                            "status": "complete",
+                            "reason": "Verified through the real TUI flow.",
+                        },
+                    }]}
+                else:
+                    response = {
+                        "content": "Goal verification complete.",
+                        "usage_metadata": {"input_tokens": 13, "output_tokens": 5},
+                    }
+                yield ModelCompleted(response=self.to_response(response))
+
+        model_factory = GoalLifecycleMockLLM
+        model_responses = []
     elif scenario in {"unicode_tool", "unicode_compact"}:
         repeats = 80 if scenario == "unicode_tool" else 12
         payload = "漢字🙂 café é " * repeats
@@ -2179,6 +2226,44 @@ async def test_a_real_turn_arrives_on_screen(real_client: XBotClient) -> None:
         assert "say hello" in transcript_text(app), "the prompt is shown too"
         assert app.controller is not None
         assert app.controller.state.timeline.get("") is None
+
+
+@pytest.mark.parametrize("base_url", ["goal"], indirect=True)
+async def test_real_goal_runs_two_executions_and_completes_on_screen(
+    real_client: XBotClient,
+    tmp_path: Path,
+) -> None:
+    app = tui(real_client)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("/goal verify the release")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: (
+                "Goal complete: verify the release" in transcript_text(app)
+                and "Goal verification complete." in transcript_text(app)
+                and "Executions: 2" in transcript_text(app)
+                and "Usage: 24 in / 9 out / 33 total" in transcript_text(app)
+                and "Ready" in status_text(app)
+            ),
+            description="the real goal to finish its second execution",
+        )
+        rendered = transcript_text(app)
+        assert "Verified through the real TUI flow." in rendered
+        assert "Approval Req" not in rendered
+        assert "Permission required" not in rendered
+        (tmp_path / "goal-complete-80x24.txt").write_text(
+            f"{status_text(app)}\n\n{rendered}\n", encoding="utf-8"
+        )
+        (tmp_path / "goal-complete-80x24.svg").write_text(
+            app.export_screenshot(title="Completed goal lifecycle"), encoding="utf-8"
+        )
+
+        history = await real_client.list_messages(SESSION_ID, THREAD_ID, limit=50)
+        tools = [item.call.name for item in history.items if isinstance(item, ToolRecord)]
+        assert tools == ["get_goal", "update_goal"]
 
 
 @pytest.mark.parametrize("base_url", ["partial_failure"], indirect=True)

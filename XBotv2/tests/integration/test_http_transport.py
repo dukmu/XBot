@@ -129,7 +129,7 @@ async def _submit_turn(
             json=payload,
         )
         assert response.status_code == 202, response.text
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(1):
             async for frame in events:
                 collected.append(frame.event)
                 if _ends_turn(frame.event):
@@ -5786,526 +5786,602 @@ async def test_http_compact_command_commits_history_and_streams_typed_events(
         )
 
 
-@pytest.mark.asyncio
-async def test_http_goal_command_runs_the_evaluator_loop(
-    skills_client: httpx.AsyncClient,
-    skills_app,
-) -> None:
-    """`/goal` sets a condition, starts a turn, and an evaluator model judges it."""
-    skills_app.state.manager.application_factory = partial(
-        create_agent_application,
-        model_override=MockLLM(responses=[
-            {"content": "Working toward shipping the API."},
-            # The evaluator is a separate auxiliary call answering the verdict
-            # contract; the working model never certifies its own completion.
-            {"content": '{"verdict": "met", "reason": "API tests pass."}'},
-        ]),
-    )
-    await skills_client.post(
-        "/sessions", json={"session_id": "goal-state", "thread_id": "t"}
-    )
-    commands = await skills_client.get("/sessions/goal-state/threads/t/commands")
-    goal_commands = [
-        item for item in commands.json()["commands"] if item["name"] == "goal"
-    ]
-    assert len(goal_commands) == 1
-    assert goal_commands[0]["kind"] == "server"
-    assert goal_commands[0]["usage"].startswith("/goal")
-    assert not any(
-        item["name"] in {"create_goal", "get_goal", "update_goal", "shell"}
-        for item in commands.json()["commands"]
-    )
 
-    ctx = await skills_app.state.manager.get("goal-state", "t")
-    session_events = ctx.event_stream.subscribe()
 
-    response = await skills_client.post(
-        "/sessions/goal-state/threads/t/commands",
-        json={"raw": "/goal ship the API"},
+def _goal_request_text(request) -> str:
+    return "\n".join(
+        part.text
+        for message in request.messages
+        for part in message.parts
+        if isinstance(part, TextPart)
     )
-    assert response.json()["data"]["message"].startswith("[active] ship the API")
-
-    events = []
-    achieved = None
-    try:
-        for _ in range(200):
-            event = (
-                await asyncio.wait_for(anext(session_events), timeout=2)
-            ).event.model_dump(mode="json")
-            events.append(event)
-            if (
-                event["kind"] == "goal_changed"
-                and event["snapshot"]["state"]["kind"] == "achieved"
-            ):
-                achieved = event
-                break
-    except TimeoutError:
-        pytest.fail(f"goal event stream timed out; observed={events!r}")
-    await session_events.aclose()
-
-    assert achieved is not None
-    goal_state = achieved["snapshot"]["state"]
-    assert goal_state["condition"] == "ship the API"
-    assert goal_state["reason"] == "API tests pass."
-    assert goal_state["progress"]["turns_evaluated"] == 1
-    assert any(
-        event["kind"] == "assistant_completed"
-        and "Working toward shipping the API." in event["message"]["parts"][0]["text"]
-        for event in events
-    )
-    for _ in range(20):
-        if not ctx.turn_lock.locked():
-            break
-        await asyncio.sleep(0)
-    get_response = await skills_client.post(
-        "/sessions/goal-state/threads/t/commands",
-        json={"raw": "/goal"},
-    )
-    assert get_response.json()["data"]["status"] == "ok"
-    message = get_response.json()["data"]["message"]
-    assert message.startswith("[achieved] ship the API")
-    assert "Latest: API tests pass." in message
 
 
 @pytest.mark.asyncio
-async def test_goal_close_cancels_evaluator_and_resume_restarts_active_goal(
+@pytest.mark.parametrize("terminal_status", ["complete", "blocked"])
+async def test_goal_agent_tools_create_read_and_complete_real_state(
     skills_client: httpx.AsyncClient,
     skills_app,
+    terminal_status: str,
 ) -> None:
-    import asyncio
-
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import AchievedGoal, GoalChanged
+    from XBotv2.goal.models import BlockedGoal, CompleteGoal
 
-    class ResumeGoalLLM(MockLLM):
-        def __init__(self):
-            super().__init__(responses=[])
-            self.first_evaluator_started = asyncio.Event()
-            self.first_evaluator_cancelled = asyncio.Event()
-            self.resumed_round_started = asyncio.Event()
-            self.resumed_round_release = asyncio.Event()
-            self.rounds = 0
-            self.evaluations = 0
+    class GoalToolsLLM(MockLLM):
+        phase = 0
 
         async def _astream_once(self, request):
             self._state.request_history.append(request)
-            text = "\n".join(
-                part.text
-                for message in request.messages
-                for part in message.parts
-                if isinstance(part, TextPart)
-            )
-            if "You judge whether a completion condition has been met." in text:
-                self.evaluations += 1
-                if self.evaluations == 1:
-                    self.first_evaluator_started.set()
-                    try:
-                        await asyncio.Event().wait()
-                    except asyncio.CancelledError:
-                        self.first_evaluator_cancelled.set()
-                        raise
+            if not any(tool.name == "create_goal" for tool in request.tools):
                 yield ModelCompleted(response=self.to_response({
-                    "content": '{"verdict":"met","reason":"Verified after resume."}',
+                    "content": "Goal session",
                 }))
                 return
-
-            if '<system_reminder source="goal" event="round"' in text:
-                self.rounds += 1
-                if self.rounds == 2:
-                    self.resumed_round_started.set()
-                    await self.resumed_round_release.wait()
-            yield ModelCompleted(response=self.to_response({
-                "content": f"Goal work round {self.rounds}.",
-            }))
-
-    llm = ResumeGoalLLM()
-    manager = skills_app.state.manager
-    launch = {
-        "session_id": "goal-close-resume",
-        "thread_id": "t",
-        "provider_name": "default",
-        "workspace_root": skills_app.state.workspace_root,
-        "no_plugins": False,
-        "plugin_configs": {"goal": {"retry_seconds": 0.1}},
-        "llm_override": llm,
-    }
-    runtime = await manager.open_session(**launch)
-    first_events = runtime.event_stream.subscribe()
-    resumed_events = None
-    try:
-        response = await skills_client.post(
-            "/sessions/goal-close-resume/threads/t/commands",
-            json={"raw": "/goal ship the API"},
-        )
-        assert response.status_code == 200
-        await asyncio.wait_for(llm.first_evaluator_started.wait(), timeout=3)
-
-        closed = await skills_client.post("/sessions/goal-close-resume/close")
-        assert closed.status_code == 200
-        await asyncio.wait_for(llm.first_evaluator_cancelled.wait(), timeout=3)
-        await first_events.aclose()
-
-        resumed = await manager.open_session(**(launch | {"mode": "resume"}))
-        resumed_events = resumed.event_stream.subscribe()
-        await asyncio.wait_for(llm.resumed_round_started.wait(), timeout=3)
-
-        status = await skills_client.post(
-            "/sessions/goal-close-resume/threads/t/commands",
-            json={"raw": "/goal"},
-        )
-        assert status.status_code == 200
-        assert status.json()["data"]["message"].startswith("[active] ship the API")
-
-        llm.resumed_round_release.set()
-        achieved = None
-        async with asyncio.timeout(3):
-            while achieved is None:
-                event = (await anext(resumed_events)).event
-                if (
-                    isinstance(event, GoalChanged)
-                    and isinstance(event.snapshot.state, AchievedGoal)
-                ):
-                    achieved = event.snapshot.state
-
-        assert achieved.reason == "Verified after resume."
-        assert achieved.progress.turns_evaluated == 1
-        assert llm.rounds == 2
-        assert llm.evaluations == 2
-    finally:
-        llm.resumed_round_release.set()
-        if resumed_events is not None:
-            await resumed_events.aclose()
-        await manager.close_session("goal-close-resume", reason="test_cleanup")
-
-
-@pytest.mark.asyncio
-async def test_goal_close_cancels_scheduled_retry_timer(
-    skills_client: httpx.AsyncClient,
-    skills_app,
-) -> None:
-    import asyncio
-
-    from XBotv2.application.events import RUNTIME_EVENT
-    from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import ActiveGoal, GoalChanged
-
-    class RetryTimerLLM(MockLLM):
-        def __init__(self):
-            super().__init__(responses=[])
-            self.retry_scheduled = asyncio.Event()
-            self.rounds = 0
-            self.evaluations = 0
-
-        async def _astream_once(self, request):
-            self._state.request_history.append(request)
-            text = "\n".join(
-                part.text
-                for message in request.messages
-                for part in message.parts
-                if isinstance(part, TextPart)
-            )
-            if "You judge whether a completion condition has been met." in text:
-                self.evaluations += 1
-                yield ModelCompleted(response=self.to_response({
-                    "content": "malformed evaluator response",
-                }))
-                return
-            if '<system_reminder source="goal" event="round"' in text:
-                self.rounds += 1
-            yield ModelCompleted(response=self.to_response({
-                "content": f"Goal work round {self.rounds}.",
-            }))
-
-    llm = RetryTimerLLM()
-    manager = skills_app.state.manager
-    runtime = await manager.open_session(
-        session_id="goal-close-retry-timer",
-        thread_id="t",
-        provider_name="default",
-        workspace_root=skills_app.state.workspace_root,
-        no_plugins=False,
-        plugin_configs={"goal": {"max_retries": 1, "retry_seconds": 0.2}},
-        llm_override=llm,
-    )
-
-    def observe_goal(event):
-        if (
-            isinstance(event.event, GoalChanged)
-            and isinstance(event.event.snapshot.state, ActiveGoal)
-            and event.event.snapshot.state.progress.retries == 1
-        ):
-            llm.retry_scheduled.set()
-
-    runtime.application.events.on(RUNTIME_EVENT, observe_goal)
-    try:
-        response = await skills_client.post(
-            "/sessions/goal-close-retry-timer/threads/t/commands",
-            json={"raw": "/goal finish the API"},
-        )
-        assert response.status_code == 200
-        await asyncio.wait_for(llm.retry_scheduled.wait(), timeout=3)
-        # The GoalChanged notification precedes task creation; allow the
-        # evaluator-failure handler to finish scheduling its timer.
-        await asyncio.sleep(0.02)
-
-        closed = await skills_client.post(
-            "/sessions/goal-close-retry-timer/close"
-        )
-        assert closed.status_code == 200
-        await asyncio.sleep(0.25)
-
-        assert llm.rounds == 1
-        assert llm.evaluations == 1
-        assert runtime.engine.pending_input_count == 0
-    finally:
-        await manager.close_session(
-            "goal-close-retry-timer", reason="test_cleanup"
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("verdict", ["met", "not_yet_met"])
-async def test_terminal_goal_persists_usage_tool_and_todolist_stats(
-    skills_client: httpx.AsyncClient,
-    skills_app,
-    verdict: str,
-) -> None:
-    import asyncio
-
-    from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import ActiveGoal, AchievedGoal, GoalChanged, PausedGoal
-
-    class GoalUsageLLM(MockLLM):
-        def __init__(self):
-            super().__init__(responses=[])
-            self.work_requests = 0
-
-        async def _astream_once(self, request):
-            self._state.request_history.append(request)
-            text = "\n".join(
-                part.text
-                for message in request.messages
-                for part in message.parts
-                if isinstance(part, TextPart)
-            )
-            if "You judge whether a completion condition has been met." in text:
-                response = {
-                    "content": (
-                        '{"verdict":"'
-                        f'{verdict}'
-                        '","reason":"API verified."}'
-                    ),
-                    "usage_metadata": {"input_tokens": 23, "output_tokens": 4},
-                }
-            elif self.work_requests == 0:
-                self.work_requests += 1
-                response = {
-                    "tool_calls": [{
-                        "id": "goal-status",
-                        "name": "get_goal",
-                        "args": {},
-                    }, {
-                        "id": "create-task",
-                        "name": "task_create",
-                        "args": {"subject": "verify the API"},
-                    }],
-                    "usage_metadata": {"input_tokens": 101, "output_tokens": 7},
-                }
-            elif self.work_requests == 1:
-                self.work_requests += 1
-                response = {
-                    "tool_calls": [{
-                        "id": "complete-task",
-                        "name": "task_update",
-                        "args": {"taskId": "1", "status": "completed"},
-                    }],
-                    "usage_metadata": {"input_tokens": 5, "output_tokens": 1},
-                }
+            self.phase += 1
+            if self.phase == 1:
+                response = {"tool_calls": [{
+                    "id": "create", "name": "create_goal",
+                    "args": {"objective": "verify the API"},
+                }], "usage_metadata": {"input_tokens": 2, "output_tokens": 1}}
+            elif self.phase == 2:
+                response = {"tool_calls": [{
+                    "id": "read", "name": "get_goal", "args": {},
+                }]}
+            elif self.phase == 3:
+                text = _goal_request_text(request)
+                identity = re.findall(
+                    r"Goal: ([a-f0-9]+) revision (\d+)", text
+                )[-1]
+                response = {"tool_calls": [{
+                    "id": "complete", "name": "update_goal",
+                    "args": {
+                        "goal_id": identity[0],
+                        "revision": int(identity[1]),
+                        "status": terminal_status,
+                        "reason": "Verified by the requested checks.",
+                    },
+                }]}
             else:
-                self.work_requests += 1
+                response = {"content": "Goal complete."}
+            yield ModelCompleted(response=self.to_response(response))
+
+    llm = GoalToolsLLM(responses=[])
+    runtime = await skills_app.state.manager.open_session(
+        session_id="goal-agent-tools", thread_id="t",
+        provider_name="default", workspace_root=skills_app.state.workspace_root,
+        no_plugins=False, llm_override=llm,
+    )
+    goal_service = runtime.application._context.require("goal")
+    try:
+        await _submit_turn(
+            skills_client, skills_app, "goal-agent-tools", "t",
+            {"content": "Keep working until the API is verified."},
+        )
+        snapshot = await goal_service.snapshot()
+        expected_type = CompleteGoal if terminal_status == "complete" else BlockedGoal
+        assert isinstance(snapshot.state, expected_type)
+        messages = (
+            await skills_client.get("/sessions/goal-agent-tools/threads/t/messages")
+        ).json()["items"]
+        assert [
+            item["call"]["name"] for item in messages if item["kind"] == "tool"
+        ] == ["create_goal", "get_goal", "update_goal"]
+        if terminal_status == "blocked":
+            resumed = await skills_client.post(
+                "/sessions/goal-agent-tools/threads/t/commands",
+                json={"raw": "/goal resume"},
+            )
+            assert resumed.status_code == 200
+            resumed_snapshot = await goal_service.snapshot()
+            assert resumed_snapshot.state.kind == "active"
+            assert resumed_snapshot.state.revision == snapshot.state.revision + 1
+    finally:
+        await skills_app.state.manager.close_session(
+            "goal-agent-tools", reason="test_cleanup"
+        )
+
+
+@pytest.mark.asyncio
+async def test_http_goal_continues_in_session_until_model_marks_it_complete(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.goal.models import CompleteGoal
+
+    class CompletingGoalLLM(MockLLM):
+        sent_update = False
+        goal_rounds = 0
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            text = _goal_request_text(request)
+            if 'source="goal" event="continue"' in text and not self.sent_update:
+                self.goal_rounds += 1
+            if self.goal_rounds >= 2 and not self.sent_update:
+                self.sent_update = True
+                identity = re.search(
+                    r'goal_id="([a-f0-9]+)", revision=(\d+)', text
+                )
+                response = {"tool_calls": [{
+                    "id": "finish-goal",
+                    "name": "update_goal",
+                    "args": {
+                        "goal_id": identity.group(1),
+                        "revision": int(identity.group(2)),
+                        "status": "complete",
+                        "reason": "API verification passed.",
+                    },
+                }], "usage_metadata": {"input_tokens": 7, "output_tokens": 2}}
+            else:
                 response = {
-                    "content": "The API is complete.",
-                    "usage_metadata": {"input_tokens": 6, "output_tokens": 1},
+                    "content": "Completion recorded.",
+                    "usage_metadata": {"input_tokens": 5, "output_tokens": 1},
                 }
             yield ModelCompleted(response=self.to_response(response))
 
-    llm = GoalUsageLLM()
-    manager = skills_app.state.manager
-    runtime = await manager.open_session(
-        session_id="goal-usage-stats",
+    llm = CompletingGoalLLM(responses=[])
+    runtime = await skills_app.state.manager.open_session(
+        session_id="goal-same-session",
         thread_id="t",
         provider_name="default",
         workspace_root=skills_app.state.workspace_root,
         no_plugins=False,
-        plugin_configs={"goal": {"max_rounds": 1}},
         llm_override=llm,
     )
     events = runtime.event_stream.subscribe()
     try:
-        response = await skills_client.post(
-            "/sessions/goal-usage-stats/threads/t/commands",
-            json={"raw": "/goal finish the API"},
+        created = await skills_client.post(
+            "/sessions/goal-same-session/threads/t/commands",
+            json={"raw": "/goal ship the API"},
         )
-        assert response.status_code == 200
-
-        terminal = None
-        goal_states = []
+        assert created.status_code == 200
+        goal_service = runtime.application._context.require("goal")
+        ended = 0
         async with asyncio.timeout(5):
-            while terminal is None:
-                event = (await anext(events)).event
-                if isinstance(event, GoalChanged):
-                    state = event.snapshot.state
-                    goal_states.append(state)
-                    if isinstance(state, (AchievedGoal, PausedGoal)):
-                        terminal = state
-
-        usage = runtime.application.usage.snapshot().total_counters
-        assert usage.input == 135
-        assert usage.output == 13
-        if verdict == "met":
-            assert isinstance(terminal, AchievedGoal)
-        else:
-            assert isinstance(terminal, PausedGoal)
-        assert terminal.stats.input_tokens == usage.input
-        assert terminal.stats.output_tokens == usage.output
-        assert terminal.stats.tool_calls == 3
-        assert terminal.stats.todo_items == 1
-        assert terminal.stats.todo_completed == 1
-        if verdict == "not_yet_met":
-            updated_active = [
-                state for state in goal_states
-                if isinstance(state, ActiveGoal)
-                and state.progress.turns_evaluated == 1
-            ]
-            assert len(updated_active) == 1
-            assert updated_active[0].stats.input_tokens == usage.input
-            assert updated_active[0].stats.output_tokens == usage.output
-            assert updated_active[0].stats.tool_calls == 3
-            assert updated_active[0].stats.todo_items == 1
-            assert updated_active[0].stats.todo_completed == 1
+            while ended < 2:
+                if _ends_turn((await anext(events)).event):
+                    ended += 1
+        async with asyncio.timeout(3):
+            while runtime.turn_task is not None:
+                await asyncio.sleep(0)
+        snapshot = await goal_service.snapshot()
+        assert isinstance(snapshot.state, CompleteGoal)
+        assert snapshot.state.reason == "API verification passed."
+        assert snapshot.activation == "none"
+        assert llm.goal_rounds == 2
+        assert len(llm.request_history) == 3
+        assert all(
+            "You judge whether a completion condition has been met."
+            not in _goal_request_text(request)
+            for request in llm.request_history
+        )
+        assert runtime.engine.pending_input_count == 0
+        assert snapshot.state.stats.input_tokens == 17
+        assert snapshot.state.stats.output_tokens == 4
+        assert snapshot.state.stats.tool_calls == 1
+        terminal_stats = snapshot.state.stats
+        usage_at_completion = runtime.application.usage.snapshot().total_counters
+        await _submit_turn(
+            skills_client,
+            skills_app,
+            "goal-same-session",
+            "t",
+            {"content": "unrelated follow-up"},
+        )
+        frozen = await goal_service.snapshot()
+        assert frozen.state.stats == terminal_stats
+        assert (
+            runtime.application.usage.snapshot().total_counters
+            != usage_at_completion
+        )
     finally:
         await events.aclose()
-        await manager.close_session("goal-usage-stats", reason="test_cleanup")
+        await skills_app.state.manager.close_session(
+            "goal-same-session", reason="test_cleanup"
+        )
 
 
 @pytest.mark.asyncio
-async def test_http_goal_impossible_verdict_persists_failed_state(
-    skills_client: httpx.AsyncClient,
-    skills_app,
-) -> None:
-    from XBotv2.goal.models import FailedGoal, GoalChanged
-
-    skills_app.state.manager.application_factory = partial(
-        create_agent_application,
-        model_override=MockLLM(responses=[
-            {"content": "The API cannot be shipped."},
-            {"content": '{"verdict":"impossible","reason":"Required credentials are unavailable."}'},
-        ]),
-    )
-    await skills_client.post(
-        "/sessions", json={"session_id": "goal-failed", "thread_id": "t"}
-    )
-    ctx = await skills_app.state.manager.get("goal-failed", "t")
-    events = ctx.event_stream.subscribe()
-    response = await skills_client.post(
-        "/sessions/goal-failed/threads/t/commands",
-        json={"raw": "/goal ship the API"},
-    )
-    assert response.status_code == 200
-
-    failed = None
-    async with asyncio.timeout(5):
-        while failed is None:
-            event = (await anext(events)).event
-            if isinstance(event, GoalChanged) and isinstance(
-                event.snapshot.state, FailedGoal
-            ):
-                failed = event.snapshot.state
-    await events.aclose()
-
-    assert failed is not None
-    assert failed.condition == "ship the API"
-    assert failed.reason == "Required credentials are unavailable."
-    assert failed.progress.turns_evaluated == 1
-    status = await skills_client.post(
-        "/sessions/goal-failed/threads/t/commands",
-        json={"raw": "/goal"},
-    )
-    assert status.json()["data"]["message"].startswith("[failed] ship the API")
-
-
-@pytest.mark.asyncio
-async def test_http_goal_interrupt_pauses_and_persists_goal(
+async def test_completed_todos_do_not_implicitly_complete_goal(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import GoalChanged, PausedGoal
+    from XBotv2.goal.models import ActiveGoal
 
-    class BlockingGoalLLM(MockLLM):
+    class TodoGoalLLM(MockLLM):
         def __init__(self):
             super().__init__(responses=[])
-            self.goal_started = asyncio.Event()
+            self.continuation_started = asyncio.Event()
 
         async def _astream_once(self, request):
             self._state.request_history.append(request)
-            user_text = "\n".join(
-                part.text
-                for message in request.messages
-                for part in message.parts
-                if isinstance(part, TextPart)
-            )
-            if '<system_reminder source="goal" event="round"' in user_text:
-                self.goal_started.set()
+            call = len(self.request_history)
+            if call == 1:
+                response = {"tool_calls": [{
+                    "id": "create-task", "name": "task_create",
+                    "args": {"subject": "verify API"},
+                }]}
+            elif call == 2:
+                response = {"tool_calls": [{
+                    "id": "complete-task", "name": "task_update",
+                    "args": {"taskId": "1", "status": "completed"},
+                }]}
+            elif call == 3:
+                response = {"content": "The checklist is complete."}
+            else:
+                self.continuation_started.set()
                 await asyncio.Event().wait()
-            yield ModelCompleted(
-                response=self.to_response({"content": "session title"})
-            )
+                return
+            yield ModelCompleted(response=self.to_response(response))
 
-    llm = BlockingGoalLLM()
-    skills_app.state.manager.application_factory = partial(
-        create_agent_application,
-        model_override=llm,
+    llm = TodoGoalLLM()
+    runtime = await skills_app.state.manager.open_session(
+        session_id="goal-todo-not-terminal", thread_id="t",
+        provider_name="default", workspace_root=skills_app.state.workspace_root,
+        no_plugins=False, llm_override=llm,
     )
-    await skills_client.post(
-        "/sessions", json={"session_id": "goal-interrupted", "thread_id": "t"}
+    try:
+        created = await skills_client.post(
+            "/sessions/goal-todo-not-terminal/threads/t/commands",
+            json={"raw": "/goal verify the API"},
+        )
+        assert created.status_code == 200
+        await asyncio.wait_for(llm.continuation_started.wait(), timeout=3)
+        snapshot = await runtime.application._context.require("goal").snapshot()
+        assert isinstance(snapshot.state, ActiveGoal)
+        assert snapshot.activation == "armed"
+        todos = await skills_client.get(
+            "/sessions/goal-todo-not-terminal/threads/t/todos"
+        )
+        assert todos.json()["tasks"][0]["status"] == "completed"
+    finally:
+        await skills_client.post(
+            "/sessions/goal-todo-not-terminal/threads/t/interrupt"
+        )
+        await skills_app.state.manager.close_session(
+            "goal-todo-not-terminal", reason="test_cleanup"
+        )
+
+
+@pytest.mark.asyncio
+async def test_goal_interrupt_and_cold_resume_do_not_restart_stale_work(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.goal.models import ActiveGoal
+
+    class BlockingContinuationLLM(MockLLM):
+        def __init__(self):
+            super().__init__(responses=[])
+            self.started = asyncio.Event()
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            self.started.set()
+            await asyncio.Event().wait()
+            yield ModelCompleted(response=self.to_response({"content": "unused"}))
+
+    llm = BlockingContinuationLLM()
+    manager = skills_app.state.manager
+    launch = dict(
+        session_id="goal-interrupt-resume", thread_id="t",
+        provider_name="default", workspace_root=skills_app.state.workspace_root,
+        no_plugins=False, llm_override=llm,
     )
-    ctx = await skills_app.state.manager.get("goal-interrupted", "t")
-    events = ctx.event_stream.subscribe()
-    response = await skills_client.post(
-        "/sessions/goal-interrupted/threads/t/commands",
+    runtime = await manager.open_session(**launch)
+    created = await skills_client.post(
+        "/sessions/goal-interrupt-resume/threads/t/commands",
         json={"raw": "/goal ship the API"},
     )
-    assert response.status_code == 200
-    await asyncio.wait_for(llm.goal_started.wait(), timeout=3)
-
+    assert created.status_code == 200
+    await asyncio.wait_for(llm.started.wait(), timeout=3)
     interrupted = await skills_client.post(
-        "/sessions/goal-interrupted/threads/t/interrupt"
+        "/sessions/goal-interrupt-resume/threads/t/interrupt"
     )
-    assert interrupted.status_code == 200
     assert interrupted.json()["cancelled"] is True
     async with asyncio.timeout(3):
-        while ctx.turn_lock.locked():
+        while runtime.turn_lock.locked():
             await asyncio.sleep(0)
+    before = await runtime.application._context.require("goal").snapshot()
+    assert isinstance(before.state, ActiveGoal)
+    assert before.activation == "disarmed"
+    calls = len(llm.request_history)
+    await manager.close_session("goal-interrupt-resume", reason="test")
+    resumed = await manager.open_session(**(launch | {"mode": "resume"}))
+    try:
+        await asyncio.sleep(0.05)
+        after = await resumed.application._context.require("goal").snapshot()
+        assert isinstance(after.state, ActiveGoal)
+        assert after.state.goal_id == before.state.goal_id
+        assert after.state.revision == before.state.revision
+        assert after.state.stats == before.state.stats
+        assert after.activation == "disarmed"
+        assert len(llm.request_history) == calls
+        assert resumed.engine.pending_input_count == 0
+        llm.started.clear()
+        resumed_command = await skills_client.post(
+            "/sessions/goal-interrupt-resume/threads/t/commands",
+            json={"raw": "/goal resume"},
+        )
+        assert resumed_command.status_code == 200
+        await asyncio.wait_for(llm.started.wait(), timeout=3)
+        resumed_snapshot = await resumed.application._context.require(
+            "goal"
+        ).snapshot()
+        assert resumed_snapshot.activation == "armed"
+    finally:
+        await skills_client.post(
+            "/sessions/goal-interrupt-resume/threads/t/interrupt"
+        )
+        await manager.close_session("goal-interrupt-resume", reason="test_cleanup")
 
-    paused = None
-    async with asyncio.timeout(3):
-        while paused is None:
-            event = (await anext(events)).event
-            if isinstance(event, GoalChanged) and isinstance(
-                event.snapshot.state, PausedGoal
-            ):
-                paused = event.snapshot.state
-    await events.aclose()
 
-    assert paused is not None
-    assert paused.condition == "ship the API"
-    assert paused.reason == "Interrupted."
-    status = await skills_client.post(
-        "/sessions/goal-interrupted/threads/t/commands",
-        json={"raw": "/goal"},
+@pytest.mark.asyncio
+async def test_goal_clear_during_claimed_turn_drops_stale_continuation(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.goal.models import NoGoal
+
+    class ClaimedGoalLLM(MockLLM):
+        def __init__(self):
+            super().__init__(responses=[])
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            self.started.set()
+            await self.release.wait()
+            yield ModelCompleted(response=self.to_response({"content": "old work"}))
+
+    llm = ClaimedGoalLLM()
+    manager = skills_app.state.manager
+    runtime = await manager.open_session(
+        session_id="goal-clear-claimed", thread_id="t",
+        provider_name="default", workspace_root=skills_app.state.workspace_root,
+        no_plugins=False, llm_override=llm,
     )
-    assert status.json()["data"]["message"].startswith("[paused] ship the API")
+    try:
+        await skills_client.post(
+            "/sessions/goal-clear-claimed/threads/t/commands",
+            json={"raw": "/goal old objective"},
+        )
+        await asyncio.wait_for(llm.started.wait(), timeout=3)
+        cleared = await skills_client.post(
+            "/sessions/goal-clear-claimed/threads/t/commands",
+            json={"raw": "/goal clear"},
+        )
+        assert cleared.status_code == 200
+        llm.release.set()
+        async with asyncio.timeout(3):
+            while runtime.turn_lock.locked():
+                await asyncio.sleep(0)
+        snapshot = await runtime.application._context.require("goal").snapshot()
+        assert isinstance(snapshot.state, NoGoal)
+        assert runtime.engine.pending_input_count == 0
+        assert len(llm.request_history) == 1
+    finally:
+        llm.release.set()
+        await manager.close_session("goal-clear-claimed", reason="test_cleanup")
+
+
+@pytest.mark.asyncio
+async def test_goal_identity_survives_compaction_and_explicit_resume(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+) -> None:
+    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.goal.models import CompleteGoal, PausedGoal
+
+    class CompactGoalLLM(MockLLM):
+        goal_updates = 0
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            text = _goal_request_text(request)
+            identity = re.search(
+                r'goal_id="([a-f0-9]+)", revision=(\d+)', text
+            )
+            revision = int(identity.group(2)) if identity is not None else 0
+            if not request.tools:
+                response = {
+                    "content": "Durable API goal context.",
+                    "usage_metadata": {"input_tokens": 2, "output_tokens": 1},
+                }
+            elif identity is not None and (
+                (revision == 1 and self.goal_updates == 0)
+                or (revision >= 2 and self.goal_updates == 1)
+            ):
+                self.goal_updates += 1
+                status = "paused" if self.goal_updates == 1 else "complete"
+                response = {"tool_calls": [{
+                    "id": f"goal-{status}", "name": "update_goal",
+                    "args": {
+                        "goal_id": identity.group(1),
+                        "revision": revision,
+                        "status": status,
+                        "reason": f"Goal {status} around compaction.",
+                    },
+                }], "usage_metadata": {"input_tokens": 2, "output_tokens": 1}}
+            else:
+                response = {
+                    "content": "ordinary response",
+                    "usage_metadata": {"input_tokens": 2, "output_tokens": 1},
+                }
+            yield ModelCompleted(response=self.to_response(response))
+
+    llm = CompactGoalLLM(responses=[])
+    runtime = await skills_app.state.manager.open_session(
+        session_id="goal-compact", thread_id="t", provider_name="default",
+        workspace_root=skills_app.state.workspace_root, no_plugins=False,
+        llm_override=llm,
+    )
+    goal_service = runtime.application._context.require("goal")
+    try:
+        await skills_client.post(
+            "/sessions/goal-compact/threads/t/commands",
+            json={"raw": "/goal verify the API"},
+        )
+        async with asyncio.timeout(3):
+            while True:
+                paused = await goal_service.snapshot()
+                if isinstance(paused.state, PausedGoal):
+                    break
+                await asyncio.sleep(0)
+        assert isinstance(paused.state, PausedGoal)
+        async with asyncio.timeout(3):
+            while runtime.turn_lock.locked():
+                await asyncio.sleep(0)
+        paused = await goal_service.snapshot()
+        assert paused.state.stats.input_tokens == 4
+        assert paused.state.stats.output_tokens == 2
+        assert paused.state.stats.tool_calls == 1
+        paused_stats = paused.state.stats
+        for index in range(5):
+            await _submit_turn(
+                skills_client, skills_app, "goal-compact", "t",
+                {"content": f"context {index}"},
+            )
+        compacted = await skills_client.post(
+            "/sessions/goal-compact/threads/t/commands",
+            json={"raw": "/compact"},
+        )
+        assert compacted.status_code == 200
+        assert compacted.json()["data"]["status"] == "ok"
+        after_compact = await goal_service.snapshot()
+        assert after_compact.state.goal_id == paused.state.goal_id
+        assert after_compact.state.revision == paused.state.revision
+        assert after_compact.state.stats == paused_stats
+
+        await skills_client.post(
+            "/sessions/goal-compact/threads/t/commands",
+            json={"raw": "/goal resume"},
+        )
+        async with asyncio.timeout(3):
+            while True:
+                complete = await goal_service.snapshot()
+                if isinstance(complete.state, CompleteGoal):
+                    break
+                await asyncio.sleep(0)
+        assert isinstance(complete.state, CompleteGoal)
+        assert complete.state.goal_id == paused.state.goal_id
+        async with asyncio.timeout(3):
+            while runtime.turn_lock.locked():
+                await asyncio.sleep(0)
+        complete = await goal_service.snapshot()
+        assert complete.state.stats.input_tokens == 8
+        assert complete.state.stats.output_tokens == 4
+        assert complete.state.stats.tool_calls == 2
+    finally:
+        await skills_app.state.manager.close_session(
+            "goal-compact", reason="test_cleanup"
+        )
+
+
+@pytest.mark.asyncio
+async def test_goal_waits_for_background_job_and_running_steer_then_continues_once(
+    skills_client: httpx.AsyncClient,
+    skills_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.goal.models import CompleteGoal
+
+    release_job = asyncio.Event()
+
+    async def run_shell(*_args, **_kwargs):
+        await release_job.wait()
+        return "job result"
+
+    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run_shell)
+
+    class JobGoalLLM(MockLLM):
+        goal_requests = 0
+
+        def __init__(self):
+            super().__init__(responses=[])
+            self.user_turn_started = asyncio.Event()
+            self.release_user_turn = asyncio.Event()
+            self.gated_user_turn = False
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            text = _goal_request_text(request)
+            identity = re.search(
+                r'goal_id="([a-f0-9]+)", revision=(\d+)', text
+            )
+            if identity is not None and self.goal_requests == 0:
+                self.goal_requests += 1
+                assert "job_completed" in text
+                assert "additional user context" in text
+                response = {"tool_calls": [{
+                    "id": "job-goal-complete", "name": "update_goal",
+                    "args": {
+                        "goal_id": identity.group(1),
+                        "revision": int(identity.group(2)),
+                        "status": "complete",
+                        "reason": "Background verification finished.",
+                    },
+                }]}
+            else:
+                if not self.gated_user_turn:
+                    self.gated_user_turn = True
+                    self.user_turn_started.set()
+                    await self.release_user_turn.wait()
+                response = {"content": "Handled user steering."}
+            yield ModelCompleted(response=self.to_response(response))
+
+    llm = JobGoalLLM()
+    runtime = await skills_app.state.manager.open_session(
+        session_id="goal-job-steer", thread_id="t", provider_name="default",
+        workspace_root=skills_app.state.workspace_root, no_plugins=False,
+        llm_override=llm,
+    )
+    goal_service = runtime.application._context.require("goal")
+    try:
+        job_id = await _start_background_shell(
+            runtime.application._context, "printf verified"
+        )
+        await skills_client.post(
+            "/sessions/goal-job-steer/threads/t/commands",
+            json={"raw": "/goal verify background work"},
+        )
+        assert runtime.engine.pending_input_count == 0
+
+        running = asyncio.create_task(
+            _collect_turn(runtime, "start user work", "user-work")
+        )
+        await asyncio.wait_for(llm.user_turn_started.wait(), timeout=3)
+        await runtime.send_message(
+            "additional user context", "steer-1", delivery="steer"
+        )
+        llm.release_user_turn.set()
+        await asyncio.wait_for(running, timeout=3)
+        active = await goal_service.snapshot()
+        assert active.state.kind == "active"
+        assert active.activation == "armed"
+
+        release_job.set()
+        await runtime.application._context.jobs.wait([job_id], timeout=2)
+        async with asyncio.timeout(5):
+            while True:
+                complete = await goal_service.snapshot()
+                if isinstance(complete.state, CompleteGoal):
+                    break
+                await asyncio.sleep(0)
+        assert llm.goal_requests == 1
+        assert runtime.engine.pending_input_count == 0
+    finally:
+        llm.release_user_turn.set()
+        release_job.set()
+        await skills_app.state.manager.close_session(
+            "goal-job-steer", reason="test_cleanup"
+        )
 
 
 @pytest.mark.asyncio

@@ -303,6 +303,126 @@ async def test_dependencies_block_start_and_reject_cycles(
 
 
 @pytest.mark.asyncio
+async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
+    temp_data_dir, temp_workspace,
+):
+    from XBotv2.application import RUNTIME_EVENT
+    from XBotv2.core.operations import EmptyRequest, dispatch_operation
+    from XBotv2.todolist.contracts import GET_TODOS, TaskChanged
+
+    calls = [
+        ("a", "task_create", {"subject": "Verify implementation"}),
+        ("b", "task_create", {"subject": "Ship result"}),
+        ("invalid-claim", "task_update", {
+            "taskId": "2", "status": "in_progress", "add_blocked_by": ["1"],
+        }),
+        ("link", "task_update", {"taskId": "1", "add_blocks": ["2"]}),
+        ("revise", "task_update", {
+            "taskId": "2", "remove_blocked_by": ["1"], "status": "in_progress",
+        }),
+        ("same", "task_update", {"taskId": "2", "status": "in_progress"}),
+        ("done-b", "task_update", {"taskId": "2", "status": "completed"}),
+        ("done-a", "task_update", {"taskId": "1", "status": "completed"}),
+        ("edit-done", "task_update", {"taskId": "1", "description": "Evidence recorded"}),
+        ("same-done", "task_update", {"taskId": "1", "status": "completed"}),
+    ]
+    application, _ = await _start(temp_data_dir, temp_workspace, [
+        {"tool_calls": [{"id": call_id, "name": name, "args": args}]}
+        for call_id, name, args in calls
+    ] + [{"content": "The revised plan is complete."}])
+    updates = []
+
+    def observe(event):
+        if isinstance(event.event, TaskChanged):
+            updates.append(event.event.snapshot)
+
+    try:
+        application.on(RUNTIME_EVENT, observe)
+        await _run_turn(application.engine, "Revise and finish the plan")
+        outcomes = _tool_messages(application.loop_state.history.snapshot())
+        snapshot = await dispatch_operation(application, GET_TODOS, EmptyRequest())
+    finally:
+        await application.destroy()
+
+    assert outcomes["invalid-claim"].outcome.kind == "failed"
+    assert outcomes["invalid-claim"].outcome.error.code == "blocked"
+    assert outcomes["revise"].outcome.kind == "succeeded"
+    assert [item.version for item in updates] == list(range(1, 8))
+    assert snapshot.edges == ()
+    assert [task.id for task in snapshot.tasks] == ["1", "2"]
+    assert all(task.status == "completed" for task in snapshot.tasks)
+    completion = _outcome_text(outcomes["done-a"].outcome)
+    assert "evidence" in completion.lower()
+    assert "subagent" not in completion.lower()
+    for call_id in ("same", "edit-done", "same-done"):
+        assert "Before reporting" not in _outcome_text(outcomes[call_id].outcome)
+
+
+@pytest.mark.asyncio
+async def test_dependency_revisions_are_atomic_and_survive_resume(
+    temp_data_dir, temp_workspace,
+):
+    from XBotv2.application import RUNTIME_EVENT
+    from XBotv2.core.operations import EmptyRequest, dispatch_operation
+    from XBotv2.todolist.contracts import GET_TODOS, TaskChanged
+
+    calls = [
+        ("a", "task_create", {"subject": "Prepare"}),
+        ("b", "task_create", {"subject": "Deliver"}),
+        ("link", "task_update", {"taskId": "1", "add_blocks": ["2"]}),
+        ("conflict", "task_update", {
+            "taskId": "1", "subject": "Must not be saved",
+            "add_blocks": ["2"], "remove_blocks": ["2"],
+        }),
+        ("unlink", "task_update", {"taskId": "1", "remove_blocks": ["2"]}),
+        ("start", "task_update", {"taskId": "2", "status": "in_progress"}),
+        ("block-running", "task_update", {
+            "taskId": "1", "subject": "Also must not be saved", "add_blocks": ["2"],
+        }),
+        ("pause", "task_update", {"taskId": "2", "status": "pending"}),
+        ("relink", "task_update", {"taskId": "2", "add_blocked_by": ["1"]}),
+    ]
+    application, _ = await _start(temp_data_dir, temp_workspace, [
+        {"tool_calls": [{"id": call_id, "name": name, "args": args}]}
+        for call_id, name, args in calls
+    ] + [{"content": "Revised plan saved."}])
+    updates = []
+
+    def observe(event):
+        if isinstance(event.event, TaskChanged):
+            updates.append(event.event.snapshot)
+
+    try:
+        application.on(RUNTIME_EVENT, observe)
+        await _run_turn(application.engine, "Revise the prerequisites")
+        outcomes = _tool_messages(application.loop_state.history.snapshot())
+        saved = await dispatch_operation(application, GET_TODOS, EmptyRequest())
+        assert outcomes["conflict"].outcome.error.code == "invalid_task_update"
+        assert outcomes["block-running"].outcome.error.code == "blocked"
+        assert outcomes["unlink"].outcome.kind == "succeeded"
+        assert [value.version for value in updates] == list(range(1, 8))
+        assert saved.find("1").subject == "Prepare"
+        assert saved.prerequisites("2") == ("1",)
+    finally:
+        await application.destroy()
+
+    resumed, _ = await _start(temp_data_dir, temp_workspace, [
+        {"tool_calls": [{"id": "blocked-after-resume", "name": "task_update",
+                         "args": {"taskId": "2", "status": "in_progress"}}]},
+        {"content": "Prerequisite remains incomplete."},
+    ])
+    try:
+        restored = await dispatch_operation(resumed, GET_TODOS, EmptyRequest())
+        assert restored == saved
+        await _run_turn(resumed.engine, "Try starting delivery")
+        outcomes = _tool_messages(resumed.loop_state.history.snapshot())
+        assert outcomes["blocked-after-resume"].outcome.error.code == "blocked"
+        assert await dispatch_operation(resumed, GET_TODOS, EmptyRequest()) == saved
+    finally:
+        await resumed.destroy()
+
+
+@pytest.mark.asyncio
 async def test_stale_reminder_queues_folds_into_one_turn_and_resets_on_use(
     temp_data_dir, temp_workspace,
 ):

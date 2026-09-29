@@ -23,7 +23,6 @@ class TaskConfig(BaseModel):
     max_active_form_chars: int = Field(default=200, ge=1)
     reminder_after_turns: int = Field(default=3, ge=1)
     verification_nudge: bool = True
-    verification_hint: str = "verif"
 
 
 class TaskValidationError(ValueError):
