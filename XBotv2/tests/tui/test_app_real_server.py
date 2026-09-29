@@ -38,7 +38,7 @@ from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.core.domain import ProviderError
 from XBotv2.core.history import SurfaceReplaced
 from XBotv2.core.messages import CompactionSummaryMessage
-from XBotv2.core.stream import ModelCompleted, ModelFailed
+from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta, TextDelta
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.interactions.models import UserInputRequest
 from XBotv2.llm.mock import MockLLM
@@ -83,6 +83,8 @@ async def base_url(
         "minimax_thinking",
         "unicode_tool",
         "unicode_compact",
+        "partial_failure",
+        "tool_failure",
     }
     upstream_http: uvicorn.Server | None = None
     upstream_serving: asyncio.Task | None = None
@@ -380,6 +382,42 @@ async def base_url(
                 "chunks": [{"content": REPLY}],
                 "chunk_delay_ms": 2500,
             },
+        ]
+    elif scenario == "partial_failure":
+        model_responses = [answer]
+
+        class PartialFailureMockLLM(MockLLM):
+            failed_once = False
+
+            async def _astream_once(self, model_request):
+                if not self.failed_once:
+                    self.failed_once = True
+                    yield ReasoningDelta(text="Reasoning survived the failure. ")
+                    yield TextDelta(text="Partial answer survived the failure.")
+                    yield ModelFailed(error=ProviderError(
+                        code="partial_stream_failed",
+                        message="provider stream broke after partial output",
+                        retryable=False,
+                        category="provider",
+                    ))
+                    return
+                async for event in super()._astream_once(model_request):
+                    yield event
+
+        model_factory = PartialFailureMockLLM
+    elif scenario == "tool_failure":
+        model_responses = [
+            {
+                "tool_calls": [{
+                    "id": "failed-shell",
+                    "name": "shell",
+                    "args": {
+                        "command": "printf 'partial-tool-%s' output; exit 7",
+                    },
+                }],
+            },
+            {"content": "Recovered after the failed tool."},
+            answer,
         ]
     elif scenario in {"unicode_tool", "unicode_compact"}:
         repeats = 80 if scenario == "unicode_tool" else 12
@@ -2141,6 +2179,134 @@ async def test_a_real_turn_arrives_on_screen(real_client: XBotClient) -> None:
         assert "say hello" in transcript_text(app), "the prompt is shown too"
         assert app.controller is not None
         assert app.controller.state.timeline.get("") is None
+
+
+@pytest.mark.parametrize("base_url", ["partial_failure"], indirect=True)
+async def test_partial_provider_failure_stays_visible_and_the_tui_recovers(
+    real_client: XBotClient,
+    tmp_path: Path,
+) -> None:
+    app = tui(real_client)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("fail after partial output")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: (
+                "Partial answer survived the failure." in transcript_text(app)
+                and "provider stream broke after partial output" in transcript_text(app)
+                and "Running" not in status_text(app)
+            ),
+            description="the partial provider failure to settle visibly",
+        )
+        assert "Reasoning survived the failure." in transcript_text(app)
+        (tmp_path / "partial-provider-failure.txt").write_text(
+            f"{status_text(app)}\n\n{transcript_text(app)}\n", encoding="utf-8"
+        )
+        (tmp_path / "partial-provider-failure.svg").write_text(
+            app.export_screenshot(title="Partial provider failure"), encoding="utf-8"
+        )
+
+        composer.load_text("continue after provider failure")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            description="a successful follow-up after provider failure",
+        )
+        assert "Partial answer survived the failure." in transcript_text(app)
+
+
+@pytest.mark.parametrize("base_url", ["thinking_stream"], indirect=True)
+async def test_partial_stream_survives_interrupt_and_follow_up(
+    real_client: XBotClient,
+    tmp_path: Path,
+) -> None:
+    app = tui(real_client)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("interrupt this stream")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: "First, I am checking" in transcript_text(app),
+            description="the first streamed reasoning delta",
+        )
+        await pilot.press("escape")
+        await wait_for(
+            pilot,
+            lambda: (
+                "Turn interrupted" in transcript_text(app)
+                and "Running" not in status_text(app)
+            ),
+            description="the interrupt terminal state",
+        )
+        assert "First, I am checking" in transcript_text(app)
+        (tmp_path / "partial-stream-interrupted.txt").write_text(
+            f"{status_text(app)}\n\n{transcript_text(app)}\n", encoding="utf-8"
+        )
+        (tmp_path / "partial-stream-interrupted.svg").write_text(
+            app.export_screenshot(title="Partial stream interrupted"), encoding="utf-8"
+        )
+
+        composer.load_text("continue after interrupt")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            description="a successful follow-up after interrupt",
+        )
+        assert "First, I am checking" in transcript_text(app)
+
+
+@pytest.mark.parametrize("base_url", ["tool_failure"], indirect=True)
+async def test_failed_tool_output_remains_visible_and_follow_up_works(
+    real_client: XBotClient,
+    tmp_path: Path,
+) -> None:
+    app = tui(real_client)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("run a failing tool")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: (
+                "Recovered after the failed tool." in transcript_text(app)
+                and "Ready" in status_text(app)
+            ),
+            description="the failed tool and recovered assistant reply",
+        )
+        assert "Error" in transcript_text(app), transcript_text(app)
+        await pilot.press("ctrl+e")
+        await wait_for(
+            pilot,
+            lambda: "partial-tool-output" in transcript_text(app),
+            description="the failed tool output disclosure to expand",
+        )
+        (tmp_path / "failed-tool-output.txt").write_text(
+            f"{status_text(app)}\n\n{transcript_text(app)}\n", encoding="utf-8"
+        )
+        (tmp_path / "failed-tool-output.svg").write_text(
+            app.export_screenshot(title="Failed tool output"), encoding="utf-8"
+        )
+
+        history = await real_client.list_messages(SESSION_ID, THREAD_ID, limit=20)
+        tool = next(item for item in history.items if isinstance(item, ToolRecord))
+        assert tool.outcome.kind == "failed"
+        assert "partial-tool-output" in tool.outcome.error.message
+
+        composer.load_text("continue after tool failure")
+        await pilot.press("enter")
+        await wait_for(
+            pilot,
+            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            description="a successful follow-up after tool failure",
+        )
 
 
 @pytest.mark.parametrize("base_url", ["caption"], indirect=True)
