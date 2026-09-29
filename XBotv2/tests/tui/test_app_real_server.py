@@ -82,6 +82,7 @@ async def base_url(
         "thinking_activity", "queue_stream", "long_history_stream",
         "minimax_thinking",
         "unicode_tool",
+        "unicode_compact",
     }
     upstream_http: uvicorn.Server | None = None
     upstream_serving: asyncio.Task | None = None
@@ -380,11 +381,9 @@ async def base_url(
                 "chunk_delay_ms": 2500,
             },
         ]
-    elif scenario == "unicode_tool":
-        # Long enough to wrap both the JSON argument and tool output several
-        # times at 80 columns while keeping both disclosures inspectable in one
-        # compact terminal frame.
-        payload = "漢字🙂 café é " * 12
+    elif scenario in {"unicode_tool", "unicode_compact"}:
+        repeats = 80 if scenario == "unicode_tool" else 12
+        payload = "漢字🙂 café é " * repeats
         model_responses = [
             {
                 "tool_calls": [{
@@ -1220,10 +1219,18 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
             pass
 
 
-@pytest.mark.parametrize("base_url", ["unicode_tool"], indirect=True)
+@pytest.mark.parametrize(
+    ("base_url", "same_frame"),
+    [
+        pytest.param("unicode_tool", False, id="long-output"),
+        pytest.param("unicode_compact", True, id="args-and-result"),
+    ],
+    indirect=["base_url"],
+)
 async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
     real_client: XBotClient,
     base_url: str,
+    same_frame: bool,
     tmp_path: Path,
 ) -> None:
     if shutil.which("tmux") is None:
@@ -1265,10 +1272,16 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
         expanded = await _wait_for_tmux_screen(
             session_name,
             lambda screen: (
-                "shell(command:" in screen
-                and '"command":' in screen
-                and "Unicode complete" in screen
+                "ctrl+e collapses" in screen
                 and "漢字" in screen
+                and (
+                    not same_frame
+                    or (
+                        "shell(command:" in screen
+                        and '"command":' in screen
+                        and "Unicode complete" in screen
+                    )
+                )
             ),
             description="the Unicode tool disclosure to expand",
         )

@@ -2168,37 +2168,56 @@ async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revisio
     assert patch.config == {"workers": 2, "enabled": False}
 
 
-async def test_plugin_revision_conflict_preserves_draft_and_restores_focus() -> None:
+async def test_plugin_revision_conflict_reloads_and_retries_the_preserved_draft() -> None:
     from XBotv2.config.contracts import PluginConfigCatalog, PluginConfigDescriptor
 
-    catalog = PluginConfigCatalog(
-        scope="workspace",
-        workspace_root="/workspace/project",
-        revision="rev-1",
-        plugins=[
-            PluginConfigDescriptor(
-                plugin_id="example",
-                name="Example",
-                editable=True,
-                config_schema={
-                    "type": "object",
-                    "properties": {"enabled": {"type": "boolean"}},
-                },
-                scope_config={"enabled": True},
-                effective_config={"enabled": True},
+    def catalog(revision: str) -> PluginConfigCatalog:
+        return PluginConfigCatalog(
+            scope="workspace",
+            workspace_root="/workspace/project",
+            revision=revision,
+            plugins=[
+                PluginConfigDescriptor(
+                    plugin_id="example",
+                    name="Example",
+                    editable=True,
+                    config_schema={
+                        "type": "object",
+                        "properties": {"enabled": {"type": "boolean"}},
+                    },
+                    scope_config={"enabled": True},
+                    effective_config={"enabled": True},
+                )
+            ],
+        )
+
+    class ConflictOnceBackend(ScriptedBackend):
+        attempts = 0
+
+        async def update_plugin_config(
+            self, session_id, thread_id, plugin_id, patch
+        ):
+            self.plugin_config_updates.append({
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "plugin_id": plugin_id,
+                "patch": patch,
+            })
+            self.attempts += 1
+            if self.attempts == 1:
+                self.plugin_config = catalog("rev-2")
+                raise XBotClientError(
+                    409,
+                    ErrorResponse(
+                        code="plugin_config_conflict",
+                        message="catalog revision changed",
+                    ),
+                )
+            return await self.list_plugin_config(
+                session_id, thread_id, scope=patch.scope
             )
-        ],
-    )
-    backend = ScriptedBackend(
-        plugin_config=catalog,
-        plugin_config_update_error=XBotClientError(
-            409,
-            ErrorResponse(
-                code="plugin_config_conflict",
-                message="catalog revision changed",
-            ),
-        ),
-    )
+
+    backend = ConflictOnceBackend(plugin_config=catalog("rev-1"))
     app = app_for(backend)
     async with app.run_test(size=(80, 24)) as pilot:
         await settle(pilot)
@@ -2218,6 +2237,17 @@ async def test_plugin_revision_conflict_preserves_draft_and_restores_focus() -> 
         assert "catalog changed" in str(message.content).lower()
         assert app.screen.query_one("#plugin-config-field-0", Checkbox).value is False
         assert backend.plugin_config_updates[-1]["patch"].revision == "rev-1"
+        assert backend.plugin_config_reads == 2
+
+        await pilot.click("#plugin-config-apply")
+        await settle(pilot)
+        assert [
+            update["patch"].revision for update in backend.plugin_config_updates
+        ] == ["rev-1", "rev-2"]
+        assert backend.plugin_config_updates[-1]["patch"].config == {"enabled": False}
+        assert "saved" in str(
+            app.screen.query_one("#settings-plugin-message", Static).content
+        ).lower()
 
         await pilot.press("escape")
         await pilot.pause()
