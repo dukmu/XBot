@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 import httpx
 import pytest
@@ -35,7 +35,7 @@ import pytest_asyncio
 import XBotv2.client as client_module
 import yaml
 from openai.types.chat import ChatCompletionChunk
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from XBotv2.jobs import Running
 from XBotv2.jobs.protocol import JobCompletedEvent
 from XBotv2.core.paths import RuntimePaths
@@ -50,7 +50,7 @@ from httpx import ASGITransport
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import OpenAICompatibleProvider
 from XBotv2.interactions.protocol import Answered
-from XBotv2.application import RuntimeEvent
+from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.protocol.version import PROTOCOL_VERSION
@@ -4582,6 +4582,7 @@ async def _real_client(
     timeout: float = 30.0,
     no_plugins: bool = True,
     plugin_overlays: tuple[dict[str, Any], ...] = (),
+    initial_runtime_event: BaseModel | None = None,
 ) -> AsyncIterator[tuple[XBotClient, str, str]]:
     """A real local HTTP server and a connected ``XBotClient``.
 
@@ -4699,6 +4700,12 @@ async def _real_client(
             workspace_root=str(workspace),
             mode="new",
         )
+        if initial_runtime_event is not None:
+            runtime = await application.sessions.get("default", "agent")
+            await runtime.application.events.emit(
+                RUNTIME_EVENT,
+                RuntimeEvent(event=initial_runtime_event),
+            )
         yield client, "default", "agent"
     finally:
         try:
@@ -4710,6 +4717,38 @@ async def _real_client(
                 await asyncio.wait_for(serving, timeout=10)
             finally:
                 await application.destroy()
+
+
+@pytest.mark.asyncio
+async def test_real_http_stream_forwards_external_plugin_runtime_event(tmp_path: Path) -> None:
+    class WeatherNotice(BaseModel):
+        kind: Literal["weather_notice"] = "weather_notice"
+        city: str
+        temperatures: list[int]
+
+    async with _real_client(
+        tmp_path,
+        llm=MockLLM(responses=[]),
+        sandbox_enabled=False,
+        initial_runtime_event=WeatherNotice(
+            city="Hangzhou",
+            temperatures=[19, 23],
+        ),
+    ) as (client, session_id, thread_id):
+        frames = []
+        async with asyncio.timeout(10):
+            async for frame in client.stream_events(
+                session_id, thread_id, after=0,
+            ):
+                frames.append(frame)
+                if frame.kind == "weather_notice":
+                    break
+
+        notice = next(frame for frame in frames if frame.kind == "weather_notice")
+        assert notice.payload == {
+            "city": "Hangzhou",
+            "temperatures": [19, 23],
+        }
 
 
 @pytest.mark.asyncio

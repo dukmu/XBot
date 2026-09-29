@@ -307,20 +307,7 @@ def _session_event_payload(event: object) -> dict[str, JsonValue]:
         return event.usage.model_dump(mode="json")
     if is_loop_event(event):
         return event.model_dump(mode="json", exclude={"kind"})
-    from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
-    from XBotv2.goal.models import GoalChanged
-    from XBotv2.interactions import ClientNotice, UserInputRecorded, UserInputRequest
-    from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
-    from XBotv2.permissions import PermissionRequest, PermissionResponseRecorded
-    from XBotv2.todolist.contracts import TaskChanged
-    from XBotv2.usage import UsageUpdated
-    if isinstance(event, (
-        CompactionCompleted, CompactionFailed, CompactionStarted, GoalChanged,
-        ClientNotice, UserInputRecorded, UserInputRequest,
-        JobCompletedEvent, JobUpdatedEvent, PermissionRequest, TaskChanged,
-        PermissionResponseRecorded,
-        UsageUpdated,
-    )):
+    if isinstance(event, BaseModel):
         return event.model_dump(mode="json", exclude={"kind"})
     raise TypeError(f"Unsupported session event: {type(event).__name__}")
 
