@@ -11,7 +11,7 @@
 - [x] 持久化是可选能力；缺少持久化不得阻断实时 Agent、工具、事件流和客户端。
 - [x] StateService 当前是命名空间 KV 的单 JSON 原子快照，不是 append-only log；`d988e4c` 恢复该职责并覆盖已有状态启动。
 - [x] 本轮不做 WebUI、bench 驱动优化、外部供应商矩阵或新框架。
-- [ ] 每个切片先核对 owner 和真实生产入口，再写失败测试、最小修复、focused 验证及相称的扩大回归。
+- [x] 本轮切片先核对 owner 和生产入口；缺陷先复现，再修复及扩大验证。类型整理以唯一归属和有效状态为准，不以测试数量定义完成。
 
 ## 当前稳定基线
 
@@ -27,22 +27,27 @@
 - [x] `fbac3f1` 删除 AgentCreateOptions 的重复启动身份/上下文；SessionLaunch 为唯一来源，前者仅保留 Agent 选择/定义/model override。真实启动、恢复、caption、子应用相关验证通过，无兼容字段。
 - [x] `13e1a9f` 将 assistant history 提交置于完成事件之前，覆盖无持久化、持久化及写入失败；`6917e73` 删除该切片顺带增加的状态通知，未放宽原事件次数测试。`5b5de7b` 删除 SSE 内建插件事件名单，保留 canonical 特殊投影与客户端未知事件校验。
 - [x] `d1d0e9b` 拒绝 cold resume 的 workspace 冲突；直接 application 启动也在 session 水合边界校验，避免 metadata 与变量/配置分叉，不新增兼容路径。active attach 仍复用既有 runtime。
-- [ ] 逐项核对设计文档第 2–5 节：每个领域事实只有一个权威类型、owner 和持久化来源；删除重复 DTO、动态语义、旧入口、兼容导出及隐式 callback。
-- [ ] 从 application → loader/XCore → session/runtime → protocol/client 做依赖审计；Core 不聚合插件对象、不硬编码插件名，protocol 只表达 transport contract。
-- [ ] 核对 lifecycle 的唯一 owner：boot、apply、start、failure rollback、dispose、process/session/thread close 均只有一次明确清理，不依赖析构或静默 fallback。
-- [ ] 核对 human、runtime input/notice、tool、interaction、completion、workspace/session event 的身份与恢复语义；不能因“都像消息”共享错误路径。
-- [ ] 建立剩余迁移清单时只记录实际重复或错误职责；不得从旧 TODO checkbox 反推需要新增抽象。
-- [ ] 完成后运行 Core 与关键 layering/contract 测试，并记录仍未迁移的具体类型/入口，而非只报告数量。
+- [x] `648dbf9` 将 session 事件从 HTTP protocol 收回 `session/events.py`，删除 AgentConfiguredData/QueueUpdatedData/InputDeliveryData 副本。公开 SessionEvent 只有开放事件接口一种含义；输入 accepted 必须明确 target，不再靠 optional 字段混用事件语义。
+- [x] `216cd24` 将 loop outputs 收回 `agentloop/outputs.py`；HTTP protocol 只保留工具目录 DTO/路由。进程内 hook 结果删除无人读取的 kind 字符串，lifecycle/turn payload 不再携带可变 session 引用；无旧路径兼容导出。
+- [x] `69be637` 将 interaction 请求/结果/通知收回领域模型，HTTP 仅保留请求响应 DTO；ask_user 的选项数规则回到工具边界。删除 session 私有 publish 透传，公开事件入口标注 SessionEvent。
+- [x] 审查保留 ToolExecution/ToolMessage 的唯一显式 schema 前向引用解析；它不是业务动态注入，不为移除 model_rebuild 新造执行抽象层。
+- [x] `XBotv2/docs/runtime-closure.md` 已记录 application → loader/XCore → loop/session → transport/client 的实际 owner、依赖及生产证据。application 仍是入口，各能力依据依赖规则装配，无必须挂载的插件名单。
+- [x] 生命周期审查覆盖启动失败、可选插件失败、依赖缺失、关闭与提交竞争、资源释放；既有初始化/卸载测试与本轮关闭回归分别列证，不依赖析构。
+- [x] 输入、runtime notice、tool、interaction、completion 各自保留身份及恢复语义；进程内 hook、loop output、session event 分开，持久化恢复不冒充 SSE 重放。
+- [x] `8d61769` 将现有 InboxTarget 移至 core.domain：inbox、accepted event、pending projection 复用同一枚举，删除重复 Literal 和旧 agentloop 导出。JSON 值不变，TUI 显式展示 value，并删除无效 target 判空。
+- [x] 剩余迁移只记录上述已找到的类型/依赖，不从旧 checklist 推导框架、callback 或新状态服务。
+- [x] 最终代码 `8d61769`：Core 650 passed、3 deselected（101.94s）。仅忽略 WebUI server 文件与 3 个 CLI web 入口；不再使用误排除 browser/core server 用例的 `-k 'not web'`。
 
 ## 2. 运行时失败与恢复（对应用户旧项 2）
 
 - [x] `d9f96cb` 修复关闭期间仍接受输入/启动回合，以及 inbox discard 失败跳过资源清理；复用现有 submission lock 和 closing 状态，保留首个失败。与启动事实迁移合并后 Core + HTTP/fold-in `743 passed, 17 deselected in 172.46s`。
-- [ ] 建立 production runtime 失败矩阵：启动中插件失败、provider/tool 异常、hook 异常、task cancellation、interrupt、close 与并发提交；验证未提交输入可重试且资源只清理一次。
-- [ ] 覆盖 pending interaction 的恢复与竞争：permission/question 在断连、重连、取消、外部 resolution 和重复响应下只能完成一次，陈旧请求不可重新出现。
-- [ ] 覆盖多条 pending input 的 FIFO、claim/commit/rollback 与 turn 边界；steer 在安全 step 领取但不自动 interrupt，显式 queue 留到下一 turn。
+- [x] `70c9fd2` 明确拒绝已关闭 event stream 的新订阅，防止注册永远不会被唤醒的 waiter；不增加额外关闭状态。
+- [x] 已按真实入口核对启动/plugin/provider/tool/hook 失败、取消、中断和 close/submit；证据索引见 runtime-closure.md，包含未提交输入恢复与工具 side-effect 不盲目重放。
+- [x] permission/question 的 exactly-once resolution、外部 resolution、取消与重复响应有 Core/HTTP 证据；断连后的 overlay/selection 有真实 socket-cut TUI 证据，两者不互相冒充。
+- [x] FIFO、claim/commit/rollback、安全 step steer 和 next-turn queue 由 inbox/input-routing/fold-in 生产测试覆盖，不增加第二份输入状态。
 - [x] jobs 已覆盖 runner 尚未启动时取消及 cancelled/failed 子应用结果读取；后续只补实际缺失的竞争路径，不造通知框架。
-- [ ] 用真实 loopback HTTP/SSE 验证 sequence gap、cursor expiry、watchdog reconnect、恢复后的 authoritative snapshot 和清理；不得以 scripted backend 代替关键断线行为。
-- [ ] 运行相称的 Core + HTTP + fold-in 回归，并逐项说明失败注入点与可观察结果。
+- [x] 真实 HTTP/SSE 验证 sequence、自然 cursor expiry、主动切断 socket 后重连与恢复；transport 测试验证 gap/watchdog/baseline 策略。明确区分网络证据与受控策略测试。
+- [x] 最终代码 `8d61769` 的完整 HTTP + fold-in 为 119 passed（96.22s），与上述 Core 共用同一版本；失败点/预期结果见 runtime-closure.md。
 
 ## 3. 持久化与复杂度（对应用户旧项 3）
 
@@ -50,20 +55,18 @@
 - [x] 区分职责：StateService 是 KV 快照；session trajectory/inbox 是追加记录。撤回的 StateService JSONL 设计不再作为候选方案。
 - [x] 外部 trace writer 的已知前缀可增量读取，损坏后缀不发布部分结果；缓存丢弃后的重试重新验证磁盘事实。
 - [x] usage 累计快照包含辅助请求及已实际消耗的 provider usage，不等于成功写入 messages 的用量之和；history 写入失败不应回滚已消耗的 usage。未据此新增日志或更改统计语义。
-- [ ] 审计 metadata、usage、插件状态、transcript 和 trajectory 是否重复持有同一权威事实；静态身份只存一次，动态变化沿用现有事件，避免第二份日志。
-- [ ] 测量生产读写的记录数与字节数：追加、分页、compact、外部 writer、缓存轮换、close/reopen、多 session；累计 n 次交互不得因完整历史复制或重放形成 O(n²)。
-- [ ] 验证冷历史首次加载、损坏完整记录、部分尾写、fsync/replace 失败、进程恢复及 cursor 连续性；不能用热缓存耗时阈值代替。
-- [ ] 明确每个 persisted artifact 的格式、owner、恢复投影和清理边界；格式变化必须有迁移决策，不暗加兼容双读。
+- [x] 已核对 metadata、usage、插件 KV、transcript/trajectory 和 artifact 的 owner、格式与恢复路径，见 `XBotv2/docs/storage-plugin-closure.md`。usage 包含辅助请求，不是 messages 的冗余副本；不新增 requests 日志。
+- [x] 现有计数测试核对 warm compact、12 个活跃路径越过 8 项缓存、外部追加分页与 close/reopen：活跃 reader 只读后缀；compact 每次只 fold 新记录；失去缓存后允许一次线性冷读，不宣称零成本恢复。具体测试及字节依据已写入上述证据表。
+- [x] `3e72524` 使 cold trajectory 与热读使用同一 canonical fold，拒绝身份重复/无效 replacement；复用 append owner 修复生命周期部分写。`3c0fb15` 验证已有 committed bytes 在失败后原样保留且可重试。
+- [x] `f87c752` 将 child lifecycle 改为 schema v2 判别联合：started 独占 parent/agent，completed 无空 error，failed 必须有 error，cancelled 必须有 reason。明确拒绝 v1，不增加兼容 reader；其他存储格式不变。
 
 ## 4. 插件职责与生命周期（对应用户旧项 4）
 
 - [x] `5848db3` 修复 skills 注册 namespace 与 guard 不一致导致无法连续加载 Skill；生产 factory/标准工具路径验证，普通未允许工具仍被拒绝。`1d2a180` 保存真实 MCP stdio 自动回归：发现→模型工具调用→结果→销毁后子进程退出。
-- [ ] goal/todo 用户反馈仍未复现；已有通知链核对不构成该反馈已解决的证明，不为此新增通知框架。
-- [ ] 按主线插件实际职责建立最小证据表：注册/依赖、成功路径、关键失败、事件、可选持久化、卸载；不存在的能力不虚构测试或列为缺陷。
-- [ ] 核对 compact、goal、todolist、subagents、skills、MCP、browser 的公开服务与事件 ownership；插件不得读写 runtime 私有状态或让 Core 识别插件名。
-- [ ] 复核 compact/goal/todolist 完成通知不会重复创建 turn、恢复后不会重复投递；只有真实复现的缺陷才修改实现。
-- [ ] 验证插件卸载、依赖重绑和部分 apply 失败后的 disposer 顺序；健康能力继续可用，失败诊断保留原始 owner 信息。
-- [ ] Browser 只验收已声明 policy、关键协议互操作和资源清理；无界攻击矩阵留作独立安全 backlog。
+- [x] `XBotv2/docs/storage-plugin-closure.md` 已按实际能力记录 compact、goal、todolist、skills、MCP、browser 的注册、事件、恢复、失败和卸载证据；subagent child lifecycle 与既有 jobs 终态验证分属各自 owner。
+- [x] 公开链路验证 goal/todo 状态先保存再通知、close/resume 恢复、goal 唤醒自主回合、todo/compact 提醒不唤醒回合；证据表列出实际运行的 8 个 HTTP 用例（9 个参数化结果）。不新增通知框架。
+- [ ] 早前 goal/todo 的具体异常反馈没有原始 trace，尚未复现；不能将上述公开链路通过写成该历史问题已修复。
+- [x] 已核对部分初始化失败的注册回滚及卸载清理；MCP 真实 stdio 子进程和 Browser 本地 HTTP/Chromium 清理通过。不虚构无持久状态插件的恢复能力，不扩展无界安全矩阵。
 
 ## 5. Textual TUI 产品验收（对应用户旧项 5）
 
@@ -71,11 +74,12 @@
 - [x] Enter 默认使用现有 `delivery="steer"`，Shift+Enter 换行；显式 queue/interrupt 独立，不改用户原文、不发送额外事件。
 - [x] 当前产品契约保留分页历史、只读 `/thread`、紧凑单列布局、受限 Think/tool 展开窗口、永不折叠 final reply、可见 context trace、typed permission/question modal，以及 usage/context/cache 状态。
 - [x] `bb88087` 真实 CLI/tmux 在 permission pending 时主动切断 TCP，重连后选区及待回答交互保留，继续 question/reply/follow-up，公开 history 无重复；只增加测试侧透明转发器，无生产后门。主代理已读取本次稳定 permission-reconnected capture。
-- [ ] 继续验证 streaming/idle socket 断网、switch/reconnect 交错及滚动意图；permission 路径通过不代表全部重连矩阵完成。长历史测试一次未捕获 Running 帧，独立重跑通过但原因未定。
-- [ ] 完成 Settings 可用性闭环：真实数据来源与 scope、可发现导航、支持的 schema mutation、revision conflict/reload、返回会话后的草稿与 focus；未实现页面明确标注。
-- [ ] 继续核对 80×24、100×28 和宽屏的 Unicode、长代码、超长 tool output 与信息优先级；不追求像素仿制，也不复制 Claude 命令表。
-- [ ] 若凭证与网络可用，单独记录一次 reasoning-capable 外部 provider smoke；受控 loopback 不冒充供应商互操作。
-- [ ] 最终读取当轮 capture 和 canonical server history，确认实际产物后才能关闭 TUI 验收。
+- [x] `19fa747` 补齐 streaming/question/idle/switch 的真实 socket cut 及自然 cursor expiry；长历史 Running 阶段由测试侧 provider gate 控制。`e395c96` 修复历史阅读中提交消息强制跳尾，移除 modal 下硬编码命令提示。
+- [x] `0a80344` 验证 Settings rev-1 conflict → reload rev-2 → 保留 draft → retry success → 恢复 composer draft/focus。scope 由公开 catalog 提供，无写 API 的权限/sandbox 保持只读，不为填页面扩展服务端。
+- [x] 真实 80×24 Unicode args/result 双场景、80×24 ↔ 100×28 流式历史 anchor，以及已有宽屏 pilot 均有证据；本轮不宣称支持无界终端尺寸矩阵。具体路径见 `XBotv2/docs/tui-closure.md`。
+- [x] `da1c937` 补齐部分 Think/text 后 provider failure、Esc interrupt、shell 非零退出的真实 server/TUI 渲染与后续成功输入；主代理已实际查看 provider failure SVG 的本地渲染。
+- [ ] 外部 reasoning-capable provider 未在本轮请求；受控 loopback 不冒充供应商互操作，单独保留未验证项。
+- [x] 最终代码 `8d61769` 的 TUI + ACP 为 903 passed（165.00s）。真实用例检查公开 canonical history；主代理读取 `/tmp/xbot-final-target-20260929/` 当轮锚点、Unicode 和重连 capture，并查看三个异常终态 SVG 的实际渲染。
 
 ## 6. 子代理 `send_message`（对应用户旧项 1，后置）
 
@@ -90,9 +94,8 @@
 
 ## 最终交付门槛
 
-- [x] 本次集成代码截至 `bb88087`（最终生产代码 `6917e73`，其后仅测试/文档）：Core `632 passed, 17 deselected in 85.12s`；AgentLoop + 完整 HTTP/fold-in `138 passed in 92.35s`；完整 TUI + ACP `895 passed in 143.59s`。Core 使用 `-k 'not web'`，未运行 WebUI 或外部 provider。
-- [x] 扩大回归曾为 `750 passed, 1 failed`：额外状态通知改变既有事件次数。删除额外通知后重新验证上述套件，未改原断言。已读取集成后的 `/tmp/xbot-integrated-tui-20260929-final/` permission 重连渲染；本地产物不提交。
-- [ ] 1–5 的未完成项均有实现证据或明确排除理由；第 6 节按用户后续授权单独推进。
-- [ ] focused、Core、关键 integration、TUI/ACP 均在同一最终提交上运行；任何代码变更后受影响结果重新验证。
-- [ ] 记录未运行的外部 provider、WebUI 或安全矩阵及原因；不以旧 capture、旧 PNG 或历史测试数作为当前证据。
-- [ ] 最终检查无多余抽象、兼容路径、生成产物或无关用户修改，`git diff --check` 通过。
+- [x] 精确验收代码为 `8d61769`：Core 650 passed（忽略 WebUI server 文件、deselect 3 个 CLI web 入口），HTTP/fold-in 119 passed，TUI/ACP 903 passed。之后只修改计划与证据说明，不修改代码。
+- [x] 1–5 的有限实现/审查范围已记录于 runtime/storage-plugin/tui 三份 closure 文档；历史 goal/todo 异常缺原始 trace、外部 provider 未请求，仍按上文保留未验证状态。第 6 节按原安排后置。
+- [x] 三套集成验证使用同一最终代码；未删除失败测试，未以 mock backend 代替真实断网、stdio、HTTP 或 PTY 验证。
+- [x] 未运行 WebUI（用户排除）、付费外部 provider（本轮无新请求）、无界安全/终端矩阵（本轮有限范围之外）；受控本地 provider 不被写成外部互操作证据。
+- [x] `git diff --check` 通过；真实终端测试结束后无 xbot 测试 tmux session。本地 capture、已有 worktree 和用户无关修改不提交。

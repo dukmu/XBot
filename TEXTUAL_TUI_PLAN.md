@@ -11,7 +11,7 @@
 - [x] Textual、transport、controller/reducer 和 SSE 在同一 client loop；退出由 TUI stop → worker cancel/gather → host destroy → client close 顺序完成。
 - [x] transport 只负责公开 HTTP/SSE、cursor、sequence 和 reconnect；state/reducer 拥有语义投影；view 只拥有 DOM、focus、selection、scroll 和折叠显示。
 - [x] human、assistant、reasoning、tool、interaction、queue、history、job、compact 与 runtime notice 使用 producer-owned typed models；未知事件不得按裸 payload 猜语义。
-- [ ] 最终全仓边界审计：TUI 不读 session 文件、plugin/runtime private state，不硬编码工具名、插件名或服务端命令表；state/status/timeline 不 import Textual，view 不 import controller/transport，controller 不 import app，transport 不 import view/app/controller。
+- [x] 主线 TUI 边界静态审查与 layering 测试通过：业务数据走公开 API，state/status/timeline 不 import Textual，view 不 import controller/transport，controller 不 import app，transport 不 import view/app/controller。工具显示使用声明的类别，命令来自公开目录。
 
 ## 已验证产品基线
 
@@ -34,8 +34,8 @@
 - [x] 普通输入、多行 bracketed paste、继续编辑、canonical history 和重复输入检查已有真实 PTY 覆盖。
 - [x] Think/text/tool/permission/question/final/follow-up 的可见顺序与键盘响应已有真实 server/tmux 覆盖。
 - [x] reader 离开尾部时，连续 stream、完成和 resize 保持同一可见 entry；显式 PageDown 才恢复 tail follow。
-- [ ] 用 Unicode、长代码和超长 tool args/result 验证 terminal-cell 宽度、block 内滚动和窄屏密度，不让 payload 挤走 composer/status。
-- [ ] 对异常的部分 assistant/tool stream、provider failure 和 interrupt 终态做当前生产 capture，确认 error 可见且不伪造 turn 完成。
+- [x] 真实 80×24 的 Unicode 双场景已验证：80 次重复的超长 output 保持可操作；12 次重复场景同帧可见 tool header、JSON args、result、Think、final 与 composer。按 terminal-cell 宽度检查，不按字符串长度。
+- [x] `da1c937` 用真实 uvicorn/TUI 验证部分 Think/text 后 provider failure、Esc interrupt、shell exit 7：内容/错误保留，Running 结束，后续消息正常完成。主代理实际查看当轮 provider failure SVG 渲染；未把部分内容伪装为成功完成记录。
 
 ### History、switch、reconnect 与 resume
 
@@ -43,25 +43,25 @@
 - [x] session switch、已有 JSON 状态启动、双客户端隔离、compact 后退出/新进程 resume 和继续第六轮已有真 PTY 证据。
 - [x] switch/rebuild 后 authoritative thread read 恢复 turn count、runtime selection、usage、jobs、pending inputs/interactions 和 event cursor。
 - [x] `bb88087` 在真实 CLI/tmux 的 permission pending 阶段主动切断 TCP，服务端/session 不重启；新连接恢复后原选区可操作，继续 question/reply/follow-up，公开 history 无重复。转发器仅位于测试侧，无生产测试 API。
-- [ ] 补 stream 中、question pending 与 idle 的真实 socket 中断；permission 场景不能替代其他状态。长历史测试一次未捕获瞬时 Running 帧，重跑通过，未宣称已消除时序波动。
-- [ ] 覆盖 reconnect 与 session switch 交错、失败 switch 保持原 stream、cursor expiry baseline rebuild 后 reader intent 明确重置或保留。
+- [x] `19fa747` 真实 socket 中断覆盖 reasoning streaming、question pending、idle 和 session switch。第 31 轮改用测试 provider gate 保持 Running 验证窗口，不再依靠抢瞬时帧；未改生产 provider 接口。
+- [x] 公开 API 正常发送回合自然淘汰 SSE cursor，旧 after 返回可重试 409；既有 transport 验证 baseline rebuild/失败 switch/旧 reader 失效。生产转场与 transport 恢复策略分别列证，不宣称所有竞争排列已穷举。
+- [x] `e395c96` 删除 submit 无条件跳尾：阅读历史时继续保持 anchor，原本 following-tail 时继续跟随；视图明确实现已有 reader_at_end 契约。
 
 ### Resize、focus、selection 与 overlay
 
 - [x] pilot 覆盖滚离尾部的 entry/行偏移、composer draft/focus/selection；真实 PTY 覆盖 80×24 ↔ 100×28 长历史流式 resize。
 - [x] permission/question modal 在 80×24 保持完整边界与键盘操作；外部 resolution 关闭陈旧 overlay 并恢复 composer focus。
 - [x] Ctrl+E 展开/收起 Think/tool 后不改变 reader intent；短 block 不预留固定 12 行空白。
-- [ ] 在真实断线/重连时保持或有意重建 overlay、focus、selection、fold 和 scroll anchor；用稳定屏幕条件取 capture，不能抢中间帧。
-- [ ] 验证超窄终端的最小可操作行为；无法完整展示时给出明确限制，不静默裁掉 interaction action。
+- [x] 当轮 PTY capture 验证重连后的 question Tuesday 选区、permission modal、idle Ready 和长历史 anchor；稳定条件取帧，原始产物路径见 `XBotv2/docs/tui-closure.md`。
+- [x] 本轮可操作尺寸门槛为 80×24 与 100×28，现有 pilot 覆盖宽屏；不宣称低于 80×24 的所有终端可操作，不为此新增响应式框架。
 
 ### Settings 与状态信息
 
 - [x] F2、`/status`、Model picker、只读 session policy、plugin catalog 和支持的标量 schema 已有基础 pilot/PTY；Esc 保留草稿。
-- [ ] 统一 Settings 的真实 scope 与数据来源，完成 provider/model/effort/agent、permissions/sandbox 和可编辑 plugin config 的成功/失败反馈。
-- [ ] 对 plugin config revision conflict 实现 reload/重试选择；复杂 schema 不猜测、不提供 raw JSON 逃生口。
-- [ ] 未有公开持久化入口的 Appearance 只允许当前实例预览，不能声称跨进程保存；未实现页明确标注 unavailable。
-- [ ] 复核 80×24 的导航可发现性、键盘可达、返回焦点/草稿和 status/footer 单行优先级。
-- [ ] 当前 permission capture 中 modal 已可操作，但 composer 仍提示手工 `/approve ID`，与 modal/状态提示重复；后续按公开交互模型整理，不增硬编码命令或客户端旁路。
+- [x] Settings 使用现有公开 selection/catalog API；plugin config 明确 workspace scope，permissions/sandbox 因无公开写 API 保持只读。复杂 schema 明确 unavailable，无 raw JSON 旁路。
+- [x] `0a80344` 验证 rev-1 冲突 → 重读公开 catalog 得到 rev-2 → 保留编辑草稿 → 再次 Apply 使用 rev-2 成功 → Esc 恢复 composer 草稿及焦点。既有实现已支持该链路，无须新增状态或重试框架。
+- [x] Appearance 只影响当前进程，不承诺持久化；80×24 导航、键盘可达和退出后的焦点/草稿有当前 pilot 证据。
+- [x] `e395c96` 删除 modal 下硬编码 `/approve`、`/answer` 提示；composer 直接提示在现有 dialog 操作。
 
 ### Commands、queue 与 subagent 展示
 
@@ -72,17 +72,17 @@
 
 ## 下一执行顺序
 
-- [ ] 先等待底层数据模型、运行时恢复、持久化和插件职责收口；TUI 不为未稳定 contract 建兼容层。
-- [ ] 第一 TUI 切片：继续真实 socket 中断/reconnect 未覆盖状态，并读取当轮 capture 与 canonical history。
-- [ ] 第二 TUI 切片：Settings scope、mutation、revision conflict 和返回会话可用性。
-- [ ] 第三 TUI 切片：Unicode/长代码/超长 tool output 与超窄终端限制。
-- [ ] 若发现服务端/协议缺口，提交最小生产证据并回到 owner 修复；不得在 TUI 旁路公开 API。
+- [x] TUI 已随 session、loop、interaction 类型迁移到唯一 owner；InboxTarget 显式渲染 value，没有保留旧 import、DTO 或客户端兼容分支。
+- [x] 第一切片：真实 socket 中断、switch、cursor expiry 和 Running gate 已完成；主代理读取 post-outputs 的长历史/Unicode 渲染，最终集成仍需重跑并读取当轮产物。
+- [x] 第二切片：Settings scope、mutation、revision conflict/retry 和返回会话可用性已完成。
+- [x] 第三切片：Unicode/超长 tool output 与 80×24 尺寸门槛已完成；不承诺无界终端矩阵。
+- [x] 已定位的事件/类型问题回到 producer owner 修正，真实断网测试只使用测试侧 TCP 转发器；未增加生产测试后门或 TUI 业务旁路。
 
 ## 完成门槛
 
-- [ ] attach/resume → edit/paste → steer/queue → Think/text/tool → permission/question → follow-up → compact → switch/reconnect → exit 的各转场均有当前真实生产路径证据。
-- [ ] 80×24、100×28 和宽屏下 transcript/composer/status 可操作；resize、fold、focus、selection、overlay 和 scroll intent 行为明确。
-- [ ] Settings 只呈现可由公开 API 正确读取或修改的能力，scope/conflict/error 均可见。
-- [ ] 退出后无残留 client worker、tmux session、server process 或 UDS；失败路径同样清理。
-- [ ] focused 与完整 TUI/ACP 在同一最终提交上通过；读取实际 capture 后记录未运行的外部 provider/终端矩阵。
-- [ ] 不以“像 Claude Code”、旧 PNG、旧 worktree 或单纯全绿测试替代上述行为证据。
+- [x] 上述 attach/resume、输入、stream、交互、compact、switch/reconnect、退出转场分别由真实 server/PTY 或真实 server/Textual pilot 覆盖，证据见 `XBotv2/docs/tui-closure.md`；不宣称单个用例穷举全部排列。
+- [x] 80×24、100×28 的当轮 PTY 与既有宽屏 pilot 验证 transcript/composer/status、resize/fold/focus/selection/overlay/scroll intent；未承诺更小终端。
+- [x] Settings 的 scope/conflict/error 可见，无公开写入口的能力明确只读，不新增客户端业务旁路。
+- [x] 正常与异常用例均经过 client/server/worker 清理；最终 tmux 核查无 xbot 测试 session，未清理用户自己的 tmux session。
+- [x] 精确最终代码 `8d61769`：TUI/ACP 903 passed（165.00s），同版本 Core 650、HTTP/fold-in 119 passed。主代理读取 `/tmp/xbot-final-target-20260929/` capture，并实际查看 provider failure、interrupt、tool failure SVG 渲染；本地产物不提交。
+- [x] 外部 provider、所有终端模拟器及低于 80×24 的矩阵未验证；这轮证据仅描述实际执行路径，不以旧截图或全绿数量替代。

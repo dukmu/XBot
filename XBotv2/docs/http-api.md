@@ -135,10 +135,14 @@ are intentionally maintained in the skill rather than duplicated here.
 }
 ```
 
-The `payload` object is validated by the producer-owned event schema in
-`agentloop/protocol.py`, `session/protocol.py`, or the owning plugin's
-`protocol.py`. Clients use `sequence` for ordering and surface an unsupported
-kind instead of silently skipping it.
+Loop outputs are owned by `agentloop/outputs.py`, live session events by
+`session/events.py`, and capability events by their producing plugin. HTTP
+modules own transport envelopes and routes, not runtime event definitions.
+The SSE adapter projects completed messages into canonical conversation
+records and otherwise serializes the producer's event fields without `kind`
+(already carried by the envelope). Clients validate that payload with the
+corresponding producer-owned type, use `sequence` for ordering, and surface
+an unsupported kind instead of silently skipping it.
 
 ## Interactions
 
