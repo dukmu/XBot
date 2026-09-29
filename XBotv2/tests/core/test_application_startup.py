@@ -1602,7 +1602,12 @@ plugin = ConfiguredPlugin()
                 "started",
                 "failed" if terminal == "failed_running" else "cancelled",
             ]
-            assert child_records[1].error
+            detail = (
+                child_records[1].error
+                if child_records[1].event == "failed"
+                else child_records[1].reason
+            )
+            assert detail
             assert owner_observer.count == 2  # child released its session ownership
         finally:
             if not turn.done():

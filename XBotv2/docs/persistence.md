@@ -116,7 +116,11 @@ unrelated to that cache and keeps its atomic KV snapshot format.
 
 The session-level `threads.jsonl` lifecycle trace uses the same append helper as
 the thread traces: short writes continue until complete, and a failed append is
-truncated back to its prior committed size before the error is propagated.
+truncated back to its prior committed size before the error is propagated. Its
+schema version 2 records form a strict union: `started` alone carries immutable
+parent/agent launch facts, `failed` requires an error, `cancelled` requires a
+reason, and `completed` carries no fabricated error field. Version 1 lifecycle
+records are rejected rather than interpreted through a compatibility reader.
 
 Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
 advisory locks the runtime refuses to start rather than run without it.

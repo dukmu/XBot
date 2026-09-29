@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from XBotv2.agentloop.contracts import InboxItem, InboxSink
 from XBotv2.core.history import (
@@ -20,50 +20,47 @@ from XBotv2.core.paths import SessionPaths
 from XBotv2.core.metadata import ThreadMetadata
 
 
-class ThreadLifecycleRecord(BaseModel):
-    """Durable lifecycle entry shared with child-application orchestration."""
+class _ThreadLifecycleRecord(BaseModel):
+    """Fields shared by every version-2 child lifecycle fact."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
-    event: Literal["started", "completed", "failed", "cancelled"]
+    schema_version: Literal[2] = 2
     thread_id: str
-    parent_thread_id: str
-    agent: str
-    timestamp: str
-    error: str = ""
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    @field_validator("timestamp", mode="before")
+    @field_validator("timestamp")
     @classmethod
-    def _validate_timestamp(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise TypeError("timestamp must be a string")
-        try:
-            parsed = datetime.fromisoformat(value)
-        except ValueError as exc:
-            raise ValueError("timestamp must be an ISO 8601 timestamp") from exc
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
+    def _timestamp_has_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("timestamp must include a timezone offset")
         return value
 
-    @classmethod
-    def create(
-        cls,
-        event: Literal["started", "completed", "failed", "cancelled"],
-        *,
-        thread_id: str,
-        parent_thread_id: str,
-        agent: str,
-        error: str = "",
-    ) -> "ThreadLifecycleRecord":
-        return cls(
-            event=event,
-            thread_id=thread_id,
-            parent_thread_id=parent_thread_id,
-            agent=agent,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            error=error,
-        )
+
+class ThreadStarted(_ThreadLifecycleRecord):
+    event: Literal["started"] = "started"
+    parent_thread_id: str
+    agent: str
+
+
+class ThreadCompleted(_ThreadLifecycleRecord):
+    event: Literal["completed"] = "completed"
+
+
+class ThreadFailed(_ThreadLifecycleRecord):
+    event: Literal["failed"] = "failed"
+    error: str = Field(min_length=1)
+
+
+class ThreadCancelled(_ThreadLifecycleRecord):
+    event: Literal["cancelled"] = "cancelled"
+    reason: str = Field(min_length=1)
+
+
+ThreadLifecycleRecord: TypeAlias = Annotated[
+    ThreadStarted | ThreadCompleted | ThreadFailed | ThreadCancelled,
+    Field(discriminator="event"),
+]
 
 
 class HistoryPort(HistorySink, Protocol):
@@ -175,6 +172,10 @@ __all__ = [
     "StatePort",
     "ThreadLifecyclePort",
     "ThreadLifecycleRecord",
+    "ThreadCancelled",
+    "ThreadCompleted",
+    "ThreadFailed",
+    "ThreadStarted",
     "ThreadLifecycleWriterPort",
     "ThreadPersistenceFactory",
     "ThreadPersistencePort",

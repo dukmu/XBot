@@ -37,7 +37,7 @@ from XBotv2.persistence.contracts import (
     ThreadLifecyclePort,
     ThreadPersistencePort,
 )
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.contracts import (
@@ -58,6 +58,7 @@ from xcore.state import StateService
 _SYNC_INTERVAL_SECONDS = 0.25
 
 TrajectoryRecord = StoredTrajectoryRecord
+_THREAD_LIFECYCLE_ADAPTER = TypeAdapter(ThreadLifecycleRecord)
 
 
 class _SurfaceState:
@@ -893,7 +894,7 @@ class ThreadLifecycleStore(ThreadLifecyclePort):
 
     def load(self) -> list[ThreadLifecycleRecord]:
         return [
-            ThreadLifecycleRecord.model_validate(raw)
+            _THREAD_LIFECYCLE_ADAPTER.validate_python(raw)
             for raw in _read_jsonl(self._path, "thread lifecycle")
         ]
 

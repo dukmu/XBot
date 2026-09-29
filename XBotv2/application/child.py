@@ -11,7 +11,12 @@ from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import AgentApplicationPort, ChildApplicationRequest
 from XBotv2.application import ChildApplicationError, ChildApplicationResult
 from XBotv2.agentloop import HumanInput, InboxItem, InboxTarget
-from XBotv2.persistence import ThreadLifecycleRecord
+from XBotv2.persistence import (
+    ThreadCancelled,
+    ThreadCompleted,
+    ThreadFailed,
+    ThreadStarted,
+)
 from XBotv2.persistence import ThreadLifecycleWriterPort
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
@@ -96,7 +101,11 @@ class ChildApplicationSession:
     lifecycle: ThreadLifecycleWriterPort
 
     def record_started(self) -> None:
-        self._record("started")
+        self.lifecycle.append(ThreadStarted(
+            thread_id=self.thread_id,
+            parent_thread_id=self.parent_thread_id,
+            agent=self.agent,
+        ))
 
     async def wait(self) -> ChildApplicationResult:
         engine = self.application.driver
@@ -123,7 +132,10 @@ class ChildApplicationSession:
         except asyncio.CancelledError:
             with suppress(BaseException):
                 await asyncio.shield(self._close())
-            self._record("cancelled", error=error)
+            self.lifecycle.append(ThreadCancelled(
+                thread_id=self.thread_id,
+                reason=error or "cancelled",
+            ))
             raise
         except BaseException as exc:
             # A failed child turn still owns a mounted application and the
@@ -136,7 +148,10 @@ class ChildApplicationSession:
                 close_error = f"Subagent close failed: {close_exc}"
             if close_error:
                 failure = f"{failure}; {close_error}"
-            self._record("failed", error=failure)
+            self.lifecycle.append(ThreadFailed(
+                thread_id=self.thread_id,
+                error=failure,
+            ))
             raise ChildApplicationError(failure) from exc
 
         usage = self.application.usage.snapshot()
@@ -147,13 +162,19 @@ class ChildApplicationSession:
         if close_error and not error:
             error = close_error
         if error:
-            self._record("failed", error=error)
+            self.lifecycle.append(ThreadFailed(
+                thread_id=self.thread_id,
+                error=error,
+            ))
             raise ChildApplicationError(error)
         if not output:
             error = "Subagent completed without an assistant response"
-            self._record("failed", error=error)
+            self.lifecycle.append(ThreadFailed(
+                thread_id=self.thread_id,
+                error=error,
+            ))
             raise ChildApplicationError(error)
-        self._record("completed")
+        self.lifecycle.append(ThreadCompleted(thread_id=self.thread_id))
         return ChildApplicationResult(final_response=output, usage=usage)
 
     async def cancel(self) -> None:
@@ -167,22 +188,5 @@ class ChildApplicationSession:
         finally:
             await self.application.close()
         return ""
-
-    def _record(
-        self,
-        event: Literal["started", "completed", "failed", "cancelled"],
-        *,
-        error: str = "",
-    ) -> None:
-        self.lifecycle.append(
-            ThreadLifecycleRecord.create(
-                event,
-                thread_id=self.thread_id,
-                parent_thread_id=self.parent_thread_id,
-                agent=self.agent,
-                error=error,
-            )
-        )
-
 
 __all__ = ["ChildApplicationSession", "ChildApplications"]

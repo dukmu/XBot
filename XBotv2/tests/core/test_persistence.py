@@ -17,7 +17,7 @@ from XBotv2.core.history import ConversationHistory, HistoryCursorInvalid, Messa
 from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.persistence.contracts import ThreadLifecycleRecord
+from XBotv2.persistence.contracts import ThreadFailed, ThreadStarted
 from XBotv2.persistence.models import StoredTrajectoryRecord
 from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
 
@@ -693,17 +693,13 @@ def test_trajectory_rejects_legacy_flat_record_without_entry_envelope(tmp_path):
 
 def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monkeypatch):
     persistence = _store(tmp_path)
-    first = ThreadLifecycleRecord.create(
-        "started",
+    first = ThreadStarted(
         thread_id="child-1",
         parent_thread_id="agent",
         agent="worker",
     )
-    second = ThreadLifecycleRecord.create(
-        "failed",
+    second = ThreadFailed(
         thread_id="child-1",
-        parent_thread_id="agent",
-        agent="worker",
         error="startup failed",
     )
     raw_write = os.write
@@ -724,3 +720,20 @@ def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monke
     persistence.lifecycle.append(second)
 
     assert persistence.lifecycle.load() == [second]
+
+
+def test_lifecycle_rejects_the_previous_ambiguous_record_shape(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.paths.session.threads_log.parent.mkdir(parents=True, exist_ok=True)
+    persistence.paths.session.threads_log.write_text(json.dumps({
+        "schema_version": 1,
+        "event": "completed",
+        "thread_id": "child-1",
+        "parent_thread_id": "agent",
+        "agent": "worker",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "error": "not valid for completion",
+    }) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        persistence.lifecycle.load()
