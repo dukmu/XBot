@@ -702,6 +702,8 @@ def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monke
         thread_id="child-1",
         error="startup failed",
     )
+    persistence.lifecycle.append(first)
+    before = persistence.paths.session.threads_log.read_bytes()
     raw_write = os.write
     writes = 0
 
@@ -716,10 +718,11 @@ def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monke
 
     monkeypatch.setattr(os, "write", short_write)
     with pytest.raises(OSError, match="simulated lifecycle write failure"):
-        persistence.lifecycle.append(first)
+        persistence.lifecycle.append(second)
+    assert persistence.paths.session.threads_log.read_bytes() == before
     persistence.lifecycle.append(second)
 
-    assert persistence.lifecycle.load() == [second]
+    assert persistence.lifecycle.load() == [first, second]
 
 
 def test_lifecycle_rejects_the_previous_ambiguous_record_shape(tmp_path):
