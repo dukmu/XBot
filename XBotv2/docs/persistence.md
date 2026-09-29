@@ -46,11 +46,14 @@ HTTP history uses opaque cursors bound to the projection revision; clients must
 not manufacture or compare cursor internals.
 
 Both projections are folded incrementally and cached per trajectory path inside
-the process, so a runtime reuses the parsed records of the current file version
-and extends the folds in place when it appends. A file changed by another
-process is detected by size and rebuilt on the next access. The cache is bounded
-by a trajectory count and a total record budget, and evicts only entries no
-operation is using.
+the process, so a runtime reuses the parsed records of the current file version.
+Local and external appends read and fold only complete records after the last
+validated byte offset; a malformed suffix is fully rejected before records or
+either projection advance. Shrinking below that offset is a truncation error.
+Rewriting a loaded committed prefix bypasses the supported single-writer,
+append-only contract; readers do not poll or hash the prefix to detect it. The
+cache is bounded by a trajectory count and a total record budget, and evicts
+only entries no operation is using.
 
 A record becomes durable when its terminating newline is written. Readers ignore
 a final fragment without that newline, because such a fragment is an append
@@ -103,8 +106,8 @@ conversation-specific trace semantics or keep an unbounded mutation history.
 
 Metadata also remains an atomic snapshot. Growing conversation history belongs
 in its trace, not in ever-growing StateService values. Per-plugin ownership and
-cold-history reader costs still need review; reverting KV journaling does not
-claim to resolve those costs.
+cold reads after a process has discarded its trajectory cache still need
+review; reverting KV journaling does not claim to resolve those costs.
 
 Ownership uses `fcntl`, so it requires a POSIX platform; on a platform without
 advisory locks the runtime refuses to start rather than run without it.

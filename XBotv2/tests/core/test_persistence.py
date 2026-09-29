@@ -17,7 +17,8 @@ from XBotv2.core.history import ConversationHistory, HistoryCursorInvalid, Messa
 from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.models import StoredTrajectoryRecord
+from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
 
 
 def _store(tmp_path):
@@ -305,6 +306,78 @@ def test_live_threads_append_and_page_without_rereading_their_prefix(tmp_path, m
         assert store.history.count() == turns
 
 
+def test_reader_folds_only_external_append_suffix(tmp_path, monkeypatch):
+    import XBotv2.persistence.store as storage
+
+    persistence = _store(tmp_path)
+    original = tuple(_human(index) for index in range(10))
+    persistence.history.append(original)
+    assert persistence.history.load_surface() == original
+    assert persistence.history.load_transcript() == list(original)
+    assert len(persistence.history.page_trajectory(limit=100).page.items) == 10
+
+    # Model another process: it uses the production store API but owns a
+    # distinct in-memory trajectory state for the same append-only file.
+    writer = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    writer.history._state = storage._TrajectoryState(writer.history.path)
+    assert writer.history.load_surface() == original
+
+    read_bytes = 0
+    path_open = Path.open
+
+    class MeasuredStream:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def __enter__(self):
+            self._stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._stream.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal read_bytes
+            line = next(self._stream)
+            read_bytes += len(line if isinstance(line, bytes) else line.encode("utf-8"))
+            return line
+
+        def __getattr__(self, name):
+            return getattr(self._stream, name)
+
+    def measure_open(path, *args, **kwargs):
+        stream = path_open(path, *args, **kwargs)
+        if path == persistence.history.path:
+            return MeasuredStream(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", measure_open)
+    prefix_size = persistence.history.path.stat().st_size
+    summary = CompactionSummaryMessage(id=MessageId("external-summary"), summary="context")
+    writer.history.replace_surface(
+        tuple(message.id for message in original[:5]),
+        (summary,),
+        operation="compact",
+        preserve_transcript=True,
+    )
+    additions = tuple(_human(index) for index in range(10, 20))
+    for message in additions:
+        writer.history.append((message,))
+        # Exercise all public reader projections after every foreign append.
+        persistence.history.load_surface()
+        persistence.history.load_transcript()
+        persistence.history.page_trajectory(limit=4)
+
+    assert persistence.history.load_surface() == (summary, *original[5:], *additions)
+    assert persistence.history.load_transcript() == [*original, *additions]
+    trajectory = persistence.history.page_trajectory(limit=100)
+    assert trajectory.newest_position == 21
+    assert read_bytes == persistence.history.path.stat().st_size - prefix_size
+
+
 def test_trajectory_rejects_duplicate_message_identity(tmp_path):
     history = _store(tmp_path).history
     history.append((_human(1),))
@@ -422,13 +495,47 @@ def test_corrupt_compaction_never_publishes_a_partially_replayed_view(tmp_path):
     history.append((original,))
     summary = CompactionSummaryMessage(id=MessageId("summary-loop"), summary="context")
     history.replace_surface((original.id,), (summary,), operation="compact", preserve_transcript=True)
-    records = [json.loads(line) for line in history.path.read_text(encoding="utf-8").splitlines()]
-    records[-1]["entry"]["source_ids"] = [summary.id]
-    history.path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    valid = StoredTrajectoryRecord(entry=MessageAppended(
+        position=3,
+        message=_human(2),
+    ))
+    corrupt = StoredTrajectoryRecord(entry=SurfaceReplaced(
+        position=4,
+        operation="compact",
+        transcript_policy="preserve",
+        source_ids=(MessageId("missing-source"),),
+        replacements=(CompactionSummaryMessage(
+            id=MessageId("summary-loop-2"), summary="context",
+        ),),
+    ))
+    with history.path.open("a", encoding="utf-8") as stream:
+        stream.write(valid.model_dump_json() + "\n")
+        stream.write(corrupt.model_dump_json() + "\n")
 
     for read in (history.load_surface, history.load_surface, history.load_transcript):
         with pytest.raises(ValueError, match="not current"):
             read()
+
+
+def test_trajectory_only_reader_validates_external_projection_suffix(tmp_path):
+    persistence = _store(tmp_path)
+    persistence.history.append((_human(1),))
+    reader = _independent_reopen(persistence)
+    assert reader.history.page_trajectory(limit=10).newest_position == 1
+
+    corrupt = StoredTrajectoryRecord(entry=SurfaceReplaced(
+        position=2,
+        operation="replace",
+        transcript_policy="replace",
+        source_ids=(MessageId("missing-source"),),
+        replacements=(_human(2),),
+    ))
+    with persistence.history.path.open("a", encoding="utf-8") as stream:
+        stream.write(corrupt.model_dump_json() + "\n")
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="not current"):
+            reader.history.page_trajectory(limit=10)
 
 
 def test_trajectory_paging_reports_tail_and_validates_anchor(tmp_path):
@@ -474,7 +581,7 @@ def _rewrite_records(path, mutate):
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     mutate(records)
-    # Change file size so the shared trajectory reader must discard its cache.
+    # Preserve valid JSONL while changing the selected canonical field.
     path.write_text(
         "\n".join(
             json.dumps(record, ensure_ascii=False) + " "
@@ -482,6 +589,12 @@ def _rewrite_records(path, mutate):
         ) + "\n",
         encoding="utf-8",
     )
+
+
+def _independent_reopen(persistence):
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened.history._state = _TrajectoryState(reopened.history.path)
+    return reopened
 
 
 def test_trajectory_rejects_position_gap_when_reloaded(tmp_path):
@@ -492,7 +605,7 @@ def test_trajectory_rejects_position_gap_when_reloaded(tmp_path):
         lambda records: records[1]["entry"].update(position=9),
     )
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="positions must be contiguous"):
         reopened.history.load_surface()
 
@@ -504,7 +617,7 @@ def test_trajectory_rejects_empty_canonical_identity_when_reloaded(tmp_path):
         persistence.history.path,
         lambda records: records[0]["entry"]["message"].update(id=""),
     )
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="at least 1 character"):
         reopened.history.load_surface()
 
@@ -526,7 +639,7 @@ def test_trajectory_rejects_unknown_replacement_source_when_reloaded(tmp_path):
         ),
     )
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="source nodes are not current"):
         reopened.history.load_surface()
 
@@ -541,7 +654,7 @@ def test_trajectory_rejects_reused_message_identity_when_reloaded(tmp_path):
         ),
     )
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="reuses a message identity"):
         reopened.history.load_surface()
 
@@ -554,6 +667,6 @@ def test_trajectory_rejects_legacy_flat_record_without_entry_envelope(tmp_path):
     legacy = {"schema_version": current["schema_version"], **current["entry"]}
     path.write_text(json.dumps(legacy, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="entry"):
         reopened.history.load_surface()

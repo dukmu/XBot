@@ -175,18 +175,21 @@ class _TrajectoryState:
         self.next_position = 1
         self.file_size = -1
         self.read_size = -1
+        self.observed_size = -1
         self.last_sync = 0.0
 
     def size(self) -> int:
         return self.path.stat().st_size if self.path.exists() else 0
 
     def recorded(self) -> list[TrajectoryRecord]:
-        """The parsed trajectory, re-read only when the file version changed."""
+        """Return parsed records, folding only a newly appended file suffix."""
         size = self.size()
-        if self.records is None or self.read_size != size:
-            self.surface = None
-            self.transcript = None
+        if self.records is None:
             self.records = self._parse(size)
+        elif size != self.observed_size:
+            if size < self.read_size:
+                raise ValueError("Trajectory file truncated after it was loaded")
+            self._extend_from_disk(size)
         return self.records
 
     def surface_state(self) -> _SurfaceState:
@@ -218,10 +221,16 @@ class _TrajectoryState:
         ):
             self.next_position = len(self.records) + 1
             return self.records
+        if self.records is not None and size < self.read_size:
+            raise ValueError("Trajectory file truncated after it was loaded")
         size = _drop_incomplete_tail(self.path, size, log)
-        self.surface = None
-        self.transcript = None
-        self.records = self._parse(size)
+        if self.records is None:
+            self.records = self._parse(size)
+        elif size != self.read_size:
+            self.observed_size = -1
+            self._extend_from_disk(size)
+        else:
+            self.observed_size = size
         self.file_size = size
         self.next_position = len(self.records) + 1
         return self.records
@@ -237,7 +246,7 @@ class _TrajectoryState:
             for record in added
         )
         self.next_position = len(self.records) + 1
-        self.file_size = self.read_size = self.size()
+        self.file_size = self.read_size = self.observed_size = self.size()
         if self.surface is not None:
             _apply_records(self.surface, added)
         if self.transcript is not None:
@@ -246,10 +255,10 @@ class _TrajectoryState:
     def _parse(self, size: int) -> list[TrajectoryRecord]:
         parsed: list[TrajectoryRecord] = []
         turn_count = 0
-        for index, raw in enumerate(
-            _read_jsonl(self.path, "messages.jsonl"),
-            start=1,
-        ):
+        raw_records, durable_size = _read_jsonl_from(
+            self.path, "messages.jsonl", offset=0, first_line=1,
+        )
+        for index, raw in enumerate(raw_records, start=1):
             record = _trajectory_record(raw)
             if record.entry.position != index:
                 raise ValueError(
@@ -261,9 +270,54 @@ class _TrajectoryState:
             ):
                 turn_count += 1
         self.turn_count = turn_count
-        self.read_size = size
+        self.read_size = durable_size
+        self.observed_size = size
         return parsed
 
+    def _extend_from_disk(self, size: int) -> None:
+        """Validate a foreign append completely before publishing any of it."""
+        assert self.records is not None
+        raw_records, durable_size = _read_jsonl_from(
+            self.path,
+            "messages.jsonl",
+            offset=self.read_size,
+            first_line=len(self.records) + 1,
+        )
+        added: list[TrajectoryRecord] = []
+        for index, raw in enumerate(raw_records, start=len(self.records) + 1):
+            record = _trajectory_record(raw)
+            if record.entry.position != index:
+                raise ValueError(
+                    "Trajectory positions must be contiguous and start at 1"
+                )
+            added.append(record)
+
+        if self.surface is None:
+            surface = _SurfaceState()
+            _apply_records(surface, self.records)
+            self.surface = surface
+        if self.transcript is None:
+            transcript = _TranscriptState()
+            _apply_records(transcript, self.records)
+            self.transcript = transcript
+        try:
+            _apply_records(self.surface, added)
+            _apply_records(self.transcript, added)
+        except (TypeError, ValueError):
+            # A failed suffix may have advanced one projection. Discard both;
+            # the next read rebuilds the valid prefix and retries this suffix.
+            self.surface = None
+            self.transcript = None
+            raise
+
+        self.records.extend(added)
+        self.turn_count += sum(
+            isinstance(record.entry, MessageAppended)
+            and isinstance(record.entry.message, HumanInputMessage)
+            for record in added
+        )
+        self.read_size = durable_size
+        self.observed_size = size
 
 # Live stores own their state. The weak registry preserves one lock/cache per
 # path even when a live store is evicted from the bounded recent-reader cache.
@@ -898,26 +952,42 @@ def _drop_incomplete_tail(
 
 
 def _read_jsonl(path: Path, name: str) -> list[Mapping[str, JsonValue]]:
+    records, _ = _read_jsonl_from(path, name, offset=0, first_line=1)
+    return records
+
+
+def _read_jsonl_from(
+    path: Path,
+    name: str,
+    *,
+    offset: int,
+    first_line: int,
+) -> tuple[list[Mapping[str, JsonValue]], int]:
+    """Read complete JSONL records after a previously validated byte offset."""
     if not path.exists():
-        return []
+        return [], 0
     records: list[Mapping[str, JsonValue]] = []
-    with path.open(encoding="utf-8") as stream:
-        for line_number, line in enumerate(stream, start=1):
-            if not line.endswith("\n"):
+    durable_size = offset
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        for line_number, raw_line in enumerate(stream, start=first_line):
+            if not raw_line.endswith(b"\n"):
                 # The owning runtime appends whole lines, so a final fragment
                 # without its newline is an append still in flight rather than
                 # a durable record.
                 break
             try:
+                line = raw_line.decode("utf-8")
                 value = json.loads(line)
-            except json.JSONDecodeError as exc:
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ValueError(
                     f"Invalid {name} record at line {line_number}"
                 ) from exc
             if not isinstance(value, Mapping):
                 raise TypeError(f"{name} line {line_number} must be an object")
             records.append(value)
-    return records
+            durable_size += len(raw_line)
+    return records, durable_size
 
 
 class ThreadPersistence(ThreadPersistencePort):
