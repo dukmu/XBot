@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.agents import AgentDefinition
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import ConversationMessage, HumanInputMessage
 from XBotv2.core.domain import UsageSnapshot
@@ -26,7 +25,6 @@ from XBotv2.core.operations import OperationContext
 from pydantic import BaseModel, JsonValue
 
 from XBotv2.permissions import PermissionsPort
-from XBotv2.persistence import ThreadLifecycleWriterPort
 
 
 COLLECT_STATUS_SLOTS = "application/status-slots/collect"
@@ -163,49 +161,11 @@ class ParentPermissions:
     value: PermissionsPort | None
 
 
-@dataclass(frozen=True, slots=True)
-class ChildApplicationRequest:
-    definition: AgentDefinition
-    thread_id: str
-    prompt: str
-    parent_permissions: PermissionsPort
-    client_events: ClientEventsPort | None
-
-
-@dataclass(frozen=True, slots=True)
-class ChildApplicationResult:
-    final_response: str
-    usage: UsageSnapshot = field(default_factory=UsageSnapshot)
-
-
-class ChildApplication(Protocol):
-    async def wait(self) -> ChildApplicationResult: ...
-
-    async def cancel(self) -> None: ...
-
-
-class ChildApplicationError(RuntimeError):
-    code = "child_application_failed"
-
-
-class ChildApplicationsPort(Protocol):
-    async def spawn(
-        self,
-        request: ChildApplicationRequest,
-        lifecycle: ThreadLifecycleWriterPort,
-    ) -> ChildApplication: ...
-
-
 __all__ = [
     "AgentApplicationPort",
     "ApplicationSnapshot",
     "ApplicationEventsPort",
     "COLLECT_STATUS_SLOTS",
-    "ChildApplicationRequest",
-    "ChildApplication",
-    "ChildApplicationError",
-    "ChildApplicationResult",
-    "ChildApplicationsPort",
     "ClientEventSink",
     "ClientEventsPort",
     "InteractionWaiterPort",

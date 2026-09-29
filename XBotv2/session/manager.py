@@ -319,6 +319,7 @@ class SessionManager(SessionsPort):
         parent_thread_id: str = "",
         parent_permission_system: PermissionsPort | None = None,
         is_subagent: bool = False,
+        interactive: bool = True,
     ) -> SessionRuntime:
         mode = (mode or "new").lower().strip()
         if mode not in {"new", "resume"}:
@@ -403,6 +404,7 @@ class SessionManager(SessionsPort):
                         parent_thread_id=parent_thread_id,
                         parent_permission_system=parent_permission_system,
                         is_subagent=is_subagent,
+                        interactive=interactive,
                     ),
                     name=f"xbotv2-open-{session_id}-{thread_id}",
                 )
@@ -425,6 +427,7 @@ class SessionManager(SessionsPort):
         parent_thread_id: str,
         parent_permission_system: PermissionsPort | None,
         is_subagent: bool,
+        interactive: bool,
     ) -> SessionRuntime:
         started = time.perf_counter()
         log_token = push_log_context(
@@ -459,7 +462,9 @@ class SessionManager(SessionsPort):
                 parent_thread_id=parent_thread_id,
                 parent_permission_system=parent_permission_system,
                 is_subagent=is_subagent,
+                interactive=interactive,
                 defer_persist=mode == "new",
+                sessions=self,
             ))
             engine = application.driver
             if mode == "resume":
@@ -1162,6 +1167,24 @@ class SessionManager(SessionsPort):
             artifacts=attachments,
         )
 
+    async def submit_runtime_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        item: InboxItem,
+        *,
+        wake: bool,
+    ) -> None:
+        """Submit one producer-owned runtime input to an active thread."""
+        runtime = await self.get(session_id, thread_id)
+        if runtime.application.loop_state.session.status != "active":
+            raise OperationError(
+                "session_closing",
+                f"Cannot accept input while {session_id}/{thread_id} is closing.",
+            )
+        await runtime.engine.submit_input(item, wake=wake)
+        runtime.touch()
+
     @staticmethod
     def _store_message_inputs(
         runtime: SessionRuntime,
@@ -1464,7 +1487,6 @@ def session_has_evidence(paths: RuntimePaths, session_id: str) -> bool:
     session = paths.session(session_id)
     return (
         session.config_file.is_file()
-        or session.threads_log.is_file()
         or bool(persisted_thread_ids(paths, session_id))
     )
 

@@ -134,10 +134,20 @@ class SelectionScreen(ModalScreen[str | None]):
         hint: str = "",
         compact: bool = False,
         cancel_value: str | None = None,
+        initial_value: str | None = None,
     ) -> None:
         super().__init__()
         self.title_text = title
-        self.model = SelectionModel(options=tuple(options))
+        choices = tuple(options)
+        initial_index = next(
+            (
+                index
+                for index, option in enumerate(choices)
+                if option.value == initial_value
+            ),
+            0,
+        )
+        self.model = SelectionModel(options=choices, index=initial_index)
         self.search = search
         self.placeholder = placeholder
         self.description_text = description

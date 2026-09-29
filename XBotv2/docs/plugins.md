@@ -84,7 +84,7 @@ ownership, not proof of durable consumption.
 | sandbox | agent | filesystem/process/network ceiling | paths, session, tools, settings |
 | permissions | agent | regex Tool policy and approval flow | tools, interactions, state, settings |
 | coretools | agent | filesystem and shell Tools; workspace extension hooks | tools, session, sandbox, artifacts, jobs, workspace root |
-| subagents | agent | child Agent application lifecycle, Tools and jobs | runtime paths, session launch, Agent options, catalog, permissions, jobs, tools |
+| subagents | agent | stable child-thread collaboration and execution jobs | session manager, current session, catalog, jobs, tools |
 | goal | agent | durable objective, explicit goal tools, same-session continuation and `/goal` | tools, commands, engine, state, usage; optional jobs |
 | todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
@@ -178,11 +178,14 @@ transports install a live sink through the public interface. A child without
 its own sink forwards requests to its parent. Unloading the child removes only
 its plugin-owned services, not the parent's routing capability.
 
-The subagents plugin constructs its child application launcher rather than
-receiving a host-assembled `child_applications` service. Application startup
-retains ownership until it can return a public handle: a failed handle
-construction or failed child-start record closes the runtime before raising
-the original error, so the caller is not left with an unreachable session lock.
+The subagents plugin uses the process `SessionManager` as the sole owner of
+child runtimes. `spawn_subagent` creates a stable direct-child thread and a
+one-shot execution job; `send_message` writes a `RuntimeInput` to that thread's
+canonical inbox without waking an idle Agent; `followup_task` creates a new job
+on the same thread. Job IDs identify executions, while thread IDs identify
+conversation targets. Child transcripts, pending inputs, resume, permissions,
+and shutdown therefore use the same session path as every other Agent thread;
+there is no plugin-local child executor or second mailbox.
 
 Plugin import/construction and activation failures are isolated by default.
 The loader warns and skips entries it cannot mount; XCore rolls back registered

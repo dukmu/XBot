@@ -64,6 +64,7 @@ def _provider_arguments(
         ),
         "max_retries": max_retries,
         "retry_backoff_factor": retry_backoff_factor,
+        "request_timeout_seconds": provider_config.request_timeout_seconds,
         "input_modalities": model_config.input_modalities,
     }
 

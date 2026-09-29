@@ -66,7 +66,7 @@
       minimax:
         protocol: anthropic
         base_url: https://api.minimaxi.com/anthropic
-        api_key_env: MINIMAX_API_TOKEN
+        api_key: $${env:MINIMAX_API_TOKEN}
         default_model: Minimax-M3
         models:
           - model: Minimax-M3
@@ -90,7 +90,7 @@
       deepseek:
         protocol: openai
         base_url: https://api.deepseek.com/v1
-        api_key_env: DEEPSEEK_API_KEY
+        api_key: $${env:DEEPSEEK_API_KEY}
         default_model: deepseek-v4-flash
         models:
           - model: deepseek-v4-flash
@@ -114,7 +114,7 @@
       openai:
         protocol: openai
         base_url: https://api.openai.com/v1
-        api_key_env: OPENAI_API_KEY
+        api_key: ""
         default_model: gpt-5.6-luna
         models:
           # Official GPT-5.6 family effort values: none/low/medium/high/
@@ -135,7 +135,7 @@
       anthropic:
         protocol: anthropic
         base_url: https://api.anthropic.com
-        api_key_env: ANTHROPIC_API_KEY
+        api_key: ""
         default_model: claude-sonnet-4-20250514
         models:
           - model: claude-sonnet-4-20250514
@@ -184,7 +184,7 @@
       - {tool_pattern: compact, decision: allow}
       - {tool_pattern: '(?:list_shells|wait_shell|read_shell|cancel_shell)', decision: allow}
       - {tool_pattern: '(?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)', decision: allow}
-      - {tool_pattern: '(?:send_message|ask_user|request_permission)', decision: allow}
+      - {tool_pattern: '(?:notify_user|send_message|followup_task|ask_user|request_permission)', decision: allow}
       - {tool_pattern: search, decision: allow}
       - {tool_pattern: '(?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)', decision: allow}
       - {tool_pattern: '(?:task_create|task_get|task_update|task_list)', decision: allow}

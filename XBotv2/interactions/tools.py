@@ -110,4 +110,4 @@ def build_ask_user_tool(interactions: InteractionsPort) -> Tool:
     )
 
 
-send_message = Tool.from_function(send_message_to_user, name="send_message")
+notify_user = Tool.from_function(send_message_to_user, name="notify_user")

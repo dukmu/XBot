@@ -52,6 +52,8 @@ provider 的 `system/user/assistant/tool` 是请求协议角色，不是持久�
 
 system prompt、开发者指令和 workspace/context component 不进入 `ConversationMessage`；它们属于一次 provider request 的构建材料。`MessageId` 在消息构造时生成并终身不变；同一 thread trajectory（包括 surface、transcript 与 replacement lineage）内不得重复，fork/thread 之间不要求建立全局 id registry。`client_events` 和 `turn_complete` 不属于消息，必须移出。
 
+持久化 message/inbox identity 使用“语义前缀 + 完整随机 UUID”，不得把 wall-clock/time-ns 当唯一性来源；assistant/tool/compaction/runtime input 都遵守此规则。session/thread ID 是面向人的资源名，可保留时间或 agent 前缀并附随机后缀；进程内 JobRegistry ID 则是局部递增执行句柄。三类身份用途不同，不强行共用一种展示格式。
+
 内容类型只保留：
 
 - `TextPart(text)`
@@ -161,7 +163,7 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 - `UsageSnapshot(total_counters, latest_turn_observation)`；初始 latest 为真正的 None。每次请求的 observation 只属于其 `ModelExchange`，usage snapshot 不另建 request ledger；auxiliary request 可以累计 counters，但绝不替换 latest turn observation。
 - `ModelRoute(provider, model)`；`GenerationMode = Standard | Reasoning(effort)`；显示用 `model_mode` 只能派生。
 - `ModelExchange(observation: RequestObservation, usage: UsageDelta, timing: ModelTiming, stop: ModelStop, provider_extensions: ProviderExtensions)`；这是 AssistantMessage 唯一请求侧信息。
-- `ModelTiming(total_ms, first_delta_ms: int | None)`、`ToolTiming(duration_ms)`；first_delta 为 None 只表示确实没有观察到任何 delta，不用 0 冒充测量；`decode_ms` 需要时由 `total_ms - first_delta_ms` 派生。
+- `ModelTiming(total_ms, first_delta_ms: int | None)`、`ToolTiming(duration_ms)`；first_delta 为 None 只表示确实没有观察到任何 delta，不能用 0 表示测量结果；`decode_ms` 需要时由 `total_ms - first_delta_ms` 派生。
 - `Operation[Request, Response]`：字段仅为 `name`、`request_type`、`response_type`、`exclusive_policy`。
 - `RuntimePaths`、`SessionPaths`、`ThreadPaths`：只负责路径解析。
 
@@ -206,7 +208,6 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 - canonical `TrajectoryEntry` 本身就是 append/replace/event 的唯一 mutation 模型。
 - `StoredTrajectoryRecord(schema_version, entry: TrajectoryEntry)` 是磁盘 envelope，不重复 entry 字段。
 - `StoredInboxRecord(version, change: InboxMutation)`：复用现有 Inserted/Edited/Retargeted/Removed/Consumed/Discarded 事件，不持久化 Claimed；仅 Inserted 携带完整输入，其余记录字段变化或 ID。删除 InboxSnapshot 及快照兼容读取。
-- `ThreadLifecycleEvent` 判别联合：`ThreadStarted(thread, parent, agent, at)`、`ThreadCompleted(thread, at)`、`ThreadFailed(thread, at, error)`、`ThreadCancelled(thread, at, reason)`。
 - `ThreadMetadata(runtime_selection, parent_thread, workspace_root, title)`；`runtime_selection` 是该 thread 唯一持久化的有效 agent/model 选择。
 - 插件 state/artifact 端口。
 
@@ -399,16 +400,17 @@ engine 只产出 `LoopTurnEnded(outcome)`。session/application 组合层取得 
 
 需要：
 
-- `SubagentConfig(timeout_seconds)`。
-- `SubagentRequest(agent, prompt, parent_thread, interactive)`。
-- `ChildApplicationResult(final_response, usage)` 是同步与异步子应用共享的唯一结果。
-- `SubagentResult(thread_id, child: ChildApplicationResult)`。
-- `AgentJobSpec(agent, thread_id, prompt)` 与 `AgentJobResult(child: ChildApplicationResult)`，注册给 jobs。
+- `SubagentsConfig(timeout_seconds)`。
+- `AgentJobSpec(agent, thread_id, prompt, label)`，注册给 jobs。
+- `SubagentResult(thread_id, final_response, usage)`，直接表达一次 execution
+  的结果，不再嵌套已经不存在的 `ChildApplicationResult`。
 
 设计：
 
-- 不另造一套 job 状态；异步 subagent 是 `AgentJob`，同步调用只包装 child application result。
-- parent permissions 和 client interaction ports 是 launcher 调用依赖，不是 SubagentRequest 字段。
+- 不另造一套 job 状态；每次 spawn/follow-up 都是现有 JobRegistry 中的单向终态 job。
+- `SessionManager` 持有稳定 child thread；`send_message` 和 `followup_task`
+  只使用该 thread 的 canonical inbox/runtime，不存在第二套 child application executor。
+- parent permissions 和 client interaction routing 由 session open path 继承，不进入 model-facing request。
 
 ### 3.15 goal
 

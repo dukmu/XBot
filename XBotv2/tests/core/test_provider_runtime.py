@@ -1,5 +1,7 @@
 """Behavioral checks for provider retry and stream failure semantics."""
 
+import asyncio
+
 import pytest
 
 from XBotv2.core.domain import (
@@ -88,6 +90,19 @@ class AlwaysTransientFailure(_RetryTestProvider):
         yield  # Make this an async generator.
 
 
+class NeverResponds(_RetryTestProvider):
+    def __init__(self):
+        super().__init__(
+            max_retries=None,
+            retry_backoff_factor=0,
+            request_timeout_seconds=0.01,
+        )
+
+    async def _astream_once(self, _request):
+        await asyncio.Event().wait()
+        yield  # Make this an async generator.
+
+
 @pytest.mark.asyncio
 async def test_transient_failure_before_output_retries_and_completes():
     provider = TransientFailureThenSuccess()
@@ -126,3 +141,18 @@ async def test_retry_exhaustion_is_reported_as_non_retryable_failure():
     assert events[0].error.code == "retry_exhausted"
     assert events[0].error.retryable is False
     assert events[0].error.provider_details["retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_bounds_the_complete_provider_retry_operation():
+    events = [event async for event in NeverResponds().astream(request())]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ModelFailed)
+    assert events[0].error.code == "provider_timeout"
+    assert events[0].error.category == "transport"
+    assert events[0].error.retryable is True
+    assert events[0].error.provider_details == {
+        "model": "test-model",
+        "timeout_seconds": 0.01,
+    }

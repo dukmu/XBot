@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from uuid import uuid4
 
 from XBotv2.core import prompt_element
 from XBotv2.core.artifacts import ArtifactStorePort
@@ -70,7 +71,7 @@ def strip_summary_heading(summary: str) -> str:
 
 def compacted_message(summary: str, *, reason: str) -> CompactionSummaryMessage:
     return CompactionSummaryMessage(
-        id=f"summary-{abs(hash((summary, reason)))}",
+        id=f"summary-{reason}-{uuid4().hex}",
         summary=summary,
     )
 

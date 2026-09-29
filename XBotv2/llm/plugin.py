@@ -55,7 +55,7 @@ def build_llm_service(config: LlmConfig | None = None) -> LlmService:
     service.register("openai", create_openai_provider)
     service.register("anthropic", create_anthropic_provider)
     for name in service.names():
-        service.provider_config(name, require_key=False)
+        service.provider_config(name)
     return service
 
 

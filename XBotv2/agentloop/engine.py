@@ -697,7 +697,7 @@ class Engine(AgentLoopDriverPort):
                     f"LLM returned no assistant content or ToolUse{context} "
                     f"(stop_reason={stop_reason}, reasoning_chars={len(reasoning)})"
                 )
-            response_id = f"assistant-{self.turn_count}-{iteration}-{uuid.uuid4().hex[:8]}"
+            response_id = f"assistant-{self.turn_count}-{iteration}-{uuid.uuid4().hex}"
             observation = RequestObservation(
                 selection=model_request.selection,
                 purpose=TurnRequest(turn_id=self._request_id.get()),

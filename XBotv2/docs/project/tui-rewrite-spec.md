@@ -391,7 +391,7 @@ activity 行绕过渲染层、被快照重建摘除)。结果它污染每一轮�
   session/thread/provider/model/agent、显示控制、附件、交互回应、清屏、复制和退出等已实现操作。
   `/approve <id> [once|session]`、`/deny <id>` 与 `/answer <id> <text>` 通过标准 HTTP client
   permission/user-input endpoints 响应阻塞请求，ID 来自可见 interaction entry。不能把审批或答案
-  当作普通 Agent 消息发送，也不能以“尚未实现”的占位命令冒充能力。
+  当作普通 Agent 消息发送，也不能用“尚未实现”的占位命令表示已有能力。
 - **调色板不是新概念**:`CommandPalette` 就是"在命令搜索结果上的 `SelectionScreen`",
   没有第二套列表模型。`Option` / `SelectionModel` 同时服务会话选择与命令面板。
 - **过滤保持高亮**:`with_options(..., keep=...)` 在候选中保留当前高亮项,否则按索引收敛——
@@ -920,7 +920,7 @@ ok
   在敌意 `NO_PROXY` 下构造本地 client 不抛、显式 `trust_env=False` 生效);4 项变异全部被杀。
 - `XBotv2/tests/conftest.py`:session 级 autouse fixture 规范化**环境里**的代理变量 ——
   仓级测试里直接构造 `httpx.AsyncClient` 的地方不属于产品代码,套件不该由开发机的代理配置决定成败。
-  `XBotClient` 自身的行为仍由上面那组用例负责,不靠这个 fixture 掩盖。
+  `XBotClient` 自身的行为仍由上面那组用例负责，这个 fixture 不覆盖该职责。
 - **同一根因在服务端 provider 侧仍然存在(有意不改)**:`XBotv2/llm/openai.py:74` 构造 `AsyncOpenAI(**kwargs)`,
   OpenAI SDK 自己建 httpx client 且 `trust_env=True` → 在敌意 `NO_PROXY` 环境下 provider 构造就抛,
   表现为 `session_open_failed: Invalid port: ':1]'`(会话根本打不开)。

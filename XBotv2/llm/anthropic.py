@@ -126,6 +126,7 @@ class AnthropicProvider(BaseProvider):
         extra_headers: dict[str, str] | None = None,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
+        request_timeout_seconds: float | None = 60.0,
         input_modalities: list[str] | None = None,
     ) -> None:
         from anthropic import AsyncAnthropic
@@ -133,6 +134,7 @@ class AnthropicProvider(BaseProvider):
         super().__init__(
             max_retries=max_retries,
             retry_backoff_factor=retry_backoff_factor,
+            request_timeout_seconds=request_timeout_seconds,
             input_modalities=input_modalities,
         )
         kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}

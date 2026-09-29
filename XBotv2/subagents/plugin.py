@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from xcore import Context
 
-from XBotv2.application.child import ChildApplications
 from XBotv2.subagents.service import (
     SubagentCatalogPrompt,
     SubagentLauncher,
@@ -18,17 +17,12 @@ from XBotv2.subagents.contracts import SubagentsConfig
 class SubagentsRuntimeComponent:
     inject = [
         "session",
+        "sessions",
         "agent_catalog",
-        "runtime_paths",
         "session_launch",
-        "agent_options",
         "no_plugins",
-        "plugin_dirs",
-        "permissions",
-        "client_events",
         "jobs",
         "tools",
-        "thread_persistence",
     ]
     name = "xbot.subagents"
 
@@ -44,33 +38,25 @@ class SubagentsRuntimeComponent:
             CONTEXT_COMPONENTS_BUILT,
             SubagentCatalogPrompt(ctx.agent_catalog).contribute,
         )
+        launcher = SubagentLauncher(
+            catalog=ctx.agent_catalog,
+            session=ctx.session,
+            sessions=ctx.sessions,
+            provider_name=ctx.session_launch.provider_name,
+            no_plugins=ctx.no_plugins,
+        )
         handlers = SubagentTools(
             registry=ctx.jobs,
-            catalog=ctx.agent_catalog,
-            launcher=SubagentLauncher(
-                catalog=ctx.agent_catalog,
-                session=ctx.session,
-                children=ChildApplications(
-                    paths=ctx.runtime_paths,
-                    provider_name=ctx.session_launch.provider_name,
-                    session_id=ctx.session_launch.session_id,
-                    workspace_root=ctx.session_launch.workspace_root,
-                    no_plugins=ctx.no_plugins,
-                    plugin_dirs=ctx.plugin_dirs,
-                    llm_override=ctx.agent_options.model_override,
-                    parent_thread_id=ctx.session_launch.thread_id,
-                    interactive=ctx.session_launch.interactive,
-                ),
-                lifecycle=ctx.thread_persistence.lifecycle,
-                parent_permissions=ctx.permissions,
-                client_events=ctx.client_events,
-            ),
+            launcher=launcher,
         )
+        ctx.dispose(launcher.close)
         ctx.tools.register(
             Tool.from_function(handlers.spawn_subagent),
             timeout_seconds=timeout_seconds,
         )
         for handler in (
+            handlers.send_message,
+            handlers.followup_task,
             handlers.list_subagents,
             handlers.wait_subagent,
             handlers.read_subagent,
@@ -80,7 +66,7 @@ class SubagentsRuntimeComponent:
 
 
 class SubagentsPlugin:
-    """Mount subagent support only when thread persistence is available."""
+    """Mount collaboration tools on a session-owned Agent runtime."""
 
     name = "xbot.subagents"
     Config = SubagentsConfig

@@ -31,6 +31,7 @@ from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
 from XBotv2.session.contracts import AgentApplicationOptions
+from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import new_session_id
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
@@ -58,6 +59,7 @@ async def start_application(
     defer_persist: bool = False,
     extra_plugins: list[dict[str, JsonValue]] | None = None,
     client_events: ClientEventsPort | None = None,
+    sessions: SessionsPort | None = None,
 ) -> Context:
     """Assemble the XBot runtime on an XCore context.
 
@@ -128,6 +130,8 @@ async def start_application(
         }
         for name, service in services.items():
             plugin_ctx.set(name, service)
+        if sessions is not None:
+            plugin_ctx.set("sessions", sessions)
         plugin_ctx = await boot_application(
             ctx=plugin_ctx,
             tree=tree,
@@ -211,6 +215,7 @@ async def create_agent_application(
         is_subagent=options.is_subagent,
         interactive=options.interactive,
         defer_persist=options.defer_persist,
+        sessions=options.sessions,
     )
     return await mounted_application(context)
 

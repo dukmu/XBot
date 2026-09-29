@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import time
+from uuid import uuid4
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -82,7 +83,7 @@ async def execute_tools(
                                          runtime_log,
                                          approval_layer_active)
         message = ToolMessage(
-            id=MessageId(f"tool-{call.id}-{time.time_ns()}"),
+            id=MessageId(f"tool-{call.id}-{uuid4().hex}"),
             call=ToolCallRef(id=call.id, name=call.name),
             outcome=outcome,
             timing=ToolTiming(duration_ms=round((time.perf_counter() - started) * 1000, 3)),

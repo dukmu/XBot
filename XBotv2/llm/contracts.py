@@ -74,9 +74,9 @@ class ProviderConfig(BaseModel):
     protocol: str = "openai"
     base_url: str | None = None
     api_key: str | None = None
-    api_key_env: str | None = None
     default_model: str
     models: list[ModelConfig] = Field(default_factory=list)
+    request_timeout_seconds: float | None = Field(default=60.0, gt=0)
     # Extra request headers appended to every call, e.g.
     # ``x-opencode-session: "$${session_id}"`` (expanded automatically with the
     # session's runtime variables by the config-load boundary).
@@ -212,7 +212,7 @@ class LlmServicePort(LlmCatalogPort, Protocol):
     def has(self, provider: str) -> bool: ...
     def default_name(self) -> str: ...
     def names(self) -> tuple[str, ...]: ...
-    def provider_config(self, name: str, *, require_key: bool = True) -> ProviderConfig: ...
+    def provider_config(self, name: str) -> ProviderConfig: ...
     def create(
         self,
         provider_config: ProviderConfig,

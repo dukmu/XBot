@@ -18,7 +18,7 @@
 - [x] 紧凑单列布局使用 `❯` user/composer、`●` assistant/tool、底部 status/footer，无永久顶部 session bar。
 - [x] reasoning delta 渲染独立 Think block；无 reasoning 时只显示 transient `Thinking…`。Think/tool 使用受限高度 disclosure；收起显示标题和最多两行 preview，final assistant reply 永不折叠。
 - [x] tool call 与 result 为独立 disclosure；permission 和有限 question 使用 typed modal/chooser，开放问题使用 typed answer flow，不伪造消息或 slash command。
-- [x] RuntimeNotice/context 注入在 transcript 中以来源明确的紧凑 trace 可见，不把内部 XML/JSON 原样冒充用户消息。
+- [x] RuntimeNotice/context 注入在 transcript 中以来源明确的紧凑 trace 可见，内部 XML/JSON 不作为用户消息展示。
 - [x] status 保留 usage、context/window、cache、activity 和必要 session/runtime selection；窄屏按优先级裁剪，不伪造正常比例。
 - [x] Enter 默认 steer，Shift+Enter 换行；显式 queue 和 interrupt 独立。长 paste 保留原文与 canonical identity，pending input 来自服务端权威列表。
 - [x] session/thread switch、只读 `/thread`/subagent view、jobs hydration、compact summary、退出和跨进程 resume 走公开 API。
@@ -68,7 +68,7 @@
 - [x] commands 来自 client commands port/服务端目录；TUI 不复制 `/compact` 等服务端 vocabulary。
 - [x] pending input panel 展示服务端 target；Enter/Alt+S 默认 next-step steer，显式 queue 仍可由公开 API 使用。
 - [x] `Ctrl+T` 使用公开 thread catalog；subagent thread 只读，Esc 回 main，主会话只显示紧凑 job 状态，不复制 child transcript。
-- [ ] 后续 subagent `send_message` 若实现，TUI 只显示标准工具结果和既有 input/message events；不得在客户端新增寻址、delivery 或唤醒逻辑。
+- [x] subagent `send_message`/`followup_task` 只产生标准工具结果及既有 input/message/job events；TUI 不新增寻址、delivery 或唤醒逻辑，`/thread` 继续使用服务端 thread catalog 只读查看。
 
 ## 下一执行顺序
 

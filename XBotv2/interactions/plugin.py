@@ -26,7 +26,7 @@ from XBotv2.interactions.contracts import (
 from XBotv2.agentloop import Events
 from XBotv2.agentloop.events import SessionLifecycle
 from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
-from XBotv2.interactions.tools import build_ask_user_tool, send_message
+from XBotv2.interactions.tools import build_ask_user_tool, notify_user
 from XBotv2.interactions.models import (
     Answered,
     InputCancelled,
@@ -149,7 +149,7 @@ class InteractionsComponent:
                 recorded_event=_user_input_recorded,
             )
         ))
-        ctx.tools.register(send_message)
+        ctx.tools.register(notify_user)
         if ctx.session_launch.interactive:
             ctx.tools.register(build_ask_user_tool(service))
         ctx.on(Events.SESSION_CLOSE, service.session_closed)

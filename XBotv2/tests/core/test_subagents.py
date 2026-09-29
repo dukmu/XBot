@@ -1,21 +1,15 @@
-"""Subagents are owner-defined jobs, not a parallel lifecycle registry."""
-
-from dataclasses import dataclass
+"""Subagent collaboration uses session-owned threads and ordinary jobs."""
 
 import pytest
 
+from XBotv2.agents import AgentDefinition
+from XBotv2.session import ThreadSummary
 from XBotv2.subagents.contracts import SubagentAgentError
 from XBotv2.subagents.service import AgentJobSpec, SubagentLauncher
 
 
-@dataclass(frozen=True)
-class _Definition:
-    name: str
-    mode: str
-
-
 class _Catalog:
-    def __init__(self, definition=None):
+    def __init__(self, definition: AgentDefinition | None = None):
         self.definition = definition
 
     def get(self, _name):
@@ -23,56 +17,113 @@ class _Catalog:
 
 
 class _Session:
+    session_id = "parent-session"
+    thread_id = "parent-thread"
+    workspace_root = "/workspace"
+
     def new_thread_id(self, name):
         return f"child-{name}"
 
 
-class _Children:
-    def __init__(self):
-        self.request = None
+class _Sessions:
+    def __init__(self, threads=()):
+        self.threads = tuple(threads)
+        self.opened = []
 
-    async def spawn(self, request, _lifecycle):
-        self.request = request
-        return "child"
+    async def list_threads(self, session_id):
+        assert session_id == "parent-session"
+        return self.threads
+
+    async def open_thread(self, request):
+        self.opened.append(request)
 
 
-def _launcher(definition):
-    children = _Children()
+def _definition(name="explorer", mode="subagent"):
+    return AgentDefinition(name=name, description=f"{name} agent", mode=mode)
+
+
+def _launcher(definition=None, *, threads=()):
+    sessions = _Sessions(threads)
     launcher = SubagentLauncher(
         catalog=_Catalog(definition),
         session=_Session(),
-        children=children,
-        lifecycle=object(),
-        parent_permissions=object(),
-        client_events=None,
+        sessions=sessions,
+        provider_name="mock",
+        no_plugins=False,
     )
-    return launcher, children
+    return launcher, sessions
 
 
-def test_agent_job_spec_carries_plugin_owned_kind_and_label():
-    spec = AgentJobSpec(agent="explorer", prompt="inspect", label="Inspect")
+def test_agent_job_spec_binds_one_execution_to_its_stable_thread():
+    spec = AgentJobSpec(
+        agent="explorer",
+        prompt="inspect",
+        label="Inspect",
+        thread_id="explorer-a1b2c3",
+    )
+
     assert spec.kind == "subagent"
     assert spec.label == "Inspect"
+    assert spec.thread_id == "explorer-a1b2c3"
 
 
-@pytest.mark.asyncio
-async def test_launcher_rejects_unknown_primary_and_empty_requests():
-    for definition, prompt in (
-        (None, "inspect"),
-        (_Definition("default", "primary"), "inspect"),
-        (_Definition("explorer", "subagent"), "   "),
-    ):
-        launcher, _children = _launcher(definition)
+def test_launcher_allocates_only_registered_non_primary_agents():
+    launcher, _sessions = _launcher(_definition())
+    assert launcher.allocate("explorer") == "child-explorer"
+
+    for definition in (None, _definition("default", "primary")):
+        launcher, _sessions = _launcher(definition)
         with pytest.raises(SubagentAgentError):
-            await launcher.spawn_subagent("explorer", prompt)
+            launcher.allocate("explorer")
 
 
 @pytest.mark.asyncio
-async def test_launcher_passes_one_typed_child_request_to_application_owner():
-    definition = _Definition("explorer", "subagent")
-    launcher, children = _launcher(definition)
-    child = await launcher.spawn_subagent("explorer", "inspect repository")
-    assert child == "child"
-    assert children.request.definition is definition
-    assert children.request.thread_id == "child-explorer"
-    assert children.request.prompt == "inspect repository"
+async def test_launcher_creates_child_through_the_session_owner():
+    launcher, sessions = _launcher(_definition())
+
+    await launcher.ensure_open(
+        thread_id="child-explorer",
+        agent="explorer",
+        create=True,
+    )
+
+    [request] = sessions.opened
+    assert request.session_id == "parent-session"
+    assert request.thread_id == "child-explorer"
+    assert request.parent_thread_id == "parent-thread"
+    assert request.workspace_root == "/workspace"
+    assert request.provider_name == "mock"
+    assert request.mode == "new"
+    assert request.selected_agent == "explorer"
+
+
+@pytest.mark.asyncio
+async def test_launcher_resumes_only_a_direct_inactive_child():
+    child = ThreadSummary(
+        session_id="parent-session",
+        thread_id="child-explorer",
+        status="inactive",
+        kind="subagent",
+        parent_thread_id="parent-thread",
+        agent="explorer",
+    )
+    launcher, sessions = _launcher(_definition(), threads=(child,))
+
+    await launcher.ensure_open(
+        thread_id="child-explorer",
+        agent="explorer",
+        create=False,
+    )
+
+    [request] = sessions.opened
+    assert request.mode == "resume"
+    assert request.thread_id == "child-explorer"
+
+    sibling = child.model_copy(update={"parent_thread_id": "another-parent"})
+    launcher, _sessions = _launcher(_definition(), threads=(sibling,))
+    with pytest.raises(SubagentAgentError, match="Unknown child thread"):
+        await launcher.ensure_open(
+            thread_id="child-explorer",
+            agent="explorer",
+            create=False,
+        )

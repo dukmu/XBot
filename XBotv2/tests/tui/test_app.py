@@ -1161,6 +1161,8 @@ async def test_thread_lists_what_the_session_holds_and_picks_one() -> None:
         await settle(pilot)
         assert backend.sent == [], "listing threads is local"
         assert isinstance(app.screen, SelectionScreen)
+        assert app.screen.title_text == "Subagents"
+        assert "read-only" in app.screen.description_text
         assert "child-1" in selection_text(app), (
             "the picker shows the id the user would type"
         )
@@ -1168,6 +1170,27 @@ async def test_thread_lists_what_the_session_holds_and_picks_one() -> None:
         await settle(pilot)
         assert app.controller is not None
         assert app.controller.state.thread_id == "child-1"
+
+
+async def test_thread_picker_preselects_the_thread_being_viewed() -> None:
+    backend = ScriptedBackend(
+        threads=(thread(), thread(thread_id="child-1", kind="subagent", agent="reviewer"))
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        backend.session = snapshot(thread_id="child-1")
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("/thread child-1")
+        await pilot.press("enter")
+        await settle(pilot)
+
+        await pilot.press("ctrl+t")
+        await settle(pilot)
+
+        assert isinstance(app.screen, SelectionScreen)
+        assert app.screen.model.current is not None
+        assert app.screen.model.current.value == "child-1"
 
 
 def selection_text(app: TuiApp) -> str:
@@ -1221,7 +1244,7 @@ async def test_agent_thread_picker_switches_read_only_and_escape_returns_to_main
         await pilot.press("ctrl+t")
         await settle(pilot)
         assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.title_text == "Agent threads"
+        assert app.screen.title_text == "Subagents"
 
         backend.session = snapshot(
             thread_id="child-1",

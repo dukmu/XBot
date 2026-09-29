@@ -55,14 +55,18 @@ class BaseProvider(ABC):
         *,
         max_retries: int | None = None,
         retry_backoff_factor: float = 0.5,
+        request_timeout_seconds: float | None = 60.0,
         input_modalities: list[InputModality] | None = None,
     ) -> None:
         if max_retries is not None and max_retries < 0:
             raise ValueError("max_retries must be non-negative or None")
         if retry_backoff_factor < 0:
             raise ValueError("retry_backoff_factor must be non-negative")
+        if request_timeout_seconds is not None and request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be positive or None")
         self.max_retries = max_retries
         self.retry_backoff_factor = retry_backoff_factor
+        self.request_timeout_seconds = request_timeout_seconds
         requested = frozenset(input_modalities or ["text"])
         unsupported = requested - self.supported_input_modalities
         if unsupported:
@@ -76,8 +80,33 @@ class BaseProvider(ABC):
         self,
         request: ModelRequest,
     ) -> AsyncIterator[ModelStreamEvent]:
-        """Retry transient failures until output begins or the limit is reached."""
+        """Run one bounded provider operation, including internal retries."""
         self._validate_message_capabilities(request)
+        model = request.selection.route.model
+        try:
+            async with asyncio.timeout(self.request_timeout_seconds):
+                async for event in self._astream_with_retries(request):
+                    yield event
+        except TimeoutError:
+            yield ModelFailed(error=ProviderError(
+                code="provider_timeout",
+                message=(
+                    f"Provider request for {model!r} timed out after "
+                    f"{self.request_timeout_seconds:g}s"
+                ),
+                retryable=True,
+                category="transport",
+                provider_details={
+                    "model": model,
+                    "timeout_seconds": self.request_timeout_seconds,
+                },
+            ))
+
+    async def _astream_with_retries(
+        self,
+        request: ModelRequest,
+    ) -> AsyncIterator[ModelStreamEvent]:
+        """Retry transient failures until output begins or the limit is reached."""
         model = request.selection.route.model
         retries = 0
         while True:

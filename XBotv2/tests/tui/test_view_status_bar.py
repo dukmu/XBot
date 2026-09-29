@@ -120,6 +120,7 @@ def test_session_usage_totals_are_visible_in_the_status_line() -> None:
     shown = plain(model)
     assert "in:100" in shown
     assert "out:20" in shown
+    assert "cache:0%" in shown
 
 
 def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
@@ -149,7 +150,7 @@ def test_usage_breakdown_context_size_and_cache_rate_are_shown() -> None:
 
     assert "in:300" in shown
     assert "out:50" in shown
-    assert "ctx:350/4096" in shown
+    assert "ctx:350/4.1k" in shown
     assert "cache:25%" in shown
 
 
@@ -160,7 +161,16 @@ def test_context_overflow_is_explicit_instead_of_looking_like_a_valid_ratio() ->
         context_input_estimated=True,
     ))
 
-    assert "ctx:~5.7k/4096!" in shown
+    assert "ctx:~5.7k/4.1k!" in shown
+
+
+def test_large_context_window_is_rendered_in_human_readable_units() -> None:
+    shown = plain(line(
+        context_window=204_800,
+        context_input_tokens=3_800,
+    ))
+
+    assert "ctx:3.8k/204.8k" in shown
 
 
 def test_statusline_combines_session_context_and_usage() -> None:
@@ -175,7 +185,7 @@ def test_statusline_combines_session_context_and_usage() -> None:
     ), width=100)
 
     assert "session:session-1" in status
-    assert "ctx:350/4096" in status
+    assert "ctx:350/4.1k" in status
     assert "in:300" in status
     assert "out:50" in status
     assert "cache:25%" in status
@@ -194,7 +204,7 @@ def test_statusline_orders_session_context_and_model() -> None:
     ), width=120)
 
     assert "session:session-1" in shown
-    assert shown.index("ctx:350/4096") < shown.index("session:session-1")
+    assert shown.index("ctx:350/4.1k") < shown.index("session:session-1")
     assert shown.index("session:session-1") < shown.index("deepseek/v4")
     assert "in:300" in shown
 

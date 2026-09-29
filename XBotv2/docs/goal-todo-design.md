@@ -10,7 +10,7 @@
 
 ## 开源实现核查（2026-09-29）
 
-只以用户指定的 Codex、OpenCode、Claude Code、DSH 为参考。以下是源码阅读事实，不是运行验证；OpenCode 在线链接指向可变分支，Claude Code 此处只有官方产品文档，不冒充内部源码证据。
+只以用户指定的 Codex、OpenCode、Claude Code、DSH 为参考。以下是源码阅读事实，不是运行验证；OpenCode 在线链接指向可变分支，Claude Code 此处只有官方产品文档，不作为内部源码证据。
 
 - [x] OpenCode [`tool/todo.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/todo.ts) 接收模型提交的列表；[`session/todo.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/todo.ts) 在事务中替换会话任务并发布更新事件。字段为 content/status/priority，位置用于排序。这条路径不调用独立评估模型，也没有依赖图调度。
 - [x] OpenCode [`session/prompt.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/prompt.ts) 的 runLoop 检查停止原因、工具调用和用户消息归属决定正常退出；todo 更新与此处退出判断不是同一职责。

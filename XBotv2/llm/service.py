@@ -8,15 +8,13 @@ service also carries the *configured* providers from the ``llm`` plugin's
 tree config (``default`` + ``providers``), so runtime code can resolve a
 provider by name without reading a separate ``providers.yaml`` document.
 
-Provider definitions are stored raw and parsed on demand: only the selected
-provider's API key is required (``provider_config(name)`` raises when its
-``api_key_env`` is unset), so mounting never fails because an unrelated
-configured provider lacks a key.
+Provider definitions are validated after the configuration loader expands
+environment references. Concrete remote adapters validate their credential
+when they are created.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from typing import Callable
 from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
@@ -93,18 +91,8 @@ class LlmService(LlmServicePort):
     def provider_config(
         self,
         name: str,
-        *,
-        require_key: bool = True,
     ) -> ProviderConfig:
-        """Resolve one configured provider to its validated adapter instance.
-
-        The name ``"default"`` aliases the configured default provider.
-        ``require_key=True`` (selection path) resolves ``api_key_env`` and
-        raises when the environment variable is unset; ``require_key=False``
-        (listing path) leaves the key unresolved.  The returned catalog entry
-        carries ``protocol`` / ``default_model`` / ``models``; the concrete
-        request settings for one model come from ``resolve(model)``.
-        """
+        """Return one validated provider entry; ``default`` is an alias."""
         if name == "default":
             name = self._config.default_provider
         provider = self._config.providers.get(name)
@@ -114,16 +102,7 @@ class LlmService(LlmServicePort):
                 f"Unknown provider config: {name}. "
                 f"Configured providers: {available}."
             )
-        if provider.api_key is not None or provider.api_key_env is None:
-            return provider
-        api_key = os.environ.get(provider.api_key_env)
-        if api_key is None and require_key:
-            raise ValueError(
-                f"Environment variable {provider.api_key_env} is not set"
-            )
-        if api_key is None:
-            return provider
-        return provider.model_copy(update={"api_key": api_key})
+        return provider
 
     def create(
         self,

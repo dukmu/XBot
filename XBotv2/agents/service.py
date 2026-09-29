@@ -131,10 +131,7 @@ class AgentsService(AgentRuntimePort):
                 definition,
                 stored_metadata,
             )
-        provider = self._providers.provider_config(
-            provider_name,
-            require_key=options.model_override is None,
-        )
+        provider = self._providers.provider_config(provider_name)
         model_config = (
             provider.resolve(runtime_selection.model.route.model)
             if self._restored_runtime
@@ -329,10 +326,7 @@ class AgentsService(AgentRuntimePort):
             if isinstance(policy_route, ModelRoute)
             else current.model.route.provider
         )
-        provider = self._providers.provider_config(
-            provider_name,
-            require_key=not self._model_is_override,
-        )
+        provider = self._providers.provider_config(provider_name)
         model_config = self._resolve_model_config(provider, definition)
         if not self._model_is_override:
             self._model.replace(
@@ -387,10 +381,7 @@ class AgentsService(AgentRuntimePort):
             raise ValueError(f"Unknown provider: {name}")
         engine = self._require_engine()
         state = self._state
-        provider = self._providers.provider_config(
-            name,
-            require_key=not self._model_is_override,
-        )
+        provider = self._providers.provider_config(name)
         model_config = provider.resolve(model)
         if model_config.max_output_tokens is None:
             raise ValueError(
@@ -440,10 +431,7 @@ class AgentsService(AgentRuntimePort):
         runtime = self._state.metadata.value.runtime_selection
         provider_name = runtime.model.route.provider
         model_name = runtime.model.route.model
-        entry = self._providers.provider_config(
-            provider_name,
-            require_key=not self._model_is_override,
-        )
+        entry = self._providers.provider_config(provider_name)
         model_config = entry.resolve(model_name)
         tiers = list(model_config.effort or [])
         if not tiers:

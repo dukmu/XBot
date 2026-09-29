@@ -403,6 +403,7 @@ class TuiApp(App[None]):
         hint: str = "",
         compact: bool = False,
         cancel_value: str | None = None,
+        initial_value: str | None = None,
     ) -> SelectionScreen:
         choices = tuple(options)
         return SelectionScreen(
@@ -414,6 +415,7 @@ class TuiApp(App[None]):
             hint=hint,
             compact=compact,
             cancel_value=cancel_value,
+            initial_value=initial_value,
         )
 
     async def _present_interaction(
@@ -556,7 +558,15 @@ class TuiApp(App[None]):
         ]
         self._notify("help", "\n".join(lines))
 
-    async def _choose(self, *, title: str, load, apply) -> None:
+    async def _choose(
+        self,
+        *,
+        title: str,
+        load,
+        apply,
+        description: str = "",
+        initial_value: str | None = None,
+    ) -> None:
         """Offer a selection and apply the chosen row.
 
         Every picker in the client comes through here -- ``/session``,
@@ -574,7 +584,12 @@ class TuiApp(App[None]):
             self._notify(title.lower(), f"Nothing to choose from in {title.lower()}.")
             return
         await self.push_screen(
-            self._selection_screen(title, options),
+            self._selection_screen(
+                title,
+                options,
+                description=description,
+                initial_value=initial_value,
+            ),
             callback=lambda value: self._chosen(value, apply),
         )
 
@@ -823,11 +838,15 @@ class TuiApp(App[None]):
         await self._open_settings()
 
     async def action_agents(self) -> None:
-        """Inspect the server's agent threads through the shared picker."""
+        """Inspect the server's subagent threads through the shared picker."""
         await self._choose(
-            title="Agent threads",
+            title="Subagents",
             load=self._load_threads,
             apply=self._apply_thread,
+            description="Select a transcript to inspect; subagent threads are read-only.",
+            initial_value=(
+                self.controller.state.thread_id if self.controller is not None else None
+            ),
         )
 
     async def _cmd_jobs(self, args: str) -> None:
@@ -883,7 +902,10 @@ class TuiApp(App[None]):
 
     async def _load_threads(self):
         assert self.controller is not None
-        return thread_options(await self.controller.threads())
+        return thread_options(
+            await self.controller.threads(),
+            current=self.controller.state.thread_id,
+        )
 
     async def _load_providers(self):
         assert self.controller is not None
@@ -969,7 +991,11 @@ class TuiApp(App[None]):
             await self._switch_thread(target)
             return
         await self._choose(
-            title="Threads", load=self._load_threads, apply=self._apply_thread
+            title="Subagents",
+            load=self._load_threads,
+            apply=self._apply_thread,
+            description="Select a transcript to inspect; subagent threads are read-only.",
+            initial_value=self.controller.state.thread_id,
         )
 
     async def _switch_thread(self, thread_id: str) -> None:

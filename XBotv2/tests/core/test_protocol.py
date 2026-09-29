@@ -268,18 +268,14 @@ class TestProviderConfigLoader:
         assert service.names() == ("primary",)
         assert service.provider_config("primary") is config.providers["primary"]
 
-    def test_llm_service_resolves_configured_credential_only_at_selection(
-        self, monkeypatch
-    ):
+    def test_llm_service_returns_the_already_expanded_provider_entry(self):
         from XBotv2.llm.service import LlmService
 
-        monkeypatch.setenv("PROVIDER_TEST_KEY", "secret-from-environment")
         config = LlmConfig(
             default_provider="custom",
             providers={
                 "custom": ProviderConfig(
                     protocol="openai",
-                    api_key_env="PROVIDER_TEST_KEY",
                     default_model="model-v1",
                     models=[ModelConfig(model="model-v1")],
                 ),
@@ -288,9 +284,7 @@ class TestProviderConfigLoader:
 
         service = LlmService(config)
 
-        assert service.provider_config("custom").api_key == (
-            "secret-from-environment"
-        )
+        assert service.provider_config("custom").api_key is None
 
     def test_unknown_provider_is_rejected(self):
         from XBotv2.llm.service import LlmService
@@ -336,18 +330,6 @@ class TestProviderConfigLoader:
                 tmp_path,
                 session_id="s1",
             )
-
-    def test_api_key_env_resolves_from_environment(self, monkeypatch):
-        from XBotv2.llm.config import parse_provider_config
-
-        monkeypatch.setenv("PROVIDER_TEST_KEY", "sk-resolved")
-        config = parse_provider_config({
-            "protocol": "anthropic",
-            "default_model": "m3",
-            "models": [{"model": "m3", "max_output_tokens": 8192}],
-            "api_key_env": "PROVIDER_TEST_KEY",
-        })
-        assert config.api_key == "sk-resolved"
 
     def test_server_profile_reads_merged_llm_entry(self, tmp_path):
         """The server application consumes the overlaid LLM profile entry."""

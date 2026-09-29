@@ -159,8 +159,10 @@ def test_summary_request_requires_a_store_for_artifact_bearing_history():
 
 def test_compacted_message_has_its_own_canonical_kind_and_identity():
     message = compacted_message("kept facts", reason="manual")
+    repeated = compacted_message("kept facts", reason="manual")
     assert isinstance(message, CompactionSummaryMessage)
     assert message.id.startswith("summary-")
+    assert repeated.id != message.id
     assert message.summary == "kept facts"
 
 

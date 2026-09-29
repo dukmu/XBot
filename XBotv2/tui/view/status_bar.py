@@ -242,7 +242,7 @@ def _context_segment(model: StatusLine) -> tuple[str, str] | None:
         overflow = model.context_input_tokens > model.context_window
         return (
             f"ctx:{marker}{_compact_count(model.context_input_tokens)}"
-            f"/{model.context_window}"
+            f"/{_compact_count(model.context_window)}"
             f"{'!' if overflow else ''}",
             "red" if overflow else "cyan",
         )
@@ -254,7 +254,6 @@ def _usage_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
     if counters.input or counters.output:
         yield f"in:{_compact_count(counters.input)}", ""
         yield f"out:{_compact_count(counters.output)}", ""
-    if counters.cache_read:
         cache_basis = counters.input + counters.cache_read
         if cache_basis:
             cache_rate = round(100 * counters.cache_read / cache_basis)

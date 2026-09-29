@@ -3,6 +3,7 @@
 import json
 import sys
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -61,13 +62,16 @@ import yaml
 from xcore import ServiceNotFoundError
 
 from XBotv2.application.app import start_application
+from XBotv2.application.app import create_agent_application
+from XBotv2.application.server import start_server_application
+from XBotv2.loader import PluginOverlay
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.contracts import AgentApplicationOptions
 from XBotv2.agentloop import InboxItem, HumanInput
 from XBotv2.core.domain import InboxTarget
 from XBotv2.agentloop.outputs import AssistantCompleted, LoopError, ToolCompleted
 from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import ToolSucceeded
+from XBotv2.core.tools import ToolCall, ToolSucceeded
 from XBotv2.core.artifacts import ArtifactKind, ImageRef
 from XBotv2.core.messages import HumanInputMessage
 from XBotv2.core.parts import ImagePart
@@ -81,6 +85,32 @@ async def _run_turn(engine, content):
         input=HumanInput(content=content),
     )
     return [event async for event in engine.run_turn(item)]
+
+
+async def _hosted_application(
+    *, paths, session_id, workspace_root, llm_override
+):
+    """Open an Agent through the process session owner used in production."""
+    host = await start_server_application(
+        paths=paths,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default",
+            "workspace_root": str(workspace_root),
+            "no_plugins": False,
+        }}]),
+    )
+    host.sessions.application_factory = partial(
+        create_agent_application,
+        model_override=llm_override,
+    )
+    runtime = await host.sessions.open_session(
+        session_id=session_id,
+        thread_id="main",
+        provider_name="default",
+        workspace_root=str(workspace_root),
+        no_plugins=False,
+    )
+    return host, runtime.application._context
 
 
 @pytest.mark.asyncio
@@ -542,7 +572,7 @@ class TestApplicationStartupBasics:
         )
 
         names = set(application.engine.tools.names())
-        assert "send_message" in names
+        assert "notify_user" in names
         assert "ask_user" not in names
         assert "request_permission" not in names
 
@@ -1365,18 +1395,78 @@ plugin = ConfiguredPlugin()
         llm = MockLLM(responses=[
             {"content": "session title"},  # caption auto-titles the first message
 {"content": "ok"}])
-        application = await start_application(
+        host, application = await _hosted_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="catalog",
-            thread_id="main",
             workspace_root=temp_workspace,
             llm_override=llm,
         )
+        try:
+            _ = await _run_turn(application.engine, "hello")
+            prompt = _system_prompt(llm)
+            assert "- reviewer: Workspace reviewer" in prompt
+        finally:
+            await host.stop()
 
-        _ = await _run_turn(application.engine, "hello")
-        prompt = _system_prompt(llm)
-        assert "- reviewer: Workspace reviewer" in prompt
-        await application.stop()
+    @pytest.mark.asyncio
+    async def test_subagent_runtime_does_not_require_persistence(
+        self, temp_data_dir, temp_workspace
+    ):
+        from XBotv2.core.stream import ModelCompleted
+
+        _write_plugins(temp_data_dir, {"persistence": {"disabled": True}})
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
+            encoding="utf-8",
+        )
+
+        class ChildLLM(MockLLM):
+            async def _astream_once(self, request):
+                self._state.request_history.append(request)
+                yield ModelCompleted(response=self.to_response({
+                    "content": "ephemeral review complete",
+                }))
+
+        host, application = await _hosted_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir),
+            session_id="ephemeral-subagent",
+            workspace_root=temp_workspace,
+            llm_override=ChildLLM(responses=[]),
+        )
+        try:
+            assert not application.has("thread_persistence")
+            [spawned] = await application.tools.execute_all([ToolCall(
+                id="spawn-ephemeral",
+                name="spawn_subagent",
+                args={"agent": "reviewer", "prompt": "Review without storage."},
+            )])
+            assert isinstance(spawned.message.outcome, ToolSucceeded)
+            [waited] = await application.tools.execute_all([ToolCall(
+                id="wait-ephemeral",
+                name="wait_subagent",
+                args={"mode": "all"},
+            )])
+            assert isinstance(waited.message.outcome, ToolSucceeded)
+            [read] = await application.tools.execute_all([ToolCall(
+                id="read-ephemeral",
+                name="read_subagent",
+                args={"id": "subagent_1"},
+            )])
+            assert isinstance(read.message.outcome, ToolSucceeded)
+            assert "ephemeral review complete" in "".join(
+                part.text for part in read.message.outcome.output.parts
+                if isinstance(part, TextPart)
+            )
+            children = [
+                item
+                for item in await host.sessions.list_threads("ephemeral-subagent")
+                if item.kind == "subagent"
+            ]
+            assert len(children) == 1
+            assert children[0].status == "active"
+        finally:
+            await host.stop()
 
     @pytest.mark.asyncio
     async def test_parent_agent_runs_a_subagent_application_through_jobs(
@@ -1439,10 +1529,9 @@ plugin = ConfiguredPlugin()
                 yield ModelCompleted(response=self.to_response(responses.pop(0)))
 
         llm = AgentRoutedMockLLM()
-        application = await start_application(
+        host, application = await _hosted_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="subagent-e2e",
-            thread_id="main",
             workspace_root=temp_workspace,
             llm_override=llm,
         )
@@ -1483,7 +1572,7 @@ plugin = ConfiguredPlugin()
             assert job.kind == "subagent"
             assert job.status == "succeeded"
             assert job.result is not None
-            assert job.result.child.final_response == (
+            assert job.result.final_response == (
                 "The parent policy prevented file access."
             )
             child_tool_results = [
@@ -1494,18 +1583,19 @@ plugin = ConfiguredPlugin()
             ]
             assert "Tool execution did not produce output" in child_tool_results
             assert all("parent-only content" not in text for text in child_tool_results)
-            lifecycle = application.thread_persistence.lifecycle.load()
-            assert [record.event for record in lifecycle] == ["started", "completed"]
-            assert lifecycle[0].thread_id != "main"
-            assert lifecycle[1].thread_id == lifecycle[0].thread_id
-            assert lifecycle[0].agent == "reviewer"
-            assert lifecycle[0].parent_thread_id == "main"
+            child = await host.sessions.thread_summary(
+                "subagent-e2e", job.spec.thread_id
+            )
+            assert child.status == "active"
+            assert child.turn_status == "idle"
+            assert child.agent == "reviewer"
+            assert child.parent_thread_id == "main"
         finally:
-            await application.stop()
+            await host.stop()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("terminal", ["failed_running", "cancelled_running"])
-    async def test_subagent_failure_and_cancel_close_child_application(
+    async def test_subagent_failure_and_cancel_keep_child_thread_available(
         self, temp_data_dir, temp_workspace, terminal
     ):
         import asyncio
@@ -1566,10 +1656,9 @@ plugin = ConfiguredPlugin()
         llm = LifecycleMockLLM()
         paths = RuntimePaths.from_data_dir(temp_data_dir)
         session_id = f"subagent-{terminal}"
-        application = await start_application(
+        host, application = await _hosted_application(
             paths=paths,
             session_id=session_id,
-            thread_id="main",
             workspace_root=temp_workspace,
             llm_override=llm,
         )
@@ -1594,31 +1683,23 @@ plugin = ConfiguredPlugin()
             events = await asyncio.wait_for(turn, timeout=5)
             assert any(isinstance(event, AssistantCompleted) for event in events)
             assert job.status == terminal
-            records = application.thread_persistence.lifecycle.load()
-            child_records = [
-                record for record in records
-                if record.thread_id != "main"
-            ]
-            assert [record.event for record in child_records] == [
-                "started",
-                "failed" if terminal == "failed_running" else "cancelled",
-            ]
-            detail = (
-                child_records[1].error
-                if child_records[1].event == "failed"
-                else child_records[1].reason
+            child = await host.sessions.thread_summary(
+                session_id, job.spec.thread_id
             )
-            assert detail
-            assert owner_observer.count == 2  # child released its session ownership
+            assert child.status == "active"
+            assert child.turn_status == "idle"
+            assert child.parent_thread_id == "main"
+            assert owner_observer.count == 3  # stable child remains resumable
         finally:
             if not turn.done():
                 turn.cancel()
                 await asyncio.gather(turn, return_exceptions=True)
-            await application.stop()
+            await host.stop()
+            assert owner_observer.count == 1
             owner_observer.release()
 
     @pytest.mark.asyncio
-    async def test_multiple_subagents_cancel_together_and_release_every_child(
+    async def test_multiple_subagents_cancel_together_keep_their_threads(
         self, temp_data_dir, temp_workspace
     ):
         import asyncio
@@ -1671,10 +1752,9 @@ plugin = ConfiguredPlugin()
                 yield ModelCompleted(response=self.to_response(response))
 
         paths = RuntimePaths.from_data_dir(temp_data_dir)
-        application = await start_application(
+        host, application = await _hosted_application(
             paths=paths,
             session_id="subagent-concurrent-cancel",
-            thread_id="main",
             workspace_root=temp_workspace,
             llm_override=ConcurrentChildrenLLM(),
         )
@@ -1696,13 +1776,17 @@ plugin = ConfiguredPlugin()
             assert {view.state for view in stopped} == {"cancelled_running"}
             assert waited.pending == ()
             assert {view.state for view in waited.ready} == {"cancelled_running"}
-            records = application.thread_persistence.lifecycle.load()
-            child_records = [record for record in records if record.thread_id != "main"]
-            assert [record.event for record in child_records].count("started") == 2
-            assert [record.event for record in child_records].count("cancelled") == 2
-            assert owner_observer.count == 2
+            summaries = await host.sessions.list_threads(
+                "subagent-concurrent-cancel"
+            )
+            child_threads = [item for item in summaries if item.kind == "subagent"]
+            assert len(child_threads) == 2
+            assert all(item.status == "active" for item in child_threads)
+            assert all(item.turn_status == "idle" for item in child_threads)
+            assert owner_observer.count == 4
         finally:
-            await application.stop()
+            await host.stop()
+            assert owner_observer.count == 1
             owner_observer.release()
 
     @pytest.mark.asyncio
@@ -1759,10 +1843,9 @@ plugin = ConfiguredPlugin()
                     response=self.to_response(next(self.parent_responses))
                 )
 
-        application = await start_application(
+        host, application = await _hosted_application(
             paths=RuntimePaths.from_data_dir(temp_data_dir),
             session_id="subagent-parent-read-failure",
-            thread_id="main",
             workspace_root=temp_workspace,
             llm_override=FailedChildLLM(),
         )
@@ -1779,7 +1862,7 @@ plugin = ConfiguredPlugin()
                 "spawn_subagent", "wait_subagent", "read_subagent",
             ]
             assert isinstance(tools[-1].outcome, ToolFailed)
-            assert tools[-1].outcome.error.code == "child_application_failed"
+            assert tools[-1].outcome.error.code == "subagent_failed"
             assert "review provider failed" in tools[-1].outcome.error.message
             assert any(
                 isinstance(event, AssistantCompleted)
@@ -1790,7 +1873,7 @@ plugin = ConfiguredPlugin()
                 for event in events
             )
         finally:
-            await application.stop()
+            await host.stop()
 
     @pytest.mark.asyncio
     async def test_goal_provider_error_disarms_without_retrying_forever(

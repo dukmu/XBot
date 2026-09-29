@@ -62,6 +62,21 @@ async def test_plain_return_value_is_wrapped_once_as_success():
 
 
 @pytest.mark.asyncio
+async def test_tool_message_identity_does_not_depend_on_wall_clock(monkeypatch):
+    import XBotv2.agentloop.tool_runtime as runtime
+
+    async def probe() -> str:
+        return "done"
+
+    registry = ToolRegistry()
+    registry.register(Tool.from_function(probe))
+    monkeypatch.setattr(runtime.time, "time_ns", lambda: 1)
+    first = await _execute(registry, ToolCall(id="same-call", name="probe"))
+    second = await _execute(registry, ToolCall(id="same-call", name="probe"))
+    assert first.message.id != second.message.id
+
+
+@pytest.mark.asyncio
 async def test_guard_denial_prevents_tool_invocation():
     invoked = False
 

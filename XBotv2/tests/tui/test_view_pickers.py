@@ -55,9 +55,36 @@ def test_thread_rows_show_the_id_alongside_a_title() -> None:
     assert "4 msg" in options[0].detail
 
 
+def test_thread_rows_name_liveness_and_current_thread() -> None:
+    options = thread_options(
+        [
+            thread(thread_id="main", kind="main", turn_status="idle"),
+            thread(
+                thread_id="worker-1",
+                kind="subagent",
+                agent="reviewer",
+                turn_status="running",
+            ),
+            thread(
+                thread_id="worker-2",
+                kind="subagent",
+                agent="researcher",
+                status="inactive",
+            ),
+        ],
+        current="worker-1",
+    )
+
+    assert options[0].label.startswith("Main")
+    assert "idle" in options[0].detail
+    assert "working" in options[1].detail
+    assert "current" in options[1].detail
+    assert "closed" in options[2].detail
+
+
 def test_thread_rows_do_not_repeat_an_id_as_the_title() -> None:
     options = thread_options([thread(thread_id="agent", title="agent")])
-    assert options[0].label == "agent"
+    assert options[0].label == "Main · agent"
 
 
 # --- providers and models -------------------------------------------------

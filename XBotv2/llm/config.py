@@ -16,8 +16,6 @@ being silently sent to a vendor.
 
 from __future__ import annotations
 
-import os
-
 from pydantic import JsonValue
 
 def merge_request_extras(
@@ -44,28 +42,13 @@ def merge_request_extras(
 
 def parse_provider_config(
     raw: dict[str, JsonValue],
-    *,
-    require_key: bool = True,
 ) -> ProviderConfig:
-    """Validate one provider catalog entry from the llm plugin tree config.
-
-    ``api_key_env`` is resolved against the environment here; the key itself
-    is never stored in configuration.  ``require_key=False`` (listing path)
-    leaves the key unresolved.
-    """
+    """Validate one provider entry after configuration expansion."""
     # Environment references were expanded at the config-load boundary
     # (``expand_env_refs`` over the plugin tree); this parser validates only.
-    values = dict(raw)
-    api_key_env = values.pop("api_key_env", None)
-    if api_key_env and not values.get("api_key"):
-        env_name = str(api_key_env)
-        if require_key and env_name not in os.environ:
-            raise ValueError(f"Environment variable {env_name} is not set")
-        if env_name in os.environ:
-            values["api_key"] = os.environ[env_name]
     from XBotv2.llm.contracts import ProviderConfig
 
-    return ProviderConfig.model_validate(values)
+    return ProviderConfig.model_validate(raw)
 
 
 __all__ = [

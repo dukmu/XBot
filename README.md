@@ -88,6 +88,22 @@ tree into `<data-dir>/config/plugins.yaml`, which overlays the bundled
 └── .xbot/plugins.yaml           # workspace plugin overlay
 ```
 
+Provider credentials use the same YAML expansion boundary as other settings:
+
+```yaml
+- id: llm
+  config:
+    providers:
+      minimax:
+        api_key: "$${env:MINIMAX_API_TOKEN}"
+        request_timeout_seconds: 60
+```
+
+`$${env:NAME}` is expanded before YAML entries are validated; an unset
+variable is a configuration error. `request_timeout_seconds` bounds the whole
+provider operation, including adapter retries, and reports `provider_timeout`
+through the normal turn error stream.
+
 Provider definitions live in the `llm` plugin's tree config; sessions,
 message history (`messages.jsonl`), usage, and artifacts are stored per
 thread and are resumable.

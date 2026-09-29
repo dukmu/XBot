@@ -359,12 +359,14 @@ async def test_minimax_adaptive_thinking_is_sent_and_streamed_as_reasoning():
     configured_provider = ProviderConfig(
         protocol="anthropic",
         api_key="test",
+        request_timeout_seconds=15,
         default_model=model.model,
         models=[model],
     )
     provider = AnthropicProvider(
         **_provider_arguments(configured_provider, model),
     )
+    assert provider.request_timeout_seconds == 15
     sent: list[dict[str, object]] = []
 
     class MessageStream:

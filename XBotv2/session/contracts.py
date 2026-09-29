@@ -38,6 +38,7 @@ from XBotv2.interactions.models import UserInputRequest
 from XBotv2.permissions.contracts import PermissionRequest
 
 if TYPE_CHECKING:
+    from XBotv2.agentloop.contracts import InboxItem
     from XBotv2.agents import AgentDefinition
     from XBotv2.application import AgentApplicationPort
     from XBotv2.core.providers import BaseProvider
@@ -363,6 +364,9 @@ class AgentApplicationOptions:
     parent_permission_system: PermissionsPort | None = None
     is_subagent: bool = False
     interactive: bool = True
+    # Process-owned session access is published to Agent plugins explicitly;
+    # it is runtime composition, not persisted thread state.
+    sessions: "SessionsPort | None" = None
     # A brand-new session does not materialize on disk until its first record;
     # resume sessions persist metadata immediately.
     defer_persist: bool = False
@@ -440,6 +444,14 @@ class SessionsPort(Protocol):
         history_limit: int | None,
     ) -> HistoryMutation: ...
     async def send_message(self, request: SendMessage) -> None: ...
+    async def submit_runtime_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        item: InboxItem,
+        *,
+        wake: bool,
+    ) -> None: ...
     async def pending_inputs(
         self,
         session_id: str,

@@ -17,7 +17,6 @@ from XBotv2.core.history import ConversationHistory, HistoryCursorInvalid, Messa
 from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.persistence.contracts import ThreadFailed, ThreadStarted
 from XBotv2.persistence.models import StoredTrajectoryRecord
 from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
 
@@ -695,54 +694,3 @@ def test_trajectory_rejects_legacy_flat_record_without_entry_envelope(tmp_path):
     reopened = _independent_reopen(persistence)
     with pytest.raises(ValueError, match="entry"):
         reopened.history.load_surface()
-
-
-def test_lifecycle_short_write_preserves_prefix_and_allows_retry(tmp_path, monkeypatch):
-    persistence = _store(tmp_path)
-    first = ThreadStarted(
-        thread_id="child-1",
-        parent_thread_id="agent",
-        agent="worker",
-    )
-    second = ThreadFailed(
-        thread_id="child-1",
-        error="startup failed",
-    )
-    persistence.lifecycle.append(first)
-    before = persistence.paths.session.threads_log.read_bytes()
-    raw_write = os.write
-    writes = 0
-
-    def short_write(descriptor, payload):
-        nonlocal writes
-        writes += 1
-        if writes == 1:
-            return raw_write(descriptor, payload[:-1])
-        if writes == 2:
-            raise OSError("simulated lifecycle write failure")
-        return raw_write(descriptor, payload)
-
-    monkeypatch.setattr(os, "write", short_write)
-    with pytest.raises(OSError, match="simulated lifecycle write failure"):
-        persistence.lifecycle.append(second)
-    assert persistence.paths.session.threads_log.read_bytes() == before
-    persistence.lifecycle.append(second)
-
-    assert persistence.lifecycle.load() == [first, second]
-
-
-def test_lifecycle_rejects_the_previous_ambiguous_record_shape(tmp_path):
-    persistence = _store(tmp_path)
-    persistence.paths.session.threads_log.parent.mkdir(parents=True, exist_ok=True)
-    persistence.paths.session.threads_log.write_text(json.dumps({
-        "schema_version": 1,
-        "event": "completed",
-        "thread_id": "child-1",
-        "parent_thread_id": "agent",
-        "agent": "worker",
-        "timestamp": "2026-01-01T00:00:00+00:00",
-        "error": "not valid for completion",
-    }) + "\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="schema_version"):
-        persistence.lifecycle.load()

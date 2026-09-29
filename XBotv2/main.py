@@ -510,66 +510,70 @@ def _workspace_root(args) -> Path:
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.application.app import start_application
-    from XBotv2.application.host import mounted_application
-    from XBotv2.session.runtime import SessionRuntime
+    from XBotv2.application.server import start_server_application
+    from XBotv2.loader import PluginOverlay
 
-    context = await start_application(
-        paths=RuntimePaths.from_data_dir(args.data_dir),
-        provider_name=args.provider,
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
-        selected_agent=getattr(args, "agent", None),
-        interactive=False,
+    paths = RuntimePaths.from_data_dir(args.data_dir)
+    workspace = str(_workspace_root(args))
+    host = await start_server_application(
+        paths=paths,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": args.provider,
+            "workspace_root": workspace,
+            "no_plugins": args.no_plugins,
+        }}]),
     )
-    application = await mounted_application(context)
-    engine = application.driver
-    await engine.start_session()
-    session = context.loop_state.session
-    runtime = SessionRuntime(
-        paths=RuntimePaths.from_data_dir(args.data_dir),
-        no_plugins=args.no_plugins,
-        application=application,
-        engine=engine,
-        interactive=False,
-    )
-    events = runtime.event_stream.subscribe()
     try:
-        await runtime.send_message(args.prompt, "once")
-        async for frame in events:
-            event = frame.event
-            if isinstance(event, AssistantCompleted):
-                content = "".join(
-                    part.text for part in event.message.parts if isinstance(part, TextPart)
-                )
-                if content:
-                    print(content)
-            elif isinstance(event, ToolCompleted):
-                outcome = event.execution.message.outcome
-                if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+        session_id = getattr(args, "session", None)
+        runtime = await host.sessions.open_session(
+            session_id=session_id,
+            thread_id=getattr(args, "thread", "agent"),
+            provider_name=args.provider,
+            workspace_root=workspace,
+            selected_agent=getattr(args, "agent", None),
+            mode="resume" if session_id else "new",
+            no_plugins=args.no_plugins,
+            interactive=False,
+        )
+        events = runtime.event_stream.subscribe()
+        try:
+            await runtime.send_message(args.prompt, "once")
+            async for frame in events:
+                event = frame.event
+                if isinstance(event, AssistantCompleted):
                     content = "".join(
-                        part.text
-                        for part in outcome.output.parts
+                        part.text for part in event.message.parts
                         if isinstance(part, TextPart)
                     )
-                elif isinstance(outcome, (ToolDenied, ToolCancelled)):
-                    content = outcome.reason
-                else:
-                    raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
-                print(f"\n[{event.execution.message.call.id}]: {content[:300]}")
-            elif isinstance(event, ClientNotice):
-                print(f"\n[message] {event.message}")
-            elif isinstance(event, LoopError):
-                print(f"\nError: {event.message}")
-            if isinstance(event, (LoopTurnEnded, LoopError)):
-                # A failed turn may never reach ``turn_started`` and therefore
-                # has no lifecycle terminal frame; the typed error ends it.
-                break
+                    if content:
+                        print(content)
+                elif isinstance(event, ToolCompleted):
+                    outcome = event.execution.message.outcome
+                    if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+                        content = "".join(
+                            part.text
+                            for part in outcome.output.parts
+                            if isinstance(part, TextPart)
+                        )
+                    elif isinstance(outcome, (ToolDenied, ToolCancelled)):
+                        content = outcome.reason
+                    else:
+                        raise TypeError(
+                            f"Unsupported tool outcome: {type(outcome).__name__}"
+                        )
+                    print(f"\n[{event.execution.message.call.id}]: {content[:300]}")
+                elif isinstance(event, ClientNotice):
+                    print(f"\n[message] {event.message}")
+                elif isinstance(event, LoopError):
+                    print(f"\nError: {event.message}")
+                if isinstance(event, (LoopTurnEnded, LoopError)):
+                    # A failed turn may never reach ``turn_started`` and therefore
+                    # has no lifecycle terminal frame; the typed error ends it.
+                    break
+        finally:
+            await events.aclose()
     finally:
-        await events.aclose()
-        await runtime.close()
+        await host.stop()
 
 
 if __name__ == "__main__":

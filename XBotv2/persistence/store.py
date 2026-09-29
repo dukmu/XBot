@@ -34,10 +34,9 @@ from XBotv2.persistence.contracts import (
     HistoryPort,
     InboxPersistencePort,
     MetadataPort,
-    ThreadLifecyclePort,
     ThreadPersistencePort,
 )
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue
 from XBotv2.core.paths import SessionPaths, ThreadPaths
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.contracts import (
@@ -49,9 +48,6 @@ from XBotv2.persistence.models import (
     StoredInboxRecord,
     StoredTrajectoryRecord,
 )
-from XBotv2.persistence.contracts import (
-    ThreadLifecycleRecord,
-)
 from xcore.state import StateService
 
 # Ordinary telemetry is flushed with a bounded delay; callers that declare a
@@ -59,7 +55,6 @@ from xcore.state import StateService
 _SYNC_INTERVAL_SECONDS = 0.25
 
 TrajectoryRecord = StoredTrajectoryRecord
-_THREAD_LIFECYCLE_ADAPTER = TypeAdapter(ThreadLifecycleRecord)
 
 
 class _SurfaceState:
@@ -874,32 +869,6 @@ def _append_bytes(path: Path, payload: bytes, *, sync: bool = True) -> None:
         os.close(descriptor)
 
 
-class ThreadLifecycleStore(ThreadLifecyclePort):
-    def __init__(
-        self,
-        paths: ThreadPaths,
-        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
-    ) -> None:
-        self._path = paths.session.threads_log
-        self._log = runtime_log
-
-    def append(self, record: ThreadLifecycleRecord) -> None:
-        payload = (
-            json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
-        ).encode("utf-8")
-        _append_bytes(self._path, payload)
-        self._log.debug(
-            "persistence.lifecycle.appended",
-            bytes=len(payload),
-        )
-
-    def load(self) -> list[ThreadLifecycleRecord]:
-        return [
-            _THREAD_LIFECYCLE_ADAPTER.validate_python(raw)
-            for raw in _read_jsonl(self._path, "thread lifecycle")
-        ]
-
-
 def _read_json(path: Path, name: str) -> Mapping[str, JsonValue] | None:
     if not path.exists():
         return None
@@ -1005,7 +974,6 @@ class ThreadPersistence(ThreadPersistencePort):
         self.metadata = metadata or ThreadMetadataStore(paths, runtime_log)
         self.history = MessageHistoryStore(paths, runtime_log)
         self.inbox = InboxStore(paths, runtime_log)
-        self.lifecycle = ThreadLifecycleStore(paths, runtime_log)
         self.state = state
 
     def materialize(self) -> None:
@@ -1080,6 +1048,5 @@ __all__ = [
     "InboxStore",
     "MessageHistoryStore",
     "ThreadMetadataStore",
-    "ThreadLifecycleStore",
     "ThreadPersistence",
 ]

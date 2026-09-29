@@ -2663,7 +2663,7 @@ async def test_real_reasoning_and_usage_reach_the_tui(real_client: XBotClient) -
         assert "ctx:~" in status
         assert "session:tui-e2e" in status
         assert "ctx:~" in status
-        assert "/4096" in status
+        assert "/4.1k" in status
 
 
 @pytest.mark.parametrize("base_url", ["compact"], indirect=True)
@@ -3094,7 +3094,7 @@ async def test_the_real_thread_picker_lists_the_sessions_threads(
             description="the thread picker",
         )
         assert THREAD_ID in await screen_text(app)
-        assert "main" in await screen_text(app), "the picker says which thread is main"
+        assert "Main" in await screen_text(app), "the picker says which thread is main"
 
 
 async def test_switching_to_the_real_main_thread_keeps_the_client_writable(
@@ -3362,7 +3362,7 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
         _tmux("send-keys", "-t", name, "C-t")
         await _wait_for_tmux_screen(
             name,
-            lambda screen: "Agent threads" in screen and child_id in screen,
+            lambda screen: "Subagents" in screen and child_id in screen,
             description="the real agent thread picker",
         )
         for _ in range(child_index):

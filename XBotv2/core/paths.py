@@ -72,10 +72,6 @@ class SessionPaths:
     def threads_dir(self) -> Path:
         return self.root / "threads"
 
-    @property
-    def threads_log(self) -> Path:
-        return self.root / "threads.jsonl"
-
     def thread(self, thread_id: str) -> ThreadPaths:
         return ThreadPaths(self, _identifier("thread_id", thread_id))
 

@@ -58,20 +58,35 @@ def session_options(items: Sequence[SessionSummary]) -> tuple[Option, ...]:
     )
 
 
-def thread_options(items: Sequence[ThreadSummary]) -> tuple[Option, ...]:
-    """Rows for ``/thread``: the id is what the user would type, so it is shown."""
+def thread_options(
+    items: Sequence[ThreadSummary], *, current: str = ""
+) -> tuple[Option, ...]:
+    """Rows for ``/thread`` with identity and server-owned liveness."""
     return tuple(
         Option(
             value=item.thread_id,
             label=(
-                f"{item.title}  {item.thread_id}"
-                if item.title and item.title != item.thread_id
-                else item.thread_id
+                (
+                    f"Main · {item.title} · {item.thread_id}"
+                    if item.title and item.title != item.thread_id
+                    else f"Main · {item.thread_id}"
+                )
+                if item.kind == "main"
+                else (
+                    f"{item.title} · {item.thread_id}"
+                    if item.title and item.title != item.thread_id
+                    else f"{item.agent or 'subagent'} · {item.thread_id}"
+                )
             ),
             detail=_detail(
-                item.kind,
-                item.turn_status,
-                item.agent,
+                "current" if item.thread_id == current else "",
+                "subagent" if item.kind == "subagent" else "",
+                (
+                    "closed"
+                    if item.status == "inactive"
+                    else "working" if item.turn_status == "running" else "idle"
+                ),
+                item.agent if item.kind == "subagent" else "",
                 f"{item.message_count} msg" if item.message_count else "",
             ),
         )

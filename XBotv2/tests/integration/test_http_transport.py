@@ -42,7 +42,14 @@ from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.errors import OperationError
 from XBotv2.loader import PluginOverlay
 from XBotv2.agentloop import AllTools
-from XBotv2.core.tools import Tool, ToolCall, ToolCancelled, ToolDenied, ToolSucceeded
+from XBotv2.core.tools import (
+    Tool,
+    ToolCall,
+    ToolCancelled,
+    ToolDenied,
+    ToolFailed,
+    ToolSucceeded,
+)
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellJobSpec, ShellRunner, start_shell
 from httpx import ASGITransport
@@ -57,6 +64,7 @@ from XBotv2.protocol.version import PROTOCOL_VERSION
 from XBotv2.session import (
     InteractionReceipt,
     OpenSession,
+    OpenThread,
     SendMessage,
 )
 from XBotv2.session.contracts import SessionEvent
@@ -5683,6 +5691,450 @@ async def skills_client(skills_app) -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
+async def test_subagent_message_and_followup_share_one_hosted_child_thread(
+    skills_app,
+    skills_client: httpx.AsyncClient,
+) -> None:
+    """All collaboration paths use one server-owned child and inbox."""
+    from XBotv2.core.stream import ModelCompleted
+
+    workspace = Path(skills_app.state.workspace_root)
+    agents = workspace / ".agents"
+    agents.mkdir(exist_ok=True)
+    (agents / "reviewer.md").write_text(
+        "---\ndescription: Review runtime ownership\nmode: subagent\n---\nReview.",
+        encoding="utf-8",
+    )
+    (workspace / "note.txt").write_text("runtime note", encoding="utf-8")
+
+    class CollaborationLLM(MockLLM):
+        def __init__(self) -> None:
+            super().__init__(responses=[])
+            self.parent_step = 0
+            self.child_step = 0
+            self.target = ""
+            self.release_child = asyncio.Event()
+            self.first_child_context = ""
+            self.followup_child_context = ""
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            text = "\n".join(
+                part.text
+                for message in request.messages
+                for part in message.parts
+                if isinstance(part, TextPart)
+            )
+            system = "\n".join(
+                part.text
+                for part in request.messages[0].parts
+                if isinstance(part, TextPart)
+            )
+            if "Review." in system:
+                if self.child_step == 0:
+                    await self.release_child.wait()
+                    response = {"tool_calls": [{
+                        "id": "inspect-note",
+                        "name": "read",
+                        "args": {"path": "note.txt", "mode": "utf8"},
+                    }]}
+                elif self.child_step == 1:
+                    self.first_child_context = text
+                    response = {"content": "Initial review complete."}
+                else:
+                    self.followup_child_context = text
+                    response = {"content": "Follow-up review complete."}
+                self.child_step += 1
+                yield ModelCompleted(response=self.to_response(response))
+                return
+
+            if "spawn_subagent" not in {tool.name for tool in request.tools}:
+                yield ModelCompleted(response=self.to_response({
+                    "content": "Collaboration session",
+                }))
+                return
+
+            if self.parent_step == 0:
+                response = {"tool_calls": [{
+                    "id": "spawn-reviewer",
+                    "name": "spawn_subagent",
+                    "args": {"agent": "reviewer", "prompt": "Inspect ownership."},
+                }]}
+            elif self.parent_step == 1:
+                matched = re.search(r"Started subagent thread ([^;]+);", text)
+                assert matched is not None
+                self.target = matched.group(1)
+                response = {"tool_calls": [{
+                    "id": "message-reviewer",
+                    "name": "send_message",
+                    "args": {
+                        "target": self.target,
+                        "message": "Focus on runtime ownership.",
+                    },
+                }]}
+            elif self.parent_step == 2:
+                self.release_child.set()
+                response = {"tool_calls": [{
+                    "id": "wait-initial",
+                    "name": "wait_subagent",
+                    "args": {"mode": "all"},
+                }]}
+            elif self.parent_step == 3:
+                response = {"tool_calls": [{
+                    "id": "read-initial",
+                    "name": "read_subagent",
+                    "args": {"id": "subagent_1"},
+                }]}
+            elif self.parent_step == 4:
+                response = {"content": "Initial collaboration complete."}
+            elif self.parent_step == 5:
+                response = {"tool_calls": [{
+                    "id": "queue-idle-message",
+                    "name": "send_message",
+                    "args": {
+                        "target": self.target,
+                        "message": "Remember the queued detail.",
+                    },
+                }]}
+            elif self.parent_step == 6:
+                response = {"content": "Idle message queued."}
+            elif self.parent_step == 7:
+                response = {"tool_calls": [{
+                    "id": "followup-reviewer",
+                    "name": "followup_task",
+                    "args": {
+                        "target": self.target,
+                        "message": "Continue with the follow-up.",
+                    },
+                }]}
+            elif self.parent_step == 8:
+                response = {"tool_calls": [{
+                    "id": "wait-followup",
+                    "name": "wait_subagent",
+                    "args": {"mode": "all"},
+                }]}
+            elif self.parent_step == 9:
+                response = {"tool_calls": [{
+                    "id": "read-followup",
+                    "name": "read_subagent",
+                    "args": {"id": "subagent_2"},
+                }]}
+            elif self.parent_step == 10:
+                response = {"content": "Follow-up collaboration complete."}
+            elif self.parent_step == 11:
+                response = {"tool_calls": [{
+                    "id": "resume-reviewer",
+                    "name": "followup_task",
+                    "args": {
+                        "target": self.target,
+                        "message": "Resume this persisted reviewer.",
+                    },
+                }]}
+            elif self.parent_step == 12:
+                response = {"tool_calls": [{
+                    "id": "wait-resumed",
+                    "name": "wait_subagent",
+                    "args": {"mode": "all"},
+                }]}
+            elif self.parent_step == 13:
+                response = {"tool_calls": [{
+                    "id": "read-resumed",
+                    "name": "read_subagent",
+                    "args": {"id": "subagent_3"},
+                }]}
+            elif self.parent_step == 14:
+                response = {"content": "Resumed collaboration complete."}
+            elif self.parent_step == 15:
+                response = {"tool_calls": [{
+                    "id": "message-foreign-child",
+                    "name": "send_message",
+                    "args": {
+                        "target": self.foreign_target,
+                        "message": "This must be rejected.",
+                    },
+                }]}
+            else:
+                response = {"content": "Foreign target was rejected."}
+            self.parent_step += 1
+            yield ModelCompleted(response=self.to_response(response))
+
+    llm = CollaborationLLM()
+    skills_app.state.manager.application_factory = partial(
+        create_agent_application,
+        model_override=llm,
+    )
+    session_id = "subagent-collaboration"
+    parent_runtime = await skills_app.state.manager.open_session(
+        session_id=session_id,
+        thread_id="main",
+        provider_name="default",
+        workspace_root=str(workspace),
+        no_plugins=False,
+    )
+    try:
+        await _submit_turn(
+            skills_client, skills_app, session_id, "main",
+            {"content": "Delegate the runtime review."},
+        )
+        assert llm.target
+        child = await skills_app.state.manager.thread_summary(session_id, llm.target)
+        assert child.parent_thread_id == "main"
+        assert child.status == "active"
+        assert child.turn_status == "idle"
+        assert "Focus on runtime ownership." in llm.first_child_context
+
+        initial_child_calls = llm.child_step
+        await _submit_turn(
+            skills_client, skills_app, session_id, "main",
+            {"content": "Send an idle message only."},
+        )
+        assert llm.child_step == initial_child_calls
+        [pending] = await skills_app.state.manager.pending_inputs(
+            session_id, llm.target
+        )
+        assert "Remember the queued detail." in pending.content
+        assert pending.target is InboxTarget.NEXT_STEP
+
+        await _submit_turn(
+            skills_client, skills_app, session_id, "main",
+            {"content": "Continue the same reviewer thread."},
+        )
+        assert llm.child_step == initial_child_calls + 1
+        assert "Remember the queued detail." in llm.followup_child_context
+        assert "Continue with the follow-up." in llm.followup_child_context
+        assert (
+            llm.followup_child_context.index("Remember the queued detail.")
+            < llm.followup_child_context.index("Continue with the follow-up.")
+        )
+        assert await skills_app.state.manager.pending_inputs(
+            session_id, llm.target
+        ) == ()
+        children = [
+            item for item in await skills_app.state.manager.list_threads(session_id)
+            if item.kind == "subagent"
+        ]
+        assert [item.thread_id for item in children] == [llm.target]
+
+        await skills_app.state.manager.close_thread(session_id, llm.target)
+        assert (
+            await skills_app.state.manager.thread_summary(session_id, llm.target)
+        ).status == "inactive"
+        await _submit_turn(
+            skills_client, skills_app, session_id, "main",
+            {"content": "Resume the same reviewer."},
+        )
+        resumed = await skills_app.state.manager.thread_summary(
+            session_id, llm.target
+        )
+        assert resumed.status == "active"
+        assert resumed.parent_thread_id == "main"
+
+        await skills_app.state.manager.open_session(
+            session_id=session_id,
+            thread_id="other-main",
+            provider_name="default",
+            workspace_root=str(workspace),
+            no_plugins=False,
+        )
+        llm.foreign_target = "foreign-reviewer"
+        await skills_app.state.manager.open_thread(OpenThread(
+            session_id=session_id,
+            thread_id=llm.foreign_target,
+            parent_thread_id="other-main",
+            workspace_root=str(workspace),
+            provider_name="default",
+            mode="new",
+            no_plugins=False,
+            selected_agent="reviewer",
+        ))
+        rejected = await _submit_turn(
+            skills_client, skills_app, session_id, "main",
+            {"content": "Try to message another parent's child."},
+        )
+        rejection = next(
+            event.execution.message.outcome
+            for event in rejected
+            if event.kind == "tool_completed"
+            and event.execution.message.call.name == "send_message"
+        )
+        assert isinstance(rejection, ToolFailed)
+        assert rejection.error.code == "subagent_message_failed"
+        assert await skills_app.state.manager.pending_inputs(
+            session_id, llm.foreign_target
+        ) == ()
+
+        manager = skills_app.state.manager
+        original_submit = manager.submit_runtime_input
+        submit_entered = asyncio.Event()
+        release_submit = asyncio.Event()
+
+        async def gated_submit(
+            submitted_session_id, submitted_thread_id, item, *, wake
+        ):
+            if (
+                submitted_thread_id == llm.target
+                and isinstance(item.input, RuntimeInput)
+                and item.input.event == "message"
+            ):
+                submit_entered.set()
+                await release_submit.wait()
+            await original_submit(
+                submitted_session_id, submitted_thread_id, item, wake=wake
+            )
+
+        manager.submit_runtime_input = gated_submit
+        racing_send = asyncio.create_task(
+            parent_runtime.engine.tools.execute_all([ToolCall(
+                id="message-during-parent-close",
+                name="send_message",
+                args={"target": llm.target, "message": "Closing race."},
+            )])
+        )
+        await asyncio.wait_for(submit_entered.wait(), timeout=1)
+        await manager.close_thread(session_id, "main")
+        release_submit.set()
+        [raced] = await racing_send
+        assert isinstance(raced.message.outcome, ToolFailed)
+        assert raced.message.outcome.error.code == "subagent_message_failed"
+        assert (
+            await manager.thread_summary(session_id, llm.target)
+        ).status == "inactive"
+        assert (
+            await manager.thread_summary(session_id, llm.foreign_target)
+        ).status == "active"
+    finally:
+        await skills_app.state.manager.close_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_followup_resumes_the_same_child_after_server_restart(
+    tmp_path: Path,
+) -> None:
+    """Persisted child identity, not an in-memory launcher cache, owns resume."""
+    from XBotv2.core.stream import ModelCompleted
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".agents").mkdir()
+    (workspace / ".agents" / "reviewer.md").write_text(
+        "---\ndescription: Review after restart\nmode: subagent\n---\nReview.",
+        encoding="utf-8",
+    )
+
+    class RestartLLM(MockLLM):
+        def __init__(self) -> None:
+            super().__init__(responses=[])
+            self.child_calls = 0
+
+        async def _astream_once(self, request):
+            self._state.request_history.append(request)
+            system = "\n".join(
+                part.text
+                for part in request.messages[0].parts
+                if isinstance(part, TextPart)
+            )
+            if "Review." in system:
+                self.child_calls += 1
+                content = f"review response {self.child_calls}"
+            else:
+                content = "parent persisted"
+            yield ModelCompleted(response=self.to_response({"content": content}))
+
+    async def execute(runtime, name: str, args: dict[str, Any], call_id: str):
+        [execution] = await runtime.engine.tools.execute_all([
+            ToolCall(id=call_id, name=name, args=args),
+        ])
+        outcome = execution.message.outcome
+        assert isinstance(outcome, ToolSucceeded), outcome
+        return "".join(
+            part.text for part in outcome.output.parts
+            if isinstance(part, TextPart)
+        )
+
+    llm = RestartLLM()
+    overlay = PluginOverlay.parse([{"id": "session", "config": {
+        "provider_name": "default",
+        "workspace_root": str(workspace),
+        "no_plugins": False,
+    }}])
+    first = await start_server_application(paths=paths, overrides=overlay)
+    first.sessions.application_factory = partial(
+        create_agent_application, model_override=llm
+    )
+    try:
+        parent = await first.sessions.open_session(
+            session_id="restart-subagent",
+            thread_id="main",
+            provider_name="default",
+            workspace_root=str(workspace),
+            no_plugins=False,
+        )
+        await _collect_turn(parent, "Persist the parent.", "persist-parent")
+        started = await execute(
+            parent,
+            "spawn_subagent",
+            {"agent": "reviewer", "prompt": "Initial review."},
+            "spawn-before-restart",
+        )
+        match = re.search(r"Started subagent thread ([^;]+); job ([^ ]+)", started)
+        assert match is not None
+        child_id, first_job = match.groups()
+        await execute(
+            parent,
+            "wait_subagent",
+            {"ids": [first_job]},
+            "wait-before-restart",
+        )
+    finally:
+        await first.stop()
+
+    second = await start_server_application(paths=paths, overrides=overlay)
+    second.sessions.application_factory = partial(
+        create_agent_application, model_override=llm
+    )
+    try:
+        parent = await second.sessions.open_session(
+            session_id="restart-subagent",
+            thread_id="main",
+            provider_name="default",
+            workspace_root=str(workspace),
+            mode="resume",
+            no_plugins=False,
+        )
+        followed = await execute(
+            parent,
+            "followup_task",
+            {"target": child_id, "message": "Review again after restart."},
+            "followup-after-restart",
+        )
+        match = re.search(r"job ([^ ]+)", followed)
+        assert match is not None
+        resumed_job = match.group(1)
+        await execute(
+            parent,
+            "wait_subagent",
+            {"ids": [resumed_job]},
+            "wait-after-restart",
+        )
+        response = await execute(
+            parent,
+            "read_subagent",
+            {"id": resumed_job},
+            "read-after-restart",
+        )
+        assert response == "review response 2"
+        summary = await second.sessions.thread_summary(
+            "restart-subagent", child_id
+        )
+        assert summary.status == "active"
+        assert summary.parent_thread_id == "main"
+        assert llm.child_calls == 2
+    finally:
+        await second.stop()
+
+
+@pytest.mark.asyncio
 async def test_http_server_commands_include_kind(
     skills_client: httpx.AsyncClient,
 ) -> None:
@@ -6257,6 +6709,9 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
         assert after_compact.state.goal_id == paused.state.goal_id
         assert after_compact.state.revision == paused.state.revision
         assert after_compact.state.stats == paused_stats
+        usage_before_resume = (
+            runtime.application.usage.snapshot().total_counters
+        )
 
         await skills_client.post(
             "/sessions/goal-compact/threads/t/commands",
@@ -6274,8 +6729,16 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
             while runtime.turn_lock.locked():
                 await asyncio.sleep(0)
         complete = await goal_service.snapshot()
-        assert complete.state.stats.input_tokens == 8
-        assert complete.state.stats.output_tokens == 4
+        usage_after_resume = runtime.application.usage.snapshot().total_counters
+        resumed_input = usage_after_resume.input - usage_before_resume.input
+        resumed_output = usage_after_resume.output - usage_before_resume.output
+        assert (resumed_input, resumed_output) == (6, 3)
+        assert complete.state.stats.input_tokens == (
+            paused_stats.input_tokens + resumed_input
+        )
+        assert complete.state.stats.output_tokens == (
+            paused_stats.output_tokens + resumed_output
+        )
         assert complete.state.stats.tool_calls == 2
     finally:
         await skills_app.state.manager.close_session(
