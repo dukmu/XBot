@@ -23,6 +23,7 @@ import uuid
 from functools import partial
 from pathlib import Path
 from typing import AsyncIterator, Callable
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
@@ -510,6 +511,90 @@ async def real_client(base_url: str) -> AsyncIterator[XBotClient]:
         await client.close()
 
 
+class SocketCutProxy:
+    """Transparent TCP forwarder that can cut live client connections only."""
+
+    def __init__(self, upstream_url: str) -> None:
+        upstream = urlsplit(upstream_url)
+        assert upstream.hostname is not None and upstream.port is not None
+        self._upstream = (upstream.hostname, upstream.port)
+        self._server: asyncio.Server | None = None
+        self._connections: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
+        self.accepted = 0
+
+    async def start(self) -> str:
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        return f"http://127.0.0.1:{port}"
+
+    async def cut_connections(self) -> int:
+        accepted = self.accepted
+        connections = tuple(self._connections)
+        assert connections, "the TUI has no live connection to cut"
+        for client, upstream in connections:
+            client.close()
+            upstream.close()
+        await asyncio.gather(
+            *(writer.wait_closed() for pair in connections for writer in pair),
+            return_exceptions=True,
+        )
+        return accepted
+
+    async def stop(self) -> None:
+        if self._connections:
+            await self.cut_connections()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _accept(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_reader, upstream_writer = await asyncio.open_connection(*self._upstream)
+        pair = (writer, upstream_writer)
+        self._connections.add(pair)
+        self.accepted += 1
+
+        async def relay(
+            source: asyncio.StreamReader,
+            target: asyncio.StreamWriter,
+        ) -> None:
+            while data := await source.read(64 * 1024):
+                target.write(data)
+                await target.drain()
+
+        relays = {
+            asyncio.create_task(relay(reader, upstream_writer)),
+            asyncio.create_task(relay(upstream_reader, writer)),
+        }
+        try:
+            await asyncio.wait(relays, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in relays:
+                task.cancel()
+            await asyncio.gather(*relays, return_exceptions=True)
+            self._connections.discard(pair)
+            writer.close()
+            upstream_writer.close()
+            await asyncio.gather(
+                writer.wait_closed(),
+                upstream_writer.wait_closed(),
+                return_exceptions=True,
+            )
+
+
+@pytest_asyncio.fixture
+async def socket_cut_proxy(base_url: str) -> AsyncIterator[tuple[str, SocketCutProxy]]:
+    proxy = SocketCutProxy(base_url)
+    url = await proxy.start()
+    try:
+        yield url, proxy
+    finally:
+        await proxy.stop()
+
+
 def tui(client: XBotClient) -> TuiApp:
     return tui_app(
         client,
@@ -660,7 +745,7 @@ async def _stop_tmux_tui(session_name: str) -> None:
 @pytest.mark.parametrize("base_url", ["interaction"], indirect=True)
 async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
     real_client: XBotClient,
-    base_url: str,
+    socket_cut_proxy: tuple[str, SocketCutProxy],
     tmp_path: Path,
 ) -> None:
     """Drive the installed CLI in tmux, not Textual's in-process pilot."""
@@ -674,7 +759,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         str(xbot),
         "tui",
         "--server",
-        base_url,
+        socket_cut_proxy[0],
         "--no-plugins",
     ])
     captures = tmp_path / "pty-captures"
@@ -721,6 +806,28 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         assert "Enter confirm · Esc deny" in permission_screen
         (captures / "permission.txt").write_text(
             permission_screen, encoding="utf-8"
+        )
+
+        accepted_before_cut = await socket_cut_proxy[1].cut_connections()
+        deadline = asyncio.get_running_loop().time() + 10
+        while socket_cut_proxy[1].accepted <= accepted_before_cut:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("the CLI did not reconnect after its socket was cut")
+            await asyncio.sleep(0.02)
+        permission_reconnected = await _wait_for_tmux_screen(
+            session_name,
+            lambda screen: (
+                "Permission required" in screen
+                and "Tool: ask_user" in screen
+                and "Allow once" in screen
+                and "Enter confirm · Esc deny" in screen
+            ),
+            description="the pending permission after a real socket reconnect",
+        )
+        assert permission_reconnected.count("❯ ask me a question") == 1
+        assert "▸ Allow once" in permission_reconnected
+        (captures / "permission-reconnected.txt").write_text(
+            permission_reconnected, encoding="utf-8"
         )
 
         _resize_tmux_window(session_name, 80, 24)
@@ -886,7 +993,10 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
             for item in history.items
             if isinstance(item, HumanInputRecord)
         ]
-        assert human_inputs[-1] == f"follow-up question\n{long_tail}!"
+        assert human_inputs == [
+            "ask me a question",
+            f"follow-up question\n{long_tail}!",
+        ]
 
         other_session = "pty-switch-target"
         await real_client.open_session(
@@ -1670,7 +1780,7 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
             "--thread",
             THREAD_ID,
             "--workspace",
-            str(repo_root),
+            str(tmp_path / "workspace"),
             "--no-plugins",
         ])
 

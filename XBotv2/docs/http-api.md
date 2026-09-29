@@ -34,6 +34,12 @@ protocol handshake is `POST /hello`.
 | POST | `/sessions/{session_id}/threads/{thread_id}/close` | `close_thread` | `CloseResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/interrupt` | `interrupt_thread` | `InterruptResponse` |
 
+For `open_session` in `resume` mode, an existing thread's persisted
+`workspace_root` is authoritative. Omitting `workspace_root` resumes in that
+workspace; supplying a different path fails with `workspace_conflict` rather
+than moving the thread. Reopening an already active thread is an attachment to
+the existing runtime and does not reconfigure its workspace.
+
 ## Messages, history, queue, and stream
 
 | Method | Path | Operation | Result |
