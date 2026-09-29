@@ -24,6 +24,7 @@ class HumanInputMessage(BaseModel):
     id: MessageId = Field(min_length=1)
     parts: tuple[TextContent, ...]
     artifacts: tuple[ArtifactRef, ...] = ()
+    steering: bool = False
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 

@@ -1239,6 +1239,7 @@ class Engine(AgentLoopDriverPort):
                 id=accepted_input.id,
                 parts=parts,
                 artifacts=payload.artifacts,
+                steering=accepted_input.target is InboxTarget.NEXT_STEP,
             )
         elif isinstance(payload, RuntimeInput):
             message = RuntimeNoticeMessage(

@@ -203,6 +203,11 @@ def _compile_message(
 ) -> ProviderMessage:
     if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
         parts: list[TextPart | ResolvedImagePart] = []
+        if isinstance(message, HumanInputMessage) and message.steering:
+            parts.append(TextPart(text=(
+                "[Temporary supplemental input] Continue the current task; "
+                "do not interrupt or abandon it unless this input explicitly asks you to do so."
+            )))
         for part in message.parts:
             if isinstance(part, TextPart):
                 parts.append(part)

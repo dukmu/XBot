@@ -25,6 +25,7 @@ provider 的 `system/user/assistant/tool` 是请求协议角色，不是持久�
 - `HumanInputMessage`
   - `id: MessageId`
   - 接受后沿用 inbox 的 `id`，不再保存重复的 `input_id`。
+  - `steering: bool = False`：记录它是否作为当前工作的临时补充被接受；context compiler 据此添加简短模型侧说明，原文不变。投递时机和唤醒仍由 inbox 控制，不由该字段驱动。
   - `parts: tuple[TextPart | ImagePart, ...]`
   - `artifacts: tuple[ArtifactRef, ...]`
 - `RuntimeNoticeMessage`

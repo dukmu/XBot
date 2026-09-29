@@ -280,6 +280,59 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
     assert llm.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldin_app):
+    from XBotv2.core.messages import HumanInputMessage, ToolMessage
+    from XBotv2.core.provider import ProviderUser
+    from XBotv2.agentloop.protocol import TurnCancelled
+
+    llm = MockLLM(responses=[
+        {"tool_calls": [{"id": "wait-steer", "name": "wait_for_release", "args": {"value": "finished"}}]},
+        {"content": "continued current task"},
+    ])
+    first_events, _, _ = await _run_foldin(foldin_app, llm)
+    runtime = await foldin_app.state.manager.get("foldin", "t")
+    messages = runtime.application.loop_state.messages
+    human = [message for message in messages if isinstance(message, HumanInputMessage)]
+    assert [message.steering for message in human] == [False, True]
+    assert [message.parts for message in human] == [
+        (TextPart(text="first request"),), (TextPart(text="second queued"),),
+    ]
+    assert not any(isinstance(event, TurnCancelled) for event in first_events)
+    assert all(isinstance(message.outcome, ToolSucceeded) for message in messages if isinstance(message, ToolMessage))
+
+    def assert_model_wrapper(request):
+        ordinary = next(
+            message for message in request.messages
+            if isinstance(message, ProviderUser) and TextPart(text="first request") in message.parts
+        )
+        assert ordinary.parts == (TextPart(text="first request"),)
+        steered = next(
+            message for message in request.messages
+            if isinstance(message, ProviderUser) and TextPart(text="second queued") in message.parts
+        )
+        assert len(steered.parts) == 2
+        instruction = steered.parts[0].text.lower()
+        assert "temporary" in instruction and "unless" in instruction
+        assert "interrupt" in instruction
+
+    assert_model_wrapper(llm.request_history[-1])
+    await foldin_app.state.manager.close_session("foldin")
+    resumed_llm = MockLLM(responses=[{"content": "resumed"}])
+    resumed = await foldin_app.state.manager.open_session(
+        session_id="foldin", thread_id="t", mode="resume", llm_override=resumed_llm,
+        provider_name="default", workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True,
+    )
+    resumed_events = await _collect(_runtime_command(resumed, "next request", "after-resume"))
+    assert not any(isinstance(event, LoopError) for event in resumed_events)
+    assert_model_wrapper(resumed_llm.request_history[-1])
+    assert [
+        message.steering for message in resumed.application.loop_state.messages
+        if isinstance(message, HumanInputMessage)
+    ] == [False, True, False]
+
+
 async def _run_multi_queue(app, llm):
     """First turn blocks on a tool; SECOND and THIRD are queued meanwhile."""
     ctx = await app.state.manager.open_session(

@@ -45,6 +45,14 @@ only message parts and artifact references; identity, message kind and runtime
 notice provenance remain unchanged. Invalid hook results fail before history
 append, leaving the original input available for retry.
 
+Busy-session input defaults to `steer` (the next step), not a separate queued
+turn. Explicit `queue` still targets the next turn; neither submission cancels
+the running tool or model invocation. Accepted human messages retain a
+`steering` fact, and the context compiler adds a brief temporary-supplement
+instruction: continue the current task unless the user explicitly asks to
+interrupt or abandon it. The instruction is not inserted into user-authored
+parts or the TUI transcript, and it is reconstructed on resume from that fact.
+
 Inbox change payloads carry only the changed facts: `Inserted` carries the full
 input and wake flag; `Edited` carries `id/content`; `Retargeted` carries
 `id/target`; `Removed` carries `id`; `Claimed`, `Consumed` and `Discarded` carry
