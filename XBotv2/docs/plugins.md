@@ -32,6 +32,12 @@ store is available. It owns history/metadata restoration and inbox construction;
 persistence subscribes to subsequent metadata changes and materialization
 boundaries. Consumers use the same registered XCore state service.
 
+`SessionLaunch` is also the single launch-time owner of session/thread identity,
+workspace, provider route, parent thread, interaction mode, and subagent status.
+Agent construction receives those facts from that service. `AgentCreateOptions`
+contains only the requested Agent definition/selection and an optional model
+override; it does not duplicate launch identity or context.
+
 Input hooks apply at both turn-start and next-step boundaries. `RejectInput`
 reports rejection and stops the current turn; `CompleteTurn` publishes its
 result and stops the current turn. In a claimed batch, only the processed
@@ -67,7 +73,7 @@ ownership, not proof of durable consumption.
 | tui | client | Textual terminal client and local command presentation using its own plugin configuration | client API, commands |
 | persistence | agent, server, acp | thread store, durable subscribers and reader factory | session launch; subscriber: loop state, thread persistence, runtime log |
 | usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
-| agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, sessions |
+| agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, session launch |
 | session | agent, server, acp | SessionManager, thread runtime, hydration, inbox, artifacts, history routes | launch, paths, commands, runtime log, application factory; optional thread persistence |
 | jobs | agent, server | shell/subagent job registry | commands, engine, sessions |
 | commands | agent, server, client | human command catalog and dispatch | sessions/server where mounted |

@@ -153,6 +153,7 @@ class SessionLaunch:
     session_paths: SessionPaths
     interactive: bool
     is_subagent: bool
+    parent_thread_id: str = ""
     parent_client_events: ClientEventsPort | None = None
     defer_persist: bool = False
 

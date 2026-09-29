@@ -56,6 +56,7 @@ _RUNTIME_DEPENDENCIES = [
     "agent_inbox",
     "commands",
     "agent_options",
+    "session_launch",
     "runtime_log",
 ]
 
@@ -97,7 +98,7 @@ async def mount_runtime(ctx: Context) -> None:
         runtime_log=ctx.runtime_log,
     )
     ctx.set("agent_runtime", service)
-    ctx.set("engine", await service.create(ctx.agent_options))
+    ctx.set("engine", await service.create(ctx.agent_options, ctx.session_launch))
     AgentRuntimeOperations(service, ctx.agent_catalog).register(ctx)
 
 

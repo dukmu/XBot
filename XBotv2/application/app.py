@@ -101,15 +101,9 @@ async def start_application(
     try:
         plugin_ctx = Context(data_dir=thread_paths.plugin_state_dir)
         agent_options = AgentCreateOptions(
-            session_id=session_id,
-            thread_id=thread_id,
-            workspace_root=str(workspace_root),
-            provider_name=provider_name,
             agent_definition=agent_definition,
             model_override=llm_override,
             selected_agent=selected_agent,
-            parent_thread_id=parent_thread_id,
-            is_subagent=is_subagent,
         )
 
         services = {
@@ -123,6 +117,7 @@ async def start_application(
                 session_paths=session_paths,
                 interactive=interactive,
                 is_subagent=is_subagent,
+                parent_thread_id=parent_thread_id,
                 parent_client_events=client_events,
                 defer_persist=defer_persist,
             ),

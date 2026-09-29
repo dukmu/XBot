@@ -19,7 +19,7 @@ from XBotv2.agents.contracts import (
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.application import ApplicationEventsPort
+from XBotv2.application import ApplicationEventsPort, SessionLaunch
 from XBotv2.agentloop import (
     DEFAULT_MAX_ITERATIONS,
     AgentInbox,
@@ -96,14 +96,18 @@ class AgentsService(AgentRuntimePort):
         self._model_is_override = False
         self._restored_runtime = False
 
-    async def create(self, options: AgentCreateOptions) -> AgentLoopDriverPort:
+    async def create(
+        self,
+        options: AgentCreateOptions,
+        launch: SessionLaunch,
+    ) -> AgentLoopDriverPort:
         """Resolve one Agent and publish the driver returned by its factory."""
         state = self._state
         config = self._runtime_config(
             self._settings.load_plugin_tree(
-                options.workspace_root,
-                options.session_id,
-                thread_id=options.thread_id,
+                launch.workspace_root,
+                launch.session_id,
+                thread_id=launch.thread_id,
             )
         )
         metadata_lifecycle = state.metadata.lifecycle
@@ -112,7 +116,7 @@ class AgentsService(AgentRuntimePort):
             if isinstance(metadata_lifecycle, MetadataReady)
             else None
         )
-        definition = self._resolve_definition(options, stored_metadata)
+        definition = self._resolve_definition(options, launch, stored_metadata)
         self._restored_runtime = state.resumed
         if self._restored_runtime:
             if stored_metadata is None:
@@ -123,7 +127,7 @@ class AgentsService(AgentRuntimePort):
             provider_name = runtime_selection.model.route.provider
         else:
             provider_name = self._resolve_provider(
-                options,
+                launch,
                 definition,
                 stored_metadata,
             )
@@ -144,7 +148,7 @@ class AgentsService(AgentRuntimePort):
         if not self._restored_runtime:
             title = stored_metadata.title if stored_metadata is not None else ""
             if (
-                options.is_subagent
+                launch.is_subagent
                 and definition is not None
                 and (not title or title == state.session.session_id)
             ):
@@ -157,8 +161,8 @@ class AgentsService(AgentRuntimePort):
             )
             metadata = ThreadMetadata(
                 runtime_selection=runtime_selection,
-                parent_thread_id=options.parent_thread_id,
-                workspace_root=options.workspace_root,
+                parent_thread_id=launch.parent_thread_id,
+                workspace_root=str(launch.workspace_root),
                 title=title,
             )
             if isinstance(metadata_lifecycle, MetadataUninitialized):
@@ -191,8 +195,8 @@ class AgentsService(AgentRuntimePort):
         self._engine = engine
         self._log.info(
             "agent.created",
-            session_id=options.session_id,
-            thread_id=options.thread_id,
+            session_id=launch.session_id,
+            thread_id=launch.thread_id,
             agent=runtime_selection.agent_name,
             provider=provider_name,
             model=model_config.model,
@@ -505,6 +509,7 @@ class AgentsService(AgentRuntimePort):
     def _resolve_definition(
         self,
         options: AgentCreateOptions,
+        launch: SessionLaunch,
         metadata: ThreadMetadata | None,
     ) -> AgentDefinition | None:
         definition = options.agent_definition
@@ -517,7 +522,7 @@ class AgentsService(AgentRuntimePort):
         selected = options.selected_agent
         if selected is not None and stored_name is not None and selected != stored_name:
             raise ValueError(
-                f"Thread {options.thread_id!r} belongs to Agent {stored_name!r}, "
+                f"Thread {launch.thread_id!r} belongs to Agent {stored_name!r}, "
                 f"not {selected!r}"
             )
         if selected is None and options.agent_definition is None:
@@ -530,7 +535,7 @@ class AgentsService(AgentRuntimePort):
             registered = self.catalog.get(selected)
             if definition is None:
                 if registered is None or (
-                    registered.mode == "subagent" and not options.is_subagent
+                    registered.mode == "subagent" and not launch.is_subagent
                 ):
                     raise ValueError(f"Unknown primary agent: {selected}")
                 definition = registered
@@ -541,18 +546,18 @@ class AgentsService(AgentRuntimePort):
         if (
             definition is not None
             and definition.mode == "subagent"
-            and not options.is_subagent
+            and not launch.is_subagent
         ):
             raise ValueError(f"Unknown primary agent: {definition.name}")
         return definition
 
     def _resolve_provider(
         self,
-        options: AgentCreateOptions,
+        launch: SessionLaunch,
         definition: AgentDefinition | None,
         metadata: ThreadMetadata | None,
     ) -> str:
-        provider_name = options.provider_name
+        provider_name = launch.provider_name
         if definition is not None and isinstance(
             definition.model_policy.route,
             ModelRoute,

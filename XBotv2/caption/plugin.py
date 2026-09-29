@@ -11,12 +11,12 @@ from XBotv2.caption.tools import build_caption_tool
 
 
 class CaptionPlugin:
-    inject = ["tools", "model", "loop_state", "session", "agent_options", "usage"]
+    inject = ["tools", "model", "loop_state", "session", "session_launch", "usage"]
     name = "caption"
     Config = CaptionConfig
 
     def apply(self, ctx: Context, config: CaptionConfig) -> None:
-        is_subagent = ctx.agent_options.is_subagent
+        is_subagent = ctx.session_launch.is_subagent
         service = CaptionService(
             events=ctx,
             model=ctx.model,
