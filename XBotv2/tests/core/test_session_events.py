@@ -117,3 +117,14 @@ async def test_session_event_stream_rejects_expired_and_future_cursors():
         stream.subscribe(0)
     with pytest.raises(ValueError, match="outside"):
         stream.subscribe(4)
+
+
+@pytest.mark.asyncio
+async def test_session_event_stream_rejects_subscribers_after_close():
+    stream = await _stream()
+    stream.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        stream.subscribe()
+
+    assert stream.subscriber_count == 0

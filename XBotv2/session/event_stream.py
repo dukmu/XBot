@@ -114,6 +114,8 @@ class SessionEventStream:
         return frame
 
     def subscribe(self, after: int | None = None) -> SessionEventSubscriptionPort:
+        if self._closed:
+            raise RuntimeError("Session event stream is closed")
         cursor = self.sequence if after is None else after
         if cursor < 0 or cursor > self.sequence:
             raise ValueError("Session event cursor is outside the current sequence")
