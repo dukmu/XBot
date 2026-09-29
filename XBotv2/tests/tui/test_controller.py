@@ -350,6 +350,16 @@ async def test_submitting_renders_the_optimistic_entry(backend: ScriptedBackend)
     assert view.pages == ["tail"], "sending is an explicit return to the live tail"
 
 
+async def test_submitting_while_reading_history_keeps_the_reader_anchor(
+    backend: ScriptedBackend,
+) -> None:
+    view = RecordingView(at_end=False)
+    control, view = controller(backend, view=view)
+    await control.connect()
+    await control.submit("stream off-screen", delivery="steer")
+    assert view.pages == []
+
+
 async def test_interrupting_delegates_and_renders(backend: ScriptedBackend) -> None:
     control, view = controller(backend)
     await control.connect()

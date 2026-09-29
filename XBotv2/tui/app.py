@@ -100,6 +100,10 @@ class TextualViewAdapter:
     ) -> bool:
         return await self.transcript.render(state, thinking=thinking)
 
+    @property
+    def reader_at_end(self) -> bool:
+        return self.transcript.reader_at_end
+
     def render_status(self, model: StatusLine) -> None:
         self.status.show(model, width=self.status.size.width or 80)
 

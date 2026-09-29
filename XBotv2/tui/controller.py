@@ -264,6 +264,7 @@ class TuiController:
 
     async def submit(self, text: str, *, delivery: Literal["queue", "steer"]) -> str:
         """Send a composer submission with its explicit keyboard delivery mode."""
+        following_tail = self._view.reader_at_end
         images = list(self._attachments)
         input_id = await self.transport.submit(
             text,
@@ -273,12 +274,11 @@ class TuiController:
         # The submission consumed the attachments; a failure is reported
         # visibly, and the user re-attaches if they retry.
         self._attachments.clear()
-        # Sending is an explicit return to the live conversation.  In
-        # particular, a tall multi-line composer can shrink the transcript and
-        # make Textual report that it is no longer at the end just before the
-        # input is submitted.  That layout artefact must not leave the reply
-        # below the viewport.
-        await self.go_to_tail()
+        # Keep a reader who deliberately paged back on that entry while the new
+        # turn streams off-screen. A reader already following the conversation
+        # stays pinned despite the composer shrinking during submission.
+        if following_tail:
+            await self.go_to_tail()
         return input_id
 
     async def switch_session(

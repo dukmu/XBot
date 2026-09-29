@@ -87,9 +87,9 @@ def composer_hint(model: ComposerModel) -> str:
     if model.read_only:
         return _READ_ONLY_HINT
     if facts.interaction is Interaction.PERMISSION:
-        return "Approval required — use /approve ID [once|session] or /deny ID"
+        return "Approval required — choose in the dialog"
     if facts.interaction is Interaction.USER_INPUT:
-        return "Answer required — use /answer ID <text>"
+        return "Answer required — respond in the dialog"
     if facts.interrupt is Interrupt.REQUESTED:
         return "Interrupting…"
     if model.submission_in_flight:
@@ -114,9 +114,9 @@ def composer_placeholder(model: ComposerModel) -> str:
     if model.read_only:
         return "read-only"
     if facts.interaction is Interaction.PERMISSION:
-        return "/approve ID | /deny ID"
+        return "permission dialog active"
     if facts.interaction is Interaction.USER_INPUT:
-        return "/answer ID <text>"
+        return "question dialog active"
     if facts.compaction:
         return "compacting conversation"
     return ""

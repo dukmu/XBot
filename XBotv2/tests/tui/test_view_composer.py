@@ -54,8 +54,8 @@ def test_a_pending_approval_asks_for_a_decision() -> None:
     hint = composer_hint(
         model(facts=StatusFacts(connection=Connection.CONNECTED, interaction=Interaction.PERMISSION))
     )
-    assert "/approve" in hint.lower()
-    assert "deny" in hint.lower()
+    assert "choose in the dialog" in hint.lower()
+    assert "/approve" not in hint.lower()
 
 
 def test_a_pending_question_asks_for_an_answer() -> None:
@@ -108,9 +108,11 @@ def test_the_placeholder_tracks_the_same_state() -> None:
     assert composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, server_turn=ServerTurn.RUNNING))
     ) == ""
-    assert "/approve" in composer_placeholder(
+    permission = composer_placeholder(
         model(facts=StatusFacts(connection=Connection.CONNECTED, interaction=Interaction.PERMISSION))
     ).lower()
+    assert permission == "permission dialog active"
+    assert "/approve" not in permission
     assert composer_placeholder(model(read_only=True)).lower().startswith("read-only")
 
 
