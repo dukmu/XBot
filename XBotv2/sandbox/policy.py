@@ -1,7 +1,7 @@
 """Sandbox policy with BubblewrapBackend for tool execution.
 
 BubblewrapBackend controls the total lifecycle of sandboxed tool calls:
-mount setup, process spawn, communication, timeout, and result formatting.
+mount setup, process spawn, communication, cancellation, and result formatting.
 Path access is enforced at the OS level through mount specifications, not
 through Python-level path extraction and checking.
 """
@@ -102,7 +102,6 @@ class SandboxPolicy(SandboxPort):
         *,
         shell: str | None = None,
         cwd: str | None = None,
-        timeout_seconds: float | None = None,
     ) -> str:
         shell = shell or os.environ.get("SHELL")
         if not shell:
@@ -112,7 +111,6 @@ class SandboxPolicy(SandboxPort):
             [shell, "-lc", command],
             spec,
             cwd=cwd,
-            timeout_seconds=timeout_seconds,
         )
 
     async def filesystem(self, operation: str, args: dict[str, JsonValue]) -> str:

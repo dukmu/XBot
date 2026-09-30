@@ -493,6 +493,7 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
         "name",
         "sandbox_permissions",
         "justification",
+        "timeout_seconds",
     }
     started = await tools["shell"].ainvoke(
         {"command": "echo done", "background": True},

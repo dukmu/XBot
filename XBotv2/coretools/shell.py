@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import signal
 import subprocess
@@ -80,6 +81,13 @@ class ShellCommandError(RuntimeError):
         self.detail = f"exit_code={exit_code}" if exit_code is not None else None
 
 
+class ShellTimeoutError(TimeoutError):
+    code = "tool_timeout"
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__(f"Shell command timed out after {seconds}s")
+
+
 _ESCALATION_JUSTIFICATION_REQUIRED = (
     "sandbox_permissions=require_escalated requires a non-empty justification "
     "explaining why the command must run outside the sandbox"
@@ -102,6 +110,7 @@ class ShellJobSpec:
     cwd: str | None
     escalated: bool
     label: str
+    timeout_seconds: float = 0
     kind: str = "shell"
 
 
@@ -134,11 +143,11 @@ class ShellRunner:
                 command,
                 cwd=cwd,
                 sandbox=None if escalated else self.sandbox,
-                timeout_seconds=0,
+                timeout_seconds=self.spec.timeout_seconds,
             )
         except asyncio.CancelledError:
             raise
-        except ShellCommandError:
+        except (ShellCommandError, ShellTimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001 - spawn errors are job errors
             raise ShellCommandError(str(exc)) from exc
@@ -169,12 +178,14 @@ async def shell(
         "use_default", "require_escalated"
     ] = "use_default",
     justification: str | None = None,
+    timeout_seconds: float | None = None,
     *,
     sandbox: SandboxPort | None = None,
     job_registry: JobsPort,
     artifacts: ArtifactStorePort,
     default_cwd: str | None = None,
     approval_layer: ApprovalLayer = None,
+    max_timeout_seconds: float = 120.0,
 ) -> ToolSucceeded | ToolFailed:
     """Run a shell command in the foreground, or start one in the background.
 
@@ -202,7 +213,27 @@ async def shell(
         sandbox_permissions: ``use_default`` runs inside the configured
             sandbox; ``require_escalated`` requests execution outside it.
         justification: Required explanation when requesting escalation.
+        timeout_seconds: Command runtime limit in seconds, starting at process
+            launch. Foreground: omit to use the configured maximum; must be
+            positive and no greater than that maximum. Background: omit or
+            use 0 for unlimited runtime; positive values have no foreground cap.
     """
+    effective_timeout = (
+        (0 if background else max_timeout_seconds)
+        if timeout_seconds is None else timeout_seconds
+    )
+    if (
+        not math.isfinite(effective_timeout)
+        or effective_timeout < 0
+        or (not background and not 0 < effective_timeout <= max_timeout_seconds)
+    ):
+        return _failure(
+            "invalid_arguments",
+            "Background timeout_seconds must be finite and non-negative"
+            if background else (
+                f"Foreground timeout_seconds must be > 0 and <= {max_timeout_seconds}s"
+            ),
+        )
     cwd = cwd or default_cwd
     if sandbox_permissions == "require_escalated":
         if not justification or not justification.strip():
@@ -228,6 +259,7 @@ async def shell(
             job_registry=job_registry,
             artifacts=artifacts,
             approval_layer=approval_layer,
+            timeout_seconds=effective_timeout,
         )
     active_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
@@ -237,8 +269,10 @@ async def shell(
             command,
             cwd=cwd,
             sandbox=active_sandbox,
-            timeout_seconds=0,
+            timeout_seconds=effective_timeout,
         )
+    except ShellTimeoutError as exc:
+        return _failure(exc.code, str(exc))
     except Exception as exc:
         return _failure("command_failed", str(exc))
     return _success(output)
@@ -252,6 +286,7 @@ async def start_shell(
         "use_default", "require_escalated"
     ] = "use_default",
     justification: str | None = None,
+    timeout_seconds: float = 0,
     *,
     sandbox: SandboxPort | None = None,
     job_registry: JobsPort,
@@ -277,9 +312,12 @@ async def start_shell(
         sandbox_permissions: ``use_default`` runs inside the configured
             sandbox; ``require_escalated`` requests execution outside it.
         justification: Required explanation when requesting escalation.
+        timeout_seconds: Runtime limit in seconds; 0 is unlimited.
     """
     if not command.strip():
         return _failure("invalid_command", "Command cannot be empty")
+    if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+        return _failure("invalid_arguments", "timeout_seconds must be finite and non-negative")
     if sandbox_permissions == "require_escalated":
         if not justification or not justification.strip():
             return _failure(
@@ -297,6 +335,7 @@ async def start_shell(
             cwd=cwd,
             escalated=sandbox_permissions == "require_escalated",
             label=name or command,
+            timeout_seconds=timeout_seconds,
         )
         job = await job_registry.create(
             spec=spec,
@@ -447,6 +486,8 @@ def shell_tools(
     default_cwd: str,
     artifacts: ArtifactStorePort,
     approval_layer: ApprovalLayer = None,
+    *,
+    max_timeout_seconds: float = 120.0,
 ) -> tuple[Tool, ...]:
     """Build the shell Tools for one session's runtime services.
 
@@ -461,6 +502,7 @@ def shell_tools(
             "default_cwd": default_cwd,
             "artifacts": artifacts,
             "approval_layer": approval_layer,
+            "max_timeout_seconds": max_timeout_seconds,
         }),
         (list_shells, {"job_registry": job_registry}),
         (wait_shell, {"job_registry": job_registry}),
@@ -477,6 +519,13 @@ def shell_tools(
         )
         for function, dependencies in bindings
     )
+    tools[0].parameters["properties"]["timeout_seconds"] = {
+        "anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}],
+        "description": (
+            f"Foreground: > 0, <= {max_timeout_seconds}s; omitted/null uses this maximum. "
+            "Background: 0 or omitted/null is unlimited."
+        ),
+    }
     # Owners declare the model-facing category (all shell tools execute) and
     # the arguments that define a session grant's scope.
     return tuple(
@@ -518,13 +567,23 @@ async def run_shell_command(
     timeout_seconds: float | None = 0,
 ) -> str:
     """Run a shell command with cancellation-safe process cleanup."""
+    deadline = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
+    try:
+        async with asyncio.timeout(deadline):
+            return await _run_shell_process(command, cwd=cwd, sandbox=sandbox)
+    except TimeoutError as exc:
+        raise ShellTimeoutError(timeout_seconds) from exc
+
+
+async def _run_shell_process(
+    command: str, *, cwd: str | None, sandbox: SandboxPort | None,
+) -> str:
     shell = _default_shell()
     if sandbox is not None and sandbox.enabled:
         return await sandbox.run_shell(
             command,
             shell=shell,
             cwd=cwd,
-            timeout_seconds=timeout_seconds,
         )
 
     with tempfile.TemporaryFile() as output_file:
@@ -536,11 +595,11 @@ async def run_shell_command(
             start_new_session=os.name == "posix",
         )
         try:
-            await _wait_process(proc, timeout_seconds)
+            await _wait_process(proc)
         except BaseException:
             if proc.poll() is None:
                 _signal_process(proc)
-            await _wait_process(proc, None)
+            await _wait_process(proc)
             raise
         output_file.seek(0)
         output = output_file.read().decode("utf-8", errors="replace")
@@ -571,18 +630,8 @@ def _signal_process(proc: subprocess.Popen[bytes]) -> None:
         pass
 
 
-async def _wait_process(
-    proc: subprocess.Popen[bytes], timeout_seconds: float | None
-) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = (
-        loop.time() + timeout_seconds
-        if timeout_seconds is not None and timeout_seconds > 0
-        else None
-    )
+async def _wait_process(proc: subprocess.Popen[bytes]) -> None:
     while proc.poll() is None:
-        if deadline is not None and loop.time() >= deadline:
-            raise asyncio.TimeoutError
         await asyncio.sleep(0.05)
 
 

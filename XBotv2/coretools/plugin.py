@@ -67,10 +67,23 @@ class CoreToolsComponent:
                 # Resolved lazily per call: order-independent whether or not
                 # the permissions plugin mounts.
                 approval_layer=lambda: ctx.get("permissions", strict=False),
+                max_timeout_seconds=config.shell_max_timeout_seconds,
             ),
         )
+        timed_tools = {tool.name for tool in tools if tool.name != "shell"}
+        unknown = config.tool_timeouts.keys() - timed_tools
+        if unknown:
+            raise ValueError(
+                f"tool_timeouts contains unsupported tools: {', '.join(sorted(unknown))}"
+            )
         for tool in tools:
-            ctx.tools.register(tool)
+            ctx.tools.register(
+                tool,
+                timeout_seconds=(
+                    None if tool.name == "shell"
+                    else config.tool_timeouts.get(tool.name, config.tool_timeout_seconds)
+                ),
+            )
 
         for declaration in hooks:
             ctx.on(

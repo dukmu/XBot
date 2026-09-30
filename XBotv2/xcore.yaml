@@ -207,6 +207,9 @@
 - id: coretools
   name: coretools
   config:
+    shell_max_timeout_seconds: 120
+    tool_timeout_seconds: 60
+    tool_timeouts: {}
     hooks: []
     enabled_tools:
       kind: all

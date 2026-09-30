@@ -30,7 +30,6 @@ class SandboxMountSpec:
 @dataclass(frozen=True)
 class BubblewrapBackend:
     workspace_root: Path
-    timeout_seconds: float = 60.0
     network: bool = True
 
     def process_args(
@@ -60,7 +59,6 @@ class BubblewrapBackend:
         mount_specs: Iterable[SandboxMountSpec],
         cwd: str | None = None,
         stdin: str | None = None,
-        timeout_seconds: float | None = None,
     ) -> str:
         with (
             tempfile.TemporaryFile() as stdin_file,
@@ -77,21 +75,12 @@ class BubblewrapBackend:
                 stderr=stderr_file,
                 start_new_session=os.name == "posix",
             )
-            effective_timeout = (
-                self.timeout_seconds if timeout_seconds is None else timeout_seconds
-            )
             try:
-                await _wait_process(proc, effective_timeout)
-            except TimeoutError:
-                _kill_process_group(proc)
-                await _wait_process(proc, None)
-                raise RuntimeError(
-                    f"Sandbox command timed out after {effective_timeout}s"
-                ) from None
+                await _wait_process(proc)
             except BaseException:
                 if proc.poll() is None:
                     _kill_process_group(proc)
-                await _wait_process(proc, None)
+                await _wait_process(proc)
                 raise
             stdout_file.seek(0)
             stderr_file.seek(0)
@@ -103,18 +92,8 @@ class BubblewrapBackend:
         return stdout
 
 
-async def _wait_process(
-    proc: subprocess.Popen[bytes], timeout_seconds: float | None
-) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = (
-        loop.time() + timeout_seconds
-        if timeout_seconds is not None and timeout_seconds > 0
-        else None
-    )
+async def _wait_process(proc: subprocess.Popen[bytes]) -> None:
     while proc.poll() is None:
-        if deadline is not None and loop.time() >= deadline:
-            raise TimeoutError
         await asyncio.sleep(0.05)
 
 

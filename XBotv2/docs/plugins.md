@@ -100,6 +100,46 @@ ownership, not proof of durable consumption.
 | acp_plugin | acp | ACP carrier | sessions, ACP launch, runtime log |
 | server | server | FastAPI carrier and health/hello | runtime log |
 
+## Built-in tool timeouts
+
+```yaml
+- id: coretools
+  config:
+    shell_max_timeout_seconds: 120
+    tool_timeout_seconds: 60
+    tool_timeouts:
+      search: 120
+      wait_shell: 30
+```
+
+All configuration values above are finite positive seconds. `tool_timeout_seconds`
+is the registered dispatch deadline for this plugin's non-shell built-ins;
+`tool_timeouts` overrides it by tool name (`read`, `edit`, `path`, `search`,
+`list_shells`, `wait_shell`, `read_shell`, `cancel_shell`). Unknown names and
+`shell` are configuration errors. Workspace extensions and other plugins retain
+their own registration policies.
+
+The Agent-facing `shell.timeout_seconds` controls process runtime:
+
+- Foreground: omitted/null uses `shell_max_timeout_seconds`; an explicit value
+  must be positive and no greater than that maximum. Invalid values return
+  `invalid_arguments` without launching the command.
+- Background (`background: true`): omitted/null or `0` means unlimited runtime;
+  positive finite values are independent of the foreground maximum. Negative
+  values are invalid. Jobs do not survive session shutdown.
+- A runtime deadline kills and reaps the process group and returns `tool_timeout`.
+  A background deadline becomes a failed job, not user cancellation.
+
+Process deadlines start on execution, excluding approval and job queue waits.
+`wait_shell.timeout_ms` is a separate **wait** budget: `0` polls immediately,
+omission waits until completion, and expiry never kills the job. Its enclosing
+tool call is still bounded by the configured registration deadline.
+
+Sandboxing owns isolation and cancellation cleanup, not a competing timeout.
+Provider/network transport timeouts are separate. Dispatch cancellation cannot
+forcibly stop synchronous Python work already running in a worker thread;
+process-backed sandbox I/O and shell commands do support process cleanup.
+
 ## Process session defaults
 
 The `session` plugin owns process-level defaults through its declared Config:

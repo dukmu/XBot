@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, field_validator
 from XBotv2.agentloop.contracts import AllTools, ToolSelection
 
 
 class CoreToolsModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class HookConfig(CoreToolsModel):
@@ -38,6 +38,9 @@ class WorkspaceToolConfig(CoreToolsModel):
 
 
 class CoreToolsConfig(CoreToolsModel):
+    shell_max_timeout_seconds: PositiveFloat = 120.0
+    tool_timeout_seconds: PositiveFloat = 60.0
+    tool_timeouts: dict[str, PositiveFloat] = Field(default_factory=dict)
     enabled_tools: ToolSelection = Field(default_factory=AllTools)
     hooks: list[HookConfig] = Field(default_factory=list)
     workspace_tools: list[WorkspaceToolConfig] = Field(default_factory=list)

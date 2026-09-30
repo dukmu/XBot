@@ -35,6 +35,14 @@ class SandboxPort(Protocol):
     enabled: bool
     network: bool
 
+    async def run_shell(
+        self,
+        command: str,
+        *,
+        shell: str | None = None,
+        cwd: str | None = None,
+    ) -> str: ...
+
     async def filesystem(
         self,
         operation: str,
