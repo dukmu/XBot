@@ -31,6 +31,24 @@ from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import Allowed, Denied, PermissionRequest
 
 
+@pytest.fixture
+def browser_approval_policy():
+    """These workflows exercise approval, independently of shipped defaults."""
+    return {
+        "id": "permissions",
+        "config": {"rules": [
+            {
+                "tool_pattern": "(?:browser_click|browser_fill|browser_press|browser_select)",
+                "decision": "ask",
+            },
+            {
+                "tool_pattern": "(?:browser_open|browser_snapshot|browser_screenshot|browser_close)",
+                "decision": "allow",
+            },
+        ]},
+    }
+
+
 def _text(result: ToolOutcome) -> str:
     if isinstance(result, ToolFailed):
         return "".join(part.text for part in result.output.parts)
@@ -206,7 +224,7 @@ async def test_agent_web_fetch_reads_local_page_and_closes_network_client(
 
 @pytest.mark.asyncio
 async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop(
-    tmp_path,
+    tmp_path, browser_approval_policy,
 ):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -269,6 +287,7 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
+            browser_approval_policy,
             {"id": "sandbox", "config": {"network": True}},
             {
                 "id": "browser",
@@ -335,7 +354,7 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
 
 
 @pytest.mark.asyncio
-async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path):
+async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path, browser_approval_policy):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     page = workspace / "form.html"
@@ -369,6 +388,7 @@ async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path):
         workspace_root=workspace,
         llm_override=llm,
         extra_plugins=[
+            browser_approval_policy,
             {"id": "sandbox", "config": {"network": True}},
             {"id": "caption", "config": {"auto": False, "allow_access": False}},
         ],
@@ -425,7 +445,7 @@ async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path):
 
 @pytest.mark.asyncio
 async def test_agent_browser_permission_cancellation_prevents_page_mutation(
-    tmp_path,
+    tmp_path, browser_approval_policy,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -460,6 +480,7 @@ async def test_agent_browser_permission_cancellation_prevents_page_mutation(
         workspace_root=workspace,
         llm_override=llm,
         extra_plugins=[
+            browser_approval_policy,
             {"id": "sandbox", "config": {"network": True}},
             {"id": "caption", "config": {"auto": False, "allow_access": False}},
         ],
