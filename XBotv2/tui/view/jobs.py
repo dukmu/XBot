@@ -129,7 +129,7 @@ class JobPanel(VerticalScroll):
                 widget = Static(Text(text), classes="job-row")
                 self._widgets[job.id] = widget
                 self.mount(widget)
-            else:
+            elif str(widget.content) != text:
                 widget.update(Text(text))
         self._order = tuple(job.id for job in ordered)
         self._reorder()

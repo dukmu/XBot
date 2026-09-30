@@ -246,6 +246,8 @@ class ClampedBlock(VerticalScroll):
         streaming: bool = False,
     ) -> None:
         """Re-apply content: the same block, updated in place."""
+        previous_plan = self._plan
+        previous_renderable = self._renderable
         was_streaming = self._plan.streaming
         self._text = text
         self._renderable = renderable
@@ -259,6 +261,8 @@ class ClampedBlock(VerticalScroll):
         ):
             self._expanded = False
         self._replan(streaming=streaming)
+        if self._plan == previous_plan and renderable == previous_renderable:
+            return
         self._apply()
         if streaming:
             self.scroll_end(animate=False, immediate=True)
@@ -294,13 +298,15 @@ class ClampedBlock(VerticalScroll):
                 self.head_widget = Static(head_text, classes="block-head")
                 self.mount(self.head_widget, before=0)
             else:
-                self.head_widget.update(head_text)
+                if self.head_widget.content != head_text:
+                    self.head_widget.update(head_text)
         elif self.head_widget is not None:
             head = self.head_widget
             self.head_widget = None
             head.remove()
         if self.body_widget is not None:
-            self.body_widget.update(body_text)
+            if self.body_widget.content != body_text:
+                self.body_widget.update(body_text)
             self.body_widget.display = bool(self._plan.body)
         self.set_class(self._plan.collapsible, "collapsible")
         self.set_class(self._expanded and self._plan.collapsible, "expanded")

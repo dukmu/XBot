@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import JsonValue
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown
+from rich.segment import Segment
 from rich.text import Text
 from textual.containers import Vertical
 from textual.css.query import NoMatches
@@ -205,6 +207,26 @@ def entry_reasoning(
     return None
 
 
+class _TranscriptMarkdown(Markdown):
+    """Reuse Rich's output when Textual measures and paints the same document."""
+
+    def __init__(self, markup: str) -> None:
+        super().__init__(markup, code_theme="monokai")
+        self._render_cache: tuple[Console, ConsoleOptions, tuple[Segment, ...]] | None = None
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # Markdown renders the whole document without a height limit. Textual
+        # supplies its measured document height when painting, so normalize that
+        # otherwise irrelevant difference between measurement and painting.
+        options = options.update(height=None)
+        options.max_height = console.options.max_height
+        cached = self._render_cache
+        if cached is None or cached[0] is not console or cached[1] != options:
+            cached = (console, options, tuple(super().__rich_console__(console, options)))
+            self._render_cache = cached
+        yield from cached[2]
+
+
 def entry_body_renderable(entry: Entry, *, body: str | None = None) -> Text | Markdown:
     """The body, parsed as Markdown only when there is Markdown in it."""
     body = entry_body(entry) if body is None else body
@@ -215,7 +237,7 @@ def entry_body_renderable(entry: Entry, *, body: str | None = None) -> Text | Ma
     elif isinstance(entry, AssistantEntry):
         body = _marked_text("●", body)
     if markdown:
-        return Markdown(body, code_theme="monokai")
+        return _TranscriptMarkdown(body)
     return Text(body)
 
 
@@ -301,6 +323,7 @@ async def update_entry_widget(
     *,
     assistant_label: str = "Assistant",
     visibility: BlockVisibility | None = None,
+    previous: Entry | None = None,
 ) -> bool:
     """Refresh a widget in place from its own entry.
 
@@ -312,11 +335,29 @@ async def update_entry_widget(
     if not widget.is_mounted:
         return False
     meta = _child(widget, ".meta")
-    if meta is not None:
+    if meta is not None and (
+        previous is None
+        or entry_header(previous, assistant_label=assistant_label)
+        != entry_header(entry, assistant_label=assistant_label)
+    ):
         meta.update(_header(entry, assistant_label))
     streaming = isinstance(entry, AssistantEntry) and entry.streaming
-    await _sync_reasoning(widget, entry, visibility=visibility, streaming=streaming)
-    await _sync_body(widget, entry, visibility=visibility, streaming=streaming)
+    previous_streaming = isinstance(previous, AssistantEntry) and previous.streaming
+    if (
+        previous is None
+        or streaming != previous_streaming
+        or entry_reasoning(previous, visibility=visibility)
+        != entry_reasoning(entry, visibility=visibility)
+    ):
+        await _sync_reasoning(widget, entry, visibility=visibility, streaming=streaming)
+    if (
+        not isinstance(entry, AssistantEntry)
+        or not isinstance(previous, AssistantEntry)
+        or streaming != previous_streaming
+        or entry_body(previous, visibility=visibility)
+        != entry_body(entry, visibility=visibility)
+    ):
+        await _sync_body(widget, entry, visibility=visibility, streaming=streaming)
     return True
 
 
@@ -468,7 +509,6 @@ async def _sync_tool_blocks(
     *,
     visibility: BlockVisibility | None,
 ) -> None:
-    planned = _tool_blocks(entry, visibility=visibility)
     details = visibility is None or visibility.details
     texts = (
         format_payload(entry.args) if details and entry.args else "",
@@ -476,21 +516,22 @@ async def _sync_tool_blocks(
         if details and entry.result not in ("", None)
         else "",
     )
-    for selector, replacement, text in zip(
-        (".tool-call", ".tool-result"), planned, texts
+    for index, (selector, label, text) in enumerate(
+        zip(
+            (".tool-call", ".tool-result"),
+            (_tool_call_label(entry), _tool_outcome_label(entry)),
+            texts,
+        )
     ):
         existing = _child(widget, selector)
         if isinstance(existing, ClampedBlock):
-            existing.label = replacement.label
-            existing.always_show_label = replacement.always_show_label
-            existing.always_collapsible = replacement.always_collapsible
-            existing.inline_label = replacement.inline_label
+            existing.label = label
+            existing.always_collapsible = bool(text)
             existing.show(text)
-        elif existing is None:
-            await widget.mount(replacement)
         else:  # pragma: no cover - the classes are owned by this module
-            await existing.remove()
-            await widget.mount(replacement)
+            if existing is not None:
+                await existing.remove()
+            await widget.mount(_tool_blocks(entry, visibility=visibility)[index])
 
 
 def _child(widget: EntryWidget, selector: str) -> Widget | None:

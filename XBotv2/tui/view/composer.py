@@ -243,7 +243,8 @@ class Composer(Vertical):
     def show(self, model: ComposerModel) -> None:
         """Apply a model: hint, placeholder, and whether input is accepted."""
         self._hint_text = composer_hint(model)
-        self._hint.update(self._hint_text)
+        if str(self._hint.content) != self._hint_text:
+            self._hint.update(self._hint_text)
         self._hint.display = bool(self._hint_text)
         self._input.placeholder = composer_placeholder(model)
         self._input.may_submit_empty = model.pending_images > 0

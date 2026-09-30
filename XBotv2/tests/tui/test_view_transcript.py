@@ -18,7 +18,7 @@ from typing import AsyncIterator
 import pytest
 from textual.app import App, ComposeResult
 
-from XBotv2.agentloop.outputs import AssistantReasoningDelta
+from XBotv2.agentloop.outputs import AssistantReasoningDelta, AssistantTextDelta
 from XBotv2.core.domain import CompletedStop, ModelTiming
 from XBotv2.session.records import AssistantRecord
 from XBotv2.session.records import HumanInputRecord
@@ -254,6 +254,46 @@ async def test_rendering_an_unchanged_state_mounts_nothing_new() -> None:
         widget = app.view.widget_for("m1")
         assert await app.view.render(state) is False
         assert app.view.widget_for("m1") is widget, "an unchanged entry is not rebuilt"
+
+
+async def test_reasoning_updates_do_not_reparse_an_unchanged_answer(monkeypatch):
+    from textual.widgets import Static
+    from XBotv2.tui.view.blocks import ClampedBlock
+
+    state = build_state(user("m1", "explain"))
+    reduce(state, AssistantDelta(payload=AssistantTextDelta(text="**answer**")))
+    reduce(state, AssistantDelta(payload=AssistantReasoningDelta(text="first")))
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        widget = app.view.widget_for(state.stream_entry_id)
+        body = widget.query_one(".body", Static)
+        rendered = body.content
+        updates = []
+        original = body.update
+
+        def update(*args, **kwargs):
+            updates.append(args)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(body, "update", update)
+        reduce(state, AssistantDelta(payload=AssistantReasoningDelta(text=" second")))
+        await app.view.render(state)
+        await pilot.pause()
+        assert widget.query_one(".reasoning", ClampedBlock).shown_text == "first second"
+        assert body.content is rendered
+        assert updates == []
+
+
+async def test_no_change_render_does_not_schedule_tail_scroll(monkeypatch):
+    state = build_state(user("m1", "one"))
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        calls = []
+        monkeypatch.setattr(app.view.container, "follow_tail_after_refresh", lambda: calls.append(True))
+        assert await app.view.render(state) is False
+        assert calls == []
 
 
 async def test_streamed_thinking_widget_survives_canonical_completion_identity() -> None:

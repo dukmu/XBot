@@ -108,7 +108,7 @@ class QueuePanel(VerticalScroll):
                 widget = Static(Text(text), classes="queue-row")
                 self._widgets[item.message_id] = widget
                 self.mount(widget)
-            else:
+            elif str(widget.content) != text:
                 widget.update(Text(text))
         self._order = tuple(item.message_id for item in items)
         self._reorder()

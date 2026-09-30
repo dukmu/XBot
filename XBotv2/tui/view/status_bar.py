@@ -302,7 +302,9 @@ class StatusBar(Static):
     DEFAULT_CSS = STATUS_BAR_CSS
 
     def show(self, model: StatusLine, *, width: int | None = None) -> None:
-        self.update(render_status_line(model, width=width or self.size.width or 80))
+        content = render_status_line(model, width=width or self.size.width or 80)
+        if self.content != content:
+            self.update(content)
 
 
 __all__ = [

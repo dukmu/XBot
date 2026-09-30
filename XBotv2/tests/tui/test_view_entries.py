@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from rich.markdown import Markdown
+from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
@@ -205,6 +206,35 @@ def test_an_assistant_body_is_parsed_only_when_it_has_markup() -> None:
     assert isinstance(entry_body_renderable(assistant("plain words")), Text)
 
 
+def test_markdown_measurement_and_paint_reuse_identical_rich_output(monkeypatch):
+    console = Console(width=80, force_terminal=True)
+    markup = (
+        "## Heading\n\n- **bold** and `code`\n  - *nested*\n\n"
+        "> quote with [link](https://example.com)\n\n"
+        "```python\nprint('你好')\n```\n\n| A | B |\n|---|---|\n| x | y |"
+    )
+    cached = entry_body_renderable(assistant(markup))
+    reference = Markdown(cached.markup, code_theme="monokai")
+    options = console.options.update(width=80, highlight=False)
+    painting = options.update(height=12)
+    expected = [list(console.render(reference, option)) for option in (options, painting)]
+    calls = 0
+    render = Markdown.__rich_console__
+
+    def counted(self, console, options):
+        nonlocal calls
+        calls += 1
+        yield from render(self, console, options)
+
+    monkeypatch.setattr(Markdown, "__rich_console__", counted)
+    for _ in range(3):
+        for option, segments in zip((options, painting), expected):
+            assert list(console.render(cached, option)) == segments
+    assert calls == 1, "measurement and painting reuse the same styled output"
+    resized = options.update(width=40)
+    assert list(console.render(cached, resized)) == list(console.render(reference, resized))
+
+
 def test_a_user_body_is_never_parsed_as_markdown() -> None:
     """What the human typed is shown as typed, not reflowed."""
     assert isinstance(entry_body_renderable(user(content="## not a heading")), Text)
@@ -223,6 +253,21 @@ async def test_updating_a_widget_that_has_not_composed_reports_failure() -> None
 
     widget = entry_widget(user(Delivery.PENDING))
     assert await update_entry_widget(widget, user(Delivery.ACCEPTED)) is False
+
+
+async def test_input_confirmation_refreshes_delivery_marker_without_content_change():
+    from XBotv2.tui.view.entries import update_entry_widget
+
+    pending = user(Delivery.PENDING)
+    widget = entry_widget(pending)
+    app = EntryHarness(widget)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        body = widget.query_one(".body", Static)
+        assert "sending…" in str(body.content)
+        assert await update_entry_widget(widget, user(Delivery.ACCEPTED), previous=pending)
+        await pilot.pause()
+        assert str(body.content) == "❯ hello"
 
 
 @pytest.mark.parametrize(

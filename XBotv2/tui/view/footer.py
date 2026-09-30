@@ -46,7 +46,9 @@ class FooterBar(Static):
     DEFAULT_CSS = FOOTER_CSS
 
     def show(self, model: ComposerModel, *, width: int | None = None) -> None:
-        self.update(render_footer_hints(model, width=width or self.size.width or 80))
+        content = render_footer_hints(model, width=width or self.size.width or 80)
+        if self.content != content:
+            self.update(content)
 
 
 __all__ = ["FOOTER_CSS", "FooterBar", "footer_hint_text", "render_footer_hints"]

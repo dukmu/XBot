@@ -299,36 +299,40 @@ class TranscriptView:
         # visible full-window flash. State and widget identity are already
         # diffed above -- this makes their presentation atomic as well.
         with self.container.app.batch_update():
-            await self._render_older_notice(state)
-            changed = await self._apply(state, plan)
+            changed = await self._render_older_notice(state)
+            changed = await self._apply(state, plan) or changed
             changed = await self._refresh_changed(state, plan) or changed
             changed = await self._sync_thinking_activity(thinking) or changed
-        if following:
+        if changed and following:
             # The scroll target is only known after the new widgets have been
             # laid out. Recompute from the post-layout range: a block collapse
             # may leave the transcript shorter than its viewport.
             self.container.follow_tail_after_refresh()
-        else:
+        elif changed:
             self.container.preserve_reader_position()
         return changed
 
-    async def _render_older_notice(self, state: SessionState) -> None:
+    async def _render_older_notice(self, state: SessionState) -> bool:
         """Show, above the window, what the client knows about older messages."""
         label = older_history_label(state.older)
         if label is None:
             if self._notice_mounted:
                 await self.older_notice.remove()
                 self._notice_mounted = False
-            return
-        self.older_notice.update(label)
+                return True
+            return False
+        changed = str(self.older_notice.content) != label
+        if changed:
+            self.older_notice.update(label)
         if self._notice_mounted:
-            return
+            return changed
         first = self._widgets.get(self._mounted[0]) if self._mounted else None
         if first is None:
             await self.container.mount(self.older_notice)
         else:
             await self.container.mount(self.older_notice, before=first)
         self._notice_mounted = True
+        return True
 
     async def _apply(self, state: SessionState, plan: ViewPlan) -> bool:
         changed = False
@@ -460,6 +464,7 @@ class TranscriptView:
                 entry,
                 assistant_label=self.assistant_label,
                 visibility=self.visibility,
+                previous=self._rendered.get(entry_id),
             )
             if not applied:
                 # The widget has not composed yet; leave it un-recorded so the

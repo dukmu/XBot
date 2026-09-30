@@ -25,3 +25,29 @@ Unicode case keeps args, result, and final reply operable at 80 columns.
 Not claimed here: paid-provider interoperability, an exhaustive terminal
 emulator matrix, or Settings mutations for capabilities that have no public
 write API.
+
+## 2026-09-30 rendering follow-up
+
+The transcript now reuses Rich Markdown segments between measurement and
+painting of the same document at the same width, instead of rendering it twice.
+The cache is local to that version of the renderable, not a growing conversation
+cache. Width changes invalidate it. Tests compare the exact styled segments
+against ordinary Rich Markdown, including nested lists, links, quotes, tables,
+Unicode code highlighting, and resize. Reasoning-only updates leave the answer
+renderable untouched. Unchanged status, hints, queue/job rows and tool disclosure
+contents do not invalidate layout; an unchanged transcript does not reschedule
+tail scrolling. History-notice changes still trigger scroll reconciliation.
+
+A same-process Textual pilot comparison at 100x30, with a synthetic 20,000-character
+Markdown answer and six five-character updates, measured median update-and-settle
+time of 330.5 ms without the Markdown reuse and 260.0 ms with it. These timings
+include pilot scheduling and are indicative, not a terminal latency guarantee.
+Full-document parsing/layout still costs time for very large single answers;
+this change does not claim constant-cost streaming or universally smooth scrolling.
+
+Real local-server/PTY checks revalidated MiniMax-format thinking at three sizes,
+two-client session isolation and disk resume, and removal of the pending-input
+marker after acknowledgement. MiniMax here is the test SSE endpoint, not a paid
+external-provider request. Provider timeout behavior is separately verified with
+real OpenAI and Anthropic SDK HTTP reads; see [getting started](getting-start.md)
+for timeout and retry configuration semantics.

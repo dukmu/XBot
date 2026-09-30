@@ -72,6 +72,10 @@
 
 ## 下一执行顺序
 
+- [x] 2026-09-30：provider 超时改为 SDK transport inactivity timeout，沿用统一重试；真实 SDK 本地 SSE 验证长思考、header/read timeout、重试恢复和 partial 不重放。
+- [x] 2026-09-30：同一 Markdown 文档的测量/绘制复用 Rich 输出，保留样式、代码高亮及 resize 重排；思考更新不重解析未变化的答案，未变化的状态/提示/工具详情不刷新。
+- [x] 2026-09-30：真实双客户端/resume 和输入确认链路复验；选择性刷新只用于 assistant，用户 delivery 变化仍更新 inline 标记。性能证据和限制见 `XBotv2/docs/tui-closure.md`。
+
 - [x] TUI 已随 session、loop、interaction 类型迁移到唯一 owner；InboxTarget 显式渲染 value，没有保留旧 import、DTO 或客户端兼容分支。
 - [x] 第一切片：真实 socket 中断、switch、cursor expiry 和 Running gate 已完成；主代理读取 post-outputs 的长历史/Unicode 渲染，最终集成仍需重跑并读取当轮产物。
 - [x] 第二切片：Settings scope、mutation、revision conflict/retry 和返回会话可用性已完成。
