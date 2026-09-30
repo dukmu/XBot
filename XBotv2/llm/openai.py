@@ -86,7 +86,10 @@ class OpenAICompatibleProvider(BaseProvider):
             request_timeout_seconds=request_timeout_seconds,
             input_modalities=input_modalities,
         )
-        kwargs: dict[str, JsonValue] = {"api_key": api_key, "max_retries": 0}
+        kwargs: dict[str, JsonValue] = {
+            "api_key": api_key, "max_retries": 0,
+            "timeout": request_timeout_seconds,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._extra_body = {} if extra_body is None else dict(extra_body)

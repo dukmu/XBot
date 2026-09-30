@@ -76,7 +76,10 @@ class ProviderConfig(BaseModel):
     api_key: str | None = None
     default_model: str
     models: list[ModelConfig] = Field(default_factory=list)
-    request_timeout_seconds: float | None = Field(default=60.0, gt=0)
+    request_timeout_seconds: float | None = Field(
+        default=60.0, gt=0,
+        description="Transport inactivity timeout, not a total stream deadline; null disables it",
+    )
     # Extra request headers appended to every call, e.g.
     # ``x-opencode-session: "$${session_id}"`` (expanded automatically with the
     # session's runtime variables by the config-load boundary).

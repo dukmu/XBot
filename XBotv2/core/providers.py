@@ -80,27 +80,13 @@ class BaseProvider(ABC):
         self,
         request: ModelRequest,
     ) -> AsyncIterator[ModelStreamEvent]:
-        """Run one bounded provider operation, including internal retries."""
+        """Stream provider output through the shared retry policy.
+
+        Adapters configure transport timeouts; a live stream has no total deadline.
+        """
         self._validate_message_capabilities(request)
-        model = request.selection.route.model
-        try:
-            async with asyncio.timeout(self.request_timeout_seconds):
-                async for event in self._astream_with_retries(request):
-                    yield event
-        except TimeoutError:
-            yield ModelFailed(error=ProviderError(
-                code="provider_timeout",
-                message=(
-                    f"Provider request for {model!r} timed out after "
-                    f"{self.request_timeout_seconds:g}s"
-                ),
-                retryable=True,
-                category="transport",
-                provider_details={
-                    "model": model,
-                    "timeout_seconds": self.request_timeout_seconds,
-                },
-            ))
+        async for event in self._astream_with_retries(request):
+            yield event
 
     async def _astream_with_retries(
         self,

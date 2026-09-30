@@ -55,3 +55,17 @@ XBotv2/xcore.yaml
 The session document uses the same `plugins` overlay schema. Sandbox and
 permissions are the `sandbox` and `permissions` plugin declarations, not
 separate configuration files.
+
+Provider `request_timeout_seconds` defaults to 60 seconds and configures SDK
+transport timeouts (connection, read inactivity, write, and pool acquisition).
+It is not a total generation deadline: reasoning, text, or SSE heartbeats that
+keep arriving may keep a request alive for longer. A provider that sends nothing
+while thinking can still hit the read timeout; increase the value for that
+endpoint, or set it to `null` to disable transport timeouts.
+
+Timeout failures use the normal provider retry policy, including backoff and
+`XBOT_PROVIDER_MAX_RETRIES`. The default remains 16 retries; `none`/`infinite`
+explicitly requests unlimited retries. Once any model output has been emitted,
+the request is not replayed, avoiding duplicated output or tool calls. Retry
+exhaustion (or a failure after partial output) reaches the client as a normal
+provider failure, not a separate deadline wrapper.
