@@ -102,7 +102,7 @@ def status_line_for(
         context_input_estimated=context_input_estimated,
         queue_depth=len(state.queue),
         activity=activity,
-        workspace=workspace,
+        workspace=state.thread.workspace_root if state.thread and state.thread.workspace_root else workspace,
         thread_id=state.thread_id,
         thread_kind=state.thread_kind,
     )

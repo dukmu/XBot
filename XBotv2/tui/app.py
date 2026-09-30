@@ -173,7 +173,7 @@ class TuiApp(App[None]):
         Binding("ctrl+p", "palette", "Commands"),
         Binding("ctrl+t", "agents", "Agent threads"),
         Binding("f2", "settings", "Settings", priority=True),
-        Binding("ctrl+e", "expand_blocks", "Expand folded content", priority=True),
+        Binding("ctrl+o", "expand_blocks", "Expand folded content", priority=True),
     ]
 
     def __init__(
@@ -211,6 +211,8 @@ class TuiApp(App[None]):
     @property
     def workspace(self) -> str:
         """The workspace label shown in the status line."""
+        if self.controller is not None and self.controller.state.thread is not None:
+            return self.controller.state.thread.workspace_root or self._workspace
         return self._workspace
 
     @property
@@ -727,7 +729,7 @@ class TuiApp(App[None]):
         data = SettingsData(
             status=status_report(
                 state,
-                workspace=self._workspace,
+                workspace=self.workspace,
                 activity=self.controller.activity(),
             ),
             provider=state.provider,
@@ -1091,7 +1093,7 @@ class TuiApp(App[None]):
             return
         path = Path(target).expanduser()
         if not path.is_absolute():
-            path = Path(self._workspace or Path.cwd()) / path
+            path = Path(self.workspace or Path.cwd()) / path
         try:
             image = load_image(path)
         except FileNotFoundError:

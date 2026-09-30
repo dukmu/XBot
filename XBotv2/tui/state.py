@@ -796,6 +796,7 @@ def _adopt_snapshot(state: SessionState, snapshot: OpenSessionResponse) -> None:
     metadata = opened.metadata
     state.session_id = opened.key.session_id
     state.thread_id = opened.key.thread_id
+    state.thread = None
     state.title = metadata.title
     state.runtime_selection = metadata.runtime_selection
     state.status_slots = dict(opened.status_slots)

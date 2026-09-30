@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 from typing import Sequence
 
+from rich.markdown import Markdown
+from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
@@ -33,7 +35,9 @@ from XBotv2.tui.timeline import AssistantEntry, Entry, ToolEntry
 from XBotv2.tui.view.entries import (
     BlockVisibility,
     EntryWidget,
+    entry_body_changed,
     entry_widget,
+    prepare_entry_body,
     update_entry_widget,
 )
 from XBotv2.tui.view.plan import ViewPlan, newer_anchor, older_anchor, plan_window
@@ -288,11 +292,24 @@ class TranscriptView:
             # state window moved past it). Fall back to the tail, because the
             # only alternative is inventing a position.
             self._anchor = None
-        # Read the reader's intent *before* the content grows: once the window is
+        plan = self._reuse_transition_widget(state, self.window(state))
+        prepared: dict[str, tuple[Entry, Text | Markdown | None]] = {}
+        for entry_id in plan.mounted:
+            entry = state.timeline.get(entry_id)
+            previous = self._rendered.get(entry_id)
+            if entry is None or (entry == previous and entry_id not in plan.mount):
+                continue
+            body = (
+                await prepare_entry_body(entry, self.container, visibility=self.visibility)
+                if entry_id in plan.mount or entry_body_changed(entry, previous, visibility=self.visibility)
+                else None
+            )
+            prepared[entry_id] = (entry, body)
+        # Preparation leaves the old screen interactive. Read the reader's
+        # intent afterwards, but *before* the content grows: once the window is
         # taller than the viewport, "is at the end" is false by definition, and
         # asking afterwards would silently stop following the tail.
         following = self.reader_at_end
-        plan = self.window(state)
         # A page or bounded-tail transition can remove and mount many widgets.
         # Every individual DOM operation is awaited; without one Textual repaint
         # batch the terminal may draw those intermediate, incomplete trees as a
@@ -300,8 +317,8 @@ class TranscriptView:
         # diffed above -- this makes their presentation atomic as well.
         with self.container.app.batch_update():
             changed = await self._render_older_notice(state)
-            changed = await self._apply(state, plan) or changed
-            changed = await self._refresh_changed(state, plan) or changed
+            changed = await self._apply(plan, prepared) or changed
+            changed = await self._refresh_changed(plan, prepared) or changed
             changed = await self._sync_thinking_activity(thinking) or changed
         if changed and following:
             # The scroll target is only known after the new widgets have been
@@ -334,9 +351,10 @@ class TranscriptView:
         self._notice_mounted = True
         return True
 
-    async def _apply(self, state: SessionState, plan: ViewPlan) -> bool:
+    async def _apply(
+        self, plan: ViewPlan, prepared: dict[str, tuple[Entry, Text | Markdown | None]],
+    ) -> bool:
         changed = False
-        plan = self._reuse_transition_widget(state, plan)
         for entry_id in plan.remove:
             widget = self._widgets.pop(entry_id, None)
             self._rendered.pop(entry_id, None)
@@ -344,13 +362,12 @@ class TranscriptView:
                 await widget.remove()
                 changed = True
         for entry_id in plan.mount:
-            entry = state.timeline.get(entry_id)
-            if entry is None:
+            if entry_id not in prepared:
                 continue
+            entry, body = prepared[entry_id]
             widget = entry_widget(
-                entry,
-                assistant_label=self.assistant_label,
-                visibility=self.visibility,
+                entry, body_renderable=body,
+                assistant_label=self.assistant_label, visibility=self.visibility,
             )
             self._widgets[entry_id] = widget
             self._rendered[entry_id] = entry
@@ -444,7 +461,9 @@ class TranscriptView:
             at_tail=plan.at_tail,
         )
 
-    async def _refresh_changed(self, state: SessionState, plan: ViewPlan) -> bool:
+    async def _refresh_changed(
+        self, plan: ViewPlan, prepared: dict[str, tuple[Entry, Text | Markdown | None]],
+    ) -> bool:
         """Update entries in place, but only the ones whose value actually moved.
 
         A streamed answer grows every frame; an entry that has not changed is not
@@ -453,8 +472,10 @@ class TranscriptView:
         """
         changed = False
         for entry_id in plan.mounted:
-            entry = state.timeline.get(entry_id)
-            if entry is None or self._rendered.get(entry_id) == entry:
+            if entry_id not in prepared:
+                continue
+            entry, body = prepared[entry_id]
+            if self._rendered.get(entry_id) == entry:
                 continue
             widget = self._widgets.get(entry_id)
             if widget is None:
@@ -462,6 +483,7 @@ class TranscriptView:
             applied = await update_entry_widget(
                 widget,
                 entry,
+                body_renderable=body,
                 assistant_label=self.assistant_label,
                 visibility=self.visibility,
                 previous=self._rendered.get(entry_id),

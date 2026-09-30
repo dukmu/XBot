@@ -51,3 +51,60 @@ marker after acknowledgement. MiniMax here is the test SSE endpoint, not a paid
 external-provider request. Provider timeout behavior is separately verified with
 real OpenAI and Anthropic SDK HTTP reads; see [getting started](getting-start.md)
 for timeout and retry configuration semantics.
+
+## Markdown selection and row rendering
+
+The current view prepares Rich Markdown and its width-specific display rows
+off the UI loop. Painting requests individual rows instead of splitting the
+whole document again. Width changes prepare new rows in a Textual worker;
+the old content remains visible while that work completes. Both the segment
+and row caches retain at most two widths per renderable.
+
+The display rows carry Textual selection offsets. Mouse selection and Ctrl+C
+copy rendered text, including code and Chinese characters; selection highlighting
+is applied after Markdown styling. Speaker markers are added to display rows,
+not to Markdown source, so the first heading is parsed correctly.
+Tool parameters/results use YAML literal blocks for multiline structured values.
+Strings are never unescaped a second time; literal backslash-n and real newlines
+remain distinct. Tool windows wrap to their width and retain their height cap.
+Ctrl+O folds/unfolds blocks; Ctrl+E retains the editor's line-end operation.
+Shift+Enter replaces selected input with a newline and leaves the caret after it.
+
+The implementation review consulted
+[Codex streaming](https://github.com/openai/codex/blob/main/codex-rs/tui/src/streaming/controller.rs),
+[OpenTUI Markdown](https://github.com/anomalyco/opentui/blob/main/packages/core/src/renderables/Markdown.ts),
+and [Glamour](https://github.com/charmbracelet/glamour).
+Codex/OpenTUI distinguish stable content from a mutable streaming tail;
+that incremental parser behavior is not implemented by this row cache.
+The [Codex math renderer](https://github.com/openai/codex/blob/main/codex-rs/tui/src/markdown_render/math/render.rs)
+supports a bounded TeX subset through Unicode layouts; XBot does not yet add
+formula or diagram layout.
+
+A local 80x24 Textual experiment used synthetic 20,000/80,000-character
+documents with repeated headings, lists, Chinese prose and code fences.
+A 10 ms asyncio heartbeat measured maximum scheduling gaps:
+
+| Rendering path | 20k characters | 80k characters |
+| --- | --- | --- |
+| Rich segments in ordinary Static | 84.5 ms | 747.5 ms |
+| Textual native Markdown | 759.6 ms | 3069.0 ms |
+| Prepared rows, visible-row painting | 36.2 ms | 98.7 ms |
+| Prepared rows, resize 80 to 60 columns | 27.1 ms | 98.2 ms |
+
+Native Markdown created approximately 2,600/10,400 widgets for these documents.
+These are same-machine diagnostic samples, not CI timing thresholds.
+The row path still parses each updated document, and large Python preparation
+can contend for the GIL. Tests instead verify visible input while preparation
+is delayed, scrolling during preparation, background resize, mouse copying,
+and 40/80-column tool payloads without machine-dependent timing assertions.
+
+Verification on this change: 813 core/integration cases, 888 non-server TUI
+cases, 208 focused app/entry/transcript cases including the added Chinese mouse
+copy case, and all 49 real-server/CLI/PTY cases passed. The interaction sequence
+exposed a preparation defect: a full window remount also needs unchanged entries,
+not only entries with changed text. A regression now checks a replaced middle
+record retains both neighboring rows, and the real permission/question flow
+checks the initial prompt remains mounted and visible after resize/disclosure.
+Current terminal captures are under `/tmp/xbot-markdown-final-20260930/`.
+The original prompt, resolved permission/question rows, Think block and final
+reply were read from the new idle-reconnect capture, not a previous artifact.

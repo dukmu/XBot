@@ -13,11 +13,14 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from rich.markdown import Markdown
 from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
+from textual.geometry import Offset
+from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Static
 
 from XBotv2.goal.models import ActiveGoal, GoalChanged, GoalSnapshot, GoalStats
@@ -43,6 +46,7 @@ from XBotv2.tui.view.entries import (
     entry_widget,
     format_payload,
     looks_like_markdown,
+    prepare_entry_body,
 )
 
 
@@ -140,7 +144,7 @@ def test_an_unknown_entry_is_rejected_loudly() -> None:
 def test_a_tool_body_shows_arguments_and_result() -> None:
     body = entry_body(tool(args={"command": "ls"}, result="a\nb"))
     assert "args:" in body
-    assert '"command": "ls"' in body
+    assert 'command: ls' in body
     assert "result: a\nb" in body
 
 
@@ -171,11 +175,19 @@ def test_a_string_payload_is_shown_verbatim() -> None:
     assert format_payload("line\nline") == "line\nline"
 
 
-def test_a_structured_payload_is_shown_as_readable_json() -> None:
+def test_a_structured_payload_is_shown_readably_without_changing_values() -> None:
     rendered = format_payload({"b": 1, "a": [1, 2]})
-    assert rendered.splitlines()[0] == "{"
-    assert '"a"' in rendered
-    assert rendered.index('"a"') < rendered.index('"b"'), "keys are sorted"
+    assert yaml.safe_load(rendered) == {"b": 1, "a": [1, 2]}
+    assert rendered.index("a:") < rendered.index("b:"), "keys are sorted"
+
+
+def test_structured_tool_payload_preserves_real_and_literal_newlines() -> None:
+    payload = {"command": "echo first\necho second", "literal": r"\n\t", "nested": [{"text": "中文\n末行\n"}]}
+    rendered = format_payload(payload)
+    assert "echo first\n" in rendered
+    assert "echo second" in rendered
+    assert r"\n\t" in rendered
+    assert yaml.safe_load(rendered) == payload
 
 
 def test_an_empty_payload_renders_as_nothing() -> None:
@@ -191,7 +203,7 @@ def test_unicode_payloads_are_not_escaped() -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["## heading", "```\ncode\n```", "**bold**", "- item", "1. item", "| a | b |"],
+    ["# heading", "## heading", "```\ncode\n```", "**bold**", "*italic*", "_italic_", "`code`", "[link](https://example.com)", "- item", "1. item", "| a | b |"],
 )
 def test_markdown_is_recognised(text: str) -> None:
     assert looks_like_markdown(text)
@@ -251,21 +263,29 @@ async def test_updating_a_widget_that_has_not_composed_reports_failure() -> None
     """
     from XBotv2.tui.view.entries import entry_widget, update_entry_widget
 
-    widget = entry_widget(user(Delivery.PENDING))
-    assert await update_entry_widget(widget, user(Delivery.ACCEPTED)) is False
+    async with App().run_test() as pilot:
+        pending = user(Delivery.PENDING)
+        widget = entry_widget(
+            pending, body_renderable=await prepare_entry_body(pending, pilot.app.screen),
+        )
+        assert await update_entry_widget(widget, user(Delivery.ACCEPTED), body_renderable=None) is False
 
 
 async def test_input_confirmation_refreshes_delivery_marker_without_content_change():
     from XBotv2.tui.view.entries import update_entry_widget
 
     pending = user(Delivery.PENDING)
-    widget = entry_widget(pending)
-    app = EntryHarness(widget)
+    app = EntryHarness(pending)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
+        widget = app.query_one(EntryWidget)
         body = widget.query_one(".body", Static)
         assert "sending…" in str(body.content)
-        assert await update_entry_widget(widget, user(Delivery.ACCEPTED), previous=pending)
+        accepted = user(Delivery.ACCEPTED)
+        assert await update_entry_widget(
+            widget, accepted, previous=pending,
+            body_renderable=await prepare_entry_body(accepted, app.screen),
+        )
         await pilot.pause()
         assert str(body.content) == "❯ hello"
 
@@ -278,7 +298,7 @@ async def test_conversation_entries_use_inline_claude_style_markers(
     entry: UserEntry | AssistantEntry,
     marker: str,
 ) -> None:
-    app = EntryHarness(entry_widget(entry))
+    app = EntryHarness(entry)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         widget = app.query_one(EntryWidget)
@@ -335,12 +355,70 @@ def test_block_choice_refuses_anything_else() -> None:
 class EntryHarness(App[None]):
     """One entry widget, mounted, so its children exist."""
 
-    def __init__(self, widget) -> None:
+    def __init__(self, entry) -> None:
         super().__init__()
-        self._widget = widget
+        self._entry = entry
 
-    def compose(self) -> ComposeResult:
-        yield self._widget
+    async def on_mount(self) -> None:
+        await self.mount(entry_widget(
+            self._entry, body_renderable=await prepare_entry_body(self._entry, self.screen),
+        ))
+
+
+async def test_markdown_can_copy_rendered_text_and_cell_aligned_selection() -> None:
+    app = EntryHarness(assistant("**中文** and `code`\n\n```python\nprint('ok')\n```"))
+    async with app.run_test(size=(40, 20)) as pilot:
+        await pilot.pause()
+        body = app.query_one(".body", Static)
+        selected = body.get_selection(SELECT_ALL)
+        assert selected is not None
+        assert "中文" in selected[0]
+        assert "print('ok')" in selected[0]
+        assert "**" not in selected[0]
+        # Textual's compositor maps four Chinese terminal cells to two source
+        # characters using the display row's selection metadata.
+        row = next(i for i, line in enumerate(selected[0].splitlines()) if "中文" in line)
+        line = selected[0].splitlines()[row]
+        x = len(line[:line.index("中文")])
+        assert body.get_selection(Selection(Offset(x, row), Offset(x + 2, row))) == ("中文", "\n")
+
+
+async def test_first_line_markdown_heading_is_rendered_without_source_markers() -> None:
+    app = EntryHarness(assistant("# Heading\n\nParagraph **bold**."))
+    async with app.run_test(size=(40, 20)) as pilot:
+        await pilot.pause()
+        body = app.query_one(".body", Static)
+        selected = body.get_selection(SELECT_ALL)
+        assert selected is not None
+        assert "Heading" in selected[0]
+        assert "# Heading" not in selected[0]
+        assert "●" in selected[0]
+
+
+@pytest.mark.parametrize("width", [40, 80])
+async def test_tool_multiline_arguments_wrap_and_remain_scrollable(width: int) -> None:
+    from XBotv2.tui.view.blocks import BLOCK_MAX_LINES
+
+    command = "echo first\necho 中文\n" + "/long/path/" * 30 + " FINAL"
+    app = EntryHarness(tool(args={"command": command}, result={"output": "one\ntwo"}))
+    async with app.run_test(size=(width, 24)) as pilot:
+        await pilot.pause()
+        call, result = blocks_of(app.query_one(EntryWidget))
+        call.toggle()
+        await pilot.pause()
+        assert "echo first\n" in call.shown_text
+        assert "echo 中文" in call.shown_text
+        assert call.region.height <= BLOCK_MAX_LINES
+        body = call.body_widget
+        assert body is not None
+        assert body.size.height > len(call.shown_text.splitlines()), "long paths soft-wrap"
+        assert body.size.width <= width
+        call.scroll_end(animate=False)
+        await pilot.pause()
+        assert "FINAL" in html.unescape(re.sub("<[^>]+>", "", app.export_screenshot()))
+        result.toggle()
+        await pilot.pause()
+        assert "one\n" in result.shown_text and "two" in result.shown_text
 
 
 def blocks_of(entry_widget) -> list:
@@ -354,7 +432,7 @@ async def test_a_long_tool_result_is_hidden_until_expanded_inside_a_block() -> N
     from XBotv2.tui.view.entries import entry_widget
 
     huge = "\n".join(f"output {index}" for index in range(500))
-    app = EntryHarness(entry_widget(tool(result=huge)))
+    app = EntryHarness(tool(result=huge))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         blocks = blocks_of(app.query_one(EntryWidget))
@@ -376,7 +454,7 @@ async def test_an_answer_is_never_a_folded_diagnostic_block() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     long = EntryHarness(
-        entry_widget(assistant(content="\n".join(f"para {i}" for i in range(80))))
+        assistant(content="\n".join(f"para {i}" for i in range(80)))
     )
     async with long.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
@@ -389,7 +467,7 @@ async def test_reasoning_is_its_own_clamped_block() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     app = EntryHarness(
-        entry_widget(assistant(reasoning="\n".join(f"thought {i}" for i in range(60))))
+        assistant(reasoning="\n".join(f"thought {i}" for i in range(60)))
     )
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
@@ -400,10 +478,10 @@ async def test_reasoning_is_its_own_clamped_block() -> None:
 
 async def test_context_injection_is_one_collapsed_row_with_exact_inspectable_content() -> None:
     content = '<system_reminder source="goal">\ncontinue working\n</system_reminder>'
-    app = EntryHarness(entry_widget(NoticeEntry(
+    app = EntryHarness(NoticeEntry(
         id="notice-1", notice_kind="context", text="Context · goal · round",
         detail=content,
-    )))
+    ))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)
@@ -437,7 +515,7 @@ async def test_goal_event_renders_status_execution_and_usage_at_80x24(
     ))))
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
-    app = EntryHarness(entry_widget(notice))
+    app = EntryHarness(notice)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)
@@ -449,7 +527,7 @@ async def test_goal_event_renders_status_execution_and_usage_at_80x24(
 
 
 async def test_short_reasoning_remains_a_collapsible_think_block() -> None:
-    app = EntryHarness(entry_widget(assistant(reasoning="brief thought")))
+    app = EntryHarness(assistant(reasoning="brief thought"))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         (block,) = [
@@ -458,11 +536,11 @@ async def test_short_reasoning_remains_a_collapsible_think_block() -> None:
         ]
         assert block.collapsible is True
         assert "Think" in block.head_text
-        assert "ctrl+e expands" in block.head_text
+        assert "ctrl+o expands" in block.head_text
 
 
 async def test_short_tool_output_remains_collapsible() -> None:
-    app = EntryHarness(entry_widget(tool(args={"cmd": "pwd"}, result="/repo")))
+    app = EntryHarness(tool(args={"cmd": "pwd"}, result="/repo"))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         call_block, result_block = blocks_of(app.query_one(EntryWidget))
@@ -473,7 +551,7 @@ async def test_short_tool_output_remains_collapsible() -> None:
         call_block.toggle()
         result_block.toggle()
         await pilot.pause()
-        assert '"cmd": "pwd"' in call_block.shown_text
+        assert 'cmd: pwd' in call_block.shown_text
         assert "/repo" in result_block.shown_text
 
 
@@ -482,7 +560,7 @@ async def test_an_error_is_never_folded_away() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     message = "\n".join(f"failure line {index}" for index in range(80))
-    app = EntryHarness(entry_widget(ErrorEntry(id="e1", message=message)))
+    app = EntryHarness(ErrorEntry(id="e1", message=message))
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)
@@ -501,7 +579,7 @@ async def test_help_is_never_folded() -> None:
     from XBotv2.tui.view.entries import entry_widget
 
     listing = "\n".join(f"/command-{index}  does something" for index in range(15))
-    app = EntryHarness(entry_widget(NoticeEntry(id="n1", notice_kind="help", text=listing)))
+    app = EntryHarness(NoticeEntry(id="n1", notice_kind="help", text=listing))
     async with app.run_test(size=(80, 40)) as pilot:
         await pilot.pause()
         entry = app.query_one(EntryWidget)

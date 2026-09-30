@@ -973,10 +973,10 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         )
         _resize_tmux_window(session_name, 120, 40)
 
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         tool_expanded = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "ctrl+e collapses" in screen and '"options": [' in screen,
+            lambda screen: "ctrl+o collapses" in screen and 'options:' in screen,
             description="expanded tool arguments in the transcript",
         )
         assert "Permission required" in tool_expanded
@@ -986,7 +986,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         (captures / "tool-expanded.txt").write_text(
             tool_expanded, encoding="utf-8"
         )
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         permission_screen = await _wait_for_tmux_screen(
             session_name,
             lambda screen: "? Permission required" in screen
@@ -1078,7 +1078,8 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         await socket_cut_proxy[1].cut_and_wait_for_reconnect()
         idle_reconnected = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: REPLY in screen and "Ready  turn:1" in screen,
+            lambda screen: REPLY in screen and "Ready  turn:1" in screen
+            and "❯ ask me a question" in screen,
             description="the completed turn after an idle socket reconnect",
         )
         assert idle_reconnected.count("❯ ask me a question") == 1
@@ -1274,7 +1275,7 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
         assert "✳ Thinking…" not in completed
         assert "show your reasoning" in completed
         assert "▸ Think" in completed
-        assert "ctrl+e expands" in completed
+        assert "ctrl+o expands" in completed
         assert not any("█ █ ▸ Think" in line for line in completed.splitlines())
 
         _tmux("send-keys", "-t", session_name, "-l", "follow-up after thinking")
@@ -1353,17 +1354,17 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
             completed, encoding="utf-8"
         )
 
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         expanded = await _wait_for_tmux_screen(
             session_name,
             lambda screen: (
-                "ctrl+e collapses" in screen
+                "ctrl+o collapses" in screen
                 and "漢字" in screen
                 and (
                     not same_frame
                     or (
                         "shell(command:" in screen
-                        and '"command":' in screen
+                        and 'command:' in screen
                         and "Unicode complete" in screen
                     )
                 )
@@ -1478,10 +1479,10 @@ async def test_minimax_thinking_runs_through_provider_server_and_textual_pty(
         assert "✳ Thinking…" not in completed
         assert "explain the next step" in completed
         assert "▸ Think" in completed
-        assert "ctrl+e expands" in completed
+        assert "ctrl+o expands" in completed
         assert not any("█ █ ▸ Think" in line for line in completed.splitlines())
 
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         expanded = await _wait_for_tmux_screen(
             session_name,
             lambda screen: "▾ Think" in screen
@@ -1503,7 +1504,7 @@ async def test_minimax_thinking_runs_through_provider_server_and_textual_pty(
             "the block must not reserve the maximum-height window"
         )
         (captures / "think-expanded.txt").write_text(expanded, encoding="utf-8")
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         folded_again = await _wait_for_tmux_screen(
             session_name,
             lambda screen: "▸ Think" in screen
@@ -1911,10 +1912,10 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
         )
         (captures / "older-page.txt").write_text(older, encoding="utf-8")
 
-        _tmux("send-keys", "-t", session_name, "C-e")
+        _tmux("send-keys", "-t", session_name, "C-o")
         expanded = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "history turn 0" in screen and "ctrl+e collapses" in screen,
+            lambda screen: "history turn 0" in screen and "ctrl+o collapses" in screen,
             description="folded blocks to expand without losing the older page",
         )
         (captures / "older-expanded.txt").write_text(expanded, encoding="utf-8")
@@ -1969,7 +1970,7 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
                 "stream while reading history" in screen
                 and REPLY in screen
                 and "Ready  turn:31" in screen
-                and "▸ Think · 1 line · ctrl+e expands" in screen
+                and "▸ Think · 1 line · ctrl+o expands" in screen
                 and "I am checking the request before answering." in screen
             ),
             description="PageDown to return to the settled collapsed tail preview",
@@ -2073,16 +2074,16 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
         )
         (captures / "session-a-turn-1.txt").write_text(alpha, encoding="utf-8")
 
-        _tmux("send-keys", "-t", tmux_a, "C-e")
+        _tmux("send-keys", "-t", tmux_a, "C-o")
         expanded = await _wait_for_tmux_screen(
             tmux_a,
-            lambda screen: "ctrl+e collapses" in screen,
+            lambda screen: "ctrl+o collapses" in screen,
             description="the real reasoning block to expand",
         )
         (captures / "session-a-expanded.txt").write_text(
             expanded, encoding="utf-8"
         )
-        _tmux("send-keys", "-t", tmux_a, "C-e")
+        _tmux("send-keys", "-t", tmux_a, "C-o")
 
         _tmux("send-keys", "-t", tmux_b, "-l", "beta independent turn")
         _tmux("send-keys", "-t", tmux_b, "Enter")
@@ -2369,7 +2370,7 @@ async def test_failed_tool_output_remains_visible_and_follow_up_works(
             description="the failed tool and recovered assistant reply",
         )
         assert "Error" in transcript_text(app), transcript_text(app)
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+o")
         await wait_for(
             pilot,
             lambda: "partial-tool-output" in transcript_text(app),
@@ -2590,7 +2591,7 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
     real_client: XBotClient,
 ) -> None:
     app = tui(real_client)
-    async with app.run_test(size=(100, 24)) as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("ask me where to deploy")
@@ -2611,6 +2612,12 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
             lambda: isinstance(app.screen, SelectionScreen),
             description="the permission chooser for ask_user",
         )
+        assert any(child.has_class("user") for child in app.view.transcript.container.children), "prompt before resize"
+        await pilot.resize_terminal(80, 24)
+        assert any(child.has_class("user") for child in app.view.transcript.container.children), "prompt after resize"
+        await pilot.resize_terminal(120, 40)
+        await pilot.press("ctrl+o", "ctrl+o")
+        assert any(child.has_class("user") for child in app.view.transcript.container.children), "prompt after disclosure"
         await pilot.press("enter")
         await wait_for(
             pilot,
@@ -2633,6 +2640,9 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
             description="the user-input option chooser",
         )
         assert "Which deployment window?" in app.screen.description_text
+        assert any(child.has_class("user") for child in app.view.transcript.container.children), "prompt before question resize"
+        await pilot.resize_terminal(80, 24)
+        await pilot.resize_terminal(120, 40)
         await pilot.press("down", "enter")
         await wait_for(
             pilot,
@@ -2641,6 +2651,18 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
         )
         assert not app.controller.state.pending_interactions
         assert app.screen.focused is composer.input
+        await pilot.pause()
+        scroll = app.query_one("#transcript", TranscriptScroll)
+        prompts = list(app.query("EntryWidget.user"))
+        assert prompts, "DOM: " + repr([
+            (type(child).__name__, child.name, child.classes) for child in scroll.children
+        ]) + "\nwindow: " + repr(app.view.transcript.window(app.controller.state))
+        prompt = prompts[0]
+        assert scroll.scroll_y == 0
+        assert prompt.region.y >= scroll.region.y, (
+            scroll.scroll_y, scroll.max_scroll_y, prompt.region, scroll.region,
+            [(type(child).__name__, child.region) for child in scroll.children],
+        )
 
 
 async def test_real_reasoning_and_usage_reach_the_tui(real_client: XBotClient) -> None:

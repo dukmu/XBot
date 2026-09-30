@@ -29,6 +29,18 @@
 
 ## 当前验收矩阵
 
+### 当前 Markdown、复制和输入修复
+
+- [x] 查阅 Codex 的 Markdown/streaming/math、OpenTUI Markdown/incremental parser 与 Glow/Glamour 的源码；采用源码与显示行分离、按终端宽度排版的方向，不替换 Python 客户端框架。
+- [x] Rich Markdown 准备在后台执行；DOM batch 仅用于应用准备完成的结果，准备期间输入与滚动仍可响应。
+- [x] Markdown 按显示行缓存、可见行绘制；宽度变化后台重排，保留原显示直到新宽度准备完成。缓存仅保留两个宽度，不随会话增长。
+- [x] Markdown 接入 Textual 的选区 offset、选区高亮和 Ctrl+C；首行标题使用原始源码解析，speaker marker 在显示层添加。
+- [x] 工具结构参数以 YAML literal block 呈现真实换行；字面量反斜杠保留，40/80 列长路径与中文自动折行，展开块仍受最大高度限制。
+- [x] Shift+Enter 替换选区并移动光标；Ctrl+E 恢复行尾操作，Ctrl+O 展开折叠块，不抢占标准多行编辑键。
+- [ ] 流式 Markdown 的稳定前缀/可变尾部增量解析尚未实现；不得把后台全篇解析称为增量解析。
+- [ ] 公式/流程图尚未增加排版能力；比较成熟实现与 Python 集成成本后决定，不能用代码高亮充当图形支持。
+- [x] 本轮真实 CLI/PTY 49 项通过；修复后台准备遗漏整组 remount 的未变化条目，权限→问题→回复与 reconnect 后原输入完整显示。TUI 全套 888 项、包含新增中文鼠标复制的重点 208 项、Core/集成 813 项通过。
+
 ### 输入、流式与 transcript
 
 - [x] 普通输入、多行 bracketed paste、继续编辑、canonical history 和重复输入检查已有真实 PTY 覆盖。
@@ -51,7 +63,7 @@
 
 - [x] pilot 覆盖滚离尾部的 entry/行偏移、composer draft/focus/selection；真实 PTY 覆盖 80×24 ↔ 100×28 长历史流式 resize。
 - [x] permission/question modal 在 80×24 保持完整边界与键盘操作；外部 resolution 关闭陈旧 overlay 并恢复 composer focus。
-- [x] Ctrl+E 展开/收起 Think/tool 后不改变 reader intent；短 block 不预留固定 12 行空白。
+- [x] Ctrl+O 展开/收起 Think/tool 后不改变 reader intent；短 block 不预留固定 12 行空白。
 - [x] 当轮 PTY capture 验证重连后的 question Tuesday 选区、permission modal、idle Ready 和长历史 anchor；稳定条件取帧，原始产物路径见 `XBotv2/docs/tui-closure.md`。
 - [x] 本轮可操作尺寸门槛为 80×24 与 100×28，现有 pilot 覆盖宽屏；不宣称低于 80×24 的所有终端可操作，不为此新增响应式框架。
 

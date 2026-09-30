@@ -8,6 +8,7 @@ the real code.
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 from textual.events import Paste
 from textual.widgets import Button, Checkbox, OptionList, Static
@@ -30,6 +31,7 @@ from XBotv2.tests.tui.factories import (
 )
 from XBotv2.client import XBotClientError
 from XBotv2.protocol.models import ErrorResponse
+from XBotv2.session.records import AssistantRecord
 from textual.screen import Screen
 
 from XBotv2.interactions.models import Answered, UserInputRecorded, UserInputRequest
@@ -97,6 +99,55 @@ def transcript_text(app: TuiApp) -> str:
 
 
 # --- booting --------------------------------------------------------------
+
+
+async def test_attached_session_uses_saved_workspace_for_ui_and_relative_paths() -> None:
+    backend = ScriptedBackend(threads=(thread(workspace_root="/saved/workspace"),))
+    app = app_for(backend, workspace="/launch/directory")
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        assert app.workspace == "/saved/workspace"
+        assert app.controller.status_model().workspace == "/saved/workspace"
+
+
+async def test_ctrl_e_moves_to_line_end_without_expanding_blocks() -> None:
+    app = app_for(ScriptedBackend())
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("first line\nsecond line")
+        composer.input.cursor_location = (0, 2)
+        await pilot.press("ctrl+e")
+        assert composer.input.cursor_location == (0, 10)
+        await pilot.press("shift+enter", "x", "ctrl+z")
+        assert composer.text == "first line\n\nsecond line"
+        await pilot.press("ctrl+z")
+        assert composer.text == "first line\nsecond line"
+
+
+@pytest.mark.parametrize(("text", "selected"), [("bold", "bold"), ("中文", "中文")])
+async def test_ctrl_c_copies_rendered_markdown_without_exiting(text: str, selected: str) -> None:
+    from XBotv2.tui.view.entries import TranscriptBody
+
+    backend = ScriptedBackend(session=snapshot(history=(
+        AssistantRecord.model_validate(assistant_record("a-md", f"**{text}** and `code`")),
+    )))
+    app = app_for(backend)
+    copied = []
+    app.copy_to_clipboard = copied.append
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        assert app.controller is not None
+        app.controller.dispatch(SnapshotAdopted(backend.session))
+        await settle(pilot)
+        body = app.query_one(TranscriptBody)
+        await pilot.mouse_down(body, offset=(2, 0))
+        await pilot.hover(body, offset=(6, 0))
+        await pilot.mouse_up(body, offset=(6, 0))
+        assert app.screen.get_selected_text() == selected
+        await pilot.press("ctrl+c")
+        assert copied == [selected]
+        assert app.is_running
 
 
 async def test_the_app_boots_and_shows_a_status_line() -> None:
@@ -1426,7 +1477,7 @@ async def test_expanding_think_keeps_the_final_reply_at_the_following_tail() -> 
         )
         assert answer.region.bottom <= transcript.region.bottom
 
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+o")
         await settle(pilot)
 
         assert block.expanded
@@ -1470,7 +1521,7 @@ async def test_details_off_hides_a_tool_payload() -> None:
         await settle(pilot)
         assert "SECRET-OUTPUT" not in transcript_text(app)
         assert "Done" in transcript_text(app)
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+o")
         await settle(pilot)
         assert "SECRET-OUTPUT" in transcript_text(app)
         composer = app.query_one("#composer", Composer)
@@ -1833,12 +1884,12 @@ async def test_a_folded_think_block_expands_from_the_keyboard() -> None:
         assert block.collapsible is True and block.expanded is False
         assert "thought 39" not in transcript_text(app)
 
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+o")
         await settle(pilot)
         assert block.expanded is True
         assert "thought 39" in transcript_text(app), "the folded content is now readable"
 
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+o")
         await settle(pilot)
         assert block.expanded is False
 

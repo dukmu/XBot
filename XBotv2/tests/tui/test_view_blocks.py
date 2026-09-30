@@ -51,7 +51,7 @@ def test_long_content_collapses_to_a_summary_and_a_preview() -> None:
     assert plan.lines == 40
     assert "tool output" in plan.head
     assert "40 lines" in plan.head
-    assert "ctrl+e" in plan.head
+    assert "ctrl+o" in plan.head
     assert plan.body == "\n".join(
         f"line {index}" for index in range(BLOCK_PREVIEW_LINES)
     ), "a collapsed body is exactly the preview; the head carries the count"
@@ -62,7 +62,7 @@ def test_expanding_shows_the_whole_content() -> None:
     plan = plan_block(text, label="tool output", expanded=True)
     assert plan.collapsible is True
     assert plan.body == text
-    assert "ctrl+e" in plan.head
+    assert "ctrl+o" in plan.head
 
 
 def test_the_cut_off_is_exactly_the_maximum() -> None:
@@ -85,7 +85,7 @@ def test_a_reader_can_fold_a_streaming_body() -> None:
         f"line {index}" for index in range(BLOCK_PREVIEW_LINES)
     )
     assert "streaming" in plan.head
-    assert "ctrl+e expands" in plan.head
+    assert "ctrl+o expands" in plan.head
 
 
 def test_line_counting_ignores_a_trailing_newline() -> None:
@@ -216,7 +216,7 @@ async def test_think_block_collapses_when_streaming_finishes() -> None:
         assert block.region.height <= BLOCK_PREVIEW_LINES + 1
         assert "line 0" in block_text(block)
         assert "line 40" not in block_text(block)
-        assert "ctrl+e expands" in block.head_text
+        assert "ctrl+o expands" in block.head_text
 
 
 async def test_a_regular_answer_remains_open_after_streaming() -> None:

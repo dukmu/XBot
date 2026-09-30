@@ -174,7 +174,8 @@ class ComposerInput(TextArea):
         if event.key == "shift+enter":
             event.stop()
             event.prevent_default()
-            self.insert("\n")
+            if not self.read_only:
+                self.replace("\n", *self.selection, maintain_selection_offset=False)
             return
         await super()._on_key(event)
 

@@ -12,6 +12,7 @@ Invariants under test:
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -296,6 +297,172 @@ async def test_no_change_render_does_not_schedule_tail_scroll(monkeypatch):
         assert calls == []
 
 
+async def test_markdown_preparation_does_not_block_input_or_screen_updates(monkeypatch):
+    from rich.markdown import Markdown
+    from textual.widgets import Input
+
+    class InteractiveHarness(Harness):
+        def compose(self):
+            yield from super().compose()
+            yield Input(id="input")
+
+    started = threading.Event()
+    release = threading.Event()
+    original = Markdown.__rich_console__
+
+    def gated_render(self, console, options):
+        started.set()
+        release.wait(timeout=1)
+        yield from original(self, console, options)
+
+    state = build_state(user("m1", "explain"))
+    app = InteractiveHarness(limit=5)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await app.view.render(state)
+        await pilot.pause()
+        composer = app.query_one(Input)
+        composer.focus()
+        monkeypatch.setattr(Markdown, "__rich_console__", gated_render)
+        reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n**content**")))
+        rendering = asyncio.create_task(app.view.render(state))
+        try:
+            async with asyncio.timeout(3):
+                while not started.is_set():
+                    await asyncio.sleep(0.005)
+            assert not rendering.done(), "input must run while Markdown rendering is pending"
+            await pilot.press(*"draftwhilewaiting")
+            await pilot.pause()
+            assert composer.value == "draftwhilewaiting"
+            assert "draftwhilewaiting" in app.export_screenshot()
+            assert not rendering.done(), "the draft must paint before Markdown is ready"
+            assert not release.is_set()
+        finally:
+            release.set()
+            await rendering
+        await pilot.pause()
+        assert app.view.widget_for(state.stream_entry_id) is not None
+
+
+async def test_reader_scroll_during_markdown_preparation_is_preserved(monkeypatch):
+    from rich.markdown import Markdown
+
+    state = build_state(*(user(f"m{i}", f"message {i}") for i in range(40)))
+    started = threading.Event()
+    release = threading.Event()
+    original = Markdown.__rich_console__
+
+    def gated_render(self, console, options):
+        started.set()
+        release.wait(timeout=1)
+        yield from original(self, console, options)
+
+    async with harness(limit=50) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        assert app.view.reader_at_end
+        monkeypatch.setattr(Markdown, "__rich_console__", gated_render)
+        reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n**content**")))
+        rendering = asyncio.create_task(app.view.render(state))
+        try:
+            async with asyncio.timeout(3):
+                while not started.is_set():
+                    await asyncio.sleep(0.005)
+            app.view.container.scroll_home(animate=False, immediate=True)
+            await pilot.pause()
+            assert app.view.container.scroll_y == 0
+        finally:
+            release.set()
+            await rendering
+        await pilot.pause()
+        assert app.view.container.scroll_y == 0, "a background render must not pull the reader to the tail"
+
+
+async def test_markdown_resize_reflows_off_loop_while_input_remains_visible(monkeypatch):
+    from rich.markdown import Markdown
+    from textual.widgets import Input
+    from XBotv2.tui.view.entries import TranscriptBody
+
+    class InteractiveHarness(Harness):
+        DEFAULT_CSS = "#transcript { height: 1fr; } Input { height: 3; }"
+
+        def compose(self):
+            yield from super().compose()
+            yield Input(id="input")
+
+    app = InteractiveHarness(limit=5)
+    state = build_state(user("m1", "explain"))
+    reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n" + "**content** 中文 " * 30)))
+    started, release = threading.Event(), threading.Event()
+    original = Markdown.__rich_console__
+
+    def gated_render(self, console, options):
+        assert threading.current_thread() is not threading.main_thread()
+        started.set()
+        release.wait(timeout=3)
+        yield from original(self, console, options)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await app.view.render(state)
+        await pilot.pause()
+        editor = app.query_one(Input)
+        editor.focus()
+        monkeypatch.setattr(Markdown, "__rich_console__", gated_render)
+        try:
+            await pilot.resize_terminal(40, 24)
+            async with asyncio.timeout(3):
+                while not started.is_set():
+                    await asyncio.sleep(.005)
+            await pilot.press(*"resizedraft")
+            await pilot.pause()
+            assert "resizedraft" in app.export_screenshot()
+            assert not release.is_set()
+        finally:
+            release.set()
+            await app.workers.wait_for_complete()
+        await pilot.pause()
+        body = app.query_one("EntryWidget.assistant .body", TranscriptBody)
+        assert body.content.has_width(body.content_size.width)
+        assert body.size.height > 5
+
+
+async def test_short_rebuilt_history_does_not_keep_an_out_of_range_scroll_offset():
+    from XBotv2.tui.events import SnapshotAdopted
+    state = build_state(*(user(f"m{i}", f"message {i}") for i in range(40)))
+    async with harness(limit=50) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        app.view.container.scroll_to(y=10, animate=False, immediate=True)
+        await pilot.pause()
+        reduce(state, SnapshotAdopted(snapshot(history=[
+            human_record("saved-prompt", "originalprompt"),
+            human_record("saved-followup", "followup"),
+        ])))
+        await app.view.render(state)
+        await pilot.pause()
+        assert app.view.container.max_scroll_y == 0
+        assert app.view.container.scroll_y == 0
+        assert "originalprompt" in app.export_screenshot()
+
+
+async def test_middle_record_replacement_keeps_unchanged_history_rows_visible():
+    state = build_state(user("first", "first"), user("middle", "old"), user("last", "last"))
+    async with harness(limit=5) as (app, pilot):
+        await app.view.render(state)
+        await pilot.pause()
+        reduce(state, SnapshotAdopted(snapshot(history=[
+            human_record("first", "first"),
+            human_record("replacement", "new"),
+            human_record("last", "last"),
+        ])))
+        await app.view.render(state)
+        await pilot.pause()
+        assert tuple(child.name for child in app.view.container.children) == (
+            "first", "replacement", "last",
+        )
+        screen = app.export_screenshot()
+        assert "first" in screen and "new" in screen and "last" in screen
+
+
 async def test_streamed_thinking_widget_survives_canonical_completion_identity() -> None:
     from XBotv2.tui.view.blocks import ClampedBlock
 
@@ -329,7 +496,7 @@ async def test_streamed_thinking_widget_survives_canonical_completion_identity()
         completed_block = completed_widget.query_one(".reasoning", ClampedBlock)
         assert not completed_block.expanded
         assert completed_block.shown_text == "checking the request"
-        assert "ctrl+e expands" in completed_block.head_text
+        assert "ctrl+o expands" in completed_block.head_text
 
         human_widget = app.view.widget_for("human-record-1")
         assert human_widget is not None

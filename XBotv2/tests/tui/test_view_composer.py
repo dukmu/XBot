@@ -9,6 +9,7 @@ from __future__ import annotations
 from textual.events import Paste
 from textual.app import App, ComposeResult
 from textual.widgets import Static
+from textual.widgets.text_area import Selection
 
 from XBotv2.tui.status import Connection, Interaction, Interrupt, ServerTurn, StatusFacts
 from XBotv2.tui.view.composer import (
@@ -181,6 +182,19 @@ async def test_shift_enter_adds_a_line_instead_of_submitting() -> None:
         await pilot.pause()
         assert app.submitted == []
         assert "\n" in app.composer.text
+
+
+async def test_shift_enter_replaces_selection_and_moves_cursor_to_new_line():
+    app = Harness()
+    async with app.run_test() as pilot:
+        editor = app.composer.input
+        editor.load_text("first replace last")
+        editor.selection = Selection((0, 6), (0, 13))
+        await pilot.press("shift+enter", "x")
+        assert editor.text == "first \nx last"
+        assert editor.cursor_location == (1, 1)
+        assert editor.selection.is_empty
+        assert app.submitted == []
 
 
 async def test_multiline_paste_preserves_unicode_and_trailing_newline_until_submit() -> None:

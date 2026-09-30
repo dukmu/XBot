@@ -128,8 +128,8 @@ def _head(
     prefix = label if inline_label else f"{marker} {label}"
     count = f"{lines} {'line' if lines == 1 else 'lines'}"
     if streaming:
-        return f"{prefix} · {count} streaming · ctrl+e {action}"
-    return f"{prefix} · {count} · ctrl+e {action}"
+        return f"{prefix} · {count} streaming · ctrl+o {action}"
+    return f"{prefix} · {count} · ctrl+o {action}"
 
 
 class ClampedBlock(VerticalScroll):
