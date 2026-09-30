@@ -374,16 +374,7 @@ class SessionManager(SessionsPort):
                             "thread_metadata_missing",
                             f"Thread {session_id}/{thread_id} has no runtime metadata",
                         )
-                    persisted_workspace = Path(
-                        metadata.workspace_root
-                    ).expanduser().resolve()
-                    if workspace != persisted_workspace:
-                        raise OperationError(
-                            "workspace_conflict",
-                            f"Thread {session_id}/{thread_id} belongs to workspace "
-                            f"{persisted_workspace}, not {workspace}",
-                        )
-                    workspace = persisted_workspace
+                    workspace = Path(metadata.workspace_root).expanduser().resolve()
                 if not workspace.is_dir():
                     raise OperationError(
                         "workspace_not_found",

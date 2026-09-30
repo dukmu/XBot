@@ -56,6 +56,11 @@ The session document uses the same `plugins` overlay schema. Sandbox and
 permissions are the `sandbox` and `permissions` plugin declarations, not
 separate configuration files.
 
+Resuming an existing session is independent of the caller's current directory.
+The server restores the workspace recorded in that session, including its
+workspace plugin configuration and runtime paths. A supplied launch workspace
+sets the default for new sessions; it does not relocate a resumed session.
+
 Provider `request_timeout_seconds` defaults to 60 seconds and configures SDK
 transport timeouts (connection, read inactivity, write, and pool acquisition).
 It is not a total generation deadline: reasoning, text, or SSE heartbeats that

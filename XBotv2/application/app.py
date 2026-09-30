@@ -36,6 +36,7 @@ from XBotv2.session.contracts import new_session_id
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.providers import BaseProvider
 from XBotv2.permissions import PermissionsPort
+from XBotv2.persistence.store import ThreadMetadataStore
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
@@ -81,6 +82,11 @@ async def start_application(
 
     session_paths = paths.session(session_id)
     thread_paths = session_paths.thread(thread_id)
+    saved_metadata = ThreadMetadataStore(thread_paths).load()
+    if saved_metadata is not None:
+        # Resolve the saved workspace before loading overlays or constructing
+        # runtime variables. The caller's directory is only a new-session default.
+        workspace_root = Path(saved_metadata.workspace_root).expanduser().resolve()
     plugin_ctx: Context | None = None
 
     tree = load_agent_tree(

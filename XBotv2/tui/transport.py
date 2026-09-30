@@ -641,7 +641,7 @@ class TransportSession:
                     session_id,
                     thread_id=target_thread,
                     parent_thread_id=summary.parent_thread_id,
-                    workspace_root=self._config.workspace_root,
+                    workspace_root=None,
                     mode=mode,
                     agent=None,
                     history_limit=self._config.history_window,
@@ -649,7 +649,7 @@ class TransportSession:
         return await self._backend.open_session(
             session_id=session_id,
             thread_id=target_thread,
-            workspace_root=self._config.workspace_root,
+            workspace_root=self._config.workspace_root if mode == "new" else None,
             mode=mode,
             agent=self._config.agent or None,
             history_limit=self._config.history_window,

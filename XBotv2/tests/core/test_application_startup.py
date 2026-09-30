@@ -215,7 +215,7 @@ async def test_metadata_initialization_is_durable_and_resume_is_read_only(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_direct_restore_rejects_a_different_workspace_and_releases_lock(tmp_path):
+async def test_direct_restore_from_another_directory_uses_saved_workspace(tmp_path):
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     persisted = tmp_path / "persisted-workspace"
     requested = tmp_path / "requested-workspace"
@@ -231,20 +231,18 @@ async def test_direct_restore_rejects_a_different_workspace_and_releases_lock(tm
     )
     await first.destroy()
 
-    with pytest.raises(ServiceNotFoundError) as rejected:
-        await start_application(
+    restored = await start_application(
             paths=paths,
             session_id="workspace-owner",
             workspace_root=requested,
             no_plugins=True,
             llm_override=MockLLM(responses=[]),
-        )
-    detail = "\n".join(
-        [str(rejected.value), *getattr(rejected.value, "__notes__", ())]
     )
-    assert "belongs to workspace" in detail
-    assert str(persisted.resolve()) in detail
-    assert str(requested.resolve()) in detail
+    try:
+        assert restored.loop_state.metadata.value.workspace_root == str(persisted.resolve())
+        assert Path(restored.get("workspace_root")) == persisted.resolve()
+    finally:
+        await restored.destroy()
 
     restored = await start_application(
         paths=paths,

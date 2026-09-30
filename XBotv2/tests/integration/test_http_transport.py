@@ -1966,8 +1966,7 @@ async def test_cold_resume_uses_one_persisted_workspace(
     await _drain_stream(_runtime_command(runtime, "persist", "workspace-persist"))
     await manager.close_session("workspace-resume", reason="test")
 
-    with pytest.raises(OperationError, match="belongs to workspace") as rejected:
-        await manager.open_session(
+    resumed = await manager.open_session(
             session_id="workspace-resume",
             thread_id="main",
             provider_name="default",
@@ -1975,9 +1974,9 @@ async def test_cold_resume_uses_one_persisted_workspace(
             mode="resume",
             no_plugins=True,
             llm_override=MockLLM(responses=[]),
-        )
-
-    assert rejected.value.code == "workspace_conflict"
+    )
+    assert resumed.workspace_root == str(persisted.resolve())
+    await manager.close_session("workspace-resume", reason="test")
     response = await client.post(
         "/sessions",
         json={
@@ -1987,8 +1986,8 @@ async def test_cold_resume_uses_one_persisted_workspace(
             "mode": "resume",
         },
     )
-    assert response.status_code == 400
-    assert response.json()["code"] == "workspace_conflict"
+    assert response.status_code == 200
+    assert response.json()["data"]["metadata"]["workspace_root"] == str(persisted.resolve())
 
 
 @pytest.mark.asyncio
