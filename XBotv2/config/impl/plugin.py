@@ -15,6 +15,7 @@ from XBotv2.loader.api.service import LOADER
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.impl.router import build_router
 from XBotv2.server.api.contracts import contribute_router
+from XBotv2.session.api.contracts import SESSIONS
 
 
 async def mount_http(ctx: Context) -> None:
@@ -32,6 +33,7 @@ def mount_settings(ctx: Context) -> None:
     settings = ConfigService(
         ctx.runtime_paths,
         session_id=ctx.thread_info.session_id,
+        thread_id=ctx.thread_info.thread_id,
         workspace_root=ctx.thread_info.workspace_root,
         events=ctx,
         runtime_log=ctx.runtime_log,
@@ -75,6 +77,7 @@ mount_thread.inject = (
     "runtime_log",
     "runtime_paths",
     "thread_info",
+    SESSIONS,
     "plugin_overrides",
     "plugin_dirs",
     "no_plugins",

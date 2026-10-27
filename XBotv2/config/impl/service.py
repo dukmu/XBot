@@ -21,6 +21,7 @@ from XBotv2.config.api.contracts import (
     ConfigPluginConfig,
     PatchPolicy,
     PolicySnapshot,
+    SETTINGS,
     SettingsPort,
 )
 from XBotv2.config.api.events import POLICY_CHANGED, PolicyChanged
@@ -30,6 +31,7 @@ from XBotv2.core.api.runtime_logging import RuntimeLog
 from XBotv2.core.api.paths import RuntimePaths
 from xcore.api.context import Context
 from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.session.api.contracts import SESSIONS
 
 
 class ConfigService(SettingsPort):
@@ -40,6 +42,7 @@ class ConfigService(SettingsPort):
         paths: RuntimePaths,
         *,
         session_id: str,
+        thread_id: str = "main",
         workspace_root: Path,
         events: Context,
         runtime_log: RuntimeLog,
@@ -49,6 +52,7 @@ class ConfigService(SettingsPort):
     ) -> None:
         self.paths = paths
         self.session_id = session_id
+        self.thread_id = thread_id
         self.workspace_root = workspace_root
         self.events = events
         self._log = runtime_log.bind("config", session_id=session_id)
@@ -73,13 +77,13 @@ class ConfigService(SettingsPort):
         return ConfigPluginConfig.model_validate(entry.config).user
 
     def load_plugin_tree(
-        self, workspace: Path, session_id: str, thread_id: str = "main"
+        self, workspace: Path, session_id: str, thread_id: str | None = None
     ) -> PluginTree:
         return resolve_plugin_tree(
             self.paths,
             workspace,
             session_id,
-            thread_id=thread_id,
+            thread_id=self.thread_id if thread_id is None else thread_id,
             extra_plugins=self._extra_plugins,
             plugin_dirs=self._plugin_dirs,
             no_plugins=self._no_plugins,
@@ -120,14 +124,17 @@ class ConfigService(SettingsPort):
         tree = self.load_plugin_tree(self.workspace_root, self.session_id)
         permissions = _entry_config(tree, "permissions")
         sandbox = _entry_config(tree, "sandbox")
-        await self.events.emit(
-            POLICY_CHANGED,
-            PolicyChanged(
-                policy=policy,
-                permission_policies=self.permission_policies(),
-                effective_sandbox=sandbox,
-            ),
-        )
+        for scope in await self.events.require(SESSIONS).scopes(self.session_id):
+            settings = scope.require(SETTINGS)
+            snapshot = settings.policy()
+            await scope.emit(
+                POLICY_CHANGED,
+                PolicyChanged(
+                    policy=policy,
+                    permission_policies=settings.permission_policies(),
+                    effective_sandbox=snapshot.effective_sandbox,
+                ),
+            )
         self._log.info(
             "config.policy.updated",
             permission_fields=sorted((patch.permissions or {}).keys()),
