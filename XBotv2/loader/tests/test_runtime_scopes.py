@@ -170,7 +170,7 @@ async def test_close_waits_for_real_tool_worker_and_lock(tmp_path):
     root = await open_runtime(paths=paths)
     competitor = await open_runtime(paths=paths)
     sessions = root.require(SESSIONS)
-    scope = await sessions.open(request("worker", tmp_path, plugins=False, configs={"permissions": {"default_decision": "allow", "rules": []}}))
+    scope = await sessions.open(request("worker", tmp_path, plugins=False, configs={"permissions": {"default_decision": "ask", "rules": []}}))
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
     def blocking_io():
         started.set()
@@ -310,7 +310,13 @@ async def test_workspace_provider_overlays_share_only_identical_configs(tmp_path
         assert selected.require(LLM) is not a.require(LLM)
         assert sorted(created) == ["first-model", "second-model", "session-model"]
         provider = a.require(LLM).provider_config("local")
-        assert a.require(LLM).create(provider) is twin.require(LLM).create(provider)
+        first_use = a.require(LLM).acquire(provider)
+        twin_use = twin.require(LLM).acquire(provider)
+        try:
+            assert sorted(created) == ["first-model", "second-model", "session-model"]
+        finally:
+            await first_use.close()
+            await twin_use.close()
         from XBotv2.agentloop.api.state import LOOP_STATE
         assert a.require(LOOP_STATE).metadata.value.runtime_selection.model.route.model == "first-model"
         assert b.require(LOOP_STATE).metadata.value.runtime_selection.model.route.model == "second-model"

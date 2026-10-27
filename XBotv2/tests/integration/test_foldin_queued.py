@@ -643,7 +643,12 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
         {"command": "emit output", "background": True},
     )
     job_id = started.output.parts[0].text.removeprefix("Started ")
-    await jobs.wait([job_id], timeout=1)
+    empty_started = await invoke_tool_function(tools["shell"],
+        {"command": "emit empty", "background": True},
+    )
+    empty_id = empty_started.output.parts[0].text.removeprefix("Started ")
+    waited = await jobs.wait([job_id, empty_id], mode="all", timeout=1)
+    assert waited.reason == "ready" and not waited.pending
     job = jobs.get_or_none(job_id)
     assert job is not None and job.result is not None
     assert job.result.output_ref.kind.value == "tool_results"
@@ -670,11 +675,6 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
         "truncated": False,
     }
 
-    empty_started = await invoke_tool_function(tools["shell"],
-        {"command": "emit empty", "background": True},
-    )
-    empty_id = empty_started.output.parts[0].text.removeprefix("Started ")
-    await jobs.wait([empty_id], timeout=1)
     empty_page = await invoke_tool_function(tools["read_shell"], {"id": empty_id})
     assert isinstance(empty_page, ToolSucceeded)
     assert json.loads(empty_page.output.parts[0].text) == {

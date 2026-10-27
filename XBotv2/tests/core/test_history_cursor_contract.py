@@ -21,7 +21,7 @@ def test_cursor_is_typed_in_domain_but_remains_a_string_on_the_wire():
     page = HistoryPage(items=("message",), older_cursor=cursor)
     adapter = TypeAdapter(HistoryPage[str])
     wire = adapter.dump_python(page, mode="json")
-    assert wire == {"items": ["message"], "older_cursor": str(cursor)}
+    assert wire == {"items": ["message"], "older_cursor": str(cursor), "newer_cursor": None}
     assert adapter.validate_python(wire) == page
 
 

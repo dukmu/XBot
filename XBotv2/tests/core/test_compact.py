@@ -326,7 +326,7 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
         await _run_turn(engine_of(application), "Remember decision Y")
         history_before = tuple(engine_of(application).messages)
         durable_before = await _surface(application)
-        application.compact.model.provider.astream = blocked_summary
+        provider.astream = blocked_summary
 
         command = asyncio.create_task(application.serial(
             EXECUTE_COMMAND.name,
@@ -480,9 +480,8 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
             lambda event: runtime_events.append(event.event),
         )
         await _run_turn(engine_of(application), "Earlier work " + "x" * 100)
-        bound_provider = application.compact.model.provider
-        original_astream = bound_provider.astream
-        bound_provider.astream = wait_on_summary
+        original_astream = provider.astream
+        provider.astream = wait_on_summary
 
         observed_events = []
 
@@ -602,8 +601,7 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
         await _run_turn(engine_of(application), "Old context " + "x" * 150)
         await _run_turn(engine_of(application), "New context " + "y" * 150)
 
-        bound_provider = application.compact.model.provider
-        original_astream = bound_provider.astream
+        original_astream = provider.astream
 
         async def wait_on_automatic_summary(request):
             if not request.tools:
@@ -612,7 +610,7 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
             async for event in original_astream(request):
                 yield event
 
-        bound_provider.astream = wait_on_automatic_summary
+        provider.astream = wait_on_automatic_summary
         turn = asyncio.create_task(_run_turn(
             engine_of(application), "Cancel during automatic compaction"
         ))
