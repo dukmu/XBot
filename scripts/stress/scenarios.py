@@ -9,6 +9,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -62,13 +63,13 @@ async def _collect_events(
     ) as stream:
         async for event in stream:
             events.append(event)
-            if event.type in {"turn_finished", "turn_cancelled"}:
+            if event.kind == "turn_ended":
                 terminal_events += 1
                 if terminal_events >= terminal_count:
                     return events
             elif (
-                event.type == "error"
-                and event.data.get("code") == "turn_failed"
+                event.kind == "error"
+                and event.payload.get("code") == "turn_failed"
             ):
                 return events
     return events
@@ -104,7 +105,7 @@ async def _submit_and_collect(
 
 
 def _record_events(report: ScenarioReport, events: list[ServerEvent]) -> Counter[str]:
-    counts: Counter[str] = Counter(event.type for event in events)
+    counts: Counter[str] = Counter(event.kind for event in events)
     for event_type, amount in counts.items():
         report.count(f"event.{event_type}", amount)
     return counts
@@ -118,11 +119,11 @@ def _check_turn_events(report: ScenarioReport, events: list[ServerEvent]) -> Non
         not sequences
         or sequences == list(range(sequences[0], sequences[0] + len(sequences)))
     )
-    request_ids = {event.request_id for event in events if event.request_id}
-    report.invariants["turn_request_id_stable"] = len(request_ids) <= 1
-    terminal_types = ("turn_finished", "turn_cancelled")
+    request_ids = {event.scope.turn_id for event in events if event.scope.kind == "turn"}
+    report.invariants["turn_scope_stable"] = len(request_ids) <= 1
+    terminal_types = ("turn_ended",)
     turn_failed = any(
-        event.type == "error" and event.data.get("code") == "turn_failed"
+        event.kind == "error" and event.payload.get("code") == "turn_failed"
         for event in events
     )
     report.invariants["turn_has_turn_started"] = counts["turn_started"] >= 1
@@ -137,7 +138,7 @@ def _check_turn_events(report: ScenarioReport, events: list[ServerEvent]) -> Non
         if not report.invariants["turn_has_turn_started"]:
             missing.append("turn_started")
         if not report.invariants["turn_has_terminal"]:
-            missing.append("turn_finished|turn_cancelled|error(code=turn_failed)")
+            missing.append("turn_ended|error(code=turn_failed)")
         report.errors.append(
             "turn stream missing required event: " + ", ".join(missing)
         )
@@ -161,9 +162,9 @@ async def _send_turn(
         events = await _submit_and_collect(
             client,
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             prompt,
-            after=opened.event_cursor,
+            after=opened.data.event_cursor,
             timeout=client._timeout,
             request_id=request_id,
         )
@@ -193,17 +194,17 @@ async def run_lifecycle(client: XBotClient, config: StressConfig) -> ScenarioRep
         )
         await client.list_sessions()
         await client.list_threads(session_id)
-        await client.list_messages(session_id, opened.thread_id, limit=20)
-        await client.list_trajectory(session_id, opened.thread_id, limit=20)
+        await client.list_messages(session_id, opened.data.key.thread_id, limit=20)
+        await client.list_trajectory(session_id, opened.data.key.thread_id, limit=20)
         report.add_sample("lifecycle", started)
         report.count("sessions_opened")
-        report.invariants["session_id_stable"] = opened.session_id == session_id
+        report.invariants["session_id_stable"] = opened.data.key.session_id == session_id
         resumed = await client.open_session(
             session_id=session_id,
-            thread_id=opened.thread_id,
+            thread_id=opened.data.key.thread_id,
             mode="resume",
         )
-        report.invariants["resume_identity_stable"] = resumed.session_id == session_id
+        report.invariants["resume_identity_stable"] = resumed.data.key.session_id == session_id
     except Exception as exc:  # noqa: BLE001
         report.add_sample("lifecycle", started, ok=False, error=str(exc))
     finally:
@@ -228,8 +229,8 @@ async def run_streaming(client: XBotClient, config: StressConfig) -> ScenarioRep
                 for turn in range(config.turns):
                     await _send_turn(
                         client,
-                        opened.session_id,
-                        opened.thread_id,
+                        opened.data.key.session_id,
+                        opened.data.key.thread_id,
                         f"stress worker {worker_id} turn {turn}",
                         report,
                     )
@@ -254,11 +255,11 @@ async def run_replay(client: XBotClient, config: StressConfig) -> ScenarioReport
             thread_id="main",
             mode="new",
         )
-        cursor = opened.event_cursor
+        cursor = opened.data.event_cursor
         first_events = await _submit_and_collect(
             client,
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "replay one",
             after=cursor,
             timeout=config.timeout,
@@ -273,7 +274,7 @@ async def run_replay(client: XBotClient, config: StressConfig) -> ScenarioReport
         second_events = await _submit_and_collect(
             client,
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "replay two",
             after=cursor,
             timeout=config.timeout,
@@ -305,29 +306,29 @@ async def run_persistence(client: XBotClient, config: StressConfig) -> ScenarioR
             await _send_turn(
                 client,
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 f"persist turn {turn}",
                 report,
             )
-        messages = await client.list_messages(session_id, opened.thread_id, limit=500)
-        trajectory = await client.list_trajectory(session_id, opened.thread_id, limit=500)
-        report.count("messages_loaded", len(messages.messages))
-        report.count("trajectory_items_loaded", len(trajectory.items))
-        report.invariants["messages_nonempty"] = bool(messages.messages)
-        report.invariants["trajectory_nonempty"] = bool(trajectory.items)
+        messages = await client.list_messages(session_id, opened.data.key.thread_id, limit=500)
+        trajectory = await client.list_trajectory(session_id, opened.data.key.thread_id, limit=500)
+        report.count("messages_loaded", len(messages.items))
+        report.count("trajectory_items_loaded", len(trajectory.page.items))
+        report.invariants["messages_nonempty"] = bool(messages.items)
+        report.invariants["trajectory_nonempty"] = bool(trajectory.page.items)
         fork = await client.fork_session(session_id)
         forked_session = fork.session_id
         report.count("forks")
-        await client.undo_history(session_id, opened.thread_id, count=1)
+        await client.undo_history(session_id, opened.data.key.thread_id, count=1)
         report.count("undo_operations")
-        await client.clear_history(session_id, opened.thread_id)
+        await client.clear_history(session_id, opened.data.key.thread_id)
         report.count("clear_operations")
         resumed = await client.open_session(
             session_id=session_id,
-            thread_id=opened.thread_id,
+            thread_id=opened.data.key.thread_id,
             mode="resume",
         )
-        report.invariants["resume_after_mutation"] = resumed.session_id == session_id
+        report.invariants["resume_after_mutation"] = resumed.data.key.session_id == session_id
         report.invariants["mutation_completed"] = True
     except Exception as exc:  # noqa: BLE001
         report.errors.append(str(exc))
@@ -355,9 +356,9 @@ async def run_payload(client: XBotClient, config: StressConfig) -> ScenarioRepor
         events = await _submit_and_collect(
             client,
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             content,
-            after=opened.event_cursor,
+            after=opened.data.event_cursor,
             timeout=config.timeout,
             request_id=f"stress-{uuid.uuid4().hex}",
             attachments=[
@@ -369,10 +370,10 @@ async def run_payload(client: XBotClient, config: StressConfig) -> ScenarioRepor
             ],
         )
         _check_turn_events(report, events)
-        history = await client.list_messages(session_id, opened.thread_id, limit=500)
+        history = await client.list_messages(session_id, opened.data.key.thread_id, limit=500)
         report.count("input_chars", len(content))
         report.count("attachment_base64_chars", len(payload))
-        report.invariants["history_returned"] = bool(history.messages)
+        report.invariants["history_returned"] = bool(history.items)
         report.invariants["utf8_request_completed"] = not report.errors
     except Exception as exc:  # noqa: BLE001
         report.errors.append(str(exc))
@@ -392,12 +393,12 @@ async def run_delivery(client: XBotClient, config: StressConfig) -> ScenarioRepo
             thread_id="main",
             mode="new",
         )
-        cursor = opened.event_cursor
+        cursor = opened.data.event_cursor
         first_request = f"stress-{uuid.uuid4().hex}"
         second_request = f"stress-{uuid.uuid4().hex}"
         await client.send_message(
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "active turn",
             request_id=first_request,
             delivery="steer",
@@ -405,7 +406,7 @@ async def run_delivery(client: XBotClient, config: StressConfig) -> ScenarioRepo
         queued_started = time.perf_counter()
         await client.send_message(
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "queued turn",
             request_id=second_request,
             delivery="queue",
@@ -415,27 +416,25 @@ async def run_delivery(client: XBotClient, config: StressConfig) -> ScenarioRepo
             events = await _collect_events(
                 client,
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 after=cursor,
                 terminal_count=2,
             )
         counts = _record_events(report, events)
-        terminal_count = sum(
-            counts[event_type] for event_type in ("turn_finished", "turn_cancelled")
-        )
+        terminal_count = counts["turn_ended"]
         report.invariants["queue_request_completed"] = terminal_count >= 2
         report.invariants["both_requests_terminal"] = terminal_count >= 2
-        history = await client.list_messages(session_id, opened.thread_id, limit=500)
+        history = await client.list_messages(session_id, opened.data.key.thread_id, limit=500)
         user_contents = {
             message.content
-            for message in history.messages
-            if message.role == "user"
+            for message in history.items
+            if message.kind == "human_input"
         }
         report.invariants["both_inputs_persisted"] = {
             "active turn",
             "queued turn",
         }.issubset(user_contents)
-        pending = await client.list_pending_inputs(session_id, opened.thread_id)
+        pending = await client.list_pending_inputs(session_id, opened.data.key.thread_id)
         report.invariants["queue_endpoint_readable"] = isinstance(pending.items, list)
     except Exception as exc:  # noqa: BLE001
         report.errors.append(str(exc))
@@ -468,19 +467,19 @@ async def run_same_session_concurrency(
             thread_id="main",
             mode="new",
         )
-        cursor = opened.event_cursor
+        cursor = opened.data.event_cursor
         first_request = f"stress-{uuid.uuid4().hex}"
         second_request = f"stress-{uuid.uuid4().hex}"
         await client.send_message(
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "same session primary turn",
             request_id=first_request,
             delivery="steer",
         )
         await client.send_message(
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "same session concurrent input",
             request_id=second_request,
             delivery="queue",
@@ -489,15 +488,13 @@ async def run_same_session_concurrency(
             events = await _collect_events(
                 client,
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 after=cursor,
                 terminal_count=2,
             )
         counts = _record_events(report, events)
         sequences = [event.sequence for event in events if event.sequence > 0]
-        terminal_count = sum(
-            counts[event_type] for event_type in ("turn_finished", "turn_cancelled")
-        )
+        terminal_count = counts["turn_ended"]
         report.invariants["shared_sequence_strict"] = sequences == sorted(set(sequences))
         report.invariants["shared_sequence_contiguous"] = (
             not sequences
@@ -505,27 +502,27 @@ async def run_same_session_concurrency(
         )
         report.count("requests", 2)
         report.invariants["both_requests_terminal"] = terminal_count >= 2
-        history = await client.list_messages(session_id, opened.thread_id, limit=500)
+        history = await client.list_messages(session_id, opened.data.key.thread_id, limit=500)
         user_contents = {
             message.content
-            for message in history.messages
-            if message.role == "user"
+            for message in history.items
+            if message.kind == "human_input"
         }
         report.invariants["both_inputs_persisted"] = {
             "same session primary turn",
             "same session concurrent input",
         }.issubset(user_contents)
         turn_numbers = [
-            event.data.get("turn")
+            event.payload.get("turn")
             for event in events
-            if event.type == "turn_started"
+            if event.kind == "turn_started"
         ]
         report.invariants["turn_numbers_unique"] = len(turn_numbers) == len(
             set(turn_numbers)
         )
         report.invariants["shared_has_turn_started"] = counts["turn_started"] >= 1
-        report.invariants["shared_has_turn_finished"] = (
-            counts["turn_finished"] >= 1
+        report.invariants["shared_has_turn_ended"] = (
+            counts["turn_ended"] >= 1
         )
         report.invariants["shared_has_activity"] = bool(events)
     except Exception as exc:  # noqa: BLE001
@@ -571,14 +568,14 @@ async def run_multi_server(
             mode="resume",
         )
         opened_sessions = (opened, resumed)
-        cursors = tuple(item.event_cursor for item in opened_sessions)
+        cursors = tuple(item.data.event_cursor for item in opened_sessions)
         first_request = f"stress-{uuid.uuid4().hex}"
         second_request = f"stress-{uuid.uuid4().hex}"
         requests = [
             _submit_and_collect(
                 clients[0],
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 "multi server primary",
                 after=cursors[0],
                 timeout=config.timeout,
@@ -588,7 +585,7 @@ async def run_multi_server(
             _submit_and_collect(
                 clients[1],
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 "multi server secondary",
                 after=cursors[1],
                 timeout=config.timeout,
@@ -600,16 +597,16 @@ async def run_multi_server(
         for events in streams:
             _record_events(report, events)
         turns = [
-            event.data.get("turn")
+            event.payload.get("turn")
             for events in streams
             for event in events
-            if event.type == "turn_started"
+            if event.kind == "turn_started"
         ]
         report.count("servers", len(clients))
         report.count("requests", len(streams))
         report.invariants["both_requests_terminal"] = all(
             any(
-                event.type in {"turn_finished", "turn_cancelled"}
+                event.kind == "turn_ended"
                 for event in events
             )
             for events in streams
@@ -618,8 +615,8 @@ async def run_multi_server(
         history = await clients[0].list_messages(session_id, thread_id, limit=500)
         contents = {
             message.content
-            for message in history.messages
-            if message.role == "user"
+            for message in history.items
+            if message.kind == "human_input"
         }
         report.invariants["both_inputs_persisted"] = {
             "multi server primary",
@@ -647,17 +644,18 @@ async def run_tools(client: XBotClient, config: StressConfig) -> ScenarioReport:
         events = await _submit_and_collect(
             client,
             session_id,
-            opened.thread_id,
+            opened.data.key.thread_id,
             "stress tool call",
-            after=opened.event_cursor,
+            after=opened.data.event_cursor,
             timeout=config.timeout,
             request_id=f"stress-{uuid.uuid4().hex}",
         )
         counts = _record_events(report, events)
         report.invariants["tool_call_started"] = counts["tool_calls_started"] > 0
-        report.invariants["tool_result_received"] = counts["tool_result"] > 0
+        report.invariants["tool_result_received"] = counts["tool_completed"] > 0
         report.invariants["tool_result_success"] = any(
-            event.type == "tool_result" and event.data.get("status") == "success"
+            event.kind == "tool_completed"
+            and event.payload["outcome"]["kind"] == "succeeded"
             for event in events
         )
         if not report.invariants["tool_call_started"]:
@@ -724,7 +722,7 @@ async def run_stream_failure(
         if config.failure_mode == "provider":
             await client.send_message(
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 "stress injected stream failure",
                 request_id=first_request,
             )
@@ -732,14 +730,14 @@ async def run_stream_failure(
                 first_events = await _collect_events(
                     client,
                     session_id,
-                    opened.thread_id,
-                    after=opened.event_cursor,
+                    opened.data.key.thread_id,
+                    after=opened.data.event_cursor,
                 )
         else:
             try:
                 await client.send_message(
                     session_id,
-                    opened.thread_id,
+                    opened.data.key.thread_id,
                     "stress injected stream failure",
                     request_id=first_request,
                 )
@@ -747,8 +745,8 @@ async def run_stream_failure(
                     first_events = await _collect_events(
                         client,
                         session_id,
-                        opened.thread_id,
-                        after=opened.event_cursor,
+                        opened.data.key.thread_id,
+                        after=opened.data.event_cursor,
                     )
             except (httpx.HTTPError, ConnectionError) as exc:
                 first_error = f"{type(exc).__name__}: {exc}"
@@ -764,9 +762,9 @@ async def run_stream_failure(
             },
         )
         provider_error_codes = {
-            str(event.data.get("code"))
+            str(event.payload.get("code"))
             for event in first_events
-            if event.type == "error"
+            if event.kind == "error"
         }
         if config.failure_mode == "provider":
             allowed_error_codes = {"engine_error", "turn_failed"}
@@ -824,9 +822,9 @@ async def run_stream_failure(
             recovery_events = await _submit_and_collect(
                 client,
                 session_id,
-                recovery_opened.thread_id,
+                recovery_opened.data.key.thread_id,
                 "stress recovery turn after stream failure",
-                after=recovery_opened.event_cursor,
+                after=recovery_opened.data.event_cursor,
                 timeout=config.timeout,
                 request_id=f"stress-{uuid.uuid4().hex}",
             )
@@ -842,7 +840,7 @@ async def run_stream_failure(
         _check_turn_events(report, recovery_events)
         report.invariants["followup_input_usable"] = bool(
             any(
-                event.type in {"turn_finished", "turn_cancelled"}
+                event.kind == "turn_ended"
                 for event in recovery_events
             )
         )
@@ -879,13 +877,13 @@ async def run_long_history(
             session_id=session_id, thread_id=thread_id, mode="new"
         )
 
-        cursor = opened.event_cursor
+        cursor = opened.data.event_cursor
         for turn in range(config.history_turns):
             before = time.perf_counter()
             events = await _submit_and_collect(
                 client,
                 session_id,
-                opened.thread_id,
+                opened.data.key.thread_id,
                 f"long history turn {turn} / {config.history_turns}",
                 after=cursor,
                 timeout=config.timeout,
@@ -902,8 +900,8 @@ async def run_long_history(
                 before,
                 metadata={
                     "turn": turn + 1,
-                    "history_messages": len(history.messages),
-                    "history_chars": sum(len(item.content) for item in history.messages),
+                    "history_messages": len(history.items),
+                    "history_chars": sum(len(item.content) for item in history.items if item.kind in {"human_input", "assistant", "runtime_notice"}),
                     "events": len(events),
                     "elapsed_ms_exact": round(elapsed * 1000, 3),
                 },
@@ -912,13 +910,13 @@ async def run_long_history(
         trajectory = await client.list_trajectory(session_id, thread_id, limit=500)
         threads = await client.list_threads(session_id)
         report.count("turns", config.history_turns)
-        report.count("messages", len(messages.messages))
-        report.count("trajectory_items", len(trajectory.items))
+        report.count("messages", len(messages.items))
+        report.count("trajectory_items", len(trajectory.page.items))
         report.count("authoritative_events", len(shared_events))
-        report.invariants["history_grew"] = len(messages.messages) >= config.history_turns * 2
-        report.invariants["trajectory_grew"] = len(trajectory.items) >= config.history_turns
+        report.invariants["history_grew"] = len(messages.items) >= config.history_turns * 2
+        report.invariants["trajectory_grew"] = len(trajectory.page.items) >= config.history_turns
         report.invariants["api_event_stream_complete"] = (
-            sum(item.type == "turn_finished" for item in shared_events)
+            sum(item.kind == "turn_ended" for item in shared_events)
             >= config.history_turns
         )
         current = next((item for item in threads.threads if item.thread_id == thread_id), None)
@@ -1012,12 +1010,6 @@ async def run_server_scenarios(
     multi_clients: list[XBotClient] | None = None,
 ) -> list[ScenarioReport]:
     requested = {value.strip() for value in config.scenario.split(",") if value.strip()}
-    if "all" in requested:
-        requested = {
-            "lifecycle", "streaming", "replay", "persistence",
-            "payload", "delivery", "same_session", "multi_server", "errors",
-            "tools",
-        }
     runners: dict[str, Callable[[XBotClient, StressConfig], Awaitable[ScenarioReport]]] = {
         "lifecycle": run_lifecycle,
         "streaming": run_streaming,
@@ -1032,13 +1024,15 @@ async def run_server_scenarios(
             current, current_config, live_sse=live_sse
         ),
         "incomplete": lambda current, current_config: run_stream_failure(
-            current, current_config, live_sse=live_sse
+            current, replace(current_config, failure_mode="http_truncate"), live_sse=live_sse
         ),
         "long_history": lambda current, current_config: run_long_history(
             current, current_config, live_sse=live_sse
         ),
         "llama_cpp": run_llama_cpp,
     }
+    if "all" in requested:
+        requested = set(runners) | {"multi_server"}
     reports: list[ScenarioReport] = []
     event_stream_scenarios = {
         "streaming",

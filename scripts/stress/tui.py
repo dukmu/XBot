@@ -159,7 +159,7 @@ async def run_tui(config: StressConfig) -> ScenarioReport:
                     probe_session_id, "main", limit=500
                 )
                 user_content = {
-                    item.content for item in history.messages if item.role == "user"
+                    item.content for item in history.items if item.kind == "human_input"
                 }
                 threads = await probe.list_threads(probe_session_id)
                 thread = next(
@@ -183,7 +183,7 @@ async def run_tui(config: StressConfig) -> ScenarioReport:
                     probe_session_id, "main", limit=500
                 )
                 user_content = {
-                    item.content for item in history.messages if item.role == "user"
+                    item.content for item in history.items if item.kind == "human_input"
                 }
                 report.invariants["tui_long_history_input_visible"] = (
                     f"stress tui long history {config.history_turns - 1}" in user_content

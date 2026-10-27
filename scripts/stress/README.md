@@ -1,7 +1,9 @@
 # XBot stress runner
 
 With no server URL, the runner automatically starts an isolated real HTTP
-server backed by MockLLM:
+XBot server and an independently listening loopback OpenAI-compatible MockLLM.
+Model requests use the configured production OpenAI adapter, including its
+HTTP/SSE parser, tool schema serialization, reasoning and usage conversion:
 
 ```sh
 PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
@@ -9,7 +11,7 @@ PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
 ```
 
 Run the deterministic application probes against an isolated MockLLM with
-explicit in-process modes:
+an explicit in-process XBot transport:
 
 ```sh
 PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
@@ -17,10 +19,12 @@ PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
   --mock-tools --concurrency 4 --turns 10 --report /tmp/xbot-stress.json
 ```
 
-`ASGITransport` is useful for application throughput, but it buffers an
-unbounded GET `/events` stream. Therefore the replay scenario is explicitly
-skipped in `--in-process` mode. Exercise cursor replay and reconnect against a
-real HTTP server, or let the runner bind a disposable local socket:
+`--in-process` uses `ASGITransport` only between the client and XBot; the
+provider still listens on a real TCP socket. `ASGITransport` buffers an
+unbounded GET `/events` stream, so every scenario requiring that stream is
+explicitly skipped in this mode. It does not verify SSE, replay or reconnect.
+Exercise these paths against a real HTTP server, or let the runner bind a
+disposable local socket for XBot as well:
 
 ```sh
 PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
@@ -68,7 +72,9 @@ probe.
 Server scenarios are `lifecycle`, `streaming`, `replay`, `persistence`,
 `payload`, `delivery`, `same_session`, `multi_server`, `tools`, `errors`,
 `stream_failure`, `incomplete`, `long_history`, and `llama_cpp`;
-`--scenario all` runs each one. `same_session` verifies that concurrent
+`--scenario all` runs every registered scenario, including probes that need
+external setup or a particular fault harness. Failures remain failures; use
+explicit selections for a focused run. `same_session` verifies that concurrent
 requests entering one process share one turn driver and use the declared
 steer/queue policy. It verifies that each POST message submission returns 202
 and that the sole GET `/events` stream retains the complete lifecycle, cursor
@@ -88,13 +94,42 @@ WebUI and TUI probes are separate layers because they require a running
 HTTP/Web server and a usable terminal respectively.
 
 The failure probes are one-shot and self-recovering. `stream_failure` injects
-a provider exception after a partial MockLLM delta; `incomplete` truncates the
+a real provider HTTP stream disconnect after a partial reasoning delta;
+`incomplete` truncates the
 first real TCP GET `/events` event stream after one non-empty body frame. Both
 send a recovery turn and query public thread status, so a timeout or a
 `running` turn is a failure.
 Use `--failure-mode provider` or `--failure-mode http_truncate` for
 `stream_failure`; `incomplete` always uses the latter and requires live HTTP.
 Web/TUI layers receive the same inputs when these scenarios are selected.
+Run each fault mode in its own invocation so its one-shot injection is not
+consumed by another probe:
+
+```sh
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
+  --scenario streaming,replay,tools --mock-tools --turns 2 --concurrency 1
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress \
+  --scenario stream_failure --failure-mode provider
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress --scenario incomplete
+```
+
+The network mock generates responses on demand. Tool responses are selected
+from the current request's last message, so concurrent conversations do not
+share a preallocated response sequence. It sends separate text, reasoning,
+tool argument and usage frames, with configurable delay and deterministic
+jitter. Its infrastructure regression tests also exercise one-shot HTTP 503,
+malformed JSON/UTF-8 and request timeout faults through the production adapter:
+
+```sh
+PYTHONPATH=XBotv2 .venv/bin/python -m pytest \
+  XBotv2/tests/integration/test_stress_harness.py -q
+```
+
+This focused network verification does not establish that the whole product
+stress matrix passes. The existing `lifecycle` probe currently exposes fresh
+empty-thread trajectory reads returning 404 and empty-session deletion raising
+`FileNotFoundError`; the runner retains those failures for the owning production
+boundaries to fix.
 
 `long_history` appends `--history-turns` turns, records per-append latency with
 history size, captures the authoritative API event stream, and drives the same
