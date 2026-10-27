@@ -166,10 +166,6 @@ Protocol (Python):
 - large history: page a 10k-node conversation backwards and confirm bounded
   page sizes, cursor validity, and revision-invalidation behaviour;
 - trajectory paging parity with history paging;
-- `tests/bench/test_history_paging_stress.py`: paging a 5 000-record trajectory
-  backwards must visit every position exactly once in 25 bounded pages, and the
-  positional-anchor walk must find exactly what the cursor walk finds, under a
-  total-time ceiling that catches per-page work scaling with history length;
 - event-stream throughput and replay/reconnect with cursor expiry;
 - a memory and per-page-time ceiling assertion (bounded, not "informational").
 
