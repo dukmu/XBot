@@ -364,3 +364,16 @@
 - [x] 删除launcher历史child ID集合，插件关闭从Sessions现有live scopes派生；resolve用thread_summary，默认wait用一次live scopes快照同步筛选，不扫描全部历史或在筛选期间await改变切点。仅原HTTP默认等待单项通过，`/tmp/xbot-default-child-wait.log`，1 passed/5.30s、handle59790 actual exit0。主代理已读这些实际调用和SQL/规范事实边界，提交前一次git diff --check通过；未生成新hash快照或重新运行旧套件。
 - [x] 本轮持久业务事实/投影归agentloop，child协作归subagents，通用准入归session，persistence未加入业务逻辑；没有新WaitService/runner框架。各代理明确全部测试句柄退出并停止编辑。后续仍需指定产品工况、真正供应商及最终安装产物验收，不用本轮局部证据替代完整goal；已有projection升级/旧格式保留未新增自动兼容路径。
 - [x] 本轮精确被评估开发提交`dd76884cde21ea683800b44a8e4604d506976ab2`：33个任务文件，已结合实际owner实现和上述定向证据审查；最终SQL索引/冗余预检/通用spec清退等减法未重复运行旧组合。后续仅更新日志不重验代码。整体goal保持active，下一段继续可选team/共享板与剩余集合、媒体/provider/配置、TUI及最终产品工况，不重定义为本轮已做的范围。
+
+### 迭代 10：可选 team 与共享板（实施中）
+
+- [x] 从日志提交f4861758/生产dd76884c继续，整体goal仍active。只委派GPT-6.1 Terra：team代理负责成员/共享板/HTTP/标准工具；执行owner代理补工具发布所需的canonical assistant消息与call关联。主代理负责边界审查、日志和集成，不重复上一轮测试、wheel、压测或hash。
+- [x] team按session拥有成员和板正文；latest/get/after按既定顺序与固定持久切点迭代，不设隐性总条数上限。正文与成员投影由team拥有，backend仍只负责物理流/SQL/引用。
+- [x] 发布先提交板正文再逐目标投递同一范围引用；同发布ID重试幂等、冲突明确、逐目标报告接受或失败。使用既有inbox和权限路径，不增加自动补投服务或全局outbox。禁用插件后的历史引用、恢复和fork由必要定向验证确认。
+- [x] 仅运行本轮实际改动的必要组合；记录真实退出码和未覆盖范围。遵循用户最新约束：不重复验证，不过度设计，不过度校验，不过度hash；仅Terra代理。
+- [x] 执行owner公开隐式ToolInvocation，engine传已持久化assistant消息ID，provider call ID保持原值；不改ToolCall协议，不绕标准registry/guard。新增单项pytest输出1 passed/2.84s（`/tmp/xbot-tool-invocation.log`）。最终句柄73137已结束，但退出码观察丢失；此前两次fixture许可失败日志被同路径覆盖，不能补作历史证据，也不为此重新测试。team组合另实际覆盖相同执行链。
+- [x] session owner在实际open_session入口保留`__`前缀，避免对话线程与非对话物理流占用同一ID；未改backend或加入team硬编码。新增单项1 passed/2.21s、handle90212 actual exit0（`/tmp/xbot-reserved-thread-ids.log`），拒绝发生在持久化之前，普通ID可正常打开；不重复旧组合。
+- [x] team首次组合的fixture缺口已修正：显式Mock所有线程并禁用caption，避免自投递唤醒默认provider、消耗预设回复。Terra报告2项组合5.11s/handle53242 exit0、默认禁用单项1.88s/handle50054 exit0；包含606条读取、发布中固定cut、顺序/缺失ID、HTTP 400/404/409、部分投递补试、fork删源及不挂team的新root冷读。首轮2项失败/handle79547与中间41651/80345/52479均已终止，但这些输出只保留在子代理工具会话、未保存磁盘日志；不补造日志、不为证据归档重跑。
+- [x] 主代理审查补出Agent重试入口缺口：新的模型调用身份不能用来重试旧发布。新增标准team_retry/typed retry，按原消息ID恢复原mentions，复用投递身份和同一正文ref，不新增板消息、不要求模型重传正文。仅修改并重验受影响节点，1 passed/4.07s、handle67570 actual exit0，日志`/tmp/xbot-team-retry.log`；主代理已读实际日志、最终投递/存储/工具/HTTP/禁用路径。原另外两项不重复。
+- [x] 工具身份与session边界分别独立提交389b984d、b63780be；team保持api/impl/doc/tests布局、默认关闭，元数据/schema/投影及逐目标投递都在team owner，persistence无新增业务。未引入额外cache/outbox/执行器/依赖。真实外部provider、慢客户端与最终安装产物等仍属整体待办，本轮结果不替代它们，goal保持active。
+- [x] 本轮精确被评估开发提交`52175e963a1d6e4c2dc9732156554fab4d09c4dd`，含工具身份/session内部ID边界/team三项责任提交。最终暂存检查通过，无生成产物或用户无关文件；之后仅追加本日志，不重复验证。下一切片继续目录/连接缓存清退、媒体/provider/权限配置与剩余产品验收，完整goal不缩为本轮team范围。
