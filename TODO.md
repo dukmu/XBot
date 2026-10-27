@@ -268,3 +268,10 @@
 - [x] 验收脚本单独提交`d8cb056`；本段精确最终实现提交`70fb6ded9925910b5daab3deb28de09d7459d74b`，提交前后572条生产/资源/脚本指纹未变（`/tmp/xbot-storage-root-evaluated.json`）。用户设计稿和.worktrees未加入；此后仅本日志可追加，下一段代码变更须重新验证其影响。
 - [x] 从70fb6de干净git archive构建两wheel，独立新uv环境`/tmp/xbot-storage-installed`离线安装；清单`/tmp/xbot-storage-wheel-manifest.json`核对XBot520/XCore20项，新backend及session/agentloop repository API、默认YAML、py.typed、owner文档、skill实际入包；旧persistence/store/archive/client_http及application/factory、tests/Web/生成bundle未入包。仓库外移除PYTHONPATH后实际导入来自该env的site-packages，旧模块find_spec为None；没有新增项目依赖。
 - [x] 最终安装CLI实跑退出0：`/tmp/xbot-storage-wheel-cli/report.json`，进程732076/732155、4次本地provider HTTP请求、重启4条/续跑8条、30B附件；安装版活跃SSE验收退出0：`/tmp/xbot-storage-wheel-sse/report.json`，确认流仍活后SIGTERM约0.160s、exit=-15、锁可重取，两份运行日志末尾均application.destroyed。此产物仅对应70fb6de，不冒充外部provider或后续存储切片验收。第3批整体及goal继续active。
+
+### 迭代 5：活跃 todo 与 SQLite I/O（实施中）
+
+- [x] 70fb6de的独立安装验收结束后启动两个6.1 Terra，未与Sol混跑：一位实施todo active/completed分离，一位针对实际25.6倍进程写入记账评估最小有界连接复用。第一段证据保留在原实现点，不能把旧green应用于本轮新改动；主代理继续维护TODO、边界审查与独立整合。
+- [ ] todo运行驻留只含未完成任务及必要摘要，完成全文保存在自有SQL表按ID/明确分页读取；max_tasks只计未完成，500+完成项不触发隐含总量上限。GET_TODOS/TaskChanged明确active视图和completed_count，必要TUI状态消费只做相应最小调整，不在此批扩整体布局。
+- [ ] SQLite保持唯一worker和真实短事务、预算/背压、取消排空及后端边界；以小样本确认连接/WAL开销，只有有界且能正确关闭/删除/fork/发布/重建的复用才保留，不增加无界session连接字典、不减少fsync以改善数字。当前未有本轮最终验证。
+- [ ] 随后的流式shell/artifact、固定范围物化/pin、归档/事件缓存字节预算、workspace大集合和指定产品压测继续待办；以上两项完成也不勾选整个第3批或整个goal。
