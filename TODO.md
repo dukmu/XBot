@@ -168,6 +168,11 @@
 ### 迭代 2：插件 layout 与运行关系
 
 - [x] 用户再次强调插件 layout，当前将其作为明确实施项。目录按实际职责建立，不添加空模板或只做文件搬移；跨插件从 owner/api 导入，api 不承载初始化/路由实现，不保留旧根转出口作为兼容层。
-- [ ] 第一组由一个 Terra 实施 usage/token_manager/todolist：实际声明与业务实现分离、插件内测试和文档、loader 正规 impl/plugin 发现，以及测试发现/打包约定。其他 owner 尚未迁移，不将局部布局写成整仓完成。
+- [x] 第一组由一个 Terra 实施 usage/token_manager/todolist，提交 `a8867bf`：实际声明与业务实现分离、插件内测试和文档、loader 正规 impl/plugin 发现，以及通用测试发现/打包约定。删除三者旧根模块与转出口；usage 的 USAGE 类型化引用已被真实消费者使用；todo 的图验证属于规范模型，参数解析/路由属于 impl，未新增同义服务。公开API/三插件/loader/config 聚焦75项通过，两个HTTP恢复/状态场景通过；主代理实际console重启验收 `/tmp/xbot-refactor-layout-acceptance/report.json` 通过。
+- [x] `a8867bf` 独立安装核验：从该提交干净archive构建两包（`/tmp/xbot-refactor-layout-first-wheels/`），XCore的api模块及类型标记实际入包，XBot的三插件README/doc/impl实际入包，无旧根模块、插件tests及Web；独立安装后真实console重启恢复通过（`/tmp/xbot-refactor-layout-first-installed/report.json`，4个provider请求、4→8条历史、附件30字节）。此证据只对应这个提交。
+- [x] 第一组布局检查事实：架构检查27项、契约审计57项尚未迁移违规，均退出非零，不用聚焦绿测替代；主代理实际输出 `/tmp/xbot-refactor-layout-architecture.txt`、`/tmp/xbot-refactor-layout-contracts-final.tsv`。审计按实际api目录识别边界和Protocol，不为每插件硬编码特例；tests不计为生产跨插件导入。
+- [x] 第二组由一个 Terra 实施 goal/content_cache/caption/prompts/workspace_instructions，提交 `4f21fba`。GoalChanged与状态模型分开，prompts用实际PROMPTS引用；workspace_instructions没有公共契约，因此未创建空api。各owner的旧根模块/转出口已删除，专有测试/文档迁入owner，开发skill中的旧详情改为指向owner文档的导航，减少重复维护。
+- [x] `4f21fba` 验证：五owner及loader/startup/TUI协议状态聚焦272 passed（`/tmp/xbot-five-pytest-final.log`）；Goal HTTP 9 passed（`/tmp/xbot-five-http-goal.log`）；Goal TUI专测1 passed（`/tmp/xbot-five-tui-goal.log`）；TUI收集938项（仅收集，`/tmp/xbot-five-tui-collect.log`）。包含整个test_view_entries的大合跑后段未完成，由子代理终止（`/tmp/xbot-five-pytest-rerun.log`），不计通过也不据此推断新缺陷。
+- [ ] 基础契约组由唯一 Sol 实施 core/agentloop/context_builder 的api/impl与全仓消费路径；实际LoopState/工作集/metadata状态构造归impl，规范数据及最小消费者契约归api，统一XCore事件调用契约。物理filesystem所有权留给存储批次，不通过API转出口伪装实现已分离。
 - [ ] 按同一约定完成其余插件、core 与 XCore 的公开入口消费，处理 LoopState 等混在 contracts 的实际实现，更新架构/导入检查及内置开发指南。
 - [ ] 在作用域/契约稳定后完成 loader/session/thread 单进程根接入，退出 application/host/factory 旧层；保留标准执行路径与必要行为验收。
