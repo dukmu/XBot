@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from XBotv2.usage.api.service import USAGE
+
 from dataclasses import dataclass
 
 from xcore import Context
@@ -70,7 +72,7 @@ async def mounted_application(context: Context) -> MountedAgentApplication:
                 if context.has("thread_persistence")
                 else _TranscriptPages(context.loop_state.history)
             ),
-            usage=context.require("usage"),
+            usage=context.require(USAGE),
             loop_state=context.require("loop_state"),
             parent_permissions=context.require("permissions"),
             persistence_available=context.has("thread_persistence"),

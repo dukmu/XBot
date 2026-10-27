@@ -29,7 +29,7 @@ APPLICATION_CONFIG = PACKAGE / "application_config"
 SESSION_PLUGIN = PACKAGE / "session" / "plugin.py"
 SESSION_ENTITY = PACKAGE / "session" / "session.py"
 PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
-USAGE_PLUGIN = PACKAGE / "usage" / "plugin.py"
+USAGE_PLUGIN = PACKAGE / "usage" / "impl" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
 AGENT_OPERATIONS = PACKAGE / "agents" / "plugin.py"
@@ -267,9 +267,9 @@ def _plugin_source(module: str) -> Path | None:
     if path is None:
         return None
     if path.name == "__init__.py":
-        plugin_path = path.parent / "plugin.py"
-        if plugin_path.is_file():
-            return plugin_path
+        for plugin_path in (path.parent / "impl" / "plugin.py", path.parent / "plugin.py"):
+            if plugin_path.is_file():
+                return plugin_path
     return path
 
 
@@ -851,7 +851,7 @@ def check_inbox() -> list[Violation]:
             "the inbox must live inside XBotv2/agentloop",
         ))
     for path in PACKAGE.rglob("*.py"):
-        if "__pycache__" in path.parts:
+        if "__pycache__" in path.parts or "tests" in path.relative_to(PACKAGE).parts:
             continue
         for node in ast.walk(_tree(path)):
             if isinstance(node, ast.Import):
@@ -998,6 +998,11 @@ def _public_import_violation(
         )
     if imported not in plugin_roots:
         return None
+    if (PACKAGE / imported / "api").is_dir() and (PACKAGE / imported / "impl" / "plugin.py").is_file():
+        if module.startswith(f"XBotv2.{imported}.api."):
+            return None
+        return Violation(path, node.lineno, "plugin-concrete-import",
+                         f"imports plugin implementation {module}")
     package_root = module == f"XBotv2.{imported}"
     if package_root:
         declaration_path = _module_path(module)
@@ -1041,7 +1046,7 @@ def check_plugin_imports() -> list[Violation]:
         if not root.is_dir():
             continue
         for path in sorted(root.rglob("*.py")):
-            if "__pycache__" in path.parts:
+            if "__pycache__" in path.parts or "tests" in path.relative_to(PACKAGE).parts:
                 continue
             parsed = _tree(path)
             for node in ast.walk(parsed):

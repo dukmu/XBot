@@ -3,16 +3,13 @@
 import pytest
 
 from XBotv2.core.messages import ToolMessage
-from XBotv2.todolist.contracts import (
+from XBotv2.todolist.api.models import (
     DependencyEdge,
     Task,
     TaskList,
     TaskValidationError,
-    parse_task_id,
-    parse_task_ids,
-    parse_task_status,
-    parse_task_text,
 )
+from XBotv2.todolist.impl.parsing import parse_task_id, parse_task_ids, parse_task_status, parse_task_text
 
 
 def test_task_list_allocates_stable_numeric_identity():
@@ -308,7 +305,8 @@ async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
 ):
     from XBotv2.application import RUNTIME_EVENT
     from XBotv2.core.operations import EmptyRequest, dispatch_operation
-    from XBotv2.todolist.contracts import GET_TODOS, TaskChanged
+    from XBotv2.todolist.api.service import GET_TODOS
+    from XBotv2.todolist.api.events import TaskChanged
 
     calls = [
         ("a", "task_create", {"subject": "Verify implementation"}),
@@ -364,7 +362,8 @@ async def test_dependency_revisions_are_atomic_and_survive_resume(
 ):
     from XBotv2.application import RUNTIME_EVENT
     from XBotv2.core.operations import EmptyRequest, dispatch_operation
-    from XBotv2.todolist.contracts import GET_TODOS, TaskChanged
+    from XBotv2.todolist.api.service import GET_TODOS
+    from XBotv2.todolist.api.events import TaskChanged
 
     calls = [
         ("a", "task_create", {"subject": "Prepare"}),
@@ -491,7 +490,8 @@ async def test_reminder_counter_and_snapshot_survive_close_and_resume(
     and serves the same list through the production operation."""
     from XBotv2.core.operations import EmptyRequest, dispatch_operation
     from XBotv2.core.messages import RuntimeNoticeMessage
-    from XBotv2.todolist.contracts import GET_TODOS, TaskList
+    from XBotv2.todolist.api.service import GET_TODOS
+    from XBotv2.todolist.api.models import TaskList
 
     config = {"reminder_after_turns": 2}
     application, _llm = await _start(
@@ -561,7 +561,8 @@ async def test_compaction_restates_unfinished_tasks_once(
     from XBotv2.application import RUNTIME_EVENT
     from XBotv2.core.operations import EmptyRequest, dispatch_operation
     from XBotv2.persistence.store import ThreadPersistence
-    from XBotv2.todolist.contracts import GET_TODOS, TaskList
+    from XBotv2.todolist.api.service import GET_TODOS
+    from XBotv2.todolist.api.models import TaskList
 
     application, llm = await _start(
         temp_data_dir, temp_workspace,
@@ -678,7 +679,7 @@ def test_dependency_ids_accept_integer_strings():
 def test_task_update_parameters_schema_accepts_integer_id_lists():
     """Schema validation must allow int-id arrays, not just strings."""
     from XBotv2.core.tools import tool_parameters_schema
-    from XBotv2.todolist.plugin import TaskService, _task_tool, TaskConfig
+    from XBotv2.todolist.impl.plugin import TaskService, _task_tool, TaskConfig
     from jsonschema import Draft202012Validator
 
     cfg = TaskConfig()

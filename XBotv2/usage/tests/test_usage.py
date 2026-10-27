@@ -19,7 +19,7 @@ from XBotv2.core.domain import (
     UsageDelta,
     UsageSnapshot,
 )
-from XBotv2.usage.plugin import UsageService
+from XBotv2.usage.impl.plugin import UsageService
 
 
 def _selection() -> ResolvedModelSelection:

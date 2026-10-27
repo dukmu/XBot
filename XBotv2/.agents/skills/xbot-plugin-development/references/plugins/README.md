@@ -12,8 +12,9 @@ Each page describes one XBot built-in plugin using a consistent format:
 - **cross-references** — depends-on / depended-by;
 - **pitfalls** — real-world mistakes observed in development.
 
-These are quick references, not a replacement for the package's public
-`__init__.py`, protocol models, or tests.
+These are navigation references. Migrated plugins own their documentation in
+`doc/` and public contracts in `api/`; their package roots have no exports.
+Follow each plugin's README for its current source and focused tests.
 
 For Textual/client behavior, dynamic commands, streaming, and typed client
 interactions, see the [client/runtime reference](../client-runtime.md).

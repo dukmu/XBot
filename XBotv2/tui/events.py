@@ -34,7 +34,7 @@ from XBotv2.compact.protocol import (
     CompactionFailed,
     CompactionStarted,
 )
-from XBotv2.usage import UsageUpdated
+from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.interactions.models import (
     ClientNotice,
     UserInputRequest,
@@ -43,7 +43,7 @@ from XBotv2.interactions.models import (
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobCompletedEvent, JobListResponse
 from XBotv2.goal.models import GoalChanged
-from XBotv2.todolist.contracts import TaskChanged
+from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.session.contracts import ThreadSummary
 from XBotv2.core.domain import Cursor
 from XBotv2.core.history import HistoryPage

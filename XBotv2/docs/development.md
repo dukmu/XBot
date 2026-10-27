@@ -16,7 +16,7 @@ internal path.
 Run focused tests first, then the appropriate core/integration suite:
 
 ```bash
-PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/core -q
+.venv/bin/pytest -q
 PYTHONPATH=XBotv2 .venv/bin/pytest XBotv2/tests/integration -q
 PYTHONPATH=XBotv2 .venv/bin/python scripts/check_architecture.py --scope all
 PYTHONPATH=XBotv2 .venv/bin/python scripts/audit_plugin_contracts.py --format tsv
@@ -24,12 +24,12 @@ git diff --check
 ```
 
 The architecture scripts are independent developer audits, not pytest tests.
-They parse source with AST and do not import application modules. The contract
-audit validates every explicit package-root `__all__` entry resolves, then
-classifies root imports separately from declaration-module imports; it does
-not claim that every exported name is desirable. Review the export list itself
-when changing a public facade, and keep declarations in `contracts.py`,
-`events.py`, or `protocol.py`. A green test suite does not prove interactive
+They parse source with AST and do not import application modules. Migrated
+plugins define public declarations in `api/`, keep implementation in `impl/`,
+and expose no package-root facade. The audits check cross-plugin imports
+against that boundary and report remaining legacy declarations separately.
+Focused tests live beside their plugin; the default pytest discovery includes
+them and the central integration/client suites. A green test suite does not prove interactive
 Web/TUI behavior, provider interoperability, socket permissions, or
 documentation accuracy.
 
@@ -90,8 +90,8 @@ command does not assert those behaviors or replace each plugin's own tests.
 
 When a public contract, route, tree entry, state owner, or security behavior
 changes, update the matching page and run a link/source-reference check. Keep
-the package-root export list and HTTP route table derived from the current
-source. The bundled `xbot-plugin-development` skill is maintained separately
+the API declarations and HTTP route table derived from the current source.
+The bundled `xbot-plugin-development` skill is maintained separately
 but must point to these documents and use the same ownership vocabulary.
 
 ## Before a commit

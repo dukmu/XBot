@@ -39,7 +39,7 @@ from XBotv2.core.parts import TextPart
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.session.events import MessagePublishedEvent
 from XBotv2.session.runtime import start_regenerate_turn
-from XBotv2.usage import UsageUpdated
+from XBotv2.usage.api.events import UsageUpdated
 
 
 @pytest_asyncio.fixture

@@ -11,6 +11,3 @@ class EstimatedContext(BaseModel):
     tokens: int = Field(ge=0)
     method: str = Field(min_length=1)
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-__all__ = ["EstimatedContext"]

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
 
-from xcore import Context
+from xcore.api.context import Context
 from xcore.state import StateService
 
 from XBotv2.agentloop import (
@@ -27,21 +27,18 @@ from XBotv2.core.domain import InboxTarget
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.server import contribute_router
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
-from XBotv2.todolist.contracts import (
-    GET_TODOS,
+from XBotv2.todolist.api.models import (
     DependencyEdge,
     Task,
-    TaskChanged,
     TaskConfig,
     TaskList,
     TaskStatusInput,
     TaskValidationError,
-    parse_task_id,
-    parse_task_ids,
-    parse_task_status,
-    parse_task_text,
 )
-from XBotv2.todolist.protocol import build_router
+from XBotv2.todolist.api.events import TaskChanged
+from XBotv2.todolist.api.service import GET_TODOS
+from XBotv2.todolist.impl.parsing import parse_task_id, parse_task_ids, parse_task_status, parse_task_text
+from XBotv2.todolist.impl.http import build_router
 
 _STALE_TURNS_KEY = "stale_turns"
 _COMPACT_OPERATION = "compact:"
@@ -588,5 +585,3 @@ class TodolistPlugin:
 
 
 plugin = TodolistPlugin()
-
-__all__ = ["TaskService", "TodolistPlugin"]

@@ -137,6 +137,7 @@ def plugin_config_json_schema(schema: Any) -> dict[str, Any]:
 
 def _import_plugin(name: str) -> Any:
     candidates = (
+        f"XBotv2.{name}.impl.plugin",
         f"XBotv2.{name}.plugin",
         f"{name}.plugin",
         f"XBotv2.{name}",

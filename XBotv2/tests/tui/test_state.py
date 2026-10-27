@@ -94,7 +94,7 @@ from XBotv2.session.records import (
     RuntimeNoticeRecord,
     ToolRecord,
 )
-from XBotv2.usage import UsageUpdated
+from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.session.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
 from XBotv2.session.protocol import OpenSessionResponse
 from XBotv2.tui.events import (

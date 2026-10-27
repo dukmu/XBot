@@ -36,7 +36,7 @@ from XBotv2.agentloop import Events
 from XBotv2.agentloop.events import StateChanged
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.usage import (
+from XBotv2.usage.api.service import (
     USAGE_COUNTERS_KEY,
     USAGE_STATE_NAMESPACE,
 )

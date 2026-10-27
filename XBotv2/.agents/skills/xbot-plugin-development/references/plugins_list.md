@@ -62,8 +62,10 @@ For the exact surface of one row, read the matching page under
 capability, not a license to import that plugin's implementation module.
 
 The row is intentionally a navigation aid, not a complete API contract. The
-detail pages identify the package-root contracts and the owning source file;
-the installed version's exports and tests remain authoritative.
+detail pages point to the owning source and documentation. Migrated plugins
+define contracts in `api/` and keep package roots empty; remaining legacy
+contracts are being migrated. The installed version's API and tests remain
+authoritative.
 
 ## Application-injected services
 

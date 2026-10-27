@@ -148,6 +148,8 @@ def classify(owner: str, module: str) -> str:
         return "allowed shared contract"
     if owner == "acp_plugin" and module == "XBotv2.application.acp":
         return "host composition exception"
+    if (PACKAGE / imported / "api").is_dir() and (PACKAGE / imported / "impl" / "plugin.py").is_file():
+        return "allowed plugin contract" if module.startswith(f"XBotv2.{imported}.api.") else "IMPLEMENTATION DEPENDENCY"
     if leaf in ALLOWED_DECLARATIONS:
         return "allowed plugin contract"
     if module == f"XBotv2.{imported}":
@@ -158,7 +160,7 @@ def classify(owner: str, module: str) -> str:
 def imports_for(package: Path, owner: str) -> list[ImportRecord]:
     records: dict[tuple[str, str, str], set[str]] = {}
     for path in sorted(package.rglob("*.py")):
-        if "__pycache__" in path.parts:
+        if "__pycache__" in path.parts or "tests" in path.relative_to(PACKAGE).parts:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -189,8 +191,11 @@ def _protocol_methods(node: ast.ClassDef) -> set[str]:
 def protocol_records(package: Path, owner: str) -> list[ProtocolRecord]:
     protocols: list[tuple[str, str, set[str]]] = []
     classes: list[tuple[str, str, set[str]]] = []
-    contract_path = package / "contracts.py"
-    if contract_path.is_file():
+    api = package / "api"
+    contract_paths = sorted(api.glob("*.py")) if api.is_dir() else [package / "contracts.py"]
+    for contract_path in contract_paths:
+        if not contract_path.is_file():
+            continue
         tree = ast.parse(
             contract_path.read_text(encoding="utf-8"),
             filename=str(contract_path),
@@ -207,9 +212,9 @@ def protocol_records(package: Path, owner: str) -> list[ProtocolRecord]:
             if "Protocol" in bases:
                 protocols.append((str(contract_path.relative_to(ROOT)), node.name, methods))
     for path in sorted(PACKAGE.rglob("*.py")):
-        if "__pycache__" in path.parts:
+        if "__pycache__" in path.parts or "tests" in path.relative_to(PACKAGE).parts:
             continue
-        if path.name == "contracts.py" or "tests" in path.parts:
+        if path.name == "contracts.py" or "api" in path.relative_to(PACKAGE).parts:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
@@ -234,7 +239,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--format", choices=("markdown", "tsv"), default="markdown")
     args = parser.parse_args()
-    packages = sorted(path.parent for path in PACKAGE.glob("*/plugin.py"))
+    packages = sorted({path.parent for path in PACKAGE.glob("*/plugin.py")} | {path.parent.parent for path in PACKAGE.glob("*/impl/plugin.py")})
     violations = 0
     if args.format == "markdown":
         print("# Plugin Contract AST Audit")

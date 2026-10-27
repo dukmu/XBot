@@ -12,7 +12,6 @@ def test_public_package_exports_are_resolvable_and_unique():
         "XBotv2.permissions",
         "XBotv2.protocol",
         "XBotv2.session",
-        "XBotv2.usage",
     )
     for package_name in packages:
         package = importlib.import_module(package_name)

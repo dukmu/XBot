@@ -1,6 +1,8 @@
 # Built-in plugins
 
-This page is only the navigation map. The complete contracts, dependencies,
+Migrated plugins place public contracts in `api/`, implementation and loader entry in `impl/`, documentation in `doc/`, and focused tests in `tests/`. Cross-plugin imports use the owning plugin’s `api` modules. Usage, token manager, and todolist follow this layout; other plugins are being migrated.
+
+This page is also the navigation map. The complete contracts, dependencies,
 effects, state ownership, client/server facets, and examples are maintained in
 the skill's [plugin index](../.agents/skills/xbot-plugin-development/references/plugins_list.md)
 and [per-plugin references](../.agents/skills/xbot-plugin-development/references/plugins/README.md).

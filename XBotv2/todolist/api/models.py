@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from XBotv2.core.operations import EmptyRequest, Operation
 
 TaskStatus = Literal["pending", "in_progress", "completed"]
 TaskStatusInput = TaskStatus
@@ -152,12 +151,6 @@ class TaskList(BaseModel):
         )
 
 
-class TaskChanged(BaseModel):
-    kind: Literal["task_changed"] = "task_changed"
-    snapshot: TaskList
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
 def _has_cycle(edges: Sequence[DependencyEdge]) -> bool:
     graph: dict[str, set[str]] = {}
     for edge in edges:
@@ -186,79 +179,3 @@ def _sort_ids(values: Iterable[str]) -> tuple[str, ...]:
 
 def _numeric_id(task_id: str) -> int:
     return int(task_id) if task_id.isdigit() else 0
-
-
-def parse_task_status(value: object) -> TaskStatusInput:
-    if not isinstance(value, str) or value not in TASK_STATUSES:
-        raise TaskValidationError(
-            "invalid_task_status",
-            f"Unsupported task status: {value!r}",
-        )
-    return cast(TaskStatusInput, value)
-
-
-def parse_task_text(
-    value: object,
-    *,
-    field: str,
-    limit: int,
-    required: bool,
-) -> str:
-    if value is None:
-        text = ""
-    elif isinstance(value, str):
-        text = value.strip()
-    else:
-        raise TaskValidationError("invalid_task", f"Task {field} must be a string")
-    if required and not text:
-        raise TaskValidationError("invalid_task", f"Task {field} must not be empty")
-    if len(text) > limit:
-        raise TaskValidationError(
-            "invalid_task",
-            f"Task {field} must not exceed {limit} characters",
-        )
-    return text
-
-
-def parse_task_id(value: object) -> str:
-    if isinstance(value, int) and not isinstance(value, bool):
-        value = str(value)
-    if not isinstance(value, str) or not value.strip():
-        raise TaskValidationError("invalid_task_id", "A task id is required")
-    return value.strip()
-
-
-def parse_task_ids(value: object, *, field: str) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str) or not isinstance(value, Sequence):
-        raise TaskValidationError(
-            "invalid_task_ids",
-            f"Task {field} must be a list of task ids",
-        )
-    return _sort_ids(parse_task_id(entry) for entry in value)
-
-
-GET_TODOS = Operation[EmptyRequest, TaskList](
-    "todolist/snapshot/get",
-    EmptyRequest,
-    TaskList,
-)
-
-
-__all__ = [
-    "DependencyEdge",
-    "GET_TODOS",
-    "TASK_STATUSES",
-    "Task",
-    "TaskChanged",
-    "TaskConfig",
-    "TaskList",
-    "TaskStatus",
-    "TaskStatusInput",
-    "TaskValidationError",
-    "parse_task_id",
-    "parse_task_ids",
-    "parse_task_status",
-    "parse_task_text",
-]

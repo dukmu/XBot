@@ -31,7 +31,7 @@ from XBotv2.core.provider import ModelRequest, ProviderUser, ToolSchema
 from XBotv2.core.paths import RuntimePaths
 from XBotv2.core.tokens import estimate_model_request_tokens
 from XBotv2.llm.mock import MockLLM
-from XBotv2.token_manager.plugin import TokenManagerPlugin
+from XBotv2.token_manager.impl.plugin import TokenManagerPlugin
 
 
 def _selection(*, context_window=4096, max_output_tokens=128):

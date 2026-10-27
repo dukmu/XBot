@@ -18,7 +18,7 @@ import pytest
 
 from XBotv2.client import XBotClientError
 from XBotv2.core.domain import TokenCounters, UsageSnapshot
-from XBotv2.usage import UsageUpdated as UsageUpdatedPayload
+from XBotv2.usage.api.events import UsageUpdated as UsageUpdatedPayload
 from XBotv2.protocol import ErrorResponse
 from XBotv2.core.tools import ToolCall
 from XBotv2.permissions.contracts import PermissionRequest, ToolPermission

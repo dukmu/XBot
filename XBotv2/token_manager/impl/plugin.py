@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pydantic import JsonValue
-from xcore import Context
+from xcore.api.context import Context
 
 from XBotv2.agentloop import Events
 from XBotv2.agentloop.events import ModelRequestReady, ModelResponseObserved
@@ -18,7 +18,7 @@ from XBotv2.core.domain import (
 )
 from XBotv2.core.tokens import TokenBudget, estimate_model_request_tokens
 
-from .contracts import EstimatedContext
+from XBotv2.token_manager.api.models import EstimatedContext
 
 
 @dataclass(frozen=True, slots=True)

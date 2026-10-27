@@ -29,7 +29,7 @@ from XBotv2.interactions.models import Answered
 from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
 from XBotv2.session.contracts import SessionPort
-from XBotv2.usage import UsagePort
+from XBotv2.usage.api.service import UsagePort
 
 logger = logging.getLogger("xbotv2.mcp")
 

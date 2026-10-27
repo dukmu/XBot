@@ -100,7 +100,7 @@ from XBotv2.session.runtime import (
     TurnEventRouter,
 )
 from XBotv2.session.event_stream import SessionEventStream
-from XBotv2.usage import UsageUpdated
+from XBotv2.usage.api.events import UsageUpdated
 
 
 SSE_DATA_RE = re.compile(r"^data: ?(.*)$", re.MULTILINE)
@@ -1134,7 +1134,7 @@ async def test_todo_and_usage_survive_http_close_resume(
     full_client: httpx.AsyncClient,
     full_http_app,
 ) -> None:
-    from XBotv2.todolist.contracts import TaskChanged
+    from XBotv2.todolist.api.events import TaskChanged
 
     client = full_client
 

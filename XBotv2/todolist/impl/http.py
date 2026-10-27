@@ -6,8 +6,8 @@ from fastapi import APIRouter
 
 from XBotv2.core.operations import EmptyRequest
 from XBotv2.session.contracts import SessionsPort
-from XBotv2.todolist.contracts import GET_TODOS
-from XBotv2.todolist.contracts import TaskList
+from XBotv2.todolist.api.service import GET_TODOS
+from XBotv2.todolist.api.models import TaskList
 
 
 def build_router(*, sessions: SessionsPort) -> APIRouter:
@@ -23,6 +23,3 @@ def build_router(*, sessions: SessionsPort) -> APIRouter:
         )
 
     return router
-
-
-__all__ = ["build_router"]

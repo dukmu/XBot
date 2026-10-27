@@ -46,7 +46,8 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["XBotv2/tests"]
+testpaths = ["XBotv2"]
+norecursedirs = [".*", "build", "dist", "node_modules", "web", "web_dist", "__pycache__"]
 pythonpath = [".", "XCore"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -62,10 +63,13 @@ source = [
     "XBotv2",
 ]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["XBotv2*"]
-exclude = ["XBotv2.tests*", "XBotv2.web*"]
+exclude = ["XBotv2.tests*", "XBotv2.*.tests*", "XBotv2.web*"]
 namespaces = true
 
 [tool.setuptools.package-data]
@@ -73,5 +77,9 @@ XBotv2 = [
     "xcore.yaml",
     "py.typed",
     "docs/**/*.md",
+    "*/README.md", "*/doc/*.md", "*/doc/**/*.md",
     ".agents/skills/xbot-plugin-development/**",
 ]
+
+[tool.setuptools.exclude-package-data]
+XBotv2 = ["web/*", "web/**/*"]

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 
 from pydantic import JsonValue
-from xcore import Context
+from xcore.api.context import Context
 from xcore.state import StateService
 
 from XBotv2.agentloop import Events, LoopState
@@ -25,11 +25,13 @@ from XBotv2.core.domain import (
 )
 from XBotv2.core.messages import AssistantMessage, ConversationMessage
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.usage.contracts import (
+from XBotv2.usage.api.service import (
     USAGE_COUNTERS_KEY,
     USAGE_STATE_NAMESPACE,
-    UsageUpdated,
+    USAGE,
 )
+
+from XBotv2.usage.api.events import UsageUpdated
 
 
 class UsageService:
@@ -160,11 +162,9 @@ class UsageComponent:
             ctx.runtime_log,
         )
         handlers = UsageHandlers(service, ctx.loop_state)
-        ctx.set("usage", service)
+        ctx.set(USAGE, service)
         ctx.on(Events.MODEL_RESPONSE_OBSERVED, handlers.record)
         ctx.on(APPLICATION_INITIALIZED, handlers.initialize, prepend=True)
 
 
 plugin = UsageComponent()
-
-__all__ = ["UsageComponent", "UsageHandlers", "UsageService"]

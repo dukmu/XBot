@@ -170,7 +170,8 @@ real documented feature mode in which absence is valid.
 
 Use a real XCore lifecycle plus the XBot Tool service. This test imports two
 implementation classes only to construct the smallest realistic registry;
-plugin production code still imports public contracts from package roots.
+plugin production code imports public contracts from the owner's `api` modules
+as each owner moves to the layout described in the plugin README.
 
 ```python
 from pathlib import Path
