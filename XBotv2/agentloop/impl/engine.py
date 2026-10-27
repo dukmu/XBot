@@ -177,6 +177,7 @@ _ContextBuildResult = _ContextReady | _ContextCompleted
 @dataclass(frozen=True, slots=True)
 class _ModelRequestReady:
     request: ModelRequest
+    estimated_input_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,7 +559,16 @@ class Engine:
                     iteration += 1
 
             if retry_request is not None:
-                model_request = retry_request
+                if finalizing and retry_request.tools:
+                    retry_request = retry_request.model_copy(update={"tools": ()})
+                if retry_request is not model_request:
+                    model_preparation = await self._observe_model_request(retry_request)
+                    if isinstance(model_preparation, _ModelRequestRebuild):
+                        retry_request = None
+                        retrying_iteration = True
+                        continue
+                    model_request = model_preparation.request
+                    estimated_input_tokens = model_preparation.estimated_input_tokens
                 retry_request = None
             else:
                 while True:
@@ -584,7 +594,7 @@ class Engine:
                             ),
                         )
                     model_preparation = await self._prepare_model_request(
-                        context_messages
+                        context_messages, finalizing=finalizing
                     )
                     if isinstance(model_preparation, _ModelRequestCompleted):
                         yield model_preparation.event
@@ -593,8 +603,7 @@ class Engine:
                     if isinstance(model_preparation, _ModelRequestRebuild):
                         continue
                     model_request = model_preparation.request
-                    if finalizing:
-                        model_request = model_request.model_copy(update={"tools": ()})
+                    estimated_input_tokens = model_preparation.estimated_input_tokens
                     break
             if turn_complete:
                 break
@@ -616,7 +625,7 @@ class Engine:
                 failure_revision = self.state.history.surface_revision
                 recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
-                    OnModelFailure(model_request, exc),
+                    OnModelFailure(model_request, exc, estimated_input_tokens),
                     short_circuit=True,
                 )
                 if isinstance(recovery, RetryRequest):
@@ -649,7 +658,7 @@ class Engine:
                 failure_revision = self.state.history.surface_revision
                 recovery = await self._dispatch(
                     Events.MODEL_REQUEST_ERROR,
-                    OnModelFailure(model_request, exc),
+                    OnModelFailure(model_request, exc, estimated_input_tokens),
                     short_circuit=True,
                 )
                 if isinstance(recovery, RetryRequest):
@@ -729,10 +738,7 @@ class Engine:
             observation = RequestObservation(
                 selection=model_request.selection,
                 purpose=TurnRequest(turn_id=self._request_id.get()),
-                estimated_input_tokens=estimate_request_tokens(
-                    model_request.messages,
-                    model_request.tools,
-                ),
+                estimated_input_tokens=estimated_input_tokens,
                 observed_context=response.observed_context,
             )
             exchange = ModelExchange(
@@ -999,6 +1005,8 @@ class Engine:
     async def _prepare_model_request(
         self,
         context_messages: list[ProviderMessage],
+        *,
+        finalizing: bool,
     ) -> _ModelRequestResult:
         tools = tuple(self.tools.enabled())
         schemas = tuple(
@@ -1033,9 +1041,20 @@ class Engine:
             )
         if self.state.history.surface_revision != history_revision:
             return _ModelRequestRebuild()
+        if finalizing:
+            model_request = model_request.model_copy(update={"tools": ()})
+        return await self._observe_model_request(model_request)
+
+    async def _observe_model_request(
+        self, model_request: ModelRequest,
+    ) -> _ModelRequestReady | _ModelRequestRebuild:
+        history_revision = self.state.history.surface_revision
+        estimated_input_tokens = estimate_request_tokens(
+            model_request.messages, model_request.tools,
+        )
         await self._dispatch(
             Events.MODEL_REQUEST_READY,
-            ModelRequestReady(model_request, self.session),
+            ModelRequestReady(model_request, self.session, estimated_input_tokens),
             short_circuit=False,
         )
         # MODEL_REQUEST_READY observers inspect the fully transformed request.
@@ -1053,14 +1072,11 @@ class Engine:
             model=model_request.selection.route.model,
             messages=len(model_request.messages),
             tools=len(model_request.tools),
-            estimated_input_tokens=estimate_request_tokens(
-                model_request.messages,
-                model_request.tools,
-            ),
+            estimated_input_tokens=estimated_input_tokens,
             context_window=model_request.selection.context_window,
             max_output_tokens=model_request.selection.generation.max_output_tokens,
         )
-        return _ModelRequestReady(request=model_request)
+        return _ModelRequestReady(model_request, estimated_input_tokens)
 
     async def _finish_turn(self, stop_reason: str) -> LoopEvent:
         self._log.info(

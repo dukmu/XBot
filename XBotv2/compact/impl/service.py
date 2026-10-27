@@ -15,7 +15,6 @@ from XBotv2.core.api.providers import ProviderFailure
 from XBotv2.core.api.tokens import (
     context_token_limit,
     estimate_messages_tokens,
-    estimate_model_request_tokens,
     estimate_request_tokens,
 )
 from XBotv2.core.api.messages import ConversationMessage
@@ -173,7 +172,7 @@ class CompactService:
             return None
         request = event.request
         selection = request.selection
-        context_tokens = estimate_model_request_tokens(request)
+        context_tokens = event.estimated_input_tokens
         output_reservation = (
             self._output_reservation
             if self._output_reservation is not None
@@ -221,7 +220,7 @@ class CompactService:
         request = event.request
         source_ids = self.state.history.ids()
         max_context = request.selection.context_window
-        context_tokens = estimate_model_request_tokens(request)
+        context_tokens = event.estimated_input_tokens
         request_estimate = context_tokens
         estimate_source = "estimated_request"
         # The request's bound model is the active route/model at this exact

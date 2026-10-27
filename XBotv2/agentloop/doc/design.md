@@ -86,6 +86,12 @@ release their own pins rather than accumulating them for the whole turn.
 Auxiliary compaction requests hold their separate component pins through their
 model invocation. Runtime resources never enter `ModelRequest` or rollout.
 
+After request hooks and any iteration-limit tool removal, the engine estimates
+each candidate once. The request-ready event, token manager, request log, and
+response observation, automatic compaction, and failure handling share that
+estimate. An unchanged retry reuses it; a
+replacement or rebuilt candidate receives its own estimate.
+
 Canonical exchange preserves the original thread's relative stream identity.
 Selection packages validate an already supplied canonical prefix, or import a
 foreign frozen source without binding a business projector. Business owners

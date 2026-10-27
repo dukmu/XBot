@@ -218,6 +218,7 @@ AfterModelResponseResult = KeepResponse | ReplaceResponse | CompleteTurn
 class OnModelFailure:
     request: ModelRequest
     error: BaseException
+    estimated_input_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +238,7 @@ OnModelFailureResult = PropagateFailure | RetryRequest | CompleteTurn
 class ModelRequestReady:
     request: ModelRequest
     session: ThreadExecution
+    estimated_input_tokens: int
 
 
 @dataclass(frozen=True, slots=True)

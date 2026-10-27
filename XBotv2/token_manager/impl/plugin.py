@@ -13,7 +13,7 @@ from XBotv2.core.api.domain import (
     ResolvedModelSelection,
     TokenCounters,
 )
-from XBotv2.core.api.tokens import TokenBudget, estimate_model_request_tokens
+from XBotv2.core.api.tokens import TokenBudget
 from XBotv2.token_manager.api.models import EstimatedContext
 
 
@@ -59,7 +59,7 @@ class TokenManagerPlugin:
     async def _on_model_request_ready(self, event: ModelRequestReady) -> None:
         request = event.request
         estimate = EstimatedContext(
-            tokens=estimate_model_request_tokens(request),
+            tokens=event.estimated_input_tokens,
             method="estimate_model_request_tokens",
         )
         self._latest = _RequestReady(

@@ -852,8 +852,21 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
 
 @pytest.mark.asyncio
 async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
-    temp_data_dir, temp_workspace
+    temp_data_dir, temp_workspace, monkeypatch
 ):
+    from XBotv2.agentloop.impl import engine as engine_module
+    from XBotv2.core.api import tokens
+
+    calls = []
+    original_estimate = tokens.estimate_request_tokens
+
+    def estimate(messages, tools=()):
+        value = original_estimate(messages, tools)
+        calls.append((messages, tools, value))
+        return value
+
+    monkeypatch.setattr(tokens, "estimate_request_tokens", estimate)
+    monkeypatch.setattr(engine_module, "estimate_request_tokens", estimate)
     provider = MockLLM(responses=[
         {"content": "A title"},
         {"content": "First answer"},
@@ -895,6 +908,10 @@ async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
             engine_of(application).messages
         )
         assert provider.call_count == 2
+        request = provider.request_history[-1]
+        main_calls = [call for call in calls if call[:2] == (request.messages, request.tools)]
+        assert main_calls == [(request.messages, request.tools, original_estimate(request.messages, request.tools))]
+        assert application.token_manager.diagnostics()["latest_request"]["estimated_context"]["tokens"] == main_calls[0][2]
     finally:
         await application.root.close()
 
@@ -1200,7 +1217,8 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
             if request.tools:
                 self.probe["agent_request_count"] += 1
                 if 3 <= self.probe["agent_request_count"] < 3 + overflow_count:
-                    self.probe["overflow_request"] = request
+                    if self.probe["overflow_request"] is None:
+                        self.probe["overflow_request"] = request
                     yield ModelFailed(error=ProviderError(
                         code="context_length_exceeded",
                         message="The request exceeds the model context window.",
@@ -1304,6 +1322,9 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
         ]
         assert len(completed) == 1
         assert completed[0].reason == "context-overflow"
+        assert completed[0].metrics.request_estimate == estimate_model_request_tokens(
+            provider.probe["overflow_request"]
+        )
         assert await _surface(application) == tuple(
             engine_of(application).messages
         )

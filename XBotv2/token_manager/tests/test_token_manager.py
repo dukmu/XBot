@@ -23,7 +23,9 @@ from XBotv2.core.api.domain import (
     TurnRequest,
     UsageDelta,
 )
-from XBotv2.agentloop.api.events import ModelRequestReady, ModelResponseObserved
+from XBotv2.agentloop.api.events import (
+    Events, ModelRequestReady, ModelResponseObserved, ReplaceRequest, RetryRequest,
+)
 from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ModelRequest, ProviderUser, ToolSchema
@@ -95,6 +97,89 @@ async def test_application_exposes_diagnostics_from_the_actual_final_exchange(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["normal", "replace", "retry", "retry_replace", "finalize"])
+async def test_engine_shares_candidate_estimate_with_observers(
+    temp_data_dir, temp_workspace, monkeypatch, scenario,
+):
+    from XBotv2.agentloop.impl import engine as engine_module
+    from XBotv2.core.api.stream import ModelCompleted
+
+    class Provider(MockLLM):
+        async def _astream_once(self, request):
+            self._state.call_count += 1
+            self._state.request_history.append(request)
+            if scenario.startswith("retry") and self.call_count == 1:
+                raise RuntimeError("retry this request")
+            if scenario == "finalize" and self.call_count == 1:
+                response = {"tool_calls": [{"id": "one", "name": "missing", "args": {}}]}
+            else:
+                response = {"content": "done"}
+            yield ModelCompleted(response=self.to_response(response))
+
+    provider = Provider([])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="estimate-sharing", workspace_root=temp_workspace,
+        plugin_dirs=[], llm_override=provider,
+        extra_plugins=[{"id": "caption", "config": {"auto": False}}],
+    )
+    estimates, ready, observed = [], [], []
+    original_estimator = engine_module.estimate_request_tokens
+
+    def estimate(messages, tools):
+        value = original_estimator(messages, tools)
+        estimates.append((messages, tools, value))
+        return value
+
+    async def before(event):
+        if scenario in ("replace", "finalize"):
+            extra = ProviderUser(parts=(TextPart(text="hook replacement"),))
+            return ReplaceRequest(event.request.model_copy(update={"messages": (*event.request.messages, extra)}))
+
+    async def retry(event):
+        request = event.request
+        if scenario == "retry_replace":
+            extra = ProviderUser(parts=(TextPart(text="retry replacement"),))
+            request = request.model_copy(update={"messages": (*request.messages, extra)})
+        return RetryRequest(request)
+
+    async def on_ready(event):
+        ready.append((event.request, event.estimated_input_tokens))
+
+    async def on_response(event):
+        observed.append(event.exchange.observation.estimated_input_tokens)
+
+    monkeypatch.setattr(engine_module, "estimate_request_tokens", estimate)
+    application.on(Events.BEFORE_MODEL_REQUEST, before)
+    application.on(Events.MODEL_REQUEST_ERROR, retry)
+    application.on(Events.MODEL_REQUEST_READY, on_ready)
+    application.on(Events.MODEL_RESPONSE_OBSERVED, on_response)
+    engine = engine_of(application)
+    if scenario == "finalize":
+        engine.configure(max_iterations=1)
+    try:
+        [event async for event in engine.run_turn(InboxItem(
+            target=InboxTarget.NEXT_TURN, input=HumanInput(content="test estimates"),
+        ))]
+        requests = provider.request_history
+        expected_candidates = 2 if scenario in ("retry_replace", "finalize") else 1
+        assert len(estimates) == len(ready) == expected_candidates
+        for request, value in ready:
+            assert (request.messages, request.tools, value) in estimates
+            assert value == estimate_model_request_tokens(request)
+        assert ready[-1][0] == requests[-1]
+        assert observed[-1] == ready[-1][1]
+        latest = application.token_manager.diagnostics()["latest_request"]
+        assert latest["estimated_context"]["tokens"] == observed[-1]
+        assert latest["tool_count"] == len(requests[-1].tools)
+        if scenario == "finalize":
+            assert requests[0].tools
+            assert not requests[-1].tools
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
 async def test_request_diagnostics_are_derived_from_provider_request():
     plugin = TokenManagerPlugin()
     request = ModelRequest(
@@ -112,6 +197,7 @@ async def test_request_diagnostics_are_derived_from_provider_request():
     await plugin._on_model_request_ready(ModelRequestReady(
         request=request,
         session=SimpleNamespace(turn_count=3),
+        estimated_input_tokens=estimate_model_request_tokens(request),
     ))
 
     latest = plugin.diagnostics()["latest_request"]
@@ -147,6 +233,7 @@ async def test_response_diagnostics_keep_typed_usage_and_observed_context(
     await plugin._on_model_request_ready(ModelRequestReady(
         request=request,
         session=SimpleNamespace(turn_count=1),
+        estimated_input_tokens=estimate_model_request_tokens(request),
     ))
     observation = RequestObservation(
         selection=_selection(),
@@ -195,6 +282,7 @@ async def test_unavailable_measurement_does_not_become_an_estimated_observation(
     await plugin._on_model_request_ready(ModelRequestReady(
         request=request,
         session=SimpleNamespace(turn_count=4),
+        estimated_input_tokens=estimate_model_request_tokens(request),
     ))
     exchange = ModelExchange(
         observation=RequestObservation(
@@ -231,6 +319,7 @@ async def test_estimated_budget_preserves_negative_remaining_for_compaction():
     await plugin._on_model_request_ready(ModelRequestReady(
         request=request,
         session=SimpleNamespace(turn_count=2),
+        estimated_input_tokens=estimate_model_request_tokens(request),
     ))
 
     budget = plugin.diagnostics()["latest_request"]["estimated_budget"]
@@ -252,6 +341,7 @@ async def test_plugin_unload_clears_latest_request_state():
             selection=_selection(),
         ),
         session=SimpleNamespace(turn_count=5),
+        estimated_input_tokens=5,
     ))
     assert plugin.diagnostics()["latest_request"]
 
