@@ -236,3 +236,12 @@
 - [x] 第2批代码和安装产物验收完成后，已让同一Sol接具体存储实施；两个Terra均结束，无混跑。新段以b8b4974为已验收代码基线，前一批green不替代本段新实现的验证；主代理继续只负责边界审查、TODO、整合和独立验收。
 - [ ] 第一段落地真实生产SQLite/rollout与索引：唯一根DB worker、异步短事务和队列背压，session/thread权威元数据、规范正文与可重建投影、输入幂等和损坏/提交恢复、归档/工作集分离、fork/delete及独立rename事实。退出XBot的持久state.json和完整归档缓存，不引入旧格式自动双读写或同步阻塞桥。
 - [ ] 后续存储段继续流式artifact、从启动即spool的shell、固定范围引用与pin，以及指定预算下的驻留/写入/大结果实测；不以第一段局部验证提前勾选整个第3批。
+- [x] 已确认进程插件的workspace membership/archive/显示顺序由同一DB worker管理的根plugin-state.sqlite3保存，不复制session title/workspace或建立第二份可写会话目录；每session仍独立state.sqlite3。此选择落实物理存储归属，不把业务规则交给backend。
+- [x] 主代理以b8b4974独立安装wheel完成真实loader/thread的存储组件基线：W恒为1条23B摘要，H为4/16/64MiB时tracemalloc current为4,780,449 /19,059,506 /76,164,905B，RSS为139,554,816 /155,471,872 /219,537,408B，首条消息weakref均存活；报告`/tmp/xbot-storage-baseline-b8b4974/report.json`、脚本`/tmp/xbot-storage-baseline.py`。此实验直接操作history，没有模型请求，不算4096次模型步或真实模型compact验收。
+- [x] 主代理读到首个SQL切片真实产物：空thread未物化；仅rename写session权威行，输入/assistant进入单rollout与SQL refs，消费后inbox为空；无thread.json/messages.jsonl/inbox.jsonl/state.json。原型日志`/tmp/xbot-sqlite-first.log`及`/tmp/xbot-sqlite-first/data/`。随后代码仍变更，早期4项contract及单项fork通过不作为本段最终验收。
+- [x] 审查纠正了实际恢复缺口：未决接受只补SQL会漏掉活跃inbox；未决assistant/ToolResult只补SQL会让活跃W仍是旧值。当前已加强同ID消费/FIFO及标准工具副作用后同scope恢复验收，禁止用关闭重开掩盖；worker返回DB对象、title旧事件覆盖rename、turn计数按输入数漂移等也按负责边界修正。物理worker/生命周期组合15 passed的原始日志`/tmp/xbot-sqlite-worker-lifetime.log`，仍非最终owner拆分后的全量结论。
+- [x] 用户明确强调存储必须是真正backend并参考XBot_cpp。主代理只读核对本地dev-mem的851b936：persistence/docs/design.md说明物理/事务/文件归backend，agentloop/src/history_index.cpp实际拥有schema与project，session/src/sql_catalog.cpp拥有元数据，usage/todolist自有repository；未修改C++仓库。
+- [ ] 据该审查修正本段架构：persistence只留worker、受限SQL、通用日志/offset、durable I/O、claim/lease与快照/复制/发布/删除原语；agentloop实际拥有typed codec、输入/turn/surface/lineage投影及历史repository/HTTP/import-export；session实际拥有元数据schema/repository与fork业务协调；各领域owner处理自己的fork状态。不能只移动文件后由backend硬调业务实现，也不照搬StatementId/SqlDomain/ModuleResource框架。
+- [ ] 本段仅将todo物理状态改为自有表；现有全量TaskList读取、完成项占max_tasks及500行事务预算问题尚未完成设计8.2。紧接存储切片落实active graph、独立get/完成项分页和只计未完成的活跃名额，不把抬高上限当成有界清退。
+- [x] 根据用户backend边界要求，选择业务repository首次持久修改时显式调用session的公开ThreadRepository.ensure；不把session准备逻辑作为backend.state(before_write=...)隐式注入，也不新增Host/包装执行器。默认解析和读操作不触发ensure落盘；受限SQL事务回调仍只是调用方明确提供的短SQL工作。
+- [ ] owner拆分后补一个不启动AgentLoop的自定义owner实测：自己的表和日志kind经backend公开API完成事务、append/flush、范围读/恢复与关闭，证明后端不需要Input/Turn/ThreadMetadata业务对象；不能仅凭文件搬迁或字面导入检查宣称backend已纯化。
