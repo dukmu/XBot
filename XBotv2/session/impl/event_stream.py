@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pydantic_core import to_json
 from XBotv2.core.api.domain import EventScope, SessionScope
 from XBotv2.session.api.contracts import SessionEventCursorExpired, SessionEventFrame, SessionEventSubscription as SessionEventSubscriptionPort, SessionEvent
 from XBotv2.agentloop.api.state import ThreadExecution
@@ -63,11 +64,14 @@ class SessionEventStream:
         state: ThreadExecution,
         *,
         capacity: int = 512,
+        max_bytes: int = 8 * 1024 * 1024,
     ) -> None:
-        if capacity < 1:
-            raise ValueError("Session event capacity must be positive")
+        if capacity < 1 or max_bytes < 1:
+            raise ValueError("Session event capacity and byte budget must be positive")
         self._capacity = capacity
-        self._frames: deque[SessionEventFrame] = deque(maxlen=capacity)
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        self._frames: deque[tuple[SessionEventFrame, int]] = deque()
         self._subscribers: set[_SessionSubscriber] = set()
         self._state = state
         self._closed = False
@@ -84,7 +88,7 @@ class SessionEventStream:
     def oldest_sequence(self) -> int:
         if not self._frames:
             return self.sequence + 1
-        return self._frames[0].sequence
+        return self._frames[0][0].sequence
 
     def publish(
         self,
@@ -94,9 +98,15 @@ class SessionEventStream:
     ) -> SessionEventFrame:
         if self._closed:
             raise RuntimeError("Session event stream is closed")
-        self._state.event_cursor += 1
-        frame = SessionEventFrame(self.sequence, scope, event)
-        self._frames.append(frame)
+        frame = SessionEventFrame(self.sequence + 1, scope, event)
+        size = len(to_json(frame))
+        self._state.event_cursor = frame.sequence
+        while self._frames and (len(self._frames) >= self._capacity or self._bytes + size > self._max_bytes):
+            _, removed_size = self._frames.popleft()
+            self._bytes -= removed_size
+        if size <= self._max_bytes:
+            self._frames.append((frame, size))
+            self._bytes += size
         # Subscribers retain only a cursor. A single coalesced wakeup tells
         # them to pull all available frames from the central bounded window.
         # This keeps both producer and subscriber memory bounded without
@@ -132,7 +142,7 @@ class SessionEventStream:
         index = next_sequence - self.oldest_sequence
         if index < 0 or index >= len(self._frames):
             raise SessionEventCursorExpired(cursor, self.oldest_sequence)
-        frame = self._frames[index]
+        frame = self._frames[index][0]
         if frame.sequence != next_sequence:
             raise SessionEventCursorExpired(cursor, self.oldest_sequence)
         return frame

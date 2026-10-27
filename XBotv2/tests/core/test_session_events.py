@@ -23,7 +23,7 @@ class _Event:
     index: int
 
 
-async def _stream(capacity=512):
+async def _stream(capacity=512, max_bytes=8 * 1024 * 1024):
     selection = ResolvedRuntimeSelection(
         agent_name="default",
         prompt="",
@@ -42,7 +42,7 @@ async def _stream(capacity=512):
     )
     await metadata_state.initialize(ThreadMetadata(runtime_selection=selection))
     state = SessionRuntimeState(SessionKey("s", "t"), metadata_state)
-    return SessionEventStream(state, capacity=capacity)
+    return SessionEventStream(state, capacity=capacity, max_bytes=max_bytes)
 
 
 @pytest.mark.asyncio
@@ -128,3 +128,33 @@ async def test_session_event_stream_rejects_subscribers_after_close():
         stream.subscribe()
 
     assert stream.subscriber_count == 0
+
+
+@pytest.mark.asyncio
+async def test_session_byte_budget_expires_slow_cursor_and_keeps_other_stream_live():
+    stream = await _stream(max_bytes=200)
+    other = await _stream(max_bytes=200)
+    slow = stream.subscribe(0)
+    first = stream.publish(_Event(kind="small", index=1))
+    stream.publish(_Event(kind="large", index="界" * 200))
+    other_frame = other.publish(_Event(kind="small", index=2))
+
+    with pytest.raises(SessionEventCursorExpired, match="expired"):
+        await anext(slow)
+    with pytest.raises(SessionEventCursorExpired, match="expired"):
+        stream.subscribe(first.sequence)
+    assert await anext(other.subscribe(0)) == other_frame
+    cursor = stream.sequence
+    following = stream.publish(_Event(kind="small", index=3))
+    assert await anext(stream.subscribe(cursor)) == following
+
+
+@pytest.mark.asyncio
+async def test_session_byte_budget_evicts_retained_frames():
+    stream = await _stream(max_bytes=240)
+    slow = stream.subscribe(0)
+    stream.publish(_Event(kind="message", index="x" * 80))
+    latest = stream.publish(_Event(kind="message", index="y" * 80))
+    with pytest.raises(SessionEventCursorExpired):
+        await anext(slow)
+    assert await anext(stream.subscribe(1)) == latest

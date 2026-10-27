@@ -39,3 +39,11 @@ other owners explicitly call `ensure` before their first durable mutation.
 Session coordinates fork staging and publication and emits the public fork
 events; each participating owner handles its own state. An unhandled owner
 prevents publication.
+
+Each thread's event replay window retains at most 512 frames and 8 MiB of
+UTF-8 JSON serialized frame data, including sequence and scope metadata.
+These are process-local constructor defaults, not user configuration. An
+oversized frame advances the cursor but is not retained. Subscribers hold only
+a cursor and a coalesced wakeup; an expired cursor requires a new snapshot.
+The snapshot cursor is captured before reading snapshot data so subscribing
+from it cannot silently miss a concurrent event.

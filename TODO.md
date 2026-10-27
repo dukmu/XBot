@@ -340,5 +340,7 @@
 
 - [x] 从已验收cce37b15及日志04f6d6e0继续，遵从最新约束只启动两个明确指定GPT-6.1 Terra的实施代理：分别收口3处filesystem跨实现导入、给现有session/workspace replay加字节预算。两者文件范围分开，无Sol运行或续派；主代理负责边界审查、TODO和提交。
 - [x] 文件操作共享实现通过最小公共边界提供；工具模式映射归coretools owner，permissions/sandbox沿公开契约工作。保留标准工具/权限/bwrap路径，不将workspace业务移入persistence、不造新executor或框架。
-- [ ] 事件窗口沿现有中央replay和cursor/单槽唤醒实现帧数与字节双预算；越界明确要求重取快照，保留业务原文。只做必要定向验证，不再次全套、wheel、压测或hash。
+- [x] 事件窗口沿现有中央replay和cursor/单槽唤醒实现帧数与字节双预算；越界明确要求重取快照，保留业务原文。只做必要定向验证，不再次全套、wheel、压测或hash。
 - [x] filesystem Terra公开core.api.filesystem的PATH_ACCESS/execute/WORKER_PATH及coretools.api.filesystem的工具模式映射，删除worker内的工具业务映射与旧私有导出，3处消费者改用公共契约，文档同步。一次相关47项测试含真实bwrap通过，未加测试；首次受限环境运行停滞后已中止并确认退出，授权环境完成。主代理本轮唯一架构脚本实际exit0、architecture boundaries: ok（`/tmp/xbot-iteration8-architecture.txt`及`.exit`），原登记3项解除；不重复contract audit、全套、wheel或hash。
+- [x] replay Terra沿现有session/workspace窗口实现默认512帧/8MiB的UTF-8完整内部帧计费，仅保存整数大小、不缓存另一份正文、不做hash；workspace删除每订阅者payload队列及回放副本，改为中央窗口游标/单槽唤醒。超大帧推进序号但不保留，旧游标明确过期、需要重取快照。10项原有及新增组合通过，后补普通字节清退2项分别通过，不重复前10项；额外仅选workspace真实HTTP/SSE重放与含tool/usage的provider流各1项通过，3.86s、actual exit0，未扩全套。第一次受限socket运行已中断并确认130退出后授权环境完成。
+- [x] 两Terra已停止编辑，主代理已读实际API/worker调用链、计费与游标实现、相关测试；无新executor、缓存框架、持久化业务回调或依赖。filesystem先独立提交`dc471ca4`；本轮新改动不再复用cce37b15的wheel结论，不重复构建旧验收。后续继续其他集合清退与协作等任务，整体goal仍active。

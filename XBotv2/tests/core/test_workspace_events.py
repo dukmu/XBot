@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from XBotv2.session.api.contracts import SessionResourceChanged
+from XBotv2.session.api.contracts import SessionResourceChanged, SessionResourceRemoved
 from XBotv2.session.impl.protocol import build_session_router
 from XBotv2.session.api.contracts import SessionSummary
 from XBotv2.workspaces.api.events import WorkspaceCursorExpired
@@ -70,3 +70,33 @@ async def test_session_baseline_cursor_precedes_the_snapshot_read():
 
     assert response.status_code == 200
     assert response.json()["event_cursor"] == 11
+
+
+@pytest.mark.asyncio
+async def test_workspace_byte_budget_expires_slow_cursor_and_keeps_other_stream_live():
+    stream = WorkspaceEventStream(max_bytes=200)
+    other = WorkspaceEventStream(max_bytes=200)
+    slow = stream.subscribe(0)
+    first = stream.publish(SessionResourceRemoved("small"))
+    stream.publish(SessionResourceRemoved("界" * 200))
+    other_frame = other.publish(SessionResourceRemoved("other"))
+
+    with pytest.raises(WorkspaceCursorExpired, match="expired"):
+        await anext(slow)
+    with pytest.raises(WorkspaceCursorExpired, match="expired"):
+        stream.subscribe(first.sequence)
+    assert await anext(other.subscribe(0)) == other_frame
+    cursor = stream.sequence
+    following = stream.publish(SessionResourceRemoved("following"))
+    assert await anext(stream.subscribe(cursor)) == following
+
+
+@pytest.mark.asyncio
+async def test_workspace_byte_budget_evicts_retained_frames():
+    stream = WorkspaceEventStream(max_bytes=240)
+    slow = stream.subscribe(0)
+    stream.publish(SessionResourceRemoved("x" * 100))
+    latest = stream.publish(SessionResourceRemoved("y" * 100))
+    with pytest.raises(WorkspaceCursorExpired):
+        await anext(slow)
+    assert await anext(stream.subscribe(1)) == latest
