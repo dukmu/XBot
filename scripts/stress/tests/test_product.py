@@ -13,7 +13,13 @@ async def test_real_provider_tool_steps_and_compaction(tmp_path):
         30, data_dir=tmp_path / "data", mock_tools=True, tool_steps=2,
         compact_recent=1, capture_requests=False, chunk_delay_ms=0,
     ) as harness:
+        from XBotv2.persistence.api.contracts import PERSISTENCE
+        from XBotv2.session.api.replay import REPLAY_POOL
         client = harness.client
+        backend = harness.application.require(PERSISTENCE)
+        replay = harness.application.require(REPLAY_POOL)
+        assert backend.record_cache_stats["budget_bytes"] > 0
+        assert replay.stats["budget_bytes"] > 0
         opened = await client.open_session(session_id="s", thread_id="main", mode="new")
         cursor = opened.data.event_cursor
         events = Counter()
@@ -28,6 +34,7 @@ async def test_real_provider_tool_steps_and_compaction(tmp_path):
         assert harness.provider.auxiliary_requests == 1
         assert harness.provider.tool_responses == events["tool_succeeded"] == 4
         assert events["compaction_completed"] == 1
+        assert replay.stats["frames"] > 0 and replay.stats["resident_bytes"] > 0 and replay.stats["windows"] > 0
         assert len(tool_latencies) == 4 and all(value >= 0 for value in tool_latencies)
         assert not harness.provider.requests
         measured = sample("test", tmp_path / "data")

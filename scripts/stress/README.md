@@ -182,7 +182,9 @@ The 200 MiB output, PTY and browser paths are separate from this matrix.
 The report records bounded latency samples, per-stage process RSS and
 tracemalloc, GC-tracked object counts, active Context and session-subscriber counts, file
 descriptors, child-process counts,
-current JSONL/SQLite/WAL file lengths and Linux process I/O counters. Stage
+current JSONL/SQLite/WAL file lengths, record-cache budget/occupancy/hit/pin
+statistics, the shared replay pool's budget/resident bytes/frame and window
+counts, and Linux process I/O counters. Stage
 samples also record each active main thread's public working-message count,
 completed turns and committed compactions, so comparisons can identify matching
 working-set and active-thread conditions. XBot,

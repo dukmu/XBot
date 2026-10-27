@@ -184,8 +184,7 @@ async def run(args):
                        "max_write_mib": args.max_write_mib,
                        "context_window_tokens": 32768,
                        "model_max_output_tokens": 4096,
-                       "compact_keep_recent_turns": 1,
-                       "artifact_cache_budget_bytes": 64 * 1024 * 1024},
+                       "compact_keep_recent_turns": 1},
         "measurement_scope": "one process: XBot server, network mock and stress harness",
         "environment": {"started_utc": datetime.now(timezone.utc).isoformat(),
                         "platform": platform.platform(), "python": platform.python_version(),
@@ -227,10 +226,23 @@ async def run(args):
             client = harness.client
             assert client is not None and harness.data_dir is not None
             data_dir = harness.data_dir
+            from XBotv2.persistence.api.contracts import PERSISTENCE
+            from XBotv2.session.api.replay import REPLAY_POOL
+            backend = harness.application.require(PERSISTENCE)
+            replay = harness.application.require(REPLAY_POOL)
+            report["parameters"].update({
+                "record_cache_budget_bytes": backend.record_cache_stats["budget_bytes"],
+                "artifact_cache_budget_bytes": backend.artifact_cache.budget,
+                "replay_budget_bytes": replay.stats["budget_bytes"],
+            })
+
             initial_write_bytes = process_io().get("write_bytes")
             if initial_write_bytes is None:
                 report["limitations"].append("Process write-byte budget unavailable on this platform.")
-            report["samples"].append(sample("server_started", data_dir))
+            started_sample = sample("server_started", data_dir)
+            started_sample["record_cache"] = backend.record_cache_stats
+            started_sample["event_replay"] = replay.stats
+            report["samples"].append(started_sample)
             print(json.dumps({"phase": "server_started", "data_dir": str(data_dir),
                               "concurrency": n}), flush=True)
             observer = await cleanup.enter_async_context(httpx.AsyncClient(
@@ -278,6 +290,8 @@ async def run(args):
                         "board_messages": board["count"],
                     })
                 value = sample(label, data_dir)
+                value["record_cache"] = backend.record_cache_stats
+                value["event_replay"] = replay.stats
                 value.update({
                     "user_turns_completed": completed_turns,
                     "compactions_committed": completed_compactions,
@@ -390,6 +404,8 @@ async def run(args):
                         "tool_successes": events["tool_succeeded"], "disk": disk,
                         "process_io": process_io(), "process": snapshot(),
                         "process_details": process_details(),
+                        "record_cache": backend.record_cache_stats,
+                        "event_replay": replay.stats,
                         "tracemalloc_current_bytes": tracemalloc.get_traced_memory()[0],
                     }), flush=True)
                     last_progress = time.monotonic()
@@ -463,8 +479,14 @@ async def run(args):
                     raise RuntimeError(f"unexpected board count for {identity}")
             for identity in sessions:
                 await client.close_session(identity)
-            report["samples"].append(sample("sessions_closed", data_dir))
-        report["samples"].append(sample("server_closed", data_dir))
+            closed_sample = sample("sessions_closed", data_dir)
+            closed_sample["record_cache"] = backend.record_cache_stats
+            closed_sample["event_replay"] = replay.stats
+            report["samples"].append(closed_sample)
+        closed_sample = sample("server_closed", data_dir)
+        closed_sample["record_cache"] = backend.record_cache_stats
+        closed_sample["event_replay"] = replay.stats
+        report["samples"].append(closed_sample)
     except Exception as exc:
         report["errors"].append(f"{type(exc).__name__}: {exc}")
         report["counters"].update({"user_turns": completed_turns,
