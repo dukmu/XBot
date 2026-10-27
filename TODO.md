@@ -363,3 +363,4 @@
 - [x] 最后按实际canonical execution_id区分live与归档未结束事实，cold/idle无匹配执行时返回interrupted；有界事件游标过期时先重订阅再查冻结turn_id的规范记录，不把丢replay当执行失败或偷换后续代次。新增边界组合5 passed/0.26s，`/tmp/xbot-child-final-boundaries.log`，actual exit0；owner身份/精确读取接口单项通过，`/tmp/xbot-execution-identity-test.log`。原8项不重复。
 - [x] 删除launcher历史child ID集合，插件关闭从Sessions现有live scopes派生；resolve用thread_summary，默认wait用一次live scopes快照同步筛选，不扫描全部历史或在筛选期间await改变切点。仅原HTTP默认等待单项通过，`/tmp/xbot-default-child-wait.log`，1 passed/5.30s、handle59790 actual exit0。主代理已读这些实际调用和SQL/规范事实边界，提交前一次git diff --check通过；未生成新hash快照或重新运行旧套件。
 - [x] 本轮持久业务事实/投影归agentloop，child协作归subagents，通用准入归session，persistence未加入业务逻辑；没有新WaitService/runner框架。各代理明确全部测试句柄退出并停止编辑。后续仍需指定产品工况、真正供应商及最终安装产物验收，不用本轮局部证据替代完整goal；已有projection升级/旧格式保留未新增自动兼容路径。
+- [x] 本轮精确被评估开发提交`dd76884cde21ea683800b44a8e4604d506976ab2`：33个任务文件，已结合实际owner实现和上述定向证据审查；最终SQL索引/冗余预检/通用spec清退等减法未重复运行旧组合。后续仅更新日志不重验代码。整体goal保持active，下一段继续可选team/共享板与剩余集合、媒体/provider/配置、TUI及最终产品工况，不重定义为本轮已做的范围。
