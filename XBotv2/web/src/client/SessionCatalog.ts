@@ -1,143 +1,156 @@
 import type { XBotApi } from "../api/client";
 import type { ViewEvent, SessionSummary } from "../api/types";
 
+export type SessionScope =
+  | { kind: "all" }
+  | { kind: "archived" }
+  | { kind: "workspace"; workspaceId: string };
 export interface SessionCatalogSnapshot {
   items: readonly SessionSummary[];
+  archivedIds: readonly string[];
+  scope: SessionScope;
+  canPrevious: boolean;
+  canNext: boolean;
   eventCursor: number;
   state: "idle" | "loading" | "error";
   error: unknown;
 }
 
+type CatalogApi = Pick<
+  XBotApi,
+  "listSessions" | "listWorkspaceSessions" | "listArchivedSessions" | "renameSession"
+>;
+
 export class SessionCatalog {
   private items: readonly SessionSummary[] = [];
+  private archivedIds: readonly string[] = [];
+  private scope: SessionScope = { kind: "all" };
+  private cursor: string | null = null;
+  private previousCursor: string | null = null;
+  private nextCursor: string | null = null;
   private eventCursor = 0;
   private state: SessionCatalogSnapshot["state"] = "idle";
   private error: unknown = null;
   private snapshot = this.buildSnapshot();
   private readonly listeners = new Set<() => void>();
+  private generation = 0;
+  private appliedGeneration = -1;
   private refreshPromise: Promise<void> | null = null;
-  private refreshEvents: ViewEvent[] | null = null;
-  private revision = 0;
+  private dirty = false;
 
-  constructor(private readonly api: Pick<XBotApi, "listSessions" | "renameSession">) {}
-
+  constructor(private readonly api: CatalogApi) {}
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
-
   getSnapshot = (): SessionCatalogSnapshot => this.snapshot;
 
+  async select(scope: SessionScope): Promise<void> {
+    this.scope = scope;
+    this.cursor = null;
+    this.previousCursor = null;
+    this.nextCursor = null;
+    this.items = [];
+    this.archivedIds = [];
+    this.generation++;
+    await this.refresh();
+    if (this.appliedGeneration !== this.generation) await this.refresh();
+  }
+  async next(): Promise<void> {
+    if (!this.nextCursor || this.state === "loading") return;
+    this.cursor = this.nextCursor;
+    this.generation++;
+    await this.refresh();
+  }
+  async back(): Promise<void> {
+    if (!this.previousCursor || this.state === "loading") return;
+    this.cursor = this.previousCursor;
+    this.generation++;
+    await this.refresh();
+  }
   refresh(): Promise<void> {
-    if (this.refreshPromise) return this.refreshPromise;
-    const revision = this.revision;
-    const refreshEvents: ViewEvent[] = [];
-    this.refreshEvents = refreshEvents;
+    if (this.refreshPromise) {
+      this.dirty = true;
+      return this.refreshPromise;
+    }
     this.state = "loading";
     this.error = null;
     this.publish();
-    this.refreshPromise = this.api.listSessions()
-      .then((listing) => {
-        if (revision === this.revision) {
-          this.items = listing.sessions;
-          this.eventCursor = listing.event_cursor;
-          for (const event of refreshEvents) {
-            if (event.sequence > listing.event_cursor) this.applyCatalogEvent(event);
-          }
+    this.refreshPromise = (async () => {
+      do {
+        this.dirty = false;
+        const generation = this.generation;
+        const scope = this.scope;
+        const result = scope.kind === "workspace"
+          ? await this.api.listWorkspaceSessions(scope.workspaceId, this.cursor)
+          : scope.kind === "archived"
+            ? await this.api.listArchivedSessions(this.cursor)
+            : await this.api.listSessions(this.cursor);
+        if (generation !== this.generation) {
+          this.dirty = true;
+          continue;
         }
-        this.state = "idle";
-      })
-      .catch((error) => {
-        this.state = "error";
-        this.error = error;
-        throw error;
-      })
+        this.appliedGeneration = generation;
+        this.items = result.sessions;
+        this.archivedIds = scope.kind === "archived" ? result.sessions.map((item) => item.session_id) : [];
+        this.nextCursor = result.next_cursor;
+        this.previousCursor = result.previous_cursor;
+        this.eventCursor = Math.max(this.eventCursor, result.event_cursor);
+      } while (this.dirty);
+      this.state = "idle";
+    })().catch((error) => {
+      this.state = "error";
+      this.error = error;
+      throw error;
+    })
       .finally(() => {
-        if (this.refreshEvents === refreshEvents) this.refreshEvents = null;
         this.refreshPromise = null;
         this.publish();
+        if (this.dirty) void this.refresh().catch(() => undefined);
       });
     return this.refreshPromise;
   }
-
-  remove(sessionId: string): void {
-    this.revision += 1;
-    this.items = this.items.filter((session) => session.session_id !== sessionId);
-    this.publish();
+  async remove(_sessionId: string): Promise<void> {
+    await this.refresh();
   }
 
   async rename(sessionId: string, title: string): Promise<void> {
-    const session = await this.api.renameSession(sessionId, title);
-    this.revision += 1;
-    const index = this.items.findIndex((item) => item.session_id === sessionId);
-    this.items = index < 0
-      ? [session, ...this.items]
-      : this.items.map((item, position) => position === index ? session : item);
-    this.publish();
+    await this.api.renameSession(sessionId, title);
+    await this.refresh();
   }
 
   handleCatalogEvent(event: ViewEvent): void {
-    this.refreshEvents?.push(event);
-    this.applyCatalogEvent(event);
-    this.publish();
-  }
-
-  private applyCatalogEvent(event: ViewEvent): void {
     this.eventCursor = Math.max(this.eventCursor, event.sequence);
-    if (event.type === "catalog/session-added" || event.type === "catalog/session-changed") {
-      this.upsert(sessionFrame(event), false);
+    if (
+      event.type === "catalog/workspace-removed"
+      && this.scope.kind === "workspace"
+      && event.data.workspace_id === this.scope.workspaceId
+    ) {
+      void this.select({ kind: "all" }).catch(() => undefined);
       return;
     }
-    if (event.type === "catalog/session-removed") {
-      const sessionId = stringField(event.data, "session_id");
-      this.items = this.items.filter((session) => session.session_id !== sessionId);
+    if (
+      event.type.startsWith("catalog/session-")
+      || event.type === "catalog/workspace-session-order-changed"
+      || event.type === "catalog/archived-sessions-changed"
+    ) {
+      void this.refresh().catch(() => undefined);
     }
   }
-
-  private upsert(session: SessionSummary, publish = true): void {
-    const index = this.items.findIndex((item) => item.session_id === session.session_id);
-    this.items = index < 0
-      ? [session, ...this.items]
-      : this.items.map((item, position) => position === index ? session : item);
-    if (publish) this.publish();
-  }
-
   private publish(): void {
     this.snapshot = this.buildSnapshot();
     for (const listener of this.listeners) listener();
   }
-
   private buildSnapshot(): SessionCatalogSnapshot {
     return {
       items: this.items,
+      archivedIds: this.archivedIds,
+      scope: this.scope,
+      canPrevious: this.previousCursor !== null,
+      canNext: this.nextCursor !== null,
       eventCursor: this.eventCursor,
       state: this.state,
       error: this.error,
     };
   }
-}
-
-function sessionFrame(event: ViewEvent): SessionSummary {
-  const value = event.data.session;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${event.type} has no session object`);
-  }
-  const session = value as Record<string, unknown>;
-  stringField(session, "session_id");
-  const status = stringField(session, "status");
-  if (status !== "active" && status !== "inactive") {
-    throw new Error(`${event.type} has invalid session status`);
-  }
-  if (typeof session.blank !== "boolean") {
-    throw new Error(`${event.type} has invalid blank state`);
-  }
-  return session as unknown as SessionSummary;
-}
-
-function stringField(value: Record<string, unknown>, field: string): string {
-  const result = value[field];
-  if (typeof result !== "string" || !result) {
-    throw new Error(`Workspace event field ${field} must be a non-empty string`);
-  }
-  return result;
 }

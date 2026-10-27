@@ -61,6 +61,10 @@ prefix at build time.
 - `src/app`: the application shell.
 - `src/styles`: the responsive workbench theme.
 
+The sidebar keeps one page of workspaces and one page of sessions in memory.
+Use the page controls to browse all sessions, one workspace, or archived
+sessions; sidebar search applies to the current session page.
+
 Message uploads use `media` entries with base64 data, MIME type and name;
 ordinary files use `attachments`. Media references in history retain artifact
 metadata and resolve through the artifact download endpoint.

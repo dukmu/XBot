@@ -69,20 +69,23 @@ export interface SessionSummary {
 export interface SessionListData {
   sessions: SessionSummary[];
   event_cursor: number;
+  next_cursor: string | null;
+  previous_cursor: string | null;
 }
 
 export interface WorkspaceData {
   workspace_id: string;
   path: string;
   title: string;
-  session_ids: string[];
+  session_count: number;
   created_at: string;
   updated_at: string;
 }
 
 export interface WorkspaceListData {
   items: WorkspaceData[];
-  archived_session_ids: string[];
+  next_cursor: string | null;
+  previous_cursor: string | null;
   event_cursor: number;
 }
 

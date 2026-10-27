@@ -258,9 +258,13 @@ export function App() {
         open={sidebarOpen}
         collapsed={collapsed}
         width={width}
-        sessions={runtime.sessions}
-        workspaces={runtime.workspaces}
-        archivedSessionIds={runtime.archivedSessionIds}
+        catalog={runtime.catalog}
+        workspacePage={runtime.workspacePage}
+        onSelectCatalog={(scope) => void runtime.selectCatalog(scope)}
+        onNextSessions={() => void runtime.nextSessions()}
+        onPreviousSessions={() => void runtime.previousSessions()}
+        onNextWorkspaces={() => void runtime.nextWorkspaces()}
+        onPreviousWorkspaces={() => void runtime.previousWorkspaces()}
         threads={state.threads}
         current={state.current}
         onClose={() => setSidebarOpen(false)}

@@ -65,16 +65,24 @@ export class XBotApi {
     );
   }
 
-  listSessions(): Promise<SessionListData> {
-    return this.request("GET", "/sessions");
+  listSessions(cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/sessions${pageQuery(cursor)}`);
+  }
+
+  listWorkspaceSessions(workspaceId: string, cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/workspaces/${segment(workspaceId)}/sessions${pageQuery(cursor)}`);
+  }
+
+  listArchivedSessions(cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/workspaces/archived-sessions${pageQuery(cursor)}`);
   }
 
   renameSession(sessionId: string, title: string): Promise<SessionSummary> {
     return this.request("PATCH", `/sessions/${segment(sessionId)}`, { title });
   }
 
-  listWorkspaces(): Promise<WorkspaceListData> {
-    return this.request("GET", "/workspaces");
+  listWorkspaces(cursor?: string | null): Promise<WorkspaceListData> {
+    return this.request("GET", `/workspaces${pageQuery(cursor)}`);
   }
 
   listDirectories(path?: string, signal?: AbortSignal): Promise<DirectoryListingData> {
@@ -104,13 +112,8 @@ export class XBotApi {
     await this.request("DELETE", `/workspaces/${segment(workspaceId)}`);
   }
 
-  async reorderWorkspace(workspaceId: string, beforeWorkspaceId: string | null): Promise<string[]> {
-    const result = await this.request<{ workspace_ids: string[] }>(
-      "POST",
-      `/workspaces/${segment(workspaceId)}/order`,
-      { before_workspace_id: beforeWorkspaceId },
-    );
-    return result.workspace_ids;
+  reorderWorkspace(workspaceId: string, beforeWorkspaceId: string | null): Promise<{ workspace_id: string; before_workspace_id: string | null }> {
+    return this.request("POST", `/workspaces/${segment(workspaceId)}/order`, { before_workspace_id: beforeWorkspaceId });
   }
 
   async reorderWorkspaceSession(
@@ -126,12 +129,8 @@ export class XBotApi {
     return result.workspace;
   }
 
-  async setSessionArchived(sessionId: string, archived: boolean): Promise<string[]> {
-    const result = await this.request<{ archived_session_ids: string[] }>(
-      archived ? "PUT" : "DELETE",
-      `/sessions/${segment(sessionId)}/archive`,
-    );
-    return result.archived_session_ids;
+  setSessionArchived(sessionId: string, archived: boolean): Promise<{ session_id: string; archived: boolean }> {
+    return this.request(archived ? "PUT" : "DELETE", `/sessions/${segment(sessionId)}/archive`);
   }
 
   async listProviders(): Promise<{ default: string; providers: ProviderInfo[] }> {
@@ -535,4 +534,10 @@ function segment(value: string): string {
 
 function threadPath(sessionId: string, threadId: string): string {
   return `/sessions/${segment(sessionId)}/threads/${segment(threadId)}`;
+}
+
+function pageQuery(cursor?: string | null): string {
+  const query = new URLSearchParams({ limit: "100" });
+  if (cursor) query.set("cursor", cursor);
+  return `?${query}`;
 }

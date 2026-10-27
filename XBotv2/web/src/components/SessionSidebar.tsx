@@ -1,14 +1,17 @@
-import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder,
+  GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil,
+  Plus, RefreshCw, Search, Settings, TerminalSquare, Trash2, X,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { SessionView, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
 
 interface SessionSidebarProps {
   open: boolean;
   collapsed: boolean;
   width: number;
-  sessions: readonly SessionSummary[];
-  workspaces: readonly WorkspaceData[];
-  archivedSessionIds: readonly string[];
+  catalog: import("../client/SessionCatalog").SessionCatalogSnapshot;
+  workspacePage: import("../client/WorkspaceManager").WorkspaceSnapshot;
   threads: ThreadSummary[];
   current: Pick<SessionView, "session_id" | "thread_id"> | null;
   onClose: () => void;
@@ -27,80 +30,40 @@ interface SessionSidebarProps {
   onDeleteWorkspace: (workspaceId: string) => void;
   onMoveWorkspace: (workspaceId: string, direction: -1 | 1) => void;
   onMoveSession: (workspaceId: string, sessionId: string, direction: -1 | 1) => void;
+  onSelectCatalog: (scope: import("../client/SessionCatalog").SessionScope) => void;
+  onNextSessions: () => void;
+  onPreviousSessions: () => void;
+  onNextWorkspaces: () => void;
+  onPreviousWorkspaces: () => void;
 }
-
-const COLLAPSED_SESSION_LIMIT = 5;
-
-/** Ported name for the group that holds sessions outside every workspace. */
-export const UNGROUPED_LABEL = "Ungrouped";
 
 export function SessionSidebar(props: SessionSidebarProps) {
   const [wideMounted, setWideMounted] = useState(!props.collapsed);
   const [query, setQuery] = useState("");
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(new Set());
-  // Sessions with no workspace group.  The ported rail keeps them under a named
-  // `Ungrouped` node rather than a bare label.
-  const [ungroupedCollapsed, setUngroupedCollapsed] = useState(false);
-  const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(new Set());
   const [editingWorkspace, setEditingWorkspace] = useState("");
   const [workspaceTitle, setWorkspaceTitle] = useState("");
   const [confirmWorkspaceDelete, setConfirmWorkspaceDelete] = useState("");
   const [menuWorkspace, setMenuWorkspace] = useState("");
-  const searchInput = useRef<HTMLInputElement>(null);
   const lastWideWidth = useRef(props.width);
   if (!props.collapsed) lastWideWidth.current = props.width;
   useEffect(() => {
-    if (!props.collapsed) {
-      setWideMounted(true);
-      return;
-    }
+    if (!props.collapsed) { setWideMounted(true); return; }
     const timer = window.setTimeout(() => setWideMounted(false), 150);
     return () => window.clearTimeout(timer);
   }, [props.collapsed]);
   const wide = !props.collapsed || wideMounted;
   const rail = !wide;
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const matches = (values: unknown[]) => !needle || values.some(
+  const scope = props.catalog.scope;
+  const needle = query.trim().toLowerCase();
+  const matches = (session: SessionSummary) => !needle
+    || [session.title, session.session_id, session.workspace_root].some(
       (value) => String(value || "").toLowerCase().includes(needle),
     );
-    const archivedIds = new Set(props.archivedSessionIds);
-    const sessionsById = new Map(props.sessions.map((session) => [session.session_id, session]));
-    const groups = props.workspaces.flatMap((workspace) => {
-      const sessions = workspace.session_ids.flatMap((sessionId) => {
-        const session = sessionsById.get(sessionId);
-        return session && !archivedIds.has(sessionId) ? [session] : [];
-      });
-      const workspaceMatches = matches([workspace.title, workspace.path]);
-      const filtered = workspaceMatches
-        ? sessions
-        : sessions.filter((session) => matches([session.session_id, session.title, session.workspace_root]));
-      return workspaceMatches || filtered.length ? [{ workspace, sessions: filtered }] : [];
-    });
-    const registered = new Set(props.workspaces.flatMap((workspace) => workspace.session_ids));
-    const ungrouped = props.sessions.filter((session) => (
-      !registered.has(session.session_id)
-      && !archivedIds.has(session.session_id)
-      && matches([session.session_id, session.title, session.workspace_root])
-    ));
-    const archived = props.sessions.filter((session) => (
-      archivedIds.has(session.session_id)
-      && matches([session.session_id, session.title, session.workspace_root])
-    ));
-    return { groups, ungrouped, archived };
-  }, [props.archivedSessionIds, props.sessions, props.workspaces, query]);
-  const visibleCount = visible.groups.reduce((count, group) => count + group.sessions.length, 0)
-    + visible.ungrouped.length + visible.archived.length;
-
-  const toggleWorkspace = (workspaceId: string) => {
-    setCollapsedWorkspaces((current) => {
-      const next = new Set(current);
-      if (next.has(workspaceId)) next.delete(workspaceId);
-      else next.add(workspaceId);
-      return next;
-    });
-  };
-
+  const archivedIds = new Set(props.catalog.archivedIds);
+  const rows = props.catalog.items.filter(matches);
+  const selectedWorkspace = scope.kind === "workspace"
+    ? props.workspacePage.items.find((item) => item.workspace_id === scope.workspaceId)
+    : undefined;
   return (
     <aside
       className={`session-sidebar ${props.open ? "open" : ""} ${rail ? "collapsed" : ""} ${props.collapsed && wide ? "fading" : ""}`}
@@ -120,79 +83,57 @@ export function SessionSidebar(props: SessionSidebarProps) {
         </button>
       </div>
       <button className="new-session-button" title="New session" aria-label="New session" onClick={props.onNew}>
-        <Plus size={rail ? 18 : 16} /> <span className="sidebar-wide">New session</span>
+        <Plus size={rail ? 18 : 16} /><span className="sidebar-wide">New session</span>
       </button>
-      {rail && (
-        <div className="sidebar-rail-actions">
-          <button type="button" title="Search sessions" aria-label="Search sessions" onClick={() => {
-            props.onToggle();
-            window.setTimeout(() => searchInput.current?.focus(), 310);
-          }}><Search size={18} /></button>
-          <button type="button" title="Refresh sessions" aria-label="Refresh sessions" disabled={props.refreshing} onClick={() => void props.onRefresh()}>
-            <RefreshCw size={18} className={props.refreshing ? "spin" : ""} />
-          </button>
-          <button type="button" title="Settings" aria-label="Open settings" onClick={props.onSettings}>
-            <Settings size={18} />
-          </button>
-        </div>
-      )}
-      <div className="sidebar-tools sidebar-wide">
-        <div className="session-search">
+      <div className="sidebar-wide">
+        <div className="sidebar-search">
           <Search size={14} />
-          <input
-            ref={searchInput}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search sessions"
-            aria-label="Search sessions"
-          />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search current page" aria-label="Search current page" />
           {query && (
-            <button className="icon-button small" type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery("")}>
+            <button className="icon-button small" type="button" aria-label="Clear search" onClick={() => setQuery("")}>
               <X size={13} />
             </button>
           )}
         </div>
-      </div>
-      <div className="sidebar-section-label sidebar-wide">
-        <span>Sessions <b>{visibleCount}</b></span>
-        <button
-          className="icon-button small"
-          type="button"
-          title="Refresh sessions"
-          aria-label="Refresh sessions"
-          disabled={props.refreshing}
-          onClick={() => void props.onRefresh()}
-        >
-          <RefreshCw size={13} className={props.refreshing ? "spin" : ""} />
-        </button>
-      </div>
-      <nav className="session-list sidebar-wide" aria-label="Sessions">
-        {visible.groups.map(({ workspace, sessions }, workspaceIndex) => {
-          const collapsed = collapsedWorkspaces.has(workspace.workspace_id) && !query;
-          const sessionRows = query || expandedSessionGroups.has(workspace.workspace_id)
-            ? sessions
-            : sessions.slice(0, COLLAPSED_SESSION_LIMIT);
-          const hiddenSessionCount = sessions.length - sessionRows.length;
-          return (
+        <div className="sidebar-section-label">
+          <span>Workspaces</span>
+          <button className="icon-button small" type="button" title="Refresh sessions" aria-label="Refresh sessions" disabled={props.refreshing} onClick={() => void props.onRefresh()}>
+            <RefreshCw size={13} />
+          </button>
+        </div>
+        <nav className="session-list" aria-label="Sessions">
+          {props.workspacePage.items.map((workspace, index) => (
             <section className="workspace-group" key={workspace.workspace_id} onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) setMenuWorkspace("");
             }}>
               <div className="workspace-row">
-                <button className="workspace-toggle" type="button" onClick={() => toggleWorkspace(workspace.workspace_id)} title={workspace.path}>
-                  {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                <button
+                  className="workspace-toggle"
+                  type="button"
+                  onClick={() => props.onSelectCatalog({ kind: "workspace", workspaceId: workspace.workspace_id })}
+                  title={workspace.path}
+                  aria-expanded={scope.kind === "workspace" && scope.workspaceId === workspace.workspace_id}
+                >
+                  {scope.kind === "workspace" && scope.workspaceId === workspace.workspace_id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   <Folder size={14} />
                   <span><b>{workspace.title}</b><small>{workspace.path}</small></span>
-                  <small>{workspace.session_ids.length}</small>
+                  <small>{workspace.session_count}</small>
                 </button>
-                <button className="icon-button small" type="button" aria-label={`More actions for workspace ${workspace.title}`} aria-expanded={menuWorkspace === workspace.workspace_id} onClick={() => setMenuWorkspace(menuWorkspace === workspace.workspace_id ? "" : workspace.workspace_id)}><MoreHorizontal size={14} /></button>
+                <button
+                  className="icon-button small"
+                  type="button"
+                  aria-label={`More actions for workspace ${workspace.title}`}
+                  aria-expanded={menuWorkspace === workspace.workspace_id}
+                  onClick={() => setMenuWorkspace(menuWorkspace === workspace.workspace_id ? "" : workspace.workspace_id)}
+                ><MoreHorizontal size={14} /></button>
               </div>
               {menuWorkspace === workspace.workspace_id && (
                 <div className="session-action-menu workspace-action-menu" role="menu">
-                  <button type="button" role="menuitem" disabled={workspaceIndex === 0} onClick={() => {
+                  <button type="button" role="menuitem" disabled={index === 0} onClick={() => {
                     setMenuWorkspace("");
                     props.onMoveWorkspace(workspace.workspace_id, -1);
                   }}><ArrowUp size={13} /> Move up</button>
-                  <button type="button" role="menuitem" disabled={workspaceIndex === visible.groups.length - 1} onClick={() => {
+                  <button type="button" role="menuitem" disabled={index === props.workspacePage.items.length - 1} onClick={() => {
                     setMenuWorkspace("");
                     props.onMoveWorkspace(workspace.workspace_id, 1);
                   }}><ArrowDown size={13} /> Move down</button>
@@ -232,66 +173,38 @@ export function SessionSidebar(props: SessionSidebarProps) {
                   <button type="button" className="text-button" onClick={() => setConfirmWorkspaceDelete("")}>Cancel</button>
                 </div>
               )}
-              {!collapsed && sessionRows.map((session, sessionIndex) => (
-                <SessionItem
-                  key={session.session_id}
-                  session={session}
-                  sidebar={props}
-                  archived={false}
-                  workspace={workspace}
-                  sessionIndex={sessionIndex}
-                />
-              ))}
-              {!collapsed && hiddenSessionCount > 0 && (
-                <button
-                  type="button"
-                  className="workspace-show-more"
-                  onClick={() => setExpandedSessionGroups((current) => new Set(current).add(workspace.workspace_id))}
-                >Show {hiddenSessionCount} more</button>
-              )}
-              {!collapsed && sessions.length > COLLAPSED_SESSION_LIMIT && hiddenSessionCount === 0 && !query && (
-                <button
-                  type="button"
-                  className="workspace-show-more"
-                  onClick={() => setExpandedSessionGroups((current) => {
-                    const next = new Set(current);
-                    next.delete(workspace.workspace_id);
-                    return next;
-                  })}
-                >Show less</button>
-              )}
-              {!collapsed && !sessions.length && <div className="workspace-empty">No matching sessions</div>}
             </section>
-          );
-        })}
-        {visible.ungrouped.length > 0 && (
-          <section className="workspace-group">
-            <div className="workspace-row">
-              <button
-                className="workspace-toggle"
-                type="button"
-                aria-expanded={!ungroupedCollapsed}
-                onClick={() => setUngroupedCollapsed((value) => !value)}
-              >
-                {ungroupedCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                <Folder size={14} />
-                <span><b>{UNGROUPED_LABEL}</b></span>
-                <small>{visible.ungrouped.length}</small>
-              </button>
-            </div>
-            {!ungroupedCollapsed && visible.ungrouped.map((session) => (
-              <SessionItem key={session.session_id} session={session} sidebar={props} archived={false} />
-            ))}
-          </section>
-        )}
-        {visible.archived.length > 0 && (
-          <details className="archived-sessions" open={Boolean(query)}>
-            <summary><ChevronRight size={13} /> Archived <small>{visible.archived.length}</small></summary>
-            {visible.archived.map((session) => <SessionItem key={session.session_id} session={session} sidebar={props} archived />)}
-          </details>
-        )}
-        {!visibleCount && !visible.groups.length && <div className="sidebar-empty">{query ? "No matching sessions" : "No sessions"}</div>}
-      </nav>
+          ))}
+          <div className="workspace-inline-action">
+            <button type="button" disabled={!props.workspacePage.canPrevious || props.workspacePage.state === "loading"} onClick={props.onPreviousWorkspaces}>Previous workspaces</button>
+            <button type="button" disabled={!props.workspacePage.canNext || props.workspacePage.state === "loading"} onClick={props.onNextWorkspaces}>Next workspaces</button>
+          </div>
+          <div className="sidebar-section-label">
+            <span>{selectedWorkspace?.title || (scope.kind === "archived" ? "Archived sessions" : scope.kind === "workspace" ? "Workspace sessions" : "All sessions")}</span>
+          </div>
+          <div className="workspace-inline-action">
+            <button type="button" aria-pressed={scope.kind === "all"} onClick={() => props.onSelectCatalog({ kind: "all" })}>All sessions</button>
+            <button type="button" aria-pressed={scope.kind === "archived"} onClick={() => props.onSelectCatalog({ kind: "archived" })}>Archived</button>
+          </div>
+          {rows.map((session) => (
+            <SessionItem
+              key={session.session_id}
+              session={session}
+              sidebar={props}
+              archived={scope.kind === "all" ? undefined : archivedIds.has(session.session_id)}
+              workspace={selectedWorkspace}
+              sessionIndex={props.catalog.items.findIndex((item) => item.session_id === session.session_id)}
+            />
+          ))}
+          {!rows.length && props.catalog.state !== "loading" && (
+            <div className="sidebar-empty">{needle ? "No matches on this page" : "No sessions on this page"}</div>
+          )}
+          <div className="workspace-inline-action">
+            <button type="button" disabled={!props.catalog.canPrevious || props.catalog.state === "loading"} onClick={props.onPreviousSessions}>Previous sessions</button>
+            <button type="button" disabled={!props.catalog.canNext || props.catalog.state === "loading"} onClick={props.onNextSessions}>Next sessions</button>
+          </div>
+        </nav>
+      </div>
     </aside>
   );
 }
@@ -305,7 +218,7 @@ function SessionItem({
 }: {
   session: SessionSummary;
   sidebar: SessionSidebarProps;
-  archived: boolean;
+  archived: boolean | undefined;
   workspace?: WorkspaceData;
   sessionIndex?: number;
 }) {
@@ -351,7 +264,7 @@ function SessionItem({
                         setMenuOpen(false);
                         sidebar.onMoveSession(workspace.workspace_id, session.session_id, -1);
                       }}><ArrowUp size={13} /> Move up</button>
-                      <button type="button" role="menuitem" disabled={sessionIndex === workspace.session_ids.length - 1} onClick={() => {
+                      <button type="button" role="menuitem" disabled={sessionIndex === sidebar.catalog.items.length - 1} onClick={() => {
                         setMenuOpen(false);
                         sidebar.onMoveSession(workspace.workspace_id, session.session_id, 1);
                       }}><ArrowDown size={13} /> Move down</button>
@@ -362,10 +275,18 @@ function SessionItem({
                     setTitle(session.title);
                     setEditing(true);
                   }}><Pencil size={13} /> Rename</button>
-                  <button type="button" role="menuitem" onClick={() => {
-                    setMenuOpen(false);
-                    sidebar.onArchiveSession(session.session_id, !archived);
-                  }}>{archived ? <><ArrowUp size={13} /> Restore</> : <><ArrowDown size={13} /> Archive</>}</button>
+                  {archived !== true && (
+                    <button type="button" role="menuitem" onClick={() => {
+                      setMenuOpen(false);
+                      sidebar.onArchiveSession(session.session_id, true);
+                    }}><ArrowDown size={13} /> Archive</button>
+                  )}
+                  {archived !== false && (
+                    <button type="button" role="menuitem" onClick={() => {
+                      setMenuOpen(false);
+                      sidebar.onArchiveSession(session.session_id, false);
+                    }}><ArrowUp size={13} /> Restore</button>
+                  )}
                   <button type="button" role="menuitem" onClick={() => {
                     setMenuOpen(false);
                     sidebar.onFork(session.session_id);

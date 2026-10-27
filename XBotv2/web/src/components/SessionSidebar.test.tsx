@@ -1,113 +1,30 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import type { SessionSummary, WorkspaceData } from "../api/types";
+import { expect, it, vi } from "vitest";
 import { SessionSidebar } from "./SessionSidebar";
+import type { SessionSummary, WorkspaceData } from "../api/types";
 
-function session(index: number): SessionSummary {
-  return {
-    session_id: `session-${index}`,
-    title: `Session ${index}`,
-    status: "inactive",
-    active_threads: 0,
-    thread_count: 1,
-    blank: false,
-  };
-}
+const session: SessionSummary = { session_id: "s-101", title: "Later session", status: "inactive", active_threads: 0, thread_count: 1, blank: false, workspace_root: "/w" };
+const workspace: WorkspaceData = { workspace_id: "w", title: "Workspace", path: "/w", session_count: 201, created_at: "", updated_at: "" };
 
-describe("SessionSidebar", () => {
-  it("bounds workspace rows until the user expands the group", () => {
-    const sessions = Array.from({ length: 7 }, (_, index) => session(index + 1));
-    const workspace: WorkspaceData = {
-      workspace_id: "workspace-1",
-      path: "/workspace",
-      title: "Workspace",
-      session_ids: sessions.map((item) => item.session_id),
-      created_at: "2026-09-01T00:00:00Z",
-      updated_at: "2026-09-01T00:00:00Z",
-    };
-    const noop = vi.fn();
-
-    render(
-      <SessionSidebar
-        open
-        collapsed={false}
-        width={280}
-        sessions={sessions}
-        workspaces={[workspace]}
-        archivedSessionIds={[]}
-        threads={[]}
-        current={null}
-        onClose={noop}
-        onToggle={noop}
-        onSettings={noop}
-        onNew={noop}
-        onRefresh={async () => undefined}
-        refreshing={false}
-        onSession={noop}
-        onThread={noop}
-        onFork={noop}
-        onDelete={noop}
-        onRenameSession={noop}
-        onArchiveSession={noop}
-        onRenameWorkspace={noop}
-        onDeleteWorkspace={noop}
-        onMoveWorkspace={noop}
-        onMoveSession={noop}
-      />,
-    );
-
-    expect(screen.getByText("Session 5")).toBeVisible();
-    expect(screen.queryByText("Session 6")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show 2 more" }));
-    expect(screen.getByText("Session 7")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
-    expect(screen.queryByText("Session 6")).not.toBeInTheDocument();
-  });
-});
-
-/**
- * The ported rail keeps sessions outside every workspace under a named
- * `Ungrouped` node (message-actions/fork), not under a bare label.
- */
-describe("ungrouped sessions", () => {
-  it("groups sessions with no workspace under the Ungrouped node", () => {
-    const [first, second] = [session(1), session(2)];
-    const noop = vi.fn();
-    render(
-      <SessionSidebar
-        open
-        collapsed={false}
-        width={280}
-        sessions={[first, second]}
-        workspaces={[]}
-        archivedSessionIds={[]}
-        threads={[]}
-        current={null}
-        onClose={noop}
-        onToggle={noop}
-        onSettings={noop}
-        onNew={noop}
-        onRefresh={async () => undefined}
-        refreshing={false}
-        onSession={noop}
-        onThread={noop}
-        onFork={noop}
-        onDelete={noop}
-        onRenameSession={noop}
-        onArchiveSession={noop}
-        onRenameWorkspace={noop}
-        onDeleteWorkspace={noop}
-        onMoveWorkspace={noop}
-        onMoveSession={noop}
-      />,
-    );
-    const group = screen.getByRole("button", { name: /Ungrouped/ });
-    expect(group.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Session 1")).toBeTruthy();
-    expect(screen.queryByText("Other sessions")).toBeNull();
-
-    fireEvent.click(group);
-    expect(group.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Session 1")).toBeNull();
-  });
+it("navigates the bounded workspace and member pages and selects a session", () => {
+  const noop = vi.fn();
+  const select = vi.fn();
+  const open = vi.fn();
+  const nextSessions = vi.fn();
+  const previousSessions = vi.fn();
+  render(<SessionSidebar open collapsed={false} width={280}
+    catalog={{ items: [session], archivedIds: [], scope: { kind: "workspace", workspaceId: "w" }, canPrevious: true, canNext: true, eventCursor: 0, state: "idle", error: null }}
+    workspacePage={{ items: [workspace], canPrevious: false, canNext: true, eventCursor: 0, state: "idle", error: null }}
+    threads={[]} current={{ session_id: "off-page", thread_id: "main" }} onClose={noop} onToggle={noop} onSettings={noop} onNew={noop} onRefresh={async () => undefined} refreshing={false}
+    onSession={open} onThread={noop} onFork={noop} onDelete={noop} onRenameSession={noop} onArchiveSession={noop} onRenameWorkspace={noop} onDeleteWorkspace={noop} onMoveWorkspace={noop} onMoveSession={noop}
+    onSelectCatalog={select} onNextSessions={nextSessions} onPreviousSessions={previousSessions} onNextWorkspaces={noop} onPreviousWorkspaces={noop} />);
+  expect(screen.getByText("201")).toBeVisible();
+  fireEvent.click(screen.getByText("Later session"));
+  expect(open).toHaveBeenCalledWith("s-101");
+  fireEvent.click(screen.getByRole("button", { name: "Next sessions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Previous sessions" }));
+  expect(nextSessions).toHaveBeenCalledOnce();
+  expect(previousSessions).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+  expect(select).toHaveBeenCalledWith({ kind: "archived" });
 });

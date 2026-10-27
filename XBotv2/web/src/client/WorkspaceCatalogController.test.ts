@@ -1,112 +1,54 @@
-import { describe, expect, it, vi } from "vitest";
-import type { ViewEvent, SessionSummary, WorkspaceData } from "../api/types";
+import { expect, it, vi } from "vitest";
 import { WorkspaceCatalogController } from "./WorkspaceCatalogController";
 import { SessionCatalog } from "./SessionCatalog";
 import { WorkspaceManager } from "./WorkspaceManager";
 
-describe("WorkspaceCatalogController", () => {
-  it("connects from the oldest baseline and projects replayed frames", async () => {
-    const session = sessionSummary("Before");
-    const workspace = workspaceData();
-    const cursors: number[] = [];
-    const api = {
-      listSessions: async () => ({ sessions: [session], event_cursor: 4 }),
-      renameSession: async () => session,
-      listWorkspaces: async () => ({ items: [workspace], archived_session_ids: [], event_cursor: 6 }),
-      createWorkspace: async () => workspace,
-      renameWorkspace: async () => workspace,
-      deleteWorkspace: async () => undefined,
-      reorderWorkspace: async () => [workspace.workspace_id],
-      reorderWorkspaceSession: async () => workspace,
-      setSessionArchived: async () => [],
-      async *streamWorkspaceEvents(after: number): AsyncGenerator<import("../api/wire").ServerEvent> {
-        cursors.push(after);
-        yield { protocol_version: "xbotv2.v3", session_id: "", thread_id: "", sequence: 5, scope: { kind: "session" }, kind: "catalog/session-changed", payload: catalogSessionFrame(5, "After").data };
-        await new Promise(() => undefined);
-      },
-    };
-    const sessions = new SessionCatalog(api);
-    const workspaces = new WorkspaceManager(api);
-    const controller = new WorkspaceCatalogController(api, sessions, workspaces, {
-      onConnection: vi.fn(),
-      onError: vi.fn(),
-    });
-
-    await controller.start();
-    await vi.waitFor(() => expect(sessions.getSnapshot().items[0]?.title).toBe("After"));
-
-    expect(cursors).toEqual([4]);
-    expect(sessions.getSnapshot().eventCursor).toBe(5);
-    expect(workspaces.getSnapshot().eventCursor).toBe(6);
-    controller.stop();
-  });
-
-  it("reuses only an accounted, unarchived blank session", async () => {
-    const blank = { ...sessionSummary("Blank"), blank: true };
-    const workspace = workspaceData();
-    const api = {
-      listSessions: async () => ({ sessions: [blank], event_cursor: 0 }),
-      renameSession: async () => blank,
-      listWorkspaces: async () => ({ items: [workspace], archived_session_ids: [], event_cursor: 0 }),
-      createWorkspace: async () => workspace,
-      renameWorkspace: async () => workspace,
-      deleteWorkspace: async () => undefined,
-      reorderWorkspace: async () => [workspace.workspace_id],
-      reorderWorkspaceSession: async () => workspace,
-      setSessionArchived: async () => [],
-      async *streamWorkspaceEvents(): AsyncGenerator<import("../api/wire").ServerEvent> {
-        await new Promise(() => undefined);
-      },
-    };
-    const sessions = new SessionCatalog(api);
-    const workspaces = new WorkspaceManager(api);
-    const controller = new WorkspaceCatalogController(api, sessions, workspaces, {
-      onConnection: vi.fn(), onError: vi.fn(),
-    });
-    await Promise.all([sessions.refresh(), workspaces.refresh()]);
-
-    expect(controller.reusableSession("/workspace")).toEqual(blank);
-    expect(controller.reusableSession("/other")).toBeUndefined();
-    workspaces.handleCatalogEvent({
-      protocol_version: "xbotv2.v3", session_id: "", thread_id: "workspaces",
-      request_id: "", sequence: 1, type: "catalog/archived-sessions-changed",
-      data: { archived_session_ids: [blank.session_id] },
-    });
-    expect(controller.reusableSession("/workspace")).toBeUndefined();
-  });
+it("subscribes from the older page snapshot cursor", async () => {
+  const cursors: number[] = [];
+  const api = {
+    listSessions: vi.fn(async () => ({ sessions: [], previous_cursor: null, next_cursor: null, event_cursor: 4 })),
+    listWorkspaceSessions: vi.fn(), listArchivedSessions: vi.fn(), renameSession: vi.fn(),
+    listWorkspaces: vi.fn(async () => ({ items: [], previous_cursor: null, next_cursor: null, event_cursor: 6 })),
+    createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(), reorderWorkspace: vi.fn(), reorderWorkspaceSession: vi.fn(), setSessionArchived: vi.fn(),
+    async *streamWorkspaceEvents(after: number): AsyncGenerator<import("../api/wire").ServerEvent> { cursors.push(after); await new Promise(() => undefined); },
+  };
+  const controller = new WorkspaceCatalogController(api, new SessionCatalog(api), new WorkspaceManager(api), { onConnection: vi.fn(), onError: vi.fn() });
+  await controller.start();
+  await vi.waitFor(() => expect(cursors).toEqual([4]));
+  controller.stop();
 });
 
-function sessionSummary(title: string): SessionSummary {
-  return {
-    session_id: "session-1",
-    title,
-    workspace_root: "/workspace",
-    status: "inactive",
-    active_threads: 0,
-    thread_count: 1,
-    blank: false,
+it("refreshes both pages after event cursor expiry and stops cleanly", async () => {
+  const { XBotApiError } = await import("../api/client");
+  const cursors: number[] = [];
+  let version = 0;
+  const api = {
+    listSessions: vi.fn(async () => ({ sessions: [], previous_cursor: null, next_cursor: null, event_cursor: version ? 10 : 1 })),
+    listWorkspaceSessions: vi.fn(),
+    listArchivedSessions: vi.fn(),
+    renameSession: vi.fn(),
+    listWorkspaces: vi.fn(async () => ({ items: [], previous_cursor: null, next_cursor: null, event_cursor: version ? 10 : 1 })),
+    createWorkspace: vi.fn(),
+    renameWorkspace: vi.fn(),
+    deleteWorkspace: vi.fn(),
+    reorderWorkspace: vi.fn(),
+    reorderWorkspaceSession: vi.fn(),
+    setSessionArchived: vi.fn(),
+    async *streamWorkspaceEvents(after: number): AsyncGenerator<import("../api/wire").ServerEvent> {
+      cursors.push(after);
+      if (version++ === 0) throw new XBotApiError(409, "workspace_event_cursor_expired", "expired", true);
+      await new Promise(() => undefined);
+    },
   };
-}
-
-function workspaceData(): WorkspaceData {
-  return {
-    workspace_id: "workspace-1",
-    path: "/workspace",
-    title: "Workspace",
-    session_ids: ["session-1"],
-    created_at: "2026-01-01T00:00:00Z",
-    updated_at: "2026-01-01T00:00:00Z",
-  };
-}
-
-function catalogSessionFrame(sequence: number, title: string): ViewEvent {
-  return {
-    protocol_version: "xbotv2.v3",
-    session_id: "",
-    thread_id: "workspaces",
-    request_id: "",
-    sequence,
-    type: "catalog/session-changed",
-    data: { session: sessionSummary(title) },
-  };
-}
+  const controller = new WorkspaceCatalogController(
+    api,
+    new SessionCatalog(api),
+    new WorkspaceManager(api),
+    { onConnection: vi.fn(), onError: vi.fn() },
+  );
+  await controller.start();
+  await vi.waitFor(() => expect(cursors).toEqual([1, 10]));
+  expect(api.listSessions).toHaveBeenCalledTimes(2);
+  expect(api.listWorkspaces).toHaveBeenCalledTimes(2);
+  controller.stop();
+});

@@ -402,11 +402,6 @@ export function useXBot() {
       || state.current?.workspace_root
       || workspaces.items[0]?.path
       || "";
-    const reusable = workspaceCatalog.reusableSession(targetWorkspace);
-    if (reusable) {
-      await openExistingSession(reusable.session_id, targetWorkspace);
-      return;
-    }
     if (navigationBlocked) {
       notify(navigationBlockMessage);
       return;
@@ -464,10 +459,11 @@ export function useXBot() {
   const setSessionArchived = useCallback(async (sessionId: string, archived: boolean) => {
     try {
       await workspaceManager.setSessionArchived(sessionId, archived);
+      await sessionCatalog.refresh();
     } catch (error) {
       reportError(error);
     }
-  }, [reportError, workspaceManager]);
+  }, [reportError, workspaceManager, sessionCatalog]);
 
   const moveSession = useCallback(async (
     workspaceId: string,
@@ -475,11 +471,12 @@ export function useXBot() {
     direction: -1 | 1,
   ) => {
     try {
-      await workspaceManager.moveSession(workspaceId, sessionId, direction);
+      await workspaceManager.moveSession(workspaceId, sessions.items.map((item) => item.session_id), sessionId, direction);
+      await sessionCatalog.refresh();
     } catch (error) {
       reportError(error);
     }
-  }, [reportError, workspaceManager]);
+  }, [reportError, workspaceManager, sessionCatalog, sessions.items]);
 
   const resumeSession = openExistingSession;
 
@@ -1109,7 +1106,7 @@ export function useXBot() {
     try {
       await api.deleteSession(sessionId);
       if (generation !== navigationGeneration.current) return;
-      sessionCatalog.remove(sessionId);
+      await sessionCatalog.remove(sessionId);
       await workspaceManager.refresh();
       if (generation !== navigationGeneration.current) return;
       if (deletingCurrent) {
@@ -1304,7 +1301,13 @@ export function useXBot() {
     hasNewer,
     sessions: sessions.items,
     workspaces: workspaces.items,
-    archivedSessionIds: workspaces.archivedSessionIds,
+    catalog: sessions,
+    workspacePage: workspaces,
+    selectCatalog: (scope: import("../client/SessionCatalog").SessionScope) => sessionCatalog.select(scope).catch(reportError),
+    nextSessions: () => sessionCatalog.next().catch(reportError),
+    previousSessions: () => sessionCatalog.back().catch(reportError),
+    nextWorkspaces: () => workspaceManager.next().catch(reportError),
+    previousWorkspaces: () => workspaceManager.back().catch(reportError),
     commands,
     commandRunning,
     notification,
