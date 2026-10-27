@@ -8,7 +8,7 @@ It owns four things the rest of the client must not worry about:
 * **recovery** -- an evicted cursor resubscribes from the oldest retained frame,
   and a rebuild re-opens the session for a fresh baseline. Both are bounded, and
   running out of budget is reported instead of looping.
-* **the watchdog** -- the thread listing is the server's own answer for whether a
+* **the watchdog** -- the thread summary is the server's own answer for whether a
   turn is running. The session descriptor has no such field, so this read is what
   keeps the status honest after a lost terminal frame or a mid-turn attach.
 * **writes** -- submission and interrupt. A submission carries a client-generated
@@ -127,7 +127,9 @@ class SessionBackend(Protocol):
 
     async def list_sessions(self, *, limit: int = 100, cursor: str | None = None, workspace_root: str | None = None) -> SessionListResponse: ...
 
-    async def list_threads(self, session_id: str) -> ThreadListResponse: ...
+    async def list_threads(self, session_id: str, *, limit: int = 100, cursor: str | None = None, parent_thread_id: str | None = None, kind: Literal["main", "subagent"] | None = None) -> ThreadListResponse: ...
+
+    async def get_thread(self, session_id: str, thread_id: str) -> ThreadSummary: ...
 
     async def list_jobs(
         self, session_id: str, thread_id: str
@@ -361,17 +363,11 @@ class TransportSession:
         return opened
 
     async def _main_thread(self, session_id: str) -> str:
-        """The thread a session is attached by: its main one, or its first."""
-        listing = await self._backend.list_threads(session_id)
-        threads = listing.threads
-        main = next(
-            (item for item in threads if item.kind == "main"),
-            None,
-        )
-        chosen = main if main is not None else (threads[0] if threads else None)
-        if chosen is None:
-            raise ValueError(f"session {session_id!r} has no thread to attach to")
-        return chosen.thread_id
+        """Find the session's main thread without scanning other pages."""
+        listing = await self._backend.list_threads(session_id, kind="main", limit=1)
+        if not listing.threads:
+            raise ValueError(f"session {session_id!r} has no main thread to attach to")
+        return listing.threads[0].thread_id
 
     async def list_providers(self) -> ProviderCatalog:
         """The provider/model catalogue, for the pickers."""
@@ -455,10 +451,9 @@ class TransportSession:
             answer=answer,
         )
 
-    async def list_threads(self) -> tuple[ThreadSummary, ...]:
-        """The threads this session holds, for the thread picker."""
-        listing = await self._backend.list_threads(self._session_id)
-        return tuple(listing.threads)
+    async def list_threads(self, *, cursor: str | None = None) -> ThreadListResponse:
+        """One page of this session's threads for the picker."""
+        return await self._backend.list_threads(self._session_id, cursor=cursor)
 
     async def list_sessions(self, *, cursor: str | None = None) -> SessionListResponse:
         """One page of sessions for the session picker."""
@@ -614,9 +609,8 @@ class TransportSession:
         """
         target_thread = thread_id or self._thread_id
         if mode == "resume" and session_id:
-            listing = await self._backend.list_threads(session_id)
-            summary = _find_thread(listing.threads, target_thread)
-            if summary is not None and summary.kind == "subagent":
+            summary = await self._backend.get_thread(session_id, target_thread)
+            if summary.kind == "subagent":
                 return await self._backend.open_thread(
                     session_id,
                     thread_id=target_thread,
@@ -669,18 +663,11 @@ class TransportSession:
         server is visible without one error line per tick.
         """
         try:
-            listing = await self._backend.list_threads(self._session_id)
+            summary = await self._backend.get_thread(self._session_id, self._thread_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._note_watchdog_failure(str(exc))
-            return False
-        summary = _find_thread(listing.threads, self._thread_id)
-        if summary is None:
-            self._note_watchdog_failure(
-                f"thread {self._thread_id!r} is no longer listed for session "
-                f"{self._session_id!r}"
-            )
             return False
         self._watchdog_failures = 0
         self._emit(ThreadRead(payload=summary))
@@ -746,14 +733,6 @@ class TransportSession:
             self._emit(InterruptSettled(cancelled=False))
             return
         self._emit(InterruptSettled(cancelled=result.cancelled))
-
-def _find_thread(
-    threads: Sequence[ThreadSummary], thread_id: str
-) -> ThreadSummary | None:
-    for summary in threads:
-        if summary.thread_id == thread_id:
-            return summary
-    return None
 
 
 __all__ = ["SessionBackend", "TransportConfig", "TransportSession"]

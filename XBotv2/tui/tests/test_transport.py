@@ -812,6 +812,7 @@ async def test_switching_threads_asks_for_a_bounded_window_too(
 ) -> None:
     recorder = Recorder()
     transport = await connected(backend, recorder, history_window=40)
+    backend.threads = (*backend.threads, thread(thread_id="other"))
 
     await transport.switch(session_id="s2", thread_id="other")
 
@@ -897,3 +898,24 @@ async def test_a_failed_older_page_is_reported_not_raised(
 
     assert "unreachable" in recorder.only(OlderHistoryFailed).message
     assert not recorder.of(OlderHistoryLoaded)
+
+async def test_target_beyond_first_thread_page_is_opened_and_watched(backend: ScriptedBackend) -> None:
+    backend.threads = (thread(), *(thread(thread_id=f"child-{index:03}", kind="subagent", parent_thread_id=THREAD, turn_status="running") for index in range(101)))
+    backend.session = snapshot(thread_id="child-100")
+    recorder = Recorder()
+    transport = await connected(backend, recorder)
+    await transport.switch(session_id=SESSION, thread_id="child-100")
+    assert backend.opened_threads[-1]["thread_id"] == "child-100"
+    assert backend.thread_reads[-1] == (SESSION, "child-100")
+    assert recorder.only(ThreadRead).payload.turn_status == "running"
+    assert not backend.thread_list_requests
+
+
+async def test_main_thread_lookup_does_not_fall_back_to_subagent(backend: ScriptedBackend) -> None:
+    backend.threads = (thread(thread_id="child", kind="subagent"),)
+    recorder = Recorder()
+    transport = await connected(backend, recorder)
+    with pytest.raises(ValueError, match="no main thread"):
+        await transport.switch(session_id=SESSION, thread_id="")
+    assert backend.thread_list_requests[-1]["kind"] == "main"
+    assert backend.thread_list_requests[-1]["limit"] == 1

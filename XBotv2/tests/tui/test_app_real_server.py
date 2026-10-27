@@ -45,7 +45,7 @@ from XBotv2.llm.api.contracts import LLM
 from XBotv2.main import open_runtime
 from XBotv2.loader.api.contracts import PluginOverlay
 from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
-from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
+from XBotv2.tui.tests.factories import PNG_BYTES, tui_app
 from XBotv2.tui.impl.app import TuiApp
 from XBotv2.tui.impl.transport import TransportConfig
 from XBotv2.tui.impl.view.composer import Composer, composer_can_submit

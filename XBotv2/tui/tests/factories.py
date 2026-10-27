@@ -331,6 +331,8 @@ class ScriptedBackend:
     hello_thread_id: str = THREAD
     #: The session ids the client asked a thread listing for, in order.
     read_threads: list[str] = field(default_factory=list)
+    thread_reads: list[tuple[str, str]] = field(default_factory=list)
+    thread_list_requests: list[dict[str, Any]] = field(default_factory=list)
 
     # --- lifecycle ----------------------------------------------------
     async def hello(self, **kwargs: Any) -> Any:
@@ -516,11 +518,25 @@ class ScriptedBackend:
         return HistoryPage(items=(), older_cursor=None)
 
     # --- reads --------------------------------------------------------
-    async def list_threads(self, session_id: str) -> Any:
-        self.read_threads.append(session_id)
+    async def list_threads(self, session_id: str, *, limit: int = 100, cursor: str | None = None, parent_thread_id: str | None = None, kind: str | None = None) -> Any:
+        self.thread_list_requests.append({"session_id": session_id, "limit": limit, "cursor": cursor, "parent_thread_id": parent_thread_id, "kind": kind})
         if self.thread_error is not None:
             raise self.thread_error
-        return type("Threads", (), {"session_id": session_id, "threads": list(self.threads)})()
+        items = [item for item in self.threads if (kind is None or item.kind == kind) and (parent_thread_id is None or item.parent_thread_id == parent_thread_id)]
+        start = int(cursor) if cursor is not None else 0
+        next_cursor = str(start + limit) if start + limit < len(items) else None
+        previous_cursor = str(max(0, start - limit)) if start else None
+        return type("Threads", (), {"session_id": session_id, "threads": items[start:start + limit], "next_cursor": next_cursor, "previous_cursor": previous_cursor})()
+
+    async def get_thread(self, session_id: str, thread_id: str) -> ThreadSummary:
+        self.read_threads.append(session_id)
+        self.thread_reads.append((session_id, thread_id))
+        if self.thread_error is not None:
+            raise self.thread_error
+        for item in self.threads:
+            if item.thread_id == thread_id:
+                return item
+        raise ValueError(f"thread {thread_id!r} not found")
 
     async def list_jobs(self, session_id: str, thread_id: str) -> Any:
         self.job_reads.append((session_id, thread_id))

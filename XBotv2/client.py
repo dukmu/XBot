@@ -267,9 +267,20 @@ class XBotClient:
             "POST", f"/sessions/{_segment(session_id)}/close", CloseResponse
         )
 
-    async def list_threads(self, session_id: str) -> ThreadListResponse:
+    async def list_threads(
+        self, session_id: str, *, limit: int = 100, cursor: str | None = None,
+        parent_thread_id: str | None = None, kind: Literal["main", "subagent"] | None = None,
+    ) -> ThreadListResponse:
+        params: dict[str, JsonValue] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        if parent_thread_id is not None:
+            params["parent_thread_id"] = parent_thread_id
+        if kind is not None:
+            params["kind"] = kind
         return await self._request(
-            "GET", f"/sessions/{_segment(session_id)}/threads", ThreadListResponse
+            "GET", f"/sessions/{_segment(session_id)}/threads", ThreadListResponse,
+            params=params,
         )
 
     async def open_thread(

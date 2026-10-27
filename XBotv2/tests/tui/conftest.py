@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from XBotv2.tests.tui.factories import ScriptedBackend
+from XBotv2.tui.tests.factories import ScriptedBackend
 
 
 @pytest.fixture

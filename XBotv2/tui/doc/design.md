@@ -6,4 +6,4 @@ The implementation depends on the HTTP client capability, command registry, shar
 
 `TextualTuiConfig` configures the workspace, session and thread, optional Agent, refresh interval and history display/retention limits. For example, a client profile with `workspace: .` and `thread_id: agent` opens the default workspace and Agent thread. `session_id` selects an existing session for resume; without one the client starts a new session.
 
-The `/session` picker loads one page at a time. Its previous and next page rows navigate the catalogue; the filter applies to the current page.
+The `/session` and `/thread` pickers load one page at a time. Its previous and next page rows navigate the catalogue; the filter applies to the current page.

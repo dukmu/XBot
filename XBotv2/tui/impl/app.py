@@ -883,15 +883,7 @@ class TuiApp(App[None]):
 
     async def action_agents(self) -> None:
         """Inspect the server's subagent threads through the shared picker."""
-        await self._choose(
-            title="Subagents",
-            load=self._load_threads,
-            apply=self._apply_thread,
-            description="Select a transcript to inspect; subagent threads are read-only.",
-            initial_value=(
-                self.controller.state.thread_id if self.controller is not None else None
-            ),
-        )
+        await self._choose_threads()
 
     async def _cmd_jobs(self, args: str) -> None:
         """Show the tasks this client is tracking; anything else is the server's."""
@@ -940,13 +932,6 @@ class TuiApp(App[None]):
         await self._choose(title="Agents", load=self._load_agents, apply=self._apply_agent)
 
     # --- rows, and what choosing one does ---------------------------------
-    async def _load_threads(self):
-        assert self.controller is not None
-        return thread_options(
-            await self.controller.threads(),
-            current=self.controller.state.thread_id,
-        )
-
     async def _load_providers(self):
         assert self.controller is not None
         return provider_options(
@@ -1030,11 +1015,35 @@ class TuiApp(App[None]):
                 return
             await self._switch_thread(target)
             return
+        await self._choose_threads()
+
+    async def _choose_threads(self, cursor: str | None = None) -> None:
+        assert self.controller is not None
+        try:
+            page = await self.controller.threads(cursor=cursor)
+        except Exception as exc:  # noqa: BLE001 — the user must see the failure
+            self._notify("subagents", f"Could not list threads: {exc}")
+            return
+        options = list(thread_options(page.threads, current=self.controller.state.thread_id))
+        if page.previous_cursor is not None:
+            options.insert(0, Option(value="\0previous", label="← Previous page"))
+        if page.next_cursor is not None:
+            options.append(Option(value="\0next", label="Next page →"))
+
+        async def load():
+            return options
+
+        async def apply(value: str) -> None:
+            if value == "\0previous":
+                await self._choose_threads(page.previous_cursor)
+            elif value == "\0next":
+                await self._choose_threads(page.next_cursor)
+            else:
+                await self._apply_thread(value)
+
         await self._choose(
-            title="Subagents",
-            load=self._load_threads,
-            apply=self._apply_thread,
-            description="Select a transcript to inspect; subagent threads are read-only.",
+            title="Subagents", load=load, apply=apply,
+            description="Filter this page; navigate with page rows. Subagent threads are read-only.",
             initial_value=self.controller.state.thread_id,
         )
 

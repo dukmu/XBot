@@ -576,7 +576,7 @@ async def test_the_thread_list_comes_from_the_server(backend: ScriptedBackend) -
     backend.threads = (thread(), thread(thread_id="child", kind="subagent"))
     control, _view = controller(backend)
     threads = await control.threads()
-    assert [item.thread_id for item in threads] == [THREAD, "child"]
+    assert [item.thread_id for item in threads.threads] == [THREAD, "child"]
 
 
 # --- the queued-input panel ------------------------------------------------

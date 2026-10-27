@@ -370,9 +370,9 @@ class TuiController:
         """Run one server-owned command; the caller shows what it answered."""
         return await self.transport.run_command(raw)
 
-    async def threads(self) -> list[Any]:
-        """The threads this session holds, for the picker."""
-        return list(await self.transport.list_threads())
+    async def threads(self, *, cursor: str | None = None):
+        """One page of this session's threads for the picker."""
+        return await self.transport.list_threads(cursor=cursor)
 
     async def interrupt(self) -> None:
         await self.transport.interrupt()

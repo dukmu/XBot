@@ -2572,3 +2572,26 @@ async def test_session_picker_navigates_pages_and_selects_session() -> None:
         await pilot.press("down", "enter")
         await settle(pilot)
         assert app.controller.state.session_id == "item-100"
+
+async def test_thread_picker_navigates_pages_and_opens_read_only_subagent() -> None:
+    backend = ScriptedBackend(threads=(thread(), *(thread(thread_id=f"child-{index:03}", kind="subagent", parent_thread_id=THREAD, agent="task") for index in range(100))))
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("/thread")
+        await pilot.press("enter")
+        await settle(pilot)
+        await pilot.press("up", "enter")
+        await settle(pilot)
+        assert [option.value for option in app.screen.model.options] == ["\0previous", "child-099"]
+        await pilot.press("enter")
+        await settle(pilot)
+        assert app.screen.model.options[-1].value == "\0next"
+        await pilot.press("up", "enter")
+        await settle(pilot)
+        backend.session = snapshot(thread_id="child-099")
+        await pilot.press("down", "enter")
+        await settle(pilot)
+        assert app.controller.state.thread_id == "child-099"
+        assert app.controller.state.read_only
