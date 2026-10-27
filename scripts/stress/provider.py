@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 from collections import deque
 from typing import Any
@@ -70,6 +71,8 @@ class NetworkMockLLM:
         timeout_delay_seconds: float = 0.2,
         tool_steps: int = 1,
         capture_requests: bool = True,
+        product_workload: bool = False,
+        shell_command: str = "printf stress-tool",
     ) -> None:
         if fault not in {"", "disconnect", "http_error", "invalid_json", "invalid_utf8", "timeout"}:
             raise ValueError(f"unknown network provider fault: {fault}")
@@ -78,6 +81,8 @@ class NetworkMockLLM:
         self.mock_tools = mock_tools
         self.tool_steps = tool_steps
         self.capture_requests = capture_requests
+        self.product_workload = product_workload
+        self.shell_command = shell_command
         self.tool_responses = 0
         self.tool_calls = 0
         self.agent_requests = 0
@@ -154,10 +159,41 @@ class NetworkMockLLM:
                 recent_tools += 1
         if self.mock_tools and payload.get("tools") and recent_tools < self.tool_steps:
             self.tool_calls += 1
-            arguments = json.dumps({"command": "printf stress-tool"})
+            name = "shell"
+            arguments_data = {"command": self.shell_command}
+            if self.product_workload:
+                number = None
+                turn_text = ""
+                for message in reversed(payload["messages"]):
+                    if message.get("role") != "user":
+                        continue
+                    content = message.get("content", "")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            part.get("text", "") for part in content if isinstance(part, dict)
+                        )
+                    match = re.search(r"Product workload turn (\d+)", str(content))
+                    if match:
+                        number = int(match.group(1))
+                        turn_text = str(content)
+                        break
+                if number is None:
+                    raise ValueError("product turn marker missing from provider request")
+                actions = []
+                if number == 1:
+                    actions.extend(("task_create", {"subject": f"Workload task {i}"}) for i in range(1, 6))
+                target = re.search(r"complete_task=([A-Za-z0-9._-]+)", turn_text)
+                if target:
+                    actions.append(("task_update", {"taskId": target.group(1), "status": "completed"}))
+                actions.append(("team_publish", {"team": "stress", "content": f"update {number}", "mentions": []}))
+                if "read_board=1" in turn_text:
+                    actions.append(("team_latest", {"team": "stress", "n": 3}))
+                if recent_tools < len(actions):
+                    name, arguments_data = actions[recent_tools]
+            arguments = json.dumps(arguments_data)
             yield await frame({"tool_calls": [{
-                "index": 0, "id": f"stress-shell-{request_id}", "type": "function",
-                "function": {"name": "shell", "arguments": arguments[:7]},
+                "index": 0, "id": f"stress-{name}-{request_id}", "type": "function",
+                "function": {"name": name, "arguments": arguments[:7]},
             }]})
             yield await frame({"tool_calls": [{
                 "index": 0, "function": {"arguments": arguments[7:19]},

@@ -11,8 +11,11 @@ from contextlib import AsyncExitStack, aclosing
 import gc
 import json
 import os
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 import statistics
+import subprocess
 import time
 import tracemalloc
 
@@ -26,18 +29,29 @@ from .server import LiveMockServerHarness
 
 def disk_sizes(root: Path) -> dict[str, int]:
     totals = {"jsonl": 0, "sqlite": 0, "wal": 0, "other": 0}
-    for directory, _, files in os.walk(root):
-        for name in files:
-            path = Path(directory) / name
-            try:
-                size = path.stat().st_size
-            except FileNotFoundError:
-                continue
-            category = "wal" if name.endswith("-wal") else (
-                "sqlite" if name.endswith(".sqlite3") else
-                "jsonl" if name.endswith(".jsonl") else "other"
-            )
-            totals[category] += size
+    directories = [root]
+    while directories:
+        directory = directories.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            directories.append(Path(entry.path))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        size = entry.stat(follow_symlinks=False).st_size
+                    except FileNotFoundError:
+                        continue
+                    name = entry.name
+                    category = "wal" if name.endswith("-wal") else (
+                        "sqlite" if name.endswith(".sqlite3") else
+                        "jsonl" if name.endswith(".jsonl") else "other"
+                    )
+                    totals[category] += size
+        except FileNotFoundError:
+            continue
     totals["total"] = sum(totals.values())
     return totals
 
@@ -67,6 +81,22 @@ def process_details() -> dict:
     return details
 
 
+def source_state() -> dict:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parents[2],
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            check=True, capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parents[2],
+        ).stdout
+        return {"commit": commit, "tracked_dirty": bool(status.strip())}
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "tracked_dirty": None}
+
+
 def sample(label: str, data_dir: Path | None) -> dict:
     current, peak = tracemalloc.get_traced_memory()
     objects = gc.get_objects()
@@ -94,6 +124,7 @@ def sample(label: str, data_dir: Path | None) -> dict:
         "active_contexts": active_contexts,
         "active_session_subscribers": active_subscribers,
         "asyncio_tasks": sum(not task.done() for task in asyncio.all_tasks()),
+        "system_load_average": os.getloadavg() if hasattr(os, "getloadavg") else None,
         "disk": disk_sizes(data_dir) if data_dir is not None else None,
     }
 
@@ -108,6 +139,20 @@ async def consume_until(client, session_id, cursor, terminal, counts, tool_laten
                 if not isinstance(outcome, dict) or outcome.get("kind") != "succeeded":
                     raise RuntimeError(f"tool did not succeed: {outcome}")
                 counts["tool_succeeded"] += 1
+                call = event.payload.get("call", {})
+                name = call.get("name", "") if isinstance(call, dict) else ""
+                if name:
+                    counts[f"tool.{name}"] += 1
+                if name in {"team_publish", "team_latest"}:
+                    output = outcome.get("output", {})
+                    artifacts = output.get("artifacts", []) if isinstance(output, dict) else []
+                    if not artifacts or not all(
+                        isinstance(ref, dict) and ref.get("kind") == "context"
+                        and str(ref.get("id", "")).startswith("records/")
+                        for ref in artifacts
+                    ):
+                        raise RuntimeError(f"{name} did not return a record-range artifact")
+                    counts["team_range_artifacts"] += len(artifacts)
                 timing = event.payload.get("timing", {})
                 if tool_latencies is not None and isinstance(timing, dict):
                     duration = timing.get("duration_ms")
@@ -136,8 +181,16 @@ async def run(args):
                        "compactions": compactions, "child_lifecycles": children,
                        "concurrency": n, "slow_sse": args.slow_sse,
                        "max_disk_mib": args.max_disk_mib,
-                       "max_write_mib": args.max_write_mib},
+                       "max_write_mib": args.max_write_mib,
+                       "context_window_tokens": 32768,
+                       "model_max_output_tokens": 4096,
+                       "compact_keep_recent_turns": 1,
+                       "artifact_cache_budget_bytes": 64 * 1024 * 1024},
         "measurement_scope": "one process: XBot server, network mock and stress harness",
+        "environment": {"started_utc": datetime.now(timezone.utc).isoformat(),
+                        "platform": platform.platform(), "python": platform.python_version(),
+                        "pid": os.getpid(), "cwd": os.getcwd(),
+                        "cpu_count": os.cpu_count(), "source": source_state()},
         "limitations": [
             "RSS and process IO include the mock provider and harness, not only XBot; "
             "tracemalloc and GC inspection add observer overhead.",
@@ -145,7 +198,7 @@ async def run(args):
             "File sizes are current logical file lengths; process write_bytes is not "
             "attributed per file or device.",
             "Object counts cover Python GC-tracked instances by class name, not all native resources.",
-            "Current implementation does not exercise todo, team, 200 MB output, PTY or browser.",
+            "The matrix does not include 200 MiB output, PTY or browser; large output is a separate case.",
         ],
         "samples": [], "counters": {}, "errors": [],
     }
@@ -157,6 +210,7 @@ async def run(args):
     compact_latencies = deque(maxlen=512)
     sessions = [f"product-{i}" for i in range(n)]
     cursors = [0] * n
+    task_ids = [[] for _ in range(n)]
     completed_turns = 0
     completed_compactions = 0
     completed_children = 0
@@ -165,8 +219,9 @@ async def run(args):
     started = time.perf_counter()
     try:
         async with LiveMockServerHarness(
-            60, mock_tools=True, tool_steps=7, capture_requests=False,
-            compact_recent=1, chunk_delay_ms=0,
+            60, data_dir=args.data_dir, mock_tools=True, tool_steps=7,
+            capture_requests=False, compact_recent=1, chunk_delay_ms=0,
+            product_workload=True,
         ) as harness, AsyncExitStack() as cleanup:
             server_start_ms = (time.perf_counter() - started) * 1000
             client = harness.client
@@ -176,11 +231,22 @@ async def run(args):
             if initial_write_bytes is None:
                 report["limitations"].append("Process write-byte budget unavailable on this platform.")
             report["samples"].append(sample("server_started", data_dir))
+            print(json.dumps({"phase": "server_started", "data_dir": str(data_dir),
+                              "concurrency": n}), flush=True)
+            observer = await cleanup.enter_async_context(httpx.AsyncClient(
+                base_url=harness.base_url, timeout=30,
+            ))
             for i, identity in enumerate(sessions):
                 opened_at = time.perf_counter()
                 opened = await client.open_session(session_id=identity, thread_id="main", mode="new")
                 startup_latencies.append((time.perf_counter() - opened_at) * 1000)
                 cursors[i] = opened.data.event_cursor
+                membership = await observer.put(
+                    f"/sessions/{identity}/threads/main/teams/stress/members/main"
+                )
+                membership.raise_for_status()
+                if not membership.json()["changed"]:
+                    raise RuntimeError(f"team membership not created for {identity}")
             if args.slow_sse:
                 slow_client = await cleanup.enter_async_context(httpx.AsyncClient(timeout=None))
                 slow_response = await cleanup.enter_async_context(slow_client.stream(
@@ -188,19 +254,28 @@ async def run(args):
                     params={"after": cursors[0]},
                 ))
                 slow_response.raise_for_status()
-                lines = slow_response.aiter_lines()
-                async with asyncio.timeout(10):
-                    async for line in lines:
-                        if line.startswith("data:"):
-                            break
-                report["slow_sse"] = {"socket_connected": True, "initial_cursor": cursors[0]}
+                slow_lines = slow_response.aiter_lines()
+                report["slow_sse"] = {
+                    "socket_connected": True, "initial_cursor": cursors[0],
+                    "initial_event_read": False,
+                }
             async def record_stage(label):
                 threads = []
                 for identity in sessions:
                     thread = await client.get_thread(identity, "main")
+                    base = f"/sessions/{identity}/threads/main"
+                    todo_response = await observer.get(base + "/todos")
+                    todo_response.raise_for_status()
+                    board_response = await observer.get(base + "/teams/stress/count")
+                    board_response.raise_for_status()
+                    todos = todo_response.json()
+                    board = board_response.json()
                     threads.append({
                         "session_id": identity, "status": thread.status,
                         "working_messages": thread.message_count,
+                        "active_todos": len(todos["tasks"]),
+                        "completed_todos": todos["completed_count"],
+                        "board_messages": board["count"],
                     })
                 value = sample(label, data_dir)
                 value.update({
@@ -222,6 +297,11 @@ async def run(args):
                         if result.status != "closed":
                             raise RuntimeError(f"child {child} did not close")
                         completed_children += 1
+                    if completed_children % 8 == 0 or completed_children == children:
+                        print(json.dumps({
+                            "phase": "children", "completed": completed_children,
+                            "target": children, "disk": disk_sizes(data_dir),
+                        }), flush=True)
                     if disk_sizes(data_dir)["total"] > args.max_disk_mib * 1024 * 1024:
                         raise RuntimeError("disk budget exceeded during child lifecycles")
             await record_stage("children_closed")
@@ -233,13 +313,24 @@ async def run(args):
             async def turn(i, number):
                 nonlocal completed_turns, completed_compactions
                 started = time.perf_counter()
-                await client.send_message(sessions[i], "main", f"Product workload turn {number}",
-                                          request_id=f"turn-{i}-{number}")
+                prompt = f"Product workload turn {number}"
+                stride = 2 if args.short else 8
+                if number in (stride, 2 * stride, 3 * stride, 4 * stride):
+                    target = task_ids[i][number // stride]
+                    prompt += f" complete_task={target} read_board=1"
+                await client.send_message(
+                    sessions[i], "main", prompt, request_id=f"turn-{i}-{number}",
+                )
                 cursors[i] = await asyncio.wait_for(
                     consume_until(client, sessions[i], cursors[i], "turn_ended", events, tool_latencies), 60,
                 )
                 latencies.append((time.perf_counter() - started) * 1000)
                 completed_turns += 1
+                if number == 1:
+                    response = await observer.get(f"/sessions/{sessions[i]}/threads/main/todos")
+                    response.raise_for_status()
+                    by_subject = {task["subject"]: task["id"] for task in response.json()["tasks"]}
+                    task_ids[i] = [by_subject[f"Workload task {item}"] for item in range(1, 6)]
                 count = compact_quotas[i]
                 if count and any(number == (k * quotas[i] // count) for k in range(1, count + 1)):
                     compact_started = time.perf_counter()
@@ -271,6 +362,7 @@ async def run(args):
             cleanup.push_async_callback(stop_task, guard)
             waves = max(quotas)
             marks = {max(1, waves * k // 4) for k in range(1, 5)}
+            last_progress = time.monotonic()
             for number in range(1, waves + 1):
                 work = asyncio.gather(*(turn(i, number) for i in range(n) if number <= quotas[i]))
                 done, _ = await asyncio.wait((work, guard), return_when=asyncio.FIRST_COMPLETED)
@@ -279,11 +371,28 @@ async def run(args):
                     await asyncio.gather(work, return_exceptions=True)
                     await guard
                 await work
+                if args.slow_sse and number == 1:
+                    async with asyncio.timeout(10):
+                        async for line in slow_lines:
+                            if line.startswith("data:"):
+                                report["slow_sse"]["initial_event_read"] = True
+                                break
                 disk = disk_sizes(data_dir)
                 if disk["total"] > args.max_disk_mib * 1024 * 1024:
                     raise RuntimeError(f"disk budget exceeded: {disk}")
                 if number in marks:
                     await record_stage(f"turn_wave_{number}")
+                if time.monotonic() - last_progress >= 20 or number == waves:
+                    print(json.dumps({
+                        "phase": "progress", "wave": number, "waves": waves,
+                        "turns": completed_turns, "compactions": completed_compactions,
+                        "agent_requests": harness.provider.agent_requests,
+                        "tool_successes": events["tool_succeeded"], "disk": disk,
+                        "process_io": process_io(), "process": snapshot(),
+                        "process_details": process_details(),
+                        "tracemalloc_current_bytes": tracemalloc.get_traced_memory()[0],
+                    }), flush=True)
+                    last_progress = time.monotonic()
             if args.slow_sse:
                 async with httpx.AsyncClient(timeout=10) as check:
                     async with check.stream(
@@ -320,6 +429,7 @@ async def run(args):
                 "session_open_p50_ms": percentile(list(startup_latencies), .5),
                 "session_open_p95_ms": percentile(list(startup_latencies), .95),
                 "tool_execution_samples": len(tool_latencies),
+                "tool_execution_sampling": "most recent 2048 completed tools",
                 "tool_execution_p50_ms": percentile(list(tool_latencies), .5),
                 "tool_execution_p95_ms": percentile(list(tool_latencies), .95),
                 "compact_samples": len(compact_latencies),
@@ -332,6 +442,24 @@ async def run(args):
                 raise RuntimeError("workload did not complete the requested model/tool round trips")
             if completed_compactions != compactions or completed_children != children:
                 raise RuntimeError("workload did not complete compaction or child targets")
+            if (events["tool.task_create"] != n * 5
+                or events["tool.task_update"] != n * 4
+                or events["tool.team_publish"] != turns
+                or events["tool.team_latest"] < n * 4):
+                raise RuntimeError("todo/team workload did not meet its targets")
+            for i, identity in enumerate(sessions):
+                base = f"/sessions/{identity}/threads/main"
+                todos_response = await observer.get(base + "/todos")
+                todos_response.raise_for_status()
+                todos = todos_response.json()
+                if (len(todos["tasks"]) != 1 or todos["tasks"][0]["id"] != task_ids[i][0]
+                    or todos["tasks"][0]["status"] != "pending"
+                    or todos["completed_count"] != 4):
+                    raise RuntimeError(f"unexpected todo state for {identity}: {todos}")
+                board_response = await observer.get(base + "/teams/stress/count")
+                board_response.raise_for_status()
+                if board_response.json()["count"] != quotas[i]:
+                    raise RuntimeError(f"unexpected board count for {identity}")
             for identity in sessions:
                 await client.close_session(identity)
             report["samples"].append(sample("sessions_closed", data_dir))
@@ -361,12 +489,15 @@ def main():
     parser.add_argument("--slow-sse", action="store_true")
     parser.add_argument("--max-disk-mib", type=int, default=256)
     parser.add_argument("--max-write-mib", type=int, default=2048)
+    parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.data_dir is not None and args.data_dir.exists() and any(args.data_dir.iterdir()):
+        parser.error("data-dir must be empty to isolate this run")
     if args.max_disk_mib < 1 or args.max_write_mib < 1:
         parser.error("disk and write budgets must be positive")
-    if args.short and args.concurrency == 16:
-        parser.error("short mode has too few turns to compact with 16 sessions")
+    if args.short and args.concurrency != 1:
+        parser.error("short mode requires concurrency 1 for its four staged todo completions")
     report = asyncio.run(run(args))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

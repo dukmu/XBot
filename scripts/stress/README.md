@@ -151,9 +151,14 @@ interpretation, and the unabridged JSON emitted by `--report`.
 `product` is a separate bounded-observer entry point. It starts a real XBot
 HTTP listener and the independently listening OpenAI-compatible mock, with the
 production provider adapter between them. It creates 512 user turns, each with
-seven completed shell-tool round trips and a final model request (at least
-4,096 agent model requests), at least 20 committed `/compact` operations, and
-64 child thread open/close lifecycles in batches of four. `--concurrency` is the
+seven completed tool round trips and a final model request (at least 4,096 agent
+model requests), at least 20 committed `/compact` operations, and 64 child thread
+open/close lifecycles in batches of four. The mock issues ordinary shell, todo,
+and team tool calls through the production registry: each session creates five
+tasks, keeps one pending and completes four gradually, and publishes a board
+message each turn. Every eighth turn also requests a bounded record-range
+artifact. The harness enables the optional team plugin and declares explicit
+permissions for the exercised team tools in its isolated configuration. `--concurrency` is the
 number of independent sessions (1, 4, or 16), not a product limit. The compact
 configuration retains one recent turn for this workload; the mock's recent
 request-body capture is disabled. Child threads are opened and closed through
@@ -167,13 +172,12 @@ PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress.product \
 ```
 
 Short mode uses eight user turns, two compactions and four child lifecycles;
-it supports concurrency 1 or 4. `--slow-sse` keeps a real socket open after
+it supports concurrency 1. `--slow-sse` keeps a real socket open after
 reading its initial event and separately attempts a new connection using the
 initial cursor. A 409 on that reconnect establishes cursor expiry, not that the
 held connection itself was blocked by TCP buffering. The full workload requires
 the 409 when this option is selected; short mode may not fill the event window.
-The 200 MB output, todo, shared board, PTY and browser paths are separate and
-are not exercised by this entry point.
+The 200 MiB output, PTY and browser paths are separate from this matrix.
 
 The report records bounded latency samples, per-stage process RSS and
 tracemalloc, GC-tracked object counts, active Context and session-subscriber counts, file
@@ -191,3 +195,17 @@ bounded at 2 GiB after server startup. The running-turn monitor checks both
 budgets every 250 ms; override them with `--max-disk-mib` or `--max-write-mib`
 when a larger workload is intentional. Results and runtime data
 remain local; reports must not be committed.
+
+The separate large-output case generates 200 MiB through the normal shell tool,
+then streams its artifact over HTTP and checks each chunk without retaining the
+body. Run it once for a matrix, with a separate report and data directory:
+
+```sh
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress.large_output \
+  --data-dir /tmp/xbot-large-data --output /tmp/xbot-large.json
+```
+
+The case records its exact target and verified byte count. `--bytes` can set a
+smaller development probe; such a result is not evidence of the 200 MiB case.
+Its default live file-size and process-write budgets are 512 MiB and 2 GiB;
+shell subprocess writes are not attributed by `/proc/self/io`.

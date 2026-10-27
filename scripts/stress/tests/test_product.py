@@ -35,3 +35,74 @@ async def test_real_provider_tool_steps_and_compaction(tmp_path):
         assert measured["process"]["open_fds"] is not None
         assert measured["active_contexts"] > 0
         assert process_details()["rss_bytes"] is not None
+
+
+@pytest.mark.asyncio
+async def test_product_todo_team_and_range_artifact(tmp_path):
+    import asyncio
+    import httpx
+    async with LiveMockServerHarness(
+        60, data_dir=tmp_path / "data", mock_tools=True, tool_steps=7,
+        compact_recent=1, capture_requests=False, chunk_delay_ms=0,
+        product_workload=True,
+    ) as harness:
+        client = harness.client
+        opened = await client.open_session(session_id="s", thread_id="main", mode="new")
+        cursor = opened.data.event_cursor
+        async with httpx.AsyncClient(base_url=harness.base_url) as observer:
+            member = await observer.put("/sessions/s/threads/main/teams/stress/members/main")
+            assert member.status_code == 200 and member.json()["changed"]
+        events = Counter()
+        await client.send_message("s", "main", "Product workload turn 1", request_id="first")
+        cursor = await asyncio.wait_for(consume_until(client, "s", cursor, "turn_ended", events), 30)
+        async with httpx.AsyncClient(base_url=harness.base_url) as observer:
+            first = await observer.get("/sessions/s/threads/main/todos")
+            first.raise_for_status()
+            tasks = first.json()["tasks"]
+            assert len(tasks) == 5
+            target = next(task["id"] for task in tasks if task["subject"] == "Workload task 2")
+            await client.send_message(
+                "s", "main", f"Product workload turn 8 complete_task={target} read_board=1",
+                request_id="second",
+            )
+            await asyncio.wait_for(consume_until(client, "s", cursor, "turn_ended", events), 30)
+            result = await observer.get("/sessions/s/threads/main/todos")
+            assert result.json()["completed_count"] == 1
+            assert len(result.json()["tasks"]) == 4
+            board = await observer.get("/sessions/s/threads/main/teams/stress/count")
+            assert board.json()["count"] == 2
+        assert harness.provider.agent_requests == 16
+        assert events["tool.task_create"] == 5
+        assert events["tool.task_update"] == 1
+        assert events["tool.team_publish"] == 2
+        assert events["tool.team_latest"] == 1
+        assert events["team_range_artifacts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_slow_socket_connects_before_first_turn(tmp_path):
+    import asyncio
+    import httpx
+    async with LiveMockServerHarness(
+        30, data_dir=tmp_path / "data", mock_tools=True, tool_steps=1,
+        capture_requests=False, chunk_delay_ms=0,
+    ) as harness:
+        client = harness.client
+        opened = await client.open_session(session_id="s", thread_id="main", mode="new")
+        async with httpx.AsyncClient(base_url=harness.base_url, timeout=None) as raw:
+            async with raw.stream(
+                "GET", "/sessions/s/threads/main/events",
+                params={"after": opened.data.event_cursor},
+            ) as response:
+                assert response.status_code == 200
+                lines = response.aiter_lines()
+                await client.send_message("s", "main", "socket probe", request_id="one")
+                async with asyncio.timeout(15):
+                    async for line in lines:
+                        if line.startswith("data:"):
+                            break
+                events = Counter()
+                await asyncio.wait_for(
+                    consume_until(client, "s", opened.data.event_cursor, "turn_ended", events), 15,
+                )
+                assert events["turn_ended"] == 1

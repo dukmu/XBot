@@ -16,7 +16,8 @@ from XBotv2.loader.api.contracts import PluginOverlay
 from .provider import LoopbackServer, NetworkMockLLM
 
 
-def _write_config(data_dir: Path, provider_url: str, *, compact_recent: int | None = None) -> None:
+def _write_config(data_dir: Path, provider_url: str, *, compact_recent: int | None = None,
+                  team_enabled: bool = False) -> None:
     config = data_dir / "config"
     config.mkdir(parents=True, exist_ok=True)
     (config / "plugins.yaml").write_text(
@@ -57,6 +58,18 @@ def _write_config(data_dir: Path, provider_url: str, *, compact_recent: int | No
                         }
                     },
                 },
+                *([
+                    {"id": "team", "name": "team", "config": {"enabled": True}},
+                    {"id": "permissions", "name": "permissions", "config": {
+                        "default_decision": "ask",
+                        "rules": [
+                            {"tool_pattern": "(?:task_create|task_update|team_publish|team_latest|shell)",
+                             "decision": "allow"},
+                            {"tool_pattern": ".*", "param_patterns": {"command": "rm -rf /.*"},
+                             "decision": "deny"},
+                        ],
+                    }},
+                ] if team_enabled else []),
                 *([{"id": "compact", "name": "compact", "config": {
                     "keep_recent_turns": compact_recent,
                 }}] if compact_recent is not None else []),
@@ -123,18 +136,22 @@ class MockServerHarness:
         capture_requests: bool = True,
         compact_recent: int | None = None,
         chunk_delay_ms: float = 50,
+        product_workload: bool = False,
+        shell_command: str = "printf stress-tool",
     ) -> None:
         self.timeout = timeout
         self.mock_tools = mock_tools
         self.failure_mode = failure_mode
         self.compact_recent = compact_recent
+        self.product_workload = product_workload
         self._external_data_dir = data_dir
         self._stack = AsyncExitStack()
         self.provider = NetworkMockLLM(
             mock_tools=mock_tools,
             fault="disconnect" if failure_mode == "provider" else "",
             tool_steps=tool_steps, capture_requests=capture_requests,
-            chunk_delay_ms=chunk_delay_ms,
+            chunk_delay_ms=chunk_delay_ms, product_workload=product_workload,
+            shell_command=shell_command,
         )
         self.data_dir: Path | None = None
         self.workspace: Path | None = None
@@ -152,7 +169,8 @@ class MockServerHarness:
             self.workspace = self.data_dir.parent / "workspace"
             self.workspace.mkdir(parents=True, exist_ok=True)
             await self._stack.enter_async_context(self.provider)
-            _write_config(self.data_dir, self.provider.base_url, compact_recent=self.compact_recent)
+            _write_config(self.data_dir, self.provider.base_url, compact_recent=self.compact_recent,
+                          team_enabled=self.product_workload)
             self.application = await open_runtime(
                 paths=RuntimePaths.from_data_dir(self.data_dir),
                 overrides=PluginOverlay.parse([{
