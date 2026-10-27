@@ -2,13 +2,13 @@
 
 import pytest
 
-from XBotv2.content_cache.content_cache import (
+from XBotv2.content_cache.impl.content_cache import (
     cache_tool_execution,
     cache_user_message,
     externalize_text,
 )
-from XBotv2.content_cache.contracts import ContentCachePolicy
-from XBotv2.content_cache.plugin import ContentCacheService
+from XBotv2.content_cache.api.models import ContentCachePolicy
+from XBotv2.content_cache.impl.plugin import ContentCacheService
 from XBotv2.agentloop.contracts import HumanInput, InboxItem
 from XBotv2.agentloop.events import (
     AfterToolExecution,

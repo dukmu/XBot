@@ -7,8 +7,8 @@ import pytest
 
 from XBotv2.agentloop.events import BeforeContextBuild
 from XBotv2.agentloop.outputs import LoopError
-from XBotv2.caption import CaptionConfig, CaptionRequest, CaptionResult
-from XBotv2.caption.service import (
+from XBotv2.caption.api.models import CaptionConfig, CaptionRequest, CaptionResult
+from XBotv2.caption.impl.service import (
     CaptionService,
     _clean_title,
     _fallback_title,
@@ -438,8 +438,8 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
 
 
 def test_caption_tool_action_schema_is_enum_constrained():
-    from XBotv2.caption.contracts import CaptionResult
-    from XBotv2.caption.tools import build_caption_tool
+    from XBotv2.caption.api.models import CaptionResult
+    from XBotv2.caption.impl.tools import build_caption_tool
 
     class _Owner:
         async def caption_get(self) -> CaptionResult:

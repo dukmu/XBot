@@ -36,7 +36,7 @@ def make_plugin_ctx(tmp_path):
     from XBotv2.context_builder.builder import ContextBuilder
     from XBotv2.agentloop.tool_service import ToolsService
     from XBotv2.commands.plugin import CommandsService
-    from XBotv2.prompts.plugin import PromptsService
+    from XBotv2.prompts.impl.plugin import PromptsService
     from XBotv2.agentloop.tool_registry import ToolRegistry
 
     ctx = Context(data_dir=tmp_path)

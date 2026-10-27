@@ -77,10 +77,10 @@ from XBotv2.interactions.models import (
     UserInputRequest,
 )
 from XBotv2.jobs.contracts import JobView
-from XBotv2.goal.models import (
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.goal.api.models import (
     ActiveGoal,
     CompleteGoal,
-    GoalChanged,
     GoalSnapshot,
     GoalStats,
 )

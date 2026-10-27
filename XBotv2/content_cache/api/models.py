@@ -34,6 +34,3 @@ class ExternalizedContent:
     preview: str
     original: ArtifactRef
     original_chars: int
-
-
-__all__ = ["ContentCachePolicy", "ExternalizedContent"]

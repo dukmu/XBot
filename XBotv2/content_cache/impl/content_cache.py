@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from XBotv2.content_cache.contracts import (
+from XBotv2.content_cache.api.models import (
     ContentCachePolicy,
     ExternalizedContent,
 )
@@ -120,6 +120,3 @@ def cache_tool_execution(
         "outcome": shortened_outcome,
     })
     return execution.model_copy(update={"message": shortened_message}), externalized
-
-
-__all__ = ["cache_tool_execution", "cache_user_message", "externalize_text"]

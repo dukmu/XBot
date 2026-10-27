@@ -1,0 +1,5 @@
+# Caption
+
+Caption assigns a human-readable title to the thread metadata. It requires `tools`, `model`, `loop_state`, `session`, `session_launch`, and `usage`. The `BEFORE_CONTEXT_BUILD` observer runs first and issues an auxiliary model request when the title is still provisional and human input exists. The request does not enter conversation history; usage is recorded. Empty model output falls back to human input; provider failures allow a later turn to retry. Subagent threads are skipped.
+
+`api/models.py` defines `CaptionConfig`, `CaptionRequest`, `CaptionResult`, and `CaptionTitleError`. Defaults: `auto: true`, `allow_access: true`, `max_chars: 60`, `output_tokens: 96`; bounds are validated at plugin configuration. For example, configure `{"auto": false, "allow_access": true}` to disable automatic captioning while keeping the main Agent's `caption` tool. The tool accepts `action: "get"` or `"set"` and a title for set. It is not registered for subagents or when access is disabled. There is no slash command or plugin state namespace; retry bookkeeping is runtime-only.

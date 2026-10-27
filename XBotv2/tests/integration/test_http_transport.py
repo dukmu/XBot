@@ -6256,7 +6256,7 @@ async def test_goal_agent_tools_create_read_and_complete_real_state(
     terminal_status: str,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import BlockedGoal, CompleteGoal
+    from XBotv2.goal.api.models import BlockedGoal, CompleteGoal
 
     class GoalToolsLLM(MockLLM):
         phase = 0
@@ -6354,7 +6354,7 @@ async def test_http_goal_continues_in_session_until_model_marks_it_complete(
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import CompleteGoal
+    from XBotv2.goal.api.models import CompleteGoal
 
     class CompletingGoalLLM(MockLLM):
         sent_update = False
@@ -6455,7 +6455,7 @@ async def test_completed_todos_do_not_implicitly_complete_goal(
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import ActiveGoal
+    from XBotv2.goal.api.models import ActiveGoal
 
     class TodoGoalLLM(MockLLM):
         def __init__(self):
@@ -6518,7 +6518,7 @@ async def test_goal_interrupt_and_cold_resume_do_not_restart_stale_work(
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import ActiveGoal
+    from XBotv2.goal.api.models import ActiveGoal
 
     class BlockingContinuationLLM(MockLLM):
         def __init__(self):
@@ -6592,7 +6592,7 @@ async def test_goal_clear_during_claimed_turn_drops_stale_continuation(
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import NoGoal
+    from XBotv2.goal.api.models import NoGoal
 
     class ClaimedGoalLLM(MockLLM):
         def __init__(self):
@@ -6643,7 +6643,7 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
     skills_app,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import CompleteGoal, PausedGoal
+    from XBotv2.goal.api.models import CompleteGoal, PausedGoal
 
     class CompactGoalLLM(MockLLM):
         goal_updates = 0
@@ -6768,7 +6768,7 @@ async def test_goal_waits_for_background_job_and_running_steer_then_continues_on
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from XBotv2.core.stream import ModelCompleted
-    from XBotv2.goal.models import CompleteGoal
+    from XBotv2.goal.api.models import CompleteGoal
 
     release_job = asyncio.Event()
 

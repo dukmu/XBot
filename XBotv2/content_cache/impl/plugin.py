@@ -12,11 +12,11 @@ from XBotv2.agentloop.events import (
     InputAccepted,
     ReplaceExecution,
 )
-from XBotv2.content_cache.content_cache import (
+from XBotv2.content_cache.impl.content_cache import (
     cache_tool_execution,
     cache_user_message,
 )
-from XBotv2.content_cache.contracts import ContentCachePolicy
+from XBotv2.content_cache.api.models import ContentCachePolicy
 from XBotv2.core.artifacts import ArtifactStorePort
 from XBotv2.core.messages import HumanInputMessage
 
@@ -83,5 +83,3 @@ class ContentCacheComponent:
 
 
 plugin = ContentCacheComponent()
-
-__all__ = ["ContentCacheComponent", "ContentCacheService", "plugin"]

@@ -22,7 +22,7 @@ class CaptionConfig(BaseModel):
     allow_access: bool = True
     max_chars: int = Field(default=60, ge=10, le=200)
     # An output budget a thinking model can spare for one short title after
-    # its reasoning; ``caption.service`` still derives a deterministic title
+    # its reasoning; caption service still derives a deterministic title
     # from the first user message when the model emits no content.
     output_tokens: int = Field(default=96, ge=8, le=256)
 
@@ -46,11 +46,3 @@ class CaptionTitleError(ValueError):
     """A requested title cannot be normalized to a non-empty value."""
 
     code = "caption_empty_title"
-
-
-__all__ = [
-    "CaptionConfig",
-    "CaptionRequest",
-    "CaptionResult",
-    "CaptionTitleError",
-]

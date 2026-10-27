@@ -49,7 +49,7 @@ from XBotv2.interactions.models import (
     UserInputRecorded,
 )
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
-from XBotv2.goal.models import GoalChanged
+from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.permissions.contracts import PermissionRequest
 from XBotv2.permissions.protocol import PermissionResponseRecorded

@@ -1958,7 +1958,7 @@ plugin = ConfiguredPlugin()
         from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
         from XBotv2.core.domain import ProviderError
         from XBotv2.core.stream import ModelFailed
-        from XBotv2.goal.models import ActiveGoal
+        from XBotv2.goal.api.models import ActiveGoal
 
         class FailingGoalLLM(MockLLM):
             async def _astream_once(self, request):

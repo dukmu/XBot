@@ -5,9 +5,9 @@ from __future__ import annotations
 from xcore import Context
 
 from XBotv2.agentloop.events import Events
-from XBotv2.caption.contracts import CaptionConfig
-from XBotv2.caption.service import CaptionService
-from XBotv2.caption.tools import build_caption_tool
+from XBotv2.caption.api.models import CaptionConfig
+from XBotv2.caption.impl.service import CaptionService
+from XBotv2.caption.impl.tools import build_caption_tool
 
 
 class CaptionPlugin:
@@ -35,5 +35,3 @@ class CaptionPlugin:
 
 
 plugin = CaptionPlugin()
-
-__all__ = ["CaptionPlugin", "plugin"]

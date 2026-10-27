@@ -2,6 +2,8 @@
 
 from typing import Protocol
 
+from xcore.api.services import ServiceKey
+
 from XBotv2.context_builder.contracts import PromptComponent
 
 
@@ -9,4 +11,4 @@ class PromptsPort(Protocol):
     def add(self, component: PromptComponent) -> None: ...
 
 
-__all__ = ["PromptsPort"]
+PROMPTS = ServiceKey[PromptsPort]("prompts")

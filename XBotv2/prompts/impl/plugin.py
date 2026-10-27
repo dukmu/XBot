@@ -10,7 +10,7 @@ from pydantic import JsonValue
 from xcore import Context, bound_effect, current_plugin_name
 
 from XBotv2.context_builder.contracts import PromptComponent, PromptComponentRegistry
-from XBotv2.prompts.contracts import PromptsPort
+from XBotv2.prompts.api.service import PROMPTS, PromptsPort
 
 
 class PromptsService(PromptsPort):
@@ -49,7 +49,7 @@ class PromptsComponent:
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        ctx.set("prompts", PromptsService(ctx.context_builder))
+        ctx.set(PROMPTS, PromptsService(ctx.context_builder))
 
 
 plugin = PromptsComponent()

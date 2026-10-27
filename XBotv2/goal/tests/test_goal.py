@@ -17,8 +17,8 @@ from XBotv2.core.domain import TokenCounters, UsageSnapshot
 from XBotv2.core.messages import RuntimeNoticeMessage
 from XBotv2.core.parts import TextPart
 from XBotv2.core.paths import RuntimePaths
-from XBotv2.goal.models import ActiveGoal, GoalState
-from XBotv2.goal.plugin import GoalService
+from XBotv2.goal.api.models import ActiveGoal, GoalState
+from XBotv2.goal.impl.plugin import GoalService
 from XBotv2.llm.mock import MockLLM
 
 

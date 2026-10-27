@@ -77,24 +77,3 @@ class GoalSnapshot(BaseModel):
     state: GoalState
     activation: GoalActivation = "none"
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class GoalChanged(BaseModel):
-    kind: Literal["goal_changed"] = "goal_changed"
-    snapshot: GoalSnapshot
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-__all__ = [
-    "ActiveGoal",
-    "BlockedGoal",
-    "CompleteGoal",
-    "GoalActivation",
-    "GoalChanged",
-    "GoalSnapshot",
-    "GoalState",
-    "GoalStats",
-    "MAX_GOAL_OBJECTIVE_CHARS",
-    "NoGoal",
-    "PausedGoal",
-]

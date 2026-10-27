@@ -1,0 +1,5 @@
+# Content cache
+
+The Agent-profile plugin requires `artifacts` and subscribes to accepted input and completed tool execution. It externalizes oversized human text and successful or failed tool text, retaining complete UTF-8 content in the thread artifact store. The message or outcome carries the logical artifact reference; model-facing rendering resolves it in the active thread. Agent-authored tool arguments are unaffected. Artifact write errors retain the original content.
+
+`api/models.py` declares `ContentCachePolicy` and `ExternalizedContent`. Defaults are `threshold_chars: 48000`, `preview_chars: 12000`, `tail_chars: 2000`; preview must not exceed threshold and tail must not exceed preview. For example, set the plugin config to `{"threshold_chars": 1000, "preview_chars": 500, "tail_chars": 100}`. Large eligible text produces a head/tail preview and omission marker in context, which can change the model prompt and prefix cache. No separate plugin state, commands, or tools are registered.

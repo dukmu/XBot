@@ -28,11 +28,11 @@ from XBotv2.commands import Command, CommandEffect, CommandResult
 from XBotv2.core import Tool, ToolFailed, ToolOutcome, ToolSucceeded, failed_text, succeeded_text
 from XBotv2.core.domain import InboxTarget, TokenCounters, UsageSnapshot
 from XBotv2.core.parts import TextPart
-from XBotv2.goal.models import (
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.goal.api.models import (
     ActiveGoal,
     BlockedGoal,
     CompleteGoal,
-    GoalChanged,
     GoalSnapshot,
     GoalState,
     GoalStats,
@@ -627,5 +627,3 @@ class GoalPlugin:
 
 
 plugin = GoalPlugin()
-
-__all__ = ["GoalPlugin", "GoalService"]

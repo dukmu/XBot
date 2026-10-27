@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from XBotv2.caption.contracts import CaptionResult, CaptionTitleError
+from XBotv2.caption.api.models import CaptionResult, CaptionTitleError
 from XBotv2.core import Tool, failed_text, succeeded_text, ToolOutcome
 
 
@@ -43,6 +43,3 @@ def build_caption_tool(owner: _CaptionToolOwner) -> Tool:
         return succeeded_text(f"Session title set to {applied.title!r}.")
 
     return Tool.from_function(caption, name="caption")
-
-
-__all__ = ["build_caption_tool"]

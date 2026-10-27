@@ -8,7 +8,7 @@ from uuid import uuid4
 from xcore import Context
 from XBotv2.agentloop.events import BeforeContextBuild
 
-from XBotv2.caption.contracts import (
+from XBotv2.caption.api.models import (
     CaptionConfig,
     CaptionRequest,
     CaptionResult,

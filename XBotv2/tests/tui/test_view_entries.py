@@ -23,7 +23,8 @@ from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Static
 
-from XBotv2.goal.models import ActiveGoal, GoalChanged, GoalSnapshot, GoalStats
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.goal.api.models import ActiveGoal, GoalSnapshot, GoalStats
 from XBotv2.tui.events import GoalChangedReceived
 from XBotv2.tui.state import SessionState, reduce
 from XBotv2.tui.timeline import (
