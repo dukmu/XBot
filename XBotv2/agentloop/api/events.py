@@ -13,6 +13,7 @@ from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.agentloop.api.state import ThreadExecution
 
 from dataclasses import dataclass
+from contextlib import AsyncExitStack
 from xcore.api.events import EventKey
 from XBotv2.agentloop.api.state import ThreadExecution
 from XBotv2.agentloop.api.contracts import InboxChange, InboxItem
@@ -40,6 +41,7 @@ class Events:
     ON_STOP_FAILURE: EventKey[LoopFailure] = EventKey("stop/failure")
     # User input
     ON_TURN_INPUT: EventKey[OnTurnInput] = EventKey("input/received")
+    PREPARE_INPUT: EventKey[PrepareInput] = EventKey("input/prepare")
     INPUT_ACCEPTED: EventKey[InputAccepted] = EventKey("input/accepted")
     # Context building
     BEFORE_CONTEXT_BUILD: EventKey[BeforeContextBuild] = EventKey("context/before-build")
@@ -122,11 +124,21 @@ OnTurnInputResult = AcceptInput | RejectInput | CompleteTurn
 
 
 @dataclass(frozen=True, slots=True)
+class PrepareInput:
+    """Optional canonical body preparation before durable acceptance or edit."""
+
+    item: InboxItem
+    resources: AsyncExitStack
+    editing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class InputAccepted:
     """Accepted input and its canonical candidate before history append."""
 
     input: InboxItem
     message: ConversationMessage
+    source: InboxItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +299,7 @@ class ToolBatchObserved:
 #: Events dispatched with ``ctx.serial`` (first non-None result is the answer).
 SHORT_CIRCUIT_EVENTS = frozenset({
     Events.ON_TURN_INPUT,
+    Events.PREPARE_INPUT,
     Events.INPUT_ACCEPTED,
     Events.BEFORE_CONTEXT_BUILD,
     Events.AFTER_CONTEXT_BUILD,

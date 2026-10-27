@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from pydantic import BaseModel, ConfigDict
 
 
@@ -15,6 +16,7 @@ class CommitUncertain(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactPayload:
-    content: bytes
+    content: AsyncIterator[bytes]
     media_type: str
-    name: str = ""
+    name: str
+    size: int

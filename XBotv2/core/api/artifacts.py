@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Protocol
+from collections.abc import AsyncIterable, AsyncIterator
+from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,9 +41,52 @@ class ImageRef(BaseModel):
 
 
 class ArtifactStorePort(Protocol):
-    async def export_file(self, artifact: ArtifactRef, destination) -> None: ...
-    async def import_file(self, source, artifact: ArtifactRef) -> None: ...
-    def put(
+    def spool_file(self) -> AbstractAsyncContextManager[Path]: ...
+
+    def prepare_stream(
+        self,
+        kind: ArtifactKind,
+        chunks: AsyncIterable[bytes],
+        *,
+        media_type: str = "application/octet-stream",
+        name: str = "",
+        suffix: str = "",
+    ) -> AbstractAsyncContextManager[ArtifactRef]: ...
+
+    async def put_stream(
+        self,
+        kind: ArtifactKind,
+        chunks: AsyncIterable[bytes],
+        *,
+        media_type: str = "application/octet-stream",
+        name: str = "",
+        suffix: str = "",
+    ) -> ArtifactRef: ...
+
+    async def adopt_file(
+        self,
+        kind: ArtifactKind,
+        source: Path,
+        *,
+        media_type: str = "application/octet-stream",
+        name: str = "",
+        suffix: str = "",
+    ) -> ArtifactRef: ...
+
+    def read_chunks(
+        self,
+        artifact: ArtifactRef | str,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        chunk_size: int = 256 * 1024,
+    ) -> AsyncIterator[bytes]: ...
+
+    async def export_file(self, artifact: ArtifactRef, destination: Path) -> None: ...
+
+    async def import_file(self, source: Path, artifact: ArtifactRef) -> None: ...
+
+    async def put(
         self,
         kind: ArtifactKind,
         payload: bytes,
@@ -50,8 +96,8 @@ class ArtifactStorePort(Protocol):
         suffix: str = "",
     ) -> ArtifactRef: ...
 
-    def read(self, artifact: ArtifactRef | str) -> bytes: ...
+    async def read(self, artifact: ArtifactRef | str) -> bytes: ...
 
-    def exists(self, artifact: ArtifactRef | str) -> bool: ...
+    async def exists(self, artifact: ArtifactRef | str) -> bool: ...
 
     def model_path(self, artifact: ArtifactRef | str) -> str: ...

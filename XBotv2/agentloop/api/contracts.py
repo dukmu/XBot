@@ -85,6 +85,8 @@ class Inserted:
     kind: Literal["inserted"] = field(default="inserted", kw_only=True)
     item: InboxItem
     wake: bool
+    request_fingerprint: str = ""
+    content_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,8 @@ class Edited:
     kind: Literal["edited"] = field(default="edited", kw_only=True)
     id: MessageId
     content: str
+    artifacts: tuple[ArtifactRef, ...] = ()
+    content_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +136,8 @@ InboxChange: TypeAlias = InboxMutation | Claimed
 
 
 class InboxSink(Protocol):
+    async def accepted(self, input_id: str, fingerprint: str) -> bool: ...
+    async def current_content_sha256(self, input_id: str) -> str: ...
     async def load(self) -> list[InboxItem]: ...
     async def append(self, change: InboxMutation) -> bool: ...
 

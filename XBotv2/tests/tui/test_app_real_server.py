@@ -2388,7 +2388,11 @@ async def test_failed_tool_output_remains_visible_and_follow_up_works(
         history = await real_client.list_messages(SESSION_ID, THREAD_ID, limit=20)
         tool = next(item for item in history.items if isinstance(item, ToolRecord))
         assert tool.outcome.kind == "failed"
-        assert "partial-tool-output" in tool.outcome.error.message
+        assert "exit code 7" in tool.outcome.error.message
+        assert any(part.text == "partial-tool-output" for part in tool.outcome.output.parts)
+        assert await real_client.read_artifact(
+            SESSION_ID, THREAD_ID, tool.outcome.output.artifacts[0].id,
+        ) == b"partial-tool-output"
 
         composer.load_text("continue after tool failure")
         await pilot.press("enter")

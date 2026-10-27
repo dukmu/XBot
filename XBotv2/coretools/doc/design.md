@@ -33,9 +33,24 @@ and `mkdir`; `search` supports content and filename search.
 The `shell` Tool runs a command in the session workspace by default. A
 foreground call returns its result; `background=True` starts a session-owned
 job. The four `*_shell` helpers list, wait for, read, or cancel those jobs.
-Jobs and captured output are runtime-owned and do not survive session
-shutdown. `read_shell` pages output by character cursor; `wait_shell` returns
-job status/exit information, not output.
+Job identities are runtime-owned and do not survive session shutdown. Captured
+bytes are immutable artifacts. Commands write combined stdout/stderr directly
+to a controlled spool from process launch, including sandboxed commands.
+Completion adopts and hashes that file without a full read/decode/encode copy.
+Foreground results carry the complete logical artifact reference and at most
+6000 head bytes plus 2000 tail bytes of preview. Invalid UTF-8 is replaced only
+for display; artifact bytes are unchanged.
+
+Background terminal results retain only the artifact reference and exit code.
+Nonzero exits remain failures; foreground failures and failed background jobs
+retain readable output. Timeout kills and reaps the process group and retains
+its partial output as a failed result. Cancellation kills and reaps the group,
+then removes its unpublished spool. `read_shell` reads at a byte cursor with
+`max_bytes` between 1 and 65536 (default 8000), and never rereads the entire
+artifact. A page may split a UTF-8 sequence; its display uses replacement
+characters, while cursor advancement counts original bytes. The capture is
+combined stdout/stderr; the stream selector does not provide separate captures.
+`wait_shell` returns status and exit information, not output.
 
 Requesting `sandbox_permissions="require_escalated"` asks to run outside the
 sandbox. This is not an approval bypass: the permissions layer must approve

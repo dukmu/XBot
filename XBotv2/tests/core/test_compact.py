@@ -68,9 +68,9 @@ def _human(index: int, text: str) -> HumanInputMessage:
     )
 
 
-def _externalized_tool_message(store, text: str = "bounded provider preview") -> ToolMessage:
+async def _externalized_tool_message(store, text: str = "bounded provider preview") -> ToolMessage:
     """One tool message whose complete result lives in the ArtifactStore."""
-    ref = store.put(
+    ref = await store.put(
         ArtifactKind.TOOL_RESULT,
         b"the complete original tool result",
         media_type="text/plain; charset=utf-8",
@@ -119,8 +119,8 @@ def test_summary_request_is_provider_typed_and_does_not_mutate_history():
     assert message.parts[0].text == "important decision"
 
 
-def test_summary_request_resolves_tool_artifacts_through_the_store(artifact_store):
-    message = _externalized_tool_message(artifact_store)
+async def test_summary_request_resolves_tool_artifacts_through_the_store(artifact_store):
+    message = await _externalized_tool_message(artifact_store)
 
     request = summary_request(
         (message,),

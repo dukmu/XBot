@@ -103,6 +103,16 @@ class SandboxPolicy(SandboxPort):
     # Sandbox capabilities (system I/O isolated via bwrap)
     # ------------------------------------------------------------------
 
+    async def run_shell_to_file(
+        self, command: str, output: Path, *, shell=None, cwd=None,
+    ) -> int:
+        shell = shell or os.environ.get("SHELL")
+        if not shell:
+            raise RuntimeError("SHELL is not set in the XBot process environment")
+        return await self._backend.run_to_file(
+            [shell, "-lc", command], self._mount_specs(), output, cwd=cwd,
+        )
+
     async def run_shell(
         self,
         command: str,

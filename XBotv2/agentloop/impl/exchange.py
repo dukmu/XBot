@@ -55,6 +55,8 @@ async def _messages(store, record):
         return (MESSAGE.validate_python(data["message"]),)
     if kind == "surface_replaced":
         return tuple(MESSAGE.validate_python(value) for value in data["messages"])
+    if kind == "input_edited":
+        return (input_message(await store.input(record["id"]), {}),)
     if kind == "input_committed":
         return (await store.message(data["input_id"]),)
     return ()

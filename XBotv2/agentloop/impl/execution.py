@@ -383,7 +383,7 @@ class AgentLoop:
             raise OperationError("session_closing", "Thread is closing")
         images, attachments = [], []
         for item in request.images:
-            ref = self._context.artifacts.put(
+            ref = await self._context.artifacts.put(
                 ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type
             )
             images.append(
@@ -391,7 +391,7 @@ class AgentLoop:
             )
         for item in request.attachments:
             attachments.append(
-                self._context.artifacts.put(
+                await self._context.artifacts.put(
                     ArtifactKind.ATTACHMENT,
                     _upload_bytes(item.data),
                     media_type=item.media_type,

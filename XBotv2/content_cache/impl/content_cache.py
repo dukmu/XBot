@@ -9,25 +9,30 @@ from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.tools import ToolExecution, ToolFailed, ToolOutput, ToolSucceeded
 
 
-def externalize_text(
+async def externalize_text(
     text: str,
     artifacts: ArtifactStorePort,
     policy: ContentCachePolicy,
     *,
     kind: ArtifactKind,
     name: str,
+    resources=None,
 ) -> ExternalizedContent | None:
     """Store complete UTF-8 text and return its bounded provider preview."""
     if len(text) <= policy.threshold_chars:
         return None
 
-    artifact = artifacts.put(
-        kind,
-        text.encode("utf-8"),
-        media_type="text/plain; charset=utf-8",
-        name=name,
-        suffix=".txt",
-    )
+    async def chunks():
+        for start in range(0, len(text), 65536):
+            yield text[start:start + 65536].encode("utf-8")
+
+    metadata = dict(media_type="text/plain; charset=utf-8", name=name, suffix=".txt")
+    if resources is None:
+        artifact = await artifacts.put_stream(kind, chunks(), **metadata)
+    else:
+        artifact = await resources.enter_async_context(
+            artifacts.prepare_stream(kind, chunks(), **metadata)
+        )
     head_chars = policy.preview_chars - policy.tail_chars
     head = text[:head_chars]
     tail = text[-policy.tail_chars:] if policy.tail_chars else ""
@@ -43,12 +48,12 @@ def externalize_text(
     )
 
 
-def cache_user_message(
+async def cache_user_message(
     message: ConversationMessage,
     artifacts: ArtifactStorePort,
     policy: ContentCachePolicy,
 ) -> tuple[ConversationMessage, ExternalizedContent | None]:
-    """Build a provider-only copy of an oversized human input message."""
+    """Build a bounded human message carrying its complete original artifact."""
     if not isinstance(message, HumanInputMessage):
         return message, None
 
@@ -56,7 +61,7 @@ def cache_user_message(
     if len(text_parts) != 1:
         return message, None
     source = text_parts[0]
-    externalized = externalize_text(
+    externalized = await externalize_text(
         source.text,
         artifacts,
         policy,
@@ -77,7 +82,7 @@ def cache_user_message(
     return projected, externalized
 
 
-def cache_tool_execution(
+async def cache_tool_execution(
     execution: ToolExecution,
     artifacts: ArtifactStorePort,
     policy: ContentCachePolicy,
@@ -90,7 +95,7 @@ def cache_tool_execution(
     output = outcome.output
     if len(output.parts) != 1 or not isinstance(output.parts[0], TextPart):
         return execution, None
-    externalized = externalize_text(
+    externalized = await externalize_text(
         output.parts[0].text,
         artifacts,
         policy,

@@ -1263,7 +1263,7 @@ class Engine:
         else:  # pragma: no cover - InputPayload is a closed discriminated union
             raise TypeError(f"Unsupported inbox payload: {payload!r}")
 
-        accepted_event = InputAccepted(accepted_input, message)
+        accepted_event = InputAccepted(accepted_input, message, item)
         accepted_result = await self._dispatch(
             Events.INPUT_ACCEPTED,
             accepted_event,
@@ -1272,7 +1272,7 @@ class Engine:
         if accepted_result is not None:
             if not isinstance(accepted_result, InputAccepted):
                 raise TypeError("INPUT_ACCEPTED must return InputAccepted or None")
-            if accepted_result.input != accepted_input:
+            if accepted_result.input != accepted_input or accepted_result.source != item:
                 raise ValueError("INPUT_ACCEPTED cannot change the accepted input")
             replacement = accepted_result.message
             # Canonicalization owns content, not identity or provenance. Compare

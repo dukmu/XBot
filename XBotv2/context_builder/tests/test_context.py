@@ -135,13 +135,13 @@ def test_tool_outcome_projection_preserves_every_terminal_semantic():
     assert projected[3].is_error is True
 
 
-def test_tool_image_is_resolved_only_for_the_provider_request(artifact_store):
-    stored = artifact_store.put(
+async def test_tool_image_is_resolved_only_for_the_provider_request(artifact_store):
+    stored = (await artifact_store.put(
         ArtifactKind.MEDIA,
         b"png bytes",
         media_type="image/png",
         name="pixel.png",
-    )
+    ))
     image = ImageRef(
         artifact_id=stored.id,
         media_type=stored.media_type,
@@ -202,13 +202,13 @@ def test_builder_rejects_negative_turn():
         )
 
 
-def test_user_attachments_resolve_logical_ids_to_request_local_paths(artifact_store):
-    ref = artifact_store.put(
+async def test_user_attachments_resolve_logical_ids_to_request_local_paths(artifact_store):
+    ref = (await artifact_store.put(
         ArtifactKind.ATTACHMENT,
         b"original attachment",
         media_type="text/plain",
         name="notes.txt",
-    )
+    ))
     message = HumanInputMessage(
         id=MessageId("message-attachment"),
         parts=(TextPart(text="inspect this"),),

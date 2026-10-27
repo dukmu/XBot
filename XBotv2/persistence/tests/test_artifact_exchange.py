@@ -11,11 +11,11 @@ async def test_artifact_import_export_preserves_identity_and_existing_objects(tm
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     source = ArtifactStore(paths.session("source").thread("main"))
     destination = ArtifactStore(paths.session("destination").thread("main"))
-    ref = source.put(ArtifactKind.ATTACHMENT, b"original payload", suffix=".txt")
+    ref = (await source.put(ArtifactKind.ATTACHMENT, b"original payload", suffix=".txt"))
     exported = tmp_path / "exported"
     await source.export_file(ref, exported)
     await destination.import_file(exported, ref)
-    assert destination.read(ref) == b"original payload"
+    assert (await destination.read(ref)) == b"original payload"
 
     # A fork can share the CAS inode; failed imports must not damage either copy.
     fork = tmp_path / "fork-object"
@@ -26,5 +26,5 @@ async def test_artifact_import_export_preserves_identity_and_existing_objects(tm
     exported.write_bytes(b"incorrect data!")
     with pytest.raises(ValueError, match="hash or size"):
         await destination.import_file(exported, ref)
-    assert destination.read(ref) == b"original payload"
+    assert (await destination.read(ref)) == b"original payload"
     assert fork.read_bytes() == b"original payload"

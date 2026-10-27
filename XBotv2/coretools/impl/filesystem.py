@@ -230,7 +230,7 @@ async def _read_media(
                 "content_storage_unavailable",
                 "Session artifact storage is not available",
             )
-        ref = artifacts.put(
+        ref = await artifacts.put(
             ArtifactKind.MEDIA,
             payload,
             media_type=selected,

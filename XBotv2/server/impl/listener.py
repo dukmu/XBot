@@ -41,6 +41,11 @@ class HttpListener:
         requests = list(server.server_state.tasks)
         for task in requests:
             task.cancel()
+        # close() flushes the transport buffer. A client that has stopped
+        # reading can keep that buffer, and Uvicorn's connection set, alive
+        # after every request and persistence lease has already drained.
+        for connection in list(server.server_state.connections):
+            connection.transport.abort()
         if requests:
             await asyncio.gather(*requests, return_exceptions=True)
 

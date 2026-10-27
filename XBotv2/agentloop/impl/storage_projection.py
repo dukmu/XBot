@@ -1,6 +1,10 @@
 """Agentloop owns typed rollout facts and all conversation projections."""
 
 from pydantic import TypeAdapter
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+from XBotv2.core.api.messages import ToolMessage
+from XBotv2.core.api.parts import ImagePart
+from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
 from XBotv2.core.api.messages import (
     ConversationMessage,
     HumanInputMessage,
@@ -142,6 +146,34 @@ def _replace_transcript(connection, thread, sources, replacements):
     )
 
 
+def _index_artifacts(sql, thread, refs, images=()):
+    refs = list(refs)
+    for image in images:
+        refs.append(ArtifactRef(
+            id=image.artifact_id,
+            kind=ArtifactKind.MEDIA,
+            media_type=image.media_type,
+            size=image.size,
+        ))
+    for ref in refs:
+        sql.execute(
+            "INSERT OR REPLACE INTO conversation_artifacts VALUES(?,?,?)",
+            (thread, ref.id, ref.model_dump_json()),
+        )
+
+
+def _message_artifacts(sql, thread, message):
+    if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
+        _index_artifacts(
+            sql, thread, message.artifacts,
+            tuple(part.image for part in message.parts if isinstance(part, ImagePart)),
+        )
+    elif isinstance(message, ToolMessage) and isinstance(
+        message.outcome, (ToolSucceeded, ToolFailed)
+    ):
+        _index_artifacts(sql, thread, message.outcome.output.artifacts)
+
+
 def project(connection, thread, records):
     for record, offset, length in records:
         seq, identity, kind, data = (
@@ -152,6 +184,7 @@ def project(connection, thread, records):
         )
         if kind == "input_accepted":
             item = InboxItem.model_validate(data["item"])
+            _index_artifacts(connection, thread, item.input.artifacts, item.input.images)
             connection.execute(
                 "INSERT INTO input_ids VALUES(?,?,?,?,0)",
                 (thread, item.id, identity, identity),
@@ -169,6 +202,10 @@ def project(connection, thread, records):
                 ),
             )
         elif kind == "input_edited":
+            _index_artifacts(
+                connection, thread,
+                tuple(ArtifactRef.model_validate(ref) for ref in data["artifacts"]),
+            )
             row = _one(
                 connection,
                 "SELECT current_record,retired FROM input_ids WHERE thread_id=? AND input_id=?",
@@ -229,6 +266,11 @@ def project(connection, thread, records):
             )
             if current is None or current[1] or current[0] != data["body_ref"]:
                 raise StreamCorrupt("Committed input is not pending/current")
+            projection = data["projection"]
+            _index_artifacts(
+                connection, thread,
+                tuple(ArtifactRef.model_validate(ref) for ref in projection.get("artifacts", ())),
+            )
             _add_message(connection, thread, data["input_id"], identity)
             connection.execute(
                 "DELETE FROM inbox WHERE thread_id=? AND input_id=?",
@@ -240,6 +282,7 @@ def project(connection, thread, records):
             )
         elif kind == "message":
             message = MESSAGE.validate_python(data["message"])
+            _message_artifacts(connection, thread, message)
             _add_message(connection, thread, message.id, identity)
             if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
                 connection.execute(
@@ -251,6 +294,7 @@ def project(connection, thread, records):
                 MESSAGE.validate_python(value) for value in data["messages"]
             ]
             for ordinal, message in enumerate(replacements):
+                _message_artifacts(connection, thread, message)
                 connection.execute(
                     "INSERT INTO message_refs VALUES(?,?,?,?)",
                     (thread, message.id, identity, ordinal),

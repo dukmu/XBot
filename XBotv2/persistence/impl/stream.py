@@ -386,13 +386,20 @@ class Stream:
                 c.execute("RELEASE rollout_validation")
 
         await self._sql(validate, size=len(payload))
-        await file_io(
-            append_file,
-            self.paths.rollout_file,
-            payload,
-            offset,
-            self.paths.runtime.data_dir.parent,
-        )
+        try:
+            await file_io(
+                append_file,
+                self.paths.rollout_file,
+                payload,
+                offset,
+                self.paths.runtime.data_dir.parent,
+            )
+        except asyncio.CancelledError as exc:
+            # File I/O has drained, so the complete record may now be durable.
+            # The owner must retain objects until same-ID recovery decides.
+            raise CommitUncertain(
+                f"Rollout {self.thread}:{seq + 1} append completed during cancellation; retry its identity"
+            ) from exc
         mtime = self.paths.rollout_file.stat().st_mtime_ns
         try:
 
@@ -404,7 +411,7 @@ class Stream:
                 )
 
             await self._sql(apply, size=len(payload))
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             raise CommitUncertain(
                 f"Rollout {self.thread}:{seq + 1} is durable; retry the original record identity"
             ) from exc

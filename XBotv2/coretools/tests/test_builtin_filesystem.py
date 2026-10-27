@@ -130,7 +130,7 @@ class TestReadImage:
         assert len(_images(result)) == 1
         image = _images(result)[0]
         assert image.media_type == "image/png"
-        assert artifacts.read(image.artifact_id) == payload
+        assert (await artifacts.read(image.artifact_id)) == payload
 
     @pytest.mark.asyncio
     async def test_read_image_accepts_base64_and_data_url(self, tmp_path):

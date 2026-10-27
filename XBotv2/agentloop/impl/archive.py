@@ -1,44 +1,10 @@
 """Conversation archive business and authorization over the physical backend."""
 
 from XBotv2.agentloop.impl.storage import ConversationStore
-from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
-from XBotv2.core.api.messages import (
-    HumanInputMessage,
-    RuntimeNoticeMessage,
-    ToolMessage,
-)
-from XBotv2.core.api.parts import ImagePart
-from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.history import HistoryCursorInvalid
 from XBotv2.core.api.errors import OperationError
 from XBotv2.persistence.api.models import ArtifactPayload
-from XBotv2.persistence.api.files import run_file_io
-
-
-def _history_artifact(messages, artifact_id):
-    for message in messages:
-        if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
-            for ref in message.artifacts:
-                if ref.id == artifact_id:
-                    return ref
-            for part in message.parts:
-                if (
-                    isinstance(part, ImagePart)
-                    and part.image.artifact_id == artifact_id
-                ):
-                    return ArtifactRef(
-                        id=artifact_id,
-                        kind=ArtifactKind.MEDIA,
-                        media_type=part.image.media_type,
-                        size=part.image.size,
-                    )
-        if isinstance(message, ToolMessage) and isinstance(
-            message.outcome, (ToolSucceeded, ToolFailed)
-        ):
-            for ref in message.outcome.output.artifacts:
-                if ref.id == artifact_id:
-                    return ref
-    return None
 
 
 class ArchiveService:
@@ -129,28 +95,24 @@ class ArchiveService:
 
     async def artifact(self, session_id, thread_id, artifact_id):
         async with self.backend.use(session_id):
-            cursor = None
-            ref = None
-            while ref is None:
-                page = await self.message_page(
-                    session_id, thread_id, cursor=cursor, limit=160
-                )
-                ref = _history_artifact(page.items, artifact_id)
-                cursor = page.older_cursor
-                if cursor is None:
-                    break
-            if ref is None:
-                raise OperationError(
-                    "artifact_not_found",
-                    "Artifact is not referenced by this conversation",
-                )
-            try:
-                content = await run_file_io(
-                    self.backend.artifacts(session_id, thread_id).read, ref
-                )
-            except (FileNotFoundError, ValueError) as error:
-                raise OperationError("artifact_not_found", str(error)) from error
-            return ArtifactPayload(content, ref.media_type, ref.name)
+            store = self._store(session_id, thread_id)
+            metadata = None
+            if await store.has_history():
+                async with store.operation():
+                    rows = await store.sql(lambda sql: sql.execute(
+                        "SELECT metadata FROM conversation_artifacts WHERE thread_id=? AND artifact_id=?",
+                        (thread_id, artifact_id),
+                    ))
+                    metadata = rows[0][0] if rows else None
+            if metadata is None:
+                raise OperationError("artifact_not_found", "Artifact is not referenced by this conversation")
+            ref = ArtifactRef.model_validate_json(metadata)
+            artifacts = self.backend.artifacts(session_id, thread_id)
+            if not await artifacts.exists(ref):
+                raise OperationError("artifact_not_found", "Referenced artifact is missing")
+            return ArtifactPayload(
+                artifacts.read_chunks(ref), ref.media_type, ref.name, ref.size,
+            )
 
     async def export_rollout(self, session_id, thread_id, destination):
         from XBotv2.agentloop.impl.exchange import export_rollout

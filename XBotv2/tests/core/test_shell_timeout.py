@@ -24,8 +24,10 @@ async def test_shell_deadline_cancels_sandbox_process_group(tmp_path, monkeypatc
     command = [sys.executable, "-c", f"import time; from pathlib import Path; time.sleep(0.4); Path({str(tmp_path / 'late')!r}).touch()"]
     monkeypatch.setattr(BubblewrapBackend, "process_args", lambda *args: command)
     policy = SandboxPolicy(workspace_root=tmp_path)
+    from XBotv2.persistence.impl.artifacts import ArtifactStore
+    artifacts = ArtifactStore(RuntimePaths.from_data_dir(tmp_path / "data").session("s").thread("t"))
     with pytest.raises(ShellTimeoutError):
-        await run_shell_command("ignored by test backend", sandbox=policy, timeout_seconds=0.05)
+        await run_shell_command("ignored by test backend", sandbox=policy, timeout_seconds=0.05, artifacts=artifacts)
     await asyncio.sleep(0.45)
     assert not (tmp_path / "late").exists()
 

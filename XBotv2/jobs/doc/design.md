@@ -10,3 +10,8 @@ from XBotv2.jobs.api.contracts import JOBS
 jobs = ctx.require(JOBS)
 active = jobs.list(kind="subagent", status="running")
 ```
+
+A runner may raise `JobExecutionError` with a lightweight terminal result.
+`FailedRunning` retains that result for explicit owner reads. Shell uses it
+for its output artifact reference and exit code, including timeout output;
+completion notices and job summaries still carry no output body.

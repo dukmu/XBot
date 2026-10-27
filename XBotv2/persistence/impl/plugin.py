@@ -196,6 +196,21 @@ class PersistenceResources:
                 else:
                     self._locks[key] = (lock, count - 1)
 
+    @asynccontextmanager
+    async def artifact_lock(self, paths, identity):
+        key = (paths.session.root, "artifact:" + identity)
+        lock, count = self._locks.get(key, (asyncio.Lock(), 0))
+        self._locks[key] = (lock, count + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            lock, count = self._locks[key]
+            if count == 1:
+                del self._locks[key]
+            else:
+                self._locks[key] = (lock, count - 1)
+
     def require_writer(self, session):
         if session.root not in self._claims:
             raise RuntimeError("Storage mutations require their actual owner claim")
@@ -222,7 +237,10 @@ class PersistenceResources:
 
     def artifacts(self, session_id, thread_id):
         self._admit(session_id)
-        return ArtifactStore(self.paths(session_id).thread(thread_id), self._log)
+        return ArtifactStore(
+            self.paths(session_id).thread(thread_id), self._log, resources=self,
+            binding=self._claims.get(self.paths(session_id).root),
+        )
 
     async def owners(self, session_id):
         async with self.use(session_id):

@@ -53,6 +53,25 @@ class BubblewrapBackend:
             *payload,
         ]
 
+    async def run_to_file(
+        self, payload, mount_specs, output: Path, *, cwd=None,
+    ) -> int:
+        """Capture bytes from process launch, without decoding or buffering output."""
+        with output.open("wb") as writer:
+            proc = subprocess.Popen(
+                self.process_args(payload, mount_specs, cwd),
+                stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.STDOUT,
+                start_new_session=os.name == "posix",
+            )
+            try:
+                await _wait_process(proc)
+            except BaseException:
+                if proc.poll() is None:
+                    _kill_process_group(proc)
+                await _wait_process(proc)
+                raise
+        return proc.returncode
+
     async def run(
         self,
         payload: list[str],

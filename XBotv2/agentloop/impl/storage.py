@@ -29,6 +29,7 @@ from XBotv2.core.api.domain import HistoryRevision, InboxTarget
 from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.api.parts import TextPart, ImagePart
 from XBotv2.persistence.api.models import StreamCorrupt
+from XBotv2.agentloop.impl.inbox import input_fingerprint, content_digest
 from XBotv2.agentloop.impl import storage_projection
 from XBotv2.agentloop.impl.storage_projection import MESSAGE, _one, _all
 from XBotv2.agentloop.impl.storage_schema import TABLES, SCHEMA
@@ -408,30 +409,69 @@ class InboxStore:
                 delivery, after = rows[-1][1], rows[-1][2]
             return items
 
+    async def accepted(self, input_id, fingerprint):
+        async with self.store.operation():
+            return await self._accepted(input_id, fingerprint)
+
+    async def _accepted(self, input_id, fingerprint):
+        if not await self.store.has_history():
+            return False
+        row = await self.store.sql(
+            lambda sql: _one(
+                sql,
+                "SELECT accepted_record FROM input_ids WHERE thread_id=? AND input_id=?",
+                (self.store.thread_id, input_id),
+            )
+        )
+        if row is None:
+            return False
+        record = await self.stream.record(row[0])
+        if record["kind"] == "input_accepted":
+            original = record["data"]["request_fingerprint"]
+        else:
+            original = input_fingerprint((await self.store.input(row[0])).input)
+        if original != fingerprint:
+            from XBotv2.core.api.errors import OperationError
+
+            raise OperationError(
+                "input_id_conflict",
+                "Input ID was already accepted with different content",
+            )
+        return True
+
+    async def current_content_sha256(self, input_id):
+        async with self.store.operation():
+            row = await self.store.sql(
+                lambda sql: _one(
+                    sql,
+                    "SELECT current_record FROM input_ids WHERE thread_id=? AND input_id=?",
+                    (self.store.thread_id, input_id),
+                )
+            )
+            if row is None:
+                raise KeyError(input_id)
+            record = await self.stream.record(row[0])
+            if record["kind"] == "message":
+                return content_digest((await self.store.input(row[0])).input.content)
+            return record["data"]["content_sha256"]
+
     async def append(self, change):
         async with self.store.operation(write=True):
             if isinstance(change, Inserted):
-                if await self.store.has_history():
-                    row = await self.store.sql(
-                        lambda c: _one(
-                            c,
-                            "SELECT accepted_record FROM input_ids WHERE thread_id=? AND input_id=?",
-                            (self.store.thread_id, change.item.id),
-                        )
-                    )
-                    if row is not None:
-                        original = await self.store.input(row[0])
-                        if original.input != change.item.input:
-                            from XBotv2.core.api.errors import OperationError
-
-                            raise OperationError(
-                                "input_id_conflict",
-                                "Input ID was already accepted with different content",
-                            )
-                        return False
+                fingerprint = change.request_fingerprint or input_fingerprint(
+                    change.item.input
+                )
+                if await self._accepted(change.item.id, fingerprint):
+                    return False
                 await self.stream.append(
                     "input_accepted",
-                    {"item": change.item.model_dump(mode="json")},
+                    {
+                        "item": change.item.model_dump(mode="json"),
+                        "request_fingerprint": fingerprint,
+                        "content_sha256": change.content_sha256 or content_digest(
+                            change.item.input.content
+                        ),
+                    },
                     identity=f"input:{change.item.id}",
                 )
                 return True
@@ -467,6 +507,12 @@ class InboxStore:
                         "input_id": change.id,
                         "previous": row[0],
                         "content": change.content,
+                        "content_sha256": change.content_sha256 or content_digest(
+                            change.content
+                        ),
+                        "artifacts": [
+                            ref.model_dump(mode="json") for ref in change.artifacts
+                        ],
                     },
                 )
             elif isinstance(change, Retargeted):
@@ -615,8 +661,11 @@ class ConversationStore:
     async def input(self, identity):
         record = await self.stream.record(identity)
         edited_content = None
+        edited_artifacts = None
         if record["kind"] == "input_edited":
             edited_content = record["data"]["content"]
+            from XBotv2.core.api.artifacts import ArtifactRef
+            edited_artifacts = tuple(ArtifactRef.model_validate(ref) for ref in record["data"]["artifacts"])
             accepted = await self.sql(
                 lambda sql: _one(
                     sql,
@@ -655,7 +704,7 @@ class ConversationStore:
         if edited_content is not None:
             item = item.model_copy(
                 update={
-                    "input": item.input.model_copy(update={"content": edited_content})
+                    "input": item.input.model_copy(update={"content": edited_content, "artifacts": edited_artifacts})
                 }
             )
         return item

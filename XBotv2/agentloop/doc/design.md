@@ -42,3 +42,23 @@ owned tools before effects disappear. Other owners drain commands, interactions,
 children and jobs in that same phase. Persistence/locks are released afterward.
 Rollout records are append-only and indexed by SQLite; archive reads page the
 projection. This does not establish a bound on all live working sets.
+
+Accepted inputs are prepared through the optional `PREPARE_INPUT` event before
+writing their canonical record. The event owns a short publication-resource
+scope, with no backend business callback. Original request fingerprints and
+current content hashes remain small metadata in accepted/edit records. Retries
+check the original request before preparing another body; edits compare the
+current original content hash. A cancelled append whose I/O completed reports
+`CommitUncertain`, retaining the referenced object for same-ID recovery.
+
+The rebuildable `conversation_artifacts` projection indexes references and
+metadata from accepted inputs, edits, committed projections, messages and
+replacement versions. Archive authorization uses that thread's indexed
+references, including pending and archived versions, without scanning all
+messages per download. Fork and canonical export/import preserve those refs;
+recovery rebuilds the index from owner records. Downloads stream physical
+chunks and close readers on completion, send failure or disconnect.
+
+Uploaded image/attachment objects are still written before inbox acceptance;
+failed/conflicting uploads can leave unreferenced objects. Long-text
+preparation cleanup does not claim atomicity for that separate upload path.

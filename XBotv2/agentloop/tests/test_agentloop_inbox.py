@@ -14,22 +14,37 @@ from XBotv2.agentloop.api.contracts import (
 )
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.events import Events, ObserveInbox
-from XBotv2.agentloop.impl.inbox import AgentInbox, EphemeralInboxSink
+from XBotv2.agentloop.impl.inbox import AgentInbox, input_fingerprint, content_digest
 
 
 class MemoryInboxSink:
     def __init__(self):
         self.items = []
+        self.accepted_fingerprints = {}
         self.sizes = []
         self.fail = False
 
     async def load(self):
         return list(self.items)
 
+    async def accepted(self, input_id, fingerprint):
+        previous = self.accepted_fingerprints.get(input_id)
+        if previous is not None and previous != fingerprint:
+            from XBotv2.core.api.errors import OperationError
+            raise OperationError("input_id_conflict", "Input ID was already accepted with different content")
+        return previous is not None
+
+    async def current_content_sha256(self, input_id):
+        return content_digest(next(item.input.content for item in self.items if item.id == input_id))
+
     async def append(self, change):
         if self.fail:
             raise OSError("disk full")
         if isinstance(change, Inserted):
+            fingerprint = change.request_fingerprint or input_fingerprint(change.item.input)
+            if await self.accepted(change.item.id, fingerprint):
+                return False
+            self.accepted_fingerprints[change.item.id] = fingerprint
             self.items.append(change.item)
         elif isinstance(change, Edited):
             self.items = [item.model_copy(update={"input": item.input.model_copy(update={"content": change.content})})
@@ -49,6 +64,10 @@ class MemoryInboxSink:
 class MemoryEvents:
     def __init__(self):
         self.changes = []
+
+    async def serial(self, event, payload):
+        assert event == Events.PREPARE_INPUT
+        return None
 
     async def emit(self, event, payload):
         assert event == Events.INBOX_CHANGED
@@ -110,12 +129,13 @@ async def test_uncommitted_claim_is_pending_after_restore():
 
 @pytest.mark.asyncio
 async def test_item_ids_are_unique_across_both_targets():
-    inbox = AgentInbox(events=MemoryEvents(), sink=EphemeralInboxSink())
+    inbox = AgentInbox(events=MemoryEvents(), sink=MemoryInboxSink())
     await inbox.submit(human_input("same", "one"), wake=True)
 
-    assert not await inbox.submit(
-        human_input("same", "two", InboxTarget.NEXT_STEP), wake=True,
-    )
+    from XBotv2.core.api.errors import OperationError
+    assert not await inbox.submit(human_input("same", "one", InboxTarget.NEXT_STEP), wake=True)
+    with pytest.raises(OperationError, match="different content"):
+        await inbox.submit(human_input("same", "two", InboxTarget.NEXT_STEP), wake=True)
     assert [(item.id, item.input.content) for item in inbox.pending] == [("same", "one")]
 
 
@@ -218,7 +238,7 @@ async def test_pending_input_mutations_keep_sink_and_live_queue_consistent():
         ("edit-me", "edited", InboxTarget.NEXT_STEP),
     ]
     assert events.changes[-3:] == [
-        Edited(id="edit-me", content="edited"),
+        Edited(id="edit-me", content="edited", content_sha256=content_digest("edited")),
         Retargeted(id="edit-me", target=InboxTarget.NEXT_STEP),
         Removed(id="remove-me"),
     ]
@@ -226,7 +246,7 @@ async def test_pending_input_mutations_keep_sink_and_live_queue_consistent():
 
 @pytest.mark.asyncio
 async def test_claimed_or_unknown_input_cannot_be_mutated():
-    inbox = AgentInbox(events=MemoryEvents(), sink=EphemeralInboxSink())
+    inbox = AgentInbox(events=MemoryEvents(), sink=MemoryInboxSink())
     await inbox.submit(human_input("claimed", "claimed"), wake=True)
     await inbox.claim_turn()
 

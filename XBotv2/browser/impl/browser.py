@@ -179,7 +179,7 @@ class BrowserSession:
             payload = await self._page.screenshot(full_page=True)
         except Exception as exc:
             return failed_text("browser_screenshot_failed", f"Screenshot failed: {exc}")
-        artifact = self.artifacts.put(
+        artifact = await self.artifacts.put(
             ArtifactKind.BROWSER,
             payload,
             media_type="image/png",

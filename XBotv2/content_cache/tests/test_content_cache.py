@@ -1,5 +1,7 @@
 """Lossless content-cache projections and their ArtifactStore references."""
 
+from contextlib import AsyncExitStack
+
 import pytest
 from XBotv2.content_cache.impl.content_cache import (
     cache_tool_execution,
@@ -9,7 +11,7 @@ from XBotv2.content_cache.impl.content_cache import (
 from XBotv2.content_cache.api.models import ContentCachePolicy
 from XBotv2.content_cache.impl.plugin import ContentCacheService
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
-from XBotv2.agentloop.api.events import AfterToolExecution, InputAccepted
+from XBotv2.agentloop.api.events import AfterToolExecution, PrepareInput
 from XBotv2.core.api.artifacts import ArtifactKind
 from XBotv2.core.api.domain import InboxTarget, MessageId, ToolCallId, ToolTiming
 from XBotv2.core.api.messages import HumanInputMessage, ToolMessage
@@ -32,38 +34,38 @@ def policy() -> ContentCachePolicy:
     )
 
 
-def test_externalized_content_keeps_the_complete_utf8_original(artifact_store):
+async def test_externalized_content_keeps_the_complete_utf8_original(artifact_store):
     source = "start α middle-secret end 二"
 
-    result = externalize_text(
+    result = (await externalize_text(
         source,
         artifact_store,
         policy(),
         kind=ArtifactKind.CONTEXT,
         name="source.txt",
-    )
+    ))
 
     assert result is not None
     assert result.original.kind is ArtifactKind.CONTEXT
     assert result.original_chars == len(source)
-    assert artifact_store.read(result.original) == source.encode("utf-8")
-    assert artifact_store.exists(result.original)
+    assert (await artifact_store.read(result.original)) == source.encode("utf-8")
+    assert (await artifact_store.exists(result.original))
     assert result.preview.startswith("start")
     assert result.preview.endswith("二")
     assert "middle-secret" not in result.preview
 
 
-def test_short_text_is_not_externalized(artifact_store):
-    assert externalize_text(
+async def test_short_text_is_not_externalized(artifact_store):
+    assert (await externalize_text(
         "short",
         artifact_store,
         policy(),
         kind=ArtifactKind.CONTEXT,
         name="source.txt",
-    ) is None
+    )) is None
 
 
-def test_user_cache_returns_a_projection_without_mutating_canonical_history(
+async def test_user_cache_returns_a_projection_without_mutating_canonical_history(
     artifact_store,
 ):
     source = "start α " + ("middle-secret " * 5) + "end 二"
@@ -72,11 +74,11 @@ def test_user_cache_returns_a_projection_without_mutating_canonical_history(
         parts=(TextPart(text=source),),
     )
 
-    projected, externalized = cache_user_message(
+    projected, externalized = (await cache_user_message(
         message,
         artifact_store,
         policy(),
-    )
+    ))
 
     assert isinstance(projected, HumanInputMessage)
     assert projected is not message
@@ -85,10 +87,10 @@ def test_user_cache_returns_a_projection_without_mutating_canonical_history(
     assert externalized is not None
     assert projected.parts[0].text == externalized.preview
     assert projected.artifacts == (externalized.original,)
-    assert artifact_store.read(projected.artifacts[0]) == source.encode("utf-8")
+    assert (await artifact_store.read(projected.artifacts[0])) == source.encode("utf-8")
 
 
-def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
+async def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
     artifact_store,
 ):
     source = "tool-start α " + ("middle-secret " * 5) + "tool-end 二"
@@ -102,11 +104,11 @@ def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
         directive=ContinueTurn(),
     )
 
-    projected, externalized = cache_tool_execution(
+    projected, externalized = (await cache_tool_execution(
         execution,
         artifact_store,
         policy(),
-    )
+    ))
 
     assert projected is not execution
     assert execution.message.outcome.output.parts == (TextPart(text=source),)
@@ -115,20 +117,20 @@ def test_tool_execution_cache_returns_new_preview_and_preserves_full_result(
         TextPart(text=externalized.preview),
     )
     assert projected.message.outcome.output.artifacts == (externalized.original,)
-    assert artifact_store.read(externalized.original) == source.encode("utf-8")
+    assert (await artifact_store.read(externalized.original)) == source.encode("utf-8")
 
 
 @pytest.mark.parametrize("value", ["short", "", "small result"])
-def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, value):
+async def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, value):
     message = HumanInputMessage(
         id=MessageId("message-short"),
         parts=(TextPart(text=value),),
     )
-    projected_message, input_externalized = cache_user_message(
+    projected_message, input_externalized = (await cache_user_message(
         message,
         artifact_store,
         policy(),
-    )
+    ))
     execution = ToolExecution(
         message=ToolMessage(
             id=MessageId("tool-short"),
@@ -138,11 +140,11 @@ def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, v
         ),
         directive=ContinueTurn(),
     )
-    projected_execution, tool_externalized = cache_tool_execution(
+    projected_execution, tool_externalized = (await cache_tool_execution(
         execution,
         artifact_store,
         policy(),
-    )
+    ))
 
     assert projected_message is message
     assert input_externalized is None
@@ -151,34 +153,20 @@ def test_under_threshold_inputs_and_tool_results_keep_identity(artifact_store, v
 
 
 class _FailingArtifactStore:
-    def put(self, *_args, **_kwargs):
+    async def put_stream(self, *_args, **_kwargs):
+        raise OSError("artifact store is unavailable")
+
+    def prepare_stream(self, *_args, **_kwargs):
         raise OSError("artifact store is unavailable")
 
 
-@pytest.mark.asyncio
-async def test_artifact_write_failure_keeps_large_user_input_unchanged(
-    artifact_store,
-    caplog,
-):
-    source = "complete user input " + ("secret " * 5)
-    message = HumanInputMessage(
-        id=MessageId("message-write-failure"),
-        parts=(TextPart(text=source),),
-    )
+async def test_input_preparation_failure_prevents_acceptance():
     service = ContentCacheService(_FailingArtifactStore(), policy())
-    result = await service.externalize_accepted_input(InputAccepted(
-        input=InboxItem(
-            id="input-write-failure",
-            target=InboxTarget.NEXT_TURN,
-            input=HumanInput(content=source),
-        ),
-        message=message,
-    ))
-
-    assert result is None
-    assert message.parts == (TextPart(text=source),)
-    assert message.artifacts == ()
-    assert "content_cache.user_input.write_failed" in caplog.text
+    item = InboxItem(id="failed", target=InboxTarget.NEXT_TURN,
+                     input=HumanInput(content="complete user input " * 5))
+    with pytest.raises(OSError, match="unavailable"):
+        async with AsyncExitStack() as resources:
+            await service.prepare_input(PrepareInput(item, resources))
 
 
 @pytest.mark.asyncio
@@ -204,31 +192,15 @@ async def test_artifact_write_failure_keeps_large_tool_result_unchanged(caplog):
     assert "content_cache.tool_result.write_failed" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_accepted_input_replacement_persists_original_artifact(artifact_store):
+async def test_prepared_input_carries_original_artifact_before_persistence(artifact_store):
     source = "complete user input " + ("secret " * 5)
-    message = HumanInputMessage(
-        id=MessageId("message-turn-end"),
-        parts=(TextPart(text=source),),
-    )
+    item = InboxItem(id="prepared", target=InboxTarget.NEXT_TURN,
+                     input=HumanInput(content=source))
     service = ContentCacheService(artifact_store, policy())
-    accepted = InputAccepted(
-        input=InboxItem(
-            id="input-turn-end",
-            target=InboxTarget.NEXT_TURN,
-            input=HumanInput(content=source),
-        ),
-        message=message,
-    )
-    result = await service.externalize_accepted_input(accepted)
-
-    assert isinstance(result, InputAccepted)
-    assert result is not accepted
-    assert result.input == accepted.input
-    assert result.message is not message
-    assert result.message.id == message.id
-    assert result.message.parts[0].text != source
-    assert len(result.message.artifacts) == 1
-    assert artifact_store.read(result.message.artifacts[0]) == source.encode("utf-8")
-    assert message.parts == (TextPart(text=source),)
-    assert message.artifacts == ()
+    async with AsyncExitStack() as resources:
+        prepared = await service.prepare_input(PrepareInput(item, resources))
+    assert prepared.item.id == item.id
+    assert prepared.item.input.content != source
+    assert await artifact_store.read(prepared.item.input.artifacts[0]) == source.encode("utf-8")
+    assert item.input.content == source
+    assert item.input.artifacts == ()

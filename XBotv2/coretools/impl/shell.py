@@ -1,6 +1,6 @@
 """Shell execution and session-owned background shell jobs.
 
-The foreground ``shell`` tool executes one command synchronously. Background
+The foreground ``shell`` tool executes one command and waits for it. Background
 shells run as SHELL jobs in the shared JobRegistry through ``ShellRunner``;
 ``start_shell`` / ``list_shells`` / ``wait_shell`` / ``read_shell`` /
 ``cancel_shell`` never return bulk output — reading is explicit and bounded.
@@ -17,14 +17,16 @@ import math
 import os
 import signal
 import subprocess
-import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Literal
 from pydantic import JsonValue
 from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
-from XBotv2.jobs.api.contracts import Job, JobNotFound, JobRegistryClosed, JobsPort, OutputPage, WaitResult, parse_job_status
+from XBotv2.jobs.api.contracts import (
+    JobExecutionError, Job, JobNotFound, JobRegistryClosed, JobsPort, OutputPage,
+    WaitResult, parse_job_status,
+)
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.tools import (
     SandboxEscape,
@@ -62,20 +64,22 @@ def _failure(code: str, message: str) -> ToolFailed:
     return ToolFailed(error=ToolError(code=code, message=message), output=ToolOutput())
 
 
-class ShellCommandError(RuntimeError):
+class ShellCommandError(JobExecutionError):
     """Shell failure carrying the process exit code."""
 
-    def __init__(self, message: str, *, exit_code: int | None = None) -> None:
-        super().__init__(message)
+    def __init__(
+        self, message: str, *, exit_code: int | None = None, result=None,
+    ) -> None:
+        super().__init__(message, result=result)
         self.code = "command_failed"
         self.detail = f"exit_code={exit_code}" if exit_code is not None else None
 
 
-class ShellTimeoutError(TimeoutError):
+class ShellTimeoutError(JobExecutionError, TimeoutError):
     code = "tool_timeout"
 
-    def __init__(self, seconds: float) -> None:
-        super().__init__(f"Shell command timed out after {seconds}s")
+    def __init__(self, seconds: float, *, result=None) -> None:
+        super().__init__(f"Shell command timed out after {seconds}s", result=result)
 
 
 _ESCALATION_JUSTIFICATION_REQUIRED = (
@@ -125,33 +129,17 @@ class ShellRunner:
         self.artifacts = artifacts
 
     async def run(self, job: Job) -> ShellJobResult:
-        command = self.spec.command
-        cwd = self.spec.cwd
-        escalated = self.spec.escalated
-        try:
-            text = await run_shell_command(
-                command,
-                cwd=cwd,
-                sandbox=None if escalated else self.sandbox,
-                timeout_seconds=self.spec.timeout_seconds,
+        result = await run_shell_command(
+            self.spec.command, cwd=self.spec.cwd,
+            sandbox=None if self.spec.escalated else self.sandbox,
+            timeout_seconds=self.spec.timeout_seconds, artifacts=self.artifacts,
+        )
+        if result.exit_code:
+            raise ShellCommandError(
+                f"Command failed with exit code {result.exit_code}; output: {result.output_ref.id}",
+                exit_code=result.exit_code, result=result,
             )
-        except asyncio.CancelledError:
-            raise
-        except (ShellCommandError, ShellTimeoutError):
-            raise
-        except Exception as exc:  # noqa: BLE001 - spawn errors are job errors
-            raise ShellCommandError(str(exc)) from exc
-        output_ref = self.artifacts.put(
-            ArtifactKind.TOOL_RESULT,
-            text.encode("utf-8"),
-            media_type="text/plain; charset=utf-8",
-            name="shell-output.txt",
-            suffix=".txt",
-        )
-        return ShellJobResult(
-            output_ref=output_ref,
-            exit_code=0,
-        )
+        return result
 
     async def cancel(self, job: Job) -> None:
         # Task cancellation propagates into run_shell_command, which reaps the
@@ -180,7 +168,7 @@ async def shell(
     """Run a shell command in the foreground, or start one in the background.
 
     Foreground (default) commands must be non-interactive and return their
-    output directly. Tool status follows the final exit code; if a nonzero
+    bounded preview and a complete output artifact. Tool status follows the final exit code; if a nonzero
     exit is an expected result, the command must verify that condition and
     then exit zero.
 
@@ -255,17 +243,27 @@ async def shell(
         None if sandbox_permissions == "require_escalated" else sandbox
     )
     try:
-        output = await run_shell_command(
-            command,
-            cwd=cwd,
-            sandbox=active_sandbox,
-            timeout_seconds=effective_timeout,
+        result = await run_shell_command(
+            command, cwd=cwd, sandbox=active_sandbox,
+            timeout_seconds=effective_timeout, artifacts=artifacts,
         )
     except ShellTimeoutError as exc:
-        return _failure(exc.code, str(exc))
+        if exc.result is None:
+            return _failure(exc.code, str(exc))
+        preview = await _preview(artifacts, exc.result.output_ref)
+        return ToolFailed(error=ToolError(code=exc.code, message=str(exc)), output=ToolOutput(
+            parts=(TextPart(text=preview),), artifacts=(exc.result.output_ref,),
+        ))
     except Exception as exc:
         return _failure("command_failed", str(exc))
-    return _success(output)
+    preview = await _preview(artifacts, result.output_ref)
+    output = ToolOutput(parts=(TextPart(text=preview),), artifacts=(result.output_ref,))
+    if result.exit_code:
+        return ToolFailed(error=ToolError(code="command_failed", message=(
+            f"Command failed with exit code {result.exit_code}"
+        )), output=output)
+    return ToolSucceeded(output=output)
+
 
 
 async def start_shell(
@@ -427,8 +425,8 @@ async def read_shell(
     Args:
         id: Shell job ID returned by start_shell.
         stream: Output stream to read. Defaults to combined output.
-        cursor: Character offset to start reading from.
-        max_bytes: Maximum characters to return (default 8000).
+        cursor: Byte offset to start reading from.
+        max_bytes: Maximum raw bytes to read (1..65536; default 8000).
     """
     del stream
     job = job_registry.get_or_none(id)
@@ -439,14 +437,22 @@ async def read_shell(
         if job.status in {"queued", "running"}:
             return _failure("shell_not_complete", "Shell output is not available yet")
         return _failure("shell_output_unavailable", "Shell job has no captured output")
-    text = artifacts.read(result.output_ref).decode("utf-8")
-    start = max(0, min(cursor or 0, len(text)))
-    end = min(len(text), start + max_bytes)
+    if not 1 <= max_bytes <= 65536 or (cursor is not None and cursor < 0):
+        return _failure(
+            "invalid_arguments", "cursor must be non-negative; max_bytes must be 1..65536",
+        )
+    start = min(cursor or 0, result.output_ref.size)
+    data = b"".join([
+        chunk async for chunk in artifacts.read_chunks(
+            result.output_ref, offset=start, limit=max_bytes,
+        )
+    ])
+    end = start + len(data)
     page = OutputPage(
-        data=text[start:end],
-        next_cursor=end if end < len(text) else None,
-        eof=end >= len(text),
-        truncated=end < len(text),
+        data=data.decode("utf-8", errors="replace"),
+        next_cursor=end if end < result.output_ref.size else None,
+        eof=end >= result.output_ref.size,
+        truncated=end < result.output_ref.size,
     )
     return _success(json.dumps(asdict(page), ensure_ascii=False))
 
@@ -552,36 +558,62 @@ def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, JsonValue
 async def run_shell_command(
     command: str,
     *,
+    artifacts: ArtifactStorePort,
     cwd: str | None = None,
     sandbox: SandboxPort | None = None,
     timeout_seconds: float | None = 0,
-) -> str:
-    """Run a shell command with cancellation-safe process cleanup."""
+) -> ShellJobResult:
+    """Spool from launch; reap the producer before adopting or removing bytes."""
     deadline = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
-    try:
-        async with asyncio.timeout(deadline):
-            return await _run_shell_process(command, cwd=cwd, sandbox=sandbox)
-    except TimeoutError as exc:
-        raise ShellTimeoutError(timeout_seconds) from exc
+    async with artifacts.spool_file() as output:
+        timed_out = False
+        try:
+            async with asyncio.timeout(deadline):
+                exit_code = await _run_shell_process(
+                    command, output, cwd=cwd, sandbox=sandbox,
+                )
+        except TimeoutError:
+            timed_out = True
+            exit_code = -signal.SIGKILL
+        ref = await artifacts.adopt_file(
+            ArtifactKind.TOOL_RESULT, output, media_type="text/plain; charset=utf-8",
+            name="shell-output.txt", suffix=".txt",
+        )
+        result = ShellJobResult(output_ref=ref, exit_code=exit_code)
+        if timed_out:
+            raise ShellTimeoutError(timeout_seconds, result=result)
+        return result
+
+async def _preview(artifacts, ref):
+    head_size, tail_size = 6000, 2000
+    head = b"".join([chunk async for chunk in artifacts.read_chunks(ref, limit=head_size)])
+    if ref.size <= head_size:
+        return head.decode("utf-8", errors="replace") or "(no output)"
+    tail = b"".join([
+        chunk async for chunk in artifacts.read_chunks(
+            ref, offset=max(head_size, ref.size - tail_size), limit=tail_size,
+        )
+    ])
+    omitted = ref.size - len(head) - len(tail)
+    marker = (
+        f"\n[… {omitted} bytes omitted; complete output: {ref.id} …]\n"
+        if omitted else ""
+    )
+    return (
+        head.decode("utf-8", errors="replace")
+        + marker
+        + tail.decode("utf-8", errors="replace")
+    )
 
 
-async def _run_shell_process(
-    command: str, *, cwd: str | None, sandbox: SandboxPort | None,
-) -> str:
+async def _run_shell_process(command, output, *, cwd, sandbox) -> int:
     shell = _default_shell()
     if sandbox is not None and sandbox.enabled:
-        return await sandbox.run_shell(
-            command,
-            shell=shell,
-            cwd=cwd,
-        )
-
-    with tempfile.TemporaryFile() as output_file:
+        return await sandbox.run_shell_to_file(command, output, shell=shell, cwd=cwd)
+    with output.open("wb") as writer:
         proc = subprocess.Popen(
-            [shell, "/c" if os.name == "nt" else "-lc", command],
-            cwd=cwd,
-            stdout=output_file,
-            stderr=subprocess.STDOUT,
+            [shell, "/c" if os.name == "nt" else "-lc", command], cwd=cwd,
+            stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.STDOUT,
             start_new_session=os.name == "posix",
         )
         try:
@@ -591,15 +623,7 @@ async def _run_shell_process(
                 _signal_process(proc)
             await _wait_process(proc)
             raise
-        output_file.seek(0)
-        output = output_file.read().decode("utf-8", errors="replace")
-    output = output or "(no output)"
-    if proc.returncode:
-        raise ShellCommandError(
-            f"Command failed with exit code {proc.returncode}: {output.strip()}",
-            exit_code=proc.returncode,
-        )
-    return output
+    return proc.returncode
 
 
 def _default_shell() -> str:

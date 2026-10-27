@@ -21,6 +21,8 @@ import pytest_asyncio
 import yaml
 import httpx
 from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.artifacts import ArtifactKind
+from XBotv2.coretools.impl.shell import ShellJobResult
 from XBotv2.agentloop.api.contracts import AGENT_LOOP, INBOX, TOOLS, AllTools
 from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.session.api.contracts import OpenSession, THREAD_EVENTS
@@ -534,13 +536,14 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
     events = ctx.require(THREAD_EVENTS).subscribe()
     blocked_started = asyncio.Event()
 
-    async def run(command: str, **_kwargs: object) -> str:
+    async def run(command: str, **_kwargs: object) -> ShellJobResult:
         if command == "fail":
             raise ShellCommandError("command failed", exit_code=7)
         if command == "block":
             blocked_started.set()
             await asyncio.Event().wait()
-        return "completed"
+        ref = await _kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, b"completed")
+        return ShellJobResult(ref, 0)
 
     monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     tools = {
@@ -621,8 +624,10 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     jobs = ctx.require(JOBS)
     assert jobs is not None
 
-    async def run(command: str, **_kwargs: object) -> str:
-        return "" if command == "emit empty" else "abcdef"
+    async def run(command: str, **_kwargs: object) -> ShellJobResult:
+        payload = b"" if command == "emit empty" else b"abcdef"
+        ref = await _kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, payload)
+        return ShellJobResult(ref, 0)
 
     monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     tools = {
@@ -642,7 +647,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     job = jobs.get_or_none(job_id)
     assert job is not None and job.result is not None
     assert job.result.output_ref.kind.value == "tool_results"
-    assert ctx.require("artifacts").read(job.result.output_ref) == b"abcdef"
+    assert (await ctx.require("artifacts").read(job.result.output_ref)) == b"abcdef"
 
     first = await invoke_tool_function(tools["read_shell"],
         {"id": job_id, "cursor": None, "max_bytes": 3},

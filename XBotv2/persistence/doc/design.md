@@ -38,3 +38,27 @@ The default admission budget is 64 operations and 16 MiB; replay defaults to
 current experimental configuration values, not hardware-independent
 performance guarantees. General workspace filesystem operations remain owned
 by `core.filesystem`, not by the storage backend.
+
+Artifacts expose asynchronous `put`, `put_stream`, `adopt_file`, `read`,
+`exists`, and `read_chunks`. File work uses a separate thread executor, never
+the SQL worker. Writes, hashing and reads use at most 256 KiB storage chunks;
+`read` remains the explicit whole-bytes convenience API. Cancellation waits
+for accepted file work to finish before removing temporary files or releasing
+the physical operation lease. `adopt_file` consumes a producer-owned spool,
+hashes its original bytes, and durably publishes the immutable object by atomic
+rename; a cross-filesystem source is copied in bounded chunks first.
+
+`prepare_stream` is a publication context for one object. Normal exit retains
+it; exceptional exit removes an object created by that scope. The domain owner
+decides whether a durable-but-unconfirmed record must retain it. Publications
+share a session/object lock across thread stores, and active lock entries retire
+when the last holder or waiter exits. This is not a multi-object transaction.
+
+`spool_file` owns temporary producer output under the session's `.spool`
+directory. Its producer must stop before leaving the scope. Immutable object
+files live under `objects`; spools are excluded from session snapshots. Reads
+retain the existing physical operation lease through iterator closure; callers
+must close partially consumed iterators. HTTP artifact responses do so even
+when a send fails or a client disconnects. No SQL transaction spans a network
+send. The server cancels requests and aborts transport buffers on shutdown, so
+an unread response cannot prevent the process from exiting.

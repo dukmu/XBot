@@ -414,7 +414,7 @@ async def test_managed_cas_read_uses_standard_tool_and_readonly_sandbox(tmp_path
         from XBotv2.sandbox.api.models import SANDBOX
         from XBotv2.interactions.api.contracts import CLIENT_EVENTS
         from XBotv2.permissions.api.models import Allowed,PermissionRequest
-        ref=scope.artifacts.put(ArtifactKind.TOOL_RESULT,b'managed CAS original\n')
+        ref=(await scope.artifacts.put(ArtifactKind.TOOL_RESULT,b'managed CAS original\n'))
         path=scope.artifacts.model_path(ref)
         policy=scope.require(SANDBOX)
         assert not policy.check_filesystem_access('read',{'path':path})
@@ -432,7 +432,7 @@ async def test_managed_cas_read_uses_standard_tool_and_readonly_sandbox(tmp_path
         tools=[message for message in scope.require(LOOP_STATE).history if message.kind=='tool']
         assert len(tools)==1 and tools[0].outcome.kind=='succeeded'
         assert 'managed CAS original' in tools[0].model_dump_json()
-        assert scope.artifacts.read(ref)==b'managed CAS original\n'
+        assert (await scope.artifacts.read(ref))==b'managed CAS original\n'
     finally:
         if approval is not None:
             approval.cancel();await asyncio.gather(approval,return_exceptions=True)

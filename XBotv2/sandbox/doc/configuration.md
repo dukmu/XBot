@@ -54,7 +54,8 @@ original mounts.
 
 `SandboxPort` exposes `run_shell`, `filesystem`, path resolution and access checks. `SandboxPolicy` additionally provides these implementation methods:
 
-- `run_shell(command, *, shell=None, cwd=None)`
+- `run_shell_to_file(command, output, *, shell=None, cwd=None)` captures original combined bytes from launch and returns the exit code for shell tools.
+- `run_shell(command, *, shell=None, cwd=None)` returns text for skill prompt preprocessing.
 - `filesystem(operation, args)`
 - `resolve_read_path(path)`, `resolve_write_path(path)`
 - `check_filesystem_access(operation, args)`

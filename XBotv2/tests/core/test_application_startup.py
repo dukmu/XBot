@@ -153,8 +153,8 @@ async def test_thread_artifact_roundtrip_and_scope_close(tmp_path):
         llm_override=MockLLM(responses=[]),
     )
     try:
-        artifact = context.artifacts.put(ArtifactKind.TOOL_RESULT, b"tool output", suffix=".txt")
-        assert context.artifacts.read(artifact) == b"tool output"
+        artifact = (await context.artifacts.put(ArtifactKind.TOOL_RESULT, b"tool output", suffix=".txt"))
+        assert (await context.artifacts.read(artifact)) == b"tool output"
         assert Path(context.artifacts.model_path(artifact)).read_bytes() == b"tool output"
         await context.stop()
         assert not context.has("artifacts")
@@ -447,13 +447,13 @@ async def test_application_resolves_logical_image_for_provider_without_persistin
         ],
     )
     payload = b"image payload for request projection"
-    artifact = application.artifacts.put(
+    artifact = (await application.artifacts.put(
         ArtifactKind.MEDIA,
         payload,
         media_type="image/png",
         name="diagram.png",
         suffix=".png",
-    )
+    ))
     image = ImageRef(
         artifact_id=artifact.id,
         media_type=artifact.media_type,

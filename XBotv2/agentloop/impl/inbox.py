@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from contextlib import AsyncExitStack
+from XBotv2.persistence.api.models import CommitUncertain
 from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
 from XBotv2.agentloop.api.contracts import (
@@ -20,41 +24,8 @@ from XBotv2.agentloop.api.contracts import (
     Retargeted,
 )
 from xcore.api.events import EventDispatch
-from XBotv2.agentloop.api.events import Events, ObserveInbox
+from XBotv2.agentloop.api.events import Events, ObserveInbox, PrepareInput
 from XBotv2.core.api.domain import InboxTarget
-
-
-class EphemeralInboxSink:
-    """Explicit persistence policy for sessions without thread storage."""
-
-    def __init__(self):
-        self._items = {}
-
-    async def append(self, change: InboxMutation) -> bool:
-        if isinstance(change, Inserted):
-            if change.item.id in self._items:
-                return False
-            self._items[change.item.id] = change.item
-        elif isinstance(change, (Consumed, Discarded)):
-            for identity in change.ids:
-                self._items.pop(identity, None)
-        elif isinstance(change, Removed):
-            self._items.pop(change.id)
-        elif isinstance(change, Edited):
-            item = self._items[change.id]
-            self._items[change.id] = item.model_copy(
-                update={
-                    "input": item.input.model_copy(update={"content": change.content})
-                }
-            )
-        elif isinstance(change, Retargeted):
-            self._items[change.id] = self._items[change.id].model_copy(
-                update={"target": change.target}
-            )
-        return True
-
-    async def load(self):
-        return list(self._items.values())
 
 
 class AgentInbox:
@@ -98,11 +69,54 @@ class AgentInbox:
             self._ids.add(item.id)
         return restored
 
+    async def _prepare(self, item, resources, *, editing=False):
+        result = await self._events.serial(
+            Events.PREPARE_INPUT, PrepareInput(item, resources, editing=editing),
+        )
+        if result is None:
+            return item
+        if not isinstance(result, PrepareInput):
+            raise TypeError("PREPARE_INPUT must return PrepareInput or None")
+        if result.resources is not resources:
+            raise ValueError("PREPARE_INPUT cannot replace its resource scope")
+        candidate = result.item
+        original_payload = candidate.input.model_copy(update={
+            "content": item.input.content,
+            "artifacts": item.input.artifacts,
+        })
+        if (
+            candidate.model_copy(update={"input": item.input}) != item
+            or type(candidate.input) is not type(item.input)
+            or original_payload != item.input
+        ):
+            raise ValueError("PREPARE_INPUT may only change content and artifacts")
+        return candidate
+
     async def submit(self, item: InboxItem, *, wake: bool) -> bool:
         async with self._lock:
             restored = await self._synchronize()
-            change = Inserted(item=item, wake=wake)
-            if not await self._sink.append(change):
+            content_sha256 = content_digest(item.input.content)
+            fingerprint = input_fingerprint(
+                item.input, content_sha256=content_sha256,
+            )
+            if await self._sink.accepted(item.id, fingerprint):
+                return item.id in restored
+            uncertain = None
+            async with AsyncExitStack() as resources:
+                item = await self._prepare(item, resources)
+                change = Inserted(
+                    item=item, wake=wake, request_fingerprint=fingerprint,
+                    content_sha256=content_sha256,
+                )
+                try:
+                    appended = await self._sink.append(change)
+                except CommitUncertain as error:
+                    # The durable log can already own this object. Finish the
+                    # publication scopes normally, then report the uncertainty.
+                    uncertain = error
+            if uncertain is not None:
+                raise uncertain
+            if not appended:
                 return item.id in restored
             self._queue(item.target).append(item)
             self._ids.add(item.id)
@@ -177,13 +191,25 @@ class AgentInbox:
             current = self._pending_item(input_id)
             if not isinstance(current.input, HumanInput):
                 raise ValueError("Only human inputs can be edited")
-            if current.input.content == content:
+            digest = content_digest(content)
+            if await self._sink.current_content_sha256(input_id) == digest:
                 return current
             updated = current.model_copy(
                 update={"input": current.input.model_copy(update={"content": content})}
             )
-            change = Edited(id=current.id, content=content)
-            await self._sink.append(change)
+            uncertain = None
+            async with AsyncExitStack() as resources:
+                updated = await self._prepare(updated, resources, editing=True)
+                change = Edited(
+                    id=current.id, content=updated.input.content,
+                    artifacts=updated.input.artifacts, content_sha256=digest,
+                )
+                try:
+                    await self._sink.append(change)
+                except CommitUncertain as error:
+                    uncertain = error
+            if uncertain is not None:
+                raise uncertain
             queue = self._queue(current.target)
             queue[queue.index(current)] = updated
             await self._record(change)
@@ -265,3 +291,20 @@ class AgentInbox:
     @property
     def pending(self) -> list[InboxItem]:
         return list(self._unclaimed(self._items()))
+
+
+def content_digest(content: str) -> str:
+    digest = hashlib.sha256()
+    for offset in range(0, len(content), 65536):
+        digest.update(content[offset : offset + 65536].encode("utf-8"))
+    return digest.hexdigest()
+
+
+def input_fingerprint(payload, *, content_sha256=None):
+    """Fingerprint original request fields, independently of body projection policy."""
+    metadata = payload.model_dump(mode="json", exclude={"content"})
+    metadata["content_sha256"] = content_sha256 or content_digest(payload.content)
+    encoded = json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

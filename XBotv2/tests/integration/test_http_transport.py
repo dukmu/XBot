@@ -61,7 +61,7 @@ from XBotv2.core.api.tools import (
     ToolSucceeded,
 )
 from XBotv2.client import XBotClient, XBotClientError
-from XBotv2.coretools.impl.shell import ShellJobSpec, ShellRunner, start_shell
+from XBotv2.coretools.impl.shell import ShellJobResult, ShellJobSpec, ShellRunner, start_shell
 from httpx import ASGITransport
 from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.llm.impl.openai import OpenAICompatibleProvider
@@ -4170,7 +4170,8 @@ async def test_goal_waits_for_background_job_and_running_steer_then_continues_on
 
     async def run_shell(*_args, **_kwargs):
         await release_job.wait()
-        return "job result"
+        ref = await _kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, b"job result")
+        return ShellJobResult(ref, 0)
 
     monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run_shell)
 
@@ -5454,7 +5455,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert source_records[-1]["data"]["operation"] == "undo"
     persistence = http_app.state.test_context.require(PERSISTENCE)
     await persistence.state("history", "t").namespace("permissions").set("sample", "source-only")
-    artifact = persistence.artifacts("history", "t").put(ArtifactKind.CONTEXT, b"cached")
+    artifact = (await persistence.artifacts("history", "t").put(ArtifactKind.CONTEXT, b"cached"))
     source_session.config_file.write_text(
         "plugins:\n- id: permissions\n  config: {}\n",
         encoding="utf-8",
@@ -5467,7 +5468,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
 
     assert await persistence.state("history", "t").namespace("permissions").get("sample") == "source-only"
     assert await persistence.state(fork_id, "t").namespace("permissions").get("sample") is None
-    assert persistence.artifacts(fork_id, "t").read(artifact) == b"cached"
+    assert (await persistence.artifacts(fork_id, "t").read(artifact)) == b"cached"
     assert fork_session.config_file.read_text(encoding="utf-8") == (
         "plugins:\n- id: permissions\n  config: {}\n"
     )
@@ -6054,7 +6055,8 @@ async def test_background_task_updates_and_completion_use_session_stream(
 ) -> None:
     async def run(*args, **kwargs):
         await asyncio.sleep(0)
-        return "task output"
+        ref = await kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, b"task output")
+        return ShellJobResult(ref, 0)
 
     monkeypatch.setattr(
         "XBotv2.coretools.impl.shell.run_shell_command", run
@@ -6126,7 +6128,8 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
 ) -> None:
     async def run(*args, **kwargs):
         await asyncio.sleep(0)
-        return "task output"
+        ref = await kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, b"task output")
+        return ShellJobResult(ref, 0)
 
     monkeypatch.setattr(
         "XBotv2.coretools.impl.shell.run_shell_command", run

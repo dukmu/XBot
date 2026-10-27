@@ -197,8 +197,8 @@ async def test_real_chromium_interaction_and_screenshot_artifact_lifecycle(
         assert isinstance(closed, ToolSucceeded), _text(closed)
         assert not browser.active
 
-        assert artifact_store.exists(artifact)
-        payload = artifact_store.read(artifact)
+        assert (await artifact_store.exists(artifact))
+        payload = (await artifact_store.read(artifact))
         assert len(payload) == artifact.size
         assert payload.startswith(b"\x89PNG\r\n\x1a\n")
     finally:

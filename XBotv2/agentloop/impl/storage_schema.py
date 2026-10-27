@@ -2,6 +2,7 @@
 
 TABLES = (
     "message_refs",
+    "conversation_artifacts",
     "surface",
     "transcript",
     "lineage",
@@ -12,6 +13,7 @@ TABLES = (
     "history_state",
 )
 SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS conversation_artifacts(thread_id TEXT NOT NULL,artifact_id TEXT NOT NULL,metadata TEXT NOT NULL,PRIMARY KEY(thread_id,artifact_id))",
     "CREATE TABLE IF NOT EXISTS message_refs(stream_id TEXT NOT NULL,message_id TEXT NOT NULL,record_id TEXT NOT NULL,ordinal INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(stream_id,message_id))",
     "CREATE TABLE IF NOT EXISTS surface(thread_id TEXT NOT NULL,order_key INTEGER NOT NULL,record_id TEXT NOT NULL,PRIMARY KEY(thread_id,order_key),UNIQUE(thread_id,record_id))",
     "CREATE TABLE IF NOT EXISTS transcript(thread_id TEXT NOT NULL,order_key INTEGER NOT NULL,record_id TEXT NOT NULL,PRIMARY KEY(thread_id,order_key),UNIQUE(thread_id,record_id))",

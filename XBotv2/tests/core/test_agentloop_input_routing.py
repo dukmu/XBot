@@ -192,7 +192,7 @@ async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_n
     def replace_identity(event):
         if hook == "accept":
             return AcceptInput(event.input.model_copy(update={"id": "different-input"}))
-        return InputAccepted(event.input, event.message.model_copy(update={"id": "different-input"}))
+        return InputAccepted(event.input, event.message.model_copy(update={"id": "different-input"}), event.source)
 
     try:
         dispose = application.on(

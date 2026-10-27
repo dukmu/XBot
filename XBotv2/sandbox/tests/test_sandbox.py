@@ -194,7 +194,11 @@ class TestBubblewrapCapabilities:
             )
             == "from-host"
         )
-        host_shell = await run_shell_command('printf %s "$0"')
+        from XBotv2.persistence.impl.artifacts import ArtifactStore
+        from XBotv2.core.api.paths import RuntimePaths
+        artifacts = ArtifactStore(RuntimePaths.from_data_dir(tmp_path / ".data").session("shell").thread("main"))
+        capture = await run_shell_command('printf %s "$0"', artifacts=artifacts)
+        host_shell = (await artifacts.read(capture.output_ref)).decode("utf-8")
         sandbox_shell = await policy.run_shell('printf %s "$0"', shell=shell)
         assert Path(host_shell).resolve() == Path(shell).resolve()
         assert Path(sandbox_shell).resolve() == Path(shell).resolve()

@@ -32,7 +32,7 @@ from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.agentloop.impl.state import LoopRuntimeState
 from XBotv2.agentloop.impl.history import ConversationHistory
-from XBotv2.agentloop.impl.inbox import AgentInbox, EphemeralInboxSink
+from XBotv2.agentloop.impl.inbox import AgentInbox
 from XBotv2.session.api.contracts import SessionKey
 from XBotv2.agentloop.impl.protocol import build_tools_router
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry

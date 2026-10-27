@@ -4,10 +4,20 @@ from __future__ import annotations
 from XBotv2.session.api.records import conversation_replay
 from urllib.parse import quote
 from fastapi import APIRouter, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from contextlib import aclosing
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.api.records import ConversationRecord
+
+
+class ArtifactResponse(StreamingResponse):
+    async def stream_response(self, send):
+        # Starlette does not close arbitrary async iterators when send fails.
+        # Release the persistence lifetime even when cancellation occurs while
+        # a slow client is receiving the last yielded chunk.
+        async with aclosing(self.body_iterator):
+            await super().stream_response(send)
 
 
 def build_router(*, sessions, archive):
@@ -67,16 +77,12 @@ def build_router(*, sessions, archive):
     ) -> Response:
         await sessions.thread_summary(session_id, thread_id)
         artifact = await archive.artifact(session_id, thread_id, artifact_id)
-        headers = (
-            {
-                "Content-Disposition": (
-                    "inline; filename*=UTF-8''" + quote(artifact.name)
-                )
-            }
-            if artifact.name
-            else None
-        )
-        return Response(
+        headers = {"Content-Length": str(artifact.size)}
+        if artifact.name:
+            headers["Content-Disposition"] = (
+                "inline; filename*=UTF-8''" + quote(artifact.name)
+            )
+        return ArtifactResponse(
             content=artifact.content,
             media_type=artifact.media_type,
             headers=headers,

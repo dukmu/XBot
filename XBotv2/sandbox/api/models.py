@@ -35,6 +35,15 @@ class SandboxPort(Protocol):
     enabled: bool
     network: bool
 
+    async def run_shell_to_file(
+        self,
+        command: str,
+        output: Path,
+        *,
+        shell: str | None = None,
+        cwd: str | None = None,
+    ) -> int: ...
+
     async def run_shell(
         self,
         command: str,

@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from XBotv2.jobs.api.contracts import (
+    JobExecutionError,
     JOB_COMPLETED,
     JOB_UPDATED,
     CancelResult,
@@ -291,7 +292,10 @@ class JobRegistry(JobsPort):
             now = time.time()
             error = normalize_error(exc)
             if isinstance(job.state, Running):
-                job.state = FailedRunning(job.state.started_at, now, error)
+                job.state = FailedRunning(
+                    job.state.started_at, now, error,
+                    result=exc.result if isinstance(exc, JobExecutionError) else None,
+                )
             else:
                 job.state = FailedBeforeStart(now, error)
         finally:

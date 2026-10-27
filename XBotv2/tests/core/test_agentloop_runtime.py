@@ -628,12 +628,12 @@ async def test_human_attachment_keeps_logical_id_and_compiles_thread_absolute_pa
         llm_override=provider,
     )
     try:
-        artifact = services.artifacts.put(
+        artifact = (await services.artifacts.put(
             ArtifactKind.ATTACHMENT,
             attachment_bytes,
             media_type="text/plain",
             name="notes.txt",
-        )
+        ))
         model_path = services.artifacts.model_path(artifact)
 
         events = [event async for event in engine_of(services).run_turn(
@@ -655,7 +655,7 @@ async def test_human_attachment_keeps_logical_id_and_compiles_thread_absolute_pa
         assert stored_input.artifacts == (artifact,)
         assert artifact.id in stored_input.model_dump_json()
         assert model_path not in stored_input.model_dump_json()
-        assert services.artifacts.read(artifact) == attachment_bytes
+        assert (await services.artifacts.read(artifact)) == attachment_bytes
 
         provider_text = [
             part.text
@@ -784,8 +784,8 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         assert tool_artifact_id.startswith("tool_results/")
         assert services.artifacts.model_path(user_artifact_id) == str(user_model_path)
         assert services.artifacts.model_path(tool_artifact_id) == str(tool_model_path)
-        assert services.artifacts.read(user_artifact_id) == long_user_text.encode("utf-8")
-        assert services.artifacts.read(tool_artifact_id) == long_tool_text.encode("utf-8")
+        assert (await services.artifacts.read(user_artifact_id)) == long_user_text.encode("utf-8")
+        assert (await services.artifacts.read(tool_artifact_id)) == long_tool_text.encode("utf-8")
 
         human = next(
             message for message in engine_of(services).messages
@@ -795,7 +795,7 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         assert "USER_MIDDLE_MUST_NOT_REACH_MODEL" not in human.parts[0].text
         assert len(human.artifacts) == 1
         assert str(human.artifacts[0].id) == user_artifact_id
-        assert services.artifacts.read(human.artifacts[0]) == long_user_text.encode(
+        assert (await services.artifacts.read(human.artifacts[0])) == long_user_text.encode(
             "utf-8"
         )
         assert str(user_model_path) not in human.model_dump_json()
@@ -871,7 +871,7 @@ async def test_content_cache_keeps_prior_long_user_input_externalized_on_next_tu
         )
         assert len(stored_input.artifacts) == 1
         artifact = stored_input.artifacts[0]
-        assert services.artifacts.read(artifact) == long_user_text.encode("utf-8")
+        assert (await services.artifacts.read(artifact)) == long_user_text.encode("utf-8")
     finally:
         await services.stop()
 
@@ -916,7 +916,7 @@ async def test_content_cache_artifact_resolves_after_application_restart(
         )
         assert len(stored.artifacts) == 1
         artifact_id = stored.artifacts[0].id
-        assert services.artifacts.read(stored.artifacts[0]) == long_user_text.encode(
+        assert (await services.artifacts.read(stored.artifacts[0])) == long_user_text.encode(
             "utf-8"
         )
     finally:
@@ -939,7 +939,7 @@ async def test_content_cache_artifact_resolves_after_application_restart(
         )
         assert len(restored.artifacts) == 1
         assert restored.artifacts[0].id == artifact_id
-        assert resumed.artifacts.read(restored.artifacts[0]) == long_user_text.encode(
+        assert (await resumed.artifacts.read(restored.artifacts[0])) == long_user_text.encode(
             "utf-8"
         )
 
@@ -1019,7 +1019,7 @@ async def test_content_cache_runs_after_skill_input_expansion(
         assert "large-review" in accepted.parts[0].text
         assert "SKILL_MIDDLE_MUST_BE_EXTERNALIZED" not in accepted.parts[0].text
         assert len(accepted.artifacts) == 1
-        original = services.artifacts.read(accepted.artifacts[0]).decode("utf-8")
+        original = (await services.artifacts.read(accepted.artifacts[0])).decode("utf-8")
         assert "SKILL_MIDDLE_MUST_BE_EXTERNALIZED" in original
         assert "inspect this change" in original
 
