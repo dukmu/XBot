@@ -61,6 +61,10 @@ EntryWidget > .meta {
     height: auto;
     text-style: bold;
 }
+EntryWidget > .attachments {
+    height: auto;
+    color: $text-muted;
+}
 EntryWidget > .body, EntryWidget > .reasoning {
     height: auto;
     width: 1fr;
@@ -373,6 +377,19 @@ def format_payload(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
 
 
+def _attachment_text(entry: Entry) -> str:
+    labels = [f"[image: {name}]" for name in getattr(entry, "media_labels", ())]
+    seen = set()
+    for ref in (*getattr(entry, "media", ()), *getattr(entry, "artifacts", ())):
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        if isinstance(entry, ToolEntry) and ref in entry.artifacts and ref.media_type.lower().startswith("text/"):
+            continue
+        labels.append(f"[{ref.name or ref.id} · {ref.media_type} · {ref.id}]")
+    return "\n".join(labels)
+
+
 def entry_widget(
     entry: Entry,
     *,
@@ -394,12 +411,16 @@ def entry_widget(
             for artifact in entry.artifacts:
                 if artifact.media_type.lower().startswith("text/"):
                     children.append(LazyBodyBlock("", length=artifact.size, reader=lambda offset, identity=artifact.id: body_reader(entry.id, f"artifact:{identity}", offset), label=artifact.name or artifact.id, classes="tool-artifact", always_show_label=True, preview_lines=0, inline_label=True, unit="bytes"))
+        if attachment_text := _attachment_text(entry):
+            children.append(Static(Text(attachment_text), classes="attachments"))
         return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
     if isinstance(entry, NoticeEntry) and entry.notice_kind == "context":
         if entry.body_ref and entry.body_ref.length > len(entry.body_ref.preview) and body_reader:
             children.append(LazyBodyBlock(entry.body_ref.preview, length=entry.body_ref.length, reader=lambda offset: body_reader(entry.id, entry.body_field, offset), label=entry.text, classes="body"))
         else:
             children.append(_body_block(entry, entry.detail, renderable=body_renderable))
+        if attachment_text := _attachment_text(entry):
+            children.append(Static(Text(attachment_text), classes="attachments"))
         return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
     if not isinstance(entry, (UserEntry, AssistantEntry)):
         children.append(Static(_header(entry, assistant_label), classes="meta"))
@@ -425,6 +446,8 @@ def entry_widget(
             children.append(LazyBodyBlock(body_ref.preview, length=body_ref.length, reader=lambda offset: body_reader(entry.id, getattr(entry, "body_field", "content"), offset), label=block_label(entry), classes="body"))
         else:
             children.append(_body_block(entry, body, renderable=body_renderable))
+    if attachment_text := _attachment_text(entry):
+        children.append(Static(Text(attachment_text), classes="attachments"))
     return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
 
 
@@ -497,6 +520,14 @@ async def update_entry_widget(
     """
     if not widget.is_mounted:
         return False
+    attachment_text = _attachment_text(entry)
+    attachments = _child(widget, ".attachments")
+    if attachment_text and attachments is None:
+        await widget.mount(Static(Text(attachment_text), classes="attachments"))
+    elif attachment_text and attachments is not None:
+        attachments.update(Text(attachment_text))
+    elif attachments is not None:
+        await attachments.remove()
     meta = _child(widget, ".meta")
     if meta is not None and (
         previous is None

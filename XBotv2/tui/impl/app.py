@@ -1190,7 +1190,31 @@ class TuiApp(App[None]):
         if not replies:
             self._notify("copy", "There is no reply to copy yet.")
             return
-        text = replies[-1].content
+        reply = replies[-1]
+        identity = (self.controller.state.session_id, self.controller.state.thread_id)
+        text = reply.content
+        if reply.body_ref is not None and reply.body_ref.length > len(text):
+            pieces = []
+            offset = 0
+            try:
+                while True:
+                    page = await self._backend.read_display_body(
+                        *identity, reply.id, field="content", offset=offset,
+                    )
+                    pieces.append(page.content)
+                    if page.next_offset is None:
+                        break
+                    offset = page.next_offset
+                text = "".join(pieces)
+            except Exception as exc:  # noqa: BLE001 — clipboard failures must be visible
+                self._notify("copy", f"Could not read complete reply: {exc}")
+                return
+        elif reply.stream_truncated:
+            self._notify("copy", "The full reply is not available until it completes.")
+            return
+        if identity != (self.controller.state.session_id, self.controller.state.thread_id):
+            self._notify("copy", "The session changed before the reply was copied.")
+            return
         self.copy_to_clipboard(text)
         self._notify("copy", f"Copied {len(text)} characters.")
 

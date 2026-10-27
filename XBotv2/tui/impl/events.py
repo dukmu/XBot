@@ -284,6 +284,12 @@ class InputsConsumed:
 class UserInputSubmitted:
     input_id: str
     content: str
+    media_labels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class UserInputAccepted:
+    input_id: str
 
 
 @dataclass(frozen=True)
@@ -350,6 +356,7 @@ UiEvent = Union[
     InteractionOpened,
     InteractionResolved,
     UserInputSubmitted,
+    UserInputAccepted,
     InputsConsumed,
     UserInputFailed,
     UserMessagePublished,
@@ -396,6 +403,7 @@ __all__ = [
     "UsageSnapshotReceived",
     "UserInputFailed",
     "UserInputSubmitted",
+    "UserInputAccepted",
     "UserMessagePublished",
     "RuntimeNoticePublished",
     "ThreadRead",

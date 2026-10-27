@@ -53,6 +53,7 @@ from XBotv2.tui.impl.events import (
     UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
+    UserInputAccepted,
     UserMessagePublished,
 )
 from XBotv2.tui.impl.state import MAIN_THREAD_KIND, SUBAGENT_THREAD_KIND
@@ -100,6 +101,7 @@ CLIENT_SIDE = {
     InterruptAsked,
     InterruptSettled,
     UserInputSubmitted,
+    UserInputAccepted,
     UserInputFailed,
 }
 

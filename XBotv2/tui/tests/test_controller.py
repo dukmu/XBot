@@ -367,15 +367,28 @@ async def test_submitting_goes_through_the_transport_with_a_client_id(
 
 
 async def test_submitting_renders_the_optimistic_entry(backend: ScriptedBackend) -> None:
+    import asyncio
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def send(*args, **kwargs):
+        entered.set()
+        await release.wait()
+    backend.send_message = send
     control, view = controller(backend)
     await control.connect()
     before = view.renders
-    await control.submit("hello", delivery="queue")
-    assert view.renders > before
-    assert any(
-        getattr(entry, "content", "") == "hello" for entry in control.state.timeline
-    )
-    assert view.pages == ["tail"], "sending is an explicit return to the live tail"
+    task = asyncio.create_task(control.submit("hello", delivery="queue"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await control.flush()
+        assert view.renders > before
+        assert any(getattr(entry, "content", "") == "hello" for entry in control.state.timeline)
+        release.set()
+        await asyncio.wait_for(task, 5)
+        assert not control.state.submission_in_flight
+        assert view.pages == ["tail"]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_submitting_while_reading_history_keeps_the_reader_anchor(
@@ -709,42 +722,22 @@ async def test_history_pages_replace_old_view_while_live_events_continue(backend
     assert control._history_state is None
     assert control.state.timeline.ids() == ("u9", "u10")
 
-async def test_large_history_page_releases_older_bodies_and_can_read_them_again(backend: ScriptedBackend) -> None:
-    from XBotv2.core.api.history import HistoryPage
-    backend.session = snapshot(history=[human_record("live", "latest")], history_cursor="older")
-    backend.pages = [
-        HistoryPage((human_record("old", "a" * (2 * 1024 * 1024)), human_record("new", "b" * (2 * 1024 * 1024))), None, "newer"),
-        HistoryPage((human_record("old", "a" * (2 * 1024 * 1024)),), None, "newer"),
-    ]
-    view = RecordingView(can_move_older=False, can_move_newer=False)
-    control, _ = controller(backend, view=view)
-    await control.connect()
-    assert await control.page_older()
-    assert control._history_state.timeline.ids() == ("new",)
-    assert await control.page_older()
-    assert backend.page_reads[-1]["before_id"] == "new"
-    assert control._history_state.timeline.ids() == ("old",)
-
-async def test_large_newer_page_does_not_skip_trimmed_records(backend: ScriptedBackend) -> None:
+async def test_large_history_page_holds_previews_and_returns_to_live(backend: ScriptedBackend) -> None:
     from XBotv2.core.api.history import HistoryPage
     backend.session = snapshot(history=[human_record("live", "latest")], history_cursor="older")
     large = "x" * (2 * 1024 * 1024)
-    backend.pages = [
-        HistoryPage((human_record("old", "old"),), None, "forward"),
-        HistoryPage((human_record("next", large), human_record("last", large)), "back", None),
-        HistoryPage((human_record("last", large),), "back", None),
-    ]
+    backend.pages = [HistoryPage((human_record("old", large), human_record("new", large)), None, None)]
     view = RecordingView(can_move_older=False, can_move_newer=False)
     control, _ = controller(backend, view=view)
     await control.connect()
     assert await control.page_older()
-    assert await control.page_newer()
-    assert control._history_state.timeline.ids() == ("next",)
-    assert await control.page_newer()
-    assert backend.page_reads[-1]["after_id"] == "next"
-    assert control._history_state.timeline.ids() == ("last",)
+    assert control._history_state.timeline.ids() == ("old", "new")
+    for entry in control._history_state.timeline:
+        assert len(entry.content) == 512 and entry.body_ref.length == len(large)
     assert await control.page_newer()
     assert control._history_state is None
+    assert control.state.timeline.ids() == ("live",)
+
 
 @pytest.mark.parametrize("reset", ["session", "live"])
 async def test_late_history_page_does_not_reverse_navigation(backend: ScriptedBackend, reset: str) -> None:

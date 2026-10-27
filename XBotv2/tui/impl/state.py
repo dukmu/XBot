@@ -49,7 +49,7 @@ from XBotv2.session.api.records import (
     RuntimeNoticeRecord,
     ToolRecord,
 )
-from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.parts import MediaPart, TextPart
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
@@ -88,6 +88,7 @@ from XBotv2.tui.impl.events import (
     UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
+    UserInputAccepted,
     InputsConsumed,
     UserMessagePublished,
     ThreadRead,
@@ -164,7 +165,7 @@ class SessionState:
     # The client has handed input to the server and is waiting for the message
     # frame that confirms it. It is not a belief about the turn: a queued input
     # stays in flight while the thread is idle.
-    submission_in_flight: bool = False
+    pending_submissions: set[str] = field(default_factory=set)
     session_id: str = ""
     thread_id: str = ""
     # The server's own model for the attached thread, as last read. Kept whole
@@ -180,6 +181,10 @@ class SessionState:
     viewing_history: bool = False
     _local_counter: int = 0
 
+
+    @property
+    def submission_in_flight(self) -> bool:
+        return bool(self.pending_submissions)
 
     @property
     def thread_kind(self) -> str:
@@ -267,7 +272,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             # was lost. Leaving it running would show a tool that never finishes.
             _close_stream(state)
             _finalize_open_tools(state, "cancelled", clock)
-        state.submission_in_flight = False
 
     elif isinstance(event, UsageSnapshotReceived):
         state.usage = event.payload.snapshot
@@ -277,6 +281,11 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 
     elif isinstance(event, QueueReplaced):
         state.queue = tuple(event.payload.items)
+        for item in state.queue:
+            state.pending_submissions.discard(item.message_id)
+            entry = state.timeline.get(item.message_id)
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+                state.timeline.remove(item.message_id)
 
     elif isinstance(event, ClientNoticeReceived):
         _append(state, NoticeEntry(
@@ -384,7 +393,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             interrupt=Interrupt.NONE,
             last_error=None,
         )
-        state.submission_in_flight = False
 
     elif isinstance(event, TurnFinished):
         state.turn = event.payload.turn
@@ -491,21 +499,30 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
                 id=event.input_id,
                 content=event.content[:512],
                 delivery=Delivery.PENDING,
+                media_labels=event.media_labels,
             ))
-        state.submission_in_flight = True
+            state.pending_submissions.add(event.input_id)
+
+    elif isinstance(event, UserInputAccepted):
+        state.pending_submissions.discard(event.input_id)
+        entry = state.timeline.get(event.input_id)
+        if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+            state.timeline.remove(event.input_id)
 
     elif isinstance(event, InputsConsumed):
         for input_id in event.payload.message_ids:
             entry = state.timeline.get(input_id)
             if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
                 state.timeline.remove(input_id)
-                state.submission_in_flight = False
+            state.pending_submissions.discard(input_id)
 
     elif isinstance(event, UserInputFailed):
+        if event.input_id not in state.pending_submissions:
+            return state
+        state.pending_submissions.discard(event.input_id)
         existing = state.timeline.get(event.input_id)
         if isinstance(existing, UserEntry):
             _append(state, replace(existing, delivery=Delivery.FAILED))
-        state.submission_in_flight = False
         state.facts = replace(state.facts, last_error=event.error)
         _append(state, ErrorEntry(
             id=state.next_local_id("submit_error"),
@@ -615,7 +632,11 @@ def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
             stream_truncated=False,
         )
         if stream_id != record.id:
-            state.timeline.replace_identity(stream_id, completed)
+            if record.id in state.timeline:
+                state.timeline.remove(stream_id)
+                _append(state, completed)
+            else:
+                state.timeline.replace_identity(stream_id, completed)
         else:
             _append(state, completed)
         state.stream_entry_id = None
@@ -700,6 +721,7 @@ def _finish_tool_call(state: SessionState, record: ToolRecord, now: float) -> No
         result=body[:512],
         result_ref=DisplayBody(preview=body[:512], length=len(body)),
         artifacts=outcome.output.artifacts if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
+        media=tuple(part.artifact for part in outcome.output.parts if isinstance(part, MediaPart)) if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
         started_at=existing.started_at if known else now,
         finished_at=now,
     )
@@ -728,6 +750,7 @@ def _publish_user_message(state: SessionState, event: UserMessagePublished) -> N
         _append(state, replace(
             existing, content=event.payload.content[:512], delivery=Delivery.ACCEPTED,
             body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
+            media=event.payload.media, artifacts=event.payload.artifacts, media_labels=(),
         ))
     else:
         _append(state, UserEntry(
@@ -735,8 +758,9 @@ def _publish_user_message(state: SessionState, event: UserMessagePublished) -> N
             content=event.payload.content[:512],
             delivery=Delivery.ACCEPTED,
             body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
+            media=event.payload.media, artifacts=event.payload.artifacts,
         ))
-    state.submission_in_flight = False
+    state.pending_submissions.discard(message_id)
 
 
 # --- baseline adoption ----------------------------------------------------
@@ -762,6 +786,7 @@ def _adopt_snapshot(state: SessionState, snapshot: OpenSessionResponse) -> None:
     # Unanswered prompts arrive as ``pending_interactions``; the transport
     # replays each one as an ``InteractionOpened`` event so a reconnecting
     # client rebuilds the dialog through the same path as a live one.
+    state.pending_submissions.clear()
     _rebuild_from_items(state, opened.history.items)
     state.older = _older_from_cursor(opened.history.older_cursor)
 
@@ -792,15 +817,15 @@ def _rebuild_display_items(state: SessionState, items) -> None:
         fields = item.fields
         if item.kind == "human_input":
             body = fields["content"]
-            entry = UserEntry(id=item.id, content=body.preview, delivery=Delivery.ACCEPTED, body_ref=body)
+            entry = UserEntry(id=item.id, content=body.preview, delivery=Delivery.ACCEPTED, body_ref=body, media=item.media, artifacts=item.artifacts)
         elif item.kind == "assistant":
             body, reasoning = fields["content"], fields["reasoning"]
             entry = AssistantEntry(id=item.id, content=body.preview, reasoning=reasoning.preview, body_ref=body, reasoning_ref=reasoning)
         elif item.kind == "tool":
             args, result = fields["args"], fields["result"]
-            entry = ToolEntry(id=item.id, name=item.tool_name, call_id=item.call_id, status={"succeeded": "success", "failed": "error"}.get(item.outcome, item.outcome), result=result.preview, args_ref=args, result_ref=result, artifacts=item.artifacts, finished_at=item.duration_ms / 1000)
+            entry = ToolEntry(id=item.id, name=item.tool_name, call_id=item.call_id, status={"succeeded": "success", "failed": "error"}.get(item.outcome, item.outcome), result=result.preview, args_ref=args, result_ref=result, artifacts=item.artifacts, media=item.media, finished_at=item.duration_ms / 1000)
         elif item.kind == "runtime_notice":
-            entry = NoticeEntry(id=item.id, notice_kind="context", text=f"Context · {item.source} · {item.event}", detail=fields["content"].preview, body_ref=fields["content"])
+            entry = NoticeEntry(id=item.id, notice_kind="context", text=f"Context · {item.source} · {item.event}", detail=fields["content"].preview, body_ref=fields["content"], media=item.media, artifacts=item.artifacts)
         else:
             entry = NoticeEntry(id=item.id, notice_kind="compaction", text=fields["summary"].preview, body_ref=fields["summary"], body_field="summary")
         state.timeline.upsert(entry)
@@ -824,6 +849,7 @@ def _context_notice(item: RuntimeNoticeRecord) -> NoticeEntry:
         text=f"Context · {item.source} · {item.event}",
         detail=item.content[:512],
         body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+        media=item.media, artifacts=item.artifacts,
     )
 
 
@@ -848,6 +874,7 @@ def _entry_from_history_item(
             content=item.content[:512],
             delivery=Delivery.ACCEPTED,
             body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+            media=item.media, artifacts=item.artifacts,
         )
     if isinstance(item, AssistantRecord):
         return AssistantEntry(

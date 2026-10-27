@@ -901,3 +901,67 @@ async def test_main_thread_lookup_does_not_fall_back_to_subagent(backend: Script
         await transport.switch(session_id=SESSION, thread_id="")
     assert backend.thread_list_requests[-1]["kind"] == "main"
     assert backend.thread_list_requests[-1]["limit"] == 1
+
+async def test_display_attach_failure_is_visible_and_failed_switch_keeps_session(backend: ScriptedBackend) -> None:
+    recorder = Recorder()
+    transport = build(backend, recorder)
+    original = backend.list_display_messages
+
+    async def fail_display(*args, **kwargs):
+        raise RuntimeError("display unavailable")
+
+    backend.list_display_messages = fail_display
+    with pytest.raises(RuntimeError, match="display unavailable"):
+        await transport.connect()
+    assert recorder.of(ErrorFrame)[-1].payload.code == "connect_failed"
+    assert recorder.of(ConnectionChanged)[-1].connection is Connection.DISCONNECTED
+
+    backend.list_display_messages = original
+    transport = await connected(backend, Recorder())
+    backend.session = snapshot(session_id="other")
+    backend.list_display_messages = fail_display
+    with pytest.raises(RuntimeError, match="display unavailable"):
+        await transport.switch(session_id="other", thread_id=THREAD)
+    assert transport.session_id == SESSION and transport.thread_id == THREAD
+
+async def test_concurrent_submission_confirmation_tracks_each_input(backend: ScriptedBackend) -> None:
+    from XBotv2.agentloop.api.models import PendingInputData
+    from XBotv2.core.api.domain import InboxTarget
+    from XBotv2.session.api.events import QueueReplacedEvent
+    from XBotv2.tui.impl.events import QueueReplaced
+
+    entered = {"one": asyncio.Event(), "two": asyncio.Event()}
+    release = {"one": asyncio.Event(), "two": asyncio.Event()}
+    calls = []
+    async def send(session_id, thread_id, content, **kwargs):
+        identity = kwargs["request_id"]
+        calls.append((identity, kwargs["delivery"]))
+        entered[identity].set()
+        await release[identity].wait()
+        if identity == "two":
+            raise RuntimeError("send failed")
+    backend.send_message = send
+    state = SessionState()
+    recorder = Recorder(state)
+    ids = iter(("one", "two"))
+    transport = TransportSession(backend, config=TransportConfig(session_id=SESSION, thread_id=THREAD), emit=recorder, new_input_id=lambda: next(ids))
+    first = asyncio.create_task(transport.submit("queued", delivery="queue"))
+    second = asyncio.create_task(transport.submit("steered", delivery="steer"))
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered.values())), 5)
+        assert state.pending_submissions == {"one", "two"}
+        recorder(QueueReplaced(QueueReplacedEvent(items=(PendingInputData(message_id="one", content="queued", target=InboxTarget.NEXT_TURN),))))
+        release["one"].set()
+        await asyncio.wait_for(first, 5)
+        assert state.pending_submissions == {"two"} and state.submission_in_flight
+        assert state.timeline.get("one") is None
+        assert state.queue[0].target is InboxTarget.NEXT_TURN
+        release["two"].set()
+        await asyncio.wait_for(second, 5)
+        assert not state.submission_in_flight
+        assert state.timeline.get("two").delivery.value == "failed"
+        assert calls == [("one", "queue"), ("two", "steer")]
+    finally:
+        for event in release.values():
+            event.set()
+        await asyncio.gather(first, second, return_exceptions=True)

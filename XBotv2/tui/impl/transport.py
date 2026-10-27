@@ -56,6 +56,7 @@ from XBotv2.tui.impl.events import (
     UiEvent,
     UserInputFailed,
     UserInputSubmitted,
+    UserInputAccepted,
     ThreadRead,
 )
 from XBotv2.tui.impl.protocol import FrameRejected, FrameTranslator, replay_pending_interactions
@@ -312,13 +313,13 @@ class TransportSession:
                 mode=self._config.mode,
                 session_id=self._session_id or None,
             )
+            await self._adopt(opened)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._emit(ErrorFrame(payload=LoopError(code="connect_failed", message=str(exc))))
             self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
             raise
-        await self._adopt(opened)
         # The descriptor carries no turn answer, so the thread read is what
         # settles whether a turn is already running on attach.
         await self.watchdog_once()
@@ -699,7 +700,7 @@ class TransportSession:
         message by identity rather than by matching content.
         """
         input_id = self._new_input_id()
-        self._emit(UserInputSubmitted(input_id=input_id, content=text))
+        self._emit(UserInputSubmitted(input_id=input_id, content=text, media_labels=tuple(item.name or item.media_type for item in media)))
         try:
             await self._backend.send_message(
                 self._session_id,
@@ -710,6 +711,7 @@ class TransportSession:
                 media=list(media),
                 attachments=[],
             )
+            self._emit(UserInputAccepted(input_id=input_id))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

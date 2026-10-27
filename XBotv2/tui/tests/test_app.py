@@ -2662,3 +2662,49 @@ async def test_tool_result_text_artifact_expands_on_demand() -> None:
         block.toggle()
         await settle(pilot)
         assert block._text == ""
+
+async def test_media_only_history_and_nontext_tool_artifacts_are_visible() -> None:
+    from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.session.api.records import DisplayBody, DisplayRecord
+
+    image = ArtifactRef(id="media/image", kind=ArtifactKind.MEDIA, name="photo.png", media_type="image/png", size=3)
+    binary = ArtifactRef(id="tool_results/data", kind=ArtifactKind.TOOL_RESULT, name="data.bin", media_type="application/octet-stream", size=4)
+    backend = ScriptedBackend()
+    async def display_page(session_id, thread_id, **kwargs):
+        return HistoryPage((
+            DisplayRecord(kind="human_input", id="image-only", media=(image,), fields={"content": DisplayBody(preview="", length=0)}),
+            DisplayRecord(kind="tool", id="tool", tool_name="shell", call_id="call", outcome="succeeded", artifacts=(binary,), fields={"args": DisplayBody(preview="{}", length=2), "result": DisplayBody(preview="", length=0)}),
+        ), None)
+    backend.list_display_messages = display_page
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        rendered = transcript_text(app)
+        assert "photo.png" in rendered and "image/png" in rendered and "media/image" in rendered
+        assert "data.bin" in rendered and "application/octet-stream" in rendered
+
+
+async def test_copy_reads_complete_reply_instead_of_preview() -> None:
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.session.api.records import DisplayBody, DisplayBodyPage, DisplayRecord
+
+    text = "完整内容" * 1200
+    backend = ScriptedBackend()
+    offsets = []
+    async def display_page(session_id, thread_id, **kwargs):
+        return HistoryPage((DisplayRecord(kind="assistant", id="reply", fields={"content": DisplayBody(preview=text[:512], length=len(text)), "reasoning": DisplayBody(preview="", length=0)}),), None)
+    async def body_page(session_id, thread_id, message_id, *, field, offset=0, limit=4096):
+        offsets.append(offset)
+        end = min(offset + limit, len(text))
+        return DisplayBodyPage(content=text[offset:end], offset=offset, total=len(text), next_offset=end if end < len(text) else None)
+    backend.list_display_messages = display_page
+    backend.read_display_body = body_page
+    app = app_for(backend)
+    copied = []
+    app.copy_to_clipboard = copied.append
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        await app._cmd_copy("")
+        assert copied == [text]
+        assert offsets == [0, 4096]

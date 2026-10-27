@@ -1016,7 +1016,8 @@ def test_consumed_input_retires_only_unconfirmed_matching_echo() -> None:
     for event in FrameTranslator().translate(frame):
         reduce(state, event)
     assert state.timeline.get("rejected") is None
-    assert state.submission_in_flight is False
+    assert state.submission_in_flight is True
+    assert state.pending_submissions == {"queued"}
     assert state.timeline.get("accepted") is accepted
     assert state.timeline.get("queued").delivery is Delivery.PENDING
 
@@ -1512,3 +1513,42 @@ def test_replayed_tool_completion_merges_with_display_snapshot() -> None:
     reduce(state, ToolCallsStarted(StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="read"), category="tool"),))))
     reduce(state, ToolRecordReceived(ToolRecord(id="tool-result", call=ToolCallRef(id="call", name="read"), outcome=ToolSucceeded(output=text_output("ok")), timing=ToolTiming(duration_ms=1))))
     assert state.timeline.ids() == ("tool-result",)
+
+
+def test_replayed_assistant_completion_merges_with_display_snapshot() -> None:
+    from XBotv2.agentloop.api.outputs import AssistantTextDelta
+    from XBotv2.core.api.domain import CompletedStop, ModelTiming
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.session.api.records import AssistantRecord, DisplayBody, DisplayRecord
+    from XBotv2.tui.impl.events import AssistantCompleted, AssistantDelta, DisplayHistoryLoaded
+    from XBotv2.tui.impl.state import SessionState, reduce
+
+    state = SessionState()
+    item = DisplayRecord(kind="assistant", id="answer", fields={"content": DisplayBody(preview="reply", length=5), "reasoning": DisplayBody(preview="", length=0)})
+    reduce(state, DisplayHistoryLoaded(HistoryPage((item,), None)))
+    reduce(state, AssistantDelta(AssistantTextDelta(text="reply")))
+    reduce(state, AssistantCompleted(AssistantRecord(id="answer", content="reply", timing=ModelTiming(total_ms=0), stop=CompletedStop())))
+    assert state.timeline.ids() == ("answer",)
+    assert state.timeline.get("answer").content == "reply"
+
+
+def test_submission_confirmation_and_queue_are_scoped_to_input_id() -> None:
+    from XBotv2.agentloop.api.models import PendingInputData
+    from XBotv2.core.api.domain import InboxTarget
+    from XBotv2.session.api.events import QueueReplacedEvent
+    from XBotv2.tui.impl.events import QueueReplaced, UserInputAccepted, UserInputFailed, UserInputSubmitted
+    from XBotv2.tui.impl.state import SessionState, reduce
+
+    state = SessionState()
+    reduce(state, UserInputSubmitted("one", "first"))
+    reduce(state, UserInputSubmitted("two", "second"))
+    reduce(state, UserInputAccepted("one"))
+    assert state.submission_in_flight and state.pending_submissions == {"two"}
+    assert state.timeline.get("one") is None
+    reduce(state, QueueReplaced(QueueReplacedEvent(items=(PendingInputData(message_id="one", content="first", target=InboxTarget.NEXT_TURN),))))
+    assert [item.message_id for item in state.queue] == ["one"]
+    assert state.pending_submissions == {"two"}
+    reduce(state, UserInputFailed("two", "offline"))
+    assert not state.submission_in_flight
+    assert state.timeline.get("two").delivery is Delivery.FAILED
+    assert [item.message_id for item in state.queue] == ["one"]

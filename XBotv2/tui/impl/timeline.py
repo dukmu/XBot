@@ -80,6 +80,9 @@ class UserEntry(Entry):
     content: str = ""
     delivery: Delivery = Delivery.PENDING
     body_ref: DisplayBody | None = None
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    media_labels: tuple[str, ...] = ()
 
     kind: ClassVar[EntryKind] = EntryKind.USER
 
@@ -111,6 +114,7 @@ class ToolEntry(Entry):
     args_ref: DisplayBody | None = None
     result_ref: DisplayBody | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
+    media: tuple[ArtifactRef, ...] = ()
 
     kind: ClassVar[EntryKind] = EntryKind.TOOL
 
@@ -123,6 +127,8 @@ class NoticeEntry(Entry):
     level: str = "info"
     body_ref: DisplayBody | None = None
     body_field: str = "content"
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
 
     kind: ClassVar[EntryKind] = EntryKind.NOTICE
 
