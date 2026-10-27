@@ -284,3 +284,9 @@
 - [x] 主代理最终冻结源码同规格4096条组件测量退出0（`/tmp/xbot-collections-io-4096/report.json`）：H64MiB/W1条23B时traced=1,966,899B、RSS=120,299,520B、旧对象释放；活跃态最后采样write_bytes=437,313,536B、cancelled_write_bytes=36,864B、主DB=2,162,688B、WAL=4,210,672B。原70fb同采样点为1,720,791,040 /973,606,912B；均为进程记账，非设备真实写入，不承诺p95或把直接History写入当模型步/真实压缩。
 - [x] 主代理源码CLI退出0（`/tmp/xbot-collections-io-source-cli/report.json`）：进程765561/765643、4次真实本地provider HTTP请求、历史4→8、附件30B；活跃SSE退出0（`/tmp/xbot-collections-io-source-sse/report.json`）：确认流仍活后SIGTERM约0.170s、exit=-15、锁重取。双根及独立子进程缓存WAL探针均退出0，owner删除/重建同ID后读者读到new、WAL仍在且再次重启值仍new（`/tmp/xbot-two-root-wal-hso7zjvm/report.json`、`/tmp/xbot-cross-process-wal-l2tjuezq/report.json`，子进程772314正常退出0）。
 - [x] 提交前独立复核569条生产指纹未变、改动Python编译及diff检查通过；实际CLI两次退出与活跃SSE的data/logs均含application.destroyed。architecture及contract审计均退出1，仍仅3处已登记的core.filesystem导入（`/tmp/xbot-collections-architecture.txt`、`/tmp/xbot-collections-contracts.txt`）；未为绿测隐藏规则，也未把workspace读写/权限业务移入backend。
+- [x] 本轮精确代码提交`e1ebe0c352be542958a7320ad0466b91f44b17c1`，提交后569条指纹未变（`/tmp/xbot-collections-io-evaluated.json`）。干净archive构建两wheel，离线新uv环境`/tmp/xbot-collections-installed`安装，清单`/tmp/xbot-collections-wheel-manifest.json`核对XBot520/XCore20条、新API/文档/YAML/py.typed/skill在包内，已删模块/tests/Web不在包内；仓库外实际导入来自新site-packages。
+- [x] 安装CLI两进程789696/789747、4次本地provider HTTP请求，重启历史4条/续跑8条、附件30B（`/tmp/xbot-collections-wheel-cli/report.json`）；安装版活跃SSE确认仍在读后SIGTERM约0.172s、exit=-15、锁可重取（`/tmp/xbot-collections-wheel-sse/report.json`）。实际运行日志均含application.destroyed；非外部provider验证。当前代码点完成，本段剩余流式/范围/预算及整体goal继续active。
+
+### 迭代 6：流式 artifact 与 shell 输出（实施中）
+
+- [ ] 在e1ebe0c3独立安装验收后，由唯一Sol实施流式存取、从启动spool的前后台shell及有限预览、归档下载生命周期；不与Terra混跑。长输入规范化必须在持久确认前满足单份原文和原请求幂等，不能把content_cache业务移到物理后端。固定范围/pin/中央缓存预算仍分后续切片验收，不提前勾选整个第3批。
