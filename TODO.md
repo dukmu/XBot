@@ -121,3 +121,34 @@
 - [x] 未删除失败测试来换取绿测，未以 mock backend 替代上述真实 HTTP/TUI 路径；测试隔离导致的 loopback bind 失败已在允许本地 socket 的相同命令下复跑通过。
 - [x] 未运行 WebUI（用户排除）和无界安全/终端矩阵。本轮执行 3 次短 MiniMax 请求：首次确认真实完成，第二次确认 `$${env:...}` 配置展开，第三次确认 `cache:0%` 与 `ctx:3.8k/204.8k` 的最终状态栏。
 - [x] `git diff --check` 与受影响 Python 文件编译检查通过；真实终端测试结束后无 xbot 测试 tmux session。本地 capture、已有 worktree 和用户无关修改不提交。
+
+## 8. 整体设计实施迭代（2026-10-27 起）
+
+本节按用户提供的 `Python_XBot_整体分析与设计.md` 第 14—15 节推进，追加记录，不改写上文历史结论。上文的旧范围和旧测试结果不代表本轮验收；本轮允许按新方案迁移存储、运行关系和客户端。用户指定在 `refactor-all` 工作，覆盖原分支命名约定，不合并或推送 `main`。
+
+- [x] 固定起点：`8d318ad8eea8bfeed24a1d9c5a1e94a5f1792009`，与设计审查基线一致；由当前基线创建 `refactor-all`。本地未跟踪设计稿和 `.worktrees/` 保留，不纳入实施提交。
+- [x] 阅读整体方案与仓库约束；按批次顺序推进，每批先确认业务 owner、依赖和可观察验收，再实施和删除旧路径。用户已授权按该方案推进，核心取舍采用稿中选择。
+- [x] 第 0 批：修复 accept/stress 启动参数漂移；网络 MockLLM 经生产 provider adapter；核验独立安装入口。先跑可定位问题的工况，保留精确提交和原始结果位置。
+- [ ] 第 1 批：XCore 类型化引用、独立 owner、服务/事件作用域与可等待卸载；两线程隔离、失败回滚和重复开关资源回收。
+- [ ] 第 2 批：loader 活跃根挂载及 session/thread 生命周期；退出旧 application、MountedAgentApplication 和单用途 factory。
+- [ ] 第 3 批：SQLite/JSONL/artifact、投影恢复、工作集与归档分离、流式大结果；退出全状态重写与完整归档常驻。
+- [ ] 第 4 批：连续 child thread、统一 wait、jobs 有界清退和可选 team；移除重复结果与通知路径。
+- [ ] 第 5 批：通用媒体、共享预算、动态 API、provider/权限边界与日志收尾。
+- [ ] 第 6 批：TUI 与客户端契约验收、文档和最终 wheel 产物核验。
+
+### 迭代 0：评估入口与基线证据
+
+- [x] 已确认两个脚本传入 `start_server_application()` 不接受的 provider/workspace/no_plugins 参数；stress 还直接注入 `MockLLM`，其结果不能证明生产 provider 网络协议经过验证。
+- [x] 委派唯一 Sol 实施子代理处理 scripts 及聚焦回归；主代理负责边界审查、独立安装入口、实际命令验收与日志。子代理不自行提交，不创建后代代理。
+- [x] 用户补充：不必保留旧行为或针对旧行为的冗余检查。由当前职责决定取舍，删除 `accept_runtime.py` 的旧 Goal evaluator、失效日志矩阵及重复全局产物检查，改为短的真实 CLI / 网络 provider / 进程重启恢复验收，不给旧脚本加兼容入口。
+- [x] `eeba2ea` 修复安装资源：声明默认 `xcore.yaml`、两包 `py.typed` 和文档，排除 Web 源码/依赖目录的 Python 包发现。原始 clean wheel 缺 YAML 和类型标记；独立环境启动确实因缺 YAML 失败。旧 checkout 的 `build/` 还会掩盖类型标记缺失，因此本轮从 `git archive` 干净源码构建。
+- [x] `2681cf0fe5e933c6b7dc8a35515402893b9970d5` 为本批最终代码提交。stress 删除旧 `ModelChunk` 导入、直接 `MockLLM` 注入与预生成响应列表；loopback 网络 mock 通过正常 LLM 配置及生产 OpenAI adapter 请求。响应按请求生成并冻结身份；session overlay 将工具工作区绑定到临时目录。脚本改用当前 typed response、history 和事件契约。
+- [x] 最终网络回归：`.venv/bin/python -m pytest XBotv2/tests/integration/test_stress_harness.py -q`，11 passed / 9.17s，原始输出 `/tmp/xbot-network-harness-pytest-final.txt`。观察到 text/reasoning 和工具参数分片、标准 shell 执行结果、usage、真实 provider 断流和 XBot SSE 截断后的后续输入；HTTP 503、非法 JSON/UTF-8、请求超时均经生产 adapter 返回失败并可继续。启动失败与关闭后 listener/socket/临时目录释放。
+- [x] 扩展验证曾运行上述文件及 `test_llm_client.py`、`test_provider_errors.py`，37 passed / 9.21s（`/tmp/xbot-network-focused-pytest.txt`）；之后仅冻结网络 mock 请求身份，已复跑受影响的 11 项，不把旧 37 项描述为新一轮全量验收。
+- [x] 子代理实际执行的 CLI：`--scenario streaming,replay,tools --mock-tools --turns 2 --concurrency 1`、`--scenario stream_failure --failure-mode provider`、`--scenario incomplete` 均退出 0；主代理读取 JSON 中每个场景的 errors/invariants。报告分别为 `/tmp/xbot-network-core.json`、`/tmp/xbot-network-provider-failure.json`、`/tmp/xbot-network-sse-truncate.json`。故障场景分别调用以免一次性注入被其他场景消费；不将 `--scenario all` 写成全绿结果。
+- [x] 源码 console 验收：`.venv/bin/python -m scripts.accept_runtime --root /tmp/xbot-refactor-cli-source` 通过。两个独立 CLI 进程、4 次真实 provider HTTP 请求，历史由 4 条恢复后续增至 8 条，30 字节附件下载原样，原输入未重复；报告 `/tmp/xbot-refactor-cli-source/report.json`。
+- [x] 安装产物：从最终代码的干净 archive 运行 `uv build --all-packages --wheel`，产物 `/tmp/xbot-refactor-final-wheels/`；独立 uv 环境 `/tmp/xbot-refactor-installed/` 安装两包及依赖，从仓库外启动且移除 `PYTHONPATH`。检查默认 YAML、类型标记、文档、内置 skill 实际在 wheel，tests/Web/node_modules/生成 bundle 未进入；清单 `/tmp/xbot-refactor-final-wheel-manifest.json`。最终 console 验收结果见下条。
+- [x] 最终安装 console 验收：`.venv/bin/python -m scripts.accept_runtime --root /tmp/xbot-refactor-final-acceptance --xbot /tmp/xbot-refactor-installed/bin/xbot` 通过，进程 405913 / 405978，4 次 provider 请求，4 → 8 条规范历史与 30 字节附件恢复；原始报告 `/tmp/xbot-refactor-final-acceptance/report.json`。该产物对应 `2681cf0`，之后只提交本日志。
+- [x] `git diff --check` 与受影响脚本编译检查通过。运行日志、wheel、缓存和临时环境留在 `/tmp`，不进入提交；用户设计稿与既有 worktree 未改动。
+- [ ] 第 2 批需修的已复现缺陷：新空 thread 的 `trajectory_page` 直接要求磁盘 thread 而返回 404；`delete_session` 先 close 清空空会话目录、随后再次 rmtree 抛 `FileNotFoundError`。原始失败 `/tmp/xbot-network-stress.json`，主代理核对了两个 owner 调用路径；未绕过失败或提前修补生产生命周期。
+- [ ] 未运行：全量 core/integration、Web/TUI/PTY、真实外部 provider/MiniMax、512 轮/4096 步长压测及后续批次验收。本批仅改评估基础设施和打包，尚未迁移运行关系/存储；正常进程重启通过不代表 scope 异步排空、故障恢复或历史驻留上界已验证。
