@@ -907,3 +907,56 @@ async def test_close_before_turn_start_preserves_runtime_input_without_terminal(
         isinstance(item, RuntimeNoticeMessage) and item.id == "runtime-before-start"
         for item in messages
     ) == 1
+
+
+@pytest.mark.asyncio
+async def test_queued_user_and_explicit_runtime_wakes_drain_in_order(foldin_app):
+    """Explicit wake requests survive coalescing while a turn owns the lock."""
+    from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
+    from XBotv2.agentloop.api.outputs import ExecutionEnded
+    from XBotv2.core.api.domain import InboxTarget
+
+    llm = MockLLM(responses=[
+        {"tool_calls": [{"id": "wait", "name": "wait_for_release", "args": {"value": "x"}}]},
+        *({"content": f"answer {index}"} for index in range(5)),
+    ])
+    ctx = await _open(
+        foldin_app.state.manager, session_id="queue-wakes", thread_id="t",
+        provider_name="default", workspace_root=str(foldin_app.state.paths.data_dir),
+        no_plugins=True, llm_override=llm,
+    )
+    loop = ctx.require(AGENT_LOOP)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_release(value: str) -> str:
+        started.set()
+        await release.wait()
+        return value
+
+    ctx.require(PERMISSIONS).grant_once("wait_for_release", {})
+    ctx.require(TOOLS).register(Tool.from_function(wait_for_release), owner=ctx)
+    ctx.require(TOOLS).restrict(AllTools())
+    stream = ctx.require(THREAD_EVENTS).subscribe()
+    try:
+        await loop.send_message("first", "first")
+        await asyncio.wait_for(started.wait(), 5)
+        await loop.send_message("queued one", "q1", delivery="queue")
+        await loop.send_message("queued two", "q2", delivery="queue")
+        for identity in ("runtime-1", "runtime-2"):
+            await loop.submit_input(InboxItem(
+                id=identity, target=InboxTarget.NEXT_TURN,
+                input=RuntimeInput(source="test", event="task", content=identity),
+            ), wake=True)
+        release.set()
+        completed = []
+        async with asyncio.timeout(10):
+            while len(completed) < 5:
+                event = (await anext(stream)).event
+                if isinstance(event, ExecutionEnded):
+                    completed.append(event.execution.input_ids)
+        assert completed == [("first",), ("q1",), ("q2",), ("runtime-1",), ("runtime-2",)]
+        assert llm.call_count == 6
+        assert loop.pending_input_count == 0
+    finally:
+        release.set()
+        await stream.aclose()

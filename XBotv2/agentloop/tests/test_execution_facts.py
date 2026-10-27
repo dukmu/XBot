@@ -64,10 +64,11 @@ async def test_execution_events_and_cold_archive(tmp_path):
         await root.close()
     root = await open_runtime(paths=paths)
     try:
-        archive = root.require(ARCHIVE)
+        from XBotv2.persistence.api.contracts import PERSISTENCE
         running = ExecutionRecord(turn_id="crashed", input_ids=("three",), status="running")
-        claim = archive.backend.acquire("s")
+        claim = root.require(PERSISTENCE).acquire("s")
         try:
+            archive = root.require(ARCHIVE)
             await archive._execution_start("s", "main", running)
         finally:
             claim.release()
@@ -185,3 +186,29 @@ async def test_execution_identity_live_and_exact_cold_lookup(tmp_path):
         assert await root.require(ARCHIVE).execution_for_turn("s", "main", first_id) == first
     finally:
         await root.close()
+
+
+async def test_duplicate_user_input_does_not_wake_a_passive_notice(tmp_path):
+    from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
+    from XBotv2.core.api.domain import InboxTarget
+
+    model = MockLLM([{"content": "done"}])
+    scope = await thread_scope(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"), session_id="s",
+        llm_override=model, extra_plugins=[{"id": "caption", "config": {"auto": False}}],
+    )
+    loop = scope.require(AGENT_LOOP)
+    try:
+        await loop.send_message("original", "original-id")
+        await wait_idle(loop)
+        await loop.submit_input(InboxItem(
+            id="passive", target=InboxTarget.NEXT_STEP,
+            input=RuntimeInput(source="test", event="notice", content="passive reminder"),
+        ), wake=False)
+        await loop.send_message("original", "original-id")
+        await asyncio.sleep(0)
+        assert model.call_count == 1
+        assert loop.wakeup_task is None
+        assert [item.message_id for item in loop.pending_inputs()] == ["passive"]
+    finally:
+        await scope.root.close()

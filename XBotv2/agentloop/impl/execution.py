@@ -14,6 +14,8 @@ from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop.api.contracts import (
     Claimed,
     Consumed,
+    Discarded,
+    Removed,
     Inserted,
     HumanInput,
     InboxItem,
@@ -125,7 +127,7 @@ class AgentLoop:
     _turn_task: asyncio.Task | None = None
     wakeup_task: asyncio.Task | None = None
     last_activity: float = field(default_factory=time.monotonic)
-    _wakeup_requested: bool = False
+    _wake_inputs: set[str] = field(default_factory=set, init=False, repr=False)
     _idle_owner: asyncio.Task | None = field(default=None, init=False)
     _active_router: "TurnEventRouter | None" = field(default=None, init=False)
     _log: RuntimeLog = field(init=False)
@@ -229,11 +231,11 @@ class AgentLoop:
 
     def resume_pending_inputs(self) -> bool:
         """Resume durable inbox work after the runtime is fully registered."""
-        pending = self._engine.pending_input_count
+        pending = self._engine.pending_inputs
         if not pending:
             return False
-        self._log.info("session.inbox.resuming", pending_inputs=pending)
-        self._request_wakeup()
+        self._log.info("session.inbox.resuming", pending_inputs=len(pending))
+        self._request_wakeup(*(item.id for item in pending))
         return True
 
     async def _on_history_changed(self, event: HistoryChanged) -> None:
@@ -277,7 +279,11 @@ class AgentLoop:
         if isinstance(change, Inserted) and change.wake:
             # The producer declares the wake intent; the runtime owns whether
             # and when the loop actually runs.
-            self._request_wakeup()
+            self._request_wakeup(change.item.id)
+        if isinstance(change, (Claimed, Consumed, Discarded)):
+            self._wake_inputs.difference_update(change.ids)
+        elif isinstance(change, Removed):
+            self._wake_inputs.discard(change.id)
         splice_event = QueueReplacedEvent(items=self.pending_inputs())
         # Preserve the canonical Agent event for protocol consumers while the
         # queue projection gives UI clients the current editable snapshot.
@@ -338,7 +344,7 @@ class AgentLoop:
                 await self._engine.remove_input(message_id)
             elif action == "steer":
                 await self._engine.retarget_input(message_id, InboxTarget.NEXT_STEP)
-                self._request_wakeup()
+                self._request_wakeup(message_id)
             else:
                 raise ValueError(f"Unsupported pending input action: {action}")
         except KeyError as exc:
@@ -389,18 +395,21 @@ class AgentLoop:
             input=user_input,
         )
         # Durable acceptance precedes any model task or successful response.
-        if not await self._engine.submit_input(item, wake=False, resources=resources):
+        if not await self._engine.submit_input(item, wake=busy, resources=resources):
             return None
+        # Recovery of an uncertain accept can restore an existing item without
+        # emitting a new Inserted event. Register only this still-unclaimed input.
+        if busy and item.id not in self._wake_inputs and any(
+            pending.id == item.id for pending in self._engine.pending_inputs
+        ):
+            self._request_wakeup(item.id)
         return busy
 
     async def _schedule_message(self, busy, request_id):
         if busy is None:
-            self.resume_pending_inputs()
             return
         if not busy:
             await start_turn(self, item=None, request_id=request_id)
-        if self._engine.pending_input_count:
-            self._request_wakeup()
         self.touch()
 
     async def submit_message(self, request) -> None:
@@ -482,13 +491,16 @@ class AgentLoop:
         await asyncio.gather(task, return_exceptions=True)
         return True
 
-    def _request_wakeup(self) -> None:
-        """Wake the loop driver for followup/steer; inject never calls this."""
+    def _request_wakeup(self, *input_ids: str) -> None:
+        """Wake only for inputs whose producer requested a turn."""
+        self._wake_inputs.update(input_ids)
+        self._start_wakeup()
+
+    def _start_wakeup(self) -> None:
         if self._context.require(LOOP_STATE).session.status != "active":
-            self._wakeup_requested = False
+            self._wake_inputs.clear()
             return
-        self._wakeup_requested = True
-        if self._turn_lock.locked() or self.wakeup_task is not None:
+        if not self._wake_inputs or self._turn_lock.locked() or self.wakeup_task is not None:
             return
         self.wakeup_task = asyncio.create_task(self._run_wakeup())
 
@@ -496,10 +508,12 @@ class AgentLoop:
         try:
             if self._turn_lock.locked():
                 return
-            self._wakeup_requested = False
+            self._wake_inputs.intersection_update(
+                item.id for item in self._engine.pending_inputs
+            )
+            if not self._wake_inputs:
+                return
             await start_turn(self, item=None)
-            if self._engine.pending_input_count:
-                self._wakeup_requested = True
             task = self._turn_task
             if task is not None:
                 await task
@@ -510,8 +524,7 @@ class AgentLoop:
                 raise
         finally:
             self.wakeup_task = None
-            if self._wakeup_requested and not self._turn_lock.locked():
-                self._request_wakeup()
+            self._start_wakeup()
 
     @property
     def _event_stream(self):
@@ -567,7 +580,7 @@ class AgentLoop:
     async def drain(self) -> None:
         async with self._submission_lock:
             self._context.require(LOOP_STATE).session.status = "closing"
-            self._wakeup_requested = False
+            self._wake_inputs.clear()
         task = self._turn_task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -750,14 +763,14 @@ async def _execute_turn(
             runtime._turn_task = None
             runtime._turn_lock.release()
             runtime.touch()
-            if execution_started and status == "failed":
-                runtime._wakeup_requested = False
+            if status == "failed":
+                runtime._wake_inputs.clear()
             if terminal is not None:
                 router.emit(terminal)
             if record is not None:
                 router.emit(ExecutionEnded(execution=record))
-            if runtime._wakeup_requested and runtime.wakeup_task is None:
-                runtime._request_wakeup()
+            if runtime._wake_inputs and runtime.wakeup_task is None:
+                runtime._start_wakeup()
 
 
 async def start_turn(
