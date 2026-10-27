@@ -99,7 +99,7 @@ from XBotv2.core.api.messages import (
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.parts import MediaPart, ReasoningPart, TextPart
 from XBotv2.core.api.provider import (
     ModelRequest,
     ProviderMessage,
@@ -1266,7 +1266,7 @@ class Engine:
 
         parts = (
             TextPart(text=user_input),
-            *tuple(ImagePart(image=image) for image in payload.images),
+            *tuple(MediaPart(artifact=ref) for ref in payload.media),
         )
         if isinstance(payload, HumanInput):
             message = HumanInputMessage(

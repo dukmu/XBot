@@ -1,7 +1,7 @@
 """Context compilation is the sole conversation-to-provider projection."""
 
 import pytest
-from XBotv2.core.api.artifacts import ArtifactKind, ImageRef
+from XBotv2.core.api.artifacts import ArtifactKind
 from XBotv2.core.api.domain import UserContext
 from XBotv2.context_builder.impl.builder import ContextBuilder
 from XBotv2.context_builder.api.contracts import (
@@ -21,8 +21,8 @@ from XBotv2.core.api.domain import (
     ToolTiming,
 )
 from XBotv2.core.api.messages import CompactionSummaryMessage, HumanInputMessage, ToolMessage
-from XBotv2.core.api.parts import ImagePart, TextPart
-from XBotv2.core.api.provider import ProviderSystem, ProviderTool, ProviderUser, ResolvedImagePart
+from XBotv2.core.api.parts import MediaPart, TextPart
+from XBotv2.core.api.provider import ProviderSystem, ProviderTool, ProviderUser, ResolvedMediaPart
 from XBotv2.core.api.tools import (
     ToolCallRef,
     ToolCancelled,
@@ -142,17 +142,13 @@ async def test_tool_image_is_resolved_only_for_the_provider_request(artifact_sto
         media_type="image/png",
         name="pixel.png",
     ))
-    image = ImageRef(
-        artifact_id=stored.id,
-        media_type=stored.media_type,
-        size=stored.size,
-    )
+    image = stored
     message = ToolMessage(
         id=MessageId("tool-image"),
         call=ToolCallRef(id=ToolCallId("call-image"), name="read"),
         outcome=ToolSucceeded(output=ToolOutput(parts=(
             TextPart(text="Image content loaded"),
-            ImagePart(image=image),
+            MediaPart(artifact=image),
         ))),
         timing=ToolTiming(duration_ms=1),
     )
@@ -164,11 +160,11 @@ async def test_tool_image_is_resolved_only_for_the_provider_request(artifact_sto
 
     assert isinstance(projected, ProviderTool)
     assert projected.parts[0] == TextPart(text="Image content loaded")
-    assert projected.parts[1] == ResolvedImagePart(
-        ref=image,
+    assert projected.parts[1] == ResolvedMediaPart(
+        artifact=image,
         absolute_path=artifact_store.model_path(stored),
     )
-    assert isinstance(message.outcome.output.parts[1], ImagePart)
+    assert isinstance(message.outcome.output.parts[1], MediaPart)
 
 
 def test_compaction_summary_is_wrapped_only_for_the_provider_request():

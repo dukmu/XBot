@@ -10,10 +10,10 @@ from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import MessageId, ModelExchange, ToolTiming
-from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.parts import MediaPart, ReasoningPart, TextPart
 from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutcome
 
-TextContent: TypeAlias = TextPart | ImagePart
+TextContent: TypeAlias = TextPart | MediaPart
 AssistantContent: TypeAlias = TextPart | ReasoningPart | ToolCall
 
 

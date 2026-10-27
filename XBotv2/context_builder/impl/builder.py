@@ -22,14 +22,14 @@ from XBotv2.core.api.messages import (
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.parts import MediaPart, TextPart
 from XBotv2.core.api.provider import (
     ProviderAssistant,
     ProviderMessage,
     ProviderSystem,
     ProviderTool,
     ProviderUser,
-    ResolvedImagePart,
+    ResolvedMediaPart,
 )
 from XBotv2.core.api.artifacts import ArtifactRef, ArtifactStorePort
 from XBotv2.core.api.tools import ToolFailed, ToolSucceeded, tool_outcome_parts
@@ -166,7 +166,7 @@ class ContextBuilder:
                 parts = message.outcome.output.parts
             identities.update(ref.id for ref in refs)
             identities.update(
-                part.image.artifact_id for part in parts if isinstance(part, ImagePart)
+                part.artifact.id for part in parts if isinstance(part, MediaPart)
             )
         if identities and artifacts is None:
             raise RuntimeError("Context compilation requires an ArtifactStore for references")
@@ -226,7 +226,7 @@ def _compile_message(
     artifacts: ArtifactStorePort | None = None,
 ) -> ProviderMessage:
     if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
-        parts: list[TextPart | ResolvedImagePart] = []
+        parts: list[TextPart | ResolvedMediaPart] = []
         if isinstance(message, HumanInputMessage) and message.steering:
             parts.append(TextPart(text=(
                 "[Temporary supplemental input] Continue the current task; "
@@ -272,21 +272,21 @@ def _compile_message(
 
 
 def _resolve_parts(
-    parts: Sequence[TextPart | ImagePart],
+    parts: Sequence[TextPart | MediaPart],
     artifacts: ArtifactStorePort | None,
-) -> tuple[TextPart | ResolvedImagePart, ...]:
-    resolved: list[TextPart | ResolvedImagePart] = []
+) -> tuple[TextPart | ResolvedMediaPart, ...]:
+    resolved: list[TextPart | ResolvedMediaPart] = []
     for part in parts:
         if isinstance(part, TextPart):
             resolved.append(part)
             continue
         if artifacts is None:
             raise RuntimeError(
-                "Context compilation requires an ArtifactStore for images"
+                "Context compilation requires an ArtifactStore for media"
             )
-        resolved.append(ResolvedImagePart(
-            ref=part.image,
-            absolute_path=artifacts.model_path(part.image.artifact_id),
+        resolved.append(ResolvedMediaPart(
+            artifact=part.artifact,
+            absolute_path=artifacts.model_path(part.artifact.id),
         ))
     return tuple(resolved)
 

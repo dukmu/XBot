@@ -471,9 +471,9 @@ def _recorded_errors(control: TuiController) -> list:
 
 
 def image(data: str = "AAAA") -> object:
-    from XBotv2.agentloop.api.models import ImageInput
+    from XBotv2.agentloop.api.models import MediaInput
 
-    return ImageInput(data=data, media_type="image/png")
+    return MediaInput(data=data, media_type="image/png")
 
 
 def test_attaching_an_image_shows_it_in_the_composer(backend: ScriptedBackend) -> None:
@@ -500,7 +500,7 @@ async def test_submitting_sends_the_attachments_and_consumes_them(
     await control.connect()
     control.attach(image("Zm9v"))
     await control.submit("look at this", delivery="queue")
-    assert backend.sent[-1]["images"] == [image("Zm9v")], (
+    assert backend.sent[-1]["media"] == [image("Zm9v")], (
         "the image travels with the message, as the repository's own model"
     )
     assert control.attachments == (), "the attachment is consumed by the submission"
@@ -515,7 +515,7 @@ async def test_submitting_an_attachment_with_no_text_is_allowed(
     await control.submit("", delivery="queue")
     assert backend.sent, "an image-only message is still a message"
     assert backend.sent[-1]["content"] == ""
-    assert backend.sent[-1]["images"]
+    assert backend.sent[-1]["media"]
 
 
 # --- reading a subagent thread -------------------------------------------

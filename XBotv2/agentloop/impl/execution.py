@@ -35,7 +35,7 @@ from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.interactions.api.contracts import CLIENT_EVENTS
 from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.agentloop.api.events import RuntimeEvent
-from XBotv2.core.api.artifacts import ArtifactRef, ImageRef, ArtifactKind
+from XBotv2.core.api.artifacts import ArtifactRef, ArtifactKind
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.domain import (
     EventScope,
@@ -103,7 +103,7 @@ def _pending_input_snapshot(item: InboxItem) -> PendingInputData:
         message_id=item.id,
         content=item.input.content,
         target=item.target.value,
-        image_count=len(item.input.images),
+        media_count=len(item.input.media),
         artifact_count=len(item.input.artifacts),
     )
 
@@ -354,7 +354,7 @@ class AgentLoop:
         request_id: str,
         *,
         delivery: str = "steer",
-        images: list[ImageRef] | None = None,
+        media: list[ArtifactRef] | None = None,
         artifacts: list[ArtifactRef] | None = None,
     ) -> None:
         """Submit input; output is delivered by the session event stream."""
@@ -362,7 +362,7 @@ class AgentLoop:
             raise ValueError(f"Unsupported input delivery mode: {delivery}")
         user_input = HumanInput(
             content=content,
-            images=tuple(images or ()),
+            media=tuple(media or ()),
             artifacts=tuple(artifacts or ()),
         )
         async with self._submission_lock:
@@ -396,14 +396,12 @@ class AgentLoop:
             or self._context.require(LOOP_STATE).session.status != "active"
         ):
             raise OperationError("session_closing", "Thread is closing")
-        images, attachments = [], []
-        for item in request.images:
+        media, attachments = [], []
+        for item in request.media:
             ref = await self._context.artifacts.put(
-                ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type
+                ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type, name=item.name
             )
-            images.append(
-                ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size)
-            )
+            media.append(ref)
         for item in request.attachments:
             attachments.append(
                 await self._context.artifacts.put(
@@ -417,7 +415,7 @@ class AgentLoop:
             request.content,
             request.request_id,
             delivery=request.delivery,
-            images=images,
+            media=media,
             artifacts=attachments,
         )
 
@@ -816,7 +814,7 @@ async def start_regenerate_turn(
                     target=InboxTarget.NEXT_TURN,
                     input=HumanInput(
                         content=record.content,
-                        images=record.images,
+                        media=record.media,
                         artifacts=record.artifacts,
                     ),
                 ),
@@ -831,4 +829,4 @@ def _upload_bytes(value):
     try:
         return base64.b64decode(value, validate=True)
     except (ValueError, binascii.Error) as exc:
-        raise OperationError("invalid_upload", "Invalid base64 attachment") from exc
+        raise OperationError("invalid_upload", "Invalid base64 upload") from exc

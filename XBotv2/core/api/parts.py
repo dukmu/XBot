@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import BaseModel, ConfigDict
-from XBotv2.core.api.artifacts import ImageRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import ProviderExtensions
 
 
@@ -21,7 +21,7 @@ class ReasoningPart(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ImagePart(BaseModel):
-    kind: Literal["image"] = "image"
-    image: ImageRef
+class MediaPart(BaseModel):
+    kind: Literal["media"] = "media"
+    artifact: ArtifactRef
     model_config = ConfigDict(extra="forbid", frozen=True)

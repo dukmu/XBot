@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.agentloop.api.models import ImageInput
+from XBotv2.agentloop.api.models import MediaInput
 from XBotv2.tui.tests.factories import PNG_BYTES
 from XBotv2.tui.impl.attachments import image_media_type, load_image
 
@@ -47,8 +47,9 @@ def test_a_file_with_no_extension_is_not_an_image() -> None:
 
 def test_loading_an_image_produces_wire_input(tmp_path: Path) -> None:
     image = load_image(png(tmp_path))
-    assert isinstance(image, ImageInput)
+    assert isinstance(image, MediaInput)
     assert image.media_type == "image/png"
+    assert image.name == "shot.png"
     assert base64.b64decode(image.data) == PNG_BYTES
 
 

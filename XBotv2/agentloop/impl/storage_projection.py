@@ -2,9 +2,9 @@
 
 import json
 from pydantic import TypeAdapter
-from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.messages import ToolMessage
-from XBotv2.core.api.parts import ImagePart
+from XBotv2.core.api.parts import MediaPart
 from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
 from XBotv2.core.api.messages import (
     ConversationMessage,
@@ -147,16 +147,8 @@ def _replace_transcript(connection, thread, sources, replacements):
     )
 
 
-def _index_artifacts(sql, thread, refs, images=()):
-    refs = list(refs)
-    for image in images:
-        refs.append(ArtifactRef(
-            id=image.artifact_id,
-            kind=ArtifactKind.MEDIA,
-            media_type=image.media_type,
-            size=image.size,
-        ))
-    for ref in refs:
+def _index_artifacts(sql, thread, refs, media=()):
+    for ref in (*refs, *media):
         sql.execute(
             "INSERT OR REPLACE INTO conversation_artifacts VALUES(?,?,?)",
             (thread, ref.id, ref.model_dump_json()),
@@ -167,12 +159,13 @@ def _message_artifacts(sql, thread, message):
     if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
         _index_artifacts(
             sql, thread, message.artifacts,
-            tuple(part.image for part in message.parts if isinstance(part, ImagePart)),
+            tuple(part.artifact for part in message.parts if isinstance(part, MediaPart)),
         )
     elif isinstance(message, ToolMessage) and isinstance(
         message.outcome, (ToolSucceeded, ToolFailed)
     ):
-        _index_artifacts(sql, thread, message.outcome.output.artifacts)
+        _index_artifacts(sql, thread, message.outcome.output.artifacts,
+                         tuple(part.artifact for part in message.outcome.output.parts if isinstance(part, MediaPart)))
 
 
 def project(connection, thread, records):
@@ -187,7 +180,7 @@ def project(connection, thread, records):
             _index_artifacts(connection, thread, (ArtifactRef.model_validate(data["artifact"]),))
         elif kind == "input_accepted":
             item = InboxItem.model_validate(data["item"])
-            _index_artifacts(connection, thread, item.input.artifacts, item.input.images)
+            _index_artifacts(connection, thread, item.input.artifacts, item.input.media)
             connection.execute(
                 "INSERT INTO input_facts VALUES(?,?,?,?,?,?,?)",
                 (thread, item.id, seq, "pending", getattr(item.input, "source", None), getattr(item.input, "event", None), item.target.value),

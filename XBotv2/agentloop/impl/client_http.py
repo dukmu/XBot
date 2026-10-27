@@ -52,9 +52,7 @@ from XBotv2.session.api.contracts import (
     ThreadSummary,
 )
 from XBotv2.agentloop.api.models import (
-    AttachmentInput,
     HistoryMutation,
-    ImageInput,
     PendingInputData,
     PendingInputUpdate,
     RegenerateMessage,
@@ -159,7 +157,7 @@ def build_router(*, sessions):
             content=content,
             request_id=client_request_id,
             delivery=payload.delivery,
-            images=tuple(payload.images),
+            media=tuple(payload.media),
             attachments=tuple(payload.attachments),
         )
         try:

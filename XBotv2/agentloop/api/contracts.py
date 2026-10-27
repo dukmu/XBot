@@ -23,7 +23,7 @@ from XBotv2.core.api.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from xcore.api.context import Context
 from xcore.api.services import ServiceKey
-from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.tools import GuardDecision, Tool, ToolCall, ToolExecution
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ ToolSelection: TypeAlias = tuple[str, ...] | AllTools
 class HumanInput(BaseModel):
     kind: Literal["human"] = "human"
     content: str
-    images: tuple[ImageRef, ...] = ()
+    media: tuple[ArtifactRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,7 +59,7 @@ class RuntimeInput(BaseModel):
     source: str = Field(min_length=1)
     event: str = Field(min_length=1)
     content: str
-    images: tuple[ImageRef, ...] = ()
+    media: tuple[ArtifactRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -220,7 +220,7 @@ class AgentLoopPort(Protocol):
         request_id: str,
         *,
         delivery: str = "steer",
-        images: list[ImageRef] | None = None,
+        media: list[ArtifactRef] | None = None,
         artifacts: list[ArtifactRef] | None = None,
     ) -> None: ...
     async def update_pending_input(

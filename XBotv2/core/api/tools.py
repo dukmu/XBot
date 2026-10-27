@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal, TypeAlias, get_args, get_origin, get_
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import MessageId, StructuredToolOutput, ToolCallId
-from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.parts import MediaPart, TextPart
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ class ToolCallRef(BaseModel):
 
 
 class ToolOutput(BaseModel):
-    parts: tuple[TextPart | ImagePart, ...] = ()
+    parts: tuple[TextPart | MediaPart, ...] = ()
     structured: StructuredToolOutput | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
@@ -101,7 +101,7 @@ class ToolCancelled(BaseModel):
 ToolOutcome: TypeAlias = ToolSucceeded | ToolFailed | ToolDenied | ToolCancelled
 
 
-def tool_outcome_parts(outcome: ToolOutcome) -> tuple[TextPart | ImagePart, ...]:
+def tool_outcome_parts(outcome: ToolOutcome) -> tuple[TextPart | MediaPart, ...]:
     """Return the complete model-facing result without duplicating stored data."""
     if isinstance(outcome, ToolSucceeded):
         return outcome.output.parts

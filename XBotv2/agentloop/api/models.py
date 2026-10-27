@@ -24,7 +24,7 @@ class PendingInputData(BaseModel):
     message_id: str
     content: str
     target: InboxTarget
-    image_count: int = 0
+    media_count: int = 0
     artifact_count: int = 0
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -52,7 +52,7 @@ class SendMessage:
     content: str
     request_id: str
     delivery: Literal["queue", "steer"] = "steer"
-    images: tuple[ImageInput, ...] = ()
+    media: tuple[MediaInput, ...] = ()
     attachments: tuple[AttachmentInput, ...] = ()
 
 
@@ -63,9 +63,10 @@ class HistoryMutation:
     stats: SessionStats
 
 
-class ImageInput(BaseModel):
+class MediaInput(BaseModel):
     data: str = Field(min_length=1)
-    media_type: str = Field(pattern=r"^image/[A-Za-z0-9.+-]+$")
+    media_type: str
+    name: str = ""
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 

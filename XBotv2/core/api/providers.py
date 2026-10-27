@@ -13,7 +13,7 @@ from XBotv2.core.api.domain import ProviderError
 from XBotv2.core.api.provider import ModelRequest
 from XBotv2.core.api.stream import ModelStreamEvent
 
-InputModality = Literal["text", "image"]
+InputModality = Literal["text", "image", "audio", "video"]
 
 
 @dataclass(frozen=True, slots=True)

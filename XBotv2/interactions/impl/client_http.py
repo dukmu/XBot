@@ -27,7 +27,6 @@ from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.api.events import MessagePublishedEvent
 from XBotv2.session.api.contracts import SessionsPort, InteractionReceipt, OpenedThread, OpenSession, OpenThread, SessionExists, SessionEventSubscription, SessionEventFrame, SessionEventCursorExpired, SessionNotFound, SessionMode, SessionSummary, ThreadNotActive, ThreadSummary
-from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, ImageInput, PendingInputData, PendingInputUpdate, RegenerateMessage, SendMessage
 from XBotv2.session.api.records import ConversationRecord
 from XBotv2.session.api.snapshot import thread_snapshot
 from XBotv2.session.api.protocol import (

@@ -228,7 +228,7 @@ class FakeSessions:
     async def send_message(self, request):
         assert request.content == "hello"
         assert request.request_id == "acp:session-1"
-        assert not request.images
+        assert not request.media
         turn_id = TurnId("turn-1")
         for event in self.events:
             self.event_sequence += 1
@@ -738,3 +738,18 @@ async def test_cancelled_event_forwarding_closes_stream_and_releases_prompt() ->
     assert events.closed
     assert prompt.completed.is_set()
     assert isinstance(prompt.failure, RuntimeError)
+
+
+def test_prompt_image_maps_to_media_input():
+    from types import SimpleNamespace
+    from XBotv2.acp_plugin.impl.xbot_agent import _prompt_content
+
+    text, media = _prompt_content([
+        SimpleNamespace(type="text", text="describe"),
+        SimpleNamespace(type="image", data="aW1hZ2U=", mime_type="image/png"),
+    ])
+    assert text == "describe"
+    assert len(media) == 1
+    assert media[0].model_dump() == {
+        "data": "aW1hZ2U=", "media_type": "image/png", "name": "",
+    }

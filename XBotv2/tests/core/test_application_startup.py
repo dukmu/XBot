@@ -85,11 +85,11 @@ from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.agentloop.api.contracts import InboxItem, HumanInput
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolCompleted
-from XBotv2.core.api.parts import TextPart, ImagePart
+from XBotv2.core.api.parts import TextPart, MediaPart
 from XBotv2.core.api.tools import ToolCall, ToolSucceeded
-from XBotv2.core.api.artifacts import ArtifactKind, ImageRef
+from XBotv2.core.api.artifacts import ArtifactKind
 from XBotv2.core.api.messages import HumanInputMessage, ToolMessage
-from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedImagePart
+from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedMediaPart
 
 
 async def _run_turn(engine, content):
@@ -454,39 +454,35 @@ async def test_application_resolves_logical_image_for_provider_without_persistin
         name="diagram.png",
         suffix=".png",
     ))
-    image = ImageRef(
-        artifact_id=artifact.id,
-        media_type=artifact.media_type,
-        size=artifact.size,
-    )
+    image = artifact
     model_path = application.artifacts.model_path(artifact)
 
     try:
         events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
-            input=HumanInput(content="Describe this diagram.", images=(image,)),
+            input=HumanInput(content="Describe this diagram.", media=(image,)),
         ))]
         request = llm.request_history[0]
         provider_user = next(
             message for message in request.messages
             if isinstance(message, ProviderUser)
-            and any(isinstance(part, ResolvedImagePart) for part in message.parts)
+            and any(isinstance(part, ResolvedMediaPart) for part in message.parts)
         )
         resolved = next(
             part for part in provider_user.parts
-            if isinstance(part, ResolvedImagePart)
+            if isinstance(part, ResolvedMediaPart)
         )
         history = application.loop_state.history.snapshot()
     finally:
         await application.root.close()
 
     assert not [event for event in events if isinstance(event, LoopError)]
-    assert resolved.ref == image
+    assert resolved.artifact == image
     assert resolved.absolute_path == model_path
     assert Path(resolved.absolute_path).read_bytes() == payload
     human = next(message for message in history if isinstance(message, HumanInputMessage))
-    image_part = next(part for part in human.parts if isinstance(part, ImagePart))
-    assert image_part.image == image
+    image_part = next(part for part in human.parts if isinstance(part, MediaPart))
+    assert image_part.artifact == image
     assert resolved.absolute_path not in str(human.model_dump(mode="json"))
 
 
@@ -548,7 +544,7 @@ async def test_read_media_tool_result_reaches_the_follow_up_model_request(
         )
         resolved = next(
             part for part in provider_tool.parts
-            if isinstance(part, ResolvedImagePart)
+            if isinstance(part, ResolvedMediaPart)
         )
         tool_message = next(
             message for message in application.loop_state.history.snapshot()
@@ -556,14 +552,14 @@ async def test_read_media_tool_result_reaches_the_follow_up_model_request(
         )
         logical = next(
             part for part in tool_message.outcome.output.parts
-            if isinstance(part, ImagePart)
+            if isinstance(part, MediaPart)
         )
     finally:
         await application.root.close()
 
     assert not [event for event in events if isinstance(event, LoopError)]
     assert Path(resolved.absolute_path).read_bytes() == payload
-    assert resolved.ref == logical.image
+    assert resolved.artifact == logical.artifact
     assert resolved.absolute_path not in str(tool_message.model_dump(mode="json"))
 
 

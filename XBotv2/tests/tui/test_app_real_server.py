@@ -3092,7 +3092,7 @@ async def test_an_attached_image_reaches_the_real_server(
         user = [item for item in stored.items if item.kind == "human_input"]
         assert len(user) == 1, "one prompt was sent"
         assert user[0].content == "what is this"
-        assert [image.media_type for image in user[0].images] == ["image/png"]
+        assert [image.media_type for image in user[0].media] == ["image/png"]
 
 
 async def screen_text(app: TuiApp) -> str:

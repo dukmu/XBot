@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from XBotv2.core.api.artifacts import ImageRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import ResolvedModelSelection
 from XBotv2.core.api.parts import ReasoningPart, TextPart
 from XBotv2.core.api.tools import ToolCall
 
 
-class ResolvedImagePart(BaseModel):
-    kind: Literal["image"] = "image"
-    ref: ImageRef
+class ResolvedMediaPart(BaseModel):
+    kind: Literal["media"] = "media"
+    artifact: ArtifactRef
     absolute_path: str
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -25,7 +25,7 @@ class ProviderSystem(BaseModel):
 
 class ProviderUser(BaseModel):
     role: Literal["user"] = "user"
-    parts: tuple[TextPart | ResolvedImagePart, ...]
+    parts: tuple[TextPart | ResolvedMediaPart, ...]
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -38,7 +38,7 @@ class ProviderAssistant(BaseModel):
 class ProviderTool(BaseModel):
     role: Literal["tool"] = "tool"
     call_id: str = Field(min_length=1)
-    parts: tuple[TextPart | ResolvedImagePart, ...]
+    parts: tuple[TextPart | ResolvedMediaPart, ...]
     is_error: bool = False
     model_config = ConfigDict(extra="forbid", frozen=True)
 

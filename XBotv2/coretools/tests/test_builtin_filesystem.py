@@ -13,7 +13,7 @@ from XBotv2.sandbox.impl.policy import SandboxPolicy
 from XBotv2.persistence.impl.artifacts import ArtifactStore
 from XBotv2.core.filesystem import operations as filesystem_operations
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.parts import MediaPart, TextPart
 from XBotv2.core.api.tools import ToolFailed, ToolOutcome, ToolSucceeded
 
 
@@ -36,8 +36,8 @@ def _text(result: ToolOutcome) -> str:
 
 def _images(result: ToolOutcome):
     return tuple(
-        part.image for part in _success(result).output.parts
-        if isinstance(part, ImagePart)
+        part.artifact for part in _success(result).output.parts
+        if isinstance(part, MediaPart)
     )
 
 
@@ -130,7 +130,7 @@ class TestReadImage:
         assert len(_images(result)) == 1
         image = _images(result)[0]
         assert image.media_type == "image/png"
-        assert (await artifacts.read(image.artifact_id)) == payload
+        assert (await artifacts.read(image.id)) == payload
 
     @pytest.mark.asyncio
     async def test_read_image_accepts_base64_and_data_url(self, tmp_path):

@@ -18,14 +18,14 @@ def pending(
     *,
     content: str = "do this next",
     target: str = "next-turn",
-    image_count: int = 0,
+    media_count: int = 0,
     artifact_count: int = 0,
 ) -> PendingInputData:
     return PendingInputData(
         message_id=message_id,
         content=content,
         target=target,
-        image_count=image_count,
+        media_count=media_count,
         artifact_count=artifact_count,
     )
 
@@ -50,7 +50,7 @@ def test_a_row_shows_the_position_the_text_and_the_target() -> None:
 
 
 def test_a_row_says_how_many_images_travel_with_it() -> None:
-    assert "2 images" in queue_row(pending(image_count=2), position=1)
+    assert "2 media items" in queue_row(pending(media_count=2), position=1)
     assert "image" not in queue_row(pending(), position=1)
 
 

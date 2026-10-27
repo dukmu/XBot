@@ -13,12 +13,11 @@ from XBotv2.core.api.provider import (
     ProviderAssistant,
     ProviderSystem,
     ProviderTool,
-    ResolvedImagePart,
+    ResolvedMediaPart,
     ModelRequest,
     ToolSchema,
 )
 from XBotv2.core.api.parts import (
-    ImagePart as CanonicalImagePart,
     ReasoningPart as CanonicalReasoningPart,
     TextPart as CanonicalTextPart,
 )
@@ -439,21 +438,21 @@ def _parts_to_anthropic(
                 "name": part.name,
                 "input": part.args,
             })
-        elif isinstance(part, ResolvedImagePart):
-            if part.ref.media_type not in {
+        elif isinstance(part, ResolvedMediaPart):
+            if part.artifact.media_type not in {
                 "image/gif",
                 "image/jpeg",
                 "image/png",
                 "image/webp",
             }:
                 raise ValueError(
-                    f"Unsupported Anthropic image type: {part.ref.media_type}"
+                    f"Unsupported Anthropic image type: {part.artifact.media_type}"
                 )
             blocks.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": part.ref.media_type,
+                    "media_type": part.artifact.media_type,
                     "data": resolved_image_data(part),
                 },
             })

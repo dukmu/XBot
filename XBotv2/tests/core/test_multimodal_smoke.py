@@ -1,17 +1,17 @@
 """Image references stay logical until provider request compilation."""
 
 import pytest
-from XBotv2.core.api.artifacts import ImageRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.parts import TextPart
-from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedImagePart
+from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedMediaPart
 from XBotv2.llm.impl.anthropic import anthropic_request_messages
 from XBotv2.llm.impl.openai import openai_messages
 
 
-def _image(path: str) -> ResolvedImagePart:
-    return ResolvedImagePart(
-        ref=ImageRef(
-            artifact_id="media/pixel.png", media_type="image/png", size=3,
+def _image(path: str) -> ResolvedMediaPart:
+    return ResolvedMediaPart(
+        artifact=ArtifactRef(
+            id="media/pixel.png", media_type="image/png", size=3,
         ),
         absolute_path=path,
     )
@@ -51,3 +51,30 @@ def test_image_projection_fails_at_the_file_boundary_when_resolved_path_is_missi
     missing_path = tmp_path / "missing.png"
     with pytest.raises(FileNotFoundError):
         openai_messages((ProviderUser(parts=(_image(str(missing_path)),)),))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", ["audio/wav", "video/mp4", "application/pdf"])
+async def test_unsupported_media_fails_before_provider_send(tmp_path, media_type):
+    from XBotv2.core.api.domain import (
+        GenerationSettings, ModelRoute, ResolvedModelSelection, StandardGenerationMode,
+    )
+    from XBotv2.core.api.provider import ModelRequest
+    from XBotv2.llm.impl.mock import MockLLM
+
+    provider = MockLLM([{"content": "unused"}], input_modalities=["text", "image"])
+    media = ResolvedMediaPart(
+        artifact=ArtifactRef(id="media/item", media_type=media_type),
+        absolute_path=str(tmp_path / "item"),
+    )
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(media,)),), tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="mock", model="mock"),
+            generation=GenerationSettings(mode=StandardGenerationMode(), max_output_tokens=10),
+            context_window=100,
+        ),
+    )
+    with pytest.raises(ValueError, match="does not support|Unsupported media type"):
+        _ = [event async for event in provider.astream(request)]
+    assert provider.call_count == 0

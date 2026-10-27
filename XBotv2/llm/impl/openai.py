@@ -15,11 +15,11 @@ from XBotv2.core.api.provider import (
     ProviderSystem,
     ProviderTool,
     ProviderUser,
-    ResolvedImagePart,
+    ResolvedMediaPart,
     ModelRequest,
     ToolSchema,
 )
-from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.parts import ReasoningPart, TextPart
 from XBotv2.core.api.stream import (
     ModelCompleted,
     ModelResponse,
@@ -294,7 +294,7 @@ def _openai_content(
     )
     if attachment_text:
         text = f"{text}\n\n{attachment_text}".strip()
-    images = [part for part in parts if isinstance(part, ResolvedImagePart)]
+    images = [part for part in parts if isinstance(part, ResolvedMediaPart)]
     if not images:
         return text
     content_parts: list[dict[str, JsonValue]] = []
@@ -304,7 +304,7 @@ def _openai_content(
         "type": "image_url",
         "image_url": {
             "url": (
-                f"data:{image.ref.media_type};base64,"
+                f"data:{image.artifact.media_type};base64,"
                 f"{resolved_image_data(image)}"
             )
         },

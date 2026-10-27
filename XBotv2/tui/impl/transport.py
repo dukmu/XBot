@@ -39,7 +39,7 @@ from XBotv2.llm.api.protocol import EffortSelectionResponse, ProviderSelectionRe
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.protocol.api.models import ServerEvent
 from XBotv2.protocol.api.models import HelloResponse
-from XBotv2.agentloop.api.models import AttachmentInput, ImageInput
+from XBotv2.agentloop.api.models import AttachmentInput, MediaInput
 from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
 from XBotv2.session.api.protocol import OpenSessionResponse, SessionListResponse, ThreadListResponse
 from XBotv2.session.api.protocol import InterruptResponse
@@ -174,7 +174,7 @@ class SessionBackend(Protocol):
         *,
         request_id: str,
         delivery: Literal["queue", "steer"],
-        images: list[ImageInput],
+        media: list[MediaInput],
         attachments: list[AttachmentInput],
     ) -> None: ...
 
@@ -710,7 +710,7 @@ class TransportSession:
         text: str,
         *,
         delivery: Literal["queue", "steer"],
-        images: Sequence[ImageInput] = (),
+        media: Sequence[MediaInput] = (),
     ) -> str:
         """Send input, binding it to a client-generated id.
 
@@ -726,7 +726,7 @@ class TransportSession:
                 text,
                 request_id=input_id,
                 delivery=delivery,
-                images=list(images),
+                media=list(media),
                 attachments=[],
             )
         except asyncio.CancelledError:

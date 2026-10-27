@@ -11,13 +11,13 @@ from XBotv2.agentloop.impl.storage import input_message
 from XBotv2.agentloop.impl.storage_projection import MESSAGE
 from XBotv2.session.api.storage import ThreadFacts
 from XBotv2.session.api.contracts import new_session_id
-from XBotv2.core.api.artifacts import ArtifactRef, ArtifactKind
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.messages import (
     HumanInputMessage,
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.api.parts import ImagePart
+from XBotv2.core.api.parts import MediaPart
 from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
 from XBotv2.persistence.api.files import run_file_io as io
 
@@ -73,19 +73,15 @@ def _refs(message):
     if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
         result.extend(message.artifacts)
         result.extend(
-            ArtifactRef(
-                id=p.image.artifact_id,
-                kind=ArtifactKind.MEDIA,
-                media_type=p.image.media_type,
-                size=p.image.size,
-            )
+            p.artifact
             for p in message.parts
-            if isinstance(p, ImagePart)
+            if isinstance(p, MediaPart)
         )
     if isinstance(message, ToolMessage) and isinstance(
         message.outcome, (ToolSucceeded, ToolFailed)
     ):
         result.extend(message.outcome.output.artifacts)
+        result.extend(p.artifact for p in message.outcome.output.parts if isinstance(p, MediaPart))
     return result
 
 

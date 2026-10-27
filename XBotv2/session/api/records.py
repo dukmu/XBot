@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, RootModel
-from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.messages import (
     AssistantMessage,
     CompactionSummaryMessage,
@@ -19,7 +19,7 @@ from XBotv2.core.api.messages import (
     ToolMessage,
 )
 from XBotv2.core.api.domain import ModelStop, ModelTiming, ToolTiming
-from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.parts import MediaPart, ReasoningPart, TextPart
 from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutcome
 
 
@@ -27,7 +27,7 @@ class HumanInputRecord(BaseModel):
     kind: Literal["human_input"] = "human_input"
     id: str
     content: str
-    images: tuple[ImageRef, ...] = ()
+    media: tuple[ArtifactRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -38,7 +38,7 @@ class RuntimeNoticeRecord(BaseModel):
     source: str
     event: str
     content: str
-    images: tuple[ImageRef, ...] = ()
+    media: tuple[ArtifactRef, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -90,11 +90,11 @@ def _text(parts: tuple[object, ...]) -> str:
 
 def project_human_input(message: HumanInputMessage) -> HumanInputRecord:
     """Project the canonical human input used by history and live events."""
-    images = tuple(part.image for part in message.parts if isinstance(part, ImagePart))
+    media = tuple(part.artifact for part in message.parts if isinstance(part, MediaPart))
     return HumanInputRecord(
         id=str(message.id),
         content=_text(message.parts),
-        images=images,
+        media=media,
         artifacts=message.artifacts,
     )
 
@@ -104,10 +104,10 @@ def project_message(message: ConversationMessage) -> ConversationRecord:
     if isinstance(message, HumanInputMessage):
         return project_human_input(message)
     if isinstance(message, RuntimeNoticeMessage):
-        images = tuple(part.image for part in message.parts if isinstance(part, ImagePart))
+        media = tuple(part.artifact for part in message.parts if isinstance(part, MediaPart))
         return RuntimeNoticeRecord(
             id=str(message.id), source=message.source, event=message.event,
-            content=_text(message.parts), images=images, artifacts=message.artifacts,
+            content=_text(message.parts), media=media, artifacts=message.artifacts,
         )
     if isinstance(message, AssistantMessage):
         return AssistantRecord(

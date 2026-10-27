@@ -24,9 +24,12 @@ System stages are ordered `system_prefix`, `system_instructions`,
 `system_rules`, `context_suffix`. Stable runtime/Agent/memory components precede
 canonical history. Registered prompt fragments retain their source and logical
 path. Compilation maps user/runtime notices, assistant messages, summaries and
-tool outcomes to provider values. Images and attachments require the active
-ArtifactStore and resolve logical references to absolute model-facing paths.
-It does not read image bytes or replace artifact references in persisted data.
+tool outcomes to provider values. Media parts carry canonical ArtifactRef values;
+media and attachments require the active ArtifactStore and resolve logical
+references to absolute model-facing paths. The builder does not read media bytes
+or replace artifact references in persisted data. Provider adapters encode image
+bytes at the request boundary. Audio and video can be represented, but current
+adapters reject them before sending.
 
 Registry entries are runtime-only and removed through the registering owner's
 lifecycle. There is no builder state namespace or independent configuration.

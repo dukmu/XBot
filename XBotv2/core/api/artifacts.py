@@ -31,15 +31,6 @@ class ArtifactRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ImageRef(BaseModel):
-    """Logical image identity carried by a persisted message."""
-
-    artifact_id: str = Field(min_length=1)
-    media_type: str = "application/octet-stream"
-    size: int = Field(default=0, ge=0)
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
 class ArtifactStorePort(Protocol):
     async def reference_records(
         self,

@@ -26,7 +26,7 @@ class ModelConfig(BaseModel):
     effort: list[str] | None = None
     thinking: str | None = Field(default=None, min_length=1)
     extra_body: dict[str, JsonValue] = Field(default_factory=dict)
-    input_modalities: list[Literal["text", "image"]] = Field(
+    input_modalities: list[Literal["text", "image", "audio", "video"]] = Field(
         default_factory=lambda: ["text"]
     )
     mock_responses: list[dict[str, JsonValue]] = Field(default_factory=list)
@@ -131,7 +131,7 @@ class ModelDescription(BaseModel):
     reasoning_effort: str = ""
     effort: tuple[str, ...] = ()
     thinking: str = ""
-    input_modalities: tuple[Literal["text", "image"], ...] = ("text",)
+    input_modalities: tuple[Literal["text", "image", "audio", "video"], ...] = ("text",)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 

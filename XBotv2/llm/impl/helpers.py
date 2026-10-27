@@ -7,7 +7,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from xml.etree import ElementTree
 from XBotv2.core.api.parts import TextPart
-from XBotv2.core.api.provider import ProviderMessage, ProviderTool, ResolvedImagePart
+from XBotv2.core.api.provider import ProviderMessage, ProviderTool, ResolvedMediaPart
 from XBotv2.core.api.prompts import prompt_container, prompt_element
 from XBotv2.core.api.domain import (
     MeasurementUnavailable,
@@ -23,7 +23,7 @@ def tool_content(message: ProviderTool) -> str:
     return "".join(part.text for part in message.parts if isinstance(part, TextPart))
 
 
-def resolved_image_data(image: ResolvedImagePart) -> str:
+def resolved_image_data(image: ResolvedMediaPart) -> str:
     """Encode bytes from the path already resolved by the context compiler."""
     return base64.b64encode(Path(image.absolute_path).read_bytes()).decode("ascii")
 
@@ -31,9 +31,9 @@ def resolved_image_data(image: ResolvedImagePart) -> str:
 def attachment_prompt(message: ProviderMessage) -> str:
     """Render uploaded file references without embedding their bytes."""
     children = []
-    images = [part for part in message.parts if isinstance(part, ResolvedImagePart)]
+    images = [part for part in message.parts if isinstance(part, ResolvedMediaPart)]
     for image in images:
-        item = image.ref.model_dump(mode="json")
+        item = image.artifact.model_dump(mode="json")
         path = image.absolute_path
         children.append(prompt_element(
             "attachment",

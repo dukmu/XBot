@@ -86,7 +86,16 @@ A client that does not want the whole conversation asks for a bounded window:
   page with `newest_position=0`; an unknown thread returns not found.
 
 `MessageRequest` supports `content`, `request_id`, `delivery` (`queue` or
-`steer`), images, and attachments. SSE envelopes carry sequence, session,
+`steer`), `media`, and `attachments`. Each media upload contains base64 `data`,
+`media_type`, and an optional `name`. A media-only message is valid. Persisted
+inputs and history records expose `media` as complete `ArtifactRef` values
+(`id`, `kind`, `media_type`, `name`, `size`, `sha256`); download the original bytes
+through the artifact endpoint. Base64 belongs to the upload request. Model
+requests resolve logical references to current absolute paths and encode bytes
+at the provider boundary. Current adapters support their declared text and image
+inputs; unsupported media is reported before a provider request is sent.
+
+SSE envelopes carry sequence, session,
 thread, typed event scope, kind, and payload. A `turn` scope carries the
 independent `turn_id`; it is not the message's `request_id` or an interaction
 id. The event stream is replayable from an opaque `after` cursor; an expired

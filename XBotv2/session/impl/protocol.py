@@ -43,7 +43,6 @@ from XBotv2.session.api.contracts import (
     ThreadNotActive,
     ThreadSummary,
 )
-from XBotv2.agentloop.api.models import AttachmentInput, ImageInput
 from XBotv2.session.api.records import ConversationRecord
 from XBotv2.session.api.snapshot import thread_snapshot
 

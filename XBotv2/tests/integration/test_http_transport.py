@@ -4596,6 +4596,37 @@ async def test_python_sdk_submit_uses_only_the_shared_session_stream(http_app) -
     ]
 
 @pytest.mark.asyncio
+async def test_http_media_upload_preserves_full_reference_and_bytes(http_app) -> None:
+    llm = MockLLM(responses=[{"content": "received"}], input_modalities=["text", "image"])
+    http_app.state.test_context.require(LLM).unregister("openai")
+    http_app.state.test_context.require(LLM).register("openai", lambda *_: llm)
+    async with XBotClient("http://test", transport=ASGITransport(app=http_app)) as sdk:
+        await sdk.open_session(session_id="media-upload", thread_id="main")
+        await sdk.send_message("media-upload", "main", "", media=[{
+            "data": "aW1hZ2U=", "media_type": "image/png", "name": "diagram.png",
+        }])
+        history = await _wait_for_sdk_messages(sdk, "media-upload", "main", 2)
+        ref = history.items[0].media[0]
+        assert await sdk.read_artifact("media-upload", "main", ref.id) == b"image"
+        assert ref.kind == ArtifactKind.MEDIA
+        assert ref.media_type == "image/png"
+        assert ref.name == "diagram.png"
+        assert ref.size == 5
+        assert ref.sha256
+        assert not history.items[0].artifacts
+
+
+@pytest.mark.asyncio
+async def test_http_media_upload_rejects_invalid_base64(client: httpx.AsyncClient) -> None:
+    await client.post("/sessions", json={"session_id": "bad-media", "thread_id": "main"})
+    response = await client.post("/sessions/bad-media/threads/main/messages", json={
+        "media": [{"data": "!!!", "media_type": "image/png"}],
+    })
+    assert response.status_code == 400
+    assert "base64" in str(response.json()).lower()
+
+
+@pytest.mark.asyncio
 async def test_python_sdk_uploads_attachment_as_session_artifact(http_app) -> None:
     llm = MockLLM(responses=[{"content": "attachment received"}])
     http_app.state.test_context.require(LLM).unregister("openai")
@@ -5731,13 +5762,13 @@ async def test_pending_queue_is_authoritative_editable_and_removable_over_http(
             "message_id": "req-queued",
             "content": "edited draft",
             "target": "next-step",
-            "image_count": 0,
+            "media_count": 0,
             "artifact_count": 0,
         }, {
             "message_id": "req-discarded",
             "content": "discarded draft",
             "target": "next-turn",
-            "image_count": 0,
+            "media_count": 0,
             "artifact_count": 0,
         }]
 

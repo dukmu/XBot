@@ -48,9 +48,9 @@ def queue_row(
     head = f"{position:>2}  {item.content.replace(chr(10), ' ').strip()}"
     head = f"{head}  [{item.target.value}]"
     extras = []
-    if item.image_count:
-        noun = "image" if item.image_count == 1 else "images"
-        extras.append(f"{item.image_count} {noun}")
+    if item.media_count:
+        noun = "media item" if item.media_count == 1 else "media items"
+        extras.append(f"{item.media_count} {noun}")
     if item.artifact_count:
         noun = "file" if item.artifact_count == 1 else "files"
         extras.append(f"{item.artifact_count} {noun}")

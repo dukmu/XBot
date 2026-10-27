@@ -20,7 +20,7 @@ from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.agentloop.api.models import PendingInputData
-from XBotv2.agentloop.api.models import ImageInput
+from XBotv2.agentloop.api.models import MediaInput
 from XBotv2.tui.impl.events import (
     InteractionRequest,
     JobsReplaced,
@@ -105,7 +105,7 @@ class TuiController:
         self._stopped = False
         # Images waiting for the next message. Composing the next input is the
         # client's business, so they live here rather than in session state.
-        self._attachments: list[ImageInput] = []
+        self._attachments: list[MediaInput] = []
         self.transport = TransportSession(
             backend,
             config=config,
@@ -203,10 +203,10 @@ class TuiController:
         )
 
     @property
-    def attachments(self) -> tuple[ImageInput, ...]:
+    def attachments(self) -> tuple[MediaInput, ...]:
         return tuple(self._attachments)
 
-    def attach(self, image: ImageInput) -> None:
+    def attach(self, image: MediaInput) -> None:
         self._attachments.append(image)
         self._dirty = True
 
@@ -269,11 +269,11 @@ class TuiController:
     async def submit(self, text: str, *, delivery: Literal["queue", "steer"]) -> str:
         """Send a composer submission with its explicit keyboard delivery mode."""
         following_tail = self._view.reader_at_end
-        images = list(self._attachments)
+        media = list(self._attachments)
         input_id = await self.transport.submit(
             text,
             delivery=delivery,
-            images=images,
+            media=media,
         )
         # The submission consumed the attachments; a failure is reported
         # visibly, and the user re-attaches if they retry.

@@ -94,7 +94,7 @@ from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm.api.contracts import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin.api.models import MCP_PLUGIN_ID
-from XBotv2.agentloop.api.models import ImageInput, SendMessage
+from XBotv2.agentloop.api.models import MediaInput, SendMessage
 from XBotv2.session.api.contracts import (
     OpenSession,
     SessionEventSubscription,
@@ -338,7 +338,7 @@ class XBotACPAgent:
     ) -> PromptResponse:
         started = time.perf_counter()
         summary = await self._thread(session_id)
-        content, images = _prompt_content(prompt)
+        content, media = _prompt_content(prompt)
         command = await self._slash_command(session_id, content)
         if command is not None:
             self._log.info(
@@ -382,7 +382,7 @@ class XBotACPAgent:
                     thread_id="main",
                     content=content,
                     request_id=request_id,
-                    images=tuple(images),
+                    media=tuple(media),
                 )
             )
             await prompt.completed.wait()
@@ -404,7 +404,7 @@ class XBotACPAgent:
             "acp.prompt.finished",
             session_id=session_id,
             content_chars=len(content),
-            images=len(images),
+            media=len(media),
             stop_reason=prompt.mapper.stop_reason,
             usage=prompt.mapper.usage,
             duration_ms=round((time.perf_counter() - started) * 1000, 3),
@@ -943,16 +943,16 @@ def _workspace(cwd: str) -> str:
     return str(path.resolve())
 
 
-def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
+def _prompt_content(blocks: list[Any]) -> tuple[str, list[MediaInput]]:
     parts: list[str] = []
-    images: list[ImageInput] = []
+    media: list[MediaInput] = []
     for block in blocks:
         block_type = getattr(block, "type", "")
         if block_type == "text":
             parts.append(str(block.text))
         elif block_type == "image":
-            images.append(
-                ImageInput(
+            media.append(
+                MediaInput(
                     data=str(block.data),
                     media_type=str(block.mime_type),
                 )
@@ -979,9 +979,9 @@ def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
                 {"prompt": f"unsupported content type: {block_type}"}
             )
     content = "\n\n".join(parts).strip()
-    if not content and not images:
+    if not content and not media:
         raise RequestError.invalid_params({"prompt": "prompt is empty"})
-    return content, images
+    return content, media
 
 
 def _usage(data: TokenCounters | None) -> Usage | None:

@@ -1122,7 +1122,7 @@ async def test_attach_holds_a_local_image_for_the_next_message(tmp_path) -> None
         composer.load_text("look at this")
         await pilot.press("enter")
         await settle(pilot)
-        assert backend.sent[-1]["images"][0].media_type == "image/png"
+        assert backend.sent[-1]["media"][0].media_type == "image/png"
 
 
 async def test_a_relative_attach_is_resolved_against_the_workspace(tmp_path) -> None:
@@ -1190,7 +1190,7 @@ async def test_attach_clear_drops_what_was_pending(tmp_path) -> None:
         composer.load_text("plain text")
         await pilot.press("enter")
         await settle(pilot)
-        assert backend.sent[-1]["images"] == []
+        assert backend.sent[-1]["media"] == []
 
 
 async def test_attach_without_arguments_explains_itself() -> None:

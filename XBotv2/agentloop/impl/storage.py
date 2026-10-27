@@ -27,7 +27,7 @@ from XBotv2.core.api.history import (
 )
 from XBotv2.core.api.domain import HistoryRevision, InboxTarget
 from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
-from XBotv2.core.api.parts import TextPart, ImagePart
+from XBotv2.core.api.parts import TextPart, MediaPart
 from XBotv2.persistence.api.models import StreamCorrupt
 from XBotv2.agentloop.impl.inbox import input_fingerprint, content_digest
 from XBotv2.agentloop.impl import storage_projection
@@ -687,8 +687,8 @@ class ConversationStore:
                 "content": "".join(
                     p.text for p in message.parts if isinstance(p, TextPart)
                 ),
-                "images": tuple(
-                    p.image for p in message.parts if isinstance(p, ImagePart)
+                "media": tuple(
+                    p.artifact for p in message.parts if isinstance(p, MediaPart)
                 ),
                 "artifacts": message.artifacts,
             }
@@ -734,7 +734,7 @@ class ConversationStore:
 def input_message(item, projection):
     payload = item.input
     parts = (TextPart(text=payload.content),) + tuple(
-        ImagePart(image=image) for image in payload.images
+        MediaPart(artifact=ref) for ref in payload.media
     )
     base = {"id": item.id, "parts": parts, "artifacts": payload.artifacts}
     if isinstance(payload, HumanInput):

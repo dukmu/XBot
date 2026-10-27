@@ -4,7 +4,7 @@ from typing import Literal, Protocol, TypeAlias
 from pydantic import Field, model_validator
 from XBotv2.protocol.api.models import ResourceResponse, WireModel
 from XBotv2.session.api.contracts import SessionMode, OpenedThread, ThreadSummary, SessionSummary
-from XBotv2.agentloop.api.models import PendingInputData, ImageInput, AttachmentInput
+from XBotv2.agentloop.api.models import PendingInputData, MediaInput, AttachmentInput
 
 class OpenSessionRequest(WireModel):
     session_id: str | None = None
@@ -87,13 +87,13 @@ class MessageRequest(WireModel):
     content: str = ""
     request_id: str = ""
     delivery: Literal["queue", "steer"] = "steer"
-    images: list[ImageInput] = Field(default_factory=list)
+    media: list[MediaInput] = Field(default_factory=list)
     attachments: list[AttachmentInput] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_content(self) -> "MessageRequest":
-        if not self.content.strip() and not self.images and not self.attachments:
-            raise ValueError("message requires text, image, or attachment content")
+        if not self.content.strip() and not self.media and not self.attachments:
+            raise ValueError("message requires text, media, or attachment content")
         return self
 
 

@@ -5,7 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 from XBotv2.core.api.domain import ProviderError
-from XBotv2.core.api.provider import ModelRequest, ProviderUser, ProviderTool, ResolvedImagePart
+from XBotv2.core.api.provider import ModelRequest, ProviderUser, ProviderTool, ResolvedMediaPart
 from XBotv2.core.api.providers import InputModality, ProviderCapabilities, ProviderFailure
 from XBotv2.core.api.stream import ModelCancelled, ModelCompleted, ModelFailed, ModelStreamEvent
 logger = logging.getLogger("xbotv2.llm")
@@ -150,17 +150,20 @@ class BaseProvider(ABC):
         raise NotImplementedError
 
     def _validate_message_capabilities(self, request: ModelRequest) -> None:
-        image_messages = [
-            message for message in request.messages
-            if isinstance(message, (ProviderUser, ProviderTool))
-            and any(isinstance(part, ResolvedImagePart) for part in message.parts)
-        ]
-        if image_messages:
-            if not self.capabilities.supports("image"):
-                raise ValueError(
-                    f"Provider model {request.selection.route.model!r} "
-                    "does not support image input"
-                )
+        for message in request.messages:
+            if not isinstance(message, (ProviderUser, ProviderTool)):
+                continue
+            for part in message.parts:
+                if not isinstance(part, ResolvedMediaPart):
+                    continue
+                modality = part.artifact.media_type.partition("/")[0].lower()
+                if modality not in ("image", "audio", "video"):
+                    raise ValueError(f"Unsupported media type: {part.artifact.media_type}")
+                if not self.capabilities.supports(modality):
+                    raise ValueError(
+                        f"Provider model {request.selection.route.model!r} "
+                        f"does not support {modality} input"
+                    )
 
     @abstractmethod
     def _astream_once(

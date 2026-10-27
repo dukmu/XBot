@@ -17,7 +17,7 @@ from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionRespo
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
-from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, ImageInput
+from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, MediaInput
 from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
 from XBotv2.session.api.protocol import CloseResponse, DeleteSessionResponse, ForkResponse, InterruptResponse, MessageRequest, OpenSessionRequest, OpenSessionResponse, OpenThreadRequest, PendingInputListResponse, PendingInputUpdateRequest, RegenerateRequest, SessionListResponse, ThreadListResponse, UndoRequest
 from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
@@ -531,7 +531,7 @@ class XBotClient:
         *,
         request_id: str = "",
         delivery: Literal["queue", "steer"] = "steer",
-        images: list[ImageInput] | None = None,
+        media: list[MediaInput] | None = None,
         attachments: list[AttachmentInput] | None = None,
     ) -> None:
         await self._request_no_content(
@@ -541,7 +541,7 @@ class XBotClient:
                 content=content,
                 request_id=request_id,
                 delivery=delivery,
-                images=images or [],
+                media=media or [],
                 attachments=attachments or [],
             ),
         )

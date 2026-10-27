@@ -17,7 +17,6 @@ permissions resolve per call.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 from dataclasses import replace
 from contextlib import nullcontext
@@ -28,8 +27,8 @@ from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 import httpx
 from pydantic import JsonValue
-from XBotv2.core.api.artifacts import ArtifactKind, ArtifactStorePort, ImageRef
-from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactStorePort
+from XBotv2.core.api.parts import MediaPart, TextPart
 from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.core.api.filesystem import PATH_ACCESS, execute
 from XBotv2.sandbox.api.models import SandboxPort
@@ -37,9 +36,9 @@ from XBotv2.sandbox.api.models import SandboxPort
 _FILE_VERSIONS: WeakKeyDictionary[SandboxPort, dict[str, str]] = WeakKeyDictionary()
 
 
-def _success(text: str, *, artifacts=(), images=(), data=None) -> ToolSucceeded:
+def _success(text: str, *, artifacts=(), media=()) -> ToolSucceeded:
     parts = [TextPart(text=text)]
-    parts.extend(ImagePart(image=image) for image in images)
+    parts.extend(MediaPart(artifact=ref) for ref in media)
     return ToolSucceeded(output=ToolOutput(parts=tuple(parts), artifacts=tuple(artifacts)))
 
 
@@ -215,15 +214,15 @@ async def _read_media(
         )
     try:
         if url is not None:
-            payload, media_type, metadata = await _read_image_url(
+            payload, media_type, _ = await _read_image_url(
                 url, media_type, sandbox
             )
         elif path:
-            payload, media_type, metadata = await _read_image_path(
+            payload, media_type, _ = await _read_image_path(
                 path, media_type, sandbox
             )
         else:
-            payload, media_type, metadata = _decode_image_data(
+            payload, media_type, _ = _decode_image_data(
                 str(data or ""), media_type
             )
         if len(payload) > MAX_CONTENT_BYTES:
@@ -242,19 +241,12 @@ async def _read_media(
             payload,
             media_type=selected,
         )
-        image = ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size)
     except _ImageError as exc:
         return _failure_result(exc.code, exc.message)
 
-    result_data: dict[str, JsonValue] = {
-        "media_type": selected,
-        "size_bytes": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
-    }
-    result_data.update(metadata)
     return _success(
         f"Image content loaded: {selected} ({len(payload)} bytes)",
-        images=(image,),
+        media=(ref,),
     )
 
 
