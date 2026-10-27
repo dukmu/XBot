@@ -702,7 +702,7 @@ export function useXBot() {
             content,
             target: "next-turn",
             source: "user",
-            image_count: attachments.filter((item) => item.media_type.startsWith("image/")).length,
+            media_count: attachments.filter((item) => item.media_type.startsWith("image/")).length,
             artifact_count: attachments.filter((item) => !item.media_type.startsWith("image/")).length,
           },
         ],
@@ -717,7 +717,7 @@ export function useXBot() {
         content,
         attachments
           .filter((attachment) => attachment.media_type.startsWith("image/"))
-          .map(({ data, media_type }) => ({ data, media_type })),
+          .map(({ data, media_type, name }) => ({ data, media_type, name })),
         attachments
           .filter((attachment) => !attachment.media_type.startsWith("image/"))
           .map(({ data, media_type, name }) => ({ data, media_type, name })),

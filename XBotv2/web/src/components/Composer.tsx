@@ -1,6 +1,6 @@
 import { FileText, Paperclip, Square, SquareSlash, Send, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { CommandInfo, ImageInput, UsageData } from "../api/types";
+import type { CommandInfo, MediaInput, UsageData } from "../api/types";
 import { ContextMeter } from "./ContextMeter";
 import { CommandTriggerMenu } from "./CommandTriggerMenu";
 import { DropOverlay } from "./DropOverlay";
@@ -12,7 +12,7 @@ import { commandSuggestions } from "../commands";
 export const STEER_QUEUE_PLACEHOLDER = "Cmd/Ctrl+Enter steers all queued messages";
 export const COMPOSER_PLACEHOLDER = "Message XBot · paste images";
 
-export interface PendingAttachment extends ImageInput {
+export interface PendingAttachment extends MediaInput {
   name: string;
   preview?: string;
 }

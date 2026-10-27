@@ -3,7 +3,7 @@ import {
   EMPTY_SESSION_STATS,
   type AgentInfo,
   type HistoryItem,
-  type ImageReference,
+  type ArtifactRef,
   type InteractionRequest,
   type JsonObject,
   type OpenSessionResponse,
@@ -83,6 +83,7 @@ export interface RuntimeEntry {
   event: string;
   content: string;
   messageId?: string;
+  images?: MessageImage[];
 }
 
 export interface ToolEntry {
@@ -746,13 +747,13 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         entries: [
           ...state.entries,
           runtimeSource
-            ? runtimeEntry(runtimeSource, runtimeEvent || "message", stringValue(data.content), runtimeId)
+            ? { ...runtimeEntry(runtimeSource, runtimeEvent || "message", stringValue(data.content), runtimeId), images: historyAttachments(arrayValue(data.media) as ArtifactRef[], arrayValue(data.artifacts).map(objectValue)) }
             : {
               ...messageEntry("user", stringValue(data.content)),
               id,
               messageId: id,
               images: historyAttachments(
-                arrayValue(data.images) as ImageReference[],
+                arrayValue(data.media) as ArtifactRef[],
                 arrayValue(data.artifacts).map(objectValue),
               ),
             },
@@ -939,13 +940,14 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
           event: item.runtime?.event ?? "skill_invocation",
           content: item.content,
           messageId: item.id || "",
+          images: historyAttachments(item.media, item.artifacts),
         });
         continue;
       }
       entries.push({
         ...messageEntry("user", item.content),
         messageId: item.id || "",
-        images: historyAttachments(item.images, item.artifacts),
+        images: historyAttachments(item.media, item.artifacts),
       });
       continue;
     }
@@ -968,7 +970,8 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
       data: item.data,
       error: item.error,
       artifacts: item.artifacts,
-      images: item.images,
+      media: item.media,
+      outcome: item.outcome,
     });
   }
   return entries;
@@ -1302,10 +1305,10 @@ function carryStreamingAssistant(
   return live.length ? [...entries, ...live] : entries;
 }
 
-function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {
-  return [...images.map((image) => ({
+function historyAttachments(media: ArtifactRef[] = [], artifacts: JsonObject[] = []): MessageImage[] {
+  return [...media.map((image) => ({
     label: `${image.media_type} · ${formatBytes(image.size)}`,
-    src: image.url,
+    src: image.media_type.startsWith("image/") ? image.url : undefined,
     href: image.url,
   })), ...artifacts.map((artifact) => ({
     label: String(artifact.name || artifact.id || "attachment"),
@@ -1401,7 +1404,12 @@ function applyToolResult(entries: TimelineEntry[], data: JsonObject): TimelineEn
       data: data.data ?? null,
       error: data.error ? objectValue(data.error) : null,
       artifacts: arrayValue(data.artifacts).map(objectValue),
-      images: arrayValue(data.images).map(objectValue),
+      images: [
+        ...arrayValue(data.media).map(objectValue),
+        ...arrayValue(objectValue(objectValue(data.outcome).output).parts)
+          .map(objectValue).filter((part) => part.kind === "media")
+          .map((part) => objectValue(part.artifact)),
+      ],
     };
   }
   return copy;
@@ -1703,7 +1711,7 @@ function pendingInputs(value: unknown): PendingInput[] {
       content: stringValue(item.content),
       target,
       source: stringValue(item.source) || "user",
-      image_count: numberValue(item.image_count),
+      media_count: numberValue(item.media_count),
       artifact_count: numberValue(item.artifact_count),
     }];
   });

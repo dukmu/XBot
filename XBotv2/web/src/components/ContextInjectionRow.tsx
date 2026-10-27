@@ -33,6 +33,9 @@ export function ContextInjectionRow({ entry }: { entry: RuntimeEntry }) {
       </summary>
       <div className={`${styles.body} markdown-body`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
+        {entry.images?.map((media, index) => media.href
+          ? <a key={index} href={media.href} target="_blank" rel="noreferrer">{media.src ? <img src={media.src} alt={media.label} /> : media.label}</a>
+          : <span key={index}>{media.label}</span>)}
       </div>
     </details>
   );

@@ -152,7 +152,7 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
+        media: [],
         runtime: { source: "job-1", event: "notification" },
       }],
       nextCursor: null,
@@ -200,7 +200,7 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
+        media: [],
       }],
       nextCursor: null,
     });
@@ -267,14 +267,14 @@ describe("runtimeReducer", () => {
       history_cursor: "20",
       history: [{
         role: "assistant", content: "new", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
+        data: null, error: null, artifacts: [], media: [],
       }],
     } });
     state = runtimeReducer(state, {
       type: "history_prepend",
       history: [{
         role: "user", content: "old", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
+        data: null, error: null, artifacts: [], media: [],
       }],
       nextCursor: null,
       expectedCursor: "20",
@@ -296,7 +296,7 @@ describe("runtimeReducer", () => {
       type: "history_prepend",
       history: [{
         role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
+        data: null, error: null, artifacts: [], media: [],
       }],
       nextCursor: null,
       expectedCursor: "10",
@@ -404,7 +404,7 @@ describe("runtimeReducer", () => {
         content: "continue later",
         target: "next-turn",
         source: "user",
-        image_count: 0,
+        media_count: 0,
         artifact_count: 0,
       }] }),
     });
@@ -420,7 +420,7 @@ describe("runtimeReducer", () => {
   it("projects accepted, claimed, and consumed delivery phases", () => {
     const item = {
       message_id: "queued-1", content: "continue later", target: "next-turn" as const,
-      source: "user", image_count: 0, artifact_count: 0,
+      source: "user", media_count: 0, artifact_count: 0,
     };
     let state = runtimeReducer(initialRuntimeState, {
       type: "user_message",
@@ -444,10 +444,10 @@ describe("runtimeReducer", () => {
     const state = runtimeReducer(
       runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
         message_id: "queued-1", content: "continue later", target: "next-turn",
-        source: "user", image_count: 0, artifact_count: 0,
+        source: "user", media_count: 0, artifact_count: 0,
       }, {
         message_id: "queued-2", content: "keep this", target: "next-turn",
-        source: "user", image_count: 0, artifact_count: 0,
+        source: "user", media_count: 0, artifact_count: 0,
       }] }),
       { type: "pending_input_failed", messageId: "queued-1" },
     );
@@ -457,7 +457,7 @@ describe("runtimeReducer", () => {
   it("removes a steered input when its delivery message reaches the transcript", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
       message_id: "steer-1", content: "interrupt with this", target: "next-step",
-      source: "user", image_count: 0, artifact_count: 0,
+      source: "user", media_count: 0, artifact_count: 0,
     }] });
     state = runtimeReducer(state, {
       type: "event",
@@ -817,7 +817,7 @@ describe("runtimeReducer", () => {
       role: "user" as const,
       content: "Injected instructions",
       tool_calls: [], tool_call_id: "", status: "", data: null,
-      error: null, artifacts: [], images: [],
+      error: null, artifacts: [], media: [],
       runtime: { source: "skills", event: "inject" },
     };
     const state = runtimeReducer(initialRuntimeState, {
@@ -872,13 +872,13 @@ describe("runtimeReducer", () => {
       content: "",
       reasoning: "",
       tool_calls: [{ id: "call-1", name: "shell", args: { command: "printf hello" } }],
-      tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [],
+      tool_call_id: "", status: "", data: null, error: null, artifacts: [], media: [],
     };
     const result = {
       role: "tool" as const,
       content: "hello",
       tool_calls: [], tool_call_id: "call-1", status: "success", data: null,
-      error: null, artifacts: [], images: [],
+      error: null, artifacts: [], media: [],
     };
     const state = runtimeReducer(initialRuntimeState, {
       type: "trajectory",
@@ -914,7 +914,7 @@ describe("runtimeReducer", () => {
           content: "finished while reconnecting",
           reasoning: "checked the reconnect path",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -944,7 +944,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -964,7 +964,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -990,7 +990,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "same input",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -1015,7 +1015,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
       bufferedEvents: [event("assistant_message", {
@@ -1060,7 +1060,7 @@ describe("runtimeReducer", () => {
       type: "history_prepend",
       history: [{
         role: "user", content: "stale", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
+        data: null, error: null, artifacts: [], media: [],
       }],
       nextCursor: null,
       expectedCursor: "10",
@@ -1142,7 +1142,7 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
+        media: [],
       }],
     });
 
@@ -1175,7 +1175,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "question",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -1239,7 +1239,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "question",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
       bufferedEvents: [event("assistant_message_delta", { content: "tence." })],
@@ -1298,7 +1298,7 @@ describe("runtimeReducer", () => {
       data: null,
       error: null,
       artifacts: [],
-      images: [],
+      media: [],
       ...extra,
     });
     const history = [
@@ -1353,7 +1353,7 @@ describe("transcript window", () => {
       role: "user" as const,
       content: `message ${position}`,
       tool_calls: [], tool_call_id: "", status: "", data: null,
-      error: null, artifacts: [], images: [],
+      error: null, artifacts: [], media: [],
     },
   });
   const page = (from: number, to: number) => (

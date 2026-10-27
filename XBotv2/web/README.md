@@ -5,6 +5,12 @@ XBot protocol v3 HTTP/SSE API. It does not import Python runtime code. Typed
 resources own machine operations; the separately discovered human command
 catalog is used only for server-owned slash commands.
 
+Protocol alignment is in progress: media fields use the current artifact
+contract, while history and event DTOs still need alignment with the Python
+server's `kind`, `history.items`, and SSE envelopes. The focused media tests
+cover those field mappings; complete browser/server interoperability remains
+to be verified after the DTO migration.
+
 ## Development
 
 Start the existing XBot server:
@@ -60,6 +66,10 @@ prefix at build time.
 - `src/components`: resource navigation and interaction controls.
 - `src/app`: the application shell.
 - `src/styles`: the responsive workbench theme.
+
+Message uploads use `media` entries with base64 data, MIME type and name;
+ordinary files use `attachments`. Media references in history retain artifact
+metadata and resolve through the artifact download endpoint.
 
 The reducer is the only place that converts `ServerEvent` envelopes into UI
 state. Tool execution stays inside the Agent runtime; the browser only answers

@@ -4,8 +4,8 @@ import type { PendingInput } from "../api/types";
 import { QueueDock, QUEUE_EDIT_UNSUPPORTED, QUEUE_STEER_UNAVAILABLE } from "./QueueDock";
 
 const queued: PendingInput[] = [
-  { message_id: "q-1", content: "first queued", target: "next-turn", source: "user", image_count: 0, artifact_count: 0 },
-  { message_id: "q-2", content: "second queued", target: "next-turn", source: "user", image_count: 0, artifact_count: 0 },
+  { message_id: "q-1", content: "first queued", target: "next-turn", source: "user", media_count: 0, artifact_count: 0 },
+  { message_id: "q-2", content: "second queued", target: "next-turn", source: "user", media_count: 0, artifact_count: 0 },
 ];
 
 describe("QueueDock", () => {
@@ -42,8 +42,8 @@ describe("QueueDock", () => {
 
   it("keeps steering items out of the dock and disables an unsupported edit", () => {
     const items: PendingInput[] = [
-      { message_id: "q-1", content: "", target: "next-turn", source: "user", image_count: 1, artifact_count: 0 },
-      { message_id: "s-1", content: "steer me", target: "next-step", source: "user", image_count: 0, artifact_count: 0 },
+      { message_id: "q-1", content: "", target: "next-turn", source: "user", media_count: 1, artifact_count: 0 },
+      { message_id: "s-1", content: "steer me", target: "next-step", source: "user", media_count: 0, artifact_count: 0 },
     ];
     render(<QueueDock items={items} running onUpdate={vi.fn()} />);
     // One queued row renders directly, without a count header.

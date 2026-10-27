@@ -2,12 +2,13 @@ export const PROTOCOL_VERSION = "xbotv2.v3";
 
 export type JsonObject = Record<string, unknown>;
 
-export interface ImageInput {
+export interface MediaInput {
   data: string;
   media_type: string;
+  name: string;
 }
 
-export interface AttachmentInput extends ImageInput {
+export interface AttachmentInput extends MediaInput {
   name: string;
 }
 
@@ -15,7 +16,7 @@ export interface MessageRequest {
   content: string;
   request_id: string;
   delivery: "queue" | "steer";
-  images: ImageInput[];
+  media: MediaInput[];
   attachments: AttachmentInput[];
 }
 
@@ -23,10 +24,13 @@ export interface RegenerateRequest {
   request_id: string;
 }
 
-export interface ImageReference {
-  path: string;
+export interface ArtifactRef {
+  id: string;
   media_type: string;
+  name: string;
+  kind: string;
   size: number;
+  sha256: string;
   url?: string;
 }
 
@@ -129,7 +133,8 @@ export interface HistoryItem {
   data: unknown;
   error: JsonObject | null;
   artifacts: JsonObject[];
-  images: ImageReference[];
+  media?: ArtifactRef[];
+  outcome?: JsonObject;
   runtime?: Record<string, string> | null;
   timing?: Record<string, number> | null;
 }
@@ -169,7 +174,7 @@ export interface PendingInput {
   content: string;
   target: "next-turn" | "next-step";
   source: string;
-  image_count: number;
+  media_count: number;
   artifact_count: number;
 }
 

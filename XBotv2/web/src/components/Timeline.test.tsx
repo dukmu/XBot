@@ -212,7 +212,7 @@ describe("Timeline render cost", () => {
         role: "user" as const,
         content: `baseline ${index}`,
         tool_calls: [], tool_call_id: "", status: "", data: null,
-        error: null, artifacts: [], images: [],
+        error: null, artifacts: [], media: [],
       },
     }));
     let state = runtimeReducer(initialRuntimeState, { type: "trajectory", items: baseline, nextCursor: null });
@@ -340,7 +340,7 @@ describe("pending steering rows", () => {
             content: "Interjection: include the word BANANA in your final reply.",
             target: "next-step",
             source: "user",
-            image_count: 0,
+            media_count: 0,
             artifact_count: 0,
           }]}
           turnRunning

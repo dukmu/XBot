@@ -160,6 +160,6 @@ function editable(item: PendingInput): boolean {
 
 function preview(item: PendingInput): string {
   if (item.content) return item.content;
-  const count = item.image_count + item.artifact_count;
+  const count = item.media_count + item.artifact_count;
   return count === 1 ? "1 attachment" : `${count} attachments`;
 }

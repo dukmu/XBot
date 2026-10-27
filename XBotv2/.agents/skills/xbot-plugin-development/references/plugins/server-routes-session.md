@@ -78,7 +78,7 @@ class MessageRequest(WireModel):
     content: str = ""
     request_id: str = ""
     delivery: Literal["queue", "steer"] = "steer"
-    images: list[ImageInput] = []
+    media: list[MediaInput] = []
     attachments: list[AttachmentInput] = []
 
 class UndoRequest(WireModel):
@@ -95,7 +95,7 @@ class PendingInputUpdateRequest(WireModel):
 
 The actual Python models use `Field(default_factory=list)` for mutable list
 defaults; the snippet uses JSON-schema-like shorthand only for readability.
-`MessageRequest` rejects an empty text request unless an image or attachment
+`MessageRequest` rejects an empty text request unless media or an attachment
 is supplied. Queue `edit` requires non-empty trimmed content.
 
 ## History, queue, and mutation response schemas

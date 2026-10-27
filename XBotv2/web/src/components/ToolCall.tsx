@@ -85,7 +85,7 @@ function SkillBody({ tool, onInspect }: { tool: ToolEntry; onInspect?: () => voi
           {SKILL_INSPECT}
         </button>
       )}
-      <ToolArtifacts artifacts={tool.artifacts} />
+      <ToolMedia tool={tool} />
     </div>
   );
 }
@@ -125,13 +125,22 @@ function ToolBody({ tool, todos }: { tool: ToolEntry; todos: TodoItemData[] | nu
       {tool.result !== null && tool.result !== "" && <Detail label="Result" value={tool.result} />}
       {tool.data !== null && <Detail label="Data" value={tool.data} />}
       {tool.error && <Detail label="Error" value={tool.error} />}
-      {tool.images.length > 0 && <Detail label="Images" value={tool.images} />}
+
     </ToolDetails>
   );
 }
 
 function ToolDetails({ tool, children }: { tool: ToolEntry; children: ReactNode }) {
-  return <div className="tool-details">{children}<ToolArtifacts artifacts={tool.artifacts} /></div>;
+  return <div className="tool-details">{children}<ToolMedia tool={tool} /></div>;
+}
+
+function ToolMedia({ tool }: { tool: ToolEntry }) {
+  return <>
+    {tool.images.filter((media) => typeof media.url === "string" && String(media.media_type).startsWith("image/")).map((media) => (
+      <a key={String(media.id)} href={String(media.url)} target="_blank" rel="noreferrer"><img src={String(media.url)} alt={String(media.name || media.media_type)} /></a>
+    ))}
+    <ToolArtifacts artifacts={[...tool.artifacts, ...tool.images.filter((media) => !String(media.media_type).startsWith("image/"))]} />
+  </>;
 }
 
 function appliedDiff(tool: ToolEntry): DiffHunk | null {

@@ -7,7 +7,7 @@ import {
   type CommandResult,
   type DirectoryListingData,
   type HistoryItem,
-  type ImageInput,
+  type MediaInput,
   type JsonObject,
   type MessagePage,
   type MessageRequest,
@@ -435,7 +435,7 @@ export class XBotApi {
     sessionId: string,
     threadId: string,
     content: string,
-    images: ImageInput[],
+    media: MediaInput[],
     attachments: AttachmentInput[],
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
@@ -443,7 +443,7 @@ export class XBotApi {
   ): Promise<void> {
     const payload: MessageRequest = {
       content,
-      images,
+      media,
       attachments,
       request_id: requestId,
       delivery,
@@ -562,9 +562,10 @@ export class XBotApi {
   ): HistoryItem[] {
     return history.map((item) => ({
       ...item,
-      images: item.images.map((image) => ({
-        ...image,
-        url: this.artifactUrl(sessionId, threadId, image.path),
+      outcome: item.outcome ? this.decorateOutcome(sessionId, threadId, item.outcome) : undefined,
+      media: (item.media ?? []).map((artifact) => ({
+        ...artifact,
+        url: this.artifactUrl(sessionId, threadId, artifact.id),
       })),
       artifacts: item.artifacts.map((artifact) => ({
         ...artifact,
@@ -573,6 +574,24 @@ export class XBotApi {
           : undefined,
       })),
     }));
+  }
+
+  private decorateOutcome(sessionId: string, threadId: string, outcome: JsonObject): JsonObject {
+    const output = outcome.output as JsonObject | undefined;
+    if (!output) return outcome;
+    const parts = Array.isArray(output.parts) ? output.parts : [];
+    return {
+      ...outcome,
+      output: {
+        ...output,
+        parts: parts.map((value) => {
+          const part = value as JsonObject;
+          if (part.kind !== "media") return part;
+          const artifact = part.artifact as JsonObject;
+          return { ...part, artifact: { ...artifact, url: this.artifactUrl(sessionId, threadId, String(artifact.id)) } };
+        }),
+      },
+    };
   }
 
   private withEventArtifactUrls(
@@ -593,18 +612,19 @@ export class XBotApi {
       };
     }
     if (!["message", "tool_result"].includes(event.type)) return event;
-    const images = Array.isArray(event.data.images) ? event.data.images : [];
+    const media = Array.isArray(event.data.media) ? event.data.media : [];
     const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
     return {
       ...event,
       data: {
         ...event.data,
-        images: images.map((value) => {
+        outcome: event.data.outcome ? this.decorateOutcome(sessionId, threadId, event.data.outcome as JsonObject) : undefined,
+        media: media.map((value) => {
           const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
           return {
             ...image,
-            url: typeof image.path === "string"
-              ? this.artifactUrl(sessionId, threadId, image.path)
+            url: typeof image.id === "string"
+              ? this.artifactUrl(sessionId, threadId, image.id)
               : undefined,
           };
         }),
