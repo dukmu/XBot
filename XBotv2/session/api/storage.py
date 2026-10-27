@@ -31,6 +31,7 @@ class ThreadRepository(Protocol):
 THREAD_REPOSITORY: ServiceKey[ThreadRepository] = ServiceKey("thread_repository")
 
 FORK_COPY_STATE = "session/fork-copy-state"
+FORK_COPY_THREAD = "session/fork-copy-thread"
 FORK_FINALIZE = "session/fork-finalize"
 
 
@@ -38,7 +39,7 @@ FORK_FINALIZE = "session/fork-finalize"
 class ForkState:
     source_session_id: str
     target_session_id: str
-    thread_ids: tuple[str, ...]
-    cuts: tuple[tuple[str, int, int], ...]
+    thread_id: str = ""
+    cut: tuple[int, int] = (0, 0)
     handled: set[str] = field(default_factory=set)
-    origins: dict[str, dict[str, JsonValue]] = field(default_factory=dict)
+    origins: dict[str, JsonValue] = field(default_factory=dict)

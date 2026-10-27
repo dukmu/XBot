@@ -36,23 +36,21 @@ class ArchiveService:
         event.handled.add("agentloop")
 
     async def finalize_fork(self, event):
-        cuts = {thread: (seq, offset) for thread, seq, offset in event.cuts}
-        for thread in event.thread_ids:
-            store = self._store(event.target_session_id, thread)
-            async with store.operation(write=True):
-                pending = await store.pending_ids()
-                seq, offset = cuts.get(thread, (0, 0))
-                await store.stream.append(
-                    "fork_boundary",
-                    {
-                        "source_session": event.source_session_id,
-                        "source_stream": thread,
-                        "source_seq": seq,
-                        "source_offset": offset,
-                        "input_ids": pending,
-                        "origins": event.origins.get(thread, {}),
-                    },
-                )
+        thread = event.thread_id
+        store = self._store(event.target_session_id, thread)
+        async with store.operation(write=True):
+            seq, offset = event.cut
+            await store.stream.append(
+                "fork_boundary",
+                {
+                    "source_session": event.source_session_id,
+                    "source_stream": thread,
+                    "source_seq": seq,
+                    "source_offset": offset,
+                    "discard_pending": True,
+                    "origins": event.origins,
+                },
+            )
 
     async def _execution_start(self, session_id, thread_id, record):
         async with self.backend.use(session_id):

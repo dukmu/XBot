@@ -245,15 +245,32 @@ def project(connection, thread, records):
                 != 1
             ):
                 raise StreamCorrupt("Retargeted input is not pending")
+        elif kind == "fork_boundary":
+            if data.get("discard_pending") is not True:
+                raise StreamCorrupt("Invalid fork boundary pending-input selection")
+            if _one(connection, """
+                SELECT 1 FROM inbox AS i
+                LEFT JOIN input_ids AS ids ON ids.thread_id=i.thread_id AND ids.input_id=i.input_id
+                WHERE i.thread_id=? AND (ids.input_id IS NULL OR ids.retired!=0) LIMIT 1
+            """, (thread,)) is not None:
+                raise StreamCorrupt("Fork boundary found an invalid pending input")
+            connection.execute(
+                "UPDATE input_facts SET status='discarded' WHERE thread_id=? AND input_id IN "
+                "(SELECT input_id FROM inbox WHERE thread_id=?)", (thread, thread),
+            )
+            connection.execute(
+                "UPDATE input_ids SET retired=1 WHERE thread_id=? AND input_id IN "
+                "(SELECT input_id FROM inbox WHERE thread_id=?)", (thread, thread),
+            )
+            connection.execute("DELETE FROM inbox WHERE thread_id=?", (thread,))
         elif kind in (
             "input_removed",
             "inputs_discarded",
             "inputs_consumed",
-            "fork_boundary",
             "import_boundary",
         ):
             for input_id in data["input_ids"]:
-                status = {"input_removed": "removed", "inputs_discarded": "discarded", "inputs_consumed": "consumed", "fork_boundary": "discarded", "import_boundary": "discarded"}[kind]
+                status = {"input_removed": "removed", "inputs_discarded": "discarded", "inputs_consumed": "consumed", "import_boundary": "discarded"}[kind]
                 connection.execute("UPDATE input_facts SET status=? WHERE thread_id=? AND input_id=?", (status, thread, input_id))
                 if (
                     _one(

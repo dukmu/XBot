@@ -18,16 +18,32 @@ def encoded(value):
     )
 
 
-def read_record(path, offset, length):
+def file_signature(path):
+    try:
+        value = path.stat()
+    except FileNotFoundError:
+        return None
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def read_record_bytes(path, offset, length):
     with path.open("rb") as stream:
         stream.seek(offset)
         data = stream.read(length)
     if len(data) != length or not data.endswith(b"\n"):
         raise StreamCorrupt(f"Invalid indexed range at {path}:{offset}")
+    return data
+
+
+def decode_record(data, path, offset):
     try:
         return json.loads(data)
     except (ValueError, UnicodeDecodeError) as exc:
         raise StreamCorrupt(f"Invalid rollout record at {path}:{offset}") from exc
+
+
+def read_record(path, offset, length):
+    return decode_record(read_record_bytes(path, offset, length), path, offset)
 
 
 def sync_parents(directory, stop):
@@ -174,6 +190,7 @@ class Stream:
                 claim.release()
 
     async def _replay(self, seq, offset, mtime, current_mtime):
+        self.resources.record_cache.invalidate(str(self.paths.rollout_file))
         if offset and current_mtime != mtime:
             checked_seq = checked_offset = 0
             while checked_offset < offset:
@@ -325,6 +342,7 @@ class Stream:
     async def reset(self):
         self._require_lease()
         self.resources.require_writer(self.paths.session)
+        self.resources.record_cache.invalidate(str(self.paths.rollout_file))
 
         def reset(c):
             c.execute("DELETE FROM records WHERE stream_id=?", (self.thread,))
@@ -397,6 +415,7 @@ class Stream:
                 c.execute("RELEASE rollout_validation")
 
         await self._sql(validate, size=len(payload))
+        previous_file = file_signature(self.paths.rollout_file)
         try:
             await file_io(
                 append_file,
@@ -411,6 +430,10 @@ class Stream:
             raise CommitUncertain(
                 f"Rollout {self.thread}:{seq + 1} append completed during cancellation; retry its identity"
             ) from exc
+        current_file = file_signature(self.paths.rollout_file)
+        self.resources.record_cache.advance(
+            str(self.paths.rollout_file), previous_file, current_file,
+        )
         mtime = self.paths.rollout_file.stat().st_mtime_ns
         try:
 
@@ -443,7 +466,21 @@ class Stream:
         )
         if row is None:
             raise StreamCorrupt(f"Missing rollout reference: {identity}")
-        return await file_io(read_record, self.paths.rollout_file, *row)
+        path = self.paths.rollout_file
+        path_key = str(path)
+        key = (self.paths.session_id, path_key, row[0], row[1], identity)
+        cache = self.resources.record_cache
+        before = file_signature(path)
+        cache.observe(path_key, before)
+        data = cache.lookup(key)
+        if data is None:
+            data = await file_io(read_record_bytes, path, *row)
+            after = file_signature(path)
+            if before != after:
+                cache.observe(path_key, after)
+                return await file_io(decode_record, data, path, row[0])
+        with cache.hold(key, before, data) as pinned:
+            return await file_io(decode_record, pinned, path, row[0])
 
     async def present(self):
         async with self.resources.handle_use(

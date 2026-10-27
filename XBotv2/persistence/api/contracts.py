@@ -76,13 +76,16 @@ class RolloutPort(Protocol):
 
 class PreparedCopy(Protocol):
     session_id: str
-    cuts: tuple[tuple[str, int, int], ...]
 
+    async def cut(self, stream_id: str) -> tuple[int, int]: ...
     async def publish(self) -> None: ...
 
 
 class Persistence(Protocol):
     record_bytes: int
+
+    @property
+    def record_cache_stats(self) -> dict[str, int]: ...
 
     def use(
         self, session_id: str | None = None

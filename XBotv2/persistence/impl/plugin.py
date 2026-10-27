@@ -17,6 +17,7 @@ from XBotv2.persistence.impl.session_lock import acquire_session
 class PersistenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     artifact_cache_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
+    record_cache_bytes: int = Field(default=16 * 1024 * 1024, ge=0)
     queue_operations: int = Field(default=64, ge=1)
     queue_bytes: int = Field(default=16 * 1024 * 1024, ge=4096)
     replay_records: int = Field(default=128, ge=1, le=1000)
@@ -30,7 +31,7 @@ class PersistenceResources:
         self._paths = paths
         self._log = runtime_log
         self._owner = owner
-        self.limits = StorageLimits(**config.model_dump(exclude={"artifact_cache_bytes"}))
+        self.limits = StorageLimits(**config.model_dump(exclude={"artifact_cache_bytes", "record_cache_bytes"}))
         if (
             self.limits.record_bytes + self.limits.replay_bytes
             > self.limits.queue_bytes
@@ -53,6 +54,8 @@ class PersistenceResources:
         self._shutdown_drained = False
         from XBotv2.persistence.impl.artifact_cache import ArtifactCache
         self.artifact_cache = ArtifactCache(self, config.artifact_cache_bytes)
+        from XBotv2.persistence.impl.record_cache import RecordCache
+        self.record_cache = RecordCache(config.record_cache_bytes)
 
     def _admit(self, session_id=None):
         if (
@@ -102,6 +105,9 @@ class PersistenceResources:
             await asyncio.gather(*(done.wait() for _, done in accepted))
         if session_id is not None:
             await self.artifact_cache.drop_session(session_id)
+            self.record_cache.drop_session(session_id)
+        else:
+            self.record_cache.clear()
         await self.worker.release(
             self.paths(session_id).database_file if session_id is not None else None
         )
@@ -115,6 +121,7 @@ class PersistenceResources:
 
             path, root = self._failed_preparation
             await self.worker.release(path)
+            self.record_cache.drop_root(root)
             if root.exists():
                 await file_io(shutil.rmtree, root)
             self._failed_preparation = None
@@ -136,6 +143,10 @@ class PersistenceResources:
             raise RuntimeError("Persistence owner is closing")
         async with self._track(session_id):
             yield
+
+    @property
+    def record_cache_stats(self):
+        return self.record_cache.stats
 
     @property
     def record_bytes(self):

@@ -20,6 +20,8 @@ Process disposal closes the remaining connection on the worker thread.
 Preparations are serialized. If a staging connection cannot close, its one
 unpublished directory is retained and the next preparation or process drain
 retries closing it before removing the directory.
+Fork copies stream prefixes using pages of cuts from the frozen staging
+database; the prepared copy reads an individual cut from that same snapshot.
 Root `pre_stop` runs after children have stopped. Session claims are released
 after their accepted work drains; the process worker closes during disposal. Archive page decoding does not hold the writer mutex, but
 retains a tracked read lifetime.
@@ -89,6 +91,29 @@ per-object build ownership and atomic publication. A short metadata lock never
 covers a complete build or file deletion. Concurrent users share a complete
 view. Failed/cancelled construction drains actual I/O before removing temporary
 files. `model_path` requires an active materialization pin for record refs.
+
+The process also owns one in-memory cache of immutable physical rollout record
+bytes, shared by conversation archives and team streams. `record_cache_bytes`
+defaults to 16 MiB as an initial measurement budget; zero disables caching.
+The byte charge includes payload and conservative key/entry overhead. Records
+larger than the budget, or records that cannot fit while entries are pinned,
+are read normally without admission. Each read pins its bytes while decoding,
+then returns a freshly decoded object. Decoded pages and in-flight file reads
+are not included in the cache budget.
+
+The cache keys a record by session, physical path, offset, length and record
+identity. File device/inode, size, modification time and change time validate
+the physical version. Known appends advance that version while retaining the
+confirmed prefix; unexpected changes, replay and reset invalidate the affected
+stream. Session drain drops its entries, staging cleanup drops its physical root,
+and process drain clears the cache. `record_cache_stats` reports the budget,
+resident and pinned bytes, entries, active pins, hits, misses, evictions and
+bypasses; counters describe this process and are not restored across restarts.
+The default budget is not a measured optimum. Concurrent external in-place
+rewrites of an active rollout are outside the single-writer ownership contract.
+A rewrite whose file identity, size and timestamps are unchanged cannot be
+detected by this cache; arbitrary external corruption is therefore not promised
+to become visible immediately. Controlled reset and recovery always invalidate.
 
 The process config `artifact_cache_bytes` defaults to 64 MiB and bounds the
 unpinned LRU. Its charge includes file bytes, encoded reference/path metadata,

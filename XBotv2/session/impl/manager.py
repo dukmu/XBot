@@ -23,7 +23,7 @@ from XBotv2.core.api.messages import AssistantMessage
 from XBotv2.agentloop.api.events import Events, StateChanged
 from pydantic import JsonValue
 from XBotv2.session.impl.storage import SessionRepository
-from XBotv2.session.api.storage import ForkState, FORK_COPY_STATE, FORK_FINALIZE
+from XBotv2.session.api.storage import ForkState, FORK_COPY_STATE, FORK_COPY_THREAD, FORK_FINALIZE
 from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE
 from XBotv2.core.api.domain import ReasoningGenerationMode, TokenCounters, UsageSnapshot
 from XBotv2.core.api.providers import Provider
@@ -1077,7 +1077,6 @@ class SessionManager(SessionsPort):
                 finally:
                     reset_log_context(log_token)
             backend = self._root.require(PERSISTENCE)
-            thread_ids = []
             after = ""
             while True:
                 page = await self._repository.thread_page(session_id, after)
@@ -1085,7 +1084,6 @@ class SessionManager(SessionsPort):
                     break
                 for (thread_id,) in page:
                     await self._root.require(ARCHIVE).flush(session_id, thread_id)
-                    thread_ids.append(thread_id)
                 after = page[-1][0]
             required = await backend.owners(session_id)
             forked_id = new_session_id()
@@ -1099,13 +1097,7 @@ class SessionManager(SessionsPort):
                         (forked_id, now, now),
                     )
                 )
-                event = ForkState(
-                    session_id,
-                    forked_id,
-                    tuple(thread_ids),
-                    prepared.cuts,
-                    handled={"session"},
-                )
+                event = ForkState(session_id, forked_id, handled={"session"})
                 await self._root.emit(FORK_COPY_STATE, event)
                 missing = required - event.handled
                 if missing:
@@ -1113,7 +1105,19 @@ class SessionManager(SessionsPort):
                         "fork_owner_unavailable",
                         f"Cannot safely copy unhandled storage owners: {sorted(missing)}",
                     )
-                await self._root.emit(FORK_FINALIZE, event)
+                after = ""
+                while True:
+                    page = await self._repository.thread_page(forked_id, after)
+                    if not page:
+                        break
+                    for (thread_id,) in page:
+                        thread_event = ForkState(
+                            session_id, forked_id, thread_id,
+                            await prepared.cut(thread_id),
+                        )
+                        await self._root.emit(FORK_COPY_THREAD, thread_event)
+                        await self._root.emit(FORK_FINALIZE, thread_event)
+                    after = page[-1][0]
                 await prepared.publish()
         self._log.info(
             "session.forked",

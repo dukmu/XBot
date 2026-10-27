@@ -387,21 +387,20 @@ mount_thread.Config = getattr(PermissionsComponent, "Config", None)
 
 
 from XBotv2.persistence.api.contracts import PERSISTENCE
-from XBotv2.session.api.storage import FORK_COPY_STATE
+from XBotv2.session.api.storage import FORK_COPY_STATE, FORK_COPY_THREAD
 
 
 def mount_process(ctx, config):
     async def copy_state(event):
-        for thread in event.thread_ids:
-            await (
-                ctx.require(PERSISTENCE)
-                .state(event.target_session_id, thread)
-                .namespace("permissions")
-                .clear()
-            )
-        event.handled.add("permissions")
+        await (
+            ctx.require(PERSISTENCE)
+            .state(event.target_session_id, event.thread_id)
+            .namespace("permissions")
+            .clear()
+        )
 
-    ctx.on(FORK_COPY_STATE, copy_state)
+    ctx.on(FORK_COPY_STATE, lambda event: event.handled.add("permissions"))
+    ctx.on(FORK_COPY_THREAD, copy_state)
 
 
 mount_process.inject = (PERSISTENCE,)

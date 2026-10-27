@@ -161,33 +161,33 @@ def mount_process(ctx, config):
     ctx.provide(
         USAGE_ARCHIVE, UsageArchive(ctx.require(PERSISTENCE), ctx.require(ARCHIVE))
     )
-    from XBotv2.session.api.storage import FORK_COPY_STATE
+    from XBotv2.session.api.storage import FORK_COPY_STATE, FORK_COPY_THREAD
 
     async def fork_state(event):
         backend = ctx.require(PERSISTENCE)
-        for thread in event.thread_ids:
-            source = (
-                await backend.state(event.source_session_id, thread)
-                .namespace(USAGE_STATE_NAMESPACE)
-                .get(USAGE_COUNTERS_KEY)
+        thread = event.thread_id
+        source = (
+            await backend.state(event.target_session_id, thread)
+            .namespace(USAGE_STATE_NAMESPACE)
+            .get(USAGE_COUNTERS_KEY)
+        )
+        baseline = (
+            source["total_counters"]
+            if source is not None
+            else TokenCounters().model_dump(mode="json")
+        )
+        event.origins["usage"] = baseline
+        await (
+            backend.state(event.target_session_id, thread)
+            .namespace(USAGE_STATE_NAMESPACE)
+            .set(
+                USAGE_COUNTERS_KEY,
+                {"total_counters": TokenCounters().model_dump(mode="json")},
             )
-            baseline = (
-                source["total_counters"]
-                if source is not None
-                else TokenCounters().model_dump(mode="json")
-            )
-            event.origins.setdefault(thread, {})["usage"] = baseline
-            await (
-                backend.state(event.target_session_id, thread)
-                .namespace(USAGE_STATE_NAMESPACE)
-                .set(
-                    USAGE_COUNTERS_KEY,
-                    {"total_counters": TokenCounters().model_dump(mode="json")},
-                )
-            )
-        event.handled.add(USAGE_STATE_NAMESPACE)
+        )
 
-    ctx.on(FORK_COPY_STATE, fork_state)
+    ctx.on(FORK_COPY_STATE, lambda event: event.handled.add(USAGE_STATE_NAMESPACE))
+    ctx.on(FORK_COPY_THREAD, fork_state)
 
 
 from XBotv2.persistence.api.contracts import PERSISTENCE

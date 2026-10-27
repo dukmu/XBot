@@ -31,21 +31,29 @@ def _copy_prefix(source, target, length):
 def _copy_objects(source, target):
     if not source.exists():
         return
-    for directory, _, files in os.walk(source):
-        parent = target / Path(directory).relative_to(source)
+
+    def copy_directory(directory, parent):
         parent.mkdir(parents=True, exist_ok=True)
-        for name in files:
-            src = Path(directory) / name
-            dst = parent / name
-            if src.is_symlink():
-                raise ValueError("Session objects must not be symlinks")
-            try:
-                os.link(src, dst)
-            except OSError:
-                shutil.copyfile(src, dst)
-                with dst.open("rb") as copied:
-                    os.fsync(copied.fileno())
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise ValueError("Session objects must not be symlinks")
+                src = Path(entry.path)
+                dst = parent / entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    copy_directory(src, dst)
+                    continue
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copyfile(src, dst)
+                    with dst.open("rb") as copied:
+                        os.fsync(copied.fileno())
         sync_parents(parent, target.parent)
+
+    if source.is_symlink():
+        raise ValueError("Session objects must not be symlinks")
+    copy_directory(source, target)
 
 
 def _publish(source, target):
@@ -88,15 +96,26 @@ def _sync_tree(root):
 
 
 class PreparedCopy:
-    def __init__(self, resources, session_id, staging, cuts):
+    def __init__(self, resources, session_id, staging):
         self.resources = resources
         self.session_id = session_id
         self.staging = staging
-        self.cuts = tuple(cuts)
         self.published = False
+
+    async def cut(self, stream_id):
+        def read(c):
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stream_heads'").fetchone():
+                return (0, 0)
+            row = c.execute(
+                "SELECT indexed_seq,indexed_offset FROM stream_heads WHERE stream_id=?",
+                (stream_id,),
+            ).fetchone()
+            return tuple(row) if row is not None else (0, 0)
+        return await self.resources.worker.call(self.staging.database_file, read)
 
     async def publish(self):
         await self.resources.worker.release(self.staging.database_file)
+        self.resources.record_cache.drop_root(self.staging.root)
         await file_io(_sync_tree, self.staging.root)
         await file_io(
             _publish,
@@ -134,7 +153,6 @@ async def _prepare_copy(resources, source_id, target_id):
             raise FileExistsError(final.root)
         resources._preparations[target_id] = (staging, asyncio.current_task())
         staging_claim = resources.acquire(target_id)
-        cuts = []
         if source is not None:
 
             def snapshot(c):
@@ -144,36 +162,33 @@ async def _prepare_copy(resources, source_id, target_id):
                     c.backup(target)
                 finally:
                     target.close()
-                tables = {
-                    row[0]
-                    for row in c.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
-                }
-                return (
-                    [
-                        tuple(row)
-                        for row in c.execute(
-                            "SELECT stream_id,indexed_seq,indexed_offset FROM stream_heads ORDER BY stream_id"
-                        )
-                    ]
-                    if "stream_heads" in tables
-                    else []
-                )
+            await resources.worker.call(source.database_file, snapshot)
+            after = ""
+            while True:
+                def read_cuts(c):
+                    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stream_heads'").fetchone():
+                        return ()
+                    return tuple(c.execute(
+                        "SELECT stream_id,indexed_offset FROM stream_heads WHERE stream_id>? ORDER BY stream_id LIMIT 128",
+                        (after,),
+                    ))
 
-            cuts = await resources.worker.call(source.database_file, snapshot)
-            for thread, seq, offset in cuts:
-                if offset:
-                    await file_io(
-                        _copy_prefix,
-                        source.thread(thread).rollout_file,
-                        staging.thread(thread).rollout_file,
-                        offset,
-                    )
+                page = await resources.worker.call(staging.database_file, read_cuts)
+                if not page:
+                    break
+                for thread, offset in page:
+                    if offset:
+                        await file_io(
+                            _copy_prefix,
+                            source.thread(thread).rollout_file,
+                            staging.thread(thread).rollout_file,
+                            offset,
+                        )
+                after = page[-1][0]
             await file_io(
                 _copy_objects, source.root / "objects", staging.root / "objects"
             )
-        prepared = PreparedCopy(resources, target_id, staging, cuts)
+        prepared = PreparedCopy(resources, target_id, staging)
         yield prepared
     finally:
         staging_released = False
@@ -181,6 +196,7 @@ async def _prepare_copy(resources, source_id, target_id):
             try:
                 await resources.worker.release(staging.database_file)
                 staging_released = True
+                resources.record_cache.drop_root(staging.root)
             except BaseException:
                 resources._failed_preparation = (staging.database_file, staging_root)
                 raise

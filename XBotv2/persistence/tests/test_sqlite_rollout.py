@@ -158,7 +158,7 @@ async def test_fork_all_threads_retires_pending_even_after_rebuild(opened):
     assert paths.session(target).database_file.stat().st_ino!=paths.session('session').database_file.stat().st_ino
     # Destroy only rebuildable projections, preserving SQL authority.
     def reset(c):
-        for table in ('records','message_refs','surface','transcript','lineage','inbox','input_ids','open_transactions','turn_starts'):
+        for table in ('records','message_refs','surface','transcript','lineage','inbox','input_ids','input_facts','open_transactions','turn_starts'):
             c.execute('DELETE FROM '+table)
         c.execute('UPDATE stream_heads SET indexed_seq=0,indexed_offset=0,indexed_mtime_ns=0')
         c.execute('DELETE FROM history_state')
@@ -173,6 +173,150 @@ async def test_fork_all_threads_retires_pending_even_after_rebuild(opened):
     await asyncio.sleep(.02)
     assert not forked.require(AGENT_LOOP).busy and model.call_count==before
     assert forked.require(LOOP_STATE).history[0].id=='source'
+
+
+async def test_fork_many_pending_inputs_rebuilds_retirement_and_usage(opened):
+    from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE
+    paths, scope, _ = opened
+    manager = scope.root.require(SESSIONS)
+    loop = scope.require(AGENT_LOOP)
+    for index in range(505):
+        await loop.submit_input(InboxItem(
+            id=f'pending-{index:04}', target=InboxTarget.NEXT_TURN,
+            input=HumanInput(content=f'content {index}'),
+        ), wake=False)
+    backend = scope.root.require(PERSISTENCE)
+    usage = backend.state('session', 'main').namespace(USAGE_STATE_NAMESPACE)
+    counters = {'input': 123, 'output': 7}
+    await usage.set(USAGE_COUNTERS_KEY, {'total_counters': counters})
+    target = await manager.fork_session('session')
+    target_db = paths.session(target).database_file
+    source_db = paths.session('session').database_file
+    assert rows(source_db, 'SELECT COUNT(*) FROM inbox') == [(505,)]
+    assert rows(target_db, 'SELECT COUNT(*) FROM inbox') == [(0,)]
+    assert rows(target_db, 'SELECT COUNT(*) FROM input_ids WHERE retired=1') == [(505,)]
+    boundary = json.loads(paths.session(target).thread('main').rollout_file.read_text().splitlines()[-1])
+    assert boundary['kind'] == 'fork_boundary'
+    assert boundary['data']['discard_pending'] is True
+    assert 'input_ids' not in boundary['data']
+    assert boundary['data']['origins']['usage'] == counters
+    target_usage = await backend.state(target, 'main').namespace(USAGE_STATE_NAMESPACE).get(USAGE_COUNTERS_KEY)
+    assert target_usage['total_counters']['input'] == 0
+
+    def reset(c):
+        for table in ('records', 'inbox', 'input_ids', 'input_facts', 'history_state'):
+            c.execute('DELETE FROM ' + table)
+        c.execute('UPDATE stream_heads SET indexed_seq=0,indexed_offset=0,indexed_mtime_ns=0')
+    await backend.worker.call(target_db, reset)
+    store = scope.root.require(ARCHIVE)._store(target, 'main')
+    assert not await store.inbox.load()
+    assert rows(target_db, 'SELECT COUNT(*) FROM input_ids WHERE retired=1') == [(505,)]
+    assert rows(target_db, "SELECT COUNT(*) FROM input_facts WHERE status='discarded'") == [(505,)]
+
+
+async def test_fork_pages_more_than_500_threads_and_cuts(opened):
+    paths, scope, _ = opened
+    loop = scope.require(AGENT_LOOP)
+    await loop.submit_input(InboxItem(id='seed', target=InboxTarget.NEXT_TURN,
+                                     input=HumanInput(content='seed')), wake=False)
+    backend = scope.root.require(PERSISTENCE)
+    source_db = paths.session('session').database_file
+
+    def seed(c):
+        selection, created = c.execute(
+            "SELECT selection,created_at FROM threads WHERE thread_id='main'"
+        ).fetchone()
+        c.executemany('INSERT INTO threads VALUES(?,?,?,?,?)', (
+            (f'child-{i:04}', 'main', 'default', selection, created) for i in range(505)
+        ))
+        c.executemany('INSERT INTO stream_heads(stream_id) VALUES(?)', (
+            (f'child-{i:04}',) for i in range(505)
+        ))
+        c.commit()
+    await backend.worker.call(source_db, seed)
+    target = await scope.root.require(SESSIONS).fork_session('session')
+    target_db = paths.session(target).database_file
+    assert rows(target_db, 'SELECT COUNT(*) FROM threads') == [(506,)]
+    assert rows(target_db, 'SELECT COUNT(*) FROM stream_heads') == [(506,)]
+    last = json.loads(paths.session(target).thread('child-0504').rollout_file.read_text())
+    assert last['kind'] == 'fork_boundary'
+    assert last['data']['source_seq'] == last['data']['source_offset'] == 0
+    assert rows(source_db, 'SELECT COUNT(*) FROM inbox') == [(1,)]
+
+
+async def test_fork_thread_owner_failure_does_not_publish(opened):
+    from XBotv2.session.api.storage import FORK_COPY_THREAD
+    paths, scope, _ = opened
+    loop = scope.require(AGENT_LOOP)
+    await loop.submit_input(InboxItem(id='pending', target=InboxTarget.NEXT_TURN,
+                                     input=HumanInput(content='source')), wake=False)
+    def fail(_event):
+        raise RuntimeError('thread owner failed')
+    release = scope.root.on(FORK_COPY_THREAD, fail)
+    try:
+        with pytest.raises(RuntimeError, match='thread owner failed'):
+            await scope.root.require(SESSIONS).fork_session('session')
+    finally:
+        release()
+    assert [path.name for path in paths.sessions_dir.iterdir()] == ['session']
+    assert rows(paths.session('session').database_file, 'SELECT COUNT(*) FROM inbox') == [(1,)]
+    assert not any((paths.data_dir / '.preparing').iterdir())
+
+
+async def test_fork_usage_origin_comes_from_frozen_copy(opened):
+    from XBotv2.session.api.storage import FORK_COPY_STATE
+    from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE
+    paths, scope, _ = opened
+    loop = scope.require(AGENT_LOOP)
+    await loop.submit_input(InboxItem(id='pending', target=InboxTarget.NEXT_TURN,
+                                     input=HumanInput(content='source')), wake=False)
+    backend = scope.root.require(PERSISTENCE)
+    usage = backend.state('session', 'main').namespace(USAGE_STATE_NAMESPACE)
+    await usage.set(USAGE_COUNTERS_KEY, {'total_counters': {'input': 42}})
+
+    async def mutate_source(_event):
+        await usage.set(USAGE_COUNTERS_KEY, {'total_counters': {'input': 99}})
+
+    release = scope.root.on(FORK_COPY_STATE, mutate_source)
+    try:
+        target = await scope.root.require(SESSIONS).fork_session('session')
+    finally:
+        release()
+    boundary = json.loads(paths.session(target).thread('main').rollout_file.read_text().splitlines()[-1])
+    assert boundary['data']['origins']['usage']['input'] == 42
+    assert (await usage.get(USAGE_COUNTERS_KEY))['total_counters']['input'] == 99
+
+
+@pytest.mark.parametrize('fail', [False, True])
+async def test_fork_staging_record_cache_released_on_publish_or_failure(opened, fail):
+    from XBotv2.session.api.storage import FORK_COPY_THREAD
+    paths, scope, _ = opened
+    loop = scope.require(AGENT_LOOP)
+    await loop.submit_input(InboxItem(id='pending', target=InboxTarget.NEXT_TURN,
+                                     input=HumanInput(content='cached')), wake=False)
+    backend = scope.root.require(PERSISTENCE)
+    staging_roots = []
+
+    async def read_staged(event):
+        root = backend.paths(event.target_session_id).root
+        staging_roots.append(root)
+        store = scope.root.require(ARCHIVE)._store(event.target_session_id, event.thread_id)
+        assert len(await store.inbox.load()) == 1
+        assert any(Path(key[1]).is_relative_to(root) for key in backend.record_cache._entries)
+        if fail:
+            raise RuntimeError('after staged read')
+
+    release = scope.root.on(FORK_COPY_THREAD, read_staged)
+    try:
+        if fail:
+            with pytest.raises(RuntimeError, match='after staged read'):
+                await scope.root.require(SESSIONS).fork_session('session')
+        else:
+            await scope.root.require(SESSIONS).fork_session('session')
+    finally:
+        release()
+    assert len(staging_roots) == 1
+    assert not any(Path(key[1]).is_relative_to(staging_roots[0]) for key in backend.record_cache._entries)
 
 async def test_task_rows_and_process_workspace_preferences_use_owned_tables(opened):
     paths,scope,model=opened
@@ -301,12 +445,13 @@ async def test_storage_close_waits_for_actual_archive_file_reader(opened,monkeyp
     import threading
     import XBotv2.persistence.impl.stream as stream
     started=threading.Event();release=threading.Event()
-    original=stream.read_record
+    scope.root.require(PERSISTENCE).record_cache.clear()
+    original=stream.read_record_bytes
     def blocked(*args):
         started.set()
         assert release.wait(5)
         return original(*args)
-    monkeypatch.setattr(stream,'read_record',blocked)
+    monkeypatch.setattr(stream,'read_record_bytes',blocked)
     persistence=scope.root.require(ARCHIVE)
     reading=asyncio.create_task(persistence.message_page('session','main',limit=1))
     closing=None
