@@ -195,3 +195,11 @@
 - [x] `2df39c1`验证：XCore行为115 passed /1.56s（`/tmp/xbot-xcore-tests.log`），删掉3个旧root清单/版本字面断言，未删生命周期/隔离行为测试；Terra完整TUI owner889 passed /59.92s。主代理真实CLI/PT Y交互与reasoning、client启动生命周期、loader39 passed /9.13s（`/tmp/xbot-layout-last-smoke.txt`），SOURCE console重启恢复通过（`/tmp/xbot-layout-last-source-acceptance/report.json`，4次provider请求、4→8历史、附件30字节）。受限sandbox下TUI停滞被终止，不算结果；允许线程/socket环境的独立运行才计通过。
 - [x] `2df39c1`干净archive的两wheel构建/独立uv安装完成（`/tmp/xbot-refactor-layout-complete-wheels/`，清单`/tmp/xbot-refactor-layout-complete-wheel-manifest.json`）：XCore20个条目、XBot495个条目，新api/impl/doc及资源实际入包，旧已迁移根模块、tests/Web不在包中；XCore旧errors路径及根转出口实际退出。安装后的真实CLI重启验收通过（`/tmp/xbot-refactor-layout-complete-installed/report.json`，4次provider HTTP请求、历史4→8、附件30字节）；旧application仍在该快照，留给下一批明确删除，不将此快照称最终产物。
 - [ ] 唯一Sol已接第2批：按设计mount_process/mount_session/mount_thread接入活跃进程根及独立session/thread owner，收口loader/session/persistence最后3owner布局与真实API，退出application/host/factory；当前无低级别代理并发。LLM/Agent共享资源须保留workspace/session覆盖和thread选择隔离，loader不接管业务构造，直接复用已验证XCore pre_stop机制。
+
+### 迭代 3：共享进程根与执行所有权（实施中）
+
+- [x] 唯一Sol继续具体实施；主代理已核对当前工作树及实时代理状态。loader/session/persistence正在收口API和scope，Engine构造回agentloop，session打开任务用shield保护共享初始化，session锁已改独立运行owner，不按PID复用。此处是进行日志，未提交的实现尚未作为最终验收代码。
+- [x] 主代理直接读取中间smoke的报告和实际目录：`/tmp/xbot-scopes-smoke.json`指向`/tmp/xbot-scopes-gxumd5ha`，两个thread共享root、相同配置LLM目录复用而MODEL独立，fiber数21→21→0，session目录无持久会话；存在配置/内置skill及会话锁文件。该中间证据不代表后续修改已通过，不替代最终CLI/HTTP/ACP和关闭验收。
+- [x] 审查已要求并进入实施：可选facet发现/配置失败独立回滚，真实provide发布约束，外部impl/plugin发现；process唯一jobs registry按thread身份绑定，查询/授权不复制两套；删除纯record构造额外引入的SESSION_VIEWS转发服务，唯一无状态构造函数直接归API。权限正常配置的meet现象已定位，阻塞worker验收改走真实审批路径，不使用别的工具名或私改具体服务来放行。
+- [ ] 收口为单一公开AGENT_LOOP执行能力，Engine及Task/Lock留实现，移除THREAD_RUNNER式公开内部集合；删除application/Host/Factory残留。max_iterations直接支持None并取消旧200默认回退，保留显式有限值行为。
+- [ ] 最终验证并记录实际代码提交：并发打开/取消等待、不同workspace/session覆盖、不同thread任务授权、必需依赖失败回滚、外部facet、审批后worker真实排空与锁释放、HTTP/SSE/ACP/CLI及受影响PTY。当前中间测试与目录迁移不视为这些交付已经全部完成。
