@@ -365,10 +365,10 @@ class AgentLoop:
     ) -> None:
         """Submit input; output is delivered by the session event stream."""
         async with self._submission_lock:
-            busy = await self._accept_message(
+            accepted = await self._accept_message(
                 content, request_id, delivery=delivery, media=media, artifacts=artifacts,
             )
-            await self._schedule_message(busy, request_id)
+            await self._schedule_message(accepted, request_id)
 
     async def _accept_message(
         self, content, request_id, *, delivery, media, artifacts, resources=None,
@@ -395,7 +395,12 @@ class AgentLoop:
             input=user_input,
         )
         # Durable acceptance precedes any model task or successful response.
-        if not await self._engine.submit_input(item, wake=busy, resources=resources):
+        accepted = await self._engine.submit_input(item, wake=busy, resources=resources)
+        if not accepted:
+            # A retry after a committed accept may not emit Inserted again.
+            # Wake only the retried item if it is still unclaimed.
+            if any(pending.id == item.id for pending in self._engine.pending_inputs):
+                self._request_wakeup(item.id)
             return None
         # Recovery of an uncertain accept can restore an existing item without
         # emitting a new Inserted event. Register only this still-unclaimed input.
@@ -403,13 +408,21 @@ class AgentLoop:
             pending.id == item.id for pending in self._engine.pending_inputs
         ):
             self._request_wakeup(item.id)
-        return busy
+        return busy, item.id
 
-    async def _schedule_message(self, busy, request_id):
-        if busy is None:
+    async def _schedule_message(self, accepted, request_id):
+        if accepted is None:
             return
+        busy, input_id = accepted
         if not busy:
-            await start_turn(self, item=None, request_id=request_id)
+            # An older pending turn can be claimed first. Keep the new input's
+            # own wake intent until it is claimed, even when the thread was idle.
+            self._wake_inputs.add(input_id)
+            try:
+                await start_turn(self, item=None, request_id=request_id)
+            except BaseException:
+                self._wake_inputs.discard(input_id)
+                raise
         self.touch()
 
     async def submit_message(self, request) -> None:
@@ -437,12 +450,12 @@ class AgentLoop:
                             ArtifactKind.ATTACHMENT, chunks(), media_type=item.media_type, name=item.name
                         )
                     ))
-                busy = await self._accept_message(
+                accepted = await self._accept_message(
                     request.content, request.request_id, delivery=request.delivery,
                     media=media, artifacts=attachments, resources=resources,
                 )
 
-            await self._schedule_message(busy, request.request_id)
+            await self._schedule_message(accepted, request.request_id)
 
     async def clear_history(self, *, history_limit=None):
         return await self._change_history(None, history_limit)
