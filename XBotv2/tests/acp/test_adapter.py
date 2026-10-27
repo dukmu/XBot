@@ -205,16 +205,16 @@ class FakeSessions:
     async def message_page(self, session_id, thread_id, *, cursor=None, limit=None):
         return HistoryPage(items=tuple(self.messages), older_cursor=None)
 
-    async def list_sessions(self):
-        return (SessionSummary(
+    async def list_sessions(self, *, limit=100, cursor=None, workspace_root=None):
+        return SimpleNamespace(items=(SessionSummary(
             session_id="session-1",
             status="active",
             workspace_root="/workspace",
             title="session-1",
-        ),)
+        ),), next_cursor=None)
 
     async def session_summary(self, session_id: str):
-        return (await self.list_sessions())[0]
+        return (await self.list_sessions()).items[0]
 
     async def thread_summary(self, session_id: str, thread_id: str):
         return ThreadSummary(
@@ -753,3 +753,21 @@ def test_prompt_image_maps_to_media_input():
     assert media[0].model_dump() == {
         "data": "aW1hZ2U=", "media_type": "image/png", "name": "",
     }
+
+async def test_list_sessions_passes_cursor_and_workspace_to_session_owner(tmp_path):
+    agent, _ = _agent(tmp_path, [])
+    calls = []
+
+    async def list_sessions(*, cursor=None, workspace_root=None):
+        calls.append((cursor, workspace_root))
+        return SimpleNamespace(
+            items=(SessionSummary(session_id="second", status="inactive", workspace_root=str(tmp_path)),),
+            next_cursor="next-page",
+        )
+
+    agent.sessions.list_sessions = list_sessions
+    result = await agent.list_sessions(cwd=str(tmp_path), cursor="page-two")
+    assert calls == [("page-two", str(tmp_path.resolve()))]
+    assert [session.session_id for session in result.sessions] == ["second"]
+    assert result.next_cursor == "next-page"
+    assert result.model_dump(by_alias=True, exclude_none=True)["nextCursor"] == "next-page"

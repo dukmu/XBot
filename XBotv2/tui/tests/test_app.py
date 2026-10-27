@@ -2549,3 +2549,26 @@ async def test_a_server_command_is_posted_as_one_line() -> None:
         assert "kind" not in backend.command_calls[-1], (
             "the server resolves the line; the client does not label it"
         )
+
+async def test_session_picker_navigates_pages_and_selects_session() -> None:
+    backend = ScriptedBackend(session_catalog=[summary(f"item-{index:03}") for index in range(101)])
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("/session")
+        await pilot.press("enter")
+        await settle(pilot)
+        assert len(app.screen.model.options) == 101
+        await pilot.press("up", "enter")
+        await settle(pilot)
+        assert [option.label for option in app.screen.model.options] == ["← Previous page", "item-100"]
+        await pilot.press("enter")
+        await settle(pilot)
+        assert app.screen.model.options[0].label == "item-000"
+        await pilot.press("up", "enter")
+        await settle(pilot)
+        backend.session = snapshot(session_id="item-100")
+        await pilot.press("down", "enter")
+        await settle(pilot)
+        assert app.controller.state.session_id == "item-100"

@@ -260,14 +260,13 @@ class XBotACPAgent:
         cursor: str | None = None,
         **_: Any,
     ) -> ListSessionsResponse:
-        if cursor:
-            return ListSessionsResponse(sessions=[])
+        page = await self.sessions.list_sessions(
+            cursor=cursor, workspace_root=str(Path(cwd).resolve()) if cwd else None
+        )
         sessions: list[SessionInfo] = []
-        for snapshot in await self.sessions.list_sessions():
+        for snapshot in page.items:
             workspace = snapshot.workspace_root
-            if not workspace or (
-                cwd and Path(workspace).resolve() != Path(cwd).resolve()
-            ):
+            if not workspace:
                 continue
             sessions.append(
                 SessionInfo(
@@ -277,7 +276,7 @@ class XBotACPAgent:
                 )
             )
         self._log.debug("acp.sessions.listed", sessions=len(sessions))
-        return ListSessionsResponse(sessions=sessions)
+        return ListSessionsResponse(sessions=sessions, next_cursor=page.next_cursor)
 
     async def close_session(self, session_id: str, **_: Any) -> CloseSessionResponse:
         await self.sessions.close_session(session_id)

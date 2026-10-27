@@ -125,7 +125,7 @@ class SessionBackend(Protocol):
         patch: PatchPluginConfig,
     ) -> PluginConfigCatalog: ...
 
-    async def list_sessions(self) -> SessionListResponse: ...
+    async def list_sessions(self, *, limit: int = 100, cursor: str | None = None, workspace_root: str | None = None) -> SessionListResponse: ...
 
     async def list_threads(self, session_id: str) -> ThreadListResponse: ...
 
@@ -460,10 +460,9 @@ class TransportSession:
         listing = await self._backend.list_threads(self._session_id)
         return tuple(listing.threads)
 
-    async def list_sessions(self) -> tuple[SessionSummary, ...]:
-        """The sessions this server holds, for the session picker."""
-        listing = await self._backend.list_sessions()
-        return tuple(listing.sessions)
+    async def list_sessions(self, *, cursor: str | None = None) -> SessionListResponse:
+        """One page of sessions for the session picker."""
+        return await self._backend.list_sessions(cursor=cursor)
 
     # --- reading ------------------------------------------------------
 

@@ -353,8 +353,12 @@ class ScriptedBackend:
     async def close(self) -> None:
         self.closed = True
 
-    async def list_sessions(self) -> Any:
-        return type("Sessions", (), {"sessions": list(self.session_catalog), "event_cursor": 0})()
+    async def list_sessions(self, *, limit: int = 100, cursor: str | None = None, workspace_root: str | None = None) -> Any:
+        start = int(cursor) if cursor is not None else 0
+        items = self.session_catalog[start:start + limit]
+        next_cursor = str(start + limit) if start + limit < len(self.session_catalog) else None
+        previous_cursor = str(max(0, start - limit)) if start else None
+        return type("Sessions", (), {"sessions": list(items), "next_cursor": next_cursor, "previous_cursor": previous_cursor, "event_cursor": 0})()
 
     # --- provider / agent / effort selection --------------------------
     providers: Any = None

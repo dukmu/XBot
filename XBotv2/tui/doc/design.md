@@ -5,3 +5,5 @@ The TUI is a client-profile plugin that presents sessions, streams, commands, pe
 The implementation depends on the HTTP client capability, command registry, shared wire contracts and Textual. It retains presentation state, current session and stream subscriptions for the client lifetime; it opens network requests through the client, renders to the terminal and registers local commands. The server owns session history, execution and interaction state.
 
 `TextualTuiConfig` configures the workspace, session and thread, optional Agent, refresh interval and history display/retention limits. For example, a client profile with `workspace: .` and `thread_id: agent` opens the default workspace and Agent thread. `session_id` selects an existing session for resume; without one the client starts a new session.
+
+The `/session` picker loads one page at a time. Its previous and next page rows navigate the catalogue; the filter applies to the current page.

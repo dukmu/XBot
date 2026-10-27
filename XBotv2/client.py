@@ -21,7 +21,7 @@ from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, MediaI
 from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
 from XBotv2.session.api.protocol import CloseResponse, DeleteSessionResponse, ForkResponse, InterruptResponse, MessageRequest, OpenSessionRequest, OpenSessionResponse, OpenThreadRequest, PendingInputListResponse, PendingInputUpdateRequest, RegenerateRequest, SessionListResponse, ThreadListResponse, UndoRequest
 from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
-from XBotv2.workspaces.api.contracts import WorkspaceSnapshot
+from XBotv2.workspaces.api.protocol import WorkspaceListResponse, WorkspaceSessionPageResponse
 from XBotv2.protocol.api.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.api.version import PROTOCOL_VERSION
 from XBotv2.core.api.domain import Cursor
@@ -129,12 +129,42 @@ class XBotClient:
     async def list_providers(self) -> ProviderCatalog:
         return await self._request("GET", "/providers", ProviderCatalog)
 
-    async def list_sessions(self) -> SessionListResponse:
-        return await self._request("GET", "/sessions", SessionListResponse)
+    async def list_sessions(
+        self, *, limit: int = 100, cursor: str | None = None,
+        workspace_root: str | None = None,
+    ) -> SessionListResponse:
+        params: dict[str, JsonValue] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        if workspace_root is not None:
+            params["workspace_root"] = workspace_root
+        return await self._request("GET", "/sessions", SessionListResponse, params=params)
 
-    async def list_workspaces(self) -> WorkspaceSnapshot:
-        """The workspace catalogue the Web rail groups sessions by."""
-        return await self._request("GET", "/workspaces", WorkspaceSnapshot)
+    async def list_workspaces(
+        self, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceListResponse:
+        params: dict[str, JsonValue] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        return await self._request("GET", "/workspaces", WorkspaceListResponse, params=params)
+
+    async def list_workspace_sessions(
+        self, workspace_id: str, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        params: dict[str, JsonValue] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        return await self._request(
+            "GET", f"/workspaces/{_segment(workspace_id)}/sessions", WorkspaceSessionPageResponse, params=params
+        )
+
+    async def list_archived_sessions(
+        self, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        params: dict[str, JsonValue] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        return await self._request("GET", "/workspaces/archived-sessions", WorkspaceSessionPageResponse, params=params)
 
     async def open_session(
         self,

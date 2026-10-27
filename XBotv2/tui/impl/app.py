@@ -621,16 +621,37 @@ class TuiApp(App[None]):
         if target:
             await self._switch_session(target)
             return
-        await self._choose(
-            title="Sessions",
-            load=self._load_sessions,
-            apply=self._apply_session,
-            initial_value=(
-                self.controller.state.session_id
-                if self.controller is not None
-                else None
-            ),
-        )
+        async def show_page(cursor: str | None = None) -> None:
+            assert self.controller is not None
+            try:
+                page = await self.controller.sessions(cursor=cursor)
+            except Exception as exc:  # noqa: BLE001 — the user must see the failure
+                self._notify("sessions", f"Could not list sessions: {exc}")
+                return
+            options = list(session_options(page.sessions, current=self.controller.state.session_id))
+            if page.previous_cursor is not None:
+                options.insert(0, Option(value="\0previous", label="← Previous page"))
+            if page.next_cursor is not None:
+                options.append(Option(value="\0next", label="Next page →"))
+
+            async def load():
+                return options
+
+            async def apply(value: str) -> None:
+                if value == "\0previous":
+                    await show_page(page.previous_cursor)
+                elif value == "\0next":
+                    await show_page(page.next_cursor)
+                else:
+                    await self._apply_session(value)
+
+            await self._choose(
+                title="Sessions", load=load, apply=apply,
+                description="Filter this page; choose a page row to navigate.",
+                initial_value=self.controller.state.session_id,
+            )
+
+        await show_page()
 
     async def _cmd_status(self, args: str) -> None:
         """Open the read-only status page from what the client already holds.
@@ -919,13 +940,6 @@ class TuiApp(App[None]):
         await self._choose(title="Agents", load=self._load_agents, apply=self._apply_agent)
 
     # --- rows, and what choosing one does ---------------------------------
-    async def _load_sessions(self):
-        assert self.controller is not None
-        return session_options(
-            await self.controller.sessions(),
-            current=self.controller.state.session_id,
-        )
-
     async def _load_threads(self):
         assert self.controller is not None
         return thread_options(

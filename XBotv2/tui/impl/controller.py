@@ -297,9 +297,9 @@ class TuiController:
         await self._refresh_jobs()
         await self.flush()
 
-    async def sessions(self) -> list[Any]:
-        """The sessions the server offers, for the picker."""
-        return list(await self.transport.list_sessions())
+    async def sessions(self, *, cursor: str | None = None):
+        """One page of sessions the server offers, for the picker."""
+        return await self.transport.list_sessions(cursor=cursor)
 
     async def switch_thread(self, thread_id: str) -> None:
         """Attach to another thread of this session (an empty id means the main one)."""
