@@ -74,6 +74,12 @@ def compiled_web_root(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_WEB_STATIC_ROOT", root)
 
 
+def test_web_missing_assets_reports_install_or_source_build(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_WEB_STATIC_ROOT", tmp_path / "missing-web")
+    with pytest.raises(SystemExit, match="install a distribution containing the Web assets"):
+        cli._run_web(None)
+
+
 def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(
     monkeypatch,
     tmp_path,

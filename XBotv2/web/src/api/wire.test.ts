@@ -5,10 +5,10 @@ afterEach(() => vi.unstubAllGlobals());
 
 it("uses the production envelopes, page cursors and command request", async () => {
   const responses = [
-    { data: { key: { session_id: "s", thread_id: "main" }, history: { items: [], older_cursor: "old" } } },
-    { items: [{ kind: "human_input", id: "u", content: "hello", media: [], artifacts: [] }], older_cursor: null },
-    { page: { items: [], older_cursor: "older" }, newest_position: 8 },
-    { removed_turns: 1, history: { items: [], older_cursor: null }, stats: {} },
+    { data: { key: { session_id: "s", thread_id: "main" }, history: { items: [], older_cursor: "old", newer_cursor: null } } },
+    { items: [{ kind: "human_input", id: "u", content: "hello", media: [], artifacts: [] }], older_cursor: null, newer_cursor: null },
+    { page: { items: [], older_cursor: "older", newer_cursor: null }, newest_position: 8 },
+    { removed_turns: 1, history: { items: [], older_cursor: null, newer_cursor: null }, stats: {} },
     { type: "command_result", data: { command: "status", status: "ok", message: "ok", effects: [] } },
   ];
   const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));

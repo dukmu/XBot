@@ -46,10 +46,11 @@ generated socket is removed when Web mode exits.
 npm run build
 ```
 
-The ignored build output is written to `XBotv2/web_dist`. Run the build
-explicitly before `xbot web`; runtime Web mode never invokes npm. The Python
-server serves those files and reverse-proxies `/api/*` while removing the
-`/api` prefix. XBot currently has no remote authentication contract, so Web
+The ignored build output is written to `XBotv2/web_dist`. From the repository
+root, run `uv build --all-packages --wheel` after the frontend build to include
+the index and assets in the XBot wheel. Runtime Web mode never invokes npm; an
+installed wheel serves its packaged assets. The Python server serves those
+files and reverse-proxies `/api/*` while removing the `/api` prefix. XBot currently has no remote authentication contract, so Web
 mode binds to loopback only. `VITE_XBOT_API_BASE` may select another same-origin
 prefix at build time.
 
@@ -97,6 +98,31 @@ The local Playwright real-server scenarios use the production loader and a
 MockLLM. They cover streaming, tool results, media history and reattachment
 while a turn is active, approval recovery and response, and undo/clear against
 service history. They do not exercise an external model provider.
+
+The optional built-assets thread test uses a running API and `xbot web`, not
+Vite. Prepare a disposable data directory containing a persisted session with
+more than 100 threads. Choose a parent ID on the first thread page and a child
+ID on a later page whose `parent_thread_id` is that parent. Resume the main and
+parent threads through the session API before the test; the child must already
+exist or be created through the thread API. For example, with a prepared
+fixture and variables `DATA_DIR`, `WORKSPACE`, `SESSION`, `PARENT`, and `CHILD`:
+
+```bash
+uv run xbot serve --data-dir "$DATA_DIR" --workspace "$WORKSPACE" --port 4097
+# In another terminal, resume main and parent, then start the built Web server:
+curl -X POST http://127.0.0.1:4097/sessions -H 'Content-Type: application/json' \
+  -d "{\"session_id\":\"$SESSION\",\"thread_id\":\"main\",\"mode\":\"resume\"}"
+curl -X POST "http://127.0.0.1:4097/sessions/$SESSION/threads" -H 'Content-Type: application/json' \
+  -d "{\"thread_id\":\"$PARENT\",\"parent_thread_id\":\"main\",\"mode\":\"resume\"}"
+uv run xbot web --server http://127.0.0.1:4097 --web-port 4174 --no-open
+# In a third terminal, from XBotv2/web:
+XBOT_THREAD_FIXTURE_SESSION="$SESSION" XBOT_THREAD_FIXTURE_PARENT="$PARENT" \
+  XBOT_THREAD_FIXTURE_CHILD="$CHILD" npx playwright test --config playwright.built.config.ts
+```
+
+Set `XBOT_BUILT_WEB_URL` if the Web server uses a different address. The test
+skips when fixture IDs are not supplied and is excluded from the default e2e
+run. Shut down both servers afterward.
 
 ```bash
 npm test

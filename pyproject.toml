@@ -76,6 +76,7 @@ namespaces = true
 XBotv2 = [
     "xcore.yaml",
     "py.typed",
+    "web_dist/index.html", "web_dist/assets/*", "web_dist/assets/**/*",
     "docs/**/*.md",
     "*/README.md", "*/doc/*.md", "*/doc/**/*.md",
     ".agents/skills/xbot-plugin-development/**",

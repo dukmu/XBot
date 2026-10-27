@@ -50,9 +50,19 @@ factory, parallel runtime service bag or session business-forwarding layer.
 
 ## Installed distribution checks
 
-Build both workspace wheels with `uv build --all-packages --wheel --out-dir
-/tmp/xbot-wheels`. Use a clean checkout or an extracted source distribution:
-setuptools can retain deleted modules in a previous `build/` directory. Install
+Build the Web assets first, then build both workspace wheels from the checkout:
+
+```bash
+cd XBotv2/web && npm run build
+cd ../..
+uv build --all-packages --wheel --out-dir /tmp/xbot-wheels
+```
+
+Install frontend dependencies with `npm ci` if they are not present. The ignored
+`XBotv2/web_dist` directory is a build input; the wheel contains its index and
+assets, and `xbot web` never invokes npm. Build the wheel directly from the
+checkout after generating these files. Use a clean checkout: setuptools can
+retain deleted modules in a previous `build/` directory. Install
 both wheels in a separate uv environment and run its `xbot` from outside the
 checkout with `PYTHONPATH` unset. Check `xbot --help`, then start `xbot serve`
 with a disposable data directory, query `/health` and `/sessions`, and shut it
@@ -60,8 +70,9 @@ down. Startup must not create any session records.
 
 Inspect the actual wheel contents as well: `XBotv2/xcore.yaml`, both packages'
 `py.typed` markers, runtime documentation and the bundled plugin development
-skill must be present. Tests, Web source, `node_modules`, generated bundles and
-local runtime data must be absent. Provider interoperability and the final
+skill, and the built `web_dist` index and assets must be present. Generated Web
+assets remain ignored by Git but are included in the wheel. Tests, Web source,
+`node_modules`, build intermediates and local runtime data must be absent. Provider interoperability and the final
 post-refactor distribution require their own checks; a healthy idle server
 only proves this installation and startup path.
 

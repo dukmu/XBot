@@ -90,7 +90,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
       <button className="new-session-button" title="New session" aria-label="New session" onClick={props.onNew}>
         <Plus size={rail ? 18 : 16} /><span className="sidebar-wide">New session</span>
       </button>
-      <div className="sidebar-wide">
+      <div className="sidebar-wide sidebar-content">
         <div className="sidebar-search">
           <Search size={14} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search current page" aria-label="Search current page" />
@@ -180,16 +180,16 @@ export function SessionSidebar(props: SessionSidebarProps) {
               )}
             </section>
           ))}
-          <div className="workspace-inline-action">
-            <button type="button" disabled={!props.workspacePage.canPrevious || props.workspacePage.state === "loading"} onClick={props.onPreviousWorkspaces}>Previous workspaces</button>
-            <button type="button" disabled={!props.workspacePage.canNext || props.workspacePage.state === "loading"} onClick={props.onNextWorkspaces}>Next workspaces</button>
+          <div className="catalog-pager" aria-label="Workspace pages">
+            <button className="text-button" type="button" disabled={!props.workspacePage.canPrevious || props.workspacePage.state === "loading"} onClick={props.onPreviousWorkspaces}>Previous workspaces</button>
+            <button className="text-button" type="button" disabled={!props.workspacePage.canNext || props.workspacePage.state === "loading"} onClick={props.onNextWorkspaces}>Next workspaces</button>
           </div>
           <div className="sidebar-section-label">
             <span>{selectedWorkspace?.title || (scope.kind === "archived" ? "Archived sessions" : scope.kind === "workspace" ? "Workspace sessions" : "All sessions")}</span>
           </div>
-          <div className="workspace-inline-action">
-            <button type="button" aria-pressed={scope.kind === "all"} onClick={() => props.onSelectCatalog({ kind: "all" })}>All sessions</button>
-            <button type="button" aria-pressed={scope.kind === "archived"} onClick={() => props.onSelectCatalog({ kind: "archived" })}>Archived</button>
+          <div className="catalog-pager" aria-label="Session filters">
+            <button className="text-button" type="button" aria-pressed={scope.kind === "all"} onClick={() => props.onSelectCatalog({ kind: "all" })}>All sessions</button>
+            <button className="text-button" type="button" aria-pressed={scope.kind === "archived"} onClick={() => props.onSelectCatalog({ kind: "archived" })}>Archived</button>
           </div>
           {rows.map((session) => (
             <SessionItem
@@ -204,9 +204,9 @@ export function SessionSidebar(props: SessionSidebarProps) {
           {!rows.length && props.catalog.state !== "loading" && (
             <div className="sidebar-empty">{needle ? "No matches on this page" : "No sessions on this page"}</div>
           )}
-          <div className="workspace-inline-action">
-            <button type="button" disabled={!props.catalog.canPrevious || props.catalog.state === "loading"} onClick={props.onPreviousSessions}>Previous sessions</button>
-            <button type="button" disabled={!props.catalog.canNext || props.catalog.state === "loading"} onClick={props.onNextSessions}>Next sessions</button>
+          <div className="catalog-pager" aria-label="Session pages">
+            <button className="text-button" type="button" disabled={!props.catalog.canPrevious || props.catalog.state === "loading"} onClick={props.onPreviousSessions}>Previous sessions</button>
+            <button className="text-button" type="button" disabled={!props.catalog.canNext || props.catalog.state === "loading"} onClick={props.onNextSessions}>Next sessions</button>
           </div>
         </nav>
       </div>

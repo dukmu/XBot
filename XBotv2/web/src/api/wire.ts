@@ -4,6 +4,7 @@ import type { ArtifactRef, JsonObject } from "./types";
 export interface HistoryPage<T> {
   items: T[];
   older_cursor: string | null;
+  newer_cursor: string | null;
 }
 
 export interface ModelTiming {

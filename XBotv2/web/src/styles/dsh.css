@@ -330,6 +330,38 @@ body {
   box-shadow: var(--dsw-shadow-lv2);
 }
 
+.sidebar-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.catalog-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 10px;
+}
+
+.catalog-pager > span {
+  flex-basis: 100%;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.catalog-pager > button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .workbench {
   --dsh-chat-content-width: 748px;
   --dsh-composer-card-max-width: 780px;

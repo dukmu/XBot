@@ -329,7 +329,8 @@ def _run_web(args) -> None:
     ).is_dir():
         raise SystemExit(
             f"Error: compiled Web client not found at {static_root}; "
-            "run `npm run build` in XBotv2/web"
+            "install a distribution containing the Web assets, or build the "
+            "frontend in a source checkout before building the wheel"
         )
     if args.web_bind != "127.0.0.1":
         raise SystemExit("Error: Web mode only supports --web-bind 127.0.0.1")
