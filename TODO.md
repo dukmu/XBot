@@ -390,3 +390,19 @@
 - [x] 取消选择单项在真实loader中阻塞旧client.close再取消，确认完成释放、新绑定与metadata一致、各client只关一次：1 passed/1.93s、77439 exit0（`/tmp/xbot-provider-cancel-selection.log`）。最后补公开use提前关闭stream时await底层finally，未提前释放pin或关闭client；仅该新增单项1 passed/0.88s、14337 exit0（`/tmp/xbot-provider-early-close.log`），未重复其他已通过节点。所有句柄均终态。证据为本地fake/SDK构造，不声称真实供应商互操作或adapter内部网络流已新增验收。
 - [x] Agent解析owner已独立提交85007d5a；本轮没有修改persistence、队列、媒体协议或TUI，不因相关测试通过勾选那些整体待办。公共API/生命周期文档同步，未保留create兼容桥；下一切片继续真实剩余集合和媒体/provider等完整目标。
 - [x] 本轮精确被评估开发提交`78af9efa7b396d8537443b453cd22a6ba06f00bd`，包含Agent解析缓存及provider资源两个责任提交；最终暂存检查通过，无生成产物。之后仅提交本迭代日志，不重跑旧验证或生成hash快照；完整goal保持active。
+
+### 迭代 12：规范媒体与输入契约（实施中）
+
+- [x] 从日志b03a0e7f/生产78af9efa继续，上轮有实际源码提交及定向证据；工作树除原用户设计稿/.worktrees无未提交改动。两名Terra分别实施核心/adapter媒体模型与输入/客户端契约，先约定MediaPart.artifact、ResolvedMediaPart.artifact和统一media字段，主代理处理边界审查、TODO与提交。
+- [x] 删除ImageRef重复元数据和ImagePart专用持久类型，统一MediaPart→完整ArtifactRef；媒体引用授权、范围/导出/fork/恢复及请求绝对路径沿既有ArtifactStore处理。provider发送前明确拒绝不支持模态，保留现有文本与图像格式，不新增音视频adapter。
+- [x] wire/typed输入统一MediaInput与media字段，session记录保留完整ArtifactRef，标准read/ACP/TUI实际消费者同步；上传base64仅为transport数据，不进入持久对话。不保留旧别名、双字段或自动旧格式兼容。
+- [x] 只跑实际受影响的必要定向组合，保存独立日志与准确exit，初次DB/socket/async在授权环境运行；不扩全套/wheel/hash。既有媒体/附件pre-put失败清理仍是明确待办，本轮契约迁移不假称已解决，也不把多个prepare_stream直接嵌套造成重复digest/逆序锁死。完整goal仍active。
+- [x] 核心/adapter Terra定向31项5.60s、handle87586 actual exit0（`/tmp/xbot-media-focused-2.log`）：文本/图像格式、resolved绝对路径/原bytes、未知MIME及audio/video发送前拒绝、标准read、真实loader下工具媒体授权/fork/resume/exchange保留完整ref。首次命令名称错误actual exit4/no tests ran（`/tmp/xbot-media-focused.log`），不算生产失败或通过证据。
+- [x] 输入/客户端组合首轮71 passed/1 failed（`/tmp/xbot-media-client-tests.log`），唯一失败是新HTTP fixture模型未声明图像能力。修正声明后仅该节点1 passed/2.51s（`/tmp/xbot-media-http-retest.log`），下载原bytes、历史中name/size/sha和media-only提交正确；原无效base64/空请求、ACP映射、controller/queue等已通过节点不重跑。另真实服务TUI上传及App节点2 passed/3.36s（`/tmp/xbot-media-tui.log`），不是完整PTY或外网供应商验收。
+- [x] 主代理已读实际MediaPart/ArtifactRef、投影/导出闭包、context pin、adapter编码、wire/SDK/ACP/TUI路径及日志；生产代码旧Image*类型与.images引用归零，归档设计草案明确非当前契约、保留历史不重写。HTTP当前文档已同步。移除read媒体路径未使用result_data及其重复SHA计算、未使用_success.data，以及能力检查后冗余的全局image-only分支；这些减法未重跑已通过组合，不声称删除后有新全套结果。
+- [x] 核心/维护的Python客户端媒体契约提交da3d7a37。后续发现当前文档仍明确支持xbot web，故同一Terra补Web源码的media/ArtifactRef/media_count、name及历史/live/tool媒体下载映射，保留有用的图像视图模型，不机械改CSS或Markdown词汇。未生成web_dist、未装依赖或跑全量npm/audit/e2e。
+- [x] Web定向vitest首组3文件67项通过（handle47718 exit0，`/tmp/xbot-web-media-vitest.log`）；实际补live/tool显示后仅受影响2文件13项通过（64089 exit0，`/tmp/xbot-web-media-vitest-last.log`），有重叠不累计。TypeScript fixture旧字段及一次错误工作目录导致92180/92787 exit2，修正后23111及最终30237 exit0；最终日志`/tmp/xbot-web-media-tsc-last.log`。主代理已读源码与最终日志，不重跑这些组合。
+- [ ] 真实互通限制：Web仍有本轮之前的role/content历史形状、open history数组及SSE envelope契约债务，与当前Python的kind/history.items等不一致；上述媒体映射/tsc通过不能证明完整Web互通。阶段6必须按当前Python契约收口并实际驱动浏览器，不能以文档“支持”或现有stub测试替代证据。
+- [x] 首次真实MiniMax媒体冒烟由Terra完成，只使用现有环境MINIMAX_API_TOKEN（存在性/来源记录、不输出值）与合成payload；Python评估提交`da3d7a37b11cad237335beb967e265807c9702bc`。标准open_runtime/loader/AGENT_LOOP、生产Anthropic adapter、仅read，3次真实POST `/anthropic/v1/messages`均200、0重试、max_output_tokens512；文本轮read成功、最终cobalt，256px红PNG轮最终red。主代理已读安全报告及保留的canonical rollout实际文本，不从脚本exit0或关键词命中猜成功，也未重发请求。
+- [x] 真实媒体历史中一个MediaPart保留完整ArtifactRef（image/png、media、red.png、851B、sha字段），ArtifactStore原bytes相等；session/root均await关闭，handle44735 actual exit0。报告`/tmp/xbot-minimax-accept/report.json`；usage input/output依次1189/35、55/4、130/110，供应商cache_read计数128/1317/1372，只记这次观测，不推导延迟/驻留或普遍命中率。响应未提供request-id/x-request-id，不能补造关联字段。官方说明`https://platform.minimax.io/docs/api-reference/text-chat-anthropic`，实际仓库模型名Minimax-M3被服务端接受；未改用户配置。
+- [x] 本轮开发提交`4b3a0684ccf917700f5b88254dafeed8290578b0`包含Python媒体和Web字段两责任提交；对应范围的定向证据见上，Python真实供应商证据仍精确归da3d7a37（后续仅Web/文档变化）。无生成产物/依赖变化，最终暂存检查通过。整体goal保持active；下一段优先上传接受失败的物理发布清理，并继续Web真实协议、配置/预算和TUI/最终产品工况，不缩为本轮已完成的媒体路径。
