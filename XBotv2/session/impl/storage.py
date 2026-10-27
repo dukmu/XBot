@@ -53,6 +53,28 @@ class SessionRepository:
             zip(("id", "title", "workspace", "created_at", "updated_at"), rows[0])
         )
 
+    async def thread_count(self, session_id):
+        if not await self.backend.database_exists(session_id):
+            return 0
+        domain = self.domain(session_id)
+        if not await domain.exists():
+            raise StreamCorrupt("Authoritative thread table is missing")
+        rows = await domain.transaction(lambda sql: sql.execute("SELECT count(*) FROM threads"), write=False)
+        return rows[0][0]
+
+    async def thread_page(self, session_id, after=""):
+        if not await self.backend.database_exists(session_id):
+            return ()
+        domain = self.domain(session_id)
+        if not await domain.exists():
+            raise StreamCorrupt("Authoritative thread table is missing")
+        return await domain.transaction(lambda sql: sql.execute("SELECT thread_id FROM threads WHERE thread_id>? ORDER BY thread_id LIMIT 100", (after,)), write=False)
+
+    async def has_thread(self, session_id, thread_id):
+        if not await self.backend.database_exists(session_id):
+            return False
+        return bool(await self.domain(session_id).transaction(lambda sql: sql.execute("SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)), write=False))
+
     async def thread_ids(self, session_id):
         if not await self.backend.database_exists(session_id):
             return []

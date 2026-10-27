@@ -236,10 +236,16 @@ def build_session_router(
         return _open_session_response(opened, page)
 
     @router.get("/sessions", operation_id="list_sessions")
-    async def list_sessions_endpoint() -> SessionListResponse:
+    async def list_sessions_endpoint(limit: int = Query(default=100, ge=1, le=100), cursor: str | None = None, workspace_root: str | None = None) -> SessionListResponse:
         event_cursor = workspace_events.sequence
+        try:
+            page = await sessions.list_sessions(limit=limit, cursor=cursor, workspace_root=workspace_root)
+        except ValueError as exc:
+            raise HttpServerError("invalid_catalog_cursor", str(exc), status=400) from exc
         return SessionListResponse(
-            sessions=list(await sessions.list_sessions()),
+            sessions=list(page.items),
+            next_cursor=page.next_cursor,
+            previous_cursor=page.previous_cursor,
             event_cursor=event_cursor,
         )
 

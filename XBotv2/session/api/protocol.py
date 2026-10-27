@@ -21,6 +21,8 @@ class ThreadListResponse(WireModel):
 
 
 class SessionListResponse(WireModel):
+    previous_cursor: str | None = None
+    next_cursor: str | None = None
     sessions: list[SessionSummary] = Field(default_factory=list)
     event_cursor: int = Field(default=0, ge=0)
 

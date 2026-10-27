@@ -3,6 +3,11 @@
 from __future__ import annotations
 import asyncio
 import time
+import heapq
+import os
+import base64
+import json
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -66,6 +71,7 @@ from XBotv2.session.api.contracts import (
     SessionExists,
     SessionNotFound,
     SessionSummary,
+    SessionPage,
     ThreadNotActive,
     ThreadSummary,
     new_session_id,
@@ -88,7 +94,7 @@ class SessionManager(SessionsPort):
         self.paths = paths
         self._repository = SessionRepository(events.require(PERSISTENCE))
         self._events = events
-        self._published_summaries: dict[str, SessionSummary] = {}
+        self._published_summaries: OrderedDict[str, SessionSummary] = OrderedDict()
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
         self._root = events.root
@@ -306,11 +312,12 @@ class SessionManager(SessionsPort):
             return
         previous = self._published_summaries.get(session_id)
         if previous == summary:
+            self._published_summaries.move_to_end(session_id)
             return
-        self._published_summaries[session_id] = summary
+        self._remember_summary(session_id, summary)
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(summary, added=previous is None),
+            SessionResourceChanged(summary, added=False),
         )
 
     async def _close_runtime(self, scope: Context, reason: str) -> None:
@@ -644,7 +651,7 @@ class SessionManager(SessionsPort):
             )
             if mode == "resume" or session_has_evidence(self.paths, session_id):
                 opened_summary = await self.session_summary(session_id)
-                self._published_summaries[session_id] = opened_summary
+                self._remember_summary(session_id, opened_summary)
                 await self._events.emit(
                     SESSION_RESOURCE_CHANGED,
                     SessionResourceChanged(
@@ -885,36 +892,119 @@ class SessionManager(SessionsPort):
         )
         return runtime
 
-    async def list_sessions(self) -> tuple[SessionSummary, ...]:
+    def _remember_summary(self, session_id: str, summary: SessionSummary) -> None:
+        self._published_summaries[session_id] = summary
+        self._published_summaries.move_to_end(session_id)
+        if len(self._published_summaries) > 256:
+            self._published_summaries.popitem(last=False)
+
+    async def list_sessions(
+        self, *, limit: int = 100, cursor: str | None = None,
+        workspace_root: str | None = None,
+    ) -> SessionPage:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
         root = self.paths.sessions_dir
-        session_ids = (
-            sorted(
-                path.name
-                for path in root.iterdir()
-                if path.is_dir() and not path.name.startswith(".")
-            )
-            if root.is_dir()
-            else []
-        )
         active = await self.active_threads()
-        session_ids = [
-            session_id
-            for session_id in session_ids
-            if session_has_evidence(self.paths, session_id)
-        ]
+        try:
+            boundary, direction = (
+                json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if cursor else ("", "next")
+            )
+            if not isinstance(boundary, str) or direction not in (
+                "next", "previous", "next_inclusive", "previous_inclusive",
+            ):
+                raise ValueError
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ValueError("Invalid page cursor") from exc
+        backwards = direction.startswith("previous")
+        inclusive = direction.endswith("_inclusive")
         summaries = []
-        for session_id in session_ids:
-            try:
-                summaries.append(await _build_session_summary(self, session_id, active))
-            except Exception as exc:  # noqa: BLE001 - one session must not hide the catalog
-                self._log.warning(
-                    "session.catalog.unreadable",
-                    session_id=session_id,
-                    error_type=type(exc).__name__,
-                    error=str(exc) or type(exc).__name__,
+        after = boundary
+        while root.is_dir():
+            def eligible(entry):
+                if entry.name.startswith(".") or not entry.is_dir():
+                    return False
+                if entry.name == after:
+                    return inclusive
+                return entry.name < after if backwards else entry.name > after
+
+            with os.scandir(root) as entries:
+                names = (entry.name for entry in entries if eligible(entry))
+                candidates = (
+                    heapq.nlargest(100, names) if backwards
+                    else heapq.nsmallest(100, names)
                 )
-                summaries.append(await _unreadable_summary(self, session_id))
-        return tuple(summaries)
+            if not candidates:
+                break
+            inclusive = False
+            for session_id in candidates:
+                after = session_id
+                if not session_has_evidence(self.paths, session_id):
+                    continue
+                if workspace_root is not None:
+                    try:
+                        row = await self._repository.row(session_id)
+                        if row is not None and row["workspace"] != workspace_root:
+                            continue
+                    except Exception as exc:
+                        self._log.warning(
+                            "session.catalog.unreadable", session_id=session_id,
+                            error_type=type(exc).__name__, error=str(exc) or type(exc).__name__,
+                        )
+                        continue
+                try:
+                    summary = await _build_session_summary(self, session_id, active)
+                except Exception as exc:
+                    self._log.warning(
+                        "session.catalog.unreadable", session_id=session_id,
+                        error_type=type(exc).__name__, error=str(exc) or type(exc).__name__,
+                    )
+                    summary = await _unreadable_summary(self, session_id)
+                if workspace_root is not None and summary.workspace_root != workspace_root:
+                    continue
+                summaries.append(summary)
+                if len(summaries) > limit:
+                    break
+            if len(summaries) > limit or len(candidates) < 100:
+                break
+        more = len(summaries) > limit
+        summaries = summaries[:limit]
+        if backwards:
+            summaries.reverse()
+
+        def encode(identity, direction):
+            return base64.urlsafe_b64encode(
+                json.dumps([identity, direction]).encode()
+            ).decode()
+
+        previous = None
+        next_cursor = None
+        if summaries:
+            if more if backwards else cursor is not None:
+                previous = encode(summaries[0].session_id, "previous")
+            if cursor is not None if backwards else more:
+                next_cursor = encode(summaries[-1].session_id, "next")
+        elif cursor:
+            if backwards:
+                next_cursor = encode(boundary, "next_inclusive")
+            else:
+                previous = encode(boundary, "previous_inclusive")
+        return SessionPage(
+            items=tuple(summaries), next_cursor=next_cursor, previous_cursor=previous,
+        )
+
+    async def catalog_summary(self, session_id: str) -> SessionSummary:
+        try:
+            return await self.session_summary(session_id)
+        except SessionNotFound:
+            raise
+        except Exception as exc:
+            self._log.warning(
+                "session.catalog.unreadable", session_id=session_id,
+                error_type=type(exc).__name__, error=str(exc) or type(exc).__name__,
+            )
+            return await _unreadable_summary(self, session_id)
 
     async def session_summary(self, session_id: str) -> SessionSummary:
         return await _build_session_summary(
@@ -1035,7 +1125,7 @@ class SessionManager(SessionsPort):
             threads=len(runtimes),
         )
         forked_summary = await self.session_summary(forked_id)
-        self._published_summaries[forked_id] = forked_summary
+        self._remember_summary(forked_id, forked_summary)
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
             SessionResourceChanged(forked_summary, added=True),
@@ -1270,9 +1360,27 @@ async def _build_session_summary(
     }
     if not session.root.is_dir() and not active_by_thread:
         raise SessionNotFound(session_id)
-    thread_ids = sorted(
-        set(await manager._repository.thread_ids(session_id)) | active_by_thread.keys()
-    )
+    thread_count = await manager._repository.thread_count(session_id)
+    for tid in active_by_thread:
+        if not await manager._repository.has_thread(session_id, tid):
+            thread_count += 1
+    blank = True
+    after = ""
+    archive = manager._root.require(ARCHIVE)
+    while blank:
+        page = await manager._repository.thread_page(session_id, after)
+        if not page:
+            break
+        for (tid,) in page:
+            if await archive.message_count(session_id, tid):
+                blank = False
+                break
+        after = page[-1][0]
+    if blank:
+        for tid in active_by_thread:
+            if await archive.message_count(session_id, tid):
+                blank = False
+                break
     row = await manager._repository.row(session_id)
     main = active_by_thread.get("main")
     metadata = main.require(LOOP_STATE).metadata.value if main is not None else None
@@ -1280,7 +1388,7 @@ async def _build_session_summary(
         session_id=session_id,
         status="active" if active_by_thread else "inactive",
         active_threads=len(active_by_thread),
-        thread_count=len(thread_ids),
+        thread_count=thread_count,
         workspace_root=row["workspace"]
         if row is not None
         else metadata.workspace_root
@@ -1291,12 +1399,7 @@ async def _build_session_summary(
         else metadata.title
         if metadata is not None
         else session_id,
-        blank=not any(
-            [
-                await manager._root.require(ARCHIVE).message_count(session_id, tid)
-                for tid in thread_ids
-            ]
-        ),
+        blank=blank,
     )
 
 
@@ -1305,13 +1408,11 @@ async def _unreadable_summary(
     session_id: str,
 ) -> SessionSummary:
     """Keep an unreadable session visible so it can still be deleted."""
-    thread_ids = await manager._repository.thread_ids(session_id)
     return SessionSummary(
         session_id=session_id,
         status="inactive",
-        thread_count=len(thread_ids),
         title=session_id,
-        blank=not thread_ids,
+        blank=False,
         unreadable=True,
     )
 

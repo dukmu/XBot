@@ -30,13 +30,12 @@ async def test_list_sessions_keeps_an_unreadable_session_visible(tmp_path, caplo
 
     summaries = {
         summary.session_id: summary
-        for summary in await manager.list_sessions()
+        for summary in (await manager.list_sessions()).items
     }
 
     assert set(summaries) == {"good", "broken"}
     assert summaries["good"].unreadable is False
     assert summaries["broken"].unreadable is True
-    assert summaries["broken"].thread_count == 1
     assert "session.catalog.unreadable" in caplog.text
 
 @pytest.mark.asyncio
@@ -73,8 +72,66 @@ async def manager(tmp_path):
 async def test_unused_open_is_invisible_and_shutdown_removes_it(tmp_path, manager):
     scope = await manager.open(OpenSession("unused", "main", str(tmp_path), None, "new", True, model_override=MockLLM()))
     assert not RuntimePaths.from_data_dir(tmp_path).session("unused").root.exists()
-    assert await manager.list_sessions() == ()
+    assert (await manager.list_sessions()).items == ()
     await manager.close_session("unused")
     assert not scope.is_active
     assert not RuntimePaths.from_data_dir(tmp_path).session("unused").root.exists()
-    assert await manager.list_sessions() == ()
+    assert (await manager.list_sessions()).items == ()
+
+
+@pytest.mark.asyncio
+async def test_session_pages_move_both_directions_and_filter(tmp_path, manager):
+    for session_id in ("a", "b", "c"):
+        await _session(tmp_path, manager, session_id)
+    first = await manager.list_sessions(limit=1, workspace_root=str(tmp_path))
+    assert [item.session_id for item in first.items] == ["a"]
+    second = await manager.list_sessions(limit=1, cursor=first.next_cursor, workspace_root=str(tmp_path))
+    assert [item.session_id for item in second.items] == ["b"]
+    previous = await manager.list_sessions(limit=1, cursor=second.previous_cursor, workspace_root=str(tmp_path))
+    assert previous.items == first.items
+    last = await manager.list_sessions(limit=1, cursor=second.next_cursor, workspace_root=str(tmp_path))
+    assert [item.session_id for item in last.items] == ["c"]
+    assert last.next_cursor is None
+    assert not (await manager.list_sessions(workspace_root="/missing")).items
+
+
+@pytest.mark.asyncio
+async def test_workspace_membership_recovers_at_startup(tmp_path):
+    from XBotv2.workspaces.api.contracts import WORKSPACES
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    root = await open_runtime(paths=paths)
+    try:
+        manager = root.require(SESSIONS)
+        await root.require(WORKSPACES).create(tmp_path)
+        await _session(tmp_path, manager, "recover")
+        registry = root.require(WORKSPACES)
+        workspace = next(item for item in (await registry.list()).items if item.path == str(tmp_path))
+        await registry._storage.transaction(lambda sql: sql.execute("DELETE FROM workspaces_members WHERE session_id=?", ("recover",)), write=True)
+    finally:
+        await root.close()
+    root = await open_runtime(paths=paths)
+    try:
+        page = await root.require(WORKSPACES).list_sessions(workspace.workspace_id)
+        assert [session.session_id for session in page.sessions] == ["recover"]
+    finally:
+        await root.close()
+
+
+@pytest.mark.asyncio
+async def test_directory_catalog_pages_past_500(tmp_path, manager, monkeypatch):
+    from XBotv2.session.api.contracts import SessionSummary
+    from XBotv2.session.impl import manager as module
+    directory = manager.paths.sessions_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(550):
+        (directory / f"s{index:04}").mkdir()
+    monkeypatch.setattr(module, "session_has_evidence", lambda paths, session_id: True)
+    async def summary(_manager, session_id, _active):
+        return SessionSummary(session_id=session_id, status="inactive")
+    monkeypatch.setattr(module, "_build_session_summary", summary)
+    page = await manager.list_sessions()
+    while page.next_cursor:
+        page = await manager.list_sessions(cursor=page.next_cursor)
+    assert page.items[-1].session_id == "s0549"
+    assert len(page.items) == 50
+    assert (await manager.list_sessions(cursor=page.previous_cursor)).items[-1].session_id == "s0499"

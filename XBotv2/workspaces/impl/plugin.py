@@ -10,6 +10,7 @@ from XBotv2.workspaces.api.contracts import (
     WORKSPACES, WORKSPACE_EVENTS, WORKSPACE_DIRECTORIES,
     ARCHIVED_SESSIONS_CHANGED,
     WORKSPACE_ORDER_CHANGED,
+    WORKSPACE_SESSION_ORDER_CHANGED,
     WORKSPACE_RESOURCE_CHANGED,
     WORKSPACE_RESOURCE_REMOVED,
 )
@@ -69,6 +70,7 @@ class WorkspacesPlugin:
             ctx.runtime_log,
         )
         await registry.ensure(ctx.workspace_root)
+        await registry.reconcile()
         handlers = WorkspaceSessionHandlers(registry)
         catalog = WorkspaceCatalogHandlers(stream)
         ctx.on(SESSION_RESOURCE_CHANGED, handlers.changed)
@@ -78,6 +80,7 @@ class WorkspacesPlugin:
         ctx.on(WORKSPACE_RESOURCE_CHANGED, catalog.publish)
         ctx.on(WORKSPACE_RESOURCE_REMOVED, catalog.publish)
         ctx.on(WORKSPACE_ORDER_CHANGED, catalog.publish)
+        ctx.on(WORKSPACE_SESSION_ORDER_CHANGED, catalog.publish)
         ctx.on(ARCHIVED_SESSIONS_CHANGED, catalog.publish)
         ctx.set(WORKSPACES, registry)
         ctx.set(WORKSPACE_EVENTS, stream)

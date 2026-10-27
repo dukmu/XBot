@@ -1,498 +1,302 @@
 """Process-level durable Workspace registry."""
 
-from __future__ import annotations
-from xcore.api.events import EventEmitter
 import asyncio
-from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
 import uuid
-from XBotv2.persistence.api.contracts import StatePort
+
 from XBotv2.workspaces.impl.storage import WorkspaceStorage
-from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.workspaces.api.contracts import (
-    WorkspaceRecord,
-    WorkspaceListing,
-    WorkspaceSnapshot,
-    WorkspaceView,
-    WorkspaceNotFound,
-    WorkspaceSessionMoveInvalid,
-    WorkspaceSessionNotFound,
-    WorkspacesPort,
-    ARCHIVED_SESSIONS_CHANGED,
-    ArchivedSessionsChanged,
-    WORKSPACE_ORDER_CHANGED,
-    WORKSPACE_RESOURCE_CHANGED,
-    WORKSPACE_RESOURCE_REMOVED,
-    WorkspaceOrderChanged,
-    WorkspaceResourceChanged,
-    WorkspaceResourceRemoved,
+    WorkspaceView, WorkspaceListing, WorkspaceSessionPage, WorkspaceNotFound,
+    WorkspaceSessionNotFound, WorkspaceResourceChanged, WorkspaceResourceRemoved,
+    WorkspaceOrderChanged, WorkspaceSessionOrderChanged, ArchivedSessionsChanged,
+    WORKSPACE_RESOURCE_CHANGED, WORKSPACE_RESOURCE_REMOVED, WORKSPACE_ORDER_CHANGED,
+    WORKSPACE_SESSION_ORDER_CHANGED, ARCHIVED_SESSIONS_CHANGED,
 )
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
 
 
-class SessionSummary(Protocol):
-    session_id: str
-    workspace_root: str
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
 
-class SessionListing(Protocol):
-    async def list_sessions(self) -> tuple[SessionSummary, ...]: ...
+def _limit(limit):
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
 
 
-class WorkspaceRegistry(WorkspacesPort):
-    """Own Workspace identity, ordering, titles, and session membership."""
-
-    def __init__(
-        self,
-        state: StatePort,
-        sessions: SessionListing,
-        events: EventEmitter,
-        runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
-    ) -> None:
+class WorkspaceRegistry:
+    def __init__(self, state, sessions, events, runtime_log=DEFAULT_RUNTIME_LOG):
         self._storage = WorkspaceStorage(state)
         self._sessions = sessions
         self._events = events
         self._log = runtime_log.bind("workspaces")
         self._lock = asyncio.Lock()
 
-    async def list(self) -> WorkspaceListing:
-        sessions = await self._sessions.list_sessions()
-        session_ids = {str(session.session_id) for session in sessions}
-        async with self._lock:
-            snapshot = await self._snapshot()
-            snapshot, membership_changes = _reconcile_membership(snapshot, sessions)
-            archived_session_ids = tuple(
-                session_id
-                for session_id in snapshot.archived_session_ids
-                if session_id in session_ids
-            )
-            archive_changed = archived_session_ids != snapshot.archived_session_ids
-            if archive_changed:
-                removed = len(snapshot.archived_session_ids) - len(archived_session_ids)
-                snapshot = snapshot.model_copy(
-                    update={
-                        "archived_session_ids": archived_session_ids,
-                    }
-                )
-            if membership_changes or archive_changed:
-                await self._write(snapshot)
-            if membership_changes:
-                self._log.info(
-                    "workspace.membership.reconciled",
-                    workspaces=len(membership_changes),
-                )
-            if archive_changed:
-                self._log.info(
-                    "workspace.archive.reconciled",
-                    removed=removed,
-                )
-        for record in membership_changes:
-            await self._events.emit(
-                WORKSPACE_RESOURCE_CHANGED,
-                WorkspaceResourceChanged(_view(record)),
-            )
+    async def list(self, *, limit=100, cursor=None):
+        _limit(limit)
+        rows, next_cursor, previous_cursor = await self._storage.page("workspace", limit, cursor)
         return WorkspaceListing(
-            items=_views(snapshot.items),
-            archived_session_ids=archived_session_ids,
-        )
-
-    async def create(self, path: Path | str) -> tuple[WorkspaceView, bool]:
-        record, created = await self._register(self._require_existing_directory(path))
-        listing = await self.list()
-        workspace = next(
-            item for item in listing.items if item.workspace_id == record.id
-        )
-        return workspace, created
-
-    async def ensure(self, path: Path | str) -> bool:
-        """Ensure registry identity without projecting potentially corrupt sessions.
-
-        Boot-time identity: like ``attach_session`` it records membership and
-        must not fail because the launch workspace directory is not present
-        yet (only explicit ``create`` validates the directory).
-        """
-        _record, created = await self._register(path)
-        return created
-
-    async def attach_session(
-        self,
-        session_id: str,
-        workspace_root: Path | str,
-    ) -> None:
-        """Persist membership from a committed Session resource event.
-
-        A projection of a *live* session: it records membership and must
-        never veto the session lifecycle, so it does not require the
-        directory to exist on disk (the session may have moved or been
-        cleaned up while still active).
-        """
-        await self._register(workspace_root, session_id=session_id)
-
-    async def detach_session(self, session_id: str) -> None:
-        """Remove a deleted Session from membership and archive state."""
-        async with self._lock:
-            snapshot = await self._snapshot()
-            changed: list[WorkspaceRecord] = []
-            items: list[WorkspaceRecord] = []
-            for record in snapshot.items:
-                if session_id in record.session_ids:
-                    record = record.model_copy(
-                        update={
-                            "session_ids": tuple(
-                                value
-                                for value in record.session_ids
-                                if value != session_id
-                            ),
-                            "updated_at": _now(),
-                        }
-                    )
-                    changed.append(record)
-                items.append(record)
-            archived = tuple(
-                value for value in snapshot.archived_session_ids if value != session_id
-            )
-            archive_changed = archived != snapshot.archived_session_ids
-            if not changed and not archive_changed:
-                return
-            await self._write(
-                snapshot.model_copy(
-                    update={
-                        "items": tuple(items),
-                        "archived_session_ids": archived,
-                    }
+            items=tuple(
+                WorkspaceView(
+                    workspace_id=r[1], path=r[2], title=r[3],
+                    created_at=r[4], updated_at=r[5], session_count=r[6],
                 )
-            )
-        for record in changed:
-            await self._events.emit(
-                WORKSPACE_RESOURCE_CHANGED,
-                WorkspaceResourceChanged(_view(record)),
-            )
-        if archive_changed:
-            await self._events.emit(
-                ARCHIVED_SESSIONS_CHANGED,
-                ArchivedSessionsChanged(archived),
-            )
-        self._log.info(
-            "workspace.session.detached",
-            session_id=session_id,
-            workspaces=len(changed),
-            archive_changed=archive_changed,
+                for r in rows
+            ),
+            next_cursor=next_cursor, previous_cursor=previous_cursor,
         )
 
-    async def _register(
-        self,
-        path: Path | str,
-        *,
-        session_id: str = "",
-    ) -> tuple[WorkspaceRecord, bool]:
-        # Explicit user-facing creation validates the directory (see
-        # _require_existing_directory); projections never do, so a deleted
-        # workspace dir cannot break a live session's lifecycle.
-        value = str(Path(path).expanduser().resolve())
-        async with self._lock:
-            snapshot = await self._snapshot()
-            existing = next(
-                (record for record in snapshot.items if record.path == value),
-                None,
-            )
-            if existing is not None:
-                if session_id and session_id not in existing.session_ids:
-                    record = existing.model_copy(
-                        update={
-                            "session_ids": (session_id, *existing.session_ids),
-                            "updated_at": _now(),
-                        }
-                    )
-                    items = list(snapshot.items)
-                    items[_index(snapshot, existing.id)] = record
-                    await self._write(
-                        snapshot.model_copy(
-                            update={
-                                "items": tuple(items),
-                            }
-                        )
-                    )
-                    changed = True
-                else:
-                    record = existing
-                    changed = False
-                created = False
-            else:
-                now = _now()
-                record = WorkspaceRecord(
-                    id=f"ws_{uuid.uuid4().hex[:12]}",
-                    path=value,
-                    title=Path(value).name or value,
-                    session_ids=(session_id,) if session_id else (),
-                    created_at=now,
-                    updated_at=now,
-                )
-                await self._write(
-                    snapshot.model_copy(
-                        update={
-                            "items": (*snapshot.items, record),
-                        }
-                    )
-                )
-                created = True
-                changed = True
-        if created:
-            self._log.info(
-                "workspace.created", workspace_id=record.id, path=record.path
-            )
-        elif changed:
-            self._log.info(
-                "workspace.session.attached",
-                workspace_id=record.id,
-                session_id=session_id,
-            )
-        if changed:
-            await self._events.emit(
-                WORKSPACE_RESOURCE_CHANGED,
-                WorkspaceResourceChanged(_view(record)),
-            )
-        return record, created
+    async def _session_page(self, kind, limit, cursor, workspace_id=None):
+        _limit(limit)
+        rows, next_cursor, previous_cursor = await self._storage.page(kind, limit, cursor, workspace_id)
+        summaries = []
+        archived = []
+        workspace_path = (await self._workspace(workspace_id)).path if kind == "member" else None
+        for _, session_id in rows:
+            try:
+                summary = await self._sessions.catalog_summary(session_id)
+            except (FileNotFoundError, LookupError):
+                continue
+            if kind == "member" and not summary.unreadable and summary.workspace_root != workspace_path:
+                continue
+            summaries.append(summary)
+        archived = [s.session_id for s in summaries] if kind == "archived" else []
+        return WorkspaceSessionPage(
+            sessions=tuple(summaries), next_cursor=next_cursor,
+            previous_cursor=previous_cursor, archived_session_ids=tuple(archived),
+        )
 
-    async def rename(self, workspace_id: str, title: str) -> WorkspaceView:
-        value = title.strip()
-        if not value:
-            raise ValueError("Workspace title must be non-empty")
-        async with self._lock:
-            snapshot = await self._snapshot()
-            index = _index(snapshot, workspace_id)
-            if any(
-                record.id != workspace_id and record.title == value
-                for record in snapshot.items
-            ):
-                raise ValueError(f"Workspace title {value!r} is already in use")
-            current = snapshot.items[index]
-            updated = current.model_copy(update={"title": value, "updated_at": _now()})
-            items = list(snapshot.items)
-            items[index] = updated
-            await self._write(snapshot.model_copy(update={"items": tuple(items)}))
-        self._log.info("workspace.renamed", workspace_id=workspace_id)
-        workspace = _view(updated)
-        await self._events.emit(
-            WORKSPACE_RESOURCE_CHANGED,
-            WorkspaceResourceChanged(workspace),
-        )
-        return workspace
+    async def list_sessions(self, workspace_id, *, limit=100, cursor=None):
+        return await self._session_page("member", limit, cursor, workspace_id)
 
-    async def delete(self, workspace_id: str) -> bool:
-        async with self._lock:
-            snapshot = await self._snapshot()
-            items = tuple(
-                record for record in snapshot.items if record.id != workspace_id
-            )
-            if len(items) == len(snapshot.items):
-                return False
-            await self._write(snapshot.model_copy(update={"items": items}))
-        self._log.info("workspace.deleted", workspace_id=workspace_id)
-        await self._events.emit(
-            WORKSPACE_RESOURCE_REMOVED,
-            WorkspaceResourceRemoved(workspace_id),
-        )
-        return True
+    async def list_archived(self, *, limit=100, cursor=None):
+        return await self._session_page("archived", limit, cursor)
 
-    async def insert_before(
-        self,
-        workspace_id: str,
-        before_workspace_id: str | None,
-    ) -> tuple[str, ...]:
-        async with self._lock:
-            snapshot = await self._snapshot()
-            source = _index(snapshot, workspace_id)
-            anchor = (
-                len(snapshot.items)
-                if before_workspace_id is None
-                else _index(snapshot, before_workspace_id)
-            )
-            items = list(snapshot.items)
-            record = items.pop(source)
-            if source < anchor:
-                anchor -= 1
-            items.insert(anchor, record)
-            if tuple(items) == snapshot.items:
-                return tuple(item.id for item in items)
-            await self._write(snapshot.model_copy(update={"items": tuple(items)}))
-        order = tuple(item.id for item in items)
-        self._log.info("workspace.reordered", workspace_ids=order)
-        await self._events.emit(
-            WORKSPACE_ORDER_CHANGED,
-            WorkspaceOrderChanged(order),
-        )
-        return order
+    async def _workspace(self, workspace_id):
+        view = await self._storage.transaction(lambda sql: self._storage.view(sql, workspace_id))
+        if view is None:
+            raise WorkspaceNotFound(workspace_id)
+        return view
 
-    async def insert_session_before(
-        self,
-        workspace_id: str,
-        session_id: str,
-        before_session_id: str | None,
-    ) -> WorkspaceView:
-        await self.list()
-        async with self._lock:
-            snapshot = await self._snapshot()
-            index = _index(snapshot, workspace_id)
-            record = snapshot.items[index]
-            if session_id not in record.session_ids:
-                raise WorkspaceSessionMoveInvalid(
-                    f"Session {session_id!r} is not in Workspace {workspace_id!r}"
-                )
-            if (
-                before_session_id is not None
-                and before_session_id not in record.session_ids
-            ):
-                raise WorkspaceSessionMoveInvalid(
-                    f"Session anchor {before_session_id!r} is not in Workspace {workspace_id!r}"
-                )
-            if before_session_id == session_id:
-                return _view(record)
-            session_ids = [value for value in record.session_ids if value != session_id]
-            position = (
-                len(session_ids)
-                if before_session_id is None
-                else session_ids.index(before_session_id)
-            )
-            session_ids.insert(position, session_id)
-            ordered = tuple(session_ids)
-            if ordered == record.session_ids:
-                return _view(record)
-            updated = record.model_copy(
-                update={
-                    "session_ids": ordered,
-                    "updated_at": _now(),
-                }
-            )
-            items = list(snapshot.items)
-            items[index] = updated
-            await self._write(snapshot.model_copy(update={"items": tuple(items)}))
-        self._log.info(
-            "workspace.session.reordered",
-            workspace_id=workspace_id,
-            session_id=session_id,
-        )
-        workspace = _view(updated)
-        await self._events.emit(
-            WORKSPACE_RESOURCE_CHANGED,
-            WorkspaceResourceChanged(workspace),
-        )
-        return workspace
-
-    async def set_archived(
-        self,
-        session_id: str,
-        archived: bool,
-    ) -> tuple[str, ...]:
-        known = {
-            str(session.session_id) for session in await self._sessions.list_sessions()
-        }
-        if session_id not in known:
-            raise WorkspaceSessionNotFound(f"Session {session_id!r} was not found")
-        async with self._lock:
-            snapshot = await self._snapshot()
-            current = list(snapshot.archived_session_ids)
-            if archived and session_id not in current:
-                current.append(session_id)
-            elif not archived:
-                current = [value for value in current if value != session_id]
-            archived_session_ids = tuple(current)
-            if archived_session_ids == snapshot.archived_session_ids:
-                return archived_session_ids
-            await self._write(
-                snapshot.model_copy(
-                    update={
-                        "archived_session_ids": archived_session_ids,
-                    }
-                )
-            )
-        self._log.info(
-            "workspace.session.archive.updated",
-            session_id=session_id,
-            archived=archived,
-        )
-        await self._events.emit(
-            ARCHIVED_SESSIONS_CHANGED,
-            ArchivedSessionsChanged(archived_session_ids),
-        )
-        return archived_session_ids
-
-    @staticmethod
-    def _require_existing_directory(path: Path | str) -> str:
-        """Explicit, user-facing creation validates the workspace directory."""
+    async def create(self, path):
         resolved = Path(path).expanduser().resolve()
         if not resolved.is_dir():
             raise ValueError("Workspace path must be an existing directory")
-        return str(resolved)
+        return await self._register(resolved)
 
-    async def _snapshot(self) -> WorkspaceSnapshot:
-        return await self._storage.load()
+    async def ensure(self, path):
+        _, created = await self._register(path)
+        return created
 
-    async def _write(self, snapshot: WorkspaceSnapshot) -> None:
-        await self._storage.save(snapshot)
+    async def reconcile(self):
+        """Repair the durable membership projection once at process startup."""
+        after = ("", "")
+        while True:
+            rows = await self._storage.transaction(
+                lambda sql: sql.execute(
+                    "SELECT workspace_id,session_id FROM workspaces_members "
+                    "WHERE workspace_id>? OR (workspace_id=? AND session_id>?) "
+                    "ORDER BY workspace_id,session_id LIMIT 100",
+                    (after[0], after[0], after[1]),
+                )
+            ) or ()
+            if not rows:
+                break
+            for workspace_id, session_id in rows:
+                if not self._sessions.session_exists(session_id):
+                    await self.detach_session(session_id)
+                    continue
+                try:
+                    summary = await self._sessions.session_summary(session_id)
+                    workspace = await self._workspace(workspace_id)
+                except Exception as exc:
+                    self._log.warning(
+                        "workspace.reconcile.unreadable", session_id=session_id,
+                        error_type=type(exc).__name__, error=str(exc) or type(exc).__name__,
+                    )
+                    continue
+                if summary.workspace_root != workspace.path:
+                    await self._storage.transaction(
+                        lambda sql: sql.execute(
+                            "DELETE FROM workspaces_members "
+                            "WHERE workspace_id=? AND session_id=?",
+                            (workspace_id, session_id),
+                        ),
+                        write=True,
+                    )
+            after = rows[-1]
+        after_id = ""
+        while True:
+            rows = await self._storage.transaction(
+                lambda sql: sql.execute(
+                    "SELECT session_id FROM workspaces_archived WHERE session_id>? "
+                    "ORDER BY session_id LIMIT 100", (after_id,),
+                )
+            ) or ()
+            if not rows:
+                break
+            for (session_id,) in rows:
+                if not self._sessions.session_exists(session_id):
+                    await self.detach_session(session_id)
+            after_id = rows[-1][0]
+        cursor = None
+        while True:
+            page = await self._sessions.list_sessions(limit=100, cursor=cursor)
+            for summary in page.items:
+                if summary.unreadable or not summary.workspace_root:
+                    continue
+                def known(sql):
+                    return sql.execute(
+                        "SELECT id FROM workspaces_items w WHERE path=? AND NOT EXISTS "
+                        "(SELECT 1 FROM workspaces_members m WHERE m.workspace_id=w.id "
+                        "AND m.session_id=?) LIMIT 1",
+                        (summary.workspace_root, summary.session_id),
+                    )
+                if await self._storage.transaction(known):
+                    await self.attach_session(summary.session_id, summary.workspace_root)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
 
+    async def attach_session(self, session_id, workspace_root):
+        await self._register(workspace_root, session_id)
 
-def _views(records: tuple[WorkspaceRecord, ...]) -> tuple[WorkspaceView, ...]:
-    return tuple(_view(record) for record in records)
+    async def _register(self, path, session_id=""):
+        path = str(Path(path).expanduser().resolve())
+        now = _now()
+        def write(sql):
+            found = sql.execute("SELECT id FROM workspaces_items WHERE path=? LIMIT 1", (path,))
+            created = not found
+            identity = found[0][0] if found else f"ws_{uuid.uuid4().hex[:12]}"
+            if created:
+                sql.execute(
+                    "INSERT INTO workspaces_items VALUES(?,?,?,?,?,"
+                    "(SELECT coalesce(max(ordinal),-1)+1 FROM workspaces_items))",
+                    (identity, path, Path(path).name or path, now, now),
+                )
+            changed = created
+            old_views = []
+            if session_id:
+                old = sql.execute(
+                    "SELECT workspace_id FROM workspaces_members "
+                    "WHERE session_id=? AND workspace_id!=? LIMIT 500",
+                    (session_id, identity),
+                )
+                sql.execute(
+                    "DELETE FROM workspaces_members WHERE session_id=? AND workspace_id!=?",
+                    (session_id, identity),
+                )
+                old_views = [self._storage.view(sql, row[0]) for row in old]
+                sql.execute(
+                    "INSERT OR IGNORE INTO workspaces_members VALUES(?,?,"
+                    "(SELECT coalesce(min(ordinal),1)-1 FROM workspaces_members "
+                    "WHERE workspace_id=?))", (identity, session_id, identity),
+                )
+                if sql.changed:
+                    sql.execute("UPDATE workspaces_items SET updated_at=? WHERE id=?", (now, identity))
+                    changed = True
+            return self._storage.view(sql, identity), created, changed, old_views
+        async with self._lock:
+            view, created, changed, old_views = await self._storage.transaction(write, write=True)
+        for old_view in old_views:
+            await self._events.emit(WORKSPACE_RESOURCE_CHANGED, WorkspaceResourceChanged(old_view))
+        if changed:
+            await self._events.emit(WORKSPACE_RESOURCE_CHANGED, WorkspaceResourceChanged(view))
+        return view, created
 
-
-def _reconcile_membership(
-    snapshot: WorkspaceSnapshot,
-    sessions: tuple[SessionSummary, ...],
-) -> tuple[WorkspaceSnapshot, tuple[WorkspaceRecord, ...]]:
-    by_path: dict[str, set[str]] = {record.path: set() for record in snapshot.items}
-    for session in sessions:
-        members = by_path.get(str(session.workspace_root))
-        if members is not None:
-            members.add(str(session.session_id))
-    changed: list[WorkspaceRecord] = []
-    items: list[WorkspaceRecord] = []
-    for record in snapshot.items:
-        known = by_path[record.path]
-        retained = tuple(value for value in record.session_ids if value in known)
-        added = tuple(sorted(known.difference(retained), reverse=True))
-        session_ids = (*added, *retained)
-        if session_ids != record.session_ids:
-            record = record.model_copy(
-                update={
-                    "session_ids": session_ids,
-                    "updated_at": _now(),
-                }
+    async def detach_session(self, session_id):
+        def write(sql):
+            rows = sql.execute(
+                "SELECT workspace_id FROM workspaces_members WHERE session_id=? LIMIT 500",
+                (session_id,),
             )
-            changed.append(record)
-        items.append(record)
-    if not changed:
-        return snapshot, ()
-    return snapshot.model_copy(update={"items": tuple(items)}), tuple(changed)
+            sql.execute("DELETE FROM workspaces_members WHERE session_id=?", (session_id,))
+            sql.execute("DELETE FROM workspaces_archived WHERE session_id=?", (session_id,))
+            archived = bool(sql.changed)
+            return [self._storage.view(sql, r[0]) for r in rows], archived
+        if not await self._storage.domain.exists():
+            return
+        async with self._lock:
+            views, archived = await self._storage.transaction(write, write=True)
+        for view in views:
+            await self._events.emit(WORKSPACE_RESOURCE_CHANGED, WorkspaceResourceChanged(view))
+        if archived:
+            await self._events.emit(ARCHIVED_SESSIONS_CHANGED, ArchivedSessionsChanged(session_id, False))
 
+    async def rename(self, workspace_id, title):
+        title = title.strip()
+        if not title:
+            raise ValueError("Workspace title must be non-empty")
+        def write(sql):
+            self._storage.view(sql, workspace_id)
+            if sql.execute("SELECT 1 FROM workspaces_items WHERE title=? AND id!=? LIMIT 1", (title, workspace_id)):
+                raise ValueError(f"Workspace title {title!r} is already in use")
+            sql.execute("UPDATE workspaces_items SET title=?,updated_at=? WHERE id=?", (title, _now(), workspace_id))
+            return self._storage.view(sql, workspace_id)
+        async with self._lock:
+            view = await self._storage.transaction(write, write=True)
+        await self._events.emit(WORKSPACE_RESOURCE_CHANGED, WorkspaceResourceChanged(view))
+        return view
 
-def _index(snapshot: WorkspaceSnapshot, workspace_id: str) -> int:
-    for index, record in enumerate(snapshot.items):
-        if record.id == workspace_id:
-            return index
-    raise WorkspaceNotFound(workspace_id)
+    async def delete(self, workspace_id):
+        def write(sql):
+            sql.execute("DELETE FROM workspaces_items WHERE id=?", (workspace_id,))
+            found = bool(sql.changed)
+            sql.execute("DELETE FROM workspaces_members WHERE workspace_id=?", (workspace_id,))
+            return found
+        async with self._lock:
+            found = await self._storage.transaction(write, write=True)
+        if found:
+            await self._events.emit(WORKSPACE_RESOURCE_REMOVED, WorkspaceResourceRemoved(workspace_id))
+        return found
 
+    async def insert_before(self, workspace_id, before_workspace_id):
+        async with self._lock:
+            changed = await self._storage.transaction(
+                lambda sql: self._storage.move(
+                    sql, "workspaces_items", workspace_id, before_workspace_id,
+                ),
+                write=True,
+            )
+        if changed:
+            await self._events.emit(WORKSPACE_ORDER_CHANGED, WorkspaceOrderChanged(workspace_id, before_workspace_id))
 
-def _view(
-    record: WorkspaceRecord,
-) -> WorkspaceView:
-    return WorkspaceView(
-        workspace_id=record.id,
-        path=record.path,
-        title=record.title,
-        session_ids=record.session_ids,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
+    async def insert_session_before(self, workspace_id, session_id, before_session_id):
+        def write(sql):
+            self._storage.view(sql, workspace_id)
+            changed = self._storage.move(sql, "workspaces_members", session_id, before_session_id, workspace_id)
+            return changed, self._storage.view(sql, workspace_id)
+        async with self._lock:
+            changed, view = await self._storage.transaction(write, write=True)
+        if changed:
+            await self._events.emit(
+                WORKSPACE_SESSION_ORDER_CHANGED,
+                WorkspaceSessionOrderChanged(workspace_id, session_id, before_session_id),
+            )
+        return view
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-__all__ = [
-    "WorkspaceNotFound",
-    "WorkspaceRegistry",
-    "WorkspaceSessionMoveInvalid",
-    "WorkspaceSessionNotFound",
-]
+    async def set_archived(self, session_id, archived):
+        if not self._sessions.session_exists(session_id):
+            raise WorkspaceSessionNotFound(f"Session {session_id!r} was not found")
+        def write(sql):
+            if archived:
+                sql.execute(
+                    "INSERT OR IGNORE INTO workspaces_archived VALUES(?,"
+                    "(SELECT coalesce(max(ordinal),-1)+1 FROM workspaces_archived))",
+                    (session_id,),
+                )
+            else:
+                sql.execute("DELETE FROM workspaces_archived WHERE session_id=?", (session_id,))
+            changed = bool(sql.changed)
+            rows = sql.execute(
+                "SELECT workspace_id FROM workspaces_members WHERE session_id=? LIMIT 500",
+                (session_id,),
+            )
+            return changed, [self._storage.view(sql, row[0]) for row in rows]
+        async with self._lock:
+            changed, views = await self._storage.transaction(write, write=True)
+        if changed:
+            for view in views:
+                await self._events.emit(WORKSPACE_RESOURCE_CHANGED, WorkspaceResourceChanged(view))
+            await self._events.emit(ARCHIVED_SESSIONS_CHANGED, ArchivedSessionsChanged(session_id, archived))

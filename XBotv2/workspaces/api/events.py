@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from XBotv2.session.api.contracts import SessionResourceChanged, SessionResourceRemoved
-from XBotv2.workspaces.api.contracts import ArchivedSessionsChanged, WorkspaceOrderChanged, WorkspaceResourceChanged, WorkspaceResourceRemoved
+from XBotv2.workspaces.api.contracts import ArchivedSessionsChanged, WorkspaceOrderChanged, WorkspaceResourceChanged, WorkspaceResourceRemoved, WorkspaceSessionOrderChanged
 
 
 WorkspaceCatalogChange = (
@@ -10,6 +10,7 @@ WorkspaceCatalogChange = (
     | SessionResourceRemoved
     | WorkspaceResourceChanged
     | WorkspaceResourceRemoved
+    | WorkspaceSessionOrderChanged
     | WorkspaceOrderChanged
     | ArchivedSessionsChanged
 )

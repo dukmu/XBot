@@ -40,6 +40,26 @@ workspace; supplying a different path fails with `workspace_conflict` rather
 than moving the thread. Reopening an already active thread is an attachment to
 the existing runtime and does not reconfigure its workspace.
 
+Catalog lists use `limit` (1–100, default 100) and an opaque `cursor`.
+`GET /sessions` returns `sessions`, `next_cursor`, `previous_cursor`, and
+`event_cursor`, ordered by session ID; `workspace_root` optionally filters the
+authoritative session workspace. `GET /workspaces` returns the same cursors and
+`items`, ordered by workspace preference. `GET /workspaces/{workspace_id}/sessions`
+and `GET /workspaces/archived-sessions` return paged `sessions` with the same
+cursors and an `archived_session_ids` subset of that page. Workspace member pages
+exclude archived sessions; `session_count` counts unarchived members. A null
+page cursor marks the corresponding end. A page cursor is a position, not a
+snapshot: changes or reordering can move items across pages. Use the returned
+catalog event cursor and refresh affected pages on events; expired event replay
+requires a fresh listing. Invalid page cursors return `invalid_catalog_cursor`.
+
+Workspace and member reorder events identify the moved entity and its optional
+before anchor. Archive events contain one `session_id` and `archived` flag.
+Session summaries remain authoritative in the session store. Startup repairs
+workspace membership in bounded batches; listing does not rescan the catalog.
+The session change deduplication cache holds at most 256 summaries, an internal
+budget rather than a measured optimum. Thread lists remain unpaginated.
+
 ## Messages, history, queue, and stream
 
 | Method | Path | Operation | Result |
@@ -264,6 +284,8 @@ plugin-directory discovery mechanism.
 | GET | `/directories` | `list_workspace_directories` | `DirectoryListing` |
 | GET | `/workspaces` | `list_workspaces` | `WorkspaceListResponse` |
 | GET | `/workspaces/events` | `stream_workspace_events` | catalog SSE stream |
+| GET | `/workspaces/{workspace_id}/sessions` | `list_workspace_sessions` | `WorkspaceSessionPageResponse` |
+| GET | `/workspaces/archived-sessions` | `list_archived_sessions` | `WorkspaceSessionPageResponse` |
 | POST | `/workspaces` | `create_workspace` | `WorkspaceCreateResponse` |
 | PATCH | `/workspaces/{workspace_id}` | `rename_workspace` | `WorkspaceResponse` |
 | DELETE | `/workspaces/{workspace_id}` | `delete_workspace` | `WorkspaceDeleteResponse` |

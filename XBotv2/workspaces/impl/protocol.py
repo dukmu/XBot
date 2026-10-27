@@ -26,13 +26,19 @@ from XBotv2.workspaces.api.contracts import (
     WorkspacesPort,
     ArchivedSessionsChanged,
     WorkspaceOrderChanged,
+    WorkspaceSessionOrderChanged,
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
 )
 from XBotv2.workspaces.api.events import WorkspaceCursorExpired, WorkspaceEventFrame
 
 
-from XBotv2.workspaces.api.protocol import (WorkspaceListResponse, WorkspaceCreateRequest, WorkspaceCreateResponse, WorkspaceRenameRequest, WorkspaceResponse, WorkspaceOrderRequest, WorkspaceOrderResponse, WorkspaceSessionOrderRequest, WorkspaceDeleteResponse, ArchivedSessionsResponse)
+from XBotv2.workspaces.api.protocol import (
+    WorkspaceSessionPageResponse, WorkspaceListResponse, WorkspaceCreateRequest,
+    WorkspaceCreateResponse, WorkspaceRenameRequest, WorkspaceResponse,
+    WorkspaceOrderRequest, WorkspaceOrderResponse, WorkspaceSessionOrderRequest,
+    WorkspaceDeleteResponse, ArchivedSessionsResponse,
+)
 
 
 def build_router(
@@ -56,12 +62,50 @@ def build_router(
         return listing
 
     @router.get("/workspaces", operation_id="list_workspaces")
-    async def list_workspaces() -> WorkspaceListResponse:
+    async def list_workspaces(
+        limit: int = Query(default=100, ge=1, le=100), cursor: str | None = None,
+    ) -> WorkspaceListResponse:
         event_cursor = workspace_events.sequence
-        listing = await workspaces.list()
+        try:
+            listing = await workspaces.list(limit=limit, cursor=cursor)
+        except ValueError as exc:
+            raise HttpServerError("invalid_catalog_cursor", str(exc), status=400) from exc
         return WorkspaceListResponse(
             items=list(listing.items),
-            archived_session_ids=list(listing.archived_session_ids),
+            next_cursor=listing.next_cursor, previous_cursor=listing.previous_cursor,
+            event_cursor=event_cursor,
+        )
+
+    @router.get("/workspaces/archived-sessions", operation_id="list_archived_sessions")
+    async def list_archived_sessions(
+        limit: int = Query(default=100, ge=1, le=100), cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        event_cursor = workspace_events.sequence
+        try:
+            page = await workspaces.list_archived(limit=limit, cursor=cursor)
+        except ValueError as exc:
+            raise HttpServerError("invalid_catalog_cursor", str(exc), status=400) from exc
+        return WorkspaceSessionPageResponse(
+            sessions=list(page.sessions), archived_session_ids=list(page.archived_session_ids),
+            next_cursor=page.next_cursor, previous_cursor=page.previous_cursor,
+            event_cursor=event_cursor,
+        )
+
+    @router.get("/workspaces/{workspace_id}/sessions", operation_id="list_workspace_sessions")
+    async def list_workspace_sessions(
+        workspace_id: str, limit: int = Query(default=100, ge=1, le=100),
+        cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        event_cursor = workspace_events.sequence
+        try:
+            page = await workspaces.list_sessions(workspace_id, limit=limit, cursor=cursor)
+        except WorkspaceNotFound as exc:
+            raise _not_found(exc) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_catalog_cursor", str(exc), status=400) from exc
+        return WorkspaceSessionPageResponse(
+            sessions=list(page.sessions), archived_session_ids=list(page.archived_session_ids),
+            next_cursor=page.next_cursor, previous_cursor=page.previous_cursor,
             event_cursor=event_cursor,
         )
 
@@ -138,13 +182,13 @@ def build_router(
         request: WorkspaceOrderRequest,
     ) -> WorkspaceOrderResponse:
         try:
-            order = await workspaces.insert_before(
+            await workspaces.insert_before(
                 workspace_id,
                 request.before_workspace_id,
             )
         except WorkspaceNotFound as exc:
             raise _not_found(exc) from exc
-        return WorkspaceOrderResponse(workspace_ids=list(order))
+        return WorkspaceOrderResponse(workspace_id=workspace_id, before_workspace_id=request.before_workspace_id)
 
     @router.post(
         "/workspaces/{workspace_id}/sessions/{session_id}/order",
@@ -194,10 +238,10 @@ async def _archive_response(
     archived: bool,
 ) -> ArchivedSessionsResponse:
     try:
-        session_ids = await workspaces.set_archived(session_id, archived)
+        await workspaces.set_archived(session_id, archived)
     except WorkspaceSessionNotFound as exc:
         raise HttpServerError("session_not_found", str(exc), status=404) from exc
-    return ArchivedSessionsResponse(archived_session_ids=list(session_ids))
+    return ArchivedSessionsResponse(session_id=session_id, archived=archived)
 
 
 async def _workspace_sse(
@@ -244,11 +288,16 @@ def _workspace_event(frame: WorkspaceEventFrame) -> tuple[str, dict[str, JsonVal
         return "catalog/workspace-removed", {"workspace_id": change.workspace_id}
     if isinstance(change, WorkspaceOrderChanged):
         return "catalog/workspace-order-changed", {
-            "workspace_ids": list(change.workspace_ids),
+            "workspace_id": change.workspace_id, "before_workspace_id": change.before_workspace_id,
+        }
+    if isinstance(change, WorkspaceSessionOrderChanged):
+        return "catalog/workspace-session-order-changed", {
+            "workspace_id": change.workspace_id, "session_id": change.session_id,
+            "before_session_id": change.before_session_id,
         }
     if isinstance(change, ArchivedSessionsChanged):
         return "catalog/archived-sessions-changed", {
-            "archived_session_ids": list(change.session_ids),
+            "session_id": change.session_id, "archived": change.archived,
         }
     raise TypeError(f"Unsupported Workspace catalog change: {type(change).__name__}")
 
