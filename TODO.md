@@ -289,7 +289,7 @@
 
 ### 迭代 6：流式 artifact 与 shell 输出（实施中）
 
-- [ ] 在e1ebe0c3独立安装验收后，由唯一Sol实施流式存取、从启动spool的前后台shell及有限预览、归档下载生命周期；不与Terra混跑。长输入规范化必须在持久确认前满足单份原文和原请求幂等，不能把content_cache业务移到物理后端。固定范围/pin/中央缓存预算仍分后续切片验收，不提前勾选整个第3批。
+- [x] 在e1ebe0c3独立安装验收后，由唯一Sol实施流式存取、从启动spool的前后台shell及有限预览、归档下载生命周期；不与Terra混跑。长输入规范化必须在持久确认前满足单份原文和原请求幂等，不能把content_cache业务移到物理后端。固定范围/pin/中央缓存预算仍分后续切片验收，不提前勾选整个第3批。
 - [x] 主代理先以e1ebe0c3独立wheel完成同规格shell基线（真实CLI+本地HTTP OpenAI adapter+规范Tool调用，非直接调用runner）：1MiB/16MiB ASCII输出的CLI峰值RSS分别150,437,888 /181,846,016B，启动后约145.9/145.7MB；完整artifact下载hash/size正确、规范日志约15KB。报告`/tmp/xbot-stream-shell-before-1m/report.json`及`/tmp/xbot-stream-shell-before-16m/report.json`，并非新流式实现证据。另明确配置shell ask，通过1次真实permission_request/allow响应完成同样链路（`/tmp/xbot-stream-shell-before-ask/report.json`）；未将默认allow误报审批验收。
 - [ ] 已明确的后续输入/媒体边界：submit_message目前在AgentInbox之前立即put image/attachment，改变同inputId的上传或预日志失败可能留下未引用对象。本轮long-text publication作用域不等于所有上传都能回滚；后续输入/媒体切片处理共享CAS/多对象发布顺序及实际失败清理，不向backend注入业务callback，也不以抬高存储预算掩盖。
 - [x] 主代理两个中间真实CLI探针通过：1MiB非法UTF8/NUL shell的原字节hash一致、标准ask/allow、有限事件/模型预览（`/tmp/xbot-stream-shell-mid-1m/report.json`）；12MiB原文及编辑版本分别12582913B、对象各1、规范log28417B，pending和消费/重启后两版本均可下载，原payload重试不增模型请求、冲突清楚返回（`/tmp/xbot-long-input-mid/report.json`）。这些均为修改期间smoke，仍需冻结后验证，不算最终生产结果。
@@ -303,3 +303,7 @@
 - [x] 客户端完整整合退出0：integration/ACP139 passed /129.88s（`/tmp/xbot-streaming-client-integration.log`）；TUI含真实server/PTY939 passed /179.18s（`/tmp/xbot-streaming-client-tui-rerun.log`）。首轮938/1是错误message拼接的旧断言，迁移为exitcode摘要、output预览和下载原bytes，原可见Error/展开/后续输入仍通过；首轮日志保留，另定向1 passed不与全套相加。
 - [x] core/nonclient owner/XCore完整重跑812 passed、指定旧WebCLI3项deselected /261.17s，pytest与外层handle均exit0（`/tmp/xbot-streaming-core-full.log`及`.exit`）；Web静态/代理两项运行通过。首轮811/1仅compact测试helper未await异步put，迁移后定向及完整重跑；原失败保留`/tmp/xbot-streaming-core-first.log`，未补生产兼容桥。
 - [x] 提交前569条生产指纹未变、改动及新增Python编译和git diff --check通过；architecture与contract各退出1，仍仅原登记的3处core.filesystem跨实现导入（`/tmp/xbot-streaming-architecture.txt`、`/tmp/xbot-streaming-contracts.txt`）。业务原文规范化/引用授权/投影属于agentloop/content_cache，底层只持文件流/发布/物理lease与受限SQL；未把业务塞进backend来消除导入问题。
+- [x] 精确代码提交`7300ec8131c5e0b3fb85cf24689e6c0caf10775b`，提交后及wheel验收后569条指纹不变（`/tmp/xbot-streaming-root-evaluated.json`）。干净archive构建两wheel，离线新uv环境`/tmp/xbot-streaming-installed`实际安装；清单`/tmp/xbot-streaming-wheel-manifest.json`核对XBot520/XCore20项、async API/owner doc/默认YAML/py.typed/skill入包，已删模块/tests/Web不在包内。仓库外无PYTHONPATH实际导入新site-packages；与旧对比env的Python3.12.12及74项依赖版本完全一致，未新增依赖。
+- [x] 安装版CLI/SSE/200MiB/12MiB长输入/1MiB与16MiB对比共6组验证均exit0，报告为`/tmp/xbot-streaming-wheel-{cli,sse,200m,long,1m,16m}/report.json`。常规CLI进程825491/825569、4次本地provider HTTP、历史4→8、附件30B；活跃SSE约0.164s退出(-15)且重取锁。长输入原/编辑各12582913B、对象各1、log28668B，改preview后重启幂等及冲突无新对象、两版本下载仍通过；实际退出日志均含application.destroyed。
+- [x] 安装版200MiB保真、标准ask/allow及2次本地provider请求通过：完整209715200B对象/下载hash一致、无spool残留、log11349B；未读完下载时SIGTERM约0.213s退出(-15)、新root重取锁。新env同规格1/16MiB ASCII的kernel峰149598208 /151945216B，200MiB二进制为152301568B（启动后147423232B）；旧env1/16MiB ASCII为150437888 /181846016B。分开保留原报告与运行环境，只报告观察平台，不将单次样本称延迟分位或绝对内存保证。
+- [ ] 下一切片继续固定不可变范围、按需原子物化、请求至工具批次及后台job接管pin、中央读取/事件缓存字节预算；图片/附件预put清理、workspace大集合、jobs/wait/team、媒体/provider/权限和最终TUI/产品工况仍待后续。第3批及整体goal保持active。
