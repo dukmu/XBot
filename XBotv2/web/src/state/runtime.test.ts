@@ -118,7 +118,7 @@ describe("runtimeReducer", () => {
       type: "event",
       event: event("usage", { input_tokens: 20, output_tokens: 5, total_tokens: 25, context_tokens: 700 }),
     });
-    state = runtimeReducer(state, { type: "threads", threads: [{
+    state = runtimeReducer(state, { type: "thread_page", cursor: null, page: { session_id: opened.session_id, previous_cursor: null, next_cursor: null, threads: [{
       session_id: opened.session_id,
       title: opened.title,
       thread_id: opened.thread_id,
@@ -136,8 +136,11 @@ describe("runtimeReducer", () => {
       session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: {},
-    }] });
+    }] } });
 
+    expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
+    state = runtimeReducer(state, { type: "thread_observed", thread: { ...state.threads[0], turn_status: "idle" } });
+    expect(state.turnRunning).toBe(true);
     expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
   });
 
@@ -530,6 +533,21 @@ describe("runtimeReducer", () => {
     expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
   });
 
+  it("keeps the active thread and running state when its directory page changes", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, { type: "thread_page", cursor: "later", page: {
+      session_id: opened.session_id, previous_cursor: "previous", next_cursor: null, threads: [{
+        session_id: opened.session_id, thread_id: "later-thread", title: "Later", status: "inactive", kind: "subagent", turn_status: "idle", parent_thread_id: opened.thread_id,
+        agent: "worker", provider: "default", model: "test", model_mode: "", context_window: 1000, message_count: 0, usage: wireUsage(0, 0, 0), session_stats: { ...EMPTY_SESSION_STATS }, pending_interactions: [], status_slots: {},
+      }],
+    } });
+    expect(state.current?.thread_id).toBe(opened.thread_id);
+    expect(state.turnRunning).toBe(true);
+    expect(state.threads.map((thread) => thread.thread_id)).toEqual(["later-thread"]);
+    expect(state.threadPreviousCursor).toBe("previous");
+  });
+
   it("marks a subagent thread view as read-only", () => {
     const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const subagent = {
@@ -539,11 +557,15 @@ describe("runtimeReducer", () => {
       context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
       session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
     };
-    const state = runtimeReducer(current, { type: "thread_synced", thread: subagent });
+    expect(runtimeReducer(current, { type: "thread_synced", thread: subagent })).toBe(current);
+    const subagentOpened = { ...opened, thread_id: subagent.thread_id };
+    const active = runtimeReducer(initialRuntimeState, { type: "opened", session: subagentOpened });
+    const state = runtimeReducer(active, { type: "thread_synced", thread: subagent });
     expect(state.viewingSubagent).toBe(true);
 
     const main = { ...subagent, thread_id: "agent", kind: "main" as const, parent_thread_id: "" };
-    expect(runtimeReducer(state, { type: "thread_synced", thread: main }).viewingSubagent).toBe(false);
+    const mainState = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    expect(runtimeReducer(mainState, { type: "thread_synced", thread: main }).viewingSubagent).toBe(false);
     expect(runtimeReducer(initialRuntimeState, { type: "opened", session: opened }).viewingSubagent).toBe(false);
   });
 

@@ -14,6 +14,7 @@ import {
   type JobData,
   type TodoItemData,
   type ThreadSummary,
+  type ThreadListPage,
   type ToolCall,
   type TrajectoryItem,
   type UsageData,
@@ -120,6 +121,10 @@ export interface RuntimeState {
   catalogEventStreamConnected: boolean;
   loading: boolean;
   threads: ThreadSummary[];
+  threadCursor: string | null;
+  threadPreviousCursor: string | null;
+  threadNextCursor: string | null;
+  threadPageLoading: boolean;
   providers: ProviderInfo[];
   agents: AgentInfo[];
   current: RuntimeSession | null;
@@ -165,12 +170,13 @@ export type RuntimeAction =
   | { type: "session_attached"; value: boolean }
   | { type: "event_stream"; value: boolean }
   | { type: "catalog_event_stream"; value: boolean }
-  | { type: "threads"; threads: ThreadSummary[] }
+  | { type: "thread_page"; page: ThreadListPage; cursor: string | null }
+  | { type: "thread_page_loading"; value: boolean }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "agents"; agents: AgentInfo[] }
   | { type: "opened"; session: SessionView }
   | { type: "session_deleted"; sessionId: string }
-  | { type: "thread_synced"; thread: ThreadSummary }
+  | { type: "thread_synced" | "thread_observed"; thread: ThreadSummary }
   | { type: "history"; history: HistoryViewItem[]; nextCursor?: string | null }
   | { type: "history_prepend"; history: HistoryViewItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
@@ -200,6 +206,10 @@ export const initialRuntimeState: RuntimeState = {
   catalogEventStreamConnected: false,
   loading: true,
   threads: [],
+  threadCursor: null,
+  threadPreviousCursor: null,
+  threadNextCursor: null,
+  threadPageLoading: false,
   providers: [],
   agents: [],
   current: null,
@@ -310,8 +320,17 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
       return { ...state, eventStreamConnected: action.value };
     case "catalog_event_stream":
       return { ...state, catalogEventStreamConnected: action.value };
-    case "threads":
-      return { ...state, threads: action.threads, ...currentThreadProjection(state, action.threads) };
+    case "thread_page":
+      return {
+        ...state,
+        threads: action.page.threads,
+        threadCursor: action.cursor,
+        threadPreviousCursor: action.page.previous_cursor,
+        threadNextCursor: action.page.next_cursor,
+        threadPageLoading: false,
+      };
+    case "thread_page_loading":
+      return { ...state, threadPageLoading: action.value };
     case "providers":
       return { ...state, providers: action.providers };
     case "agents":
@@ -322,6 +341,11 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         sessionAttached: true,
         loading: false,
         current: runtimeSession(action.session),
+        threads: [],
+        threadCursor: null,
+        threadPreviousCursor: null,
+        threadNextCursor: null,
+        threadPageLoading: false,
         entries: historyEntries(action.session.history),
         windowAnchor: null,
         atTail: true,
@@ -350,6 +374,10 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         sessionAttached: false,
         eventStreamConnected: false,
         threads: [],
+        threadCursor: null,
+        threadPreviousCursor: null,
+        threadNextCursor: null,
+        threadPageLoading: false,
         agents: [],
         current: null,
         entries: [],
@@ -370,8 +398,11 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         error: "",
       };
     case "thread_synced":
-      return state.current ? {
+    case "thread_observed":
+      return state.current && state.current.session_id === action.thread.session_id
+        && state.current.thread_id === action.thread.thread_id ? {
         ...state,
+        threads: state.threads.map((thread) => thread.thread_id === action.thread.thread_id ? action.thread : thread),
         current: {
           ...state.current,
           agent_name: action.thread.agent,
@@ -381,9 +412,14 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
           context_window: action.thread.context_window,
           status_slots: action.thread.status_slots,
         },
-        usage: projectUsage(action.thread.usage),
-        sessionStats: normalizeSessionStats(action.thread.session_stats),
-        turnRunning: action.thread.turn_status === "running",
+        usage: action.type === "thread_observed"
+          ? mergeLiveUsage(state.usage, projectUsage(action.thread.usage))
+          : projectUsage(action.thread.usage),
+        sessionStats: action.type === "thread_observed"
+          ? mergeLiveStats(state.sessionStats, action.thread.session_stats)
+          : normalizeSessionStats(action.thread.session_stats),
+        turnRunning: action.type === "thread_observed"
+          ? state.turnRunning : action.thread.turn_status === "running",
         viewingSubagent: action.thread.kind === "subagent",
       } : state;
     case "history":
@@ -1604,37 +1640,6 @@ function normalizeSessionStats(value: unknown): SessionStatsData {
 function updateSlots(current: RuntimeSession | null, slots: unknown): RuntimeSession | null {
   if (!current || !slots || typeof slots !== "object" || Array.isArray(slots)) return current;
   return { ...current, status_slots: slots as Record<string, string> };
-}
-
-function currentThreadProjection(
-  state: RuntimeState,
-  threads: ThreadSummary[],
-): Pick<RuntimeState, "current" | "usage" | "sessionStats"> {
-  const current = state.current;
-  if (!current) return {
-    current: null,
-    usage: state.usage,
-    sessionStats: state.sessionStats,
-  };
-  const thread = threads.find((item) => item.thread_id === current.thread_id);
-  if (!thread) return {
-    current,
-    usage: state.usage,
-    sessionStats: state.sessionStats,
-  };
-  return {
-    current: {
-      ...current,
-      agent_name: thread.agent,
-      provider: thread.provider,
-      model: thread.model,
-      model_mode: thread.model_mode,
-      context_window: thread.context_window,
-      status_slots: thread.status_slots,
-    },
-    usage: mergeLiveUsage(state.usage, projectUsage(thread.usage)),
-    sessionStats: mergeLiveStats(state.sessionStats, thread.session_stats),
-  };
 }
 
 function mergeLiveUsage(current: UsageData, snapshot: UsageData): UsageData {

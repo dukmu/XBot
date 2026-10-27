@@ -21,3 +21,14 @@ it("uses the production envelopes, page cursors and command request", async () =
   await api.runCommand("s", "main", "status", "/status");
   expect(JSON.parse(fetcher.mock.calls[4][1].body)).toEqual({ raw: "/status" });
 });
+
+
+it("requests bounded thread pages and finds the main thread through its filter", async () => {
+  const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ session_id: "s", threads: [], previous_cursor: "prev", next_cursor: "next" }), { status: 200 }));
+  vi.stubGlobal("fetch", fetcher);
+  const api = new XBotApi();
+  expect((await api.listThreads("s", { limit: 1, kind: "main" })).next_cursor).toBe("next");
+  await api.listThreads("s", { cursor: "page +/", parentThreadId: "parent", kind: "subagent" });
+  expect(fetcher.mock.calls[0][0]).toBe("/api/sessions/s/threads?limit=1&kind=main");
+  expect(fetcher.mock.calls[1][0]).toBe("/api/sessions/s/threads?limit=100&cursor=page+%2B%2F&kind=subagent&parent_thread_id=parent");
+});

@@ -3,7 +3,7 @@
  * a branch.  XBot threads carry the same facts in ThreadSummary
  * (parent_thread_id / turn_status / usage). */
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ThreadSummary } from "../api/types";
 
 export interface SubagentNode {
@@ -130,6 +130,13 @@ export function SubagentSessions({
   const roots = useMemo(() => subagentTree(threads), [threads]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    const ids = new Set(threads.map((thread) => thread.thread_id));
+    setCollapsed((current) => {
+      const retained = new Set([...current].filter((id) => ids.has(id)));
+      return retained.size === current.size ? current : retained;
+    });
+  }, [threads]);
   if (roots.length === 0) return null;
   const total = threads.filter((thread) => thread.kind === "subagent").length;
   if (!open) {
@@ -142,7 +149,7 @@ export function SubagentSessions({
           onClick={() => setOpen(true)}
         >
           <GitBranch size={13} />
-          {total} subagent{total === 1 ? "" : "s"}
+          {total} subagent{total === 1 ? "" : "s"} on this page
         </button>
       </section>
     );
@@ -165,7 +172,7 @@ export function SubagentSessions({
           aria-expanded
           onClick={() => setOpen(false)}
         >
-          <small>{total} subagent{total === 1 ? "" : "s"}</small>
+          <small>{total} subagent{total === 1 ? "" : "s"} on this page</small>
         </button>
       </header>
       <ul role="tree" aria-label={title} className="subagent-tree">

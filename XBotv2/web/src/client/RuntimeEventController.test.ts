@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SessionView, ViewEvent } from "../api/types";
+import type { SessionView, ViewEvent, ThreadSummary } from "../api/types";
 import { RuntimeEventController, type RuntimeEventListener } from "./RuntimeEventController";
 
 describe("RuntimeEventController", () => {
@@ -14,7 +14,7 @@ describe("RuntimeEventController", () => {
         await new Promise(() => undefined);
       },
       artifactUrl: () => "",
-      listThreads: async () => [],
+      getThread: async () => ({} as ThreadSummary),
     };
     const controller = new RuntimeEventController(api, listener({ onEvents: (batch) => batches.push(batch) }));
 
@@ -30,7 +30,7 @@ describe("RuntimeEventController", () => {
 
   it("refreshes an already-running thread without waiting for another event", async () => {
     vi.useFakeTimers();
-    const listThreads = vi.fn(async () => []);
+    const getThread = vi.fn(async () => ({} as ThreadSummary));
     const api = {
       async *streamEvents() {
         await Promise.resolve();
@@ -38,15 +38,15 @@ describe("RuntimeEventController", () => {
         await new Promise(() => undefined);
       },
       artifactUrl: () => "",
-      listThreads,
+      getThread,
     };
     const controller = new RuntimeEventController(api, listener({}));
 
     controller.start({ session_id: "s", thread_id: "t", event_cursor: 0 } as SessionView, 1, true);
     await vi.advanceTimersByTimeAsync(749);
-    expect(listThreads).not.toHaveBeenCalled();
+    expect(getThread).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(listThreads).toHaveBeenCalledWith("s");
+    expect(getThread).toHaveBeenCalledWith("s", "t");
 
     controller.stop();
     vi.useRealTimers();
@@ -62,7 +62,7 @@ function event(type: ViewEvent["type"], sequence = 1): ViewEvent {
 function listener(overrides: Partial<RuntimeEventListener>): RuntimeEventListener {
   return {
     onEvents: () => undefined,
-    onThreads: () => undefined,
+    onThread: () => undefined,
     onJobExpired: () => undefined,
     onConnection: () => undefined,
     onError: () => undefined,

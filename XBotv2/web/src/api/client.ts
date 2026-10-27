@@ -21,6 +21,7 @@ import {
   type SessionSummary,
   type JobData,
   type ThreadSummary,
+  type ThreadListPage,
   type ToolInfo,
   type WorkspaceData,
   type WorkspaceListData,
@@ -156,12 +157,15 @@ export class XBotApi {
     return result.data;
   }
 
-  async listThreads(sessionId: string): Promise<ThreadSummary[]> {
-    const result = await this.request<{ threads: ThreadSummary[] }>(
-      "GET",
-      `/sessions/${segment(sessionId)}/threads`,
-    );
-    return result.threads;
+  listThreads(
+    sessionId: string,
+    options: { cursor?: string | null; limit?: number; kind?: "main" | "subagent"; parentThreadId?: string } = {},
+  ): Promise<ThreadListPage> {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.kind) query.set("kind", options.kind);
+    if (options.parentThreadId) query.set("parent_thread_id", options.parentThreadId);
+    return this.request("GET", `/sessions/${segment(sessionId)}/threads?${query}`);
   }
 
   getSessionPolicy(sessionId: string): Promise<SessionPolicy> {

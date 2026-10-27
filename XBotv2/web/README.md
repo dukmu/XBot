@@ -63,7 +63,11 @@ prefix at build time.
 
 The sidebar keeps one page of workspaces and one page of sessions in memory.
 Use the page controls to browse all sessions, one workspace, or archived
-sessions; sidebar search applies to the current session page.
+sessions; sidebar search applies to the current session page. Thread navigation
+also holds one page, with previous, next, and refresh controls. The subagent
+tree shows the current page; a child whose parent is on another page appears
+at the root of that page. The active thread status refreshes automatically;
+other threads show a snapshot until the user selects Refresh threads.
 
 Message uploads use `media` entries with base64 data, MIME type and name;
 ordinary files use `attachments`. Media references in history retain artifact

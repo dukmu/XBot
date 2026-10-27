@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ThreadPageControls } from "../components/ThreadPageControls";
 import { AlertCircle, FolderSearch, GitBranch, LoaderCircle, Menu, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { useXBot } from "../state/useXBot";
 import { Composer, type PendingAttachment } from "../components/Composer";
@@ -266,6 +267,10 @@ export function App() {
         onNextWorkspaces={() => void runtime.nextWorkspaces()}
         onPreviousWorkspaces={() => void runtime.previousWorkspaces()}
         threads={state.threads}
+        threadPreviousCursor={state.threadPreviousCursor}
+        threadNextCursor={state.threadNextCursor}
+        threadPageLoading={state.threadPageLoading}
+        onPageThreads={(direction) => void runtime.pageThreads(direction)}
         current={state.current}
         onClose={() => setSidebarOpen(false)}
         onToggle={toggle}
@@ -360,6 +365,12 @@ export function App() {
           <div className="conversation-scroll" data-conversation-scroll>
             {/* Ported placement: the transcript shows a count button; the tree
                 opens when the reader asks for it. */}
+            <ThreadPageControls
+              previousCursor={state.threadPreviousCursor}
+              nextCursor={state.threadNextCursor}
+              loading={state.threadPageLoading}
+              onPage={(direction) => void runtime.pageThreads(direction)}
+            />
             <SubagentSessions
               threads={state.threads}
               currentThreadId={runtime.view?.threadId ?? state.current.thread_id}

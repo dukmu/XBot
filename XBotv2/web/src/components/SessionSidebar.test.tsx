@@ -15,7 +15,8 @@ it("navigates the bounded workspace and member pages and selects a session", () 
   render(<SessionSidebar open collapsed={false} width={280}
     catalog={{ items: [session], archivedIds: [], scope: { kind: "workspace", workspaceId: "w" }, canPrevious: true, canNext: true, eventCursor: 0, state: "idle", error: null }}
     workspacePage={{ items: [workspace], canPrevious: false, canNext: true, eventCursor: 0, state: "idle", error: null }}
-    threads={[]} current={{ session_id: "off-page", thread_id: "main" }} onClose={noop} onToggle={noop} onSettings={noop} onNew={noop} onRefresh={async () => undefined} refreshing={false}
+    threads={[]} threadPreviousCursor={null} threadNextCursor={null} threadPageLoading={false} onPageThreads={noop}
+    current={{ session_id: "off-page", thread_id: "main" }} onClose={noop} onToggle={noop} onSettings={noop} onNew={noop} onRefresh={async () => undefined} refreshing={false}
     onSession={open} onThread={noop} onFork={noop} onDelete={noop} onRenameSession={noop} onArchiveSession={noop} onRenameWorkspace={noop} onDeleteWorkspace={noop} onMoveWorkspace={noop} onMoveSession={noop}
     onSelectCatalog={select} onNextSessions={nextSessions} onPreviousSessions={previousSessions} onNextWorkspaces={noop} onPreviousWorkspaces={noop} />);
   expect(screen.getByText("201")).toBeVisible();

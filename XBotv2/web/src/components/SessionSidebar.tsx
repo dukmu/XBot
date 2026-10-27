@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { SessionView, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
+import { ThreadPageControls } from "./ThreadPageControls";
 
 interface SessionSidebarProps {
   open: boolean;
@@ -13,6 +14,10 @@ interface SessionSidebarProps {
   catalog: import("../client/SessionCatalog").SessionCatalogSnapshot;
   workspacePage: import("../client/WorkspaceManager").WorkspaceSnapshot;
   threads: ThreadSummary[];
+  threadPreviousCursor: string | null;
+  threadNextCursor: string | null;
+  threadPageLoading: boolean;
+  onPageThreads: (direction: "previous" | "next" | "refresh") => void;
   current: Pick<SessionView, "session_id" | "thread_id"> | null;
   onClose: () => void;
   onToggle: () => void;
@@ -310,7 +315,7 @@ function SessionItem({
                   <button className="icon-button small" type="button" aria-label="Cancel session rename" onClick={() => setEditing(false)}><X size={13} /></button>
                 </form>
               )}
-              {active && sidebar.threads.length > 0 && (
+              {active && (
                 <div className="thread-list">
                   {sidebar.threads.map((thread) => (
                     <button
@@ -327,6 +332,12 @@ function SessionItem({
                       {thread.turn_status === "running" && <i className="activity-dot" />}
                     </button>
                   ))}
+                  <ThreadPageControls
+                    previousCursor={sidebar.threadPreviousCursor}
+                    nextCursor={sidebar.threadNextCursor}
+                    loading={sidebar.threadPageLoading}
+                    onPage={sidebar.onPageThreads}
+                  />
                 </div>
               )}
             </div>

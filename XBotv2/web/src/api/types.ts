@@ -104,6 +104,13 @@ export interface DirectoryListingData {
   truncated: boolean;
 }
 
+export interface ThreadListPage {
+  session_id: string;
+  threads: ThreadSummary[];
+  previous_cursor: string | null;
+  next_cursor: string | null;
+}
+
 export interface ThreadSummary {
   session_id: string;
   thread_id: string;

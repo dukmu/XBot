@@ -54,7 +54,7 @@ describe("SubagentSessions", () => {
     );
     expect(getByTestId("subagent-reviewer")).toBeTruthy();
     expect(getByTestId("subagent-editor")).toBeTruthy();
-    expect(getByText("2 subagents")).toBeTruthy();
+    expect(getByText("2 subagents on this page")).toBeTruthy();
     expect(getByText(/7,900 tok/)).toBeTruthy();
   });
 
@@ -68,6 +68,22 @@ describe("SubagentSessions", () => {
 
     fireEvent.click(getByLabelText("Collapse reviewer descendants"));
     expect(queryByTestId("subagent-editor")).toBeNull();
+  });
+
+  it("forgets collapsed branches from a previous page without closing the tree", () => {
+    const secondPage = [
+      thread({ thread_id: "writer" }),
+      thread({ thread_id: "checker", parent_thread_id: "writer" }),
+    ];
+    const { rerender, getByLabelText, queryByTestId } = render(
+      <SubagentSessions threads={threads} currentThreadId="agent" onSelect={() => undefined} />,
+    );
+    fireEvent.click(getByLabelText("Collapse reviewer descendants"));
+    expect(queryByTestId("subagent-editor")).toBeNull();
+    rerender(<SubagentSessions threads={secondPage} currentThreadId="agent" onSelect={() => undefined} />);
+    expect(queryByTestId("subagent-checker")).toBeTruthy();
+    rerender(<SubagentSessions threads={threads} currentThreadId="agent" onSelect={() => undefined} />);
+    expect(queryByTestId("subagent-editor")).toBeTruthy();
   });
 
   it("renders nothing when the session has no subagents", () => {
@@ -91,7 +107,7 @@ describe("SubagentSessions", () => {
       />,
     );
     expect(queryByTestId("subagent-reviewer")).toBeNull();
-    fireEvent.click(getByText("2 subagents"));
+    fireEvent.click(getByText("2 subagents on this page"));
     expect(getByRole("treeitem", { name: /reviewer/ })).toBeTruthy();
   });
 });
