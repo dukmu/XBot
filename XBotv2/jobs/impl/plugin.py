@@ -62,12 +62,11 @@ class JobsRuntimeComponent:
     Config = JobsConfig
 
     def apply(self, ctx: Context, config: JobsConfig) -> None:
-        max_concurrent = config.max_concurrent_subagents
         # The registry publishes lifecycle transitions on the bus; this
         # component subscribes with fiber-owned listeners, so notifications
         # are delivered whenever the registry runs — never by assignment
         # order inside apply.
-        registry = ctx.require(JOB_REGISTRY).bind(ctx.require(LOOP_STATE).session.key, ctx)
+        registry = ctx.require(JOB_REGISTRY).bind(ctx.require(LOOP_STATE).session.key, ctx, ctx.require(AGENT_LOOP).inbox)
         ctx.set(JOBS, registry)
         for command in build_jobs_commands(registry):
             ctx.require(COMMANDS).register(command)
@@ -106,7 +105,7 @@ class JobHandlers:
                 target=InboxTarget.NEXT_STEP,
                 input=RuntimeInput(
                     source=view.id,
-                    event="completed",
+                    event="job/completed",
                     content=prompt_container(
                         "runtime_event",
                         [prompt_element(
@@ -159,7 +158,7 @@ mount_thread.Config = JobsConfig
 
 
 def mount_process(ctx, config):
-    registry = JobRegistry(limits={"subagent": config.max_concurrent_subagents})
+    registry = JobRegistry()
     ctx.provide(JOB_REGISTRY, registry)
     ctx.dispose(registry.shutdown)
     ctx.inject(["server", "sessions"], mount_http)

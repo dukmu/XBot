@@ -12,6 +12,8 @@ from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolCall, ToolFailed, ToolSucceeded
 from XBotv2.coretools.api.models import CoreToolsConfig
 from XBotv2.coretools.impl.shell import shell_tools, wait_shell
+from XBotv2.coretools.impl.shell import ShellJobResult, ShellJobSpec
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.jobs.impl.registry import JobRegistry
 
 
@@ -94,6 +96,36 @@ async def test_background_deadline_is_failed_not_cancelled(runtime, tmp_path):
     assert job.state.error.code == "tool_timeout"
     await asyncio.sleep(0.45)
     assert not (tmp_path / "late").exists()
+    await jobs.shutdown()
+
+
+async def test_wait_returns_artifact_even_when_job_is_evicted_after_wait():
+    class EvictingRegistry(JobRegistry):
+        async def wait(self, ids=None, **kwargs):
+            result = await super().wait(ids, **kwargs)
+            for view in result.ready:
+                self.remove(view.id)
+            return result
+
+    ref = ArtifactRef(id="shell-output", kind=ArtifactKind.TOOL_RESULT)
+
+    class Runner:
+        async def run(self, job):
+            return ShellJobResult(ref, 7)
+
+        async def cancel(self, job):
+            pass
+
+    jobs = EvictingRegistry()
+    job = await jobs.create(spec=ShellJobSpec("command", None, False, "command"), owner="test")
+    jobs.start(job.id, Runner())
+    result = await wait_shell([job.id], timeout_ms=1000, job_registry=jobs)
+    assert jobs.get_or_none(job.id) is None
+    assert result.output.artifacts == (ref,)
+    import json
+    ready = json.loads(result.output.parts[0].text)["ready"]
+    assert ready[0]["output_artifact_id"] == ref.id
+    assert ready[0]["exit_code"] == 7
     await jobs.shutdown()
 
 

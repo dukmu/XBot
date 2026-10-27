@@ -15,6 +15,7 @@ from XBotv2.agentloop.api.contracts import (
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.events import Events, ObserveInbox
 from XBotv2.agentloop.impl.inbox import AgentInbox, input_fingerprint, content_digest
+from XBotv2.persistence.api.models import CommitUncertain
 
 
 class MemoryInboxSink:
@@ -257,3 +258,34 @@ async def test_claimed_or_unknown_input_cannot_be_mutated():
     ):
         with pytest.raises(KeyError):
             await operation()
+
+
+@pytest.mark.asyncio
+async def test_synchronizing_durable_recovery_wakes_observers_without_duplicate_events():
+    class UncertainSink(MemoryInboxSink):
+        async def append(self, change):
+            result = await super().append(change)
+            if isinstance(change, Inserted):
+                raise CommitUncertain("index confirmation failed")
+            return result
+
+    sink = UncertainSink()
+    events = MemoryEvents()
+    inbox = AgentInbox(events=events, sink=sink)
+    item = human_input("recovered", "steer", InboxTarget.NEXT_STEP)
+    with pytest.raises(CommitUncertain):
+        await inbox.submit(item, wake=False)
+    observer = inbox.subscribe()
+    assert not observer.is_set()
+    assert await inbox.submit(item, wake=False)
+    assert observer.is_set()
+    assert inbox.pending == [item]
+    assert events.changes == []
+
+    observer.clear()
+    sink.items[0] = item.model_copy(update={"target": InboxTarget.NEXT_TURN})
+    await inbox.retarget(item.id, InboxTarget.NEXT_TURN)
+    assert observer.is_set()
+    assert inbox.pending[0].target is InboxTarget.NEXT_TURN
+    assert events.changes == []
+    inbox.unsubscribe(observer)

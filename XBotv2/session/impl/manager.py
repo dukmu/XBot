@@ -102,6 +102,8 @@ class SessionManager(SessionsPort):
         self._log = runtime_log.bind("session")
         self._sessions: dict[tuple[str, str], Context] = {}
         self._opening: dict[tuple[str, str], asyncio.Task[Context]] = {}
+        self._opening_children: dict[tuple[str, str], str] = {}
+        self._child_limits: dict[str, int] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
 
@@ -155,6 +157,7 @@ class SessionManager(SessionsPort):
                         self._owners[session_id] = ctx
                         self._closing_sessions.add(session_id)
                         raise
+                    self._child_limits.pop(session_id, None)
                     raise
                 finally:
                     self._session_opening.pop(session_id, None)
@@ -183,6 +186,32 @@ class SessionManager(SessionsPort):
                 and thread_id not in persisted
             ):
                 return thread_id
+
+    def set_child_limit(self, session_id: str, limit: int) -> None:
+        if limit < 1:
+            raise ValueError("child thread limit must be positive")
+        if session_id not in self._owners and session_id not in self._session_opening:
+            raise SessionNotFound(session_id)
+        self._child_limits[session_id] = limit
+
+    def _admit_child(self, key: tuple[str, str]) -> None:
+        session_id, _ = key
+        limit = self._child_limits.get(session_id)
+        if limit is None:
+            return
+        live_children = {
+            child_key for child_key, scope in self._sessions.items()
+            if child_key[0] == session_id and scope.require(THREAD_INFO).parent_thread_id
+        }
+        for child_key in self._opening_children:
+            if child_key == key:
+                break
+            if child_key[0] == session_id:
+                live_children.add(child_key)
+        if len(live_children) >= limit:
+            raise OperationError(
+                "child_limit_reached", "Session live child thread limit reached"
+            )
 
     async def locate(self, session_id: str, thread_id: str) -> Context:
         scope = self._sessions.get((session_id, thread_id))
@@ -309,6 +338,7 @@ class SessionManager(SessionsPort):
         if owner is not None:
             await owner.close()
             self._owners.pop(session_id, None)
+            self._child_limits.pop(session_id, None)
         if not already_closing:
             self._closing_sessions.discard(session_id)
 
@@ -441,6 +471,11 @@ class SessionManager(SessionsPort):
                         "workspace_not_found",
                         f"Workspace path is not an existing directory: {workspace}",
                     )
+                if parent_thread_id and (session_id, parent_thread_id) in self._closing_threads:
+                    raise OperationError("session_closing", f"Parent thread {session_id}/{parent_thread_id} is closing")
+                if parent_thread_id:
+                    self._admit_child(key)
+                    self._opening_children[key] = parent_thread_id
                 task = asyncio.create_task(
                     self._build_and_register(
                         key=key,
@@ -524,6 +559,9 @@ class SessionManager(SessionsPort):
                 session_id=session_id,
             )
             owner = await self._session_owner(session_id, Path(workspace_root), tree)
+            if parent_thread_id:
+                async with self._lock:
+                    self._admit_child(key)
             loader = self._root.require(LOADER)
             scope = loader.scope(
                 owner,
@@ -578,6 +616,7 @@ class SessionManager(SessionsPort):
                         self._closing_sessions.add(session_id)
                         raise
                     self._owners.pop(session_id, None)
+                    self._child_limits.pop(session_id, None)
                 raise
             async with self._lock:
                 self._sessions[key] = scope
@@ -622,6 +661,7 @@ class SessionManager(SessionsPort):
                 current = asyncio.current_task()
                 if self._opening.get(key) is current:
                     self._opening.pop(key, None)
+                    self._opening_children.pop(key, None)
             reset_log_context(log_token)
 
     async def close_thread(
@@ -647,12 +687,25 @@ class SessionManager(SessionsPort):
                     if opening is not None:
                         opening.cancel()
                         await asyncio.gather(opening, return_exceptions=True)
+                        if self._opening.get(key) is opening:
+                            self._opening.pop(key, None)
+                            self._opening_children.pop(key, None)
                     scope = self._sessions.get(key)
                     if scope is None:
                         await self._close_unused_owner(session_id)
                         return
                     if expected is not None and scope is not expected:
                         return
+                    children = {
+                        tid for (sid, tid), child in self._sessions.items()
+                        if sid == session_id
+                        and child.require(THREAD_INFO).parent_thread_id == thread_id
+                    } | {
+                        tid for (sid, tid), parent in self._opening_children.items()
+                        if sid == session_id and parent == thread_id
+                    }
+                    for child_id in children:
+                        await self.close_thread(session_id, child_id, reason=reason)
                     await self._close_runtime(scope, reason)
                     self._log.info(
                         "session.thread.closed",
@@ -680,17 +733,40 @@ class SessionManager(SessionsPort):
                 "session_busy", "A session operation is in progress", retryable=True
             )
         self._closing_sessions.add(session_id)
-        opening = [
-            task for (sid, _), task in self._opening.items() if sid == session_id
-        ]
-        for task in opening:
+        opening = {
+            key: task for key, task in self._opening.items() if key[0] == session_id
+        }
+        for task in opening.values():
             task.cancel()
         if opening:
-            await asyncio.gather(*opening, return_exceptions=True)
+            await asyncio.gather(*opening.values(), return_exceptions=True)
+            for key, task in opening.items():
+                if self._opening.get(key) is task:
+                    self._opening.pop(key, None)
+                    self._opening_children.pop(key, None)
         await self._cancel_session_opening(session_id)
         errors = []
         keys = [key for key in self._sessions if key[0] == session_id]
+        parents = {
+            tid: self._sessions[(sid, tid)].require(THREAD_INFO).parent_thread_id
+            for sid, tid in keys
+        }
+
+        def depth(key):
+            parent = parents[key[1]]
+            seen = {key[1]}
+            while parent in parents and parent not in seen:
+                seen.add(parent)
+                parent = parents[parent]
+            return len(seen)
+
+        keys.sort(key=depth, reverse=True)
         for sid, tid in keys:
+            if any(
+                parent == tid and (sid, child) in self._sessions
+                for child, parent in parents.items()
+            ):
+                continue
             try:
                 await self.close_thread(sid, tid, reason=reason)
             except Exception as error:
@@ -704,6 +780,7 @@ class SessionManager(SessionsPort):
                     errors.append(error)
                 else:
                     self._owners.pop(session_id, None)
+                    self._child_limits.pop(session_id, None)
         if errors:
             raise ExceptionGroup(
                 f"Failed to close session {session_id!r}; resources remain owned",

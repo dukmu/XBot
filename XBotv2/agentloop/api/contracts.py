@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
+import asyncio
 from XBotv2.core.api.operations import RequestT, ResponseT
 
 from collections.abc import AsyncIterator, Sequence
@@ -17,7 +18,7 @@ from typing import (
     TypeAlias,
     overload,
 )
-from XBotv2.core.api.domain import InboxTarget, MessageId
+from XBotv2.core.api.domain import InboxTarget, MessageId, TurnId
 from XBotv2.core.api.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from xcore.api.context import Context
@@ -145,6 +146,8 @@ class InboxSink(Protocol):
 class Inbox(Protocol):
     @property
     def pending(self) -> list[InboxItem]: ...
+    def subscribe(self) -> asyncio.Event: ...
+    def unsubscribe(self, observer: asyncio.Event) -> None: ...
     def __len__(self) -> int: ...
     async def submit(self, item: InboxItem, *, wake: bool) -> bool: ...
     async def claim_turn(self) -> list[InboxItem]: ...
@@ -185,7 +188,11 @@ class ToolRegistration:
 
 class AgentLoopPort(Protocol):
     @property
+    def inbox(self) -> Inbox: ...
+    @property
     def busy(self) -> bool: ...
+    @property
+    def execution_id(self) -> TurnId | None: ...
     @property
     def last_activity(self) -> float: ...
     @property

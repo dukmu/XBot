@@ -5,8 +5,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from XBotv2.jobs.api.contracts import JOB_COMPLETED, JOB_UPDATED, JobRegistryClosed
+from XBotv2.jobs.api.contracts import JOB_COMPLETED, JOB_UPDATED, JobNotFound, JobRegistryClosed
 from XBotv2.jobs.impl.registry import JobRegistry
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, RuntimeInput
+from XBotv2.core.api.domain import InboxTarget
 
 
 @dataclass(frozen=True)
@@ -174,3 +176,95 @@ async def test_shutdown_cancels_jobs_and_rejects_new_ones():
     assert registry.all() == []
     with pytest.raises(JobRegistryClosed):
         await registry.create(spec=_Spec(), owner="test")
+
+
+@pytest.mark.asyncio
+async def test_any_wait_returns_for_already_completed_target():
+    registry = JobRegistry()
+    first = await registry.create(spec=_Spec(), owner="test")
+    second = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner()
+    registry.start(first.id, runner)
+    runner.release.set()
+    await registry.wait([first.id], timeout=1)
+    registry.start(second.id, _Runner())
+    result = await registry.wait([first.id, second.id], mode="any", timeout=0.1)
+    assert [view.id for view in result.ready] == [first.id]
+    assert result.pending == (second.id,)
+    assert not result.timed_out
+    await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_completed_jobs_are_bounded_and_running_wait_keeps_its_result():
+    registry = JobRegistry()
+    first = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner()
+    registry.start(first.id, runner)
+    waiter = asyncio.create_task(registry.wait([first.id], timeout=2))
+    await asyncio.sleep(0)
+    for _ in range(101):
+        job = await registry.create(spec=_Spec(), owner="test")
+        await registry.cancel(job.id)
+    runner.release.set()
+    assert (await waiter).ready[0].id == first.id
+    assert len(registry.all()) == 100
+    with pytest.raises(JobNotFound):
+        await registry.wait(["probe_2"], timeout=0)
+    await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_wait_observes_unclaimed_steer_but_ignores_own_completion():
+    class Inbox:
+        pending = []
+
+        def __init__(self):
+            self.observers = set()
+
+        def subscribe(self):
+            event = asyncio.Event()
+            self.observers.add(event)
+            return event
+
+        def unsubscribe(self, event):
+            self.observers.remove(event)
+
+        def send(self, item):
+            self.pending.append(item)
+            for event in self.observers:
+                event.set()
+
+    registry = JobRegistry()
+    inbox = Inbox()
+    job = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner()
+    registry.start(job.id, runner)
+    inbox.send(InboxItem(target=InboxTarget.NEXT_STEP, input=RuntimeInput(
+        source=job.id, event="job/completed", content="done",
+    )))
+    waiter = asyncio.create_task(registry.wait([job.id], inbox=inbox))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    inbox.send(InboxItem(target=InboxTarget.NEXT_STEP, input=HumanInput(content="stop")))
+    assert (await waiter).reason == "steered"
+    assert not inbox.observers
+    await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_wait_does_not_cancel_job():
+    registry = JobRegistry()
+    job = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner()
+    registry.start(job.id, runner)
+    await runner.started.wait()
+    waiter = asyncio.create_task(registry.wait([job.id]))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert job.status == "running"
+    runner.release.set()
+    assert (await registry.wait([job.id], timeout=1)).reason == "ready"
+    await registry.shutdown()

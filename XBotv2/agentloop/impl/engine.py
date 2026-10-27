@@ -395,18 +395,20 @@ class Engine:
         item: InboxItem,
         *,
         request_id: str = "",
+        on_claimed=None,
     ) -> AsyncIterator[LoopEvent]:
         if item.target is not InboxTarget.NEXT_TURN:
             raise ValueError("A direct turn input must target the next turn")
         if not await self.inbox.submit(item, wake=False):
             return
-        async for event in self.run_pending(request_id=request_id):
+        async for event in self.run_pending(request_id=request_id, on_claimed=on_claimed):
             yield event
 
     async def run_pending(
         self,
         *,
         request_id: str = "",
+        on_claimed=None,
     ) -> AsyncIterator[LoopEvent]:
         """Run one turn claimed from the agent-owned inbox."""
         claimed = await self.inbox.claim_turn()
@@ -428,6 +430,8 @@ class Engine:
             input_chars=sum(len(item.input.content) for item in claimed),
         )
         try:
+            if on_claimed is not None:
+                await on_claimed(claimed)
             async for event in self._run_turn_impl(
                 claimed,
             ):

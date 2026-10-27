@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from XBotv2.core.api.domain import UsageDelta
 from XBotv2.core.api.messages import AssistantMessage
 from XBotv2.core.api.tools import ToolCall, ToolExecution
+from XBotv2.agentloop.api.storage import ExecutionRecord
 
 
 class _LoopEventModel(BaseModel):
@@ -122,3 +123,10 @@ _LOOP_EVENT_TYPES = (
 
 def is_loop_event(value: object) -> TypeGuard[LoopEvent]:
     return type(value) in _LOOP_EVENT_TYPES
+
+
+class ExecutionEnded(_LoopEventModel):
+    """Domain completion, published after the execution releases its lock."""
+
+    kind: Literal["execution_ended"] = "execution_ended"
+    execution: ExecutionRecord

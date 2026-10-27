@@ -19,6 +19,8 @@ from XBotv2.agentloop.api.contracts import (
     InboxItem,
 )
 from XBotv2.agentloop.api.outputs import (
+    AssistantCompleted,
+    ExecutionEnded,
     LoopError,
     LoopTurnStarted,
     LoopTurnEnded,
@@ -47,7 +49,8 @@ from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.api.events import Events, ObserveInbox
 from XBotv2.core.api.timing import conversation_stats
 from XBotv2.core.api.history import HistoryPage
-from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.agentloop.api.storage import ARCHIVE, ExecutionRecord
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.interactions.api.contracts import InteractionRequest, InteractionResolution
 from XBotv2.session.api.contracts import (
@@ -128,6 +131,10 @@ class AgentLoop:
     _log: RuntimeLog = field(init=False)
 
     @property
+    def inbox(self):
+        return self._engine.inbox
+
+    @property
     def key(self) -> SessionKey:
         return self._key
 
@@ -156,6 +163,11 @@ class AgentLoop:
     @property
     def busy(self) -> bool:
         return self._turn_lock.locked()
+
+    @property
+    def execution_id(self) -> TurnId | None:
+        router = self._active_router
+        return router._turn_id if router is not None else None
 
     @property
     def pending_input_count(self) -> int:
@@ -278,6 +290,9 @@ class AgentLoop:
                 )
             )
         if isinstance(change, Claimed):
+            if self._active_router is not None:
+                self._active_router.input_ids.extend(change.ids)
+                self._active_router.final_message_id = None
             claimed = InputClaimedEvent(message_ids=change.ids)
             if self._active_router is not None:
                 self._active_router.emit(claimed)
@@ -579,6 +594,8 @@ class TurnEventRouter:
     ) -> None:
         self._runtime = runtime
         self._turn_id = turn_id
+        self.input_ids: list[str] = []
+        self.final_message_id: str | None = None
 
     def emit(self, event) -> None:
         self._runtime.publish_event(
@@ -634,6 +651,16 @@ async def _execute_turn(
     """Run one turn independently of any transport response consumer."""
     turn_open = False
     terminal = None
+    execution_started = False
+    status = "failed"
+    archive = runtime._context.require(ARCHIVE)
+
+    async def on_claimed(claimed):
+        nonlocal execution_started
+        execution_started = True
+        await archive._execution_start(runtime.session_id, runtime.thread_id, ExecutionRecord(
+            turn_id=router._turn_id, input_ids=tuple(item.id for item in claimed), status="running"))
+
     try:
         live_interactive = runtime.interactive if interactive is None else interactive
         interaction_sink = (
@@ -645,25 +672,30 @@ async def _execute_turn(
             turn_stream = (
                 runtime._engine.run_turn(
                     item,
-                    request_id=request_id,
+                    request_id=request_id, on_claimed=on_claimed,
                 )
                 if item is not None
-                else runtime._engine.run_pending(request_id=request_id)
+                else runtime._engine.run_pending(request_id=request_id, on_claimed=on_claimed)
             )
             async with aclosing(turn_stream):
                 async for event in turn_stream:
                     if ready is not None:
                         ready.set()
+                    if isinstance(event, AssistantCompleted):
+                        router.final_message_id = (None if any(isinstance(part, ToolCall) for part in event.message.parts) else event.message.id)
                     if isinstance(event, LoopTurnEnded):
                         terminal = event
+                        status = ("cancelled" if event.outcome.kind == "cancelled" else "completed" if event.outcome.stop_reason == "completed" else "failed")
                     else:
                         router.emit(event)
                         if isinstance(event, LoopTurnStarted):
                             turn_open = True
     except asyncio.CancelledError:
+        status = "cancelled"
         runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
     except Exception as exc:  # noqa: BLE001
+        status = "failed"
         runtime._log.exception(
             "session.turn.failed",
             request_id=request_id,
@@ -684,17 +716,34 @@ async def _execute_turn(
                 outcome=TurnFinished(stop_reason="session_error"),
             )
     finally:
-        if ready is not None:
-            ready.set()
-        if runtime._active_router is router:
-            runtime._active_router = None
-        runtime._turn_task = None
-        runtime._turn_lock.release()
-        runtime.touch()
-        if terminal is not None:
-            router.emit(terminal)
-        if runtime._wakeup_requested and runtime.wakeup_task is None:
-            runtime._request_wakeup()
+        record = None
+        try:
+            if execution_started:
+                record = ExecutionRecord(turn_id=router._turn_id, input_ids=tuple(router.input_ids),
+                    status=status, final_message_id=router.final_message_id if status == "completed" else None)
+                try:
+                    await archive._execution_end(runtime.session_id, runtime.thread_id, record)
+                except Exception as exc:
+                    status = "failed"
+                    record = record.model_copy(update={"status": "failed", "final_message_id": None})
+                    router.emit(LoopError(code="execution_persistence_failed", message=str(exc) or type(exc).__name__))
+                    raise
+        finally:
+            if ready is not None:
+                ready.set()
+            if runtime._active_router is router:
+                runtime._active_router = None
+            runtime._turn_task = None
+            runtime._turn_lock.release()
+            runtime.touch()
+            if execution_started and status == "failed":
+                runtime._wakeup_requested = False
+            if terminal is not None:
+                router.emit(terminal)
+            if record is not None:
+                router.emit(ExecutionEnded(execution=record))
+            if runtime._wakeup_requested and runtime.wakeup_task is None:
+                runtime._request_wakeup()
 
 
 async def start_turn(

@@ -42,6 +42,7 @@ class AgentInbox:
         self._next_step: deque[InboxItem] = deque()
         self._ids: set[str] = set()
         self._claimed_ids: set[str] = set()
+        self._observers: set[asyncio.Event] = set()
         self._lock = asyncio.Lock()
         self._sink = sink
         self._events = events
@@ -67,6 +68,7 @@ class AgentInbox:
         ]:
             self._queue(item.target).append(item)
             self._ids.add(item.id)
+        self._notify_observers()
         return restored
 
     async def _prepare(self, item, resources, *, editing=False):
@@ -283,7 +285,20 @@ class AgentInbox:
         self._ids.difference_update(input_ids)
 
     async def _record(self, change: InboxChange) -> None:
+        self._notify_observers()
         await self._events.emit(Events.INBOX_CHANGED, ObserveInbox(change))
+
+    def _notify_observers(self) -> None:
+        for observer in self._observers:
+            observer.set()
+
+    def subscribe(self) -> asyncio.Event:
+        observer = asyncio.Event()
+        self._observers.add(observer)
+        return observer
+
+    def unsubscribe(self, observer: asyncio.Event) -> None:
+        self._observers.discard(observer)
 
     def __len__(self) -> int:
         return sum(1 for _ in self._unclaimed(self._items()))

@@ -345,3 +345,21 @@
 - [x] replay Terra沿现有session/workspace窗口实现默认512帧/8MiB的UTF-8完整内部帧计费，仅保存整数大小、不缓存另一份正文、不做hash；workspace删除每订阅者payload队列及回放副本，改为中央窗口游标/单槽唤醒。超大帧推进序号但不保留，旧游标明确过期、需要重取快照。10项原有及新增组合通过，后补普通字节清退2项分别通过，不重复前10项；额外仅选workspace真实HTTP/SSE重放与含tool/usage的provider流各1项通过，3.86s、actual exit0，未扩全套。第一次受限socket运行已中断并确认130退出后授权环境完成。
 - [x] 两Terra已停止编辑，主代理已读实际API/worker调用链、计费与游标实现、相关测试；无新executor、缓存框架、持久化业务回调或依赖。filesystem先独立提交`dc471ca4`；本轮新改动不再复用cce37b15的wheel结论，不重复构建旧验收。后续继续其他集合清退与协作等任务，整体goal仍active。
 - [x] 本轮组合的精确被评估开发提交为`8e7798fca17615e7989855d6c6761916ea1922d1`；该提交包含filesystem公共边界与事件双预算两项，证据为本轮定向测试及一次架构检查。后续此处只有日志记录变更，无需重复验证。最新用户约束持续生效：仅Terra、必要实施和定向检查，不重复全套/过度设计/校验/hash。
+
+### 迭代 9：连续子线程、jobs 清退与统一等待（实施中）
+
+- [x] 上轮为实际源码与验收推进；本轮核对HEAD70451387/生产8e7798fc及工作树，除用户设计稿/.worktrees无未提交改动。现有subagents仍将每次输入包装Job并复制完整reply，jobs终态仍保留runner/Task/events，wait也未接入规范steer；据此继续设计第10节，而不重复已完成的layout/缓存验收。
+- [x] 仅启动一个明确GPT-6.1 Terra实施该关联切片，避免两个代理交叉修改同一生命周期；主代理保留TODO/边界审查/提交。持续遵循只用Terra、最少概念和必要定向验证，不新建WaitService/执行器、不做全套/wheel/压测/hash。
+- [x] subagents改为稳定child thread的提交、继续、读取和等待，取消每turn Job及全文结果副本；session级限额计入所有存活后代，关闭释放、重开校验。
+- [x] jobs完成即清退执行资源，只留有界轻量终态，等待中的目标结果能保留，过期查询清楚返回不可用；child额度配置移交subagents，取消旧jobs subagent并发字段。
+- [x] 统一wait支持冻结active集合、默认any、all/empty/timeout/steered，遵循canonical inbox claimed/consumed与queue区别，model生成期间steer能让出，A的其他完成通知与本集合完成按来源身份区分，wait取消不取消目标、child代次不被followup偷换。完成通知保留NEXT_STEP/wake=False。
+- [x] jobs/inbox共享接口先稳定后，实施按owner拆为三个Terra：jobs与共享wait、AgentLoop执行事实/归档、session准入；连续child接线由原child Terra协调，任一时刻最多三个Terra且无Sol。主代理未替代子代理写生产实现。
+- [x] jobs基础采用终态100项上限，等待者保留结果；完成清退runner/Task/completion Event，所有owner的终态spec统一仅kind/有限label，不再硬编码shell。wait结果携带轻量结果快照，wait_shell通过标准ToolOutput.artifacts及对应逻辑ID交接输出，cache清退不丢ref/exitcode。原基础23项、后续受影响37项及各新增小回归分别记录，不作为同一全套累加；`/tmp/xbot-collaboration-targeted.log`、`/tmp/xbot-wait-cancel.log`、`/tmp/xbot-shell-wait-artifact.log`均有实际exit0。文档改示例不重验。
+- [x] 共享等待归agentloop.api.wait公开小函数，没有WaitService/通知队列；Inbox订阅仅持Event，pending排除claimed，恢复CommitUncertain/retarget的同步也会唤醒但不重发输入生命周期。真实loader+Engine+标准wait_shell验证model生成wait期间steer→steered→下一请求消费一次、目标仍running（`/tmp/xbot-wait-integration.log`，1 passed/exit0）；恢复观察单项通过（`/tmp/xbot-inbox-recovery-observer.log`）。
+- [x] AgentLoop owner新增canonical execution开始/结束、输入生命周期与最终message引用的可重建投影，公开latest_input/execution_for_input/latest_execution/message；终态事件在同一规范Task释放锁后发布。实际修正领取后启动前错误的自动重复执行，失败/取消不带旧reply，不以最后assistant猜完成。索引沿用canonical seq及实际查询索引；省去冗余schema预检/单用途常量，不加hash或缓存框架。成功/启动前失败/冷读/未完成与取消、按输入查询各有定向证据（`/tmp/xbot-execution-facts-failed-node.log`、`/tmp/xbot-execution-facts-final.log`、`/tmp/xbot-input-facts-test.log`）。这些不是fork/exchange的新增验收；旧投影升级路径未做自动迁移。
+- [x] session owner原子准入涵盖直接open、并发opening、所有活跃后代及已存parent恢复，set_child_limit由subagents owner显式配置。关闭最深后代先于父；直接close_thread也处理后代及已登记opening，失败不提前释放名额。先前相关3项通过，随后opening竞态仅重验新单项，1 passed/2.44s、handle50488 actual exit0；未重跑3项或全套。
+- [x] 连续child删除Job包装/全文结果副本与旧job ID工具路径；8项受影响组合exit0（`/tmp/xbot-child-final.log`）覆盖标准工具两轮、权限、取消后继续、冷归档、关闭重开、冻结代次及两条HTTP协作/恢复。中间关闭时通知仍提交导致teardown失败已保留`/tmp/xbot-child-verification.log`，改为先提交规范通知再完成wait，并仅重验受影响组合。不把通过组合替代尚在收口的完成观察越界/冷状态。
+- [x] 受限环境DB/async多次等待SQLite future不作为行为证据，相关句柄均确认结束；后续此类验证初次即在授权环境运行，避免环境诊断循环。遵守最新用户约束，停止全套/wheel/大压测/hash，只有实际缺口产生的定向检查。
+- [x] 最后按实际canonical execution_id区分live与归档未结束事实，cold/idle无匹配执行时返回interrupted；有界事件游标过期时先重订阅再查冻结turn_id的规范记录，不把丢replay当执行失败或偷换后续代次。新增边界组合5 passed/0.26s，`/tmp/xbot-child-final-boundaries.log`，actual exit0；owner身份/精确读取接口单项通过，`/tmp/xbot-execution-identity-test.log`。原8项不重复。
+- [x] 删除launcher历史child ID集合，插件关闭从Sessions现有live scopes派生；resolve用thread_summary，默认wait用一次live scopes快照同步筛选，不扫描全部历史或在筛选期间await改变切点。仅原HTTP默认等待单项通过，`/tmp/xbot-default-child-wait.log`，1 passed/5.30s、handle59790 actual exit0。主代理已读这些实际调用和SQL/规范事实边界，提交前一次git diff --check通过；未生成新hash快照或重新运行旧套件。
+- [x] 本轮持久业务事实/投影归agentloop，child协作归subagents，通用准入归session，persistence未加入业务逻辑；没有新WaitService/runner框架。各代理明确全部测试句柄退出并停止编辑。后续仍需指定产品工况、真正供应商及最终安装产物验收，不用本轮局部证据替代完整goal；已有projection升级/旧格式保留未新增自动兼容路径。

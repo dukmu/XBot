@@ -6509,7 +6509,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
                     "args": {"agent": "reviewer", "prompt": "Inspect ownership."},
                 }]}
             elif self.parent_step == 1:
-                matched = re.search(r"Started subagent thread ([^;]+);", text)
+                matched = re.search(r"Subagent thread ([^:]+):", text)
                 assert matched is not None
                 self.target = matched.group(1)
                 response = {"tool_calls": [{
@@ -6531,7 +6531,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
                 response = {"tool_calls": [{
                     "id": "read-initial",
                     "name": "read_subagent",
-                    "args": {"id": "subagent_1"},
+                    "args": {"id": self.target},
                 }]}
             elif self.parent_step == 4:
                 response = {"content": "Initial collaboration complete."}
@@ -6565,7 +6565,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
                 response = {"tool_calls": [{
                     "id": "read-followup",
                     "name": "read_subagent",
-                    "args": {"id": "subagent_2"},
+                    "args": {"id": self.target},
                 }]}
             elif self.parent_step == 10:
                 response = {"content": "Follow-up collaboration complete."}
@@ -6588,7 +6588,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
                 response = {"tool_calls": [{
                     "id": "read-resumed",
                     "name": "read_subagent",
-                    "args": {"id": "subagent_3"},
+                    "args": {"id": self.target},
                 }]}
             elif self.parent_step == 14:
                 response = {"content": "Resumed collaboration complete."}
@@ -6813,13 +6813,13 @@ async def test_followup_resumes_the_same_child_after_server_restart(
             {"agent": "reviewer", "prompt": "Initial review."},
             "spawn-before-restart",
         )
-        match = re.search(r"Started subagent thread ([^;]+); job ([^ ]+)", started)
+        match = re.search(r"Subagent thread ([^:]+):", started)
         assert match is not None
-        child_id, first_job = match.groups()
+        child_id = match.group(1)
         await execute(
             parent,
             "wait_subagent",
-            {"ids": [first_job]},
+            {"ids": [child_id]},
             "wait-before-restart",
         )
     finally:
@@ -6838,28 +6838,28 @@ async def test_followup_resumes_the_same_child_after_server_restart(
             mode="resume",
             no_plugins=False,
         )
+        cold_response = await execute(parent, "read_subagent", {"id": child_id}, "read-before-resume")
+        assert "review response 1" in cold_response
         followed = await execute(
             parent,
             "followup_task",
             {"target": child_id, "message": "Review again after restart."},
             "followup-after-restart",
         )
-        match = re.search(r"job ([^ ]+)", followed)
-        assert match is not None
-        resumed_job = match.group(1)
+        assert child_id in followed
         await execute(
             parent,
             "wait_subagent",
-            {"ids": [resumed_job]},
+            {"ids": [child_id]},
             "wait-after-restart",
         )
         response = await execute(
             parent,
             "read_subagent",
-            {"id": resumed_job},
+            {"id": child_id},
             "read-after-restart",
         )
-        assert response == "review response 2"
+        assert "review response 2" in response
         summary = await second.sessions.thread_summary(
             "restart-subagent", child_id
         )

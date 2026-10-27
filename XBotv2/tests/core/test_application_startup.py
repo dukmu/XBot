@@ -1465,394 +1465,129 @@ mount_thread.Config = getattr(ConfiguredPlugin, "Config", None)
 
 
     @pytest.mark.asyncio
-    async def test_parent_agent_runs_a_subagent_application_through_jobs(
-        self, temp_data_dir, temp_workspace
-    ):
-        from XBotv2.core.api.provider import ProviderTool
-        from XBotv2.core.api.stream import ModelCompleted
-        from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
-
-        (temp_workspace / ".agents").mkdir()
-        (temp_workspace / ".agents" / "reviewer.md").write_text(
-            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
-            encoding="utf-8",
-        )
-        secret = temp_workspace / "secret.txt"
-        secret.write_text("parent-only content", encoding="utf-8")
-        class AgentRoutedMockLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.parent_responses = [
-                    {"content": "session title"},
-                    {"tool_calls": [{
-                        "id": "spawn-reviewer",
-                        "name": "spawn_subagent",
-                        "args": {
-                            "agent": "reviewer",
-                            "prompt": "Inspect the change.",
-                        },
-                    }]},
-                    {"tool_calls": [{
-                        "id": "wait-reviewer",
-                        "name": "wait_subagent",
-                        "args": {"mode": "all"},
-                    }]},
-                    {"tool_calls": [{
-                        "id": "read-reviewer",
-                        "name": "read_subagent",
-                        "args": {"id": "subagent_1"},
-                    }]},
-                    {"content": "The review is complete: The parent policy prevented file access."},
-                ]
-                self.child_responses = [
-                    {"tool_calls": [{
-                        "id": "reviewer-read",
-                        "name": "read",
-                        "args": {"path": "secret.txt", "mode": "utf8"},
-                    }]},
-                    {"content": "The parent policy prevented file access."},
-                ]
-                self.child_requests = []
-
-            async def _astream_once(self, request):
-                system_text = "\n".join(
-                    part.text for part in request.messages[0].parts
-                )
-                is_child = "Review." in system_text
-                responses = self.child_responses if is_child else self.parent_responses
-                if is_child:
-                    self.child_requests.append(request)
-                yield ModelCompleted(response=self.to_response(responses.pop(0)))
-
-        llm = AgentRoutedMockLLM()
-        _write_plugins(temp_data_dir, {"permissions": {"config": {"rules": [{"tool_pattern": "read", "decision": "deny"}, {"tool_pattern": ".*", "decision": "allow"}]}}})
-        host, application = await _hosted_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="subagent-e2e",
-            workspace_root=temp_workspace,
-            llm_override=llm,
-        )
-        try:
-            events = await _run_turn(
-                engine_of(application),
-                "Ask the reviewer agent to inspect this change, wait for it, then report.",
-            )
-
-            tool_completions = [
-                event for event in events if isinstance(event, ToolCompleted)
-            ]
-            assert [event.execution.message.call.name for event in tool_completions] == [
-                "spawn_subagent",
-                "wait_subagent",
-                "read_subagent",
-            ]
-            assert all(
-                isinstance(event.execution.message.outcome, ToolSucceeded)
-                for event in tool_completions
-            )
-            assert any(
-                isinstance(event, AssistantCompleted)
-                and "The review is complete: The parent policy prevented file access." in "".join(
-                    part.text for part in event.message.parts
-                    if isinstance(part, TextPart)
-                )
-                for event in events
-            )
-
-            jobs = application.jobs.all()
-            assert len(jobs) == 1
-            job = jobs[0]
-            assert job.kind == "subagent"
-            assert job.status == "succeeded"
-            assert job.result is not None
-            assert job.result.final_response == (
-                "The parent policy prevented file access."
-            )
-            child_tool_results = [
-                "".join(part.text for part in message.parts if isinstance(part, TextPart))
-                for request in llm.child_requests
-                for message in request.messages
-                if isinstance(message, ProviderTool)
-            ]
-            assert "Tool denied: Permission denied for tool: read" in child_tool_results
-            assert all("parent-only content" not in text for text in child_tool_results)
-            child = await host.sessions.thread_summary(
-                "subagent-e2e", job.spec.thread_id
-            )
-            assert child.status == "active"
-            assert child.turn_status == "idle"
-            assert child.agent == "reviewer"
-            assert child.parent_thread_id == "main"
-        finally:
-            await host.close()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("terminal", ["failed_running", "cancelled_running"])
-    async def test_subagent_failure_and_cancel_keep_child_thread_available(
-        self, temp_data_dir, temp_workspace, terminal
-    ):
-        import asyncio
-
-        from XBotv2.core.api.domain import ProviderError
-        from XBotv2.core.api.stream import ModelCompleted, ModelFailed
-        from XBotv2.persistence.impl.session_lock import acquire_session
-
-        (temp_workspace / ".agents").mkdir()
-        (temp_workspace / ".agents" / "reviewer.md").write_text(
-            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
-            encoding="utf-8",
-        )
-        child_started = asyncio.Event()
-
-        class LifecycleMockLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.parent_responses = [
-                    {"content": "session title"},
-                    {"tool_calls": [{
-                        "id": "spawn-reviewer",
-                        "name": "spawn_subagent",
-                        "args": {"agent": "reviewer", "prompt": "Inspect."},
-                    }]},
-                    {"tool_calls": [{
-                        "id": "wait-reviewer",
-                        "name": "wait_subagent",
-                        "args": {"mode": "all"},
-                    }]},
-                    {"content": "The review job reached a terminal state."},
-                ]
-
-            async def _astream_once(self, request):
-                self._state.request_history.append(request)
-                system_text = "\n".join(
-                    part.text for part in request.messages[0].parts
-                )
-                if "Review." not in system_text:
-                    response = self.parent_responses[self._state.call_count]
-                    self._state.call_count += 1
-                    yield ModelCompleted(
-                        response=self.to_response(response)
-                    )
-                    return
-
-                child_started.set()
-                if terminal == "failed_running":
-                    yield ModelFailed(error=ProviderError(
-                        code="child_provider_failed",
-                        message="child provider failed",
-                        retryable=False,
-                        category="provider",
-                    ))
-                    return
-                await asyncio.Event().wait()
-
-        llm = LifecycleMockLLM()
-        paths = RuntimePaths.from_data_dir(temp_data_dir)
-        session_id = f"subagent-{terminal}"
-        host, application = await _hosted_application(
-            paths=paths,
-            session_id=session_id,
-            workspace_root=temp_workspace,
-            llm_override=llm,
-        )
-        with pytest.raises(OperationError, match="already owned"):
-            acquire_session(paths.session(session_id).root, label="observer")
-        turn = asyncio.create_task(_run_turn(
-            engine_of(application),
-            "Ask the reviewer agent to inspect this change and wait for it.",
-        ))
-        try:
-            await asyncio.wait_for(child_started.wait(), timeout=3)
-            jobs = application.jobs
-            assert jobs is not None
-            job = next(item for item in jobs.all() if item.kind == "subagent")
-
-            if terminal == "cancelled_running":
-                await jobs.cancel(job.id)
-
-            events = await asyncio.wait_for(turn, timeout=5)
-            assert any(isinstance(event, AssistantCompleted) for event in events)
-            assert job.status == terminal
-            child = await host.sessions.thread_summary(
-                session_id, job.spec.thread_id
-            )
-            assert child.status == "active"
-            assert child.turn_status == "idle"
-            assert child.parent_thread_id == "main"
-        finally:
-            if not turn.done():
-                turn.cancel()
-                await asyncio.gather(turn, return_exceptions=True)
-            await host.close()
-
-    @pytest.mark.asyncio
-    async def test_multiple_subagents_cancel_together_keep_their_threads(
-        self, temp_data_dir, temp_workspace
-    ):
-        import asyncio
-
-        from XBotv2.core.api.stream import ModelCompleted
-        from XBotv2.persistence.impl.session_lock import acquire_session
-
-        (temp_workspace / ".agents").mkdir()
-        (temp_workspace / ".agents" / "reviewer.md").write_text(
-            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
-            encoding="utf-8",
-        )
-        both_children_started = asyncio.Event()
-
-        class ConcurrentChildrenLLM(MockLLM):
-            def __init__(self):
-                super().__init__(responses=[])
-                self.parent_calls = 0
-                self.child_calls = 0
-
-            async def _astream_once(self, request):
-                self._state.request_history.append(request)
-                system_text = "\n".join(
-                    part.text for part in request.messages[0].parts
-                )
-                if "Review." in system_text:
-                    self.child_calls += 1
-                    if self.child_calls == 2:
-                        both_children_started.set()
-                    await asyncio.Event().wait()
-
-                responses = [
-                    {"content": "session title"},
-                    {"tool_calls": [
-                        {
-                            "id": "spawn-first",
-                            "name": "spawn_subagent",
-                            "args": {"agent": "reviewer", "prompt": "First."},
-                        },
-                        {
-                            "id": "spawn-second",
-                            "name": "spawn_subagent",
-                            "args": {"agent": "reviewer", "prompt": "Second."},
-                        },
-                    ]},
-                    {"content": "Both reviews started."},
-                ]
-                response = responses[self.parent_calls]
-                self.parent_calls += 1
-                yield ModelCompleted(response=self.to_response(response))
-
-        paths = RuntimePaths.from_data_dir(temp_data_dir)
-        host, application = await _hosted_application(
-            paths=paths,
-            session_id="subagent-concurrent-cancel",
-            workspace_root=temp_workspace,
-            llm_override=ConcurrentChildrenLLM(),
-        )
-        with pytest.raises(OperationError, match="already owned"):
-            acquire_session(paths.session("subagent-concurrent-cancel").root, label="observer")
-        try:
-            await _run_turn(engine_of(application), "Start both reviewers.")
-            await asyncio.wait_for(both_children_started.wait(), timeout=3)
-            jobs = application.jobs
-            children = [job for job in jobs.all() if job.kind == "subagent"]
-            assert len(children) == 2
-
-            stopped = await jobs.stop_all()
-            waited = await jobs.wait([job.id for job in children], timeout=1)
-
-            assert {view.state for view in stopped} == {"cancelled_running"}
-            assert waited.pending == ()
-            assert {view.state for view in waited.ready} == {"cancelled_running"}
-            summaries = await host.sessions.list_threads(
-                "subagent-concurrent-cancel"
-            )
-            child_threads = [item for item in summaries if item.kind == "subagent"]
-            assert len(child_threads) == 2
-            assert all(item.status == "active" for item in child_threads)
-            assert all(item.turn_status == "idle" for item in child_threads)
-        finally:
-            await host.close()
-
-    @pytest.mark.asyncio
-    async def test_parent_reads_failed_subagent_and_continues_the_turn(
-        self, temp_data_dir, temp_workspace
-    ):
-        from XBotv2.core.api.domain import ProviderError
-        from XBotv2.core.api.stream import ModelCompleted, ModelFailed
+    async def test_continuous_child_tools_and_archive(self, temp_data_dir, temp_workspace):
+        from XBotv2.agentloop.api.contracts import TOOLS
         from XBotv2.core.api.tools import ToolFailed
 
         (temp_workspace / ".agents").mkdir()
         (temp_workspace / ".agents" / "reviewer.md").write_text(
-            "---\ndescription: Workspace reviewer\nmode: subagent\n---\nReview.",
-            encoding="utf-8",
+            "---\ndescription: Reviewer\nmode: subagent\n---\nReview.", encoding="utf-8"
         )
-
-        class FailedChildLLM(MockLLM):
+        _write_plugins(temp_data_dir, {
+            "subagents": {"config": {"max_live_threads": 1}},
+            "permissions": {"config": {"rules": [
+                {"tool_pattern": "read", "decision": "deny"},
+                {"tool_pattern": ".*", "decision": "allow"},
+            ]}},
+        })
+        (temp_workspace / "secret.txt").write_text("parent-only content", encoding="utf-8")
+        class ChildLLM(MockLLM):
             def __init__(self):
-                super().__init__(responses=[])
-                self.parent_responses = iter([
-                    {"content": "session title"},
-                    {"tool_calls": [{
-                        "id": "spawn-reviewer",
-                        "name": "spawn_subagent",
-                        "args": {"agent": "reviewer", "prompt": "Inspect."},
-                    }]},
-                    {"tool_calls": [{
-                        "id": "wait-reviewer",
-                        "name": "wait_subagent",
-                        "args": {"ids": ["subagent_1"]},
-                    }]},
-                    {"tool_calls": [{
-                        "id": "read-reviewer",
-                        "name": "read_subagent",
-                        "args": {"id": "subagent_1"},
-                    }]},
-                    {"content": "The reviewer failed; I handled the failure."},
+                super().__init__(responses=[
+                    {"tool_calls": [{"id": "inspect", "name": "read", "args": {"path": "secret.txt", "mode": "utf8"}}]},
+                    {"content": "first child reply"}, {"content": "second child reply"},
                 ])
+                self.requests = []
 
             async def _astream_once(self, request):
-                self._state.request_history.append(request)
-                system_text = "\n".join(
-                    part.text for part in request.messages[0].parts
-                )
-                if "Review." in system_text:
-                    yield ModelFailed(error=ProviderError(
-                        code="review_provider_failed",
-                        message="review provider failed",
-                        retryable=False,
-                        category="provider",
-                    ))
-                    return
-                yield ModelCompleted(
-                    response=self.to_response(next(self.parent_responses))
-                )
+                self.requests.append(request)
+                async for event in super()._astream_once(request):
+                    yield event
+
+        llm = ChildLLM()
+        host, application = await _hosted_application(
+            paths=RuntimePaths.from_data_dir(temp_data_dir), session_id="continuous-child",
+            workspace_root=temp_workspace, llm_override=llm,
+        )
+        async def call(name, **args):
+            [execution] = await application.require(TOOLS).execute_all([
+                ToolCall(id=f"call-{name}", name=name, args=args)
+            ])
+            return execution.message.outcome
+
+        def content(outcome):
+            assert isinstance(outcome, ToolSucceeded), outcome
+            return "".join(part.text for part in outcome.output.parts if isinstance(part, TextPart))
+
+        try:
+            result = content(await call("spawn_subagent", agent="reviewer", prompt="first"))
+            child = result.split()[2].rstrip(":")
+            assert result.endswith("accepted") or result.endswith("started")
+            assert "ready" in content(await call("wait_subagent", ids=[child], timeout_ms=10000))
+            assert "first child reply" in content(await call("read_subagent", id=child))
+            tool_results = [
+                part.text for request in llm.requests for message in request.messages
+                if isinstance(message, ProviderTool) for part in message.parts if isinstance(part, TextPart)
+            ]
+            assert any("Permission denied" in text for text in tool_results)
+            assert all("parent-only content" not in text for text in tool_results)
+            assert isinstance(await call("spawn_subagent", agent="reviewer", prompt="too many"), ToolFailed)
+            content(await call("followup_task", target=child, message="continue"))
+            assert "ready" in content(await call("wait_subagent", ids=[child], timeout_ms=10000))
+            assert "second child reply" in content(await call("read_subagent", id=child))
+            content(await call("close_subagent", id=child))
+            assert "second child reply" in content(await call("read_subagent", id=child))
+            content(await call("send_message", target=child, message="remember this"))
+            assert isinstance(await call("spawn_subagent", agent="reviewer", prompt="still full"), ToolFailed)
+            content(await call("close_subagent", id=child))
+        finally:
+            await host.close()
+
+        host = await open_runtime(paths=RuntimePaths.from_data_dir(temp_data_dir))
+        try:
+            application = await host.sessions.open_session(
+                session_id="continuous-child", thread_id="main", mode="resume",
+                provider_name="default", workspace_root=str(temp_workspace), no_plugins=False,
+            )
+            assert "second child reply" in content(await call("read_subagent", id=child))
+        finally:
+            await host.close()
+
+    @pytest.mark.asyncio
+    async def test_child_cancel_keeps_thread_for_followup(self, temp_data_dir, temp_workspace):
+        from XBotv2.agentloop.api.contracts import TOOLS
+        from XBotv2.core.api.tools import ToolFailed
+        from XBotv2.core.api.stream import ModelCompleted
+
+        (temp_workspace / ".agents").mkdir()
+        (temp_workspace / ".agents" / "reviewer.md").write_text(
+            "---\ndescription: Reviewer\nmode: subagent\n---\nReview.", encoding="utf-8"
+        )
+        _write_plugins(temp_data_dir, {"permissions": {"config": {"rules": [{"tool_pattern": ".*", "decision": "allow"}]}}})
+        started = asyncio.Event()
+        class GatedLLM(MockLLM):
+            def __init__(self):
+                super().__init__(responses=[])
+                self.calls = 0
+
+            async def _astream_once(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    started.set()
+                    await asyncio.Event().wait()
+                yield ModelCompleted(response=self.to_response({"content": "reply after cancellation"}))
 
         host, application = await _hosted_application(
-            paths=RuntimePaths.from_data_dir(temp_data_dir),
-            session_id="subagent-parent-read-failure",
-            workspace_root=temp_workspace,
-            llm_override=FailedChildLLM(),
+            paths=RuntimePaths.from_data_dir(temp_data_dir), session_id="cancel-child",
+            workspace_root=temp_workspace, llm_override=GatedLLM(),
         )
+        async def call(name, **args):
+            [execution] = await application.require(TOOLS).execute_all([ToolCall(id=name, name=name, args=args)])
+            return execution.message.outcome
+
+        def text(outcome):
+            assert isinstance(outcome, ToolSucceeded), outcome
+            return "".join(part.text for part in outcome.output.parts if isinstance(part, TextPart))
+
         try:
-            events = await _run_turn(
-                engine_of(application),
-                "Ask the reviewer and handle a failed review.",
-            )
-            tools = [
-                event.execution.message
-                for event in events if isinstance(event, ToolCompleted)
-            ]
-            assert [message.call.name for message in tools] == [
-                "spawn_subagent", "wait_subagent", "read_subagent",
-            ]
-            assert isinstance(tools[-1].outcome, ToolFailed)
-            assert tools[-1].outcome.error.code == "subagent_failed"
-            assert "review provider failed" in tools[-1].outcome.error.message
-            assert any(
-                isinstance(event, AssistantCompleted)
-                and "handled the failure" in "".join(
-                    part.text for part in event.message.parts
-                    if isinstance(part, TextPart)
-                )
-                for event in events
-            )
+            child = text(await call("spawn_subagent", agent="reviewer", prompt="start")).split()[2].rstrip(":")
+            await asyncio.wait_for(started.wait(), 10)
+            text(await call("cancel_subagent", id=child))
+            assert "cancelled" in text(await call("wait_subagent", ids=[child], timeout_ms=10000))
+            assert isinstance(await call("read_subagent", id=child), ToolFailed)
+            text(await call("followup_task", target=child, message="continue"))
+            assert "ready" in text(await call("wait_subagent", ids=[child], timeout_ms=10000))
+            assert "reply after cancellation" in text(await call("read_subagent", id=child))
         finally:
             await host.close()
 

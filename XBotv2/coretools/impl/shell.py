@@ -380,14 +380,12 @@ async def list_shells(
             for summary in summaries
         ]
     }
-    return _success(
-        json.dumps(payload, ensure_ascii=False)
-    )
+    return _success(json.dumps(payload, ensure_ascii=False))
 
 
 async def wait_shell(
     ids: list[str] | None = None,
-    mode: Literal["all", "any"] = "all",
+    mode: Literal["all", "any"] = "any",
     timeout_ms: int | None = None,
     *,
     job_registry: JobsPort,
@@ -403,23 +401,25 @@ async def wait_shell(
         mode: ``all`` waits for every listed job; ``any`` returns on the first.
         timeout_ms: Optional maximum wait time in milliseconds.
     """
-    resolved = ids or [
-            job.id for job in job_registry.all() if job.kind == "shell"
-    ]
-    if not resolved:
-        return _failure("shell_not_found", "No shell jobs to wait for")
     try:
         result = await job_registry.wait(
-            resolved,
+            ids or [],
             mode=mode,
             timeout=(timeout_ms / 1000) if timeout_ms is not None else None,
+            kind="shell",
         )
     except JobNotFound:
         return _failure("shell_not_found", "Unknown shell job id")
-    payload = _wait_payload(result, job_registry)
-    return _success(
-        json.dumps(payload, ensure_ascii=False)
+    payload = _wait_payload(result)
+    artifacts = tuple(
+        output.output_ref
+        for _, output in result.results
+        if isinstance(output, ShellJobResult)
     )
+    return ToolSucceeded(output=ToolOutput(
+        parts=(TextPart(text=json.dumps(payload, ensure_ascii=False)),),
+        artifacts=artifacts,
+    ))
 
 
 async def read_shell(
@@ -554,19 +554,22 @@ def shell_tools(
     )
 
 
-def _wait_payload(result: WaitResult, registry: JobsPort) -> dict[str, JsonValue]:
+def _wait_payload(result: WaitResult) -> dict[str, JsonValue]:
     ready: list[dict[str, JsonValue]] = []
+    results = dict(result.results)
     for summary in result.ready:
         item = summary.model_dump(mode="json", exclude_none=True)
         if summary.kind == "shell":
-            job = registry.get_or_none(summary.id)
-            if job is not None and isinstance(job.result, ShellJobResult):
-                item["exit_code"] = job.result.exit_code
+            output = results.get(summary.id)
+            if isinstance(output, ShellJobResult):
+                item["exit_code"] = output.exit_code
+                item["output_artifact_id"] = output.output_ref.id
         ready.append(item)
     return {
         "ready": ready,
         "pending": list(result.pending),
         "timed_out": result.timed_out,
+        "reason": result.reason,
     }
 
 

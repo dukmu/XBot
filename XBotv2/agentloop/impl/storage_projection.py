@@ -1,5 +1,6 @@
 """Agentloop owns typed rollout facts and all conversation projections."""
 
+import json
 from pydantic import TypeAdapter
 from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.api.messages import ToolMessage
@@ -188,6 +189,10 @@ def project(connection, thread, records):
             item = InboxItem.model_validate(data["item"])
             _index_artifacts(connection, thread, item.input.artifacts, item.input.images)
             connection.execute(
+                "INSERT INTO input_facts VALUES(?,?,?,?,?,?,?)",
+                (thread, item.id, seq, "pending", getattr(item.input, "source", None), getattr(item.input, "event", None), item.target.value),
+            )
+            connection.execute(
                 "INSERT INTO input_ids VALUES(?,?,?,?,0)",
                 (thread, item.id, identity, identity),
             )
@@ -226,6 +231,7 @@ def project(connection, thread, records):
                 (identity, thread, data["input_id"]),
             )
         elif kind == "input_retargeted":
+            connection.execute("UPDATE input_facts SET target=? WHERE thread_id=? AND input_id=?", (data["target"], thread, data["input_id"]))
             if (
                 _changed(
                     connection,
@@ -243,6 +249,8 @@ def project(connection, thread, records):
             "import_boundary",
         ):
             for input_id in data["input_ids"]:
+                status = {"input_removed": "removed", "inputs_discarded": "discarded", "inputs_consumed": "consumed", "fork_boundary": "discarded", "import_boundary": "discarded"}[kind]
+                connection.execute("UPDATE input_facts SET status=? WHERE thread_id=? AND input_id=?", (status, thread, input_id))
                 if (
                     _one(
                         connection,
@@ -266,6 +274,7 @@ def project(connection, thread, records):
                 "SELECT current_record,retired FROM input_ids WHERE thread_id=? AND input_id=?",
                 (thread, data["input_id"]),
             )
+            connection.execute("UPDATE input_facts SET status='consumed' WHERE thread_id=? AND input_id=?", (thread, data["input_id"]))
             if current is None or current[1] or current[0] != data["body_ref"]:
                 raise StreamCorrupt("Committed input is not pending/current")
             projection = data["projection"]
@@ -324,6 +333,17 @@ def project(connection, thread, records):
                 "UPDATE history_state SET surface_revision=surface_revision+1,surface_version=surface_version+1 WHERE thread_id=?",
                 (thread,),
             )
+        elif kind == "execution_started":
+            _many(connection, "INSERT INTO execution_inputs VALUES(?,?,?)", ((thread, input_id, data["turn_id"]) for input_id in data["input_ids"]))
+            connection.execute(
+                "INSERT INTO executions VALUES(?,?,?,?,?,?)",
+                (thread, data["turn_id"], seq, json.dumps(data["input_ids"]), "running", None),
+            )
+        elif kind == "execution_ended":
+            _many(connection, "INSERT OR IGNORE INTO execution_inputs VALUES(?,?,?)", ((thread, input_id, data["turn_id"]) for input_id in data["input_ids"]))
+            if not _changed(connection, "UPDATE executions SET input_ids=?,status=?,final_message_id=? WHERE thread_id=? AND turn_id=? AND status='running'",
+                            (json.dumps(data["input_ids"]), data["status"], data["final_message_id"], thread, data["turn_id"])):
+                raise StreamCorrupt("Execution ended without a unique running execution")
         elif kind == "turn_started":
             if (
                 _one(

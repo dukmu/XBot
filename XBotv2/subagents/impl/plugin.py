@@ -3,8 +3,8 @@
 from __future__ import annotations
 from XBotv2.agents.api.contracts import AGENT_CATALOG, AGENT_RUNTIME
 
-from XBotv2.agentloop.api.contracts import TOOLS
-from XBotv2.jobs.api.contracts import JOBS
+from XBotv2.agentloop.api.contracts import TOOLS, INBOX
+from XBotv2.agentloop.api.storage import ARCHIVE
 from xcore.api.context import Context
 from XBotv2.subagents.impl.service import SubagentCatalogPrompt, SubagentLauncher, SubagentTools
 from XBotv2.context_builder.api.events import CONTEXT_COMPONENTS_BUILT
@@ -22,7 +22,7 @@ class SubagentsRuntimeComponent:
         AGENT_CATALOG, AGENT_RUNTIME,
         "thread_info",
         "no_plugins",
-        JOBS,
+        ARCHIVE, INBOX,
         TOOLS,
     ]
     name = "xbot.subagents"
@@ -46,9 +46,10 @@ class SubagentsRuntimeComponent:
             coordinator=ctx.require(SUBAGENTS),
             provider_name=ctx.require(AGENT_RUNTIME).current_selection().provider,
             no_plugins=ctx.no_plugins,
+            archive=ctx.require(ARCHIVE),
+            inbox=ctx.require(INBOX),
         )
         handlers = SubagentTools(
-            registry=ctx.require(JOBS),
             launcher=launcher,
         )
         ctx.pre_stop(launcher.close)
@@ -63,14 +64,12 @@ class SubagentsRuntimeComponent:
             handlers.wait_subagent,
             handlers.read_subagent,
             handlers.cancel_subagent,
+            handlers.close_subagent,
         ):
             ctx.require(TOOLS).register(Tool.from_function(handler))
 
 
 async def mount_thread(ctx, config):
-    # Nested delegation awaits the coordinator scheduling contract.
-    if ctx.thread_info.parent_thread_id:
-        return
     await ctx.plugin(SubagentsRuntimeComponent(), config)
 
 mount_thread.inject = ("thread_info",)
@@ -79,7 +78,10 @@ mount_thread.Config = SubagentsConfig
 
 
 def mount_session(ctx, config):
-    ctx.provide(SUBAGENTS, SubagentCoordinator(ctx.require(SESSION_INFO), ctx.require(SESSIONS)))
+    session = ctx.require(SESSION_INFO)
+    sessions = ctx.require(SESSIONS)
+    sessions.set_child_limit(session.session_id, config.max_live_threads)
+    ctx.provide(SUBAGENTS, SubagentCoordinator(session, sessions))
 
 mount_session.inject = (SESSION_INFO, SESSIONS)
 mount_session.provide = (SUBAGENTS,)

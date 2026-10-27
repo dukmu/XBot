@@ -1,45 +1,18 @@
 """Public declarations owned by the subagent capability."""
 
-from dataclasses import dataclass, field as dataclass_field
 from pydantic import BaseModel, ConfigDict, Field
-from XBotv2.core.api.domain import UsageSnapshot
+from xcore.api.services import ServiceKey
 
 
 class SubagentsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timeout_seconds: float = Field(default=600.0, gt=0)
+    max_live_threads: int = Field(default=4, ge=1)
 
 
 class SubagentAgentError(RuntimeError):
     code = "agent_not_found"
 
 
-class SubagentExecutionError(RuntimeError):
-    code = "subagent_failed"
-
-
-@dataclass(frozen=True, slots=True)
-class SubagentResult:
-    thread_id: str
-    final_response: str
-    usage: UsageSnapshot = dataclass_field(default_factory=UsageSnapshot)
-
-
-__all__ = [
-    "SubagentAgentError",
-    "SubagentExecutionError",
-    "SubagentResult",
-    "SubagentsConfig",
-]
-
-
-from typing import Protocol
-from xcore.api.services import ServiceKey
-
-class SubagentCoordination(Protocol):
-    def allocate(self, agent: str) -> str: ...
-    def lock(self, thread_id: str): ...
-    def owned(self, parent_thread: str) -> set[str]: ...
-
-SUBAGENTS: ServiceKey[SubagentCoordination] = ServiceKey("subagents")
+SUBAGENTS = ServiceKey("subagents")

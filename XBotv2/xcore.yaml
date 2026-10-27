@@ -42,8 +42,6 @@
 - id: jobs
   name: jobs
   profiles: [agent, server]
-  config:
-    max_concurrent_subagents: 4
 
 - id: commands
   name: commands
@@ -183,7 +181,7 @@
       - {tool_pattern: '(?:create_goal|get_goal|update_goal)', decision: allow}
       - {tool_pattern: compact, decision: allow}
       - {tool_pattern: '(?:list_shells|wait_shell|read_shell|cancel_shell)', decision: allow}
-      - {tool_pattern: '(?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent)', decision: allow}
+      - {tool_pattern: '(?:spawn_subagent|list_subagents|wait_subagent|read_subagent|cancel_subagent|close_subagent)', decision: allow}
       - {tool_pattern: '(?:notify_user|send_message|followup_task|ask_user|request_permission)', decision: allow}
       - {tool_pattern: search, decision: allow}
       - {tool_pattern: '(?:web_search|web_fetch|browser_open|browser_snapshot|browser_screenshot|browser_close)', decision: allow}

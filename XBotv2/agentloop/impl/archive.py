@@ -1,5 +1,7 @@
 """Conversation archive business and authorization over the physical backend."""
 
+import json
+from XBotv2.agentloop.api.storage import ExecutionRecord, InputRecord
 from XBotv2.agentloop.impl.storage import ConversationStore
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.history import HistoryCursorInvalid
@@ -51,6 +53,86 @@ class ArchiveService:
                         "origins": event.origins.get(thread, {}),
                     },
                 )
+
+    async def _execution_start(self, session_id, thread_id, record):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            async with store.operation(write=True):
+                await store.stream.append("execution_started", record.model_dump(mode="json"))
+
+    async def _execution_end(self, session_id, thread_id, record):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            async with store.operation(write=True):
+                await store.stream.append("execution_ended", record.model_dump(mode="json"))
+
+    async def execution_for_turn(self, session_id, thread_id, turn_id):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            if not await store.has_history():
+                return None
+            async with store.operation():
+                rows = await store.sql(lambda sql: sql.execute(
+                    "SELECT turn_id,input_ids,status,final_message_id FROM executions WHERE thread_id=? AND turn_id=?", (thread_id, turn_id)))
+                if not rows:
+                    return None
+                turn_id, input_ids, status, final_message_id = rows[0]
+                return ExecutionRecord(turn_id=turn_id, input_ids=json.loads(input_ids), status=status, final_message_id=final_message_id)
+
+    async def execution_for_input(self, session_id, thread_id, input_id):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            if not await store.has_history():
+                return None
+            async with store.operation():
+                rows = await store.sql(lambda sql: sql.execute(
+                    "SELECT e.turn_id,e.input_ids,e.status,e.final_message_id FROM executions e "
+                    "JOIN execution_inputs i ON i.thread_id=e.thread_id AND i.turn_id=e.turn_id "
+                    "WHERE e.thread_id=? AND i.input_id=? ORDER BY e.order_key DESC LIMIT 1", (thread_id, input_id)))
+                if not rows:
+                    return None
+                turn_id, input_ids, status, final_message_id = rows[0]
+                return ExecutionRecord(turn_id=turn_id, input_ids=json.loads(input_ids), status=status, final_message_id=final_message_id)
+
+    async def latest_input(self, session_id, thread_id, *, source=None, event=None):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            if not await store.has_history():
+                return None
+            async with store.operation():
+                query = "SELECT input_id,status,source,event,target FROM input_facts WHERE thread_id=?"
+                parameters = [thread_id]
+                if source is not None:
+                    query += " AND source=?"
+                    parameters.append(source)
+                if event is not None:
+                    query += " AND event=?"
+                    parameters.append(event)
+                query += " ORDER BY order_key DESC LIMIT 1"
+                rows = await store.sql(lambda sql: sql.execute(query, parameters))
+                if not rows:
+                    return None
+                input_id, status, source, event, target = rows[0]
+                return InputRecord(input_id=input_id, status=status, source=source, event=event, target=target)
+
+    async def latest_execution(self, session_id, thread_id):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            if not await store.has_history():
+                return None
+            async with store.operation():
+                rows = await store.sql(lambda sql: sql.execute(
+                    "SELECT turn_id,input_ids,status,final_message_id FROM executions WHERE thread_id=? ORDER BY order_key DESC LIMIT 1", (thread_id,)))
+                if not rows:
+                    return None
+                turn_id, input_ids, status, final_message_id = rows[0]
+                return ExecutionRecord(turn_id=turn_id, input_ids=json.loads(input_ids), status=status, final_message_id=final_message_id)
+
+    async def message(self, session_id, thread_id, message_id):
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            async with store.operation():
+                return await store.message(message_id)
 
     async def surface(self, session_id, thread_id):
         async with self.backend.use(session_id):

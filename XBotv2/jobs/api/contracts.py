@@ -12,7 +12,6 @@ from xcore.api.events import EventKey
 
 
 class JobsConfig(BaseModel):
-    max_concurrent_subagents: int = Field(default=4, ge=1)
     model_config = ConfigDict(extra="forbid")
 
 JobId = str
@@ -174,6 +173,8 @@ class WaitResult:
     ready: tuple[JobView, ...]
     pending: tuple[JobId, ...]
     timed_out: bool = False
+    results: tuple[tuple[JobId, object | None], ...] = ()
+    reason: Literal["ready", "empty", "timeout", "steered"] = "ready"
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +201,7 @@ class JobsPort(Protocol):
     def get_or_none(self, job_id: JobId) -> Job | None: ...
     def all(self) -> list[Job]: ...
     def list(self, *, kind: str | None = None, status: JobStateName | None = None, parent_job_id: JobId | None = None, recursive: bool = False, max_results: int = 20) -> list[JobView]: ...
-    async def wait(self, ids: list[JobId], *, mode: WaitMode = "all", timeout: float | None = None) -> WaitResult: ...
+    async def wait(self, ids: list[JobId] | None = None, *, mode: WaitMode = "any", timeout: float | None = None, kind: str | None = None) -> WaitResult: ...
     async def cancel(self, job_id: JobId) -> CancelResult: ...
 
 

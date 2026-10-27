@@ -1,13 +1,7 @@
 # Subagents
 
-Subagents provides Agent-facing child-thread collaboration through the standard tool registry. It depends on the current session, sessions service, Agent catalog, session launch settings, no-plugins setting, jobs and tools. The launcher uses the existing session lifecycle to create or reopen children, submit inputs and deliver messages; it does not own a second runtime or mailbox. Launcher locks are temporary runtime state, while the session owner retains the child thread and history and jobs holds execution state.
+Subagents provides continuous child threads through the standard tool registry. The session owns each child runtime, its inbox and conversation archive. Inputs use the ordinary AgentLoop submission path; child tasks are not jobs.
 
-The plugin registers `spawn_subagent`, `send_message`, `followup_task`, `list_subagents`, `wait_subagent`, `read_subagent` and `cancel_subagent`. It contributes the visible Agent catalog on `CONTEXT_COMPONENTS_BUILT`. There are no slash commands or HTTP routes. Cancellation stops the job while leaving the child thread available.
+`spawn_subagent` returns a stable thread ID and acceptance status. `send_message` delivers a steer without waking an idle child; `followup_task` starts another task on the same thread. `list_subagents`, `wait_subagent`, `read_subagent`, `cancel_subagent`, and `close_subagent` use thread IDs. Wait defaults to any active direct child and can return ready, empty, timeout, or steered. Reading pages the latest completed response from the archive using a character cursor. An unfinished archived task without a matching live execution or pending input is reported as interrupted. Cancelling retains the thread; closing releases its live slot.
 
-`SubagentsConfig.timeout_seconds` defaults to 600 seconds and is applied at registration to `spawn_subagent`; the other tools use their standard timeout. For example:
-
-```python
-from XBotv2.subagents.api.contracts import SubagentsConfig
-
-config = SubagentsConfig(timeout_seconds=300)
-```
+`SubagentsConfig.max_live_threads` defaults to 4 and limits all open child threads in a session, including idle and nested children. Reopening a child consumes a slot again. `timeout_seconds` defaults to 600 and applies to the spawn tool.
