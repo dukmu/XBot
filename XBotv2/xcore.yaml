@@ -221,6 +221,13 @@
   optional: true
   name: goal
 
+- id: team
+  optional: true
+  name: team
+  profiles: [agent, server]
+  config:
+    enabled: false
+
 - id: todolist
   optional: true
   name: todolist
