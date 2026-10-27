@@ -56,7 +56,7 @@ from XBotv2.agentloop.api.contracts import (
     Discarded,
 )
 from XBotv2.persistence.models import StoredInboxRecord, StoredTrajectoryRecord
-from xcore.state import StateService
+from xcore.api.state import StateService
 
 # Ordinary telemetry is flushed with a bounded delay; callers that declare a
 # durable record get an immediate flush instead.

@@ -7,7 +7,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from pydantic import JsonValue
 from xcore.api.context import Context
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import Events, ModelResponseObserved
 from XBotv2.application import (
     APPLICATION_INITIALIZED,

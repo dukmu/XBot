@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from xcore.errors import ServiceConflictError
+from xcore.api.errors import ServiceConflictError
 
 _SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
 

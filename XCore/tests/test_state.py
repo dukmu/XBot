@@ -8,7 +8,8 @@ import os
 
 import pytest
 
-from xcore import Context, StateService
+from xcore.api.context import Context
+from xcore.api.state import StateService
 
 
 def _path(tmp_path):

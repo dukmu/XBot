@@ -37,7 +37,7 @@ def make_tool_ctx(
     interactions: Any = None,
     extra_guards: tuple[Any, ...] = (),
     base: Any = None,
-) -> xcore.Context:
+) -> xcore.api.context.Context:
     """Build an XCore context with the tool pipeline services registered.
 
     Guards are registered in the order a plugin tree would compose them:
@@ -46,7 +46,7 @@ def make_tool_ctx(
     without it ``ask`` fails closed).  Pass ``base`` to register onto an
     existing context (e.g. one carrying event listeners).
     """
-    ctx = base or xcore.Context()
+    ctx = base or xcore.api.context.Context()
     tools_service = ctx.get(TOOLS, strict=False)
     if tools_service is None:
         # The harness composes and owns this context, so registrations made

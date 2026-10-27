@@ -177,7 +177,7 @@ as each owner moves to the layout described in the plugin README.
 from pathlib import Path
 
 from xcore.api.context import Context
-from xcore import FiberState
+from xcore.api.plugins import FiberState
 
 from XBotv2.core.api.tools import ToolCall
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry

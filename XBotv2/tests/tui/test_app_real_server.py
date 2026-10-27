@@ -47,12 +47,12 @@ from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
 from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
-from XBotv2.tui.app import TuiApp
-from XBotv2.tui.transport import TransportConfig
-from XBotv2.tui.view.composer import Composer, composer_can_submit
-from XBotv2.tui.view.jobs import JobPanel
-from XBotv2.tui.view.status_bar import StatusBar
-from XBotv2.tui.view.transcript import TranscriptScroll
+from XBotv2.tui.impl.app import TuiApp
+from XBotv2.tui.impl.transport import TransportConfig
+from XBotv2.tui.impl.view.composer import Composer, composer_can_submit
+from XBotv2.tui.impl.view.jobs import JobPanel
+from XBotv2.tui.impl.view.status_bar import StatusBar
+from XBotv2.tui.impl.view.transcript import TranscriptScroll
 
 SESSION_ID = "tui-e2e"
 THREAD_ID = "agent"
@@ -2531,7 +2531,7 @@ async def test_real_permission_request_can_be_approved_from_the_tui(
         request = next(iter(app.controller.state.pending_interactions.values()))
         assert isinstance(request, PermissionRequest)
         assert f"ID: {request.interaction_id}" in transcript_text(app)
-        from XBotv2.tui.view.selection import SelectionScreen
+        from XBotv2.tui.impl.view.selection import SelectionScreen
 
         await wait_for(
             pilot,
@@ -2578,7 +2578,7 @@ async def test_real_permission_request_can_be_denied_from_the_tui(
         request = next(iter(app.controller.state.pending_interactions.values()))
         assert isinstance(request, PermissionRequest)
         assert f"ID: {request.interaction_id}" in transcript_text(app)
-        from XBotv2.tui.view.selection import SelectionScreen
+        from XBotv2.tui.impl.view.selection import SelectionScreen
 
         await wait_for(
             pilot,
@@ -2616,7 +2616,7 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
         permission = next(iter(app.controller.state.pending_interactions.values()))
         assert isinstance(permission, PermissionRequest)
         assert f"ID: {permission.interaction_id}" in transcript_text(app)
-        from XBotv2.tui.view.selection import SelectionScreen
+        from XBotv2.tui.impl.view.selection import SelectionScreen
 
         await wait_for(
             pilot,
@@ -2932,7 +2932,7 @@ async def test_the_real_transcript_is_ordered(real_client: XBotClient) -> None:
 
 async def test_the_real_sequence_has_no_gaps(real_client: XBotClient) -> None:
     """A real stream must arrive complete: no gap notice, no rejected frame."""
-    from XBotv2.tui.timeline import ErrorEntry, NoticeEntry
+    from XBotv2.tui.impl.timeline import ErrorEntry, NoticeEntry
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -3115,7 +3115,7 @@ async def screen_text(app: TuiApp) -> str:
 async def test_the_real_thread_picker_lists_the_sessions_threads(
     real_client: XBotClient,
 ) -> None:
-    from XBotv2.tui.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionScreen
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -3161,7 +3161,7 @@ async def test_switching_to_the_real_main_thread_keeps_the_client_writable(
 async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
     real_client: XBotClient,
 ) -> None:
-    from XBotv2.tui.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionScreen
 
     app = tui(real_client)
     async with app.run_test(size=(100, 28)) as pilot:
@@ -3187,7 +3187,7 @@ async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
         assert child_id, "the production subagent created a public child thread"
 
         from XBotv2.session.records import RuntimeNoticeRecord
-        from XBotv2.tui.view.blocks import ClampedBlock
+        from XBotv2.tui.impl.view.blocks import ClampedBlock
 
         history = await real_client.list_messages(SESSION_ID, THREAD_ID)
         notices = [item for item in history.items if isinstance(item, RuntimeNoticeRecord)]
@@ -3555,7 +3555,7 @@ async def test_the_real_catalogue_is_discovered_not_hardcoded(
 
 
 async def test_a_real_server_command_runs_and_answers(real_client: XBotClient) -> None:
-    from XBotv2.tui.timeline import UserEntry
+    from XBotv2.tui.impl.timeline import UserEntry
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -3599,7 +3599,7 @@ async def test_status_is_rendered_from_local_state(real_client: XBotClient) -> N
 
 
 async def test_the_provider_picker_reads_the_real_catalogue(real_client: XBotClient) -> None:
-    from XBotv2.tui.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionScreen
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -3628,7 +3628,7 @@ async def test_the_provider_picker_reads_the_real_catalogue(real_client: XBotCli
 
 
 async def test_the_model_picker_reads_the_real_catalogue(real_client: XBotClient) -> None:
-    from XBotv2.tui.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionScreen
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:

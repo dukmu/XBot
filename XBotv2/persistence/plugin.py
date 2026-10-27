@@ -5,7 +5,7 @@ from __future__ import annotations
 from XBotv2.agentloop.api.state import LOOP_STATE
 from pydantic import JsonValue
 from xcore.api.context import Context
-from xcore import StateService
+from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import Events
 from XBotv2.core.api.metadata import (
     THREAD_METADATA_CHANGED,

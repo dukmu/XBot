@@ -93,7 +93,7 @@ plugin = Plugin()
 @pytest.mark.asyncio
 async def test_failed_capability_does_not_dispose_other_plugins(tmp_path):
     from xcore.api.context import Context
-    from xcore import ServiceNotFoundError
+    from xcore.api.errors import ServiceNotFoundError
     from XBotv2.application.boot import boot_application
 
     marker = tmp_path / "healthy-disposed"

@@ -16,7 +16,7 @@ from functools import partial
 from pathlib import Path
 from pydantic import JsonValue
 from xcore.api.context import Context
-from xcore import StateService
+from xcore.api.state import StateService
 from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.operations import EmptyRequest

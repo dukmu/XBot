@@ -409,30 +409,12 @@ Fiber 在加载前调用 `Config.model_validate(raw_config or {})`。字段类�
   过滤链求值、waterfall 组合（不调 next 即短路）；返回短路值或 None。
 - 错误传播；disposer 可撤。koishi 的 `next(cb)` 临时压栈与深度上限为后续项。
 
-## 11. 公共 API 与模块树（errors.py 纳入）
+## 11. 公共 API
 
-```python
-# xcore/errors.py
-XCoreError(Exception)                      # 基类
-InactiveEffectError(XCoreError)            # 已销毁 fiber 上创建效果
-ServiceNotFoundError(XCoreError)           # require 未找到
-ServiceConflictError(XCoreError)           # 重复提供
-
-# xcore/__init__.py
-from xcore.context import Context
-from xcore.service import Service
-from xcore.plugin import Registry, PluginHandle, PluginDef, FiberState
-from xcore.state import StateService
-from xcore.events import EventBus, Disposer
-from xcore.errors import (XCoreError, InactiveEffectError, ServiceNotFoundError,
-                          ServiceConflictError)
-__version__ = "0.1.0"
-```
-
-- 不再导出 `PluginLoadError`/`PluginValidationError`：`handle.await()` 重抛原始
-  错误（对齐 Cordis）；`Registry.plugin` 对非法形态抛 `TypeError`。
-- 内部事件表见 §4.3；公共事件：`ready`、`dispose`。
-- `test_public_api.py` 对照 `docs/features/api.md` 校验导出清单。
+公开入口位于 `xcore.api.*`，实际 Context 和服务构造类型与框架实现一致。
+事件键、服务键、插件生命周期类型和错误的导入路径见
+[公共 API](features/api.md)。包根不再转出口；插件加载失败重抛原始错误。
+内部事件见 §4.3；公共生命周期事件为 `ready` 和 `dispose`。
 
 ## 12. 迁移兼容性备注（Step 3 输入）
 

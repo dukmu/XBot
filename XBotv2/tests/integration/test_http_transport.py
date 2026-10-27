@@ -2189,7 +2189,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert source_records[-1]["entry"]["operation"] == "undo"
     assert all(record["schema_version"] == 1 for record in source_records)
     source.plugin_state_dir.mkdir(exist_ok=True)
-    from xcore import StateService
+    from xcore.api.state import StateService
 
     await StateService(path=source.plugin_state_file).set("sample.value", "kept")
     source.artifact_file("context/cached.txt").parent.mkdir(parents=True)

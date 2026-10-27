@@ -12,8 +12,7 @@ The Agent runtime and session manager own execution, thread state, and
 persistence. HTTP/SSE, Textual, Web, and ACP are transport/client boundaries;
 client code does not call the Engine directly. The terminal UI is a Textual
 client mounted through the `tui` client plugin and the generic client launch
-contract. The current implementation lives under `XBotv2/tui/`, with transport,
-state/controller, timeline, and Textual view layers.
+contract. The [TUI documentation](../../../tui/doc/design.md) describes its public terminal-client contract and implementation layers.
 
 Subagent threads are represented by ordinary thread summaries with
 `kind="subagent"`, `parent_thread_id`, and runtime status. Textual supports

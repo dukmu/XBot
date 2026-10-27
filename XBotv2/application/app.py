@@ -15,7 +15,7 @@ from errno import EEXIST, ENOENT, ENOTEMPTY
 from pathlib import Path
 from pydantic import JsonValue
 from xcore.api.context import Context
-from xcore import ServiceNotFoundError
+from xcore.api.errors import ServiceNotFoundError
 from XBotv2.application.boot import boot_application
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.application.host import mounted_application

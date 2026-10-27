@@ -11,7 +11,7 @@ import sys
 import webbrowser
 from pathlib import Path
 from traceback import format_exception_only
-from xcore import ServiceNotFoundError
+from xcore.api.errors import ServiceNotFoundError
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,

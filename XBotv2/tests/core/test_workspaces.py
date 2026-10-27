@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from xcore.state import StateService
+from xcore.api.state import StateService
 
 from XBotv2.workspaces.api.contracts import WorkspaceNotFound
 from XBotv2.workspaces.impl.service import WorkspaceRegistry

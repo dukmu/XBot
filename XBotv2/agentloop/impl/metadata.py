@@ -1,7 +1,7 @@
 """Thread-local metadata lifecycle owned by the loop runtime."""
 from __future__ import annotations
 from xcore.api.context import Context
-from xcore.service import Service
+from xcore.api.service import Service
 from XBotv2.core.api.domain import ResolvedRuntimeSelection
 from XBotv2.core.api.metadata import (
     ThreadMetadata,

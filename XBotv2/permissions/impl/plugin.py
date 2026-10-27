@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Sequence
 import asyncio
 from pydantic import JsonValue, TypeAdapter
 from xcore.api.context import Context
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agents.api.contracts import AgentCatalogPort, AgentDefinition
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized

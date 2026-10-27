@@ -13,7 +13,7 @@ from typing import Literal, Protocol
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, JsonValue
 from xcore.api.context import Context
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import (
     Events,
     AfterToolExecution,

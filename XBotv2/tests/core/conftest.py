@@ -16,7 +16,7 @@ from XBotv2.core.filesystem.artifacts import ArtifactStore
 @pytest.fixture
 def plugin_ctx():
     """Empty XCore plugin context."""
-    return xcore.Context()
+    return xcore.api.context.Context()
 
 
 @pytest.fixture

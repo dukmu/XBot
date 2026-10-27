@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from xcore.errors import InactiveEffectError
+from xcore.api.errors import InactiveEffectError
 from xcore.api.services import service_name
 
 logger = logging.getLogger("xcore.plugin")

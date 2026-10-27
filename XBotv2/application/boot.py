@@ -6,7 +6,7 @@ import sys
 from functools import partial
 from pathlib import Path
 from xcore.api.context import Context
-from xcore import FiberState
+from xcore.api.plugins import FiberState
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.loader import PluginTree
 from XBotv2.loader.runtime import mount_plugin_tree, report_plugin_activation

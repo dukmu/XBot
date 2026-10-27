@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 from xcore.api.context import Context
-from xcore import InactiveEffectError
+from xcore.api.errors import InactiveEffectError
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_service import ToolsService
 from XBotv2.commands.api.contracts import Command

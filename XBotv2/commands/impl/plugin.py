@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import JsonValue
-from xcore import bound_effect
+from xcore.api.plugins import bound_effect
 from xcore.api.context import Context
 from XBotv2.commands.api.contracts import (
     COMMANDS,

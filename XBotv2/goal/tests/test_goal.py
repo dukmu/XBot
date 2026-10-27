@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
 from XBotv2.agentloop.api.events import OnTurnInput, RejectInput, SessionLifecycle, TurnEnded
 from XBotv2.application.app import start_application

@@ -19,10 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar, overload
 
-from xcore.api.events import EventKey
+from xcore.api.events import Disposer, EventKey
 from xcore.api.services import ServiceKey, service_name
-from xcore.errors import InactiveEffectError, ServiceNotFoundError
-from xcore.events import Disposer, EventBus, _UNSET
+from xcore.api.errors import InactiveEffectError, ServiceNotFoundError
+from xcore.events import EventBus, _UNSET
 from xcore.plugin import (
     Fiber,
     FiberState,
@@ -401,8 +401,20 @@ class Context:
     async def parallel(self, event: EventKey | str, *args: Any) -> None:
         await self._bus.parallel(event, *args, scope=self._scope)
 
+    @overload
+    async def serial(self, event: EventKey[T], payload: T) -> Any: ...
+
+    @overload
+    async def serial(self, event: str, *args: Any) -> Any: ...
+
     async def serial(self, event: EventKey | str, *args: Any) -> Any:
         return await self._bus.serial(event, *args, scope=self._scope)
+
+    @overload
+    async def bail(self, event: EventKey[T], payload: T) -> Any: ...
+
+    @overload
+    async def bail(self, event: str, *args: Any) -> Any: ...
 
     async def bail(self, event: EventKey | str, *args: Any) -> Any:
         return await self._bus.bail(event, *args, scope=self._scope)

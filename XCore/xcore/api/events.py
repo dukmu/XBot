@@ -1,9 +1,11 @@
 """Event declarations use object identity, independent of their diagnostic name."""
 
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Callable, Generic, Protocol, TypeVar, overload
 
 T = TypeVar("T")
+
+Disposer = Callable[[], bool]
 
 
 @dataclass(frozen=True, eq=False)
@@ -20,14 +22,23 @@ class EventKey(Generic[T]):
 
 class EventEmitter(Protocol):
     """Publish facts without exposing services or listener ownership."""
-    async def emit(self, event: EventKey | str, *args: Any) -> None: ...
+    @overload
+    async def emit(self, event: EventKey[T], payload: T) -> None: ...
+    @overload
+    async def emit(self, event: str, *args: Any) -> None: ...
 
 
 class EventDispatch(EventEmitter, Protocol):
     """Publish facts and dispatch serial interception hooks."""
-    async def serial(self, event: EventKey | str, *args: Any) -> Any: ...
+    @overload
+    async def serial(self, event: EventKey[T], payload: T) -> Any: ...
+    @overload
+    async def serial(self, event: str, *args: Any) -> Any: ...
 
 
 class EventQuery(Protocol):
     """Request the first handled result from an event boundary."""
-    async def bail(self, event: EventKey | str, *args: Any) -> Any: ...
+    @overload
+    async def bail(self, event: EventKey[T], payload: T) -> Any: ...
+    @overload
+    async def bail(self, event: str, *args: Any) -> Any: ...

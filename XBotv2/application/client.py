@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Protocol
 from xcore.api.context import Context
+import XBotv2.tui.api.service as terminal_api
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_client_tree
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
-
-
-class TerminalClient(Protocol):
-    """Async foreground client provided by the selected client plugin."""
-
-    async def run(self) -> None: ...
-
-    def request_stop(self, reason: str) -> None: ...
 
 
 async def run_client_application(*, paths: RuntimePaths, overrides: PluginOverlay) -> None:
@@ -32,10 +24,10 @@ async def run_client_application(*, paths: RuntimePaths, overrides: PluginOverla
         tree=load_client_tree(paths=paths, overrides=overrides),
     )
     try:
-        terminal: TerminalClient = context.require("terminal_client")
+        terminal: terminal_api.TerminalClient = context.require(terminal_api.TERMINAL_CLIENT)
         await terminal.run()
     finally:
         await context.destroy()
 
 
-__all__ = ["TerminalClient", "run_client_application"]
+__all__ = ["run_client_application"]

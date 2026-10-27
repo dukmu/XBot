@@ -60,7 +60,7 @@ def _write_runtime_config(data_dir, config):
 
 from XBotv2.core.api.paths import RuntimePaths
 import yaml
-from xcore import ServiceNotFoundError
+from xcore.api.errors import ServiceNotFoundError
 from XBotv2.application.app import start_application, create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay

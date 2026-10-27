@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 import uuid
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.workspaces.api.contracts import (
     WorkspaceRecord,

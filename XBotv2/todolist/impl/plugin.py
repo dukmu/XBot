@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
 from xcore.api.context import Context
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import Events, TurnStarted
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text

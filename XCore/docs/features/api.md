@@ -1,32 +1,21 @@
-# XCore 公共 API 清单
+# XCore 公共 API
 
-> 规则（对齐 XBotv2 `api_inventory.md` 惯例）：`xcore.__all__` 必须与本文档一致，
-> 由 `tests/test_public_api.py` 校验。插件与迁移层只允许 import 此清单内的符号。
+产品代码和插件通过 `xcore.api` 下的模块导入公开能力；包根不转出口。实际
+`Context`、服务、插件和事件总线类型由框架实现，API 入口引用相同的类型，
+不会创建代理或重复的状态容器。
 
-## `xcore` 顶层导出（`xcore/__init__.py`）
+- `xcore.api.context`：`Context`。
+- `xcore.api.services`：`ServiceKey`；`xcore.api.service`：`Service`。
+- `xcore.api.state`：`StateService`。
+- `xcore.api.events`：`EventKey`、`EventEmitter`、`EventDispatch`、
+  `EventQuery`、`Disposer`；`xcore.api.event_bus`：`EventBus`、`is_bailed`。
+- `xcore.api.plugins`：`PluginDef`、`PluginHandle`、`FiberState`、`Registry`、
+  `resolve_plugin`、`current_fiber`、`current_plugin_name`、`bound_effect`。
+- `xcore.api.errors`：`XCoreError`、`InactiveEffectError`、
+  `ServiceNotFoundError`、`ServiceConflictError`。
 
-| 符号 | 来源模块 | 说明 |
-| --- | --- | --- |
-| `Context` | `xcore.context` | 核心对象：事件/服务/插件/生命周期/中间件/状态 |
-| `Service` | `xcore.service` | 服务基类（构造即注册、归属 fiber） |
-| `Registry` | `xcore.plugin` | 插件注册表（`ctx.registry`） |
-| `PluginHandle` | `xcore.plugin` | `ctx.plugin()` 返回值（fiber 的 Python 视图） |
-| `PluginDef` | `xcore.plugin` | 归一化插件定义（name/callback/Config/inject/provide） |
-| `FiberState` | `xcore.plugin` | pending/loading/running/failed/unloading/disposed |
-| `current_fiber` | `xcore.plugin` | 当前正在执行 apply 的 fiber（服务用于绑定 fiber 级清理；非 apply 期间为 None） |
-| `bound_effect` | `xcore.plugin` | 把 disposer 绑定到当前 apply fiber 的卸载（服务注册清理的一行封装；非 apply 期间 no-op） |
-| `current_plugin_name` | `xcore.plugin` | 当前正在 apply 的插件名（非 apply 期间为 `"unknown"`） |
-| `StateService` | `xcore.state` | 可恢复持久 KV（JSON 原子写 + 命名空间） |
-| `EventBus` | `xcore.events` | 事件总线（六种派发 + 过滤） |
-| `Disposer` | `xcore.events` | `() -> bool` 类型别名（可逆注册的返回） |
-| `XCoreError` | `xcore.errors` | 所有 XCore 异常的基类 |
-| `InactiveEffectError` | `xcore.errors` | 在已销毁 fiber 上创建效果 |
-| `ServiceNotFoundError` | `xcore.errors` | `ctx.require` 未找到服务 |
-| `ServiceConflictError` | `xcore.errors` | 同一作用域重复提供服务 |
-| `__version__` | `xcore` | `"0.1.0"` |
-
-> 注意：插件加载失败**不**包装为专用异常 —— `PluginHandle` 的 `await` 重抛原始
-> 错误（Cordis 对齐）；`Registry.plugin` 对非法插件形态抛 `TypeError`。
+`EventKey[T]` 的监听和 `emit`、`serial`、`bail` 派发使用对应的 `T` payload；
+字符串事件保留动态参数。插件加载失败由 handle 重抛原始错误。
 
 ## 类型形状（稳定契约）
 
@@ -58,7 +47,3 @@
 | --- | --- |
 | `ready` | `start()` 完成插件加载后 |
 | `dispose` | `stop()` 清理完毕后 |
-
-## 版本
-
-`__version__ = "0.1.0"`。

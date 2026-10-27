@@ -8,8 +8,8 @@ import logging
 from typing import Any
 from pydantic import BaseModel
 from xcore.api.context import Context
-from xcore import FiberState, PluginHandle
-from xcore.plugin import resolve_plugin
+from xcore.api.plugins import FiberState, PluginHandle
+from xcore.api.plugins import resolve_plugin
 from XBotv2.loader.contracts import PluginEntry, PluginTree
 
 logger = logging.getLogger("xbotv2.loader")

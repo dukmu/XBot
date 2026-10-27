@@ -2,7 +2,7 @@
 
 Creates the tool registry and registers it as ``ctx.tools``. Registration through the
 services is a fiber effect: XCore tracks the currently applying fiber
-(:func:`xcore.current_fiber`), so anything a plugin registers is undone
+(:func:`xcore.api.plugins.current_fiber`), so anything a plugin registers is undone
 automatically when the plugin's fiber unloads — the service itself binds the
 cleanup, no loader-side context tracking.
 
@@ -29,7 +29,7 @@ from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_runtime import execute_tools
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.core.api.tools import Tool, ToolCall, ToolExecution
-from xcore import bound_effect, current_plugin_name
+from xcore.api.plugins import bound_effect, current_plugin_name
 from xcore.api.context import Context
 
 

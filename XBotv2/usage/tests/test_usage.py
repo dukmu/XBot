@@ -2,7 +2,7 @@
 
 import pytest
 from xcore.api.context import Context
-from xcore.state import StateService
+from xcore.api.state import StateService
 from XBotv2.core.api.domain import (
     AuxiliaryRequest,
     GenerationSettings,

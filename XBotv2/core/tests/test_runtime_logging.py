@@ -32,7 +32,7 @@ def test_runtime_log_redacts_credentials_but_keeps_usage(caplog) -> None:
 @pytest.mark.asyncio
 async def test_xcore_lifecycle_and_event_records_are_observable(caplog) -> None:
     caplog.set_level(logging.DEBUG, logger="xcore")
-    ctx = xcore.Context()
+    ctx = xcore.api.context.Context()
 
     def component(plugin_ctx, _config=None) -> None:
         plugin_ctx.set("probe", object())
@@ -60,14 +60,14 @@ def test_setup_logging_captures_xbot_and_xcore_namespaces(tmp_path) -> None:
     try:
         setup_logging(log_file=log_file, level="DEBUG")
         logging.getLogger("xbotv2.tools").info("tool.record")
-        logging.getLogger("xcore.plugin").info("plugin.record")
+        logging.getLogger("xcore.api.plugins").info("plugin.record")
         for root in roots:
             for handler in root.handlers:
                 handler.flush()
 
         contents = log_file.read_text(encoding="utf-8")
         assert "xbotv2.tools: tool.record" in contents
-        assert "xcore.plugin: plugin.record" in contents
+        assert "xcore.api.plugins: plugin.record" in contents
     finally:
         for root, (handlers, level, propagate) in zip(roots, previous, strict=True):
             for handler in root.handlers:
@@ -84,11 +84,11 @@ def test_logging_adds_context_and_honours_category_levels(tmp_path) -> None:
     setup_logging(
         log_file=log_file,
         level="INFO",
-        category_levels={"xcore.events": "WARNING", "xbotv2.tools": "DEBUG"},
+        category_levels={"xcore.api.event_bus": "WARNING", "xbotv2.tools": "DEBUG"},
     )
     token = push_log_context(request_id="req-7", session_id="session-3")
     try:
-        logging.getLogger("xcore.events").info("hidden event")
+        logging.getLogger("xcore.api.event_bus").info("hidden event")
         logging.getLogger("xbotv2.tools").debug("visible detail")
         RuntimeLog("tools").info("tool.done", session_id="session-3")
     finally:

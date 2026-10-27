@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 import pytest
-from xcore import ServiceNotFoundError
+from xcore.api.errors import ServiceNotFoundError
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.api.errors import OperationError
 
@@ -221,7 +221,7 @@ async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_
             for handle in context.registry.handles()
         )
         assert any(
-            record.name == "xcore.plugin" and record.levelname == "ERROR"
+            record.name == "xcore.api.plugins" and record.levelname == "ERROR"
             for record in caplog.records
         )
         assert context.get("thread_persistence", strict=False) is None

@@ -12,7 +12,7 @@ import pytest
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.api.paths import RuntimePaths
 from xcore.api.context import Context
-from xcore import StateService
+from xcore.api.state import StateService
 
 
 def _state_file(tmp_path) -> Path:

@@ -30,15 +30,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from xcore.api.events import EventKey
+from xcore.api.events import Disposer, EventKey
 
 
 
 logger = logging.getLogger("xcore.events")
-
-#: A disposer is a plain callable that undoes a registration.  Returns
-#: ``True`` when the registration was still live (Cordis parity).
-Disposer = Callable[[], bool]
 
 _UNSET = object()
 

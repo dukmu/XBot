@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from xcore import Context
-from xcore.events import is_bailed
+from xcore.api.context import Context
+from xcore.api.event_bus import is_bailed
 
 
 class Session:

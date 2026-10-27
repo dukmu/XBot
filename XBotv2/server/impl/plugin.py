@@ -15,7 +15,7 @@ from pydantic import JsonValue
 from fastapi import APIRouter, FastAPI
 from starlette.routing import BaseRoute
 from xcore.api.context import Context
-from xcore import Disposer
+from xcore.api.events import Disposer
 from XBotv2.server.api.contracts import REGISTER_ROUTE, RouteContribution, ServerInfo
 from XBotv2.server.impl.protocol import build_core_router
 

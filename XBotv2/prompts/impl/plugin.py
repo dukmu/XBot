@@ -13,7 +13,7 @@ from XBotv2.context_builder.api.contracts import (
 from functools import partial
 from pydantic import JsonValue
 from xcore.api.context import Context
-from xcore import bound_effect, current_plugin_name
+from xcore.api.plugins import bound_effect, current_plugin_name
 from XBotv2.prompts.api.service import PROMPTS, PromptsPort
 
 

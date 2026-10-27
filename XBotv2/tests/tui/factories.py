@@ -52,7 +52,7 @@ PNG_BYTES = base64.b64decode(
 def local_command_port(app):
     """Use the production command registration path for direct app tests."""
     from XBotv2.commands.impl.plugin import CommandsService
-    from XBotv2.tui.commands import register_client_commands
+    from XBotv2.tui.impl.commands import register_client_commands
 
     commands = CommandsService(ownership="caller")
     register_client_commands(commands, app)
@@ -61,10 +61,10 @@ def local_command_port(app):
 
 def tui_app(backend, **kwargs):
     """Construct a directly driven app with the normal local command registry."""
-    from XBotv2.tui.app import TuiApp
+    from XBotv2.tui.impl.app import TuiApp
 
     from XBotv2.commands.impl.plugin import CommandsService
-    from XBotv2.tui.commands import register_client_commands
+    from XBotv2.tui.impl.commands import register_client_commands
 
     commands = CommandsService(ownership="caller")
     app = TuiApp(backend=backend, commands=commands, **kwargs)
@@ -73,7 +73,7 @@ def tui_app(backend, **kwargs):
 
 
 def tui_command_registry():
-    from XBotv2.tui.commands import CommandRegistry
+    from XBotv2.tui.impl.commands import CommandRegistry
 
     app = tui_app(backend=object())
     return app.commands

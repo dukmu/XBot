@@ -6,7 +6,8 @@ import weakref
 
 import pytest
 
-from xcore import Context, InactiveEffectError, ServiceNotFoundError
+from xcore.api.context import Context
+from xcore.api.errors import InactiveEffectError, ServiceNotFoundError
 from xcore.api.context import Context as PublicContext
 from xcore.api.events import EventKey
 from xcore.api.services import ServiceKey

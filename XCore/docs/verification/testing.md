@@ -25,7 +25,6 @@ pytest 配置（`XCore/pyproject.toml`）：`asyncio_mode = "auto"`、`pythonpat
 | `test_state.py` | 持久化往返、原子写（模拟半写临时文件）、命名空间隔离、崩溃恢复 |
 | `test_plugins.py` | Fiber 通过插件 `Config.model_validate` 校验配置，并隔离校验失败 |
 | `test_middleware.py` | 链顺序、短路、prepend、过滤快照、错误传播 |
-| `test_public_api.py` | `xcore.__all__` 与 `docs/features/api.md` 清单一致 |
 
 ## 与 XBotv2 测试纪律对齐
 

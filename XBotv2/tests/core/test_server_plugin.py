@@ -133,7 +133,7 @@ async def test_existing_process_state_keeps_tui_session_routes_available(tmp_pat
             assert (await client.get("/sessions")).status_code == 200
             assert (await client.get("/workspaces")).status_code == 200
         assert await context.state.get("unrelated.setting") == "preserved"
-        from xcore import StateService
+        from xcore.api.state import StateService
         assert await StateService(path=state_path).get("unrelated.setting") == "preserved"
     finally:
         await context.destroy()

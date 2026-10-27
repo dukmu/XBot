@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 from typing import Literal
-from xcore import bound_effect, current_plugin_name
+from xcore.api.plugins import bound_effect, current_plugin_name
 from XBotv2.agents.impl.loader import load_definitions
 from XBotv2.agents.api.contracts import AgentCatalogPort, AgentDefinition
 from XBotv2.core.api.variables import RuntimeVariables

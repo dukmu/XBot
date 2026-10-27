@@ -5,12 +5,9 @@ from __future__ import annotations
 import pytest
 from xcore.api.services import ServiceKey
 
-from xcore import (
-    Context,
-    Service,
-    ServiceConflictError,
-    ServiceNotFoundError,
-)
+from xcore.api.context import Context
+from xcore.api.service import Service
+from xcore.api.errors import ServiceConflictError, ServiceNotFoundError
 
 
 async def test_set_get_has_require():

@@ -347,7 +347,7 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
                 context_window=4096,
             ),
         )
-        events = xcore.Context()
+        events = xcore.api.context.Context()
         state = ThreadMetadataState(
             events,
             session_id="session-1",
