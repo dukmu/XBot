@@ -22,7 +22,8 @@ async def run(args):
         "target_bytes": args.bytes,
         "measurement_scope": "one process: XBot, network mock, HTTP client and observer",
         "limitations": [
-            "Process RSS and IO include the observer; shell subprocess IO is not included in process IO.",
+            "Process RSS includes the observer and covers only the current process; process IO "
+            "includes waited-for children, while live children are not fully accounted for.",
             "Disk lengths are current logical sizes, not physical write counts.",
         ],
         "samples": [], "errors": [],

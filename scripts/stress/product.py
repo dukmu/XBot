@@ -215,7 +215,8 @@ async def _run(args):
             "Provider requests with tool results may include retries and do not count unique tool completions.",
             "RSS and process IO include the mock provider and harness, not only XBot; "
             "tracemalloc and GC inspection add observer overhead.",
-            "Process IO excludes shell subprocess IO; child processes are counted only at sample times.",
+            "Process IO includes waited-for children; live children are not fully accounted for. "
+            "RSS covers the current process; child processes are counted only at sample times.",
             "File sizes are current logical file lengths; process write_bytes is not "
             "attributed per file or device.",
             "Object counts cover Python GC-tracked instances by class name, not all native resources.",

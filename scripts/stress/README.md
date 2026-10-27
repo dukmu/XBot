@@ -124,10 +124,7 @@ PYTHONPATH=XBotv2 .venv/bin/python -m pytest \
 ```
 
 This focused network verification does not establish that the whole product
-stress matrix passes. The existing `lifecycle` probe currently exposes fresh
-empty-thread trajectory reads returning 404 and empty-session deletion raising
-`FileNotFoundError`; the runner retains those failures for the owning production
-boundaries to fix.
+stress matrix passes.
 
 `long_history` appends `--history-turns` turns, records per-append latency with
 history size, captures the authoritative API event stream, and drives the same
@@ -142,9 +139,9 @@ invariants, and failures. A scenario is not considered successful when a
 transport or protocol error is swallowed; the runner records it and exits
 non-zero.
 
-The checked-in `reports/` directory is reserved for explicit verification
-artifacts. A full run report includes the exact commands, pass/skip/failure
-interpretation, and the unabridged JSON emitted by `--report`.
+Keep verification reports and runtime data local; `scripts/stress/reports/` is
+ignored by Git. Record the exact commands and pass/skip/failure interpretation
+alongside the JSON emitted by `--report`.
 
 ## Product workload
 
@@ -195,8 +192,10 @@ samples also record each active main thread's public working-message count,
 completed turns and committed compactions, so comparisons can identify matching
 working-set and active-thread conditions. XBot,
 the network mock and the observer share one process, so RSS and process I/O
-cannot be attributed to XBot alone; shell subprocess I/O is not included in
-`/proc/self/io`. File lengths are not physical write volume. Tracemalloc and
+cannot be attributed to XBot alone. RSS covers that process; Linux
+[`/proc/self/io`](https://www.man7.org/linux/man-pages/man5/proc_pid_io.5.html)
+also includes I/O from waited-for children, but does not fully account for live
+children. File lengths are not physical write volume. Tracemalloc and
 GC scans add measurement overhead. The live file-size budget defaults to 256 MiB and is checked during running
 turns and child batches. Linux process physical write bytes are separately
 bounded at 2 GiB after server startup. The running-turn monitor checks both
@@ -214,6 +213,43 @@ a proven session identity. These wrappers add observer overhead. That element
 is not the complete provider cache prefix, and mock usage does not establish
 real provider cache hits. All wrapped functions are restored on exit.
 
+### Reference measurements and starting budgets
+
+An independently installed wheel built from `e9497d23` completed the product
+workload at each concurrency level on a four-CPU environment. Values below are
+bytes at the final workload sample, except for the traced allocation peak and
+request encoder thread CPU. RSS includes XBot, the mock and the observer.
+
+| Concurrent sessions | Record cache | Replay pool | Current RSS | Tracemalloc peak | JSON encoder CPU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 11,878,527 | 343,585 | 221,396,992 | 53,736,692 | 9.394 s |
+| 4 | 11,756,655 | 1,279,632 | 255,852,544 | 62,845,707 | 9.697 s |
+| 16 | 11,555,006 | 3,933,419 | 354,267,136 | 104,649,637 | 10.001 s |
+
+The 32-connection starting limit accommodates the reference 16 session databases
+and process database; it is not a session limit. The 16 MiB record cache did not
+fill, so these runs do not show a saturation plateau. The 32 MiB replay pool,
+64 MiB materialized artifact cache, 4 MiB agent-source cache, and completed-job
+limits of 100 entries and 8 MiB are also starting values, not measured optima.
+Agent source parses were zero, and this workload did not retain large job results.
+Working-set sizes changed between samples, especially at concurrency 4 and 16,
+so those samples do not establish an archive-length memory plateau. Some reported
+`ru_maxrss` values were already elevated before startup; use the current RSS and
+tracemalloc observations above rather than treating those values as new peaks.
+
+The encoder figures cover synchronous OpenAI SDK request encoding, including
+auxiliary requests. Common schema construction per thread and provider mapping
+per request are different operations; counts alone do not justify another cache.
+Only the concurrency 1 `core_instructions` element was compared: it did not
+change in 4,096 samples, which does not establish a complete prefix or real
+provider cache hits. Scope activation, storage recovery, request construction,
+and wait/steer latency were not individually timed. A held slow socket and a 409
+on an old cursor do not establish TCP backpressure.
+
+In the separate 200 MiB case, a 0.1-second RSS sidecar observed a 198,168,576-byte
+high-water mark and the traced allocation peak was 57,472,582 bytes. The artifact
+was streamed and verified in bounded chunks; larger output sizes were not measured.
+
 The separate large-output case generates 200 MiB through the normal shell tool,
 then streams its artifact over HTTP and checks each chunk without retaining the
 body. Run it once for a matrix, with a separate report and data directory:
@@ -225,5 +261,6 @@ PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress.large_output \
 
 The case records its exact target and verified byte count. `--bytes` can set a
 smaller development probe; such a result is not evidence of the 200 MiB case.
-Its default live file-size and process-write budgets are 512 MiB and 2 GiB;
-shell subprocess writes are not attributed by `/proc/self/io`.
+Its default live file-size and process-write budgets are 512 MiB and 2 GiB.
+The process I/O counter includes waited-for child writes; live child writes are
+not fully accounted for at each sample.

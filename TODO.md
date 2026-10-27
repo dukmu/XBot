@@ -130,12 +130,12 @@
 - [x] 阅读整体方案与仓库约束；按批次顺序推进，每批先确认业务 owner、依赖和可观察验收，再实施和删除旧路径。用户已授权按该方案推进，核心取舍采用稿中选择。
 - [x] 第 0 批：修复 accept/stress 启动参数漂移；网络 MockLLM 经生产 provider adapter；核验独立安装入口。先跑可定位问题的工况，保留精确提交和原始结果位置。
 - [x] 第 1 批基础能力：XCore 类型化引用、独立 owner、服务/事件作用域与可等待卸载；两线程隔离、失败回滚和重复开关资源回收。整仓 API/layout 接入继续见下文，不将框架原语通过等同所有业务生命周期已完成。
-- [ ] 插件 layout 与公开契约迁移：按第 5 节落实各 owner 的 api/impl/doc/tests，更新跨插件导入、loader、开发说明及检查脚本，移除旧包根转出口和实现混入 API。用户明确要求与整体重构一同推进；先于存储/TUI 扩展收口。
+- [x] 插件 layout 与公开契约迁移：按第 5 节落实各 owner 的 api/impl/doc/tests，更新跨插件导入、loader、开发说明及检查脚本，移除旧包根转出口和实现混入 API。用户明确要求与整体重构一同推进；先于存储/TUI 扩展收口。
 - [x] 第 2 批：loader 活跃根挂载及 session/thread 生命周期；退出旧 application、MountedAgentApplication 和单用途 factory。
-- [ ] 第 3 批：SQLite/JSONL/artifact、投影恢复、工作集与归档分离、流式大结果；退出全状态重写与完整归档常驻。
-- [ ] 第 4 批：连续 child thread、统一 wait、jobs 有界清退和可选 team；移除重复结果与通知路径。
-- [ ] 第 5 批：通用媒体、共享预算、动态 API、provider/权限边界与日志收尾。
-- [ ] 第 6 批：TUI 与客户端契约验收、文档和最终 wheel 产物核验。
+- [x] 第 3 批：SQLite/JSONL/artifact、投影恢复、工作集与归档分离、流式大结果；退出全状态重写与完整归档常驻。
+- [x] 第 4 批：连续 child thread、统一 wait、jobs 有界清退和可选 team；移除重复结果与通知路径。
+- [x] 第 5 批：通用媒体、共享预算、动态 API、provider/权限边界与日志收尾。
+- [x] 第 6 批：TUI 与客户端契约验收、文档和最终 wheel 产物核验。
 
 ### 迭代 0：评估入口与基线证据
 
@@ -540,4 +540,26 @@
 - [x] 真实4会话×1turn before（同独立65环境）`/tmp/xbot-sqlite-probe-before.json/.log` exit0、5.948s：32主请求/28tool/4 execution，turn阶段2214 connect/2214 close、704 BEGIN/COMMIT、11096 SELECT trace、write增87,392,256B；startup2,232,320B/5开4关，close151,552B/4开5关。临时trace只存分类计数，非独立SQL业务查询数，IO含mock/harness且不含shell子进程；after另用同case，不重复before/整轮。
 - [x] 生产 `a76c5bef`、报告 `540c879c`：单worker内有界SQLite连接LRU，connection_limit默认32（cache预算非会话上限），逐path/inode复用/淘汰；release(path)仅当前库、release(None)尝试全部并汇总失败，poisoned保留至实际关闭，不改WAL/事务同步、无新pool框架/业务逻辑。worker相关8项 `/tmp/xbot-worker-lru-v18-1.log` exit0；fork失败记录保留相关db路径/claims、cleanup完成才释放，delete失败保留claim至worker完全close，正常idle只读cache不强加writer。failure组 `/tmp/xbot-lru-claim-cleanup-v18-2.log`14306 exit1（source/delete2过、staging2旧异常组预期失败），只改预期并复验staging2 `/tmp/xbot-lru-claim-cleanup-v18-3.log` exit0；相关4参数均有证据，不重跑full。报告增加实际connection_limit；after小probe和新版安装/相关负载继续，未重复旧source套件/PTY/Minimax/hash。
 - [x] 同case after `/tmp/xbot-sqlite-probe-after.json/.log` actual0、4.573s（同一-I Python/依赖，XBot从已提交源码a76c5bef导入），32主请求/28工具/4 execution与before一致。turn业务SQL trace类别完全相同，connect/close各2214→0；startup write2,232,320→1,839,104B，turn87,392,256→7,618,560B，close151,552→1,220,608B，三阶段总89,776,128→10,678,272B。after turn末WAL7,193,680B，close后双方WAL均0，明确包含延后checkpoint而不只拿turn作比较。一次本地case/含mock和observer/不含shell子进程，不能将此比例外推原974MB或通用速度提升。主代理已读两JSON实际SQL/events/IO分阶段产物。
-- [ ] SQLite连接生存期实际改变影响写量及WAL crash恢复：新版仅重建受影响XBot wheel，复用未变XCore wheel及已取得同版本依赖约束/资源；旧65环境/报告保留。复验安装SIGKILL恢复与受影响1/4/16完整档，再单次200MiB；不重跑已过整套源码、旧Web/TUI交互、MiniMax、前后小probe或新freeze/hash。
+- [x] SQLite连接生存期实际改变影响写量及WAL crash恢复：新版仅重建受影响XBot wheel，复用未变XCore wheel及已取得同版本依赖约束/资源；旧65环境/报告保留。复验安装SIGKILL恢复与受影响1/4/16完整档，再单次200MiB；不重跑已过整套源码、旧Web/TUI交互、MiniMax、前后小probe或新freeze/hash。
+
+### 迭代20：最终安装工况与收尾（完成，2026-10-28）
+
+- [x] 精确被评估安装/源码/harness提交均为 `e9497d23390920ffddbee40ebea1073e5a549eb7`，包含生产 `a76c5bef` 与报告 `540c879c`。`/tmp/xbot-wheel-v19-final` 从干净archive只重建变化的XBot wheel，复用未变XCore wheel、既有依赖约束及Web资源，重新安装到独立uv环境；build/install/check/import/inspect日志在同目录，actual0。Python3.12.12、OpenAI2.32.0/Pydantic2.13.3/Textual8.2.8/regex2026.7.19；所有正式命令从 `/tmp`、`-I`、无PYTHONPATH执行，XBot和XCore实际导入独立site-packages，bootstrap只供应repo/scripts命名空间。未再npm、freeze或生成hash清单。
+- [x] 新版安装SIGKILL恢复 `/tmp/xbot-wheel-recovery-v19-1/{helper.py,report.json,run.log,effect.txt,data}`（30581 actual0）：标准shell副作用及tool结果持久化、下一模型流阻塞时，WAL655,112B，杀PID1201577并wait=-9；恢复PID1201646后原input/tool各一条、marker仍 `once\n`，观察模型请求仍2，显式followup后请求3且marker不增。新连接生存期相关恢复已验；原65版CLI/Web/TUI证据范围见迭代19，不重复它们或MiniMax成功请求。
+- [x] 首次新版c1 `/tmp/xbot-product-installed-v19-c1-1.log` 最后完整334/512轮、2672主请求、13人工compact；没有最终JSON或退出码。主代理续接时原handle已失效，授权环境确认进程不存活；末尾有慢SSE cursor expired traceback，但没有证据把退出归因于它。保留原文件，只重启这项未完成工况到新路径，不补造终态或覆盖失败记录。
+- [x] 三档正式安装工况顺序完成，每档512用户轮、4096主请求、3584成功标准工具、20人工compact、64次child开关，均actual0/errors=[]。`c1-2` session25278、`c4-1` session92468；`c16-1` session95493的wrapper独立退出文件为0且主代理确认PID1240480/1240482已退出。JSON/日志/exit-code分别为 `/tmp/xbot-product-installed-v19-c1-2.*`、`/tmp/xbot-product-installed-v19-c4-1.*`、`/tmp/xbot-product-installed-v19-c16-1.*`，数据各同前缀 `/data`；每份report均记录e949、tracked_dirty=false和实际安装路径，主代理读实际计数/阶段/终态。预算始终为逻辑磁盘256MiB、累计write_bytes增量2GiB，没有为通过提高预算。
+
+| 并发session | 主/辅助请求 | 整turn p50/p95 ms | 末轮文件总长度 B | server_closed累计write_bytes B |
+| --- | --- | --- | ---: | ---: |
+| 1 | 4096/60 | 1711.775/2155.005 | 20,238,641 | 1,096,663,040 |
+| 4 | 4096/60 | 5597.264/7351.242 | 33,839,974 | 1,055,653,888 |
+| 16 | 4096/52 | 23038.097/30135.974 | 87,406,725 | 1,014,960,128 |
+
+- [x] 三档各有512个匹配input的completed execution_ended；todo创建/完成分别5/4、20/16、80/64，最终每session都是1静置pending+4completed；team_publish各512次，最终每session板消息512/128/32。c4结束后只读SQLite另确认每个main的128次completed execution、对应started/ended记录及空open_transactions。所有档真实slow socket连接/读首事件、旧cursor重连409；它不证明持有socket已被TCP缓冲反压。关闭后active contexts/subscribers=0、asyncio活任务1、child采样0、FD7与启动一致，record cache resident/entries/pins及replay resident/frames/windows全零，WAL长度0；GC可见的closed对象数量不当作活资源数。
+- [x] 默认预算保留并在stress README写实测理由：单worker连接LRU32容纳参考16个session DB和process DB，不是活跃session上限；record cache16MiB三档末占用11,878,527/11,756,655/11,555,006B，未饱和，无淘汰，不能称已测平台或最优。process replay32MiB末占用343,585/1,279,632/3,933,419B；artifact64MiB、Agent源4MiB、jobs100/8MiB未在此矩阵被压满，文件parse=0且未保留大型job结果，不冒称命中收益。c1季度W为18/17/17/18，c4为132/51/165/18，c16也变化；RSS和trace包含mock/observer，不能从不同W推导归档长度平台。既有固定W组件弱引用和4/16/64MiB归档证据另见 `/tmp/xbot-collections-io-4096/report.json`，不替换真实模型工况。
+- [x] 三档当前末轮RSS为221,396,992/255,852,544/354,267,136B，tracemalloc峰值53,736,692/62,845,707/104,649,637B；部分ru_maxrss在启动前已偏高，不作该工况新峰值。OpenAI SDK编码thread CPU为9.3944169/9.6972443/10.0010031s，编码4156/4156/4148次；catalog65/68/80，参数schema3253/3409/4033，共同schema3447/3612/4272，provider映射各212992。schema不同层次数量不据此新建cache；仅c1的core_instructions片段4096次零变化，不冒充完整prefix或供应商命中。scope激活/存储恢复/request构建/wait-steer的分项时延未独立测，不用整turn值代替。
+- [x] 全矩阵唯一一次200MiB `/tmp/xbot-large-output-installed-v19-1.{json,log,exit-code,rss.json}`（27934 actual0）：标准shell生成，两个真实本地provider请求，artifact大小和HTTP逐块验证均209,715,200B，errors=[]。主代理读report和实际文件长度：一个209,715,200B对象、rollout11,852B；无二次下载或额外内容hash。默认512MiB磁盘/2GiB write guard，artifact_verified文件210,825,056B；总14.512s，下载6.986s。0.1s sidecar154次观测的实际PID1253364 VmHWM为198,168,576B（初值12,288B属于exec启动阶段，不能作服务基线），server_started RSS180,973,568B，trace峰57,472,582B；关闭active contexts/subscribers0、FD7、WAL0。只证明本200MiB路径，未测更大单次输出。
+- [x] 原真实MiniMax只测成功，故补一次独立错误分支而不重跑成功链。`/tmp/xbot-minimax-error-v19-1/{helper.py,report.json,run.log,exit-code}` actual0：e949独立安装、临时声明不存在model、重试0/输出上限32，恰好一次真实POST `/anthropic/v1/messages` HTTP400；公开engine_error/ProviderFailure、turn finished/error、execution failed，session/root关闭。只保留去敏字段；消息含model但不含所选随机名，未保留native响应正文，不能进一步断定远端具体错误归因。首份记录保留，未因断言或命名重复发请求；文本/read/图像成功与原供应商usage仍归da3d7a37那次证据。
+- [x] 计量勘误：此前TODO/原始报告limitations中“不含shell子进程IO”有误。[Linux proc_pid_io(5)](https://www.man7.org/linux/man-pages/man5/proc_pid_io.5.html)说明该计数包含本进程和已等待回收子进程；活跃未回收child尚未完整汇入，RSS仍只覆盖本进程。shell源码为child直接写spool，200MiB工况累计write_bytes211,542,016B与此一致。保留历史原JSON/日志及数值不改，只纠正harness两处limitations和README，不从原数字改造新的历史结果；本轮表中write_bytes均为该计量域的累计值，非设备实写或纯SQLite写量。
+- [x] 只用Terra完成运行与证据/文档实施，主代理审读指南14/15、现有owner边界和实际产物；只读对照在 `/tmp/xbot-final-requirements-audit.md`。layout及公开API、XCore/loader/session关系、物理backend与owner业务分离、工作集/协作/media/客户端/安装产物已按各迭代证据收口；未恢复旧路径、未添加新框架或重复校验。修stress README已解决缺陷和report应入库两处旧说明。源码组合仍是迭代18记录的分段执行及失败定向修复，不宣称一次全套全绿；本次不重复旧源码套件、PTY/浏览器、探针、构建或hash。
+- [x] 第8节顶层清单反映当前完成状态；各历史迭代的未勾选限制保留其当时范围，后续解除以对应后续日志为准，不把它们重新变成验证任务。e949之后只改本日志、说明文档和harness计量描述字符串，无执行逻辑/生产代码变化，因此不重跑工况或重建wheel。最终只提交这些收尾文件，不纳入原用户设计稿、.worktrees、环境或运行产物，不推送、不合并main。
