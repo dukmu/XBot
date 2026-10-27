@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from xcore.api.services import ServiceKey
 
 from xcore import (
     Context,
@@ -22,6 +23,14 @@ async def test_set_get_has_require():
     assert not ctx.has("missing")
     with pytest.raises(ServiceNotFoundError):
         ctx.require("missing")
+
+
+async def test_missing_service_key_reports_canonical_name():
+    ctx = Context()
+    with pytest.raises(ServiceNotFoundError) as error:
+        ctx.require(ServiceKey[object]("missing"))
+    assert error.value.name == "missing"
+    assert str(error.value) == "service not found: 'missing'"
 
 
 async def test_attribute_access():

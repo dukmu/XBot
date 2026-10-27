@@ -207,7 +207,7 @@ class Context:
         """Resolve a service; raises :class:`ServiceNotFoundError` when absent."""
         value = self.get(name, strict=True)
         if value is None:
-            raise ServiceNotFoundError(name)
+            raise ServiceNotFoundError(service_name(name))
         return value
 
     def has(self, name: ServiceKey | str) -> bool:
