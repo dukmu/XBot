@@ -253,6 +253,7 @@ async def _run(args):
             backend = harness.application.require(PERSISTENCE)
             replay = harness.application.require(REPLAY_POOL)
             report["parameters"].update({
+                "connection_limit": backend.limits.connection_limit,
                 "record_cache_budget_bytes": backend.record_cache_stats["budget_bytes"],
                 "artifact_cache_budget_bytes": backend.artifact_cache.budget,
                 "replay_budget_bytes": replay.stats["budget_bytes"],

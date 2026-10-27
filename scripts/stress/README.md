@@ -182,6 +182,9 @@ held connection itself was blocked by TCP buffering. The full workload requires
 the 409 when this option is selected; short mode may not fill the event window.
 The 200 MiB output, PTY and browser paths are separate from this matrix.
 
+The report records the actual retained SQLite connection budget; its default
+is 32 and it does not limit active sessions.
+
 The report records bounded latency samples, per-stage process RSS and
 tracemalloc, GC-tracked object counts, active Context and session-subscriber counts, file
 descriptors, child-process counts,
