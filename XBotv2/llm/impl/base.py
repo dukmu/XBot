@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from contextlib import aclosing
 from typing import AsyncIterator
 from XBotv2.core.api.domain import ProviderError
 from XBotv2.core.api.provider import ModelRequest, ProviderUser, ProviderTool, ResolvedMediaPart
@@ -50,8 +51,9 @@ class BaseProvider(ABC):
         Adapters configure transport timeouts; a live stream has no total deadline.
         """
         self._validate_message_capabilities(request)
-        async for event in self._astream_with_retries(request):
-            yield event
+        async with aclosing(self._astream_with_retries(request)) as stream:
+            async for event in stream:
+                yield event
 
     async def _astream_with_retries(
         self,
@@ -64,20 +66,21 @@ class BaseProvider(ABC):
             emitted = False
             terminal_seen = False
             try:
-                async for chunk in self._astream_once(request):
-                    if terminal_seen:
-                        raise ProviderFailure(ProviderError(
-                            code="event_after_terminal",
-                            message="Provider emitted an event after its terminal event",
-                            retryable=False,
-                            category="contract",
-                        ))
-                    emitted = True
-                    terminal_seen = isinstance(
-                        chunk,
-                        (ModelCompleted, ModelFailed, ModelCancelled),
-                    )
-                    yield chunk
+                async with aclosing(self._astream_once(request)) as stream:
+                    async for chunk in stream:
+                        if terminal_seen:
+                            raise ProviderFailure(ProviderError(
+                                code="event_after_terminal",
+                                message="Provider emitted an event after its terminal event",
+                                retryable=False,
+                                category="contract",
+                            ))
+                        emitted = True
+                        terminal_seen = isinstance(
+                            chunk,
+                            (ModelCompleted, ModelFailed, ModelCancelled),
+                        )
+                        yield chunk
                 if not terminal_seen:
                     yield ModelFailed(error=ProviderError(
                         code="missing_terminal",

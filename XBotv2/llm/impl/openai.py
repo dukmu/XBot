@@ -139,52 +139,56 @@ class OpenAICompatibleProvider(BaseProvider):
         final_usage: tuple[UsageDelta, object] | None = None
         stop_reason = ""
 
-        async for chunk in response:
-            usage = chunk.usage
-            if usage is not None:
-                final_usage = normalize_openai_usage(usage)
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
+        try:
+            async for chunk in response:
+                usage = chunk.usage
+                if usage is not None:
+                    final_usage = normalize_openai_usage(usage)
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
 
-            reasoning = _openai_reasoning(delta)
-            if reasoning:
-                reasoning_parts.append(reasoning)
-                yield ReasoningDelta(text=reasoning)
+                reasoning = _openai_reasoning(delta)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield ReasoningDelta(text=reasoning)
 
-            content = delta.content if delta.content is not None else ""
-            if content:
-                content_parts.append(content)
-                yield TextDelta(text=content)
+                content = delta.content if delta.content is not None else ""
+                if content:
+                    content_parts.append(content)
+                    yield TextDelta(text=content)
 
-            for tool_call in delta.tool_calls if delta.tool_calls is not None else ():
-                index = tool_call.index
-                buffer = tool_call_buffers.setdefault(
-                    index,
-                    _ToolCallBuffer(),
-                )
-                if tool_call.id is not None:
-                    buffer.call_id = tool_call.id
-                function = tool_call.function
-                if function is not None:
-                    if function.name is not None:
-                        buffer.name = function.name
-                    if function.arguments is not None:
-                        buffer.argument_fragments.append(function.arguments)
-                yield ToolCallDelta(
-                    call_id=buffer.call_id,
-                    name_delta=(
-                        function.name if function.name is not None else ""
-                    ) if function is not None else "",
-                    arguments_delta=(
-                        function.arguments
-                        if function.arguments is not None else ""
-                    ) if function is not None else "",
-                )
+                for tool_call in delta.tool_calls if delta.tool_calls is not None else ():
+                    index = tool_call.index
+                    buffer = tool_call_buffers.setdefault(
+                        index,
+                        _ToolCallBuffer(),
+                    )
+                    if tool_call.id is not None:
+                        buffer.call_id = tool_call.id
+                    function = tool_call.function
+                    if function is not None:
+                        if function.name is not None:
+                            buffer.name = function.name
+                        if function.arguments is not None:
+                            buffer.argument_fragments.append(function.arguments)
+                    yield ToolCallDelta(
+                        call_id=buffer.call_id,
+                        name_delta=(
+                            function.name if function.name is not None else ""
+                        ) if function is not None else "",
+                        arguments_delta=(
+                            function.arguments
+                            if function.arguments is not None else ""
+                        ) if function is not None else "",
+                    )
 
-            finish_reason = chunk.choices[0].finish_reason
-            if finish_reason:
-                stop_reason = finish_reason
+                finish_reason = chunk.choices[0].finish_reason
+                if finish_reason:
+                    stop_reason = finish_reason
+
+        finally:
+            await response.close()
 
         content = "".join(content_parts)
         reasoning = "".join(reasoning_parts)

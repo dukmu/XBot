@@ -261,3 +261,94 @@ async def test_early_stream_close_waits_for_provider_cleanup():
         await directories.release(cfg, service)
         await directories.close()
     assert client.closed == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_openai_stream_cleanup_precedes_release_with_shared_use(cancel):
+    from types import SimpleNamespace
+    from openai.types.chat import ChatCompletionChunk
+    from XBotv2.llm.impl.openai import OpenAICompatibleProvider
+    from XBotv2.llm.tests.test_provider_runtime import request
+
+    entered, finish, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    closed = []
+    chunk = ChatCompletionChunk.model_validate({
+        "id": "completion", "object": "chat.completion.chunk", "created": 1,
+        "model": "test-model", "choices": [{"index": 0,
+            "delta": {"content": "hello"}, "finish_reason": None}],
+    })
+
+    class Stream:
+        def __init__(self, first):
+            self.first = first
+            self.iterator = self.chunks()
+
+        async def chunks(self):
+            try:
+                yield chunk
+                if self.first:
+                    waiting.set()
+                    await asyncio.Event().wait()
+            finally:
+                if self.first:
+                    entered.set()
+                    await finish.wait()
+                closed.append("stream")
+
+        def __aiter__(self):
+            return self.iterator
+
+        async def close(self):
+            await self.iterator.aclose()
+
+    class Client:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=self)
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            return Stream(self.calls == 1)
+
+        async def close(self):
+            closed.append("client")
+
+    provider = OpenAICompatibleProvider(api_key="test", base_url=None)
+    await provider.client.close()
+    provider.client = Client()
+    directories = ProviderDirectories()
+    directories._factories = {"fake": lambda *_: provider}
+    cfg = config()
+    service = directories.acquire(cfg)
+    first = service.acquire(cfg.providers["test"])
+    second = service.acquire(cfg.providers["test"])
+    stream = first.astream(request())
+    assert (await anext(stream)).text == "hello"
+    await first.close()
+    if cancel:
+        closing = asyncio.create_task(anext(stream))
+        await waiting.wait()
+        closing.cancel()
+    else:
+        closing = asyncio.create_task(stream.aclose())
+    try:
+        await entered.wait()
+        assert not closing.done()
+        assert closed == []
+        other = second.astream(request())
+        assert (await anext(other)).text == "hello"
+        await other.aclose()
+        assert closed == ["stream"]
+        await second.close()
+        assert closed == ["stream"]
+    finally:
+        finish.set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        else:
+            await closing
+        await directories.release(cfg, service)
+        await directories.close()
+    assert closed == ["stream", "stream", "client"]

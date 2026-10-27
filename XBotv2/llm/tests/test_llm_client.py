@@ -155,6 +155,17 @@ def test_tool_arguments_parser_rejects_non_object_json():
         _parse_tool_args('{bad', tool_name="lookup")
 
 
+class _FakeOpenAIStream:
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __aiter__(self):
+        return self.chunks
+
+    async def close(self):
+        await self.chunks.aclose()
+
+
 @pytest.mark.asyncio
 async def test_openai_stream_completes_with_a_typed_terminal_event():
     """The real adapter must turn a normal provider finish into ModelCompleted."""
@@ -176,7 +187,7 @@ async def test_openai_stream_completes_with_a_typed_terminal_event():
             async def chunks():
                 yield chunk({"content": "hello"}, finish_reason="stop")
 
-            return chunks()
+            return _FakeOpenAIStream(chunks())
 
     provider = OpenAICompatibleProvider(api_key="test", base_url=None)
     provider.client = SimpleNamespace(
@@ -229,7 +240,7 @@ async def test_openai_tool_call_fragments_are_assembled_from_sdk_chunk_types():
                     "function": {"arguments": '"x"}'},
                 }, finish_reason="tool_calls")
 
-            return chunks()
+            return _FakeOpenAIStream(chunks())
 
     provider = OpenAICompatibleProvider(api_key="test", base_url=None)
     provider.client = SimpleNamespace(
@@ -279,7 +290,7 @@ async def test_openai_does_not_complete_a_tool_call_without_its_name():
             async def chunks():
                 yield malformed
 
-            return chunks()
+            return _FakeOpenAIStream(chunks())
 
     provider = OpenAICompatibleProvider(api_key="test", base_url=None)
     provider.client = SimpleNamespace(
