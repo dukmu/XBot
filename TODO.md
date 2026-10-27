@@ -377,3 +377,16 @@
 - [x] 主代理审查补出Agent重试入口缺口：新的模型调用身份不能用来重试旧发布。新增标准team_retry/typed retry，按原消息ID恢复原mentions，复用投递身份和同一正文ref，不新增板消息、不要求模型重传正文。仅修改并重验受影响节点，1 passed/4.07s、handle67570 actual exit0，日志`/tmp/xbot-team-retry.log`；主代理已读实际日志、最终投递/存储/工具/HTTP/禁用路径。原另外两项不重复。
 - [x] 工具身份与session边界分别独立提交389b984d、b63780be；team保持api/impl/doc/tests布局、默认关闭，元数据/schema/投影及逐目标投递都在team owner，persistence无新增业务。未引入额外cache/outbox/执行器/依赖。真实外部provider、慢客户端与最终安装产物等仍属整体待办，本轮结果不替代它们，goal保持active。
 - [x] 本轮精确被评估开发提交`52175e963a1d6e4c2dc9732156554fab4d09c4dd`，含工具身份/session内部ID边界/team三项责任提交。最终暂存检查通过，无生成产物或用户无关文件；之后仅追加本日志，不重复验证。下一切片继续目录/连接缓存清退、媒体/provider/权限配置与剩余产品验收，完整goal不缩为本轮team范围。
+
+### 迭代 11：目录解析与 provider 资源释放（实施中）
+
+- [x] 从日志1aa867cf/生产52175e96继续；上一轮有实际源码提交及定向证据，工作树只有原用户设计稿/.worktrees未跟踪。只启动两名Terra分别实施provider资源生命周期和Agent源解析缓存，文件责任分离；共享板及旧验证不重跑。
+- [x] provider目录按使用配置共享，thread绑定与在途请求持有明确使用权；替换/关闭释放，最后使用者完成后await关闭client和清退目录，不靠GC、不清退仍在使用的连接、不新增通用池框架。
+- [x] Agent未展开源解析结果归process owner，按字节预算清退、变更替换旧版本、实际重读目录时清理已删source；线程变量独立展开，直接loader调用没有模块全局缓存。现有fiber Catalog只持当前定义，不把它重写成历史缓存。
+- [x] 仅运行本轮实际变化的必要定向组合，保存独立日志和准确退出码；不重复旧套件、wheel或hash。整体goal仍active，媒体/provider互操作、配置/客户端及最终产品工况继续待办。
+- [x] AgentSources移除模块级128项lru_cache，process实例按路径保留单一stat版本并在关闭清空；默认4MiB计费预算，计费为源字节64倍加顶层对象/键浅层大小，是保守驻留估算，不能作为精确Python堆上限或已测最优参数。超预算单源仍可读取但不缓存。相关12项一次通过/0.43s、actual exit0，日志`/tmp/xbot-agent-sources-test.log`；预算用例为100/7000/100000B，覆盖共享解析/独立展开、变更删除、清退及process关闭。最终数值仍待后续同产品工况测量，不追加大压测。
+- [x] LLM公开ProviderUse（close/astream）和acquire，替代无主create缓存；MODEL以async replace接管使用权，外部override仍由caller关闭。目录由scope计数共享，client由绑定/流持有，idle立即释放，不加另一个有界池。thread关闭先释放绑定再目录，root等待在途流和正在close的资源；关闭错误不跳过其他client。主代理已读实际引用计数/流清理/目录dispose及跨owner调用。
+- [x] Terra首轮3项中2 passed/1 failed（handle58213 exit1，`/tmp/xbot-provider-lifetime-test.log`）；失败为fixture替错openai工厂，minimax实际走anthropic，修正后只该节点1 passed/2.27s（26294 exit0，`/tmp/xbot-provider-loader-retry.log`）。关闭失败/原工厂8项0.82s及生命周期3项2.38s分别通过（91097、86866 exit0）。公共use接口收口后受影响组合11项2.13s（57255 exit0，`/tmp/xbot-provider-lease-final.log`），与前述有重叠，不累计作全套。
+- [x] 取消选择单项在真实loader中阻塞旧client.close再取消，确认完成释放、新绑定与metadata一致、各client只关一次：1 passed/1.93s、77439 exit0（`/tmp/xbot-provider-cancel-selection.log`）。最后补公开use提前关闭stream时await底层finally，未提前释放pin或关闭client；仅该新增单项1 passed/0.88s、14337 exit0（`/tmp/xbot-provider-early-close.log`），未重复其他已通过节点。所有句柄均终态。证据为本地fake/SDK构造，不声称真实供应商互操作或adapter内部网络流已新增验收。
+- [x] Agent解析owner已独立提交85007d5a；本轮没有修改persistence、队列、媒体协议或TUI，不因相关测试通过勾选那些整体待办。公共API/生命周期文档同步，未保留create兼容桥；下一切片继续真实剩余集合和媒体/provider等完整目标。
+- [x] 本轮精确被评估开发提交`78af9efa7b396d8537443b453cd22a6ba06f00bd`，包含Agent解析缓存及provider资源两个责任提交；最终暂存检查通过，无生成产物。之后仅提交本迭代日志，不重跑旧验证或生成hash快照；完整goal保持active。
