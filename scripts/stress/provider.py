@@ -68,12 +68,20 @@ class NetworkMockLLM:
         chunk_delay_ms: float = 50,
         jitter_ms: float = 0,
         timeout_delay_seconds: float = 0.2,
+        tool_steps: int = 1,
+        capture_requests: bool = True,
     ) -> None:
         if fault not in {"", "disconnect", "http_error", "invalid_json", "invalid_utf8", "timeout"}:
             raise ValueError(f"unknown network provider fault: {fault}")
         if chunk_delay_ms < 0 or not 0 <= jitter_ms <= chunk_delay_ms:
             raise ValueError("delay and jitter must satisfy 0 <= jitter <= delay")
         self.mock_tools = mock_tools
+        self.tool_steps = tool_steps
+        self.capture_requests = capture_requests
+        self.tool_responses = 0
+        self.tool_calls = 0
+        self.agent_requests = 0
+        self.auxiliary_requests = 0
         self.fault = fault
         self.chunk_delay_ms = chunk_delay_ms
         self.jitter_ms = jitter_ms
@@ -97,7 +105,14 @@ class NetworkMockLLM:
         payload = await request.json()
         if not payload.get("model") or payload.get("stream") is not True or not payload.get("messages"):
             return JSONResponse({"error": {"message": "expected model, messages and stream=true"}}, status_code=400)
-        self.requests.append(payload)
+        if self.capture_requests:
+            self.requests.append(payload)
+        if payload["messages"][-1].get("role") == "tool":
+            self.tool_responses += 1
+        if payload.get("tools"):
+            self.agent_requests += 1
+        else:
+            self.auxiliary_requests += 1
         self.request_count += 1
         request_id = self.request_count
         fault = self.fault if request_id == 1 else ""
@@ -131,7 +146,14 @@ class NetworkMockLLM:
             yield b"data: \xff\xfe\n\n"
             return
         yield await frame({"reasoning_content": "reasoning"})
-        if self.mock_tools and payload["messages"][-1]["role"] != "tool":
+        recent_tools = 0
+        for message in reversed(payload["messages"]):
+            if message.get("role") == "user":
+                break
+            if message.get("role") == "tool":
+                recent_tools += 1
+        if self.mock_tools and payload.get("tools") and recent_tools < self.tool_steps:
+            self.tool_calls += 1
             arguments = json.dumps({"command": "printf stress-tool"})
             yield await frame({"tool_calls": [{
                 "index": 0, "id": f"stress-shell-{request_id}", "type": "function",

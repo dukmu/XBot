@@ -145,3 +145,49 @@ non-zero.
 The checked-in `reports/` directory is reserved for explicit verification
 artifacts. A full run report includes the exact commands, pass/skip/failure
 interpretation, and the unabridged JSON emitted by `--report`.
+
+## Product workload
+
+`product` is a separate bounded-observer entry point. It starts a real XBot
+HTTP listener and the independently listening OpenAI-compatible mock, with the
+production provider adapter between them. It creates 512 user turns, each with
+seven completed shell-tool round trips and a final model request (at least
+4,096 agent model requests), at least 20 committed `/compact` operations, and
+64 child thread open/close lifecycles in batches of four. `--concurrency` is the
+number of independent sessions (1, 4, or 16), not a product limit. The compact
+configuration retains one recent turn for this workload; the mock's recent
+request-body capture is disabled. Child threads are opened and closed through
+the public session API without submitting child turns.
+
+```sh
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress.product \
+  --short --output /tmp/xbot-product-short.json
+PYTHONPATH=XBotv2 .venv/bin/python -m scripts.stress.product \
+  --concurrency 4 --slow-sse --output /tmp/xbot-product-4.json
+```
+
+Short mode uses eight user turns, two compactions and four child lifecycles;
+it supports concurrency 1 or 4. `--slow-sse` keeps a real socket open after
+reading its initial event and separately attempts a new connection using the
+initial cursor. A 409 on that reconnect establishes cursor expiry, not that the
+held connection itself was blocked by TCP buffering. The full workload requires
+the 409 when this option is selected; short mode may not fill the event window.
+The 200 MB output, todo, shared board, PTY and browser paths are separate and
+are not exercised by this entry point.
+
+The report records bounded latency samples, per-stage process RSS and
+tracemalloc, GC-tracked object counts, active Context and session-subscriber counts, file
+descriptors, child-process counts,
+current JSONL/SQLite/WAL file lengths and Linux process I/O counters. Stage
+samples also record each active main thread's public working-message count,
+completed turns and committed compactions, so comparisons can identify matching
+working-set and active-thread conditions. XBot,
+the network mock and the observer share one process, so RSS and process I/O
+cannot be attributed to XBot alone; shell subprocess I/O is not included in
+`/proc/self/io`. File lengths are not physical write volume. Tracemalloc and
+GC scans add measurement overhead. The live file-size budget defaults to 256 MiB and is checked during running
+turns and child batches. Linux process physical write bytes are separately
+bounded at 2 GiB after server startup. The running-turn monitor checks both
+budgets every 250 ms; override them with `--max-disk-mib` or `--max-write-mib`
+when a larger workload is intentional. Results and runtime data
+remain local; reports must not be committed.

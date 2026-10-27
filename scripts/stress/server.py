@@ -16,7 +16,7 @@ from XBotv2.loader.api.contracts import PluginOverlay
 from .provider import LoopbackServer, NetworkMockLLM
 
 
-def _write_config(data_dir: Path, provider_url: str) -> None:
+def _write_config(data_dir: Path, provider_url: str, *, compact_recent: int | None = None) -> None:
     config = data_dir / "config"
     config.mkdir(parents=True, exist_ok=True)
     (config / "plugins.yaml").write_text(
@@ -57,6 +57,9 @@ def _write_config(data_dir: Path, provider_url: str) -> None:
                         }
                     },
                 },
+                *([{"id": "compact", "name": "compact", "config": {
+                    "keep_recent_turns": compact_recent,
+                }}] if compact_recent is not None else []),
                 {"id": "caption", "name": "caption", "config": {"auto": False}},
                 {"id": "sandbox", "name": "sandbox", "config": {"enabled": False, "resources": []}},
             ],
@@ -116,15 +119,22 @@ class MockServerHarness:
         *,
         mock_tools: bool = False,
         failure_mode: str = "",
+        tool_steps: int = 1,
+        capture_requests: bool = True,
+        compact_recent: int | None = None,
+        chunk_delay_ms: float = 50,
     ) -> None:
         self.timeout = timeout
         self.mock_tools = mock_tools
         self.failure_mode = failure_mode
+        self.compact_recent = compact_recent
         self._external_data_dir = data_dir
         self._stack = AsyncExitStack()
         self.provider = NetworkMockLLM(
             mock_tools=mock_tools,
             fault="disconnect" if failure_mode == "provider" else "",
+            tool_steps=tool_steps, capture_requests=capture_requests,
+            chunk_delay_ms=chunk_delay_ms,
         )
         self.data_dir: Path | None = None
         self.workspace: Path | None = None
@@ -142,7 +152,7 @@ class MockServerHarness:
             self.workspace = self.data_dir.parent / "workspace"
             self.workspace.mkdir(parents=True, exist_ok=True)
             await self._stack.enter_async_context(self.provider)
-            _write_config(self.data_dir, self.provider.base_url)
+            _write_config(self.data_dir, self.provider.base_url, compact_recent=self.compact_recent)
             self.application = await open_runtime(
                 paths=RuntimePaths.from_data_dir(self.data_dir),
                 overrides=PluginOverlay.parse([{

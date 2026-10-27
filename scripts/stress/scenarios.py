@@ -812,7 +812,8 @@ async def run_long_history(
     report = ScenarioReport("server.long_history")
     session_id = _session_id("long-history")
     thread_id = "main"
-    shared_events: list[ServerEvent] = []
+    event_count = 0
+    terminal_count = 0
     try:
         opened = await client.open_session(
             session_id=session_id, thread_id=thread_id, mode="new"
@@ -832,7 +833,8 @@ async def run_long_history(
             )
             elapsed = time.perf_counter() - before
             _check_turn_events(report, events)
-            shared_events.extend(events)
+            event_count += len(events)
+            terminal_count += sum(event.kind == "turn_ended" for event in events)
             if events:
                 cursor = events[-1].sequence
             history = await client.list_messages(session_id, thread_id, limit=500)
@@ -853,12 +855,11 @@ async def run_long_history(
         report.count("turns", config.history_turns)
         report.count("messages", len(messages.items))
         report.count("trajectory_items", len(trajectory.page.items))
-        report.count("authoritative_events", len(shared_events))
+        report.count("authoritative_events", event_count)
         report.invariants["history_grew"] = len(messages.items) >= config.history_turns * 2
         report.invariants["trajectory_grew"] = len(trajectory.page.items) >= config.history_turns
         report.invariants["api_event_stream_complete"] = (
-            sum(item.kind == "turn_ended" for item in shared_events)
-            >= config.history_turns
+            terminal_count >= config.history_turns
         )
         current = next((item for item in threads.threads if item.thread_id == thread_id), None)
         report.invariants["long_session_idle_after_append"] = bool(
