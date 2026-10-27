@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from XBotv2.session.contracts import ImageInput
+from XBotv2.agentloop.api.models import ImageInput
 from XBotv2.tui.tests.factories import PNG_BYTES
 from XBotv2.tui.impl.attachments import image_media_type, load_image
 

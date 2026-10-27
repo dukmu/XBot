@@ -6,7 +6,7 @@ skill's [HTTP route references](../.agents/skills/xbot-plugin-development/refere
 and [XBot API guide](../.agents/skills/xbot-plugin-development/references/xbot-api.md).
 
 The server is FastAPI with typed Pydantic wire models. The route owner is the
-plugin's `protocol.py`; the root `plugin.py` contributes the router when the
+plugin's `api/protocol.py`; `impl/plugin.py` contributes the router when the
 server carrier and required services exist. `GET /hello` is not used: the
 protocol handshake is `POST /hello`.
 

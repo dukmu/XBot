@@ -533,19 +533,8 @@ async def run_same_session_concurrency(
     return report
 
 
-async def run_multi_server(
-    clients: list[XBotClient],
-    config: StressConfig,
-) -> ScenarioReport:
-    """Probe ownership when independent servers share one session store.
-
-    A distributed deployment must not create two active engine drivers for the
-    same session merely because requests land on different workers.  The
-    invariant is based on the public turn number: a queued second request must
-    advance the turn, while two independent ``turn=1`` streams are evidence
-    of split-brain ownership.  The report keeps both streams and errors so a
-    failing deployment is diagnosable instead of being hidden by cleanup.
-    """
+async def run_multi_server(clients: list[XBotClient], config: StressConfig) -> ScenarioReport:
+    """Verify exclusive session writers and independent-session progress."""
     report = ScenarioReport("server.multi_server")
     if len(clients) < 2:
         report.invariants["skipped"] = True
@@ -553,80 +542,32 @@ async def run_multi_server(
         report.finish()
         return report
     session_id = _session_id("multi-server")
-    thread_id = "main"
+    other_id = _session_id("multi-server-independent")
     try:
-        opened = await clients[0].open_session(
-            session_id=session_id,
-            thread_id=thread_id,
-            mode="new",
-        )
-        # Prime every server's session lookup, then race two independent
-        # requests against the shared session.
-        resumed = await clients[1].open_session(
-            session_id=session_id,
-            thread_id=thread_id,
-            mode="resume",
-        )
-        opened_sessions = (opened, resumed)
-        cursors = tuple(item.data.event_cursor for item in opened_sessions)
-        first_request = f"stress-{uuid.uuid4().hex}"
-        second_request = f"stress-{uuid.uuid4().hex}"
-        requests = [
-            _submit_and_collect(
-                clients[0],
-                session_id,
-                opened.data.key.thread_id,
-                "multi server primary",
-                after=cursors[0],
-                timeout=config.timeout,
-                request_id=first_request,
-                delivery="steer",
-            ),
-            _submit_and_collect(
-                clients[1],
-                session_id,
-                opened.data.key.thread_id,
-                "multi server secondary",
-                after=cursors[1],
-                timeout=config.timeout,
-                request_id=second_request,
-                delivery="queue",
-            ),
-        ]
-        streams = await asyncio.gather(*requests)
-        for events in streams:
-            _record_events(report, events)
-        turns = [
-            event.payload.get("turn")
-            for events in streams
-            for event in events
-            if event.kind == "turn_started"
-        ]
+        opened = await clients[0].open_session(session_id=session_id, thread_id="main", mode="new")
+        events = await _submit_and_collect(clients[0], session_id, "main", "multi server primary", after=opened.data.event_cursor, timeout=config.timeout, request_id=f"stress-{uuid.uuid4().hex}", delivery="steer")
+        _record_events(report, events)
+        conflict = False
+        try:
+            await clients[1].open_session(session_id=session_id, thread_id="main", mode="resume")
+        except XBotClientError as error:
+            conflict = error.status_code == 409 and error.code == "session_in_use"
+            if not conflict:
+                raise
+        report.invariants["second_owner_rejected"] = conflict
+        independent = await clients[1].open_session(session_id=other_id, thread_id="main", mode="new")
+        other_events = await _submit_and_collect(clients[1], other_id, "main", "independent session", after=independent.data.event_cursor, timeout=config.timeout, request_id=f"stress-{uuid.uuid4().hex}", delivery="steer")
+        _record_events(report, other_events)
+        report.invariants["different_session_completes"] = any(event.kind == "turn_ended" for event in other_events)
+        history = await clients[0].list_messages(session_id, "main", limit=500)
+        report.invariants["primary_input_preserved"] = any(message.kind == "human_input" and message.content == "multi server primary" for message in history.items)
         report.count("servers", len(clients))
-        report.count("requests", len(streams))
-        report.invariants["both_requests_terminal"] = all(
-            any(
-                event.kind == "turn_ended"
-                for event in events
-            )
-            for events in streams
-        )
-        report.invariants["single_owner_turn_order"] = len(turns) == len(set(turns))
-        history = await clients[0].list_messages(session_id, thread_id, limit=500)
-        contents = {
-            message.content
-            for message in history.items
-            if message.kind == "human_input"
-        }
-        report.invariants["both_inputs_persisted"] = {
-            "multi server primary",
-            "multi server secondary",
-        }.issubset(contents)
-    except Exception as exc:  # noqa: BLE001
-        report.errors.append(str(exc))
+        report.count("requests", 2)
+    except Exception as error:
+        report.errors.append(str(error))
     finally:
-        for client in clients:
-            await _delete_session(client, session_id, report)
+        await _delete_session(clients[0], session_id, report)
+        await _delete_session(clients[1], other_id, report)
     report.finish()
     return report
 

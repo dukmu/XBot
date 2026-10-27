@@ -5,7 +5,7 @@ plugin contributes this router after `server`, `sessions`,
 `server_options`, and `workspace_events` are available. The router does not
 open persistence files directly; all state is accessed through `SessionsPort`.
 
-Source: `XBotv2/session/plugin.py`, `XBotv2/session/protocol.py`.
+Source: `XBotv2/session/impl/plugin.py`, `XBotv2/session/api/protocol.py`.
 
 ## Router contract
 
@@ -19,8 +19,8 @@ def build_session_router(
 ```
 
 The exact request and response models are declared in
-`XBotv2/session/protocol.py`; the domain ports and shared models are in
-`XBotv2/session/contracts.py`.
+`XBotv2/session/api/protocol.py`; the domain ports and shared models are in
+`XBotv2/session/api/contracts.py`.
 
 ## Routes
 

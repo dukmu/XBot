@@ -1,7 +1,7 @@
 # Persistence
 
 This is the ownership summary. Typed ports, record schemas, replay rules, and
-factory/hydration examples are maintained in the skill's
+resource/hydration examples are maintained in the skill's
 [persistence reference](../.agents/skills/xbot-plugin-development/references/plugins/persistence.md)
 and [session trace reference](../.agents/skills/xbot-plugin-development/references/session-trace.md).
 
@@ -11,7 +11,7 @@ and [session trace reference](../.agents/skills/xbot-plugin-development/referenc
 typed history, inbox, metadata, lifecycle, and StateService views. The persistence
 plugin creates this store; session restores its runtime projections and owns the
 single AgentInbox. Without a store, session uses memory state and a transient
-inbox. No application entry identifies this capability by its YAML mount ID.
+inbox. The loader never identifies this capability by its YAML mount ID.
 ArtifactStore
 belongs to the session plugin and remains available without conversation
 persistence; it is not a port of ThreadPersistence. The physical layout is derived by `RuntimePaths → SessionPaths →
@@ -83,19 +83,16 @@ runtime, so a second runtime on the same session fails with the stable
 `session_in_use` code instead of interleaving turns into one trajectory. The
 stable lock inode is outside the session directory, so ownership alone does not
 materialize a session and empty session files can be removed without unlinking
-a lock that another process may be opening. Ownership is shared by every
-runtime the process starts for that session (a main thread and its subagent
-threads) and released when the last one closes; the kernel releases it if the
-process dies, so a crashed runtime cannot lock a session forever.
+a lock that another process may be opening. One session owner holds the claim;
+only its real child thread scopes share it. Independent roots conflict even
+inside one PID. The kernel releases the descriptor if the owner process dies.
 
-Startup acquires the claim before creating thread persistence files. The
-launcher retains the claim through initialization and rollback, transferring
-its release to the Context only after initialization succeeds. Failed startup
-removes only its own newly created thread directory and empty session parents;
-it must not delete sibling-thread files or release a live parent's claim.
-Permanent disposal is `Context.destroy()` (`AgentApplication.close()` for the
-public application port); XCore's restartable `Context.stop()` is not permanent
-root-resource disposal.
+The persistence session facet acquires ownership before thread initialization.
+Opening failures roll back that new owner and preserve existing data and
+accepted input. Closing awaits owner pre_stop work before releasing claims or
+revoking services. Failed cleanup retains the owner and lock for retry; a new
+writer cannot replace it. Permanent disposal uses `Context.close()`; XCore's
+restartable `Context.stop()` is a separate lifecycle operation.
 
 Readers are not blocked: history, transcript, and trajectory reads take no lock,
 which is why the torn-tail rule above exists. Ownership therefore guarantees

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from xcore.api.events import EventKey
 from XBotv2.core.api.domain import ResolvedRuntimeSelection
-from XBotv2.session.contracts import SessionKey
+from XBotv2.session.api.contracts import SessionKey
 
 @dataclass(frozen=True, slots=True)
 class AgentConfigured:

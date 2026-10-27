@@ -38,9 +38,10 @@ ProviderFactory = Callable[..., Provider]
 class LlmService(LlmServicePort):
     """Provider route directory with configured provider definitions."""
 
-    def __init__(self, config: LlmConfig) -> None:
-        self._factories: dict[str, ProviderFactory] = {}
+    def __init__(self, config: LlmConfig, *, factories: dict[str, ProviderFactory] | None = None) -> None:
+        self._factories: dict[str, ProviderFactory] = factories if factories is not None else {}
         self._config = config
+        self._clients = {}
 
     def register(self, provider: str, factory: ProviderFactory) -> None:
         if provider in self._factories:
@@ -124,7 +125,17 @@ class LlmService(LlmServicePort):
         factory = self._factories.get(protocol)
         if factory is None:
             raise ValueError(f"Unknown protocol implementation: {protocol!r}")
-        return factory(provider_config, model_config)
+        key = (provider_config.model_dump_json(), model_config.model_dump_json())
+        if key not in self._clients:
+            self._clients[key] = factory(provider_config, model_config)
+        return self._clients[key]
+
+    async def close(self):
+        for provider in self._clients.values():
+            close = getattr(provider, "close", None)
+            if close is not None:
+                await close()
+        self._clients.clear()
 
 
 class ModelService(ModelPort):

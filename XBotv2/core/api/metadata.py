@@ -16,6 +16,9 @@ class ThreadMetadata(BaseModel):
 
     schema_version: Literal[1] = THREAD_METADATA_SCHEMA_VERSION
     runtime_selection: ResolvedRuntimeSelection
+    provider_override: str | None = None
+    model_override: str | None = None
+    effort_override: str | None = None
     parent_thread_id: str = ""
     workspace_root: str = ""
     title: str = ""
@@ -30,9 +33,8 @@ class ThreadMetadata(BaseModel):
         if self.title:
             return self
         if self.parent_thread_id:
-            title = self.runtime_selection.agent_name
-        else:
-            title = session_id or thread_id
+            return self
+        title = session_id or thread_id
         return self.model_copy(update={"title": title})
 
 

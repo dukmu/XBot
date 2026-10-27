@@ -7,6 +7,8 @@ lifecycle do not belong to the carrier.
 """
 
 from __future__ import annotations
+from XBotv2.server.impl.listener import HttpListener
+from XBotv2.server.api.contracts import HTTP_LISTENER
 
 from collections.abc import Iterator
 from functools import partial
@@ -151,7 +153,16 @@ class ServerComponent:
         ctx.on(REGISTER_ROUTE, carrier.register_contribution)
         ctx.set("server_info", info)
         ctx.set("server", app)
+        listener = HttpListener(ctx, app)
+        ctx.provide(HTTP_LISTENER, listener)
+        ctx.pre_stop(listener.stop)
         ctx.inject(["server", "server_info"], mount_core_http)
 
 
-plugin = ServerComponent()
+def mount_process(ctx, config):
+    ServerComponent().apply(ctx, config)
+
+
+mount_process.inject = ("runtime_log",)
+mount_process.provide = ("server", "server_info", HTTP_LISTENER)
+mount_process.Config = getattr(ServerComponent, "Config", None)

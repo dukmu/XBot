@@ -2,7 +2,7 @@
 
 from XBotv2.agentloop.api.contracts import TOOLS
 import pytest
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import Tool, ToolCall, ToolDenied, ToolSucceeded
 from XBotv2.llm.impl.mock import MockLLM
@@ -32,7 +32,7 @@ async def test_active_skill_scope_keeps_other_skill_tools_callable(tmp_path):
         frontmatter="allowed-tools:\n  - read\n",
     )
     _write_skill(workspace, name="verify")
-    context = await start_application(
+    context = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="skill-chaining",
         thread_id="main",
@@ -60,4 +60,4 @@ async def test_active_skill_scope_keeps_other_skill_tools_callable(tmp_path):
         assert isinstance(second[0].message.outcome, ToolSucceeded)
         assert isinstance(ordinary[0].message.outcome, ToolDenied)
     finally:
-        await context.destroy()
+        await context.root.close()

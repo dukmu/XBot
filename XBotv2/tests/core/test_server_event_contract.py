@@ -23,18 +23,12 @@ from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
 from XBotv2.protocol.api.models import server_event
 from XBotv2.protocol.api.sse import SseDecodeError, SseDecoder, SseMessage, decode_server_event, encode_server_event
-from XBotv2.session.contracts import (
-    HistoryMutation,
-    OpenedThread,
-    SessionEventFrame,
-    SessionKey,
-    ThreadMetadata,
-    PendingInputData,
-)
-from XBotv2.session.events import AgentConfiguredEvent, HistoryUpdatedEvent, InputAcceptedEvent
-from XBotv2.session.protocol import _format_sse, _open_session_response
-from XBotv2.session.records import HumanInputRecord
-from XBotv2.session.runtime import TurnEventRouter
+from XBotv2.agentloop.api.models import HistoryMutation, PendingInputData
+from XBotv2.session.api.contracts import OpenedThread, SessionEventFrame, SessionKey, ThreadMetadata
+from XBotv2.session.api.events import AgentConfiguredEvent, HistoryUpdatedEvent, InputAcceptedEvent
+from XBotv2.session.impl.protocol import _format_sse, _open_session_response
+from XBotv2.session.api.records import HumanInputRecord
+from XBotv2.agentloop.impl.execution import TurnEventRouter
 
 
 def _decode(encoded: bytes):
@@ -61,7 +55,7 @@ def test_session_frame_encodes_scope_kind_and_payload():
         event=HistoryUpdatedEvent(operation="undo", mutation=_mutation(removed_turns=1)),
     )
 
-    event = _decode(_format_sse(frame, session_id="s1", thread_id="agent"))
+    event = _decode(_format_sse(frame, session_id="s1", thread_id="main"))
     payload = event.model_dump(mode="json")
 
     assert event.kind == "history_updated"
@@ -104,7 +98,7 @@ def test_malformed_or_mismatched_sse_is_rejected_not_reinterpreted():
         payload={},
         sequence=1,
         session_id="s1",
-        thread_id="agent",
+        thread_id="main",
         scope=SessionScope(),
     ))
     decoder = SseDecoder()
@@ -139,7 +133,7 @@ def test_history_mutation_response_carries_one_complete_page_and_stats_value():
 
     response = _open_session_response(
         OpenedThread(
-            key=SessionKey(session_id="s1", thread_id="agent"),
+            key=SessionKey(session_id="s1", thread_id="main"),
             metadata=ThreadMetadata(
                 workspace_root="/w",
                 runtime_selection=ResolvedRuntimeSelection(
@@ -170,7 +164,7 @@ def test_history_mutation_response_carries_one_complete_page_and_stats_value():
     assert [item.id for item in response.data.history.items] == ["input-1"]
     assert response.data.history.older_cursor == result.history.older_cursor
     assert response.data.key.session_id == "s1"
-    assert response.data.key.thread_id == "agent"
+    assert response.data.key.thread_id == "main"
 
 
 def test_agent_configuration_crosses_session_event_boundary_as_one_selection():
@@ -195,7 +189,7 @@ def test_agent_configuration_crosses_session_event_boundary_as_one_selection():
         event=configured,
     )
     assert set(configured.model_dump()) == {"kind", "runtime_selection"}
-    wire_event = _decode(_format_sse(frame, session_id="s1", thread_id="agent"))
+    wire_event = _decode(_format_sse(frame, session_id="s1", thread_id="main"))
     decoded = AgentConfiguredEvent.model_validate(
         {"kind": wire_event.kind, **wire_event.payload}
     )

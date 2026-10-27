@@ -36,26 +36,17 @@ them and the central integration/client suites. A green test suite does not prov
 Web/TUI behavior, provider interoperability, socket permissions, or
 documentation accuracy.
 
-## Embedded application composition
+## Embedded process composition
 
-For an embedded server or test harness, install a provider default on the
-session manager before opening the first session:
+Use `XBotv2.main.open_runtime(paths=...)` for the same process startup used by
+CLI, HTTP and ACP. It creates one root and mounts the loader's process facets.
+Open a thread through `root.require(SESSIONS).open(OpenSession(...))`, which
+returns its real Context. Resolve tools, loop execution, permissions or other
+capabilities from their owning API keys on that Context.
 
-```python
-from functools import partial
-
-from XBotv2.application.app import create_agent_application
-
-sessions.application_factory = partial(
-    create_agent_application,
-    model_override=mock_provider,
-)
-```
-
-An explicit `AgentApplicationOptions.model_override` supplied when opening a
-session takes precedence over the factory default. This keeps test and host
-composition in the application layer without adding a transport-specific
-override hook.
+Tests may pass `model_override` in `OpenSession` or register a provider adapter
+through the public LLM directory before opening. There is no application
+factory, parallel runtime service bag or session business-forwarding layer.
 
 ## Installed distribution checks
 
@@ -85,7 +76,11 @@ recovery after a process restart:
   --xbot /tmp/xbot-installed/bin/xbot
 ```
 
-Each root must be empty. Logs and `report.json` stay there. The earlier logging
+Each root must be empty. Logs and `report.json` stay there. Run `.venv/bin/python -m scripts.accept_scope_shutdown --root /tmp/xbot-sse-exit`
+to terminate a real server while its SSE connection remains open and verify
+that the writer claim is released.
+
+The earlier logging
 matrix and Goal evaluator probes were removed from this script; passing this
 command does not assert those behaviors or replace each plugin's own tests.
 

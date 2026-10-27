@@ -446,7 +446,7 @@ def _provider_config(data_dir: Path, name: str) -> dict[str, Any]:
     there is no separate ``providers.yaml`` document.
     """
     sys.path.insert(0, "/home/shefrin/repo/XBot")
-    from XBotv2.loader import PluginTree
+    from XBotv2.loader.api.contracts import PluginTree
 
     tree = PluginTree.from_yaml(REPO_ROOT / "XBotv2" / "xcore.yaml")
     overlay_path = data_dir / "config" / "plugins.yaml"

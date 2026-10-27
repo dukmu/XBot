@@ -68,17 +68,12 @@ from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import ActiveGoal, CompleteGoal, GoalSnapshot, GoalStats
 from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
-from XBotv2.session.contracts import HistoryMutation, PendingInputData, ThreadSummary
-from XBotv2.session.records import (
-    AssistantRecord,
-    ConversationRecord,
-    HumanInputRecord,
-    RuntimeNoticeRecord,
-    ToolRecord,
-)
+from XBotv2.agentloop.api.models import HistoryMutation, PendingInputData
+from XBotv2.session.api.contracts import ThreadSummary
+from XBotv2.session.api.records import AssistantRecord, ConversationRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
 from XBotv2.usage.api.events import UsageUpdated
-from XBotv2.session.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
-from XBotv2.session.protocol import OpenSessionResponse
+from XBotv2.session.api.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
+from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
     AssistantCompleted,
     AssistantDelta,
@@ -321,7 +316,7 @@ def snapshot(**overrides) -> OpenSessionResponse:
 def thread(**overrides) -> ThreadSummary:
     base: dict = {
         "session_id": "s1",
-        "thread_id": "agent",
+        "thread_id": "main",
         "status": "active",
         "kind": "main",
         "turn_status": "idle",
@@ -1023,7 +1018,7 @@ def test_consumed_input_retires_only_unconfirmed_matching_echo() -> None:
     accepted = state.timeline.get("accepted")
     frame = server_event(
         kind="input_consumed", payload={"message_ids": ["rejected", "accepted"]},
-        session_id="s1", thread_id="agent", sequence=1, scope=SessionScope(),
+        session_id="s1", thread_id="main", sequence=1, scope=SessionScope(),
     )
     for event in FrameTranslator().translate(frame):
         reduce(state, event)
@@ -1305,7 +1300,7 @@ def test_authoritative_job_snapshot_replaces_stale_thread_jobs() -> None:
         JobUpdated(job("old", "running")),
         JobsReplaced(payload=JobListResponse(
             session_id="s1",
-            thread_id="agent",
+            thread_id="main",
             jobs=[job("current", "succeeded")],
         )),
     )

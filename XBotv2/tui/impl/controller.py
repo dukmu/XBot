@@ -19,8 +19,8 @@ from XBotv2.jobs.api.contracts import JobView
 from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.permissions.api.models import PermissionRequest
-from XBotv2.session.contracts import PendingInputData
-from XBotv2.session.contracts import ImageInput
+from XBotv2.agentloop.api.models import PendingInputData
+from XBotv2.agentloop.api.models import ImageInput
 from XBotv2.tui.impl.events import (
     InteractionRequest,
     JobsReplaced,

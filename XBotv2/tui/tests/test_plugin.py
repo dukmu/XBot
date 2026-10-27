@@ -6,9 +6,8 @@ import asyncio
 import threading
 import importlib
 from xcore.api.context import Context
-from XBotv2.application.boot import boot_application
-from XBotv2.loader import PluginOverlay
-from XBotv2.application.tree import load_client_tree
+from XBotv2.main import open_runtime
+from XBotv2.loader.api.contracts import PluginOverlay
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.tui.api.service import TERMINAL_CLIENT
 from XBotv2.tui.impl.app import TuiApp
@@ -53,13 +52,11 @@ async def test_client_profile_provides_one_api_client_and_textual_terminal(
         "    session_id: configured-session\n",
         encoding="utf-8",
     )
-    context = Context(data_dir=paths.data_dir)
-    context = await boot_application(
-        ctx=context,
-        tree=load_client_tree(paths=paths, overrides=PluginOverlay.parse([
+    context = await open_runtime(
+        paths=paths, profile="client", overrides=PluginOverlay.parse([
             {"id": "client-transport", "config": {"base_url": "http://127.0.0.1:4096"}},
             {"id": "textual-tui", "config": {"workspace": str(tmp_path)}},
-        ])),
+        ]),
     )
     try:
         api = context.require("client_api")

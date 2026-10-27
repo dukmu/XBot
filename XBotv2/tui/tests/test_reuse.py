@@ -14,7 +14,7 @@ from typing import get_args, get_type_hints
 import pytest
 from pydantic import BaseModel
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
-from XBotv2.session.contracts import ThreadSummary
+from XBotv2.session.api.contracts import ThreadSummary
 from XBotv2.tui.impl import events, protocol
 from XBotv2.tui.impl.events import (
     AssistantCompleted,

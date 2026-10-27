@@ -21,12 +21,16 @@ import pytest_asyncio
 import yaml
 import httpx
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.agentloop.api.contracts import AllTools
+from XBotv2.agentloop.api.contracts import AGENT_LOOP, INBOX, TOOLS, AllTools
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.session.api.contracts import OpenSession, THREAD_EVENTS
+from XBotv2.session.api.snapshot import thread_snapshot
+from XBotv2.permissions.api.models import PERMISSIONS
+from XBotv2.jobs.api.contracts import JOBS, JobRegistryClosed
 from XBotv2.core.api.tools import Tool, ToolSucceeded
-from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.application.server import start_server_application
-from XBotv2.loader import PluginOverlay
+from XBotv2.main import open_runtime
+from XBotv2.loader.api.contracts import PluginOverlay
 from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     LoopError,
@@ -36,8 +40,7 @@ from XBotv2.agentloop.api.outputs import (
 )
 from XBotv2.core.api.parts import TextPart
 from XBotv2.jobs.api.protocol import JobCompletedEvent, JobUpdatedEvent
-from XBotv2.session.events import MessagePublishedEvent
-from XBotv2.session.runtime import start_regenerate_turn
+from XBotv2.session.api.events import MessagePublishedEvent
 from XBotv2.usage.api.events import UsageUpdated
 
 
@@ -84,14 +87,9 @@ async def foldin_app(tmp_path: Path):
         ], sort_keys=False),
         encoding="utf-8",
     )
-    (data_dir / "config" / "config.yaml").write_text(
-        "provider: default\ntools: []\nplugins: {}\nhooks: []\n"
-        "sandbox:\n  enabled: false\n  resources: []\n",
-        encoding="utf-8",
-    )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    server = await start_server_application(
+    server = await open_runtime(
         paths=RuntimePaths.from_data_dir(data_dir),
         overrides=PluginOverlay.parse([{"id": "session", "config": {
             "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
@@ -102,7 +100,11 @@ async def foldin_app(tmp_path: Path):
     try:
         yield server.server
     finally:
-        await server.stop()
+        await server.close()
+
+
+async def _open(manager, *, llm_override=None, mode="new", **kwargs):
+    return await manager.open(OpenSession(mode=mode, model_override=llm_override, **kwargs))
 
 
 async def _collect(stream):
@@ -112,9 +114,9 @@ async def _collect(stream):
 def _runtime_command(runtime, content: str, request_id: str, *, delivery="steer"):
     """Issue a command while consuming the central session event stream."""
     async def stream():
-        events = runtime.event_stream.subscribe()
+        events = runtime.require(THREAD_EVENTS).subscribe()
         try:
-            await runtime.send_message(content, request_id, delivery=delivery)
+            await runtime.require(AGENT_LOOP).send_message(content, request_id, delivery=delivery)
             async for frame in events:
                 yield frame.event
                 if isinstance(frame.event, LoopTurnEnded):
@@ -130,8 +132,8 @@ def _runtime_command(runtime, content: str, request_id: str, *, delivery="steer"
 
 
 @pytest.mark.asyncio
-async def test_agent_application_snapshot_without_optional_plugins(foldin_app):
-    runtime = await foldin_app.state.manager.open_session(
+async def test_thread_snapshot_without_optional_plugins(foldin_app):
+    runtime = await _open(foldin_app.state.manager,
         session_id="snapshot",
         thread_id="t",
         provider_name="default",
@@ -140,7 +142,7 @@ async def test_agent_application_snapshot_without_optional_plugins(foldin_app):
         llm_override=MockLLM(responses=[{"content": "ok"}]),
     )
 
-    snapshot = await asyncio.wait_for(runtime.application.snapshot(), timeout=2)
+    snapshot = await asyncio.wait_for(thread_snapshot(runtime), timeout=2)
     assert snapshot.metadata.runtime_selection.agent_name
 
 
@@ -158,7 +160,7 @@ async def test_http_open_snapshot_without_optional_plugins(foldin_app):
 
 
 async def _run_foldin(app, llm):
-    ctx = await app.state.manager.open_session(
+    ctx = await _open(app.state.manager,
         session_id="foldin",
         thread_id="t",
         provider_name="default",
@@ -166,11 +168,7 @@ async def _run_foldin(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    services = ctx.application._context
-    services.permissions.replace_policies((PermissionPolicy(
-        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
-        default_decision="ask",
-    ),))
+    ctx.require(PERMISSIONS).grant_once("wait_for_release", {})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -179,10 +177,10 @@ async def _run_foldin(app, llm):
         await release_tool.wait()
         return value
 
-    services.tools._registry.register(Tool.from_function(wait_for_release))
-    services.tools._registry.restrict(AllTools())
+    ctx.require(TOOLS).register(Tool.from_function(wait_for_release), owner=ctx)
+    ctx.require(TOOLS).restrict(AllTools())
 
-    ev_stream = ctx.event_stream.subscribe()
+    ev_stream = ctx.require(THREAD_EVENTS).subscribe()
 
     async def _collect_events(stream):
         return [event async for event in stream]
@@ -195,7 +193,7 @@ async def _run_foldin(app, llm):
         _collect_events(_runtime_command(ctx, "second queued", "req-2"))
     )
     await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 1
+    assert ctx.require(AGENT_LOOP).pending_input_count == 1
     release_tool.set()
     first_events, second_events = await asyncio.gather(first_task, second_task)
     message_events = []
@@ -274,8 +272,6 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
         f"central usage event was not observed by both subscribers: {usage_totals}"
     )
 
-    # The fold-in response belongs only to the queued request; the active
-    # request must not observe it (single event source after hand-off).
     assert llm.call_count == 2
 
 
@@ -290,8 +286,8 @@ async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldi
         {"content": "continued current task"},
     ])
     first_events, _, _ = await _run_foldin(foldin_app, llm)
-    runtime = await foldin_app.state.manager.get("foldin", "t")
-    messages = runtime.application.loop_state.messages
+    runtime = await foldin_app.state.manager.locate("foldin", "t")
+    messages = runtime.require(LOOP_STATE).messages
     human = [message for message in messages if isinstance(message, HumanInputMessage)]
     assert [message.steering for message in human] == [False, True]
     assert [message.parts for message in human] == [
@@ -318,7 +314,7 @@ async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldi
     assert_model_wrapper(llm.request_history[-1])
     await foldin_app.state.manager.close_session("foldin")
     resumed_llm = MockLLM(responses=[{"content": "resumed"}])
-    resumed = await foldin_app.state.manager.open_session(
+    resumed = await _open(foldin_app.state.manager,
         session_id="foldin", thread_id="t", mode="resume", llm_override=resumed_llm,
         provider_name="default", workspace_root=str(foldin_app.state.paths.data_dir),
         no_plugins=True,
@@ -327,14 +323,14 @@ async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldi
     assert not any(isinstance(event, LoopError) for event in resumed_events)
     assert_model_wrapper(resumed_llm.request_history[-1])
     assert [
-        message.steering for message in resumed.application.loop_state.messages
+        message.steering for message in resumed.require(LOOP_STATE).messages
         if isinstance(message, HumanInputMessage)
     ] == [False, True, False]
 
 
 async def _run_multi_queue(app, llm):
     """First turn blocks on a tool; SECOND and THIRD are queued meanwhile."""
-    ctx = await app.state.manager.open_session(
+    ctx = await _open(app.state.manager,
         session_id="multi",
         thread_id="t",
         provider_name="default",
@@ -342,11 +338,7 @@ async def _run_multi_queue(app, llm):
         no_plugins=True,
         llm_override=llm,
     )
-    services = ctx.application._context
-    services.permissions.replace_policies((PermissionPolicy(
-        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
-        default_decision="ask",
-    ),))
+    ctx.require(PERMISSIONS).grant_once("wait_for_release", {})
     tool_started = asyncio.Event()
     release_tool = asyncio.Event()
 
@@ -355,8 +347,8 @@ async def _run_multi_queue(app, llm):
         await release_tool.wait()
         return value
 
-    services.tools._registry.register(Tool.from_function(wait_for_release))
-    services.tools._registry.restrict(AllTools())
+    ctx.require(TOOLS).register(Tool.from_function(wait_for_release), owner=ctx)
+    ctx.require(TOOLS).restrict(AllTools())
 
     async def collect(stream):
         events = []
@@ -364,13 +356,13 @@ async def _run_multi_queue(app, llm):
             events.append(event)
         return events
 
-    ev_stream = ctx.event_stream.subscribe()
+    ev_stream = ctx.require(THREAD_EVENTS).subscribe()
     first_task = asyncio.create_task(collect(_runtime_command(ctx, "first", "req-1")))
     await asyncio.wait_for(tool_started.wait(), timeout=3)
     second_task = asyncio.create_task(collect(_runtime_command(ctx, "second", "req-2")))
     third_task = asyncio.create_task(collect(_runtime_command(ctx, "third", "req-3")))
     await asyncio.sleep(0)
-    assert ctx.engine.pending_input_count == 2
+    assert ctx.require(AGENT_LOOP).pending_input_count == 2
     release_tool.set()
     first_events = await asyncio.wait_for(first_task, timeout=5)
     second_events = await asyncio.wait_for(second_task, timeout=5)
@@ -394,7 +386,7 @@ async def test_multiple_queued_messages_all_drain_in_order(foldin_app) -> None:
     While the agent is busy the mailbox holds the queue; at the tool
     boundary ALL pending messages are fused into the turn context (one LLM
     call), each queued stream receives a ``turn_started`` pop signal, and the
-    final queued stream owns the single merged reply.
+    all subscribers see the single merged reply.
 
     Regression: only one queued message was folded per boundary, so the
     second queued message never drained and the transcript did not update."""
@@ -459,7 +451,7 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
 
     from XBotv2.coretools.impl.shell import shell_tools
 
-    ctx = await foldin_app.state.manager.open_session(
+    ctx = await _open(foldin_app.state.manager,
         session_id="task-panel",
         thread_id="t",
         provider_name="default",
@@ -467,14 +459,9 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
         no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "hi"}]),
     )
-    services = ctx.application._context
-    services.permissions.replace_policies((PermissionPolicy(
-        rules=(PermissionRule(tool_pattern=".*", decision="allow"),),
-        default_decision="ask",
-    ),))
-    events = ctx.event_stream.subscribe()
+    events = ctx.require(THREAD_EVENTS).subscribe()
 
-    registry = services.jobs
+    registry = ctx.require(JOBS)
     assert registry is not None
     tools = {
         tool.name: tool
@@ -482,7 +469,7 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
             None,
             registry,
             str(foldin_app.state.paths.data_dir),
-            services.artifacts,
+            ctx.require("artifacts"),
         )
     }
     assert set(tools["shell"].parameters["properties"]) == {
@@ -521,7 +508,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
     from XBotv2.coretools.impl.shell import ShellCommandError, shell_tools
 
     llm = MockLLM(responses=[{"content": "acknowledged"}])
-    ctx = await foldin_app.state.manager.open_session(
+    ctx = await _open(foldin_app.state.manager,
         session_id="job-terminal-states",
         thread_id="t",
         provider_name="default",
@@ -529,8 +516,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
         no_plugins=True,
         llm_override=llm,
     )
-    services = ctx.application._context
-    events = ctx.event_stream.subscribe()
+    events = ctx.require(THREAD_EVENTS).subscribe()
     blocked_started = asyncio.Event()
 
     async def run(command: str, **_kwargs: object) -> str:
@@ -546,9 +532,9 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
         tool.name: tool
         for tool in shell_tools(
             None,
-            services.jobs,
+            ctx.require(JOBS),
             str(foldin_app.state.paths.data_dir),
-            services.artifacts,
+            ctx.require("artifacts"),
         )
     }
 
@@ -561,8 +547,8 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
     failed_id = await start("fail")
     cancelled_id = await start("block")
     await blocked_started.wait()
-    await services.jobs.cancel(cancelled_id)
-    await services.jobs.wait([failed_id, cancelled_id], timeout=1)
+    await ctx.require(JOBS).cancel(cancelled_id)
+    await ctx.require(JOBS).wait([failed_id, cancelled_id], timeout=1)
 
     updates: dict[str, list[str]] = {failed_id: [], cancelled_id: []}
     completions: list[JobCompletedEvent] = []
@@ -588,7 +574,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
         failed_id: "failed_running",
         cancelled_id: "cancelled_running",
     }
-    assert len(ctx.engine.inbox) == 2
+    assert len(ctx.require(INBOX)) == 2
     assert llm.call_count == 0
 
     await asyncio.wait_for(
@@ -596,8 +582,8 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
         timeout=3,
     )
     assert llm.call_count == 1
-    assert len(ctx.engine.inbox) == 0
-    assert [message.kind for message in ctx.engine.messages] == [
+    assert len(ctx.require(INBOX)) == 0
+    assert [message.kind for message in ctx.require(LOOP_STATE).messages] == [
         "runtime_notice", "runtime_notice", "human_input", "assistant",
     ]
 
@@ -609,7 +595,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
 ) -> None:
     from XBotv2.coretools.impl.shell import shell_tools
 
-    ctx = await foldin_app.state.manager.open_session(
+    ctx = await _open(foldin_app.state.manager,
         session_id="shell-output-pages",
         thread_id="t",
         provider_name="default",
@@ -617,7 +603,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
         no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "unused"}]),
     )
-    jobs = ctx.application._context.jobs
+    jobs = ctx.require(JOBS)
     assert jobs is not None
 
     async def run(command: str, **_kwargs: object) -> str:
@@ -630,7 +616,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
             None,
             jobs,
             str(foldin_app.state.paths.data_dir),
-            ctx.application._context.artifacts,
+            ctx.require("artifacts"),
         )
     }
     started = await invoke_tool_function(tools["shell"],
@@ -641,7 +627,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     job = jobs.get_or_none(job_id)
     assert job is not None and job.result is not None
     assert job.result.output_ref.kind.value == "tool_results"
-    assert ctx.application._context.artifacts.read(job.result.output_ref) == b"abcdef"
+    assert ctx.require("artifacts").read(job.result.output_ref) == b"abcdef"
 
     first = await invoke_tool_function(tools["read_shell"],
         {"id": job_id, "cursor": None, "max_bytes": 3},
@@ -686,7 +672,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
 ) -> None:
     from XBotv2.coretools.impl.shell import shell_tools
 
-    ctx = await foldin_app.state.manager.open_session(
+    ctx = await _open(foldin_app.state.manager,
         session_id="job-session-close",
         thread_id="t",
         provider_name="default",
@@ -694,7 +680,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
         no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "unused"}]),
     )
-    jobs = ctx.application._context.jobs
+    jobs = ctx.require(JOBS)
     assert jobs is not None
     command_started = asyncio.Event()
     command_cancelled = asyncio.Event()
@@ -714,7 +700,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
             None,
             jobs,
             str(foldin_app.state.paths.data_dir),
-            ctx.application._context.artifacts,
+            ctx.require("artifacts"),
         )
         if tool.name == "shell"
     )
@@ -726,19 +712,19 @@ async def test_session_close_cancels_and_removes_owned_background_job(
 
     await foldin_app.state.manager.close_session(
         "job-session-close",
-        reason="test_session_close",
     )
 
     assert command_cancelled.is_set()
     assert jobs.closing is True
-    assert jobs.all() == []
+    with pytest.raises(JobRegistryClosed):
+        jobs.all()
 
 
 @pytest.mark.asyncio
 async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
-    from XBotv2.session.records import project_message
+    from XBotv2.session.api.records import project_message
 
-    runtime = await foldin_app.state.manager.open_session(
+    runtime = await _open(foldin_app.state.manager,
         session_id="regenerate-events",
         thread_id="t",
         provider_name="default",
@@ -758,13 +744,13 @@ async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
                 return events
         raise AssertionError("turn stream ended without a terminal event")
 
-    first_stream = runtime.event_stream.subscribe()
-    await runtime.send_message("original question", "original-request")
+    first_stream = runtime.require(THREAD_EVENTS).subscribe()
+    await runtime.require(AGENT_LOOP).send_message("original question", "original-request")
     await drain_turn(first_stream)
     await first_stream.aclose()
 
-    replay_stream = runtime.event_stream.subscribe()
-    await start_regenerate_turn(runtime, request_id="regenerate-request")
+    replay_stream = runtime.require(THREAD_EVENTS).subscribe()
+    await runtime.require(AGENT_LOOP).regenerate("regenerate-request")
     replay_events = await drain_turn(replay_stream)
     await replay_stream.aclose()
 
@@ -777,7 +763,7 @@ async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
         ("regenerate-request", "original question"),
     ]
     assert published_inputs == [
-        project_message(message) for message in runtime.application.loop_state.messages
+        project_message(message) for message in runtime.require(LOOP_STATE).messages
         if message.kind == "human_input"
     ]
 
@@ -786,7 +772,7 @@ async def test_regenerate_publishes_the_replayed_input_once(foldin_app) -> None:
 async def test_interrupted_turn_emits_one_cancel_terminal_and_runtime_recovers(
     foldin_app,
 ) -> None:
-    runtime = await foldin_app.state.manager.open_session(
+    runtime = await _open(foldin_app.state.manager,
         session_id="interrupt-recovery",
         thread_id="t",
         provider_name="default",
@@ -801,9 +787,9 @@ async def test_interrupted_turn_emits_one_cancel_terminal_and_runtime_recovers(
         ]),
     )
 
-    interrupted_stream = runtime.event_stream.subscribe()
-    await runtime.send_message("interrupt me", "interrupt-request")
-    assert runtime.request_interrupt()
+    interrupted_stream = runtime.require(THREAD_EVENTS).subscribe()
+    await runtime.require(AGENT_LOOP).send_message("interrupt me", "interrupt-request")
+    assert await runtime.require(AGENT_LOOP).interrupt()
     interrupted = await asyncio.wait_for(drain(interrupted_stream), timeout=2)
     await interrupted_stream.aclose()
 
@@ -813,11 +799,11 @@ async def test_interrupted_turn_emits_one_cancel_terminal_and_runtime_recovers(
         if isinstance(event, LoopTurnEnded)
     ]
     assert terminals == [TurnCancelled(reason="client_interrupt")]
-    assert not runtime.turn_lock.locked()
-    assert runtime.engine.pending_input_count == 0
+    assert not runtime.require(AGENT_LOOP).busy
+    assert runtime.require(AGENT_LOOP).pending_input_count == 0
 
-    recovery_stream = runtime.event_stream.subscribe()
-    await runtime.send_message("try again", "recovery-request")
+    recovery_stream = runtime.require(THREAD_EVENTS).subscribe()
+    await runtime.require(AGENT_LOOP).send_message("try again", "recovery-request")
     recovered = await asyncio.wait_for(drain(recovery_stream), timeout=2)
     await recovery_stream.aclose()
     assert any(

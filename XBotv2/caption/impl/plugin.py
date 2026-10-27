@@ -13,18 +13,18 @@ from XBotv2.caption.impl.tools import build_caption_tool
 
 
 class CaptionPlugin:
-    inject = [TOOLS, MODEL, LOOP_STATE, "session", "session_launch", "usage"]
+    inject = [TOOLS, MODEL, LOOP_STATE, "thread_info", "usage"]
     name = "caption"
     Config = CaptionConfig
 
     def apply(self, ctx: Context, config: CaptionConfig) -> None:
-        is_subagent = ctx.session_launch.is_subagent
+        is_subagent = ctx.thread_info.is_subagent
         service = CaptionService(
             events=ctx,
             model=ctx.require(MODEL),
             state=ctx.require(LOOP_STATE).metadata,
             usage=ctx.usage,
-            session_id=ctx.session.session_id,
+            session_id=ctx.thread_info.session_id,
             config=config,
             is_subagent=is_subagent,
         )
@@ -36,4 +36,10 @@ class CaptionPlugin:
         ctx.set("caption", service)
 
 
-plugin = CaptionPlugin()
+def mount_thread(ctx, config):
+    CaptionPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(CaptionPlugin, "inject", ())
+mount_thread.provide = ('caption',)
+mount_thread.Config = getattr(CaptionPlugin, "Config", None)

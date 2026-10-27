@@ -7,7 +7,7 @@ from XBotv2.core.api.metadata import Metadata
 from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.messages import ConversationMessage
 if TYPE_CHECKING:
-    from XBotv2.session.contracts import SessionKey
+    from XBotv2.session.api.contracts import SessionKey
 
 
 class ThreadExecution(Protocol):

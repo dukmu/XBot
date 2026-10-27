@@ -17,7 +17,7 @@ from .network import WebAccess, network_disabled
 
 
 class BrowserPlugin:
-    inject = [TOOLS, 'session', SANDBOX, 'artifacts']
+    inject = [TOOLS, 'thread_info', SANDBOX, 'artifacts']
     name = "browser"
     Config = BrowserConfig
 
@@ -30,7 +30,7 @@ class BrowserPlugin:
 
     def apply(self, ctx: Context, config: BrowserConfig) -> None:
         self._config = config
-        ctx.dispose(self._dispose)
+        ctx.pre_stop(self._dispose)
         self._artifacts = ctx.artifacts
         self._sandbox = ctx.require(SANDBOX)
         for function in (
@@ -193,4 +193,10 @@ class BrowserPlugin:
         self._web = None
 
 
-plugin = BrowserPlugin()
+def mount_thread(ctx, config):
+    BrowserPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(BrowserPlugin, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(BrowserPlugin, "Config", None)

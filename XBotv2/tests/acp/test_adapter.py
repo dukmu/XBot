@@ -19,13 +19,19 @@ from acp.schema import (
 )
 from XBotv2.acp_plugin.impl.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.impl.events import ACPEventMapper, replay_history
-from XBotv2.session.contracts import (
-    OpenedThread,
-    SessionEventFrame,
-    SessionKey,
-    conversation_replay,
-)
-from XBotv2.application.acp import start_acp_application
+from XBotv2.session.api.contracts import OpenedThread, SessionEventFrame, SessionKey
+from XBotv2.session.api.records import conversation_replay
+from XBotv2.main import open_runtime
+from XBotv2.acp_plugin.api.contracts import ACP_SERVER
+from XBotv2.loader.api.contracts import PluginOverlay
+from XBotv2.llm.api.contracts import LLM
+from xcore.api.context import Context
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.interactions.api.contracts import CLIENT_EVENTS
+from XBotv2.session.api.contracts import THREAD_EVENTS
+from XBotv2.usage.api.service import USAGE
+from XBotv2.persistence.api.contracts import PERSISTENCE
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import (
     ToolTiming,
@@ -87,7 +93,7 @@ from XBotv2.jobs.api.protocol import JobUpdatedEvent
 from XBotv2.interactions.api.models import Answered, UserInputOption, UserInputRequest
 from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.session import SessionSummary, ThreadSummary
+from XBotv2.session.api.contracts import SessionSummary, ThreadSummary
 
 
 def _exchange() -> ModelExchange:
@@ -155,30 +161,53 @@ class FakeSessions:
 
     async def open(self, request):
         self.last_open = request
-        return OpenedThread(
-            key=SessionKey(
-                session_id=request.session_id or "session-1",
-                thread_id="agent",
-            ),
-            metadata=ThreadMetadata(
-                runtime_selection=_selection(),
-                workspace_root=request.workspace_root,
-            ),
-            usage=UsageSnapshot(),
-            status_slots={},
-            event_cursor=0,
-            history=HistoryPage(
-                items=conversation_replay(self.messages),
-                older_cursor=None,
-            ),
-            pending_inputs=(),
-            pending_interactions=(),
-        )
+        return await self.locate(request.session_id or "session-1", "main", workspace=request.workspace_root)
+
+    async def locate(self, session_id, thread_id, *, workspace="/workspace"):
+        if not hasattr(self, "scope"):
+            self.scope = Context()
+            host = self
+            class Loop:
+                def pending_inputs(self):
+                    return ()
+                async def invoke(self, operation, request):
+                    return await host.dispatch(session_id, thread_id, operation, request)
+                async def submit_message(self, request):
+                    return await host.send_message(request)
+                async def interrupt(self):
+                    return True
+            class Events:
+                sequence = 0
+                def subscribe(self, after=None):
+                    async def stream():
+                        while True:
+                            event = await host.event_queue.get()
+                            if event is None:
+                                return
+                            yield event
+                    return stream()
+            class Clients:
+                def pending_interactions(self):
+                    return ()
+                def resolve(self, request_id, resolution):
+                    host.interaction_responses.append(("permission" if isinstance(resolution, Allowed) else "user_input", (request_id, resolution)))
+                def cancel(self, *args, **kwargs):
+                    host.interaction_responses.append(("cancel", args))
+            self.scope.provide(AGENT_LOOP, Loop())
+            self.scope.provide(THREAD_EVENTS, Events())
+            self.scope.provide(CLIENT_EVENTS, Clients())
+            self.scope.provide(USAGE, SimpleNamespace(snapshot=lambda: UsageSnapshot()))
+            self.scope.provide(LOOP_STATE, SimpleNamespace(session=SimpleNamespace(key=SessionKey(session_id, "main")), metadata=SimpleNamespace(value=ThreadMetadata(runtime_selection=_selection(), workspace_root=workspace)), history=SimpleNamespace(snapshot=lambda: tuple(self.messages))))
+            await self.scope.start()
+        return self.scope
+
+    def message_page(self, session_id, thread_id, *, cursor=None, limit=None):
+        return HistoryPage(items=tuple(self.messages), older_cursor=None)
 
     async def list_sessions(self):
         return (SessionSummary(
-            "session-1",
-            "active",
+            session_id="session-1",
+            status="active",
             workspace_root="/workspace",
             title="session-1",
         ),)
@@ -275,6 +304,7 @@ def _agent(tmp_path, events: list[dict[str, Any]]) -> tuple[XBotACPAgent, FakeCo
     sessions = FakeSessions(events)
     agent = XBotACPAgent(
         sessions=sessions,
+        persistence=sessions,
         provider_name="default",
         no_plugins=True,
     )
@@ -439,6 +469,7 @@ async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
     ])
     agent = XBotACPAgent(
         sessions=host,
+        persistence=host,
         provider_name="default",
         no_plugins=False,
     )
@@ -538,21 +569,11 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
         }]),
         encoding="utf-8",
     )
-    context = await start_acp_application(
-        paths=RuntimePaths.from_data_dir(data_dir),
-        provider_name="default",
-        no_plugins=True,
-        selected_agent=None,
-        llm_override=MockLLM([{
-            "content": "real runtime",
-            "usage_metadata": {
-                "input_tokens": 4,
-                "output_tokens": 2,
-                "total_tokens": 6,
-            },
-        }]),
-    )
-    agent = context.acp_agent
+    context = await open_runtime(paths=RuntimePaths.from_data_dir(data_dir), profile="acp", overrides=PluginOverlay.parse([{"id": "acp", "config": {"provider_name": "default", "no_plugins": True}}]))
+    providers = context.require(LLM)
+    providers.unregister("openai")
+    providers.register("openai", lambda *_: MockLLM([{"content": "real runtime", "usage_metadata": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}}]))
+    agent = context.require(ACP_SERVER)
     connection = FakeConnection()
     agent.on_connect(connection)
     await agent.initialize(PROTOCOL_VERSION, ClientCapabilities())
@@ -571,10 +592,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             session.session_id,
             str(workspace),
         )
-        forked_messages = await agent.sessions.messages(
-            forked.session_id,
-            "agent",
-        )
+        forked_messages = context.require(PERSISTENCE).messages(forked.session_id, "main")
     finally:
         await context.destroy()
 
@@ -608,7 +626,7 @@ async def test_prompt_is_released_when_the_session_stream_ends() -> None:
             del session_id, thread_id
             return ThreadSummary()
 
-    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
 
@@ -666,7 +684,7 @@ async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -
         async def aclose(self):
             self.closed = True
 
-    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
     agent.connection = FailingConnection()
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
@@ -705,7 +723,7 @@ async def test_cancelled_event_forwarding_closes_stream_and_releases_prompt() ->
         async def aclose(self):
             self.closed = True
 
-    agent = XBotACPAgent(sessions=Sessions(), provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
     events = BlockingSubscription()

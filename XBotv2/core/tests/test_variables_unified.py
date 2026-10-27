@@ -1,7 +1,7 @@
 """The one expansion engine: two passes, one syntax, auto-expanded configs."""
 
 import pytest
-from XBotv2.config.impl.loader import load_plugin_tree
+from XBotv2.config.api.tree import load_plugin_tree
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.permissions.impl.system import PermissionSystem
@@ -33,10 +33,10 @@ def test_runtime_variables_keep_identities_verbatim():
             thread_dir="/t", state_dir="/st",
         ),
         "session_id": "s1",
-        "thread_id": "agent",
+        "thread_id": "main",
     })
     assert variables["session_id"] == "s1"
-    assert variables["thread_id"] == "agent"
+    assert variables["thread_id"] == "main"
     assert variables["workspace"] == "/w"
 
 
@@ -90,7 +90,7 @@ plugins:
             x-opencode-session: "$${session_id}"
 """
     paths = _tree(tmp_path, doc)
-    tree = load_plugin_tree(paths, tmp_path, session_id="s1", thread_id="agent")
+    tree = load_plugin_tree(paths, tmp_path, session_id="s1", thread_id="main")
 
     entry = next(e for e in tree.entries if e.id == "llm")
     providers = entry.config["providers"]
@@ -118,7 +118,7 @@ plugins:
 """,
     )
     tree = load_plugin_tree(
-        paths, workspace, session_id="scope-test", thread_id="agent"
+        paths, workspace, session_id="scope-test", thread_id="main"
     )
     entry = next(item for item in tree.entries if item.id == "permissions")
     expanded_scope = entry.config["rules"][0]["path_scope"]

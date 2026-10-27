@@ -27,7 +27,7 @@ matches the work, then follow the detailed page only when necessary:
 1. [plugins_list.md](references/plugins_list.md) for the bundled tree, profiles,
    injected services, public operations, and the built-in plugin index;
 2. [xbot-architecture.md](references/xbot-architecture.md) for ownership,
-   application composition, session/runtime boundaries, and persistence;
+   process/session/thread composition, owner boundaries, and persistence;
 3. [xcore-api.md](references/xcore-api.md) for Context, effects, events,
    injection, schemas, and lifecycle;
 4. [first-plugin.md](references/first-plugin.md) for the complete package,

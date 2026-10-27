@@ -1,7 +1,7 @@
 import pytest
-from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.persistence.impl.artifacts import ArtifactStore
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.impl.store import ThreadPersistence
 from XBotv2.tests.conftest import temp_data_dir
 
 

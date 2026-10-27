@@ -8,9 +8,9 @@ from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.impl.policy import SandboxPolicy
 from XBotv2.context_builder.impl.builder import ContextBuilder
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.impl.store import ThreadPersistence
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.core.filesystem.artifacts import ArtifactStore
+from XBotv2.persistence.impl.artifacts import ArtifactStore
 
 
 @pytest.fixture

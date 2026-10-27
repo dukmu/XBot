@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from functools import partial
+from XBotv2.loader.impl.runtime import Loader
 from XBotv2.config.api.contracts import PatchPluginConfig
-from XBotv2.config.impl.plugin_catalog import PluginConfigConflict, plugin_config_catalog, update_plugin_config
+from XBotv2.config.impl.plugin_catalog import PluginConfigConflict, plugin_config_catalog as _catalog, update_plugin_config as _update
+
+loader = Loader()
+plugin_config_catalog = partial(_catalog, loader=loader)
+update_plugin_config = partial(_update, loader=loader)
 from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.compact.api.contracts import CompactConfig
@@ -119,17 +125,17 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
     plugin_root = workspace / ".xbot" / "plugins"
     plugin_root.mkdir(parents=True)
     (plugin_root / "external_demo").mkdir()
-    (plugin_root / "external_demo" / "plugin.py").write_text(
+    (plugin_root / "external_demo" / "impl").mkdir()
+    (plugin_root / "external_demo" / "impl" / "plugin.py").write_text(
         "from pydantic import BaseModel, ConfigDict\n"
         "class ExternalConfig(BaseModel):\n"
         "    model_config = ConfigDict(extra='forbid')\n"
         "    enabled: bool = True\n"
-        "class ExternalDemo:\n"
-        "    name = 'external_demo'\n"
-        "    Config = ExternalConfig\n"
-        "    def apply(self, ctx, config=None):\n"
-        "        return None\n"
-        "plugin = ExternalDemo()\n",
+        "def mount_thread(ctx, config):\n"
+        "    pass\n"
+        "mount_thread.inject = ()\n"
+        "mount_thread.provide = ()\n"
+        "mount_thread.Config = ExternalConfig\n",
         encoding="utf-8",
     )
     (workspace / ".xbot" / "config.yaml").write_text(
@@ -137,7 +143,7 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
         encoding="utf-8",
     )
     (workspace / ".xbot" / "plugins.yaml").write_text(
-        "- id: external_demo\n  name: external_demo\n  config: {}\n",
+        "- id: external_demo\n  name: external_demo.impl.plugin\n  config: {}\n",
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(plugin_root))

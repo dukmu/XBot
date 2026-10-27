@@ -17,7 +17,7 @@ from typing import Sequence
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.agents.api.protocol import AgentListResponse
 from XBotv2.core.api.domain import ModelRoute
-from XBotv2.session.contracts import SessionSummary, ThreadSummary
+from XBotv2.session.api.contracts import SessionSummary, ThreadSummary
 from XBotv2.tui.impl.view.selection import Option
 
 

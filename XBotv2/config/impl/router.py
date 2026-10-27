@@ -1,6 +1,7 @@
 """Configuration C/S wire models and route contribution."""
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 
 from fastapi import APIRouter, Query
 from XBotv2.config.api.contracts import (
@@ -21,7 +22,7 @@ from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plug
 from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
-from XBotv2.session.contracts import SessionsPort
+from XBotv2.session.api.contracts import SessionsPort
 from XBotv2.config.api.protocol import (
     PluginConfigPatchRequest, SessionPolicyPatch, SessionPolicyResponse,
 )
@@ -43,7 +44,7 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
+def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIRouter:
     router = APIRouter()
 
     async def _main_thread_id(session_id: str) -> str:
@@ -72,9 +73,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
     )
     async def get_session_policy(session_id: str) -> SessionPolicyResponse:
         thread_id = await _main_thread_id(session_id)
-        snapshot = await sessions.dispatch(
-            session_id, thread_id, GET_POLICY, EmptyRequest()
-        )
+        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(GET_POLICY, EmptyRequest())
         return _policy_response(session_id, snapshot)
 
     @router.patch(
@@ -86,17 +85,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
         payload: SessionPolicyPatch,
     ) -> SessionPolicyResponse:
         thread_id = await _main_thread_id(session_id)
-        snapshot = await sessions.dispatch(
-            session_id,
-            thread_id,
-            UPDATE_POLICY,
-            PatchPolicy(
-                permissions=dict(payload.permissions) or None,
-                remove_permissions=tuple(payload.remove_permissions),
-                sandbox=dict(payload.sandbox) or None,
-                remove_sandbox=tuple(payload.remove_sandbox),
-            ),
-        )
+        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(UPDATE_POLICY, PatchPolicy(permissions=dict(payload.permissions) or None, remove_permissions=tuple(payload.remove_permissions), sandbox=dict(payload.sandbox) or None, remove_sandbox=tuple(payload.remove_sandbox)))
         return _policy_response(session_id, snapshot)
 
     @router.get(
@@ -111,7 +100,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
         thread = await sessions.thread_summary(session_id, thread_id)
         try:
             return plugin_config_catalog(
-                paths, thread.workspace_root, scope, session_id
+                paths, thread.workspace_root, scope, session_id, loader=loader
             )
         except ValueError as exc:
             raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
@@ -138,7 +127,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths) -> APIRouter:
                     revision=payload.revision,
                     config=payload.config,
                 ),
-                session_id,
+                session_id, loader=loader
             )
         except PluginConfigConflict as exc:
             raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc

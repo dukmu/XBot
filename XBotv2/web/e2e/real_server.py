@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import uvicorn
 import yaml
-from XBotv2.application.server import start_server_application
-from XBotv2.loader import PluginOverlay
-from XBotv2.application.app import create_agent_application
+from XBotv2.main import open_runtime
+from XBotv2.loader.api.contracts import PluginOverlay
+from XBotv2.llm.api.contracts import LLM
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
 
@@ -71,54 +70,14 @@ async def main() -> None:
             encoding="utf-8",
         )
 
-        application = await start_server_application(
+        application = await open_runtime(
             paths=RuntimePaths.from_data_dir(data_dir),
             overrides=PluginOverlay.parse([{"id": "session", "config": {
                 "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
             }}]),
         )
-        application.sessions.application_factory = partial(
-            create_agent_application,
-            model_override=MockLLM(
-                responses=[
-                    {
-                        "content": "A real MockLLM response through the XBot HTTP stream.",
-                        "reasoning": "I am checking the real transport before replying.",
-                        "chunks": [
-                            {"reasoning": "I am checking the real "},
-                            {"reasoning": "transport before replying. "},
-                            {"content": "A real MockLLM response "},
-                            {"content": "through the XBot HTTP stream."},
-                        ],
-                        "chunk_delay_ms": 90,
-                        "usage_metadata": {
-                            "input_tokens": 12,
-                            "output_tokens": 10,
-                            "total_tokens": 22,
-                        },
-                    },
-                    {
-                        "content": "The clipboard image reached the real MockLLM.",
-                        "chunks": [
-                            {"content": "The clipboard image reached "},
-                            {"content": "the real MockLLM."},
-                        ],
-                        "chunk_delay_ms": 90,
-                    },
-                    {
-                        "content": "The second real turn stayed aligned with the first.",
-                        "reasoning": "I am comparing both persisted turns.",
-                        "chunks": [
-                            {"reasoning": "I am comparing both persisted turns. "},
-                            {"content": "The second real turn stayed "},
-                            {"content": "aligned with the first."},
-                        ],
-                        "chunk_delay_ms": 90,
-                    },
-                ],
-                input_modalities=["text", "image"],
-            ),
-        )
+        application.require(LLM).unregister("openai")
+        application.require(LLM).register("openai", lambda *_: MockLLM(responses=[{'content': 'A real MockLLM response through the XBot HTTP stream.', 'reasoning': 'I am checking the real transport before replying.', 'chunks': [{'reasoning': 'I am checking the real '}, {'reasoning': 'transport before replying. '}, {'content': 'A real MockLLM response '}, {'content': 'through the XBot HTTP stream.'}], 'chunk_delay_ms': 90, 'usage_metadata': {'input_tokens': 12, 'output_tokens': 10, 'total_tokens': 22}}, {'content': 'The clipboard image reached the real MockLLM.', 'chunks': [{'content': 'The clipboard image reached '}, {'content': 'the real MockLLM.'}], 'chunk_delay_ms': 90}, {'content': 'The second real turn stayed aligned with the first.', 'reasoning': 'I am comparing both persisted turns.', 'chunks': [{'reasoning': 'I am comparing both persisted turns. '}, {'content': 'The second real turn stayed '}, {'content': 'aligned with the first.'}], 'chunk_delay_ms': 90}], input_modalities=['text', 'image']))
         server = uvicorn.Server(
             uvicorn.Config(
                 application.server,
@@ -130,7 +89,7 @@ async def main() -> None:
         try:
             await server.serve()
         finally:
-            await application.stop()
+            await application.close()
 
 
 if __name__ == "__main__":

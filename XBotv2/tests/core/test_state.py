@@ -1,6 +1,6 @@
 """Tests for ThreadPersistence message persistence."""
 
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.impl.store import ThreadPersistence
 from XBotv2.core.api.domain import MessageId
 from XBotv2.core.api.messages import HumanInputMessage
 from XBotv2.core.api.parts import TextPart

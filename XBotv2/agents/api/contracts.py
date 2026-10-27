@@ -15,8 +15,8 @@ from XBotv2.agentloop.api.contracts import AllTools
 from XBotv2.permissions.api.models import PermissionPolicy
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop.api.contracts import AgentLoopDriverPort
-    from XBotv2.application import SessionLaunch
+    from XBotv2.agentloop.api.contracts import AgentLoopPort
+    from XBotv2.session.api.contracts import ThreadInfo
     from XBotv2.config.api.contracts import RuntimeConfig
     from XBotv2.llm.api.contracts import EffortSelection, ProviderSelection
 
@@ -75,6 +75,7 @@ class AgentDefinition(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class AgentCreateOptions:
+    provider_name: str | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
     model_override: Provider | None = None
@@ -107,11 +108,11 @@ class AgentCatalogPort(Protocol):
 
 
 class AgentRuntimePort(Protocol):
-    async def create(
+    async def bind(
         self,
         options: AgentCreateOptions,
-        launch: SessionLaunch,
-    ) -> AgentLoopDriverPort: ...
+        launch: ThreadInfo,
+    ) -> None: ...
     def active_definition(self) -> AgentDefinition | None: ...
     def current_selection(self) -> AgentSelection: ...
     def runtime_config(

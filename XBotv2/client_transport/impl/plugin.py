@@ -21,6 +21,10 @@ class ClientTransportPlugin:
         ctx.on("dispose", client.close)
 
 
-plugin = ClientTransportPlugin()
+def mount_process(ctx, config):
+    ClientTransportPlugin().apply(ctx, config)
 
-__all__ = ["ClientTransportPlugin", "plugin"]
+
+mount_process.inject = getattr(ClientTransportPlugin, "inject", ())
+mount_process.provide = ('client_api',)
+mount_process.Config = getattr(ClientTransportPlugin, "Config", None)

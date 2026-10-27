@@ -38,8 +38,8 @@ from XBotv2.goal.api.models import NoGoal
 from XBotv2.jobs.api.contracts import JobView
 from XBotv2.permissions.api.models import NamedPermission, PermissionRequest, ToolPermission
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
-from XBotv2.session.contracts import PendingInputData
-from XBotv2.session.records import (
+from XBotv2.agentloop.api.models import PendingInputData
+from XBotv2.session.api.records import (
     AssistantRecord,
     CompactionSummaryRecord,
     ConversationRecord,
@@ -49,7 +49,7 @@ from XBotv2.session.records import (
 )
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
-from XBotv2.session.protocol import OpenSessionResponse
+from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
     AssistantCompleted,
     AssistantDelta,

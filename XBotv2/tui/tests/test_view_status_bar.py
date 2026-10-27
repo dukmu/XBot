@@ -193,7 +193,7 @@ def test_statusline_orders_session_context_and_model() -> None:
     )
     shown = plain(line(
         session_label="session-1",
-        thread_id="agent",
+        thread_id="main",
         usage=snapshot,
         context_window=4096,
         context_input_tokens=350,
@@ -443,7 +443,7 @@ def test_the_report_carries_the_derived_status_not_a_guess() -> None:
 
 def test_the_report_counts_what_the_server_queued() -> None:
     """Being submitted is not being queued: only the server's queue counts."""
-    from XBotv2.session.events import QueueReplacedEvent
+    from XBotv2.session.api.events import QueueReplacedEvent
     from XBotv2.tui.impl.events import QueueReplaced
     from XBotv2.tui.impl.state import reduce
     from XBotv2.tui.impl.view.status_bar import status_report
@@ -477,7 +477,7 @@ def test_the_report_marks_a_subagent_thread_read_only() -> None:
 
 
 def test_thread_read_updates_the_authoritative_session_title() -> None:
-    from XBotv2.session.contracts import ThreadSummary
+    from XBotv2.session.api.contracts import ThreadSummary
     from XBotv2.tui.impl.events import ThreadRead
     from XBotv2.tui.impl.state import SessionState, reduce
 

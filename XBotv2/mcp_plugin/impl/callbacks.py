@@ -26,7 +26,7 @@ from XBotv2.interactions.api.contracts import InteractionsPort
 from XBotv2.interactions.api.models import Answered
 from XBotv2.llm.api.invoke import invoke_llm
 from XBotv2.llm.api.contracts import ModelPort
-from XBotv2.session.contracts import SessionPort
+from XBotv2.session.api.contracts import ThreadInfo
 from XBotv2.usage.api.service import UsagePort
 
 logger = logging.getLogger("xbotv2.mcp")
@@ -35,7 +35,7 @@ logger = logging.getLogger("xbotv2.mcp")
 def client_callbacks(
     model: ModelPort,
     interactions: InteractionsPort,
-    session: SessionPort,
+    session: ThreadInfo,
     usage: UsagePort,
     model_selection: Callable[[], ResolvedModelSelection],
 ) -> dict[str, Any]:

@@ -56,4 +56,10 @@ class PromptsComponent:
         ctx.set(PROMPTS, PromptsService(ctx.require(CONTEXT_BUILDER)))
 
 
-plugin = PromptsComponent()
+def mount_thread(ctx, config):
+    PromptsComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(PromptsComponent, "inject", ())
+mount_thread.provide = ('prompts',)
+mount_thread.Config = getattr(PromptsComponent, "Config", None)

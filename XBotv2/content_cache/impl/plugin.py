@@ -72,4 +72,10 @@ class ContentCacheComponent:
         ctx.on(Events.AFTER_TOOL_CALL, service.externalize_tool_result)
 
 
-plugin = ContentCacheComponent()
+def mount_thread(ctx, config):
+    ContentCacheComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(ContentCacheComponent, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(ContentCacheComponent, "Config", None)

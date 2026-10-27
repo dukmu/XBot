@@ -1,8 +1,7 @@
 # XBot API Reference
 
 This is the version-matched public API map for the bundled XBot runtime. Import
-cross-plugin contracts from the package that owns them. Package `__all__`
-declarations and tests are the final authority; implementation modules not
+cross-plugin contracts from the package that owns them. Owning API declarations and tests are the final authority; implementation modules not
 listed as public are not plugin contracts.
 
 ## Import map
@@ -11,15 +10,19 @@ listed as public are not plugin contracts.
 |---|---|---|
 | Tools, outcomes, messages, artifact/path values | `XBotv2.core.api.tools`, `.messages`, `.artifacts`, `.paths`, `.variables` | `Tool`, `ToolCall`, `ToolOutcome`, `ToolOutput`, `ConversationMessage`, `ArtifactRef`, `RuntimeVariables` |
 | Loop event names and tool/inbox contracts | `XBotv2.agentloop.api.events`, `.contracts`, `.state` | `Events`, `SHORT_CIRCUIT_EVENTS`, `ToolSelection`, `InboxItem`, `LoopState` |
-| Human slash commands | `XBotv2.commands` | `Command`, `CommandResult`, `CommandDescription`, `split_command_args` |
-| Sessions and threads | `XBotv2.session` | `SessionKey`, `SessionSummary`, `ThreadSummary`, session operations |
-| Provider catalog and model binding | `XBotv2.llm` | `ModelPort`, `LlmConfig`, `ProviderCatalog`, selection operations |
-| Provider-neutral model request | `XBotv2.core.api.provider` (used by `XBotv2.llm.ModelPort`) | `ModelRequest`, `ProviderMessage`, `ToolSchema` |
+| Human slash commands | `XBotv2.commands.api.contracts` | `Command`, `CommandResult`, `CommandDescription`, `split_command_args` |
+| Sessions and threads | `XBotv2.session.api.contracts` | `SessionKey`, `SessionSummary`, `ThreadSummary`, session operations |
+| Provider catalog and model binding | `XBotv2.llm.api.contracts` | `ModelPort`, `LlmConfig`, `ProviderCatalog`, selection operations |
+| Provider-neutral model request | `XBotv2.core.api.provider` (used by `XBotv2.llm.api.contracts.ModelPort`) | `ModelRequest`, `ProviderMessage`, `ToolSchema` |
 | Model stream values | `XBotv2.core.api.stream` | `TextDelta`, `ReasoningDelta`, `ToolCallDelta`, `ModelCompleted`, `ModelFailed`, `ModelCancelled` |
 | Usage | `XBotv2.core.api.domain` / `XBotv2.usage.api.service`, `.events` | `UsageSnapshot`, `UsageDelta`, `RequestObservation`, `UsagePort`, `UsageUpdated` |
-| Permission policy and approval | `XBotv2.permissions` | `PermissionsPort`, `ApprovalPort`, `PermissionRequest`, `PermissionResponseRequest` |
-| User input | `XBotv2.interactions` | `InteractionsPort`, `UserInputRequest`, `UserInputOption`, `UserInputResponseRequest` |
-| Application lifecycle | `XBotv2.application` | `APPLICATION_INITIALIZED`, `ApplicationInitialized`, `RuntimeEvent` |
+| Permission policy and approval | `XBotv2.permissions.api.models`, `.protocol` | `PermissionsPort`, `ApprovalPort`, `PermissionRequest`, `PermissionResponseRequest` |
+| User input | `XBotv2.interactions.api.contracts`, `.models`, `.protocol` | `InteractionsPort`, `UserInputRequest`, `UserInputOption`, `UserInputResponseRequest` |
+| Thread initialization/runtime events | `XBotv2.agentloop.api.events` | `THREAD_INITIALIZED`, `ThreadInitialized`, `RUNTIME_EVENT`, `RuntimeEvent` |
+| Client events/status | `XBotv2.interactions.api.contracts`, `.status` | `CLIENT_EVENTS`, `ClientEventsPort`, status slots |
+| Scope loader | `XBotv2.loader.api.service`, `.contracts` | `create_loader`, `LOADER`, plugin trees and facets |
+| Durable resources | `XBotv2.persistence.api.contracts`, `.models` | `PERSISTENCE`, `THREAD_PERSISTENCE`, artifact payloads |
+| Terminal carrier | `XBotv2.tui.api.service` | `TerminalClient`, `TERMINAL_CLIENT` |
 
 Public wire values live in their semantic owner's `api/protocol.py`; routes
 live in `impl/protocol.py` for migrated owners. A

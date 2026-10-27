@@ -156,7 +156,9 @@ class LlmCatalogPort(Protocol):
 
 
 class ModelPort(Protocol):
-    """Mutable model binding consumed by the Agent loop."""
+    """Mutable thread model binding consumed by the Agent loop."""
+
+    def replace(self, provider: Provider) -> None: ...
 
     def astream(
         self,

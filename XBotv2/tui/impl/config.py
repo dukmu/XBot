@@ -11,9 +11,9 @@ class TextualTuiConfig(BaseModel):
 
     render_interval: float = Field(default=0.1, gt=0)
     transcript_limit: int = Field(default=100, gt=0)
-    workspace: str = "."
+    workspace: str | None = None
     session_id: str = ""
-    thread_id: str = "agent"
+    thread_id: str = "main"
     agent: str | None = None
     history_window: int = Field(default=DEFAULT_HISTORY_WINDOW, gt=0)
     history_retention: int = Field(default=DEFAULT_HISTORY_RETENTION, gt=0)

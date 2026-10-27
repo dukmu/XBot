@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """Token manager observes typed requests; it does not own context policy."""
 
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from XBotv2.core.api.domain import (
     UsageDelta,
 )
 from XBotv2.agentloop.api.events import ModelRequestReady, ModelResponseObserved
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ModelRequest, ProviderUser, ToolSchema
 from XBotv2.core.api.paths import RuntimePaths
@@ -51,7 +52,7 @@ async def test_application_exposes_diagnostics_from_the_actual_final_exchange(
         "content": "done",
         "usage_metadata": {"input_tokens": 17, "output_tokens": 4},
     }])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="token-manager-diagnostics",
         workspace_root=temp_workspace,
@@ -63,7 +64,7 @@ async def test_application_exposes_diagnostics_from_the_actual_final_exchange(
         }],
     )
     try:
-        [event async for event in application.engine.run_turn(InboxItem(
+        [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="inspect the final request"),
         ))]
@@ -90,7 +91,7 @@ async def test_application_exposes_diagnostics_from_the_actual_final_exchange(
             "reason": "mock provider",
         }
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -254,6 +255,6 @@ async def test_plugin_unload_clears_latest_request_state():
     ))
     assert plugin.diagnostics()["latest_request"]
 
-    await context.destroy()
+    await context.root.close()
 
     assert plugin.diagnostics()["latest_request"] == {}

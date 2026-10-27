@@ -1,7 +1,7 @@
 """Register subagent tools and prompt contributions."""
 
 from __future__ import annotations
-from XBotv2.agents.api.contracts import AGENT_CATALOG
+from XBotv2.agents.api.contracts import AGENT_CATALOG, AGENT_RUNTIME
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from XBotv2.jobs.api.contracts import JOBS
@@ -9,15 +9,18 @@ from xcore.api.context import Context
 from XBotv2.subagents.impl.service import SubagentCatalogPrompt, SubagentLauncher, SubagentTools
 from XBotv2.context_builder.api.events import CONTEXT_COMPONENTS_BUILT
 from XBotv2.core.api.tools import Tool
-from XBotv2.subagents.api.contracts import SubagentsConfig
+from XBotv2.subagents.api.contracts import SubagentsConfig, SUBAGENTS
+from XBotv2.subagents.impl.service import SubagentCoordinator
+from XBotv2.session.api.contracts import SESSION_INFO, SESSIONS
 
 
 class SubagentsRuntimeComponent:
     inject = [
-        "session",
+        SUBAGENTS,
+        "thread_info",
         "sessions",
-        AGENT_CATALOG,
-        "session_launch",
+        AGENT_CATALOG, AGENT_RUNTIME,
+        "thread_info",
         "no_plugins",
         JOBS,
         TOOLS,
@@ -38,16 +41,17 @@ class SubagentsRuntimeComponent:
         )
         launcher = SubagentLauncher(
             catalog=ctx.require(AGENT_CATALOG),
-            session=ctx.session,
+            session=ctx.thread_info,
             sessions=ctx.sessions,
-            provider_name=ctx.session_launch.provider_name,
+            coordinator=ctx.require(SUBAGENTS),
+            provider_name=ctx.require(AGENT_RUNTIME).current_selection().provider,
             no_plugins=ctx.no_plugins,
         )
         handlers = SubagentTools(
             registry=ctx.require(JOBS),
             launcher=launcher,
         )
-        ctx.dispose(launcher.close)
+        ctx.pre_stop(launcher.close)
         ctx.require(TOOLS).register(
             Tool.from_function(handlers.spawn_subagent),
             timeout_seconds=timeout_seconds,
@@ -63,20 +67,20 @@ class SubagentsRuntimeComponent:
             ctx.require(TOOLS).register(Tool.from_function(handler))
 
 
-class SubagentsPlugin:
-    """Mount collaboration tools on a session-owned Agent runtime."""
+async def mount_thread(ctx, config):
+    # Nested delegation awaits the coordinator scheduling contract.
+    if ctx.thread_info.parent_thread_id:
+        return
+    await ctx.plugin(SubagentsRuntimeComponent(), config)
 
-    name = "xbot.subagents"
-    Config = SubagentsConfig
-
-    async def apply(
-        self,
-        ctx: Context,
-        config: SubagentsConfig,
-    ) -> None:
-        await ctx.plugin(SubagentsRuntimeComponent(), config)
+mount_thread.inject = ("thread_info",)
+mount_thread.provide = ()
+mount_thread.Config = SubagentsConfig
 
 
-plugin = SubagentsPlugin()
+def mount_session(ctx, config):
+    ctx.provide(SUBAGENTS, SubagentCoordinator(ctx.require(SESSION_INFO), ctx.require(SESSIONS)))
 
-__all__ = ["SubagentsPlugin", "SubagentsConfig"]
+mount_session.inject = (SESSION_INFO, SESSIONS)
+mount_session.provide = (SUBAGENTS,)
+mount_session.Config = SubagentsConfig

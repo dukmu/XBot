@@ -10,7 +10,7 @@ from XBotv2.protocol.api.models import WireModel, server_event
 from XBotv2.protocol.api.http_util import _SSE_RESPONSE, _sse_response, HttpServerError
 from XBotv2.protocol.api.sse import encode_server_event
 from XBotv2.core.api.domain import SessionScope
-from XBotv2.session.contracts import SessionResourceChanged, SessionResourceRemoved
+from XBotv2.session.api.contracts import SessionResourceChanged, SessionResourceRemoved
 from XBotv2.workspaces.api.contracts import (
     DirectoriesPort,
     DirectoryListing,

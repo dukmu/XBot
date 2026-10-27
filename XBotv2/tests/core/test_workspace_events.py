@@ -6,9 +6,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from XBotv2.session.contracts import SessionResourceChanged
-from XBotv2.session.protocol import build_session_router
-from XBotv2.session.contracts import SessionSummary
+from XBotv2.session.api.contracts import SessionResourceChanged
+from XBotv2.session.impl.protocol import build_session_router
+from XBotv2.session.api.contracts import SessionSummary
 from XBotv2.workspaces.api.events import WorkspaceCursorExpired
 from XBotv2.workspaces.impl.events import WorkspaceEventStream
 
@@ -58,6 +58,7 @@ async def test_session_baseline_cursor_precedes_the_snapshot_read():
     app = FastAPI()
     app.include_router(build_session_router(
         sessions=RacingSessions(),
+        persistence=None,
         options=SimpleNamespace(),
         workspace_events=workspace_events,
     ))

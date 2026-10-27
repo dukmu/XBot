@@ -20,14 +20,14 @@ class HelloRequest(WireModel):
     protocol_version: str = PROTOCOL_VERSION
     client_name: str = "xbotv2-client"
     session_id: str | None = None
-    thread_id: str = "agent"
+    thread_id: str = "main"
 
 
 class HelloResponse(WireModel):
     server_name: str
     protocol_version: str = PROTOCOL_VERSION
     session_id: str = ""
-    thread_id: str = "agent"
+    thread_id: str = "main"
 
 
 class HealthResponse(WireModel):

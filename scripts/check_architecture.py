@@ -22,13 +22,13 @@ PACKAGE = ROOT / "XBotv2"
 ENGINE = PACKAGE / "agentloop" / "impl" / "engine.py"
 TOOL_RUNTIME = PACKAGE / "agentloop" / "impl" / "tool_runtime.py"
 AGENTLOOP_EVENTS = PACKAGE / "agentloop" / "api" / "events.py"
-SESSION = PACKAGE / "session" / "runtime.py"
+SESSION = PACKAGE / "agentloop" / "impl" / "execution.py"
 BOOTSTRAP = PACKAGE / "bootstrap.py"
 APPLICATION_PLUGIN = PACKAGE / "application" / "plugin.py"
 APPLICATION_CONFIG = PACKAGE / "application_config"
-SESSION_PLUGIN = PACKAGE / "session" / "plugin.py"
-SESSION_ENTITY = PACKAGE / "session" / "session.py"
-PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
+SESSION_PLUGIN = PACKAGE / "session" / "impl" / "plugin.py"
+SESSION_ENTITY = PACKAGE / "session" / "impl" / "session.py"
+PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "impl" / "plugin.py"
 USAGE_PLUGIN = PACKAGE / "usage" / "impl" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
@@ -167,15 +167,15 @@ XCORE_CONTEXT_API = {
     "set",
     "state",
     "stop",
-    "unset",
+    "unset", "root", "parent", "name", "is_active", "config",
 }
 ACP_FORBIDDEN_MODULES = {
     "XBotv2.application.app",
-    "XBotv2.config.impl.loader",
-    "XBotv2.persistence.store",
-    "XBotv2.session.manager",
-    "XBotv2.session.runtime",
-    "XBotv2.session.session",
+    "XBotv2.config.api.tree",
+    "XBotv2.persistence.impl.store",
+    "XBotv2.session.impl.manager",
+    "XBotv2.session.impl.runtime",
+    "XBotv2.session.impl.session",
 }
 ACP_FORBIDDEN_RUNTIME_ATTRIBUTES = {"engine", "manager", "runtime", "services"}
 
@@ -286,14 +286,8 @@ def _module_path(module: str) -> Path | None:
 
 
 def _plugin_source(module: str) -> Path | None:
-    path = _module_path(f"XBotv2.{module}")
-    if path is None:
-        return None
-    if path.name == "__init__.py":
-        for plugin_path in (path.parent / "impl" / "plugin.py", path.parent / "plugin.py"):
-            if plugin_path.is_file():
-                return plugin_path
-    return path
+    path = PACKAGE / module / "impl" / "plugin.py"
+    return path if path.is_file() else _module_path(module)
 
 
 def _plugin_class(path: Path) -> ast.ClassDef | None:
@@ -345,40 +339,49 @@ def _provided_services(node: ast.AST, path: Path) -> set[str]:
     return services
 
 
+def _facet_declaration(tree, facet, field):
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == facet and target.attr == field:
+                    return node.value
+    return None
+
+
+def _resolved_declaration(value, tree):
+    if isinstance(value, ast.Name):
+        resolved = _assignment_value(tree.body, value.id)
+        return _resolved_declaration(resolved, tree) if resolved is not None else value
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        if value.func.id == "getattr" and len(value.args) >= 2 and isinstance(value.args[0], ast.Name):
+            cls = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == value.args[0].id), None)
+            if cls is not None:
+                resolved = _assignment_value(cls.body, value.args[1].value)
+                return _resolved_declaration(resolved, tree) if resolved is not None else ast.Tuple(elts=[])
+        if value.func.id in {"tuple", "list"} and value.args:
+            return _resolved_declaration(value.args[0], tree)
+    return value
+
+
 def _plugin_specs() -> list[PluginSpec]:
+    """Read actual scope facets and their independently activated callbacks."""
     document = yaml.safe_load(XCORE_TREE.read_text(encoding="utf-8")) or []
-    specs: list[PluginSpec] = []
+    specs = []
     for entry in document:
-        if not isinstance(entry, dict) or not entry.get("name"):
+        if not isinstance(entry, dict) or not entry.get("name") or entry.get("disabled"):
             continue
         module = str(entry["name"])
         path = _plugin_source(module)
         if path is None:
             continue
-        plugin_class = _plugin_class(path)
-        if plugin_class is None:
-            continue
-        required, optional = _inject_values(
-            _assignment_value(plugin_class.body, "inject"), path
-        )
-        raw_profiles = entry.get("profiles")
-        profiles = (
-            frozenset({str(raw_profiles)})
-            if isinstance(raw_profiles, str)
-            else frozenset(str(item) for item in raw_profiles)
-            if isinstance(raw_profiles, list)
-            else frozenset({"agent"})
-        )
-        specs.append(PluginSpec(
-            entry_id=str(entry.get("id") or module),
-            module=module,
-            profiles=profiles,
-            path=path,
-            line=plugin_class.lineno,
-            required=frozenset(required),
-            optional=frozenset(optional),
-            provided=frozenset(_provided_services(plugin_class, path)),
-        ))
+        tree = _tree(path)
+        for facet in tree.body:
+            if not isinstance(facet, (ast.FunctionDef, ast.AsyncFunctionDef)) or facet.name not in {"mount_process", "mount_session", "mount_thread"}:
+                continue
+            kind = facet.name.removeprefix("mount_")
+            required, optional = _inject_values(_resolved_declaration(_facet_declaration(tree, facet.name, "inject"), tree), path)
+            provided = _string_values(_resolved_declaration(_facet_declaration(tree, facet.name, "provide"), tree), path)
+            specs.append(PluginSpec(str(entry.get("id") or module)+":"+facet.name, module+":"+facet.name, frozenset({kind}), path, facet.lineno, frozenset(required), frozenset(optional), frozenset(provided)))
     return specs
 
 
@@ -538,7 +541,7 @@ def check_agentloop_imports() -> list[Violation]:
             agent_registry,
             1,
             "loop-agent-registry",
-            "Agent registry belongs to application ownership, not the loop",
+            "Agent definitions belong to agents, not the execution loop",
         ))
     logging_config = root / "logging_config.py"
     if logging_config.exists():
@@ -554,304 +557,49 @@ def check_agentloop_imports() -> list[Violation]:
             session_operations,
             1,
             "application-operations",
-            "cross-capability use cases belong to application ownership",
+            "cross-capability forwarding does not belong to session",
         ))
     for path in sorted(root.rglob("*.py")):
         if "tests" in path.relative_to(root).parts:
             continue
-        if path.name in {"plugin.py", "protocol.py"}:
+        if path == ENGINE:
             continue
-        violations.extend(
-            _imports(path, ENGINE_ALLOWED_XBOT_ROOTS, "loop-import")
-        )
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported = _module_root(node.module)
+                if imported not in {None, "agentloop"} and not node.module.startswith(f"XBotv2.{imported}.api."):
+                    violations.append(Violation(path, node.lineno, "loop-import", f"imports non-public owner code {node.module}"))
     return violations
 
 
-def check_application_startup() -> list[Violation]:
-    """Keep application startup under its sole owning package."""
+def check_runtime_ownership() -> list[Violation]:
+    """Check the real process/scope composition, with no application layer."""
     violations: list[Violation] = []
-    if BOOTSTRAP.exists():
-        violations.append(Violation(
-            BOOTSTRAP,
-            1,
-            "application-startup",
-            "remove the legacy bootstrap module; startup belongs to XBotv2.application",
-        ))
-    if APPLICATION_PLUGIN.exists():
-        violations.append(Violation(
-            APPLICATION_PLUGIN,
-            1,
-            "application-plugin",
-            "application is an app/composition root, not a feature plugin",
-        ))
-    if APPLICATION_CONFIG.exists() and any(APPLICATION_CONFIG.rglob("*.py")):
-        violations.append(Violation(
-            APPLICATION_CONFIG,
-            1,
-            "application-config-plugin",
-            "launch facts belong to application; user configuration belongs to config",
-        ))
-    if APPLICATION_CONFIG_SEED.exists():
-        violations.append(Violation(
-            APPLICATION_CONFIG_SEED,
-            1,
-            "application-config-ownership",
-            "configuration materialization belongs to XBotv2.config",
-        ))
-    if APPLICATION_AGENTS.exists():
-        violations.append(Violation(
-            APPLICATION_AGENTS,
-            1,
-            "application-agent-service",
-            "Agent registry and creation belong to the agents service",
-        ))
-    if APPLICATION_MODEL.exists():
-        violations.append(Violation(
-            APPLICATION_MODEL,
-            1,
-            "application-model-service",
-            "the selected model binding belongs to the LLM service",
-        ))
-    if "application_config" in XCORE_TREE.read_text(encoding="utf-8"):
-        violations.append(Violation(
-            XCORE_TREE,
-            1,
-            "application-config-plugin",
-            "the plugin tree must not carry application launch facts",
-        ))
-    for node in ast.walk(_tree(APPLICATION_APP)):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "XBotv2.loader"
-            and any(
-                alias.name in {"Loader", "LoaderComponent", "PluginTree"}
-                for alias in node.names
-            )
-        ):
-            violations.append(Violation(
-                APPLICATION_APP,
-                node.lineno,
-                "application-profile-mixing",
-                "Agent startup must delegate plugin-profile composition",
-            ))
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and (
-                node.module.startswith("XBotv2.agentloop")
-                or node.module == "XBotv2.agents.impl.service"
-                or node.module == "XBotv2.llm.impl.service"
-            )
-        ):
-            violations.append(Violation(
-                APPLICATION_APP,
-                node.lineno,
-                "application-instance-construction",
-                f"application imports concrete runtime service {node.module}",
-            ))
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "Engine"
-        ):
-            violations.append(Violation(
-                APPLICATION_APP,
-                node.lineno,
-                "application-engine-construction",
-                "application must create Agents through ctx.agents",
-            ))
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and "plugin_tree" in node.name
-        ):
-            violations.append(Violation(
-                APPLICATION_APP,
-                node.lineno,
-                "application-profile-mixing",
-                "plugin-tree parsing belongs to the application tree module",
-            ))
-    for node in ast.walk(_tree(APPLICATION_BOOT)):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "boot_application"
-            and any(arg.arg == "services" for arg in node.args.kwonlyargs)
-        ):
-            violations.append(Violation(
-                APPLICATION_BOOT,
-                node.lineno,
-                "application-boot-mixing",
-                "generic boot must receive app preparation, not a service bag",
-            ))
-    for node in ast.walk(_tree(APPLICATION_TREE)):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "resolve_llm_config"
-        ):
-            violations.append(Violation(
-                APPLICATION_TREE,
-                node.lineno,
-                "application-config-ownership",
-                "applications consume mounted LLM services; they do not export config readers",
-            ))
-    tree_source = XCORE_TREE.read_text(encoding="utf-8")
-    for required in ("name: agents", "name: agentloop"):
-        if required not in tree_source:
-            violations.append(Violation(
-                XCORE_TREE,
-                1,
-                "application-agent-factory",
-                f"default composition must mount {required}",
-            ))
-    for node in ast.walk(_tree(AGENTS_SERVICE)):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and node.module.startswith("XBotv2.agentloop")
-            and not node.module.startswith("XBotv2.agentloop.api.")
-        ):
-            violations.append(Violation(
-                AGENTS_SERVICE,
-                node.lineno,
-                "agents-loop-construction",
-                "agents service must delegate through its registered factory",
-            ))
-    for node in ast.walk(_tree(AGENT_OPERATIONS)):
-        if not isinstance(node, ast.Attribute):
+    for path in (PACKAGE / "application").rglob("*.py"):
+        violations.append(Violation(path, 1, "removed-application", "application composition has been removed"))
+    forbidden = {"MountedAgentApplication", "AgentApplicationPort", "AgentApplicationOptions", "AgentApplicationFactory", "AgentLoopFactory", "AgentLoopFactoryPort", "LoopFactoryOptions", "THREAD_RUNNER", "ThreadRunnerPort"}
+    forwarding = {"dispatch", "dispatch_all", "send_message", "submit_runtime_input", "respond_permission", "respond_user_input", "cancel_interaction", "artifact", "messages", "message_page", "trajectory_page", "pending_inputs", "update_pending_input", "regenerate_message", "interrupt"}
+    for path in PACKAGE.rglob("*.py"):
+        if "tests" in path.parts or "__pycache__" in path.parts:
             continue
-        is_service_access = (
-            isinstance(node.value, ast.Name)
-            and node.value.id == "services"
-        ) or (
-            isinstance(node.value, ast.Attribute)
-            and node.value.attr == "services"
-        )
-        if is_service_access and node.attr in {"llm", "model", "state_store"}:
-            violations.append(Violation(
-                AGENT_OPERATIONS,
-                node.lineno,
-                "application-agent-reassembly",
-                f"Agent operations must not assemble runtime service {node.attr!r}",
-            ))
-        if node.attr in {"apply_definition", "apply_provider", "apply_tools"}:
-            violations.append(Violation(
-                AGENT_OPERATIONS,
-                node.lineno,
-                "application-agent-reassembly",
-                f"Agent operations must use a high-level agents service, not {node.attr}()",
-            ))
-        if (
-            node.attr == "configure"
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "engine"
-        ):
-            violations.append(Violation(
-                AGENT_OPERATIONS,
-                node.lineno,
-                "application-agent-reassembly",
-                "Agent operations must not configure Engine directly",
-            ))
-    for path in (SERVER_APP,):
         for node in ast.walk(_tree(path)):
-            if isinstance(node, ast.ImportFrom) and node.module == "XBotv2.loader":
-                violations.append(Violation(
-                    path,
-                    node.lineno,
-                    "application-profile-mixing",
-                    "server startup must delegate profile composition",
-                ))
-    for node in ast.walk(_tree(HTTP_SERVER)):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and node.module in {
-                "XBotv2.application",
-                "XBotv2.application.tree",
-                "XBotv2.config.tree",
-            }
-        ):
-            violations.append(Violation(
-                HTTP_SERVER,
-                node.lineno,
-                "protocol-application-config",
-                "the protocol consumes injected services; it must not parse an application profile",
-            ))
-    for path in (PACKAGE / "application").glob("*.py"):
-        for node in ast.walk(_tree(path)):
-            if (
-                isinstance(node, ast.Constant)
-                and node.value == "application_config"
-            ):
-                violations.append(Violation(
-                    path,
-                    node.lineno,
-                    "application-config-roundtrip",
-                    "application must not round-trip launch facts through a plugin",
-                ))
-    for path in (SESSION_PLUGIN, SESSION_ENTITY):
-        for node in ast.walk(_tree(path)):
-            if (
-                isinstance(node, ast.Constant)
-                and node.value == "engine_factory"
-            ) or (
-                isinstance(node, ast.Name)
-                and node.id == "engine_factory"
-            ) or (
-                isinstance(node, ast.Attribute)
-                and node.attr == "engine_factory"
-            ):
-                violations.append(Violation(
-                    path,
-                    node.lineno,
-                    "application-instance-factory",
-                    "session must request child applications, not construct Engines",
-                ))
-    for node in ast.walk(_tree(PERSISTENCE_PLUGIN)):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "LoopState"
-        ):
-            violations.append(Violation(
-                PERSISTENCE_PLUGIN,
-                node.lineno,
-                "persistence-state-ownership",
-                "persistence may hydrate Agentloop state but must not construct it",
-            ))
-    for node in ast.walk(_tree(USAGE_PLUGIN)):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == "state_store"
-        ) or (
-            isinstance(node, ast.Constant)
-            and node.value == "state_store"
-        ):
-            violations.append(Violation(
-                USAGE_PLUGIN,
-                node.lineno,
-                "usage-persistence-coupling",
-                "usage owns its snapshot and must not depend on state_store",
-            ))
-    for node in ast.walk(_tree(SESSION_ENTITY)):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if (
-                node.func.attr == "get"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value in {"engine", "usage"}
-            ):
-                violations.append(Violation(
-                    SESSION_ENTITY,
-                    node.lineno,
-                    "session-feature-service",
-                    "session identity must not discover Engine or usage services",
-                ))
-        if isinstance(node, ast.ClassDef) and "Engine" in node.name:
-            violations.append(Violation(
-                SESSION_ENTITY,
-                node.lineno,
-                "application-child-lifecycle",
-                "child Engine lifecycle belongs to application ownership",
-            ))
+            if isinstance(node, (ast.Name, ast.ClassDef)) and (node.id if isinstance(node, ast.Name) else node.name) in forbidden:
+                violations.append(Violation(path, node.lineno, "removed-runtime-facade", "obsolete application/factory/execution facade"))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Engine" and path.parent != PACKAGE / "agentloop" / "impl":
+                violations.append(Violation(path, node.lineno, "engine-construction", "Engine is constructed only by agentloop implementation"))
+            if path == PACKAGE / "session" / "impl" / "manager.py" and isinstance(node, ast.ClassDef) and node.name == "SessionManager":
+                for method in node.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name in forwarding:
+                        violations.append(Violation(path, method.lineno, "session-business-forwarding", "session owns lifecycle and scope location; call the target owner service"))
+    for path in PACKAGE.glob("*/impl/plugin.py"):
+        tree = _tree(path)
+        facets = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in {"mount_process", "mount_session", "mount_thread"}]
+        if not facets:
+            violations.append(Violation(path, 1, "scope-facets", "plugin must declare at least one scope facet"))
+        for facet in facets:
+            for field in ("inject", "provide"):
+                if _facet_declaration(tree, facet.name, field) is None:
+                    violations.append(Violation(path, facet.lineno, "scope-facet-declaration", f"{facet.name} must declare {field}"))
     return violations
 
 
@@ -970,7 +718,8 @@ def check_tools() -> list[Violation]:
 def _plugin_roots() -> set[str]:
     roots = {path.parent.name for path in PACKAGE.glob("*/plugin.py")}
     roots.update(path.parent.parent.name for path in PACKAGE.glob("*/impl/plugin.py"))
-    roots.update(spec.module.split(".", 1)[0] for spec in _plugin_specs())
+    roots.update(path.parent.name for path in PACKAGE.glob("*/api") if path.is_dir())
+    roots.update(spec.module.split(":", 1)[0].split(".", 1)[0] for spec in _plugin_specs())
     return roots
 
 
@@ -994,7 +743,7 @@ def _public_import_violation(
         )
     if imported == "protocol":
         # Capability-owned route adapters consume transport envelopes here.
-        if owner in TRANSPORT_ROOTS or path.name in {"protocol.py", "router.py", "http.py"}:
+        if owner in TRANSPORT_ROOTS or path.name in {"protocol.py", "router.py", "http.py", "client_http.py"}:
             return None
         return Violation(
             path,
@@ -1004,7 +753,7 @@ def _public_import_violation(
         )
     if imported not in plugin_roots:
         return None
-    if (PACKAGE / imported / "api").is_dir() and (PACKAGE / imported / "impl" / "plugin.py").is_file():
+    if (PACKAGE / imported / "api").is_dir():
         if module.startswith(f"XBotv2.{imported}.api."):
             return None
         return Violation(path, node.lineno, "plugin-concrete-import",
@@ -1270,44 +1019,46 @@ class _ContextAccessVisitor(ast.NodeVisitor):
 
 
 def _plugin_context_accesses(spec: PluginSpec) -> tuple[dict[str, int], list[int]]:
-    plugin_class = _plugin_class(spec.path)
-    if plugin_class is None:
-        return {}, []
-    accesses: dict[str, int] = {}
-    locators: list[int] = []
-    apply = next(
-        (
-            node
-            for node in plugin_class.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "apply"
-        ),
-        None,
-    )
-    if apply is not None:
-        arguments = [*apply.args.args, *apply.args.kwonlyargs]
-        context_name = next(
-            (argument.arg for argument in arguments if argument.arg == "ctx"),
-            "ctx",
-        )
-        visitor = _ContextAccessVisitor(context_name, apply, spec.path)
-        visitor.visit(apply)
-        accesses.update(visitor.services)
-        locators.extend(visitor.locators)
-    for node in ast.walk(plugin_class):
-        if not isinstance(node, ast.Attribute):
+    tree = _tree(spec.path)
+    name = spec.module.split(":", 1)[1]
+    facet = next(node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name)
+    functions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    queue = [(facet, set(spec.required | spec.optional | spec.provided))]
+    seen = set()
+    missing = {}
+    locators = []
+    while queue:
+        node, inherited = queue.pop()
+        if id(node) in seen:
             continue
-        if (
-            isinstance(node.value, ast.Attribute)
-            and isinstance(node.value.value, ast.Name)
-            and node.value.value.id == "self"
-            and node.value.attr == "ctx"
-        ):
-            if node.attr == "services":
-                locators.append(node.lineno)
-            elif node.attr not in XCORE_CONTEXT_API:
-                accesses.setdefault(node.attr, node.lineno)
-    return accesses, locators
+        seen.add(id(node))
+        visitor = _ContextAccessVisitor("ctx", node, spec.path)
+        visitor.visit(node)
+        for service, line in visitor.services.items():
+            if service not in inherited:
+                missing.setdefault(service, line)
+        locators.extend(visitor.locators)
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name) and call.func.id in functions:
+                queue.append((functions[call.func.id], inherited))
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "inject" and len(call.args) >= 2:
+                required, optional = _inject_values(_resolved_declaration(call.args[0], tree), spec.path)
+                callback = call.args[1]
+                if isinstance(callback, ast.Call) and isinstance(callback.func, ast.Name) and callback.func.id == "partial":
+                    callback = callback.args[0]
+                if isinstance(callback, ast.Name) and callback.id in functions:
+                    queue.append((functions[callback.id], inherited | required | optional))
+            targets = [child.func.id for child in ast.walk(call) if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in classes]
+            for target in targets:
+                cls = classes[target]
+                required, optional = _inject_values(_assignment_value(cls.body, "inject"), spec.path)
+                apply = next((method for method in cls.body if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name == "apply"), None)
+                if apply is not None:
+                    queue.append((apply, inherited | required | optional))
+    return missing, locators
 
 
 def _required_cycles(specs: list[PluginSpec], profile: str) -> list[list[PluginSpec]]:
@@ -1388,7 +1139,7 @@ def check_plugin_dependencies() -> list[Violation]:
                 "plugin-service-locator",
                 "plugin accesses a whole service bag or dynamic context attribute",
             ))
-    for profile in ("agent", "server", "acp"):
+    for profile in ("process", "session", "thread"):
         for cycle in _required_cycles(specs, profile):
             ordered = sorted(cycle, key=lambda item: item.entry_id)
             violations.append(Violation(
@@ -1415,7 +1166,7 @@ def main() -> int:
             *check_engine(),
             *check_agentloop_event_context(),
             *check_agentloop_imports(),
-            *check_application_startup(),
+            *check_runtime_ownership(),
             *check_inbox(),
         ],
         "tools": check_tools,

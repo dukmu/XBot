@@ -1,6 +1,14 @@
 """ACP Agent implementation backed by the XBot session runtime."""
 
 from __future__ import annotations
+from XBotv2.session.api.records import conversation_replay, project_message, project_human_input
+from XBotv2.interactions.api.contracts import CLIENT_EVENTS
+from XBotv2.session.api.snapshot import thread_snapshot
+from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
+from XBotv2.session.api.contracts import THREAD_EVENTS
+from XBotv2.agentloop.api.models import InterruptResult
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 
 import asyncio
 import re
@@ -10,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
-from acp import PROTOCOL_VERSION, RequestError, update_agent_message_text
+from acp import PROTOCOL_VERSION, RequestError, update_agent_message_text, run_agent
 from acp.schema import (
     AgentCapabilities,
     AllowedOutcome,
@@ -53,7 +61,7 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.agentloop.api.outputs import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.impl.events import ACPEventMapper, replay_history
-from XBotv2.session import SessionEventFrame, conversation_replay
+from XBotv2.session.api.contracts import SessionEventFrame
 from XBotv2.agents.api.contracts import LIST_AGENTS, SELECT_AGENT, SelectAgent
 from XBotv2.commands.api.contracts import EXECUTE_COMMAND, LIST_COMMANDS, CommandCatalog, ExecuteCommand
 from pydantic import JsonValue
@@ -66,17 +74,9 @@ from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm.api.contracts import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin.api.models import MCP_PLUGIN_ID
-from XBotv2.session.contracts import (
-    ImageInput,
-    OpenSession,
-    SendMessage,
-    SessionEventSubscription,
-    SessionNotFound,
-    ThreadSummary,
-    ThreadNotActive,
-    SessionsPort,
-)
-from XBotv2.session.events import AgentConfiguredEvent
+from XBotv2.agentloop.api.models import ImageInput, SendMessage
+from XBotv2.session.api.contracts import OpenSession, SessionEventSubscription, SessionNotFound, ThreadSummary, ThreadNotActive, SessionsPort
+from XBotv2.session.api.events import AgentConfiguredEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -96,23 +96,26 @@ class XBotACPAgent:
         self,
         *,
         sessions: SessionsPort,
+        persistence,
         provider_name: str | None,
         no_plugins: bool = False,
         selected_agent: str | None = None,
-        llm_override: Any | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.sessions = sessions
+        self._persistence = persistence
         self.provider_name = provider_name
         self.no_plugins = no_plugins
         self.selected_agent = selected_agent
-        self.llm_override = llm_override
         self._log = runtime_log.bind("acp")
         self.connection: Any | None = None
         self.client_capabilities: ClientCapabilities | None = None
         self._commands_announced: set[str] = set()
         self._event_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_prompts: dict[str, ActivePrompt] = {}
+
+    async def serve(self) -> None:
+        await run_agent(self, use_unstable_protocol=True)
 
     def on_connect(self, connection: Any) -> None:
         self.connection = connection
@@ -169,9 +172,9 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        opened = await self.sessions.open(OpenSession(
+        opened_scope = await self.sessions.open(OpenSession(
             session_id=None,
-            thread_id="agent",
+            thread_id="main",
             provider_name=self.provider_name,
             workspace_root=workspace,
             selected_agent=self.selected_agent,
@@ -180,8 +183,8 @@ class XBotACPAgent:
             plugin_configs=self._mcp_plugin_config(
                 workspace, None, mcp_servers
             ),
-            model_override=self.llm_override,
         ))
+        opened = await thread_snapshot(opened_scope)
         await self._prepare_session(opened.key.session_id, opened.event_cursor)
         self._log.info(
             "acp.session.created",
@@ -339,12 +342,10 @@ class XBotACPAgent:
         )
         self._active_prompts[session_id] = prompt
         try:
-            await self.sessions.send_message(SendMessage(
-                session_id=session_id,
-                thread_id="agent",
-                content=content,
-                request_id=request_id,
-                images=tuple(images),
+            scope = await self.sessions.locate(session_id, "main")
+            await scope.require(AGENT_LOOP).submit_message(SendMessage(
+                session_id=session_id, thread_id="main", content=content,
+                request_id=request_id, images=tuple(images),
             ))
             await prompt.completed.wait()
         finally:
@@ -376,7 +377,7 @@ class XBotACPAgent:
         )
 
     async def cancel(self, session_id: str, **_: Any) -> None:
-        result = await self.sessions.interrupt(session_id, "agent")
+        result = InterruptResult(cancelled=await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).interrupt())
         self._log.info(
             "acp.session.cancelled",
             session_id=session_id,
@@ -403,19 +404,9 @@ class XBotACPAgent:
             })
         try:
             if config_id == "agent":
-                await self.sessions.dispatch(
-                    session_id,
-                    "agent",
-                    SELECT_AGENT,
-                    SelectAgent(value),
-                )
+                await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(SELECT_AGENT, SelectAgent(value))
             elif config_id == "provider":
-                await self.sessions.dispatch(
-                    session_id,
-                    "agent",
-                    SELECT_PROVIDER,
-                    SelectProvider(value),
-                )
+                await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(SELECT_PROVIDER, SelectProvider(value))
             else:
                 raise RequestError.invalid_params({"configId": config_id})
         except OperationError as exc:
@@ -485,9 +476,9 @@ class XBotACPAgent:
                 "expectedCwd": stored_workspace,
             })
         try:
-            opened = await self.sessions.open(OpenSession(
+            opened_scope = await self.sessions.open(OpenSession(
                 session_id=session_id,
-                thread_id="agent",
+                thread_id="main",
                 provider_name=self.provider_name,
                 workspace_root=workspace,
                 mode="resume",
@@ -495,8 +486,8 @@ class XBotACPAgent:
                 plugin_configs=self._mcp_plugin_config(
                     workspace, session_id, mcp_servers
                 ),
-                model_override=self.llm_override,
-            ))
+                ))
+            opened = await thread_snapshot(opened_scope)
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
         await self._prepare_session(session_id, opened.event_cursor)
@@ -507,11 +498,7 @@ class XBotACPAgent:
             if not existing.done():
                 existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
-        events = await self.sessions.stream_events(
-            session_id,
-            "agent",
-            after=event_cursor,
-        )
+        events = (await self.sessions.locate(session_id, 'main')).require(THREAD_EVENTS).subscribe(event_cursor)
         task = asyncio.create_task(
             self._forward_session_events(session_id, events),
             name=f"xbot-acp-events-{session_id}",
@@ -520,7 +507,7 @@ class XBotACPAgent:
 
     async def _thread(self, session_id: str) -> ThreadSummary:
         try:
-            return await self.sessions.thread_summary(session_id, "agent")
+            return await self.sessions.thread_summary(session_id, "main")
         except (SessionNotFound, ThreadNotActive) as exc:
             raise RequestError.resource_not_found(session_id) from exc
 
@@ -597,12 +584,7 @@ class XBotACPAgent:
         await self.connection.session_update(session_id=session_id, update=update)
 
     async def _command_catalog(self, session_id: str) -> CommandCatalog:
-        return await self.sessions.dispatch(
-            session_id,
-            "agent",
-            LIST_COMMANDS,
-            EmptyRequest(),
-        )
+        return await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_COMMANDS, EmptyRequest())
 
     async def _slash_command(
         self,
@@ -645,12 +627,7 @@ class XBotACPAgent:
         session_id: str,
     ) -> list[SessionConfigOptionSelect]:
         options: list[SessionConfigOptionSelect] = []
-        catalog = await self.sessions.dispatch(
-            session_id,
-            "agent",
-            LIST_AGENTS,
-            EmptyRequest(),
-        )
+        catalog = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_AGENTS, EmptyRequest())
         definitions = catalog.agents
         agents = [
             definition
@@ -674,12 +651,7 @@ class XBotACPAgent:
                 ],
             ))
 
-        providers = await self.sessions.dispatch(
-            session_id,
-            "agent",
-            LIST_PROVIDERS,
-            EmptyRequest(),
-        )
+        providers = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_PROVIDERS, EmptyRequest())
         if providers.providers:
             summary = await self._thread(session_id)
             options.append(SessionConfigOptionSelect(
@@ -698,12 +670,7 @@ class XBotACPAgent:
     async def _run_command(
         self, session_id: str, name: str, raw_args: str
     ) -> None:
-        result = await self.sessions.dispatch(
-            session_id,
-            "agent",
-            EXECUTE_COMMAND,
-            ExecuteCommand(name, "server", raw_args),
-        )
+        result = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(EXECUTE_COMMAND, ExecuteCommand(name, 'server', raw_args))
         await self._update(
             session_id,
             update_agent_message_text(result.message),
@@ -713,9 +680,9 @@ class XBotACPAgent:
         pages = []
         cursor = None
         while True:
-            page = await self.sessions.message_page(
+            page = self._persistence.message_page(
                 session_id,
-                "agent",
+                "main",
                 cursor=cursor,
                 limit=200,
             )
@@ -848,38 +815,12 @@ class XBotACPAgent:
     ) -> None:
         result = await self._handle_interaction(session_id, event)
         request_id = event.interaction_id
+        scope = await self.sessions.locate(session_id, "main")
+        events = scope.require(CLIENT_EVENTS)
         if isinstance(result, (Denied, InputCancelled, InputTimedOut)):
-            await self.sessions.cancel_interaction(
-                session_id,
-                "agent",
-                event.kind,
-                request_id,
-                result.reason,
-            )
-            return
-        if isinstance(event, PermissionRequest):
-            if not isinstance(result, Allowed):
-                raise TypeError(
-                    f"Permission request received {type(result).__name__} resolution"
-                )
-            await self.sessions.respond_permission(
-                session_id,
-                "agent",
-                request_id,
-                "allow",
-                result.scope,
-            )
-            return
-        if not isinstance(result, Answered):
-            raise TypeError(
-                f"User input received {type(result).__name__} resolution"
-            )
-        await self.sessions.respond_user_input(
-            session_id,
-            "agent",
-            request_id,
-            result.answer,
-        )
+            events.cancel(request_id, result.reason, expected_kind=event.kind)
+        else:
+            events.resolve(request_id, result)
 
     @staticmethod
     def _reject_additional_directories(

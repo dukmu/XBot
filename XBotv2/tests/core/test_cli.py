@@ -19,7 +19,7 @@ def test_default_command_is_tui():
 
     assert args.command == "tui"
     assert args.provider is None
-    assert args.thread == "agent"
+    assert args.thread == "main"
 
 
 @pytest.mark.parametrize("command", ["serve", "tui", "web"])
@@ -38,48 +38,6 @@ def test_tui_has_server_defaults_for_auto_spawn():
     assert args.port == 4096
 
 
-def test_tui_dispatches_to_generic_client_host_and_passes_unix_socket(
-    monkeypatch, tmp_path
-):
-    captured = {}
-    spawned = object()
-    monkeypatch.setattr(
-        cli,
-        "_local_server",
-        lambda _args, _prefix: ("http://localhost", "/tmp/xbot-tui.sock", spawned),
-    )
-    monkeypatch.setattr(
-        cli,
-        "_cleanup_spawned_server",
-        lambda process, socket: captured.update(cleanup=(process, socket)),
-    )
-    from XBotv2.application import client as client_host
-
-    async def run_client_application(*, paths, overrides):
-        from XBotv2.application.tree import load_client_tree
-        captured["tree"] = load_client_tree(paths=paths, overrides=overrides)
-
-    def run_coroutine(coroutine):
-        with asyncio.Runner() as runner:
-            return runner.run(coroutine)
-
-    monkeypatch.setattr(client_host, "run_client_application", run_client_application)
-    monkeypatch.setattr(cli.asyncio, "run", run_coroutine)
-
-    cli._run_tui(parse([
-        "tui", "--workspace", str(tmp_path), "--session", "resume-me",
-        "--thread", "agent", "--agent", "reviewer",
-    ]))
-
-    transport = captured["tree"].entry("client-transport").config
-    tui = captured["tree"].entry("textual-tui").config
-    assert transport["base_url"] == "http://localhost"
-    assert transport["uds_path"] == "/tmp/xbot-tui.sock"
-    assert tui["workspace"] == str(tmp_path.resolve())
-    assert tui["session_id"] == "resume-me"
-    assert tui["thread_id"] == "agent"
-    assert tui["agent"] == "reviewer"
-    assert captured["cleanup"] == (spawned, "/tmp/xbot-tui.sock")
 
 
 def test_workspace_defaults_to_startup_directory(monkeypatch, tmp_path):
@@ -256,59 +214,3 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
     assert socket_path.parent.is_dir()
     assert served["uds"] == str(socket_path)
-
-
-@pytest.mark.parametrize("fail", [False, True])
-@pytest.mark.parametrize("explicit_options", [False, True])
-def test_server_plugin_tasks_live_through_serving_and_cleanup(
-    monkeypatch, tmp_path, fail, explicit_options,
-):
-    import uvicorn
-    from XBotv2.application import server as server_host
-
-    loops = []
-    workers = []
-    phases = []
-
-    async def start(**kwargs):
-        assert set(kwargs) == {"paths", "overrides"}
-        assert kwargs["overrides"].patches[0].config == ({
-            "workspace_root": str(tmp_path), "provider_name": "test", "no_plugins": True,
-        } if explicit_options else {})
-        loops.append(asyncio.get_running_loop())
-        workers.append(asyncio.create_task(asyncio.Event().wait()))
-        phases.append("start")
-
-        async def stop():
-            loops.append(asyncio.get_running_loop())
-            phases.append("stop")
-            workers[0].cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
-
-        return types.SimpleNamespace(require=lambda name: object(), stop=stop)
-
-    class Server:
-        def __init__(self, config):
-            pass
-
-        async def serve(self):
-            loops.append(asyncio.get_running_loop())
-            phases.append("serve")
-            assert not workers[0].done()
-            if fail:
-                raise RuntimeError("serve failed")
-
-    monkeypatch.setattr(server_host, "start_server_application", start)
-    monkeypatch.setattr(uvicorn, "Server", Server)
-    argv = ["serve", "--data-dir", str(tmp_path)]
-    if explicit_options:
-        argv += ["--workspace", str(tmp_path), "--provider", "test", "--no-plugins"]
-    args = parse(argv)
-    if fail:
-        with pytest.raises(RuntimeError, match="serve failed"):
-            cli._run_server(args)
-    else:
-        cli._run_server(args)
-    assert phases == ["start", "serve", "stop"]
-    assert len({id(loop) for loop in loops}) == 1
-    assert workers[0].cancelled()

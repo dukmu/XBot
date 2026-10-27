@@ -8,7 +8,8 @@ from XBotv2.agentloop.api.contracts import TOOLS, ToolsPort, ToolRegistration, H
 from pathlib import Path
 from pydantic import JsonValue
 from xcore.api.context import Context
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import ThreadInitialized
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.prompts import prompt_container, prompt_element
 from XBotv2.core.api.tools import Tool, ToolOutcome, succeeded_text, GuardDecision, ToolCall
@@ -73,7 +74,7 @@ class SkillsPlugin:
         self._sandbox = ctx.require(SANDBOX)
         self._runtime_paths: RuntimePaths = ctx.runtime_paths
         ctx.dispose(self._cleanup_runtime)
-        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
+        ctx.on(THREAD_INITIALIZED, self._on_session_init)
         ctx.on(Events.ON_TURN_INPUT, self._on_before_user_message)
         ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_tool_schema)
         ctx.on(Events.TURN_END, self._on_turn_end)
@@ -87,7 +88,7 @@ class SkillsPlugin:
         self._model_skill_names.clear()
         self._initialized = False
 
-    async def _on_session_init(self, event: ApplicationInitialized) -> None:
+    async def _on_session_init(self, event: ThreadInitialized) -> None:
         if self._initialized:
             return
         ws = event.session.workspace_root or str(Path.cwd())
@@ -280,4 +281,10 @@ class SkillsPlugin:
         }
 
 
-plugin = SkillsPlugin()
+def mount_thread(ctx, config):
+    SkillsPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(SkillsPlugin, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(SkillsPlugin, "Config", None)

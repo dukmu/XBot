@@ -23,6 +23,24 @@ _PROXY_COPY_SIZE = 64 * 1024
 logger = logging.getLogger("xbotv2.browser.network")
 
 
+async def _blocking_io(function, *args, **kwargs):
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        # DNS/search/extraction workers cannot be stopped by cancelling await.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled() and worker.exception() is not None:
+            cancelled.add_note(f"Browser worker failed during cancellation: {worker.exception()!r}")
+        raise
+
+
 @dataclass(frozen=True, slots=True)
 class CheckedUrl:
     request_url: str
@@ -48,7 +66,7 @@ async def validate_url(url: str, policy: NetworkPolicy) -> CheckedUrl:
     try:
         addresses = {ipaddress.ip_address(hostname)}
     except ValueError:
-        addresses = await asyncio.to_thread(_resolve_addresses, hostname)
+        addresses = await _blocking_io(_resolve_addresses, hostname)
     if not addresses:
         raise ValueError("URL hostname has no resolved addresses")
     if not policy.private_access and any(
@@ -84,10 +102,13 @@ class BrowserProxy:
         self._server: asyncio.Server | None = None
         self._port: int | None = None
         self._writers: set[asyncio.StreamWriter] = set()
+        self._requests: set[asyncio.Task] = set()
+        self._closing = False
 
     async def start(self) -> str:
         if self._server is not None:
             raise RuntimeError("Browser proxy is already running")
+        self._closing = False
         self._server = await asyncio.start_server(
             self._handle,
             host="127.0.0.1",
@@ -99,15 +120,21 @@ class BrowserProxy:
         return f"http://127.0.0.1:{self._port}"
 
     async def close(self) -> None:
+        self._closing = True
         server = self._server
-        if server is None:
-            return
         self._server = None
         self._port = None
-        server.close()
+        if server is not None:
+            server.close()
         for writer in tuple(self._writers):
             writer.close()
-        await server.wait_closed()
+        if server is not None:
+            await server.wait_closed()
+        requests = [task for task in self._requests if task is not asyncio.current_task()]
+        for task in requests:
+            task.cancel()
+        if requests:
+            await asyncio.gather(*requests, return_exceptions=True)
         if self._writers:
             await asyncio.gather(
                 *(writer.wait_closed() for writer in tuple(self._writers)),
@@ -120,6 +147,12 @@ class BrowserProxy:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        if self._closing:
+            writer.close()
+            await writer.wait_closed()
+            return
+        task = asyncio.current_task()
+        self._requests.add(task)
         self._writers.add(writer)
         try:
             head = await reader.readuntil(b"\r\n\r\n")
@@ -149,6 +182,7 @@ class BrowserProxy:
             logger.exception("browser.proxy.request.failed")
             await self._error_response(writer, 502, "Browser network proxy failed")
         finally:
+            self._requests.discard(task)
             self._writers.discard(writer)
             writer.close()
             try:
@@ -378,7 +412,7 @@ class WebAccess:
         try:
             from ddgs import DDGS
 
-            results = await asyncio.to_thread(
+            results = await _blocking_io(
                 DDGS(timeout=max(1, int(self.policy.timeout))).text,
                 query,
                 region=region,
@@ -418,7 +452,7 @@ class WebAccess:
             final_url, response, body = await self._download(url)
             content_type = response.headers.get("content-type", "").split(";", 1)[0]
             if content_type == "text/html" or not content_type:
-                content, metadata = await asyncio.to_thread(
+                content, metadata = await _blocking_io(
                     _extract_html, body, final_url
                 )
             elif content_type.startswith(_TEXT_TYPES):

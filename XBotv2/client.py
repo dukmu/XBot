@@ -17,35 +17,16 @@ from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionRespo
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
-from XBotv2.session import (
-    AttachmentInput,
-    CloseResponse,
-    DeleteSessionResponse,
-    ForkResponse,
-    HistoryMutation,
-    ImageInput,
-    InterruptResponse,
-    MessageRequest,
-    OpenSessionRequest,
-    OpenSessionResponse,
-    OpenThreadRequest,
-    PendingInputListResponse,
-    PendingInputUpdateRequest,
-    RegenerateRequest,
-    SessionListResponse,
-    SessionMode,
-    SessionSummary,
-    ThreadListResponse,
-    ThreadSummary,
-    UndoRequest,
-)
+from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, ImageInput
+from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
+from XBotv2.session.api.protocol import CloseResponse, DeleteSessionResponse, ForkResponse, InterruptResponse, MessageRequest, OpenSessionRequest, OpenSessionResponse, OpenThreadRequest, PendingInputListResponse, PendingInputUpdateRequest, RegenerateRequest, SessionListResponse, ThreadListResponse, UndoRequest
 from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.workspaces.api.contracts import WorkspaceSnapshot
 from XBotv2.protocol.api.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.api.version import PROTOCOL_VERSION
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
-from XBotv2.session.records import ConversationRecord
+from XBotv2.session.api.records import ConversationRecord
 
 ResponseModel = TypeVar("ResponseModel")
 
@@ -131,7 +112,7 @@ class XBotClient:
         *,
         client_name: str = "xbotv2-python",
         session_id: str | None = None,
-        thread_id: str = "agent",
+        thread_id: str = "main",
     ) -> HelloResponse:
         return await self._request(
             "POST",
@@ -159,7 +140,7 @@ class XBotClient:
         self,
         *,
         session_id: str | None = None,
-        thread_id: str = "agent",
+        thread_id: str = "main",
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
@@ -266,7 +247,7 @@ class XBotClient:
         session_id: str,
         *,
         thread_id: str,
-        parent_thread_id: str = "agent",
+        parent_thread_id: str = "main",
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,

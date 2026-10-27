@@ -12,7 +12,8 @@ from XBotv2.core.api.messages import (
     CompactionSummaryMessage,
 )
 from XBotv2.core.api.parts import TextPart
-from XBotv2.session.contracts import conversation_replay
+
+from XBotv2.session.api.records import conversation_replay
 
 
 def human(message_id: str, content: str) -> HumanInputMessage:

@@ -35,19 +35,19 @@ from XBotv2.jobs.api.contracts import JobView
 from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
-from XBotv2.session.contracts import ThreadSummary
+from XBotv2.session.api.contracts import ThreadSummary
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
-from XBotv2.session.events import (
+from XBotv2.session.api.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,
     InputConsumedEvent,
     QueueReplacedEvent,
 )
-from XBotv2.session.protocol import OpenSessionResponse
-from XBotv2.session.records import (
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.session.api.records import (
     AssistantRecord,
     HumanInputRecord,
     RuntimeNoticeRecord,

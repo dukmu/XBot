@@ -123,8 +123,21 @@ def declaration_import_violations(package: Path) -> list[DeclarationViolation]:
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        constructors = set()
+        for function in tree.body:
+            if not isinstance(function, ast.FunctionDef) or not function.name.startswith("create_"):
+                continue
+            body = [item for item in function.body if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant) and isinstance(item.value.value, str))]
+            if len(body) != 2 or not isinstance(body[0], ast.ImportFrom) or not isinstance(body[1], ast.Return):
+                continue
+            result = body[1].value
+            imported = {alias.asname or alias.name for alias in body[0].names}
+            if isinstance(result, ast.Call) and isinstance(result.func, ast.Name) and result.func.id in imported:
+                constructors.add(id(body[0]))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if id(node) in constructors:
                 continue
             if not node.module.startswith(prefix):
                 continue
@@ -148,9 +161,7 @@ def classify(owner: str, module: str) -> str:
         return "allowed shared contract" if module.startswith("XBotv2.core.api.") else "IMPLEMENTATION DEPENDENCY"
     if imported in SHARED_ROOTS:
         return "allowed shared contract"
-    if owner == "acp_plugin" and module == "XBotv2.application.acp":
-        return "host composition exception"
-    if (PACKAGE / imported / "api").is_dir() and (PACKAGE / imported / "impl" / "plugin.py").is_file():
+    if (PACKAGE / imported / "api").is_dir():
         return "allowed plugin contract" if module.startswith(f"XBotv2.{imported}.api.") else "IMPLEMENTATION DEPENDENCY"
     if leaf in ALLOWED_DECLARATIONS:
         return "allowed plugin contract"

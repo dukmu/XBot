@@ -27,14 +27,14 @@ compiled Web client; `xbot acp` runs the ACP carrier. Use `xbot --help` and
 retention flags and its client plugin settings are summarized in
 [clients](clients.md).
 
-An external plugin is a normal package. Its root `plugin.py` exports one
-module-level `plugin` object; public declarations belong in `contracts.py`,
-`events.py`, and `protocol.py`:
+An external plugin is a normal package. Its `impl/plugin.py` declares scope facet functions;
+public declarations belong in `api/contracts.py`, `api/events.py`, and
+`api/protocol.py`:
 
 ```text
 weather-plugin/
 ├── pyproject.toml
-├── src/weather_plugin/{__init__.py,contracts.py,events.py,protocol.py,plugin.py}
+├── src/weather_plugin/{api/,impl/plugin.py,doc/,tests/}
 └── tests/
 ```
 

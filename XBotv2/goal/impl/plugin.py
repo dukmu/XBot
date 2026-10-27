@@ -1,9 +1,10 @@
 """Explicit same-session goals driven by the working Agent."""
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 from XBotv2.commands.api.contracts import COMMANDS
 
-from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopDriverPort, InboxItem, RuntimeInput
+from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopPort, InboxItem, RuntimeInput
 import asyncio
 import json
 import time
@@ -23,7 +24,10 @@ from XBotv2.agentloop.api.events import (
     SessionLifecycle,
     TurnEnded,
 )
-from XBotv2.application import COLLECT_STATUS_SLOTS, RUNTIME_EVENT, RuntimeEvent, StatusSlots
+from XBotv2.interactions.api.status import COLLECT_STATUS_SLOTS
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.agentloop.api.events import RuntimeEvent
+from XBotv2.interactions.api.status import StatusSlots
 from XBotv2.commands.api.contracts import Command, CommandEffect, CommandResult
 from XBotv2.core.api.tools import (
     Tool,
@@ -34,6 +38,7 @@ from XBotv2.core.api.tools import (
     succeeded_text,
 )
 from XBotv2.core.api.domain import InboxTarget, TokenCounters, UsageSnapshot
+from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.parts import TextPart
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import (
@@ -68,7 +73,7 @@ class GoalService:
     def __init__(
         self,
         store: StateService,
-        engine: AgentLoopDriverPort,
+        engine: AgentLoopPort,
         *,
         events: Context,
         usage: UsagePort,
@@ -485,8 +490,10 @@ class GoalService:
         if input_id is None:
             return
         try:
-            await self._engine.remove_input(input_id)
-        except KeyError:
+            await self._engine.update_pending_input(input_id, "remove")
+        except OperationError as error:
+            if error.code != "queue_item_not_found":
+                raise
             # It may already be claimed; ON_TURN_INPUT rejects it after this
             # control mutation changes or clears the owning reservation.
             pass
@@ -584,7 +591,7 @@ def _tool_outcome_text(result: ToolOutcome) -> str:
 
 class GoalPlugin:
     inject = {
-        "required": [COMMANDS, "engine", "state", TOOLS, "usage"],
+        "required": [COMMANDS, "agent_loop", "state", TOOLS, "usage"],
         "optional": [JOBS],
     }
     name = "goal"
@@ -593,7 +600,7 @@ class GoalPlugin:
             raise ValueError("goal plugin does not accept configuration")
         service = GoalService(
             ctx.state.namespace(self.name),
-            ctx.engine,
+            ctx.require(AGENT_LOOP),
             events=ctx,
             jobs=ctx.get(JOBS, strict=False),
             usage=ctx.usage,
@@ -633,4 +640,10 @@ class GoalPlugin:
         }
 
 
-plugin = GoalPlugin()
+def mount_thread(ctx, config):
+    GoalPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(GoalPlugin, "inject", ())
+mount_thread.provide = ('goal',)
+mount_thread.Config = getattr(GoalPlugin, "Config", None)

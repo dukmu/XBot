@@ -5,6 +5,8 @@ from __future__ import annotations
 from xcore.api.context import Context
 from XBotv2.config.api.contracts import ConfigPluginConfig, GET_POLICY, UPDATE_POLICY, SETTINGS
 from XBotv2.config.impl.service import ConfigService
+from XBotv2.config.impl.seed import ensure_initial_config
+from XBotv2.loader.api.service import LOADER
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.impl.router import build_router
 from XBotv2.server.api.contracts import contribute_router
@@ -14,7 +16,7 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.config.http",
-        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths),
+        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths, loader=ctx.require(LOADER)),
     )
 
 
@@ -22,13 +24,12 @@ def mount_settings(ctx: Context) -> None:
     """Mount policy operations only in an actual Agent session."""
     settings = ConfigService(
         ctx.runtime_paths,
-        session_id=ctx.session_launch.session_id,
-        workspace_root=ctx.session_launch.workspace_root,
+        session_id=ctx.thread_info.session_id,
+        workspace_root=ctx.thread_info.workspace_root,
         events=ctx,
         runtime_log=ctx.runtime_log,
         extra_plugins=ctx.plugin_overrides,
         plugin_dirs=ctx.plugin_dirs,
-        is_subagent=ctx.session_launch.is_subagent,
         no_plugins=ctx.no_plugins,
     )
     ctx.set(SETTINGS, settings)
@@ -37,18 +38,21 @@ def mount_settings(ctx: Context) -> None:
     ctx.on(UPDATE_POLICY.name, settings.update_policy)
 
 
-class ConfigPlugin:
-    """Compose independent session settings and configuration HTTP routes."""
+def mount_process(ctx, config):
+    ensure_initial_config(ctx.runtime_paths)
+    ctx.inject(["server", "sessions", "runtime_paths", LOADER], mount_http)
 
-    name = "xbot.config"
-    Config = ConfigPluginConfig
+mount_process.inject = ("runtime_paths",)
+mount_process.provide = ()
+mount_process.Config = ConfigPluginConfig
 
-    def apply(self, ctx: Context, config: ConfigPluginConfig) -> None:
-        ctx.inject([
-            "runtime_log", "runtime_paths", "session_launch",
-            "plugin_overrides", "plugin_dirs", "no_plugins",
-        ], mount_settings)
-        ctx.inject(["server", "sessions", "runtime_paths"], mount_http)
+
+def mount_thread(ctx, config):
+    mount_settings(ctx)
+
+mount_thread.inject = ("runtime_log", "runtime_paths", "thread_info", "plugin_overrides", "plugin_dirs", "no_plugins")
+mount_thread.provide = (SETTINGS,)
+mount_thread.Config = ConfigPluginConfig
 
 
 class ConfigOperations:
@@ -57,8 +61,3 @@ class ConfigOperations:
 
     def get_policy(self, _request: EmptyRequest):
         return self._settings.policy()
-
-
-plugin = ConfigPlugin()
-
-__all__ = ["ConfigPlugin"]

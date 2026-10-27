@@ -9,7 +9,7 @@ the real StateService implementation.
 import asyncio
 from pathlib import Path
 import pytest
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.impl.store import ThreadPersistence
 from XBotv2.core.api.paths import RuntimePaths
 from xcore.api.context import Context
 from xcore.api.state import StateService

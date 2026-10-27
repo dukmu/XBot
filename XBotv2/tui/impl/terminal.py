@@ -34,7 +34,7 @@ class TextualTerminalClient:
                 workspace_root=config.workspace,
                 mode="resume" if session_id else "new",
             ),
-            workspace=config.workspace,
+            workspace=config.workspace or "",
             transcript_limit=config.transcript_limit,
             render_interval=config.render_interval,
         )

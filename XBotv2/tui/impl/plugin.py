@@ -31,6 +31,10 @@ class TextualTuiPlugin:
         ctx.set(TERMINAL_CLIENT, terminal)
 
 
-plugin = TextualTuiPlugin()
+def mount_process(ctx, config):
+    TextualTuiPlugin().apply(ctx, config)
 
-__all__ = ["TextualTuiPlugin", "plugin"]
+
+mount_process.inject = getattr(TextualTuiPlugin, "inject", ())
+mount_process.provide = ('terminal_client',)
+mount_process.Config = getattr(TextualTuiPlugin, "Config", None)

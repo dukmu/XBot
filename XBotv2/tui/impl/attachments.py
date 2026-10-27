@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 from pathlib import Path
-from XBotv2.session.contracts import ImageInput
+from XBotv2.agentloop.api.models import ImageInput
 
 
 def image_media_type(path: Path) -> str | None:

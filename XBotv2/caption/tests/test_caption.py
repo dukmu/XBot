@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """Caption requests are auxiliary projections of canonical human input."""
 
 import asyncio
@@ -120,7 +121,7 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
 ):
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
     from XBotv2.core.api.domain import InboxTarget
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.core.api.messages import ToolMessage
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.permissions.api.models import PermissionPolicy
@@ -137,7 +138,7 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
         ]},
         {"content": "The title is updated."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="caption-tool-contract",
         thread_id="main",
@@ -153,7 +154,7 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
         input=HumanInput(content="Review the session title."),
     )
     try:
-        events = [event async for event in application.engine.run_turn(item)]
+        events = [event async for event in engine_of(application).run_turn(item)]
         messages = application.loop_state.history.snapshot()
         title = application.loop_state.metadata.value.title
     finally:
@@ -185,7 +186,7 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
 ):
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
     from XBotv2.core.api.domain import InboxTarget
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.permissions.api.models import PermissionPolicy
 
@@ -202,7 +203,7 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
         })
     responses.append({"content": "Answer."})
     llm = MockLLM(responses=responses)
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="caption-config-matrix",
         thread_id="main",
@@ -222,7 +223,7 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
         input=HumanInput(content="Explain the option matrix."),
     )
     try:
-        events = [event async for event in application.engine.run_turn(item)]
+        events = [event async for event in engine_of(application).run_turn(item)]
         title = application.loop_state.metadata.value.title
         requests = llm.request_history
     finally:
@@ -246,17 +247,17 @@ async def test_caption_agent_tool_is_not_registered_for_a_child_application(
 ):
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
     from XBotv2.core.api.domain import InboxTarget
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.core.api.paths import RuntimePaths
 
     llm = MockLLM(responses=[{"content": "Child response."}])
-    application = await start_application(
+    from XBotv2.session.api.contracts import SESSIONS, OpenThread
+
+    parent = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="caption-child-contract",
-        thread_id="worker",
+        thread_id="main",
         workspace_root=temp_workspace,
-        is_subagent=True,
-        parent_thread_id="main",
         llm_override=llm,
         extra_plugins=[{
             "id": "caption",
@@ -264,13 +265,18 @@ async def test_caption_agent_tool_is_not_registered_for_a_child_application(
         }],
     )
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        application = await parent.root.require(SESSIONS).open_thread(OpenThread(
+            session_id="caption-child-contract", thread_id="worker",
+            parent_thread_id="main", workspace_root=str(temp_workspace),
+            provider_name=None, mode="new", no_plugins=False, model_override=llm,
+        ))
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Inspect this child task."),
         ))]
         request = llm.request_history[0]
     finally:
-        await application.stop()
+        await parent.root.close()
 
     assert not [event for event in events if isinstance(event, LoopError)]
     assert "caption" not in {tool.name for tool in request.tools}
@@ -285,7 +291,7 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
 ):
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
     from XBotv2.core.api.domain import InboxTarget
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.core.api.messages import ToolMessage
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.core.api.tools import ToolFailed
@@ -300,7 +306,7 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
         }]},
         {"content": "The title could not be changed."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="caption-empty-normalized",
         thread_id="main",
@@ -311,7 +317,7 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
         default_decision="allow",
     ),))
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Please rename this session."),
         ))]

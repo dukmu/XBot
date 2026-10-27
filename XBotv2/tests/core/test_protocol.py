@@ -8,8 +8,9 @@ from XBotv2.core.api.domain import SessionScope
 from XBotv2.llm.api.contracts import LlmConfig, ModelConfig, ProviderConfig
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
-from XBotv2.session.contracts import HistoryMutation, SessionEventFrame
-from XBotv2.session.events import HistoryUpdatedEvent
+from XBotv2.agentloop.api.models import HistoryMutation
+from XBotv2.session.api.contracts import SessionEventFrame
+from XBotv2.session.api.events import HistoryUpdatedEvent
 
 
 class _TrackingEventSubscription(AsyncIterator[SessionEventFrame]):
@@ -306,7 +307,7 @@ class TestProviderConfigLoader:
 
     def test_missing_env_var_is_rejected(self, tmp_path, monkeypatch):
         """An unset $${env:NAME} fails closed at the config-load boundary."""
-        from XBotv2.config.impl.loader import load_plugin_tree
+        from XBotv2.config.api.tree import load_plugin_tree
         from XBotv2.core.api.paths import RuntimePaths
 
         (tmp_path / "config").mkdir(parents=True, exist_ok=True)
@@ -329,33 +330,6 @@ class TestProviderConfigLoader:
                 session_id="s1",
             )
 
-    def test_server_profile_reads_merged_llm_entry(self, tmp_path):
-        """The server application consumes the overlaid LLM profile entry."""
-        from XBotv2.application.tree import load_server_tree
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir(parents=True)
-        (config_dir / "plugins.yaml").write_text(
-            yaml.safe_dump([
-                {"id": "llm", "name": "llm", "config": {
-                    "default_provider": "custom",
-                    "providers": {
-                        "custom": {
-                            "protocol": "openai",
-                            "default_model": "custom-model",
-                            "models": [{"model": "custom-model"}],
-                        },
-                    },
-                }},
-            ]),
-            encoding="utf-8",
-        )
-
-        tree = load_server_tree(paths=RuntimePaths.from_data_dir(tmp_path))
-        llm = next(entry for entry in tree.entries if entry.id == "llm")
-        assert llm.config["default_provider"] == "custom"
-        assert llm.config["providers"]["custom"]["default_model"] == "custom-model"
-        assert llm.config["providers"]["custom"]["models"][0]["model"] == "custom-model"
 
 
 def _event_subscription() -> _TrackingEventSubscription:
@@ -377,7 +351,7 @@ def _event_subscription() -> _TrackingEventSubscription:
 
 @pytest.mark.asyncio
 async def test_session_sse_closes_subscription_after_normal_iteration() -> None:
-    from XBotv2.session.protocol import _session_sse
+    from XBotv2.session.impl.protocol import _session_sse
 
     subscription = _event_subscription()
     frames = [
@@ -391,7 +365,7 @@ async def test_session_sse_closes_subscription_after_normal_iteration() -> None:
 
 @pytest.mark.asyncio
 async def test_session_sse_closes_subscription_when_encoding_fails(monkeypatch) -> None:
-    from XBotv2.session import protocol
+    from XBotv2.session.impl import protocol
 
     subscription = _event_subscription()
 
@@ -407,7 +381,7 @@ async def test_session_sse_closes_subscription_when_encoding_fails(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_session_sse_closes_subscription_when_generator_is_closed() -> None:
-    from XBotv2.session.protocol import _session_sse
+    from XBotv2.session.impl.protocol import _session_sse
 
     subscription = _event_subscription()
     stream = _session_sse(subscription, "session-1", "agent")

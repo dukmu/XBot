@@ -7,7 +7,8 @@ from XBotv2.llm.api.contracts import MODEL
 from XBotv2.agentloop.api.contracts import TOOLS
 from XBotv2.agentloop.api.state import LOOP_STATE
 import json
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import ThreadInitialized
 from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text
 from XBotv2.agentloop.api.events import Events, SessionLifecycle
 from xcore.api.context import Context
@@ -97,7 +98,7 @@ class MCPCompletionHandler:
 
 
 class MCPPlugin:
-    inject = [TOOLS, MODEL, INTERACTIONS, "session", "usage", LOOP_STATE]
+    inject = [TOOLS, MODEL, INTERACTIONS, "thread_info", "usage", LOOP_STATE]
     name = MCP_PLUGIN_ID
     Config = MCPConfig
 
@@ -113,15 +114,15 @@ class MCPPlugin:
         self._tools = ctx.require(TOOLS)
         self._model = ctx.require(MODEL)
         self._interactions = ctx.require(INTERACTIONS)
-        self._session = ctx.session
+        self._session = ctx.thread_info
         self._usage = ctx.usage
         self._loop_state = ctx.require(LOOP_STATE)
         self._config = config
-        ctx.dispose(self._dispose)
-        ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
+        ctx.pre_stop(self._dispose)
+        ctx.on(THREAD_INITIALIZED, self._on_session_init)
         ctx.on(Events.SESSION_CLOSE, self._on_session_close)
 
-    async def _on_session_init(self, _event: ApplicationInitialized) -> None:
+    async def _on_session_init(self, _event: ThreadInitialized) -> None:
         if self._initialized:
             return
         servers = self._config.servers
@@ -347,4 +348,10 @@ def _protocol_result(data: dict[str, JsonValue]) -> ToolOutcome:
     return succeeded_text(json.dumps(data, ensure_ascii=False))
 
 
-plugin = MCPPlugin()
+def mount_thread(ctx, config):
+    MCPPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(MCPPlugin, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(MCPPlugin, "Config", None)

@@ -5,13 +5,15 @@ output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 """
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 from XBotv2.commands.api.contracts import COMMANDS
 
 import json
 from xcore.api.context import Context
-from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.agentloop.api.events import RuntimeEvent
 from XBotv2.core.api.errors import OperationError
-from XBotv2.agentloop.api.contracts import AgentLoopDriverPort, InboxItem, RuntimeInput
+from XBotv2.agentloop.api.contracts import AgentLoopPort, InboxItem, RuntimeInput
 from xcore.api.events import EventDispatch
 from XBotv2.agentloop.api.events import Events, SessionLifecycle
 from XBotv2.core.api.domain import InboxTarget
@@ -33,8 +35,12 @@ from XBotv2.jobs.api.contracts import (
 from XBotv2.jobs.impl.protocol import build_jobs_router
 from XBotv2.jobs.api.protocol import job_completed_event, job_updated_event
 from XBotv2.jobs.impl.registry import JobRegistry
+from xcore.api.services import ServiceKey
+
+JOB_REGISTRY = ServiceKey[JobRegistry]("jobs.registry")
 from XBotv2.core.api.operations import EmptyRequest
-from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
+from XBotv2.session.api.contracts import PREPARE_FORK, PrepareFork
+from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.server.api.contracts import contribute_router
 
 
@@ -48,7 +54,7 @@ async def mount_http(ctx: Context) -> None:
 
 class JobsRuntimeComponent:
     inject = {
-        "required": [COMMANDS, "engine"],
+        "required": [COMMANDS, "agent_loop", JOB_REGISTRY, LOOP_STATE],
     }
     """Register the job registry as ``ctx.jobs``."""
 
@@ -61,28 +67,25 @@ class JobsRuntimeComponent:
         # component subscribes with fiber-owned listeners, so notifications
         # are delivered whenever the registry runs — never by assignment
         # order inside apply.
-        registry = JobRegistry(
-            limits={"subagent": max_concurrent},
-            publisher=ctx,
-        )
+        registry = ctx.require(JOB_REGISTRY).bind(ctx.require(LOOP_STATE).session.key, ctx)
         ctx.set(JOBS, registry)
         for command in build_jobs_commands(registry):
             ctx.require(COMMANDS).register(command)
-        handlers = JobHandlers(registry, ctx.engine, ctx)
+        handlers = JobHandlers(registry, ctx.require(AGENT_LOOP), ctx)
         ctx.on(JOB_UPDATED, handlers.publish_update)
         ctx.on(JOB_COMPLETED, handlers.publish_completion)
         ctx.on(LIST_JOBS.name, handlers.list_jobs)
         ctx.on(STOP_JOB.name, handlers.stop_job)
         ctx.on(STOP_ALL_JOBS.name, handlers.stop_all)
         ctx.on(PREPARE_FORK, handlers.prepare_fork)
-        ctx.on(Events.SESSION_CLOSE, handlers.close)
+        ctx.pre_stop(registry.shutdown)
 
 
 class JobHandlers:
     def __init__(
         self,
         registry: JobRegistry,
-        engine: AgentLoopDriverPort,
+        engine: AgentLoopPort,
         events: EventDispatch,
     ) -> None:
         self._registry = registry
@@ -147,17 +150,20 @@ class JobHandlers:
         await self._registry.shutdown()
 
 
-class JobsPlugin:
-    """Compose Agent job execution and its process HTTP projection."""
+async def mount_thread(ctx, config):
+    await ctx.plugin(JobsRuntimeComponent(), config)
 
-    name = "xbot.jobs"
-    Config = JobsConfig
-
-    async def apply(self, ctx: Context, config: JobsConfig) -> None:
-        await ctx.plugin(JobsRuntimeComponent(), config)
-        await ctx.inject(["server", "sessions"], mount_http)
+mount_thread.inject = ()
+mount_thread.provide = (JOBS,)
+mount_thread.Config = JobsConfig
 
 
-plugin = JobsPlugin()
+def mount_process(ctx, config):
+    registry = JobRegistry(limits={"subagent": config.max_concurrent_subagents})
+    ctx.provide(JOB_REGISTRY, registry)
+    ctx.dispose(registry.shutdown)
+    ctx.inject(["server", "sessions"], mount_http)
 
-__all__ = ["JobsPlugin"]
+mount_process.inject = ()
+mount_process.provide = (JOB_REGISTRY,)
+mount_process.Config = JobsConfig

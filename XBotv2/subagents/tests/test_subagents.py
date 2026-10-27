@@ -3,9 +3,9 @@
 import pytest
 
 from XBotv2.agents.api.contracts import AgentDefinition
-from XBotv2.session import ThreadSummary
+from XBotv2.session.api.contracts import ThreadSummary
 from XBotv2.subagents.api.contracts import SubagentAgentError
-from XBotv2.subagents.impl.service import AgentJobSpec, SubagentLauncher
+from XBotv2.subagents.impl.service import AgentJobSpec, SubagentLauncher, SubagentCoordinator
 
 
 class _Catalog:
@@ -30,6 +30,10 @@ class _Sessions:
         self.threads = tuple(threads)
         self.opened = []
 
+    def new_thread_id(self, session_id, name):
+        assert session_id == "parent-session"
+        return f"child-{name}"
+
     async def list_threads(self, session_id):
         assert session_id == "parent-session"
         return self.threads
@@ -48,6 +52,7 @@ def _launcher(definition=None, *, threads=()):
         catalog=_Catalog(definition),
         session=_Session(),
         sessions=sessions,
+        coordinator=SubagentCoordinator(_Session(), sessions),
         provider_name="mock",
         no_plugins=False,
     )

@@ -15,7 +15,7 @@ from XBotv2.core.api.tools import ToolDenied, ToolFailed, ToolOutcome, ToolSucce
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolCompleted
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.messages import ToolMessage
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM

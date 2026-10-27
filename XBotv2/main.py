@@ -13,6 +13,7 @@ from pathlib import Path
 from traceback import format_exception_only
 from xcore.api.errors import ServiceNotFoundError
 from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.loader.api.contracts import LoadError
 from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     LoopError,
@@ -68,7 +69,7 @@ def _common_parser() -> argparse.ArgumentParser:
         "--workspace", default=None,
         help="Agent workspace; defaults to the current directory",
     )
-    parser.add_argument("--thread", default=_env("THREAD", "agent"), help="thread ID")
+    parser.add_argument("--thread", default=_env("THREAD", "main"), help="thread ID")
     parser.add_argument("--agent", default=_env("AGENT"), help="Agent definition name")
     parser.add_argument(
         "--no-plugins",
@@ -195,7 +196,7 @@ def _parse_args(
 def main(argv: list[str] | None = None):
     parser, args = _parse_args(argv)
 
-    from XBotv2.application.logging import setup_logging
+    from XBotv2.log_output import setup_logging
 
     setup_logging(
         data_dir=args.data_dir,
@@ -213,17 +214,10 @@ def main(argv: list[str] | None = None):
         elif args.command == "once":
             asyncio.run(_run_once(args))
         elif args.command == "acp":
-            from XBotv2.acp_plugin.impl.server import run_acp
-
-            asyncio.run(run_acp(
-                data_dir=args.data_dir,
-                provider_name=args.provider,
-                no_plugins=args.no_plugins,
-                selected_agent=args.agent,
-            ))
+            asyncio.run(_run_acp(args))
         else:
             parser.print_help()
-    except ValueError as exc:
+    except (ValueError, LoadError) as exc:
         parser.exit(2, f"Error: {exc}\n")
     except ServiceNotFoundError as exc:
         parser.exit(2, "Error: " + "".join(format_exception_only(exc)))
@@ -258,8 +252,7 @@ async def _serve(args) -> None:
     """Keep plugin resources, HTTP serving and teardown on the same loop."""
     import uvicorn
 
-    from XBotv2.application.server import start_server_application
-    from XBotv2.loader import PluginOverlay
+    from XBotv2.loader.api.contracts import PluginOverlay
 
     session_config = {}
     if args.workspace is not None:
@@ -268,7 +261,7 @@ async def _serve(args) -> None:
         session_config["provider_name"] = args.provider
     if args.no_plugins:
         session_config["no_plugins"] = True
-    root_ctx = await start_server_application(
+    root_ctx = await open_runtime(
         paths=RuntimePaths.from_data_dir(args.data_dir),
         overrides=PluginOverlay.parse([{"id": "session", "config": session_config}]),
     )
@@ -278,13 +271,10 @@ async def _serve(args) -> None:
             uds_path = Path(uds).expanduser()
             uds_path.parent.mkdir(parents=True, exist_ok=True)
             uds = str(uds_path)
-        config = uvicorn.Config(
-            root_ctx.require("server"), host=args.bind, port=args.port, uds=uds,
-            log_config=None, ws="none",
-        )
-        await uvicorn.Server(config).serve()
+        from XBotv2.server.api.contracts import HTTP_LISTENER
+        await root_ctx.require(HTTP_LISTENER).serve(host=args.bind, port=args.port, uds=uds)
     finally:
-        await root_ctx.stop()
+        await root_ctx.close()
 
 
 def _run_tui(args) -> None:
@@ -300,14 +290,12 @@ def _run_tui(args) -> None:
         args.log_level,
     )
 
-    from XBotv2.application.client import run_client_application
-    from XBotv2.loader import PluginOverlay
+    from XBotv2.loader.api.contracts import PluginOverlay
 
     session_id = getattr(args, "session", None)
-    tui_config = {
-        "workspace": str(_workspace_root(args)),
-        "thread_id": args.thread,
-    }
+    tui_config = {"thread_id": args.thread}
+    if args.workspace is not None:
+        tui_config["workspace"] = str(_workspace_root(args))
     for key, value in (
         ("session_id", session_id), ("agent", args.agent),
         ("history_window", args.history_window),
@@ -324,7 +312,7 @@ def _run_tui(args) -> None:
             {"id": "textual-tui", "config": tui_config},
         ])
         asyncio.run(
-            run_client_application(
+            run_terminal(
                 paths=RuntimePaths.from_data_dir(args.data_dir),
                 overrides=overrides,
             )
@@ -508,12 +496,12 @@ def _workspace_root(args) -> Path:
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.application.server import start_server_application
-    from XBotv2.loader import PluginOverlay
+    from XBotv2.loader.api.contracts import PluginOverlay
+    from XBotv2.session.api.contracts import SESSIONS, OpenSession
 
     paths = RuntimePaths.from_data_dir(args.data_dir)
     workspace = str(_workspace_root(args))
-    host = await start_server_application(
+    host = await open_runtime(
         paths=paths,
         overrides=PluginOverlay.parse([{"id": "session", "config": {
             "provider_name": args.provider,
@@ -523,17 +511,20 @@ async def _run_once(args):
     )
     try:
         session_id = getattr(args, "session", None)
-        runtime = await host.sessions.open_session(
+        scope = await host.require(SESSIONS).open(OpenSession(
             session_id=session_id,
-            thread_id=getattr(args, "thread", "agent"),
+            thread_id=getattr(args, "thread", "main"),
             provider_name=args.provider,
-            workspace_root=workspace,
+            workspace_root=args.workspace if session_id else workspace,
             selected_agent=getattr(args, "agent", None),
             mode="resume" if session_id else "new",
             no_plugins=args.no_plugins,
             interactive=False,
-        )
-        events = runtime.event_stream.subscribe()
+        ))
+        from XBotv2.agentloop.api.contracts import AGENT_LOOP
+        runtime = scope.require(AGENT_LOOP)
+        from XBotv2.session.api.contracts import THREAD_EVENTS
+        events = scope.require(THREAD_EVENTS).subscribe()
         try:
             await runtime.send_message(args.prompt, "once")
             async for frame in events:
@@ -573,6 +564,45 @@ async def _run_once(args):
     finally:
         await host.stop()
 
+
+
+
+async def _run_acp(args):
+    from XBotv2.acp_plugin.api.contracts import ACP_SERVER
+    from XBotv2.loader.api.contracts import PluginOverlay
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(args.data_dir), profile="acp", overrides=PluginOverlay.parse([{"id": "acp", "config": {"provider_name": args.provider, "no_plugins": args.no_plugins, "selected_agent": args.agent}}]))
+    try:
+        await root.require(ACP_SERVER).serve()
+    finally:
+        await root.close()
+
+
+async def open_runtime(*, paths: RuntimePaths, profile: str = "server", overrides=None, plugin_dirs=()):
+    """CLI composition: one XCore root, shared resources and loader."""
+    from xcore.api.context import Context
+    from XBotv2.loader.api.tree import load_process_tree
+    from XBotv2.loader.api.service import LOADER
+    from XBotv2.loader.api.service import create_loader
+    from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
+    ctx = Context(data_dir=paths.data_dir)
+    ctx.set("runtime_paths", paths)
+    ctx.set("runtime_log", DEFAULT_RUNTIME_LOG)
+    ctx.set("client_profile", profile == "client")
+    loader = create_loader(plugin_dirs=plugin_dirs)
+    ctx.dispose(loader.close)
+    ctx.set("plugin_dirs", tuple(plugin_dirs))
+    ctx.provide(LOADER, loader)
+    await loader.mount(ctx, load_process_tree(paths=paths, profile=profile, overrides=overrides, plugin_dirs=plugin_dirs), kind="process")
+    return ctx
+
+
+async def run_terminal(*, paths, overrides):
+    from XBotv2.tui.api.service import TERMINAL_CLIENT
+    ctx = await open_runtime(paths=paths, profile="client", overrides=overrides)
+    try:
+        await ctx.require(TERMINAL_CLIENT).run()
+    finally:
+        await ctx.close()
 
 if __name__ == "__main__":
     main()

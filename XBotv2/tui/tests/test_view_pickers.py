@@ -20,7 +20,7 @@ from XBotv2.tui.impl.view.pickers import (
 
 
 def summary(session_id: str = "s1", **overrides):
-    from XBotv2.session.contracts import SessionSummary
+    from XBotv2.session.api.contracts import SessionSummary
 
     fields = {
         "session_id": session_id,

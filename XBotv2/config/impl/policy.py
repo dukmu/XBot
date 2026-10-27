@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import JsonValue
 import yaml
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.loader.contracts import PluginOverlay
+from XBotv2.loader.api.contracts import PluginOverlay
 
 
 def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, JsonValue]:

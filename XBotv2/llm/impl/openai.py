@@ -93,6 +93,9 @@ class OpenAICompatibleProvider(BaseProvider):
     _OVERFLOW_TYPES = frozenset({"exceed_context_size_error"})
     _OVERFLOW_CODES = frozenset({"context_length_exceeded", "prompt_too_long"})
 
+    async def close(self) -> None:
+        await self.client.close()
+
     def normalize_provider_error(self, error: Exception):
         overflow = provider_context_overflow(
             error,

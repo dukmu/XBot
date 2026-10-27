@@ -1,6 +1,7 @@
 """Public service contracts for permission policy and approval."""
 
 from __future__ import annotations
+from dataclasses import dataclass
 
 from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue

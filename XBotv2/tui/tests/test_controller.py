@@ -148,7 +148,7 @@ async def test_thinking_activity_yields_to_active_tool_then_returns_after_result
         ToolCallsStarted as LoopToolCallsStarted,
     )
     from XBotv2.core.api.tools import ToolCall
-    from XBotv2.session.records import ToolRecord
+    from XBotv2.session.api.records import ToolRecord
     from XBotv2.tui.impl.events import ToolCallsStarted, ToolRecordReceived
 
     control, view = controller(backend)
@@ -471,7 +471,7 @@ def _recorded_errors(control: TuiController) -> list:
 
 
 def image(data: str = "AAAA") -> object:
-    from XBotv2.session.contracts import ImageInput
+    from XBotv2.agentloop.api.models import ImageInput
 
     return ImageInput(data=data, media_type="image/png")
 
@@ -584,7 +584,7 @@ async def test_the_thread_list_comes_from_the_server(backend: ScriptedBackend) -
 
 async def test_the_queue_is_rendered_from_state(backend: ScriptedBackend) -> None:
     from XBotv2.tui.impl.events import QueueReplaced
-    from XBotv2.session.events import QueueReplacedEvent
+    from XBotv2.session.api.events import QueueReplacedEvent
 
     control, view = controller(backend)
     await control.connect()

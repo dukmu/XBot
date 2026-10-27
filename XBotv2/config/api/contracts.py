@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from XBotv2.core.api.operations import EmptyRequest, Operation
 import XBotv2.core.api.domain as domain
-from XBotv2.loader.contracts import PluginTree
+from XBotv2.loader.api.contracts import PluginTree
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.agentloop.api.contracts import AllTools, ToolSelection
 
@@ -98,6 +98,7 @@ class SettingsPort(Protocol):
         self,
         workspace: Path,
         session_id: str,
+        thread_id: str = "main",
     ) -> PluginTree: ...
     def memory(self) -> str: ...
     def permission_policies(self) -> tuple[PermissionPolicy, ...]: ...

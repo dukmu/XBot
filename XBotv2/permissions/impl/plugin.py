@@ -8,6 +8,7 @@ it without importing or depending on this plugin.
 """
 
 from __future__ import annotations
+from XBotv2.session.api.contracts import SESSIONS
 from XBotv2.agents.api.contracts import AGENT_CATALOG
 from XBotv2.commands.api.contracts import COMMANDS
 from XBotv2.interactions.api.contracts import INTERACTIONS
@@ -21,7 +22,8 @@ from xcore.api.context import Context
 from xcore.api.state import StateService
 from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agents.api.contracts import AgentCatalogPort, AgentDefinition
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import ThreadInitialized
 from XBotv2.config.api.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.core.api.tools import ToolCall
 from XBotv2.core.api.variables import RuntimeVariables
@@ -205,9 +207,8 @@ class PermissionsService(PermissionsPort):
 
 class PermissionsComponent:
     inject = [
-        "session",
-        "session_launch",
-        "parent_permissions",
+        "thread_info", "interactive",
+        SESSIONS,
         TOOLS,
         "client_events",
         INTERACTIONS,
@@ -222,7 +223,12 @@ class PermissionsComponent:
     name = "xbot.permissions"
     Config = PermissionPolicy
 
-    def apply(self, ctx: Context, config: PermissionPolicy) -> None:
+    async def apply(self, ctx: Context, config: PermissionPolicy) -> None:
+        info = ctx.thread_info
+        parent = None
+        if info.parent_thread_id:
+            parent_scope = await ctx.require(SESSIONS).locate(info.session_id, info.parent_thread_id)
+            parent = parent_scope.require(PERMISSIONS)
         approval = ApprovalService(
             ctx,
             ctx.client_events,
@@ -247,7 +253,7 @@ class PermissionsComponent:
             ctx.require(SETTINGS).permission_policies(),
             ctx.variables,
             ctx.state.namespace("permissions"),
-            parent=ctx.parent_permissions.value,
+            parent=parent,
             tools=ctx.require(TOOLS),
         )
         ctx.set(PERMISSIONS, permissions)
@@ -262,11 +268,11 @@ class PermissionsComponent:
             handlers.apply_decision,
         )
         ctx.require(TOOLS).guard(guard.check, approval=True)
-        ctx.on(APPLICATION_INITIALIZED, handlers.configure_initial, prepend=True)
+        ctx.on(THREAD_INITIALIZED, handlers.configure_initial, prepend=True)
         ctx.on(AGENT_CONFIGURED, handlers.configure_agent, prepend=True)
         ctx.on(POLICY_CHANGED, handlers.update_policy)
 
-        if ctx.session_launch.interactive:
+        if ctx.interactive:
             from XBotv2.permissions.impl.tools import RequestPermissionTool
 
             tool = RequestPermissionTool(
@@ -326,7 +332,7 @@ class PermissionHandlers:
         )
         return decision
 
-    async def configure_initial(self, event: ApplicationInitialized) -> None:
+    async def configure_initial(self, event: ThreadInitialized) -> None:
         await self._permissions.restore()
         self._configure_agent(
             self._agents.get(event.metadata.runtime_selection.agent_name)
@@ -345,4 +351,10 @@ class PermissionHandlers:
         self._permissions.replace_policies(event.permission_policies)
 
 
-plugin = PermissionsComponent()
+async def mount_thread(ctx, config):
+    await PermissionsComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(PermissionsComponent, "inject", ())
+mount_thread.provide = ('approval', 'permissions')
+mount_thread.Config = getattr(PermissionsComponent, "Config", None)

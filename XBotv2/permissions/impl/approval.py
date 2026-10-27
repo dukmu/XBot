@@ -6,7 +6,7 @@ from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.permissions.api.models import Allowed, Approval, ApprovalPort, Denied, PermissionRequest
 from XBotv2.agentloop.api.events import Events, SessionLifecycle
 from xcore.api.context import Context
-from XBotv2.application.contracts import ClientEventsPort
+from XBotv2.interactions.api.contracts import ClientEventsPort
 from XBotv2.interactions.api.contracts import InteractionWaiterPort
 
 

@@ -15,7 +15,7 @@ from XBotv2.agentloop.api.contracts import (
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.events import Events, ObserveInbox
 from XBotv2.agentloop.impl.inbox import AgentInbox, EphemeralInboxSink
-from XBotv2.persistence.models import StoredInboxRecord
+from XBotv2.persistence.api.models import StoredInboxRecord
 
 
 class MemoryInboxSink:

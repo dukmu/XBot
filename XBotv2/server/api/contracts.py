@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
+from xcore.api.services import ServiceKey
 
 from fastapi import APIRouter, Request
 from starlette.responses import Response
@@ -73,3 +75,10 @@ __all__ = [
     "ServerStatus",
     "contribute_router",
 ]
+
+
+class HttpListener(Protocol):
+    async def serve(self, *, host: str = "127.0.0.1", port: int = 4096, uds: str | None = None) -> None: ...
+    async def stop(self) -> None: ...
+
+HTTP_LISTENER: ServiceKey[HttpListener] = ServiceKey("server.listener")

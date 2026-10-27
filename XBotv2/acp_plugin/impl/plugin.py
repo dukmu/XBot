@@ -2,29 +2,36 @@
 
 from __future__ import annotations
 
-from pydantic import JsonValue
 from xcore.api.context import Context
+from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.acp_plugin.api.contracts import ACPConfig, ACP_SERVER
 from XBotv2.acp_plugin.impl.xbot_agent import XBotACPAgent
 
 
 class ACPComponent:
     name = "xbot.acp"
-    inject = ["sessions", "acp_launch", "runtime_log"]
+    inject = ["sessions", "runtime_log", PERSISTENCE]
+    Config = ACPConfig
 
     def apply(
-        self, ctx: Context, config: dict[str, JsonValue] | None = None
+        self, ctx: Context, config: ACPConfig
     ) -> None:
-        launch = ctx.acp_launch
         agent = XBotACPAgent(
             sessions=ctx.sessions,
-            provider_name=launch.provider_name,
-            no_plugins=launch.no_plugins,
-            selected_agent=launch.selected_agent,
-            llm_override=launch.llm_override,
+            persistence=ctx.require(PERSISTENCE),
+            provider_name=config.provider_name,
+            no_plugins=config.no_plugins,
+            selected_agent=config.selected_agent,
             runtime_log=ctx.runtime_log,
         )
-        ctx.set("acp_agent", agent)
-        ctx.dispose(agent.close)
+        ctx.provide(ACP_SERVER, agent)
+        ctx.pre_stop(agent.close)
 
 
-plugin = ACPComponent()
+def mount_process(ctx, config):
+    ACPComponent().apply(ctx, config)
+
+
+mount_process.inject = getattr(ACPComponent, "inject", ())
+mount_process.provide = (ACP_SERVER,)
+mount_process.Config = getattr(ACPComponent, "Config", None)

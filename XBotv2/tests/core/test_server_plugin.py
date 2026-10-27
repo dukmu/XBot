@@ -7,7 +7,7 @@ import httpx
 import yaml
 from fastapi import APIRouter, FastAPI
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.loader import PluginOverlay
+from XBotv2.loader.api.contracts import PluginOverlay
 from XBotv2.server.api.contracts import REGISTER_ROUTE, RouteContribution
 from XBotv2.server.impl.plugin import WebServer, route_keys
 
@@ -85,47 +85,17 @@ def test_web_server_duplicate_path_is_rejected() -> None:
     raise AssertionError("duplicate path registration must raise")
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", [[], ["server"]])
-async def test_server_tree_can_start_without_session_capabilities(tmp_path, enabled):
-    from XBotv2.application.server import start_server_application
-    from XBotv2.application.tree import load_server_tree
-    from XBotv2.protocol.api.version import PROTOCOL_VERSION
-
-    paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    tree = load_server_tree(paths=paths)
-    context = await start_server_application(
-        paths=paths,
-        overrides=PluginOverlay.parse([
-            {"id": entry.id, "disabled": entry.id not in enabled}
-            for entry in tree.entries
-        ]),
-    )
-    try:
-        assert context.is_active
-        assert not context.has("sessions")
-        if "server" in enabled:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=context.server), base_url="http://test",
-            ) as client:
-                response = await client.post("/hello", json={"protocol_version": PROTOCOL_VERSION})
-                assert response.status_code == 200
-                assert (await client.get("/sessions")).status_code == 404
-        else:
-            assert not context.has("server")
-    finally:
-        await context.destroy()
 
 
 @pytest.mark.asyncio
 async def test_existing_process_state_keeps_tui_session_routes_available(tmp_path):
-    from XBotv2.application.server import start_server_application
+    from XBotv2.main import open_runtime
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     paths.data_dir.mkdir()
     state_path = paths.data_dir / "state.json"
     state_path.write_text('{"unrelated.setting": "preserved"}\n', encoding="utf-8")
-    context = await start_server_application(paths=paths)
+    context = await open_runtime(paths=paths)
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=context.server), base_url="http://test",
@@ -141,7 +111,7 @@ async def test_existing_process_state_keeps_tui_session_routes_available(tmp_pat
 
 @pytest_asyncio.fixture
 async def booted_server(tmp_path: Path):
-    from XBotv2.application.server import start_server_application
+    from XBotv2.main import open_runtime
 
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
@@ -176,7 +146,7 @@ async def booted_server(tmp_path: Path):
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
-    server = await start_server_application(
+    server = await open_runtime(
         paths=RuntimePaths.from_data_dir(data_dir),
         overrides=PluginOverlay.parse([{"id": "session", "config": {
             "provider_name": "default", "workspace_root": str(tmp_path), "no_plugins": True,

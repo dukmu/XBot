@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from XBotv2.jobs.api.contracts import (
     JOB_COMPLETED,
     JOB_UPDATED,
@@ -34,6 +35,11 @@ from XBotv2.jobs.api.contracts import (
 from xcore.api.events import EventEmitter
 
 logger = logging.getLogger("xbotv2.jobs")
+_ALL_SCOPES = object()
+
+@dataclass(frozen=True, eq=False, slots=True)
+class _Binding:
+    key: object
 
 
 class JobRegistry(JobsPort):
@@ -46,6 +52,7 @@ class JobRegistry(JobsPort):
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
         self._completion_events: dict[JobId, asyncio.Event] = {}
+        self._cancel_pending = set()
         self._runners: dict[JobId, JobRunner] = {}
         self._tasks: dict[JobId, asyncio.Task[None]] = {}
         self._next_id = 1
@@ -55,6 +62,24 @@ class JobRegistry(JobsPort):
         }
         self._closing = False
         self._publisher = publisher
+        self._scopes = {}
+        self._bindings = {}
+        self._publishers = {}
+        self._closing_scopes = set()
+
+    def bind(self, key, publisher):
+        if self._closing or key in self._bindings:
+            raise JobRegistryClosed("job owner is already bound or closing")
+        binding = _Binding(key)
+        self._bindings[key] = binding
+        self._publishers[binding] = publisher
+        return ThreadJobs(self, binding)
+
+    def _authorize(self, scope):
+        if scope is _ALL_SCOPES or scope is None:
+            return
+        if self._bindings.get(scope.key) is not scope:
+            raise JobRegistryClosed("thread owner has closed")
 
     @property
     def closing(self) -> bool:
@@ -67,8 +92,10 @@ class JobRegistry(JobsPort):
         owner: str,
         parent_job_id: JobId | None = None,
         name: str | None = None,
+        scope=None,
     ) -> Job:
-        if self._closing:
+        self._authorize(scope)
+        if self._closing or scope in self._closing_scopes:
             raise JobRegistryClosed("session_closing")
         if not owner.strip() or not spec.kind.strip() or not spec.label.strip():
             raise ValueError("job owner, kind, and label are required")
@@ -83,12 +110,15 @@ class JobRegistry(JobsPort):
             spec=spec,
         )
         self._jobs[job.id] = job
+        self._scopes[job.id] = scope
         self._completion_events[job.id] = asyncio.Event()
         await self._notify(job)
         return job
 
-    def start(self, job_id: JobId, runner: JobRunner) -> Job:
-        job = self._require(job_id)
+    def start(self, job_id: JobId, runner: JobRunner, *, scope=_ALL_SCOPES) -> Job:
+        job = self._require(job_id, scope=scope)
+        if self._closing or self._scopes.get(job_id) in self._closing_scopes:
+            raise JobRegistryClosed("thread_closing")
         if not isinstance(job.state, Queued):
             raise ValueError(f"Job {job_id} is not queued")
         self._runners[job_id] = runner
@@ -97,17 +127,20 @@ class JobRegistry(JobsPort):
         )
         return job
 
-    def get_or_none(self, job_id: JobId) -> Job | None:
-        return self._jobs.get(job_id)
+    def get_or_none(self, job_id: JobId, *, scope=_ALL_SCOPES) -> Job | None:
+        self._authorize(scope)
+        job = self._jobs.get(job_id)
+        return job if scope is _ALL_SCOPES or self._scopes.get(job_id) == scope else None
 
-    def all(self) -> list[Job]:
-        return list(self._jobs.values())
+    def all(self, *, scope=_ALL_SCOPES) -> list[Job]:
+        self._authorize(scope)
+        return [job for job in self._jobs.values() if scope is _ALL_SCOPES or self._scopes.get(job.id) == scope]
 
-    def views(self) -> list[JobView]:
-        return [self.view(job) for job in self._jobs.values()]
+    def views(self, *, scope=_ALL_SCOPES) -> list[JobView]:
+        return [self.view(job, scope=scope) for job in self.all(scope=scope)]
 
-    def is_busy(self) -> bool:
-        return any(not job.terminal for job in self._jobs.values())
+    def is_busy(self, *, scope=_ALL_SCOPES) -> bool:
+        return any(not job.terminal for job in self.all(scope=scope))
 
     def list(
         self,
@@ -117,8 +150,9 @@ class JobRegistry(JobsPort):
         parent_job_id: JobId | None = None,
         recursive: bool = False,
         max_results: int = 20,
+        scope=_ALL_SCOPES,
     ) -> list[JobView]:
-        jobs = list(self._jobs.values())
+        jobs = self.all(scope=scope)
         if kind is not None:
             jobs = [job for job in jobs if job.kind == kind]
         if status is not None:
@@ -138,8 +172,9 @@ class JobRegistry(JobsPort):
         *,
         mode: WaitMode = "all",
         timeout: float | None = None,
+        scope=_ALL_SCOPES,
     ) -> WaitResult:
-        jobs = [self._require(job_id) for job_id in ids]
+        jobs = [self._require(job_id, scope=scope) for job_id in ids]
         active = [job for job in jobs if not job.terminal]
         timed_out = False
         waits = [self._completion_events[job.id].wait() for job in active]
@@ -164,20 +199,22 @@ class JobRegistry(JobsPort):
             timed_out=timed_out,
         )
 
-    async def cancel(self, job_id: JobId) -> CancelResult:
-        job = self._require(job_id)
-        if job.terminal:
+    async def cancel(self, job_id: JobId, *, scope=_ALL_SCOPES) -> CancelResult:
+        job = self._require(job_id, scope=scope)
+        if job.terminal and job_id not in self._cancel_pending:
             return CancelResult(job_id, job.status, False)
         task = self._tasks.get(job_id)
         runner = self._runners.get(job_id)
-        if runner is not None:
-            try:
-                await runner.cancel(job)
-            except BaseException:
-                logger.exception("runner.cancel failed for job %s", job_id)
+        self._cancel_pending.add(job_id)
         if task is not None and not task.done():
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        try:
+            if runner is not None:
+                await runner.cancel(job)
+        finally:
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+        self._cancel_pending.discard(job_id)
         # A task cancelled before its coroutine is first scheduled never
         # enters _execute, so its exception handler/finally block cannot
         # publish a terminal state or release waiters.  Cancellation owns
@@ -193,26 +230,42 @@ class JobRegistry(JobsPort):
         cancelled = isinstance(job.state, (CancelledBeforeStart, CancelledRunning))
         return CancelResult(job_id, job.status, cancelled)
 
-    async def stop_all(self) -> list[JobView]:
-        active = [job for job in self._jobs.values() if not job.terminal]
-        await asyncio.gather(*(self.cancel(job.id) for job in active), return_exceptions=True)
+    async def stop_all(self, *, scope=_ALL_SCOPES) -> list[JobView]:
+        active = [job for job in self.all(scope=scope) if not job.terminal or job.id in self._cancel_pending]
+        await asyncio.gather(*(self.cancel(job.id, scope=scope) for job in active))
         return [self.view(job) for job in active]
 
     async def shutdown(self) -> list[JobView]:
         self._closing = True
         views = await self.stop_all()
         self.remove_all()
+        self._bindings.clear()
+        self._publishers.clear()
         return views
 
-    def remove(self, job_id: JobId) -> None:
+    def remove(self, job_id: JobId, *, scope=_ALL_SCOPES) -> None:
+        if scope is not _ALL_SCOPES:
+            self._require(job_id, scope=scope)
         self._jobs.pop(job_id, None)
+        self._scopes.pop(job_id, None)
         self._completion_events.pop(job_id, None)
         self._runners.pop(job_id, None)
         self._tasks.pop(job_id, None)
 
-    def remove_all(self) -> None:
-        for job_id in tuple(self._jobs):
-            self.remove(job_id)
+    def remove_all(self, *, scope=_ALL_SCOPES) -> None:
+        for job in self.all(scope=scope):
+            self.remove(job.id, scope=scope)
+
+    async def shutdown_scope(self, scope):
+        if self._bindings.get(scope.key) is not scope:
+            return []
+        self._closing_scopes.add(scope)
+        views = await self.stop_all(scope=scope)
+        self.remove_all(scope=scope)
+        self._publishers.pop(scope, None)
+        self._bindings.pop(scope.key, None)
+        self._closing_scopes.discard(scope)
+        return views
 
     async def _execute(self, job: Job, runner: JobRunner) -> None:
         semaphore = self._limits.get(job.kind)
@@ -255,23 +308,25 @@ class JobRegistry(JobsPort):
         await self._notify_complete(job)
 
     async def _notify(self, job: Job) -> None:
-        if self._publisher is None or self._closing:
+        publisher = self._publishers.get(self._scopes.get(job.id), self._publisher)
+        if publisher is None or self._closing or self._scopes.get(job.id) in self._closing_scopes:
             return
         try:
-            await self._publisher.emit(JOB_UPDATED, self.view(job))
+            await publisher.emit(JOB_UPDATED, self.view(job))
         except BaseException:
             logger.exception("job update publish failed for %s", job.id)
 
     async def _notify_complete(self, job: Job) -> None:
-        if self._publisher is None or self._closing:
+        publisher = self._publishers.get(self._scopes.get(job.id), self._publisher)
+        if publisher is None or self._closing or self._scopes.get(job.id) in self._closing_scopes:
             return
         try:
-            await self._publisher.emit(JOB_COMPLETED, self.view(job))
+            await publisher.emit(JOB_COMPLETED, self.view(job))
         except BaseException:
             logger.exception("job completion publish failed for %s", job.id)
 
-    @staticmethod
-    def view(job: Job) -> JobView:
+    def view(self, job: Job, *, scope=_ALL_SCOPES) -> JobView:
+        self._require(job.id, scope=scope)
         summary = job.error.message if job.error is not None else None
         return JobView(
             id=job.id,
@@ -290,8 +345,8 @@ class JobRegistry(JobsPort):
             if job_id not in self._jobs:
                 return job_id
 
-    def _require(self, job_id: JobId) -> Job:
-        job = self._jobs.get(job_id)
+    def _require(self, job_id: JobId, *, scope=_ALL_SCOPES) -> Job:
+        job = self.get_or_none(job_id, scope=scope)
         if job is None:
             raise JobNotFound(job_id)
         return job
@@ -307,3 +362,48 @@ def _preview(value: str, limit: int) -> str:
 
 
 __all__ = ["JobRegistry", "normalize_error"]
+
+
+class ThreadJobs:
+    """Bind thread authority; all state and operations belong to the registry."""
+    def __init__(self, registry: JobRegistry, key):
+        self._registry = registry
+        self._key = key
+
+    @property
+    def closing(self):
+        return self._registry.closing or self._registry._bindings.get(self._key.key) is not self._key or self._key in self._registry._closing_scopes
+
+    async def create(self, *, spec, owner, parent_job_id=None, name=None):
+        if self.closing:
+            raise JobRegistryClosed("thread_closing")
+        if parent_job_id is not None:
+            self._registry._require(parent_job_id, scope=self._key)
+        return await self._registry.create(spec=spec, owner=owner, parent_job_id=parent_job_id, name=name, scope=self._key)
+
+    def start(self, job_id, runner):
+        return self._registry.start(job_id, runner, scope=self._key)
+    def get_or_none(self, job_id):
+        return self._registry.get_or_none(job_id, scope=self._key)
+    def all(self):
+        return self._registry.all(scope=self._key)
+    def view(self, job):
+        return self._registry.view(job, scope=self._key)
+    def views(self):
+        return self._registry.views(scope=self._key)
+    def is_busy(self):
+        return self._registry.is_busy(scope=self._key)
+    def list(self, **kwargs):
+        return self._registry.list(scope=self._key, **kwargs)
+    async def wait(self, ids, **kwargs):
+        return await self._registry.wait(ids, scope=self._key, **kwargs)
+    async def cancel(self, job_id):
+        return await self._registry.cancel(job_id, scope=self._key)
+    async def stop_all(self):
+        return await self._registry.stop_all(scope=self._key)
+    async def shutdown(self):
+        return await self._registry.shutdown_scope(self._key)
+    def remove(self, job_id):
+        return self._registry.remove(job_id, scope=self._key)
+    def remove_all(self):
+        return self._registry.remove_all(scope=self._key)

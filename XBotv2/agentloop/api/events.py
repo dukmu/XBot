@@ -8,6 +8,9 @@ observer events with ``ctx.emit``.
 """
 
 from __future__ import annotations
+from pydantic import BaseModel
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.agentloop.api.state import ThreadExecution
 
 from dataclasses import dataclass
 from xcore.api.events import EventKey
@@ -293,3 +296,17 @@ SHORT_CIRCUIT_EVENTS = frozenset({
     Events.BEFORE_TOOL_CALL,
     Events.AFTER_TOOL_CALL,
 })
+
+THREAD_INITIALIZED = "session/init"
+RUNTIME_EVENT = "runtime/event"
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadInitialized:
+    session: ThreadExecution
+    metadata: ThreadMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEvent:
+    event: BaseModel

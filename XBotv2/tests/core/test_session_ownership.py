@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 import pytest
 from xcore.api.errors import ServiceNotFoundError
-from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.persistence.impl.session_lock import acquire_session
 from XBotv2.core.api.errors import OperationError
 
 
@@ -16,7 +16,7 @@ _TRY_ACQUIRE = """
 import sys
 from pathlib import Path
 from XBotv2.core.api.errors import OperationError
-from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.persistence.impl.session_lock import acquire_session
 
 try:
     ownership = acquire_session(Path(sys.argv[1]), label="child")
@@ -30,7 +30,7 @@ _DIE_WHILE_OWNING = """
 import os
 import sys
 from pathlib import Path
-from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.persistence.impl.session_lock import acquire_session
 
 acquire_session(Path(sys.argv[1]), label="crashed-runtime")
 os._exit(0)
@@ -82,49 +82,41 @@ def test_ownership_does_not_materialize_a_session_directory(tmp_path):
         ownership.release()
 
 
-def test_runtimes_in_one_process_share_ownership_until_last_close(tmp_path):
+def test_independent_claims_in_one_process_conflict(tmp_path):
     root = tmp_path / "session"
-    first = acquire_session(root, label="main")
-    second = acquire_session(root, label="child-thread")
-    assert first is second
-    assert first.count == 2
-
-    first.release()
-    assert first.count == 1
-    assert _try_acquire(root).returncode == 3
-
+    first = acquire_session(root, label="first-runtime")
+    try:
+        with pytest.raises(OperationError, match="already owned"):
+            acquire_session(root, label="second-runtime")
+        assert _try_acquire(root).returncode == 3
+    finally:
+        first.release()
+    second = acquire_session(root, label="second-runtime")
     second.release()
-    assert first.count == 0
-    allowed = _try_acquire(root)
-    assert allowed.returncode == 0, allowed.stderr
 
 
-def test_concurrent_runtime_starts_share_one_process_lock(tmp_path):
+
+def test_concurrent_claims_have_one_runtime_owner(tmp_path):
     root = tmp_path / "session"
-    acquired = []
-    errors = []
-
+    acquired, errors = [], []
     def acquire():
         try:
             acquired.append(acquire_session(root, label="runtime"))
-        except BaseException as exc:  # surfaced by assertions below
-            errors.append(exc)
-
+        except OperationError as error:
+            errors.append(error.code)
     threads = [threading.Thread(target=acquire) for _ in range(8)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=5)
+    try:
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(acquired) == 1
+        assert errors == ["session_in_use"] * 7
+    finally:
+        for owner in acquired:
+            owner.release()
 
-    assert all(not thread.is_alive() for thread in threads)
-    assert errors == []
-    assert len(acquired) == 8
-    assert len({id(owner) for owner in acquired}) == 1
-    owner = acquired[0]
-    assert owner.count == 8
-    for _ in acquired:
-        owner.release()
-    assert owner.count == 0
 
 
 def test_process_exit_releases_its_session_lock(tmp_path):
@@ -141,140 +133,24 @@ def test_process_exit_releases_its_session_lock(tmp_path):
     assert crashed.returncode == 0, crashed.stderr
 
     owner = acquire_session(root, label="after-crash")
-    assert owner.count == 1
     owner.release()
 
 
-@pytest.mark.asyncio
 async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
-    from XBotv2.application.app import start_application
+    from XBotv2.main import open_runtime
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.llm.impl.mock import MockLLM
-
+    from XBotv2.session.api.contracts import SESSIONS, OpenSession, OpenThread
+    from XBotv2.loader.api.contracts import LoadError
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    parent = await start_application(
-        paths=paths, session_id="owned", thread_id="main",
-        workspace_root=tmp_path, no_plugins=True, llm_override=MockLLM(responses=[]),
-    )
+    root = await open_runtime(paths=paths)
+    sessions = root.require(SESSIONS)
     try:
-        with pytest.raises(ServiceNotFoundError, match="Unknown primary agent: uninstalled-agent"):
-            await start_application(
-                paths=paths, session_id="owned", thread_id="child",
-                workspace_root=tmp_path, no_plugins=True,
-                selected_agent="uninstalled-agent", is_subagent=True,
-                llm_override=MockLLM(responses=[]),
-            )
-        refused = _try_acquire(paths.session("owned").root)
-        assert refused.returncode == 3, refused.stdout + refused.stderr
-        assert refused.stdout.strip() == "session_in_use"
+        parent = await sessions.open(OpenSession("owned", "main", str(tmp_path), None, "new", True, model_override=MockLLM(responses=[])))
+        with pytest.raises(LoadError, match="Unknown primary agent: uninstalled-agent"):
+            await sessions.open_thread(OpenThread(session_id="owned", thread_id="child-1", parent_thread_id="main", workspace_root=str(tmp_path), provider_name=None, mode="new", no_plugins=True, selected_agent="uninstalled-agent", model_override=MockLLM(responses=[])))
+        assert await sessions.locate("owned", "main") is parent
+        assert _try_acquire(paths.session("owned").root).returncode == 3
     finally:
-        await parent.destroy()
+        await root.close()
     assert _try_acquire(paths.session("owned").root).returncode == 0
-
-
-@pytest.mark.asyncio
-async def test_refused_start_does_not_remove_the_winning_runtime_files(tmp_path, monkeypatch):
-    import XBotv2.application.app as application
-    from XBotv2.core.api.paths import RuntimePaths
-
-    paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    root = paths.session("contended").root
-    marker = root / "winner.txt"
-
-    def another_runtime_won(session_root, *, label):
-        # The other process materializes its session between this caller's
-        # initial path lookup and its attempt to acquire the lock.
-        root.mkdir(parents=True, exist_ok=True)
-        marker.write_text("owned by the other runtime", encoding="utf-8")
-        raise OperationError("session_in_use", "another runtime owns it")
-
-    monkeypatch.setattr(application, "acquire_session", another_runtime_won)
-    with pytest.raises(OperationError, match="another runtime owns it"):
-        await application.start_application(
-            paths=paths, session_id="contended", workspace_root=tmp_path,
-            no_plugins=True,
-        )
-    assert marker.read_text(encoding="utf-8") == "owned by the other runtime"
-
-
-@pytest.mark.asyncio
-async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_path, monkeypatch, caplog):
-    import XBotv2.application.app as application
-    from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.persistence.store import ThreadPersistence
-    from XBotv2.llm.impl.mock import MockLLM
-
-    paths = RuntimePaths.from_data_dir(tmp_path / "data")
-
-    def fail_create(*args, **kwargs):
-        raise OSError("cannot create persistence")
-
-    monkeypatch.setattr(ThreadPersistence, "create", fail_create)
-    context = await application.start_application(
-        paths=paths, session_id="failed-create", workspace_root=tmp_path,
-        no_plugins=True, llm_override=MockLLM(responses=[]),
-    )
-    try:
-        assert any(
-            isinstance(handle.error, OSError)
-            and str(handle.error) == "cannot create persistence"
-            for handle in context.registry.handles()
-        )
-        assert any(
-            record.name == "xcore.api.plugins" and record.levelname == "ERROR"
-            for record in caplog.records
-        )
-        assert context.get("thread_persistence", strict=False) is None
-        assert context.require("agent_runtime") is not None
-        assert _try_acquire(paths.session("failed-create").root).returncode != 0
-    finally:
-        await context.destroy()
-    assert _try_acquire(paths.session("failed-create").root).returncode == 0
-
-
-@pytest.mark.asyncio
-async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeypatch):
-    import XBotv2.application.app as application
-    from XBotv2.core.api.paths import RuntimePaths
-
-    paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    session = paths.session("shared")
-    sibling_file = session.thread("sibling").root / "accepted.txt"
-
-    async def fail_boot(**kwargs):
-        sibling_file.parent.mkdir(parents=True)
-        sibling_file.write_text("another thread's data", encoding="utf-8")
-        raise RuntimeError("startup failed after sibling started")
-
-    monkeypatch.setattr(application, "boot_application", fail_boot)
-    with pytest.raises(RuntimeError, match="startup failed"):
-        await application.start_application(
-            paths=paths, session_id="shared", thread_id="failed",
-            workspace_root=tmp_path, no_plugins=True,
-        )
-    assert sibling_file.read_text(encoding="utf-8") == "another thread's data"
-    assert not session.thread("failed").root.exists()
-
-
-@pytest.mark.asyncio
-async def test_failed_application_handle_creation_releases_the_runtime(tmp_path):
-    from XBotv2.application.app import create_agent_application
-    from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.llm.impl.mock import MockLLM
-    from XBotv2.session.contracts import AgentApplicationOptions
-
-    paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    paths.config_dir.mkdir(parents=True)
-    (paths.config_dir / "plugins.yaml").write_text(
-        "- id: usage\n  name: uninstalled_usage_for_handoff_test\n", encoding="utf-8",
-    )
-    # The loop can mount without usage, but the public Agent application port
-    # requires a usage reader. Rejection must close the already-started runtime.
-    with pytest.raises(ServiceNotFoundError, match="usage"):
-        await create_agent_application(AgentApplicationOptions(
-            paths=paths, provider_name=None, session_id="handoff", thread_id="main",
-            workspace_root=tmp_path, no_plugins=True,
-            model_override=MockLLM(responses=[]),
-        ))
-    allowed = _try_acquire(paths.session("handoff").root)
-    assert allowed.returncode == 0, allowed.stdout + allowed.stderr

@@ -1,9 +1,4 @@
-"""Active Agent selection and loop composition service.
-
-Definitions live in the independent Agent catalog. This service consumes that
-catalog and a loop factory, then owns only active Agent/model selection and
-loop composition.
-"""
+"""Resolve current Agent definitions and bind thread-local model/tool choices."""
 
 from __future__ import annotations
 
@@ -18,13 +13,13 @@ from XBotv2.agents.api.contracts import (
     AgentCatalogPort,
 )
 from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized, SessionLaunch
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import ThreadInitialized
+from XBotv2.session.api.contracts import ThreadInfo
 from xcore.api.context import Context
 from XBotv2.agentloop.api.contracts import (
-    DEFAULT_MAX_ITERATIONS,
-    AgentLoopDriverPort,
-    AgentLoopFactoryPort,
-    LoopFactoryOptions,
+    AGENT_LOOP,
+    AgentLoopPort,
     ToolsPort,
     Inbox,
 )
@@ -32,7 +27,7 @@ from XBotv2.agentloop.api.state import LoopState
 from XBotv2.config.api.contracts import RuntimeConfig, SettingsPort
 from XBotv2.config.api.contracts import ConfigPluginConfig
 from XBotv2.coretools.api.models import CoreToolsConfig
-from XBotv2.loader.contracts import PluginTree
+from XBotv2.loader.api.contracts import PluginTree
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.metadata import MetadataReady, MetadataUninitialized, ThreadMetadata
@@ -46,7 +41,7 @@ from XBotv2.core.api.domain import (
     ResolvedRuntimeSelection,
 )
 from XBotv2.core.api.runtime_logging import RuntimeLog
-from XBotv2.session.contracts import SessionKey
+from XBotv2.session.api.contracts import SessionKey
 from XBotv2.llm.api.contracts import EffortSelection, LlmServicePort, ModelConfig, ModelPort, ProviderConfig, ProviderSelection
 
 
@@ -57,38 +52,32 @@ class AgentsService(AgentRuntimePort):
         self,
         *,
         catalog: AgentCatalogPort,
-        factory: AgentLoopFactoryPort,
         events: Context,
         state: LoopState,
         settings: SettingsPort,
         providers: LlmServicePort,
         model: ModelPort,
         tools: ToolsPort,
-        artifacts: ArtifactStorePort,
-        inbox: Inbox,
         runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog
-        self._factory = factory
         self._events = events
         self._state = state
         self._settings = settings
         self._providers = providers
         self._model = model
         self._tools = tools
-        self._artifacts = artifacts
-        self._inbox = inbox
         self._log = runtime_log.bind("agent")
-        self._engine: AgentLoopDriverPort | None = None
+        self._provider_name: str | None = None
         self._model_is_override = False
-        self._restored_runtime = False
 
-    async def create(
+    async def bind(
         self,
         options: AgentCreateOptions,
-        launch: SessionLaunch,
-    ) -> AgentLoopDriverPort:
-        """Resolve one Agent and publish the driver returned by its factory."""
+        launch: ThreadInfo,
+    ) -> None:
+        """Bind the definition and model selection for the current thread."""
+        self._provider_name = options.provider_name
         state = self._state
         config = self._runtime_config(
             self._settings.load_plugin_tree(
@@ -104,79 +93,47 @@ class AgentsService(AgentRuntimePort):
             else None
         )
         definition = self._resolve_definition(options, launch, stored_metadata)
-        self._restored_runtime = state.resumed
-        if self._restored_runtime:
-            if stored_metadata is None:
-                raise RuntimeError(
-                    "Cannot resume a persisted thread without thread metadata"
-                )
-            runtime_selection = stored_metadata.runtime_selection
-            provider_name = runtime_selection.model.route.provider
-        else:
-            provider_name = self._resolve_provider(
-                launch,
-                definition,
-                stored_metadata,
-            )
+        if state.resumed and stored_metadata is None:
+            raise RuntimeError("Cannot resume a persisted thread without thread metadata")
+        provider_override = stored_metadata.provider_override if stored_metadata is not None else None
+        model_override = stored_metadata.model_override if stored_metadata is not None else None
+        effort_override = stored_metadata.effort_override if stored_metadata is not None else None
+        if stored_metadata is None and options.provider_name is not None and not (definition is not None and isinstance(definition.model_policy.route, ModelRoute)):
+            provider_override = options.provider_name
+        provider_name = provider_override or self._resolve_provider(launch, definition, None)
         provider = self._providers.provider_config(provider_name)
-        model_config = (
-            provider.resolve(runtime_selection.model.route.model)
-            if self._restored_runtime
-            else self._resolve_model_config(provider, definition)
+        model_config = self._resolve_model_config(provider, definition, model=model_override)
+        if effort_override is not None:
+            if effort_override not in (model_config.effort or ()):
+                raise ValueError(f"Saved effort {effort_override!r} is unavailable for {provider_name}/{model_config.model}")
+            model_config = model_config.model_copy(update={"reasoning_effort": effort_override})
+        self._restrict_tools(self._tools, config, definition)
+        runtime_selection = self._resolved_runtime_selection(config=config, definition=definition, provider_name=provider_name, model_config=model_config)
+        if stored_metadata is not None:
+            # Registry contributions finish after bind. Keep only this startup
+            # projection stable until announce_initialized records the complete,
+            # currently restricted registry before the scope becomes available.
+            runtime_selection = runtime_selection.model_copy(update={"enabled_tools": stored_metadata.runtime_selection.enabled_tools})
+        if effort_override is not None:
+            runtime_selection = runtime_selection.model_copy(update={"model": runtime_selection.model.model_copy(update={"generation": runtime_selection.model.generation.model_copy(update={"mode": ReasoningGenerationMode(effort=effort_override)})})})
+        metadata = ThreadMetadata(
+            runtime_selection=runtime_selection, provider_override=provider_override,
+            model_override=model_override, effort_override=effort_override,
+            parent_thread_id=launch.parent_thread_id, workspace_root=str(launch.workspace_root),
+            title=stored_metadata.title if stored_metadata is not None else "",
         )
-
-        if self._restored_runtime:
-            self._tools.restrict(runtime_selection.enabled_tools)
+        if isinstance(metadata_lifecycle, MetadataUninitialized):
+            await state.metadata.initialize(metadata)
         else:
-            self._restrict_tools(self._tools, config, definition)
-        if not self._restored_runtime:
-            title = stored_metadata.title if stored_metadata is not None else ""
-            if (
-                launch.is_subagent
-                and definition is not None
-                and (not title or title == state.session.session_id)
-            ):
-                title = definition.name
-            runtime_selection = self._resolved_runtime_selection(
-                config=config,
-                definition=definition,
-                provider_name=provider_name,
-                model_config=model_config,
-            )
-            metadata = ThreadMetadata(
-                runtime_selection=runtime_selection,
-                parent_thread_id=launch.parent_thread_id,
-                workspace_root=str(launch.workspace_root),
-                title=title,
-            )
-            if isinstance(metadata_lifecycle, MetadataUninitialized):
-                await state.metadata.initialize(metadata)
-            else:
-                await state.metadata.replace(metadata)
+            await state.metadata.replace(metadata)
 
         model = (
             options.model_override
             if options.model_override is not None
             else self._providers.create(provider, model_config)
         )
-        user = self._settings.user_context()
         self._model_is_override = options.model_override is not None
         self._model.replace(model)
-        engine = self._factory.create(LoopFactoryOptions(
-            model_client=self._model,
-            tools=self._tools,
-            events=self._events,
-            state=state,
-            user_identity=user,
-            memory=config.memory,
-            max_iterations=(
-                runtime_selection.limits.max_turns
-                if runtime_selection.limits.max_turns is not None
-                else DEFAULT_MAX_ITERATIONS
-            ),
-            inbox=self._inbox,
-        ))
-        self._engine = engine
         self._log.info(
             "agent.created",
             session_id=launch.session_id,
@@ -188,48 +145,26 @@ class AgentsService(AgentRuntimePort):
             tools_enabled=len(self._tools.enabled()),
             resumed=state.resumed,
         )
-        return engine
 
     async def announce_initialized(self) -> None:
         """Notify fully mounted plugins after the dependency graph is running."""
         definition = self.active_definition()
         await self._events.emit(
-            APPLICATION_INITIALIZED,
-            ApplicationInitialized(
+            THREAD_INITIALIZED,
+            ThreadInitialized(
                 session=self._state.session,
                 metadata=self._state.metadata.value,
             ),
         )
-        if self._restored_runtime:
-            desired = self._state.metadata.value.runtime_selection.enabled_tools
-            self._tools.restrict(desired)
-            actual = tuple(tool.name for tool in self._tools.enabled())
-            if set(actual) != set(desired):
-                missing = sorted(set(desired) - set(actual))
-                raise RuntimeError(
-                    "Persisted runtime selection references unavailable tools: "
-                    + ", ".join(missing)
-                )
-        else:
-            self._restrict_tools(
-                self._tools,
-                self.runtime_config(definition),
-                definition,
-            )
-            current = self._state.metadata.value.runtime_selection
-            await self._state.metadata.replace_runtime_selection(
-                current.model_copy(update={
-                    "enabled_tools": tuple(tool.name for tool in self._tools.enabled()),
-                })
-            )
+        self._restrict_tools(self._tools, self.runtime_config(definition), definition)
+        current = self._state.metadata.value.runtime_selection
+        await self._state.metadata.replace_runtime_selection(current.model_copy(update={"enabled_tools": tuple(tool.name for tool in self._tools.enabled())}))
 
     def definition(self, name: str) -> AgentDefinition | None:
         return self.catalog.get(name)
 
-    def _require_engine(self) -> AgentLoopDriverPort:
-        if self._engine is None:
-            raise RuntimeError("Agent runtime has not been created")
-        return self._engine
+    def _require_engine(self) -> AgentLoopPort:
+        return self._events.require(AGENT_LOOP)
 
     def definitions(self) -> tuple[AgentDefinition, ...]:
         return self.catalog.definitions()
@@ -247,6 +182,7 @@ class AgentsService(AgentRuntimePort):
         context_window: int,
         max_output_tokens: int,
         agent_name: str | None = None,
+        overrides: dict[str, str | None] | None = None,
     ) -> None:
         current = self._state.metadata.value.runtime_selection
         selection = current.model_copy(update={
@@ -263,7 +199,7 @@ class AgentsService(AgentRuntimePort):
                 "context_window": max(1, context_window),
             }),
         })
-        await self._state.metadata.replace_runtime_selection(selection)
+        await self._state.metadata.replace(self._state.metadata.value.model_copy(update={"runtime_selection": selection, **(overrides or {})}))
 
     def current_selection(self) -> AgentSelection:
         runtime = self._state.metadata.value.runtime_selection
@@ -308,11 +244,8 @@ class AgentsService(AgentRuntimePort):
         config = self.runtime_config(definition)
         current = state.metadata.value.runtime_selection
         policy_route = definition.model_policy.route
-        provider_name = (
-            policy_route.provider
-            if isinstance(policy_route, ModelRoute)
-            else current.model.route.provider
-        )
+        saved = state.metadata.value
+        provider_name = policy_route.provider if isinstance(policy_route, ModelRoute) else (saved.provider_override or self._providers.default_name())
         provider = self._providers.provider_config(provider_name)
         model_config = self._resolve_model_config(provider, definition)
         if not self._model_is_override:
@@ -323,7 +256,7 @@ class AgentsService(AgentRuntimePort):
         self._restrict_tools(self._tools, config, definition)
         engine.configure(
             model_client=self._model,
-            max_iterations=definition.limits.max_turns or DEFAULT_MAX_ITERATIONS,
+            max_iterations=definition.limits.max_turns,
         )
         runtime = self._resolved_runtime_selection(
             config=config,
@@ -331,7 +264,11 @@ class AgentsService(AgentRuntimePort):
             provider_name=provider_name,
             model_config=model_config,
         )
-        await state.metadata.replace_runtime_selection(runtime)
+        await state.metadata.replace(state.metadata.value.model_copy(update={
+            "runtime_selection": runtime,
+            "provider_override": None if isinstance(policy_route, ModelRoute) else saved.provider_override,
+            "model_override": None, "effort_override": None,
+        }))
         await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             runtime_selection=runtime,
             session_key=SessionKey(
@@ -388,6 +325,7 @@ class AgentsService(AgentRuntimePort):
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens,
+            overrides={"provider_override": name, "model_override": model, "effort_override": None},
         )
         await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
             runtime_selection=state.metadata.value.runtime_selection,
@@ -452,6 +390,7 @@ class AgentsService(AgentRuntimePort):
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens,
+            overrides={"effort_override": value},
         )
         self._log.info(
             "model.effort.selected",
@@ -484,7 +423,7 @@ class AgentsService(AgentRuntimePort):
     def _resolve_definition(
         self,
         options: AgentCreateOptions,
-        launch: SessionLaunch,
+        launch: ThreadInfo,
         metadata: ThreadMetadata | None,
     ) -> AgentDefinition | None:
         definition = options.agent_definition
@@ -528,18 +467,16 @@ class AgentsService(AgentRuntimePort):
 
     def _resolve_provider(
         self,
-        launch: SessionLaunch,
+        launch: ThreadInfo,
         definition: AgentDefinition | None,
         metadata: ThreadMetadata | None,
     ) -> str:
-        provider_name = launch.provider_name
+        provider_name = self._provider_name
         if definition is not None and isinstance(
             definition.model_policy.route,
             ModelRoute,
         ):
             provider_name = definition.model_policy.route.provider
-        if metadata is not None:
-            return metadata.runtime_selection.model.route.provider
         return (
             provider_name
             if provider_name is not None
@@ -637,6 +574,7 @@ class AgentsService(AgentRuntimePort):
     def _resolve_model_config(
         provider: ProviderConfig,
         definition: AgentDefinition | None,
+        *, model: str | None = None,
     ) -> ModelConfig:
         """Resolve the catalog model for an Agent definition.
 
@@ -649,7 +587,7 @@ class AgentsService(AgentRuntimePort):
         """
         route = definition.model_policy.route if definition is not None else None
         model_config = provider.resolve(
-            route.model if isinstance(route, ModelRoute) else None
+            model if model is not None else route.model if isinstance(route, ModelRoute) else None
         )
         if definition is not None:
             updates: dict[str, JsonValue] = {}

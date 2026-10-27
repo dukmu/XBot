@@ -17,7 +17,7 @@ from XBotv2.core.api.history import HistoryCursorInvalid
 from XBotv2.core.api.messages import HumanInputMessage
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.persistence.store import ThreadPersistence
+from XBotv2.persistence.impl.store import ThreadPersistence
 
 RECORDS = 5_000
 PAGE = 200

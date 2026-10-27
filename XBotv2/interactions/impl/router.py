@@ -7,12 +7,15 @@ feature plugin that may need a client response.
 """
 
 from __future__ import annotations
+import asyncio
 
 from collections.abc import Callable
 from functools import partial
+from xcore.api.context import Context
 
-from XBotv2.application.contracts import ClientEventSink, InteractionWaiterPort
-from XBotv2.application.contracts import ClientEventsPort
+from XBotv2.interactions.api.contracts import ClientEventSink
+from XBotv2.interactions.api.contracts import InteractionWaiterPort
+from XBotv2.interactions.api.contracts import ClientEventsPort
 from XBotv2.interactions.api.contracts import (
     InteractionNotPending,
     InteractionReceipt,
@@ -25,8 +28,11 @@ from XBotv2.interactions.api.contracts import (
 class ClientEventRouter(ClientEventsPort):
     """Route client events without coupling transports to feature services."""
 
-    def __init__(self, parent: ClientEventsPort | None = None) -> None:
+    def __init__(self, parent: ClientEventsPort | None = None, *, owner: Context | None = None) -> None:
         self._parent = parent
+        self._owner = owner
+        self._closing = False
+        self._requests = set()
         self._sink: ClientEventSink | None = None
         self._interactions: dict[str, InteractionRegistration] = {}
         self._pending: dict[str, InteractionRequest] = {}
@@ -38,6 +44,8 @@ class ClientEventRouter(ClientEventsPort):
         single idempotent call instead of a manual save/restore dance on a
         shared field.
         """
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise InteractionNotPending("Interaction router is closing")
         previous = self._sink
         self._sink = sink
 
@@ -51,26 +59,41 @@ class ClientEventRouter(ClientEventsPort):
         self,
         event: InteractionRequest,
     ) -> InteractionResolution | None:
-        if self._sink is None:
-            if self._parent is not None:
-                return await self._parent.request(event)
-            return None
-        self._registration_for(event)
-        request_id = event.interaction_id
-        if request_id in self._pending:
-            raise InteractionNotPending(
-                f"Duplicate pending interaction request: {request_id}"
-            )
-        self._pending[request_id] = event
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise InteractionNotPending("Interaction router is closing")
+        task = asyncio.current_task()
+        self._requests.add(task)
         try:
-            return await self._sink(event)
+            if self._sink is None:
+                if self._parent is not None:
+                    return await self._parent.request(event)
+                return None
+            self._registration_for(event)
+            request_id = event.interaction_id
+            if request_id in self._pending:
+                raise InteractionNotPending(f"Duplicate pending interaction request: {request_id}")
+            self._pending[request_id] = event
+            try:
+                return await self._sink(event)
+            finally:
+                self._pending.pop(request_id, None)
         finally:
-            self._pending.pop(request_id, None)
+            self._requests.discard(task)
+
+    async def close(self):
+        self._closing = True
+        tasks = [task for task in self._requests if task is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def register_interaction(
         self,
         registration: InteractionRegistration,
     ) -> Callable[[], bool]:
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise InteractionNotPending("Interaction router is closing")
         if registration.kind in self._interactions:
             raise ValueError(
                 f"interaction already registered: {registration.kind}"

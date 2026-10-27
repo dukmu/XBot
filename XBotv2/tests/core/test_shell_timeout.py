@@ -32,7 +32,7 @@ async def test_shell_deadline_cancels_sandbox_process_group(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("tool_timeouts,expected", [({}, 0.1), ({"read": 0.05}, 0.05)])
 async def test_plugin_configuration_controls_dispatch_deadline(tmp_path, monkeypatch, tool_timeouts, expected):
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.coretools.impl import filesystem
     from XBotv2.llm.impl.mock import MockLLM
 
@@ -47,7 +47,7 @@ async def test_plugin_configuration_controls_dispatch_deadline(tmp_path, monkeyp
     monkeypatch.setattr(filesystem, "read", slow_read)
     # Preserve the exported tool identity while substituting slow I/O.
     slow_read.__name__ = "read"
-    context = await start_application(
+    context = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         workspace_root=tmp_path,
         llm_override=MockLLM(responses=[]),
@@ -73,4 +73,4 @@ async def test_plugin_configuration_controls_dispatch_deadline(tmp_path, monkeyp
         assert "0.15s" in results[1].message.outcome.error.message
         assert cancelled.is_set()
     finally:
-        await context.destroy()
+        await context.root.close()

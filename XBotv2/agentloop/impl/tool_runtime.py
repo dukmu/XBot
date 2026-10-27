@@ -205,7 +205,22 @@ async def invoke_tool_function(
         kwargs[tool.tool_call_parameter] = tool_call
     if inspect.iscoroutinefunction(tool.function):
         return await tool.function(**kwargs)
-    result = await asyncio.to_thread(tool.function, **kwargs)
+    worker = asyncio.create_task(asyncio.to_thread(tool.function, **kwargs))
+    try:
+        result = await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        # Cancelling a Future cannot stop an already running worker. Keep the
+        # invocation owned until its real I/O has finished before unwinding.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled() and worker.exception() is not None:
+            cancelled.add_note(f"Tool worker failed during cancellation: {worker.exception()!r}")
+        raise
     return await result if inspect.isawaitable(result) else result
 
 

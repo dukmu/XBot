@@ -118,6 +118,13 @@ async def test_cancel_before_runner_is_scheduled_completes_each_job_once():
 @pytest.mark.asyncio
 async def test_cancel_does_not_overwrite_result_that_finishes_during_cancel():
     class _FinishesOnCancel(_Runner):
+        async def run(self, job):
+            try:
+                return await super().run(job)
+            except asyncio.CancelledError:
+                await self.release.wait()
+                return self.result
+
         async def cancel(self, _job):
             self.release.set()
             await asyncio.sleep(0)

@@ -4,7 +4,7 @@ from __future__ import annotations
 from XBotv2.commands.api.contracts import COMMANDS
 from XBotv2.permissions.api.models import PERMISSIONS
 
-from XBotv2.agentloop.api.contracts import AGENT_LOOP_FACTORY, INBOX, TOOLS
+from XBotv2.agentloop.api.contracts import INBOX, TOOLS
 from XBotv2.agentloop.api.state import LOOP_STATE
 from pathlib import Path
 from pydantic import JsonValue
@@ -38,7 +38,6 @@ _CATALOG_DEPENDENCIES = [
 ]
 _RUNTIME_DEPENDENCIES = [
     AGENT_CATALOG,
-    AGENT_LOOP_FACTORY,
     SETTINGS,
     # A conversational runtime must not become usable before its tool policy
     # guard is installed; a failed policy plugin is not an allow-all mode.
@@ -54,7 +53,7 @@ _RUNTIME_DEPENDENCIES = [
     INBOX,
     COMMANDS,
     "agent_options",
-    "session_launch",
+    "thread_info",
     "runtime_log",
 ]
 
@@ -84,20 +83,18 @@ def mount_catalog(ctx: Context) -> None:
 async def mount_runtime(ctx: Context) -> None:
     service = AgentsService(
         catalog=ctx.require(AGENT_CATALOG),
-        factory=ctx.require(AGENT_LOOP_FACTORY),
         events=ctx,
         state=ctx.require(LOOP_STATE),
         settings=ctx.require(SETTINGS),
         providers=ctx.require(LLM),
         model=ctx.require(MODEL),
         tools=ctx.require(TOOLS),
-        artifacts=ctx.artifacts,
-        inbox=ctx.require(INBOX),
         runtime_log=ctx.runtime_log,
     )
     ctx.set(AGENT_RUNTIME, service)
-    ctx.set("engine", await service.create(ctx.agent_options, ctx.session_launch))
+    await service.bind(ctx.agent_options, ctx.thread_info)
     AgentRuntimeOperations(service, ctx.require(AGENT_CATALOG)).register(ctx)
+    ctx.on("ready", service.announce_initialized)
 
 
 async def mount_http(ctx: Context) -> None:
@@ -143,19 +140,16 @@ class AgentRuntimeOperations:
         ctx.on(SELECT_EFFORT.name, self.select_effort)
 
 
-class AgentsPlugin:
-    """Activate each Agent integration when its services are available."""
+def mount_thread(ctx, config):
+    mount_catalog(ctx)
+    ctx.inject(_RUNTIME_DEPENDENCIES, mount_runtime)
 
-    name = "xbot.agents"
-
-    async def apply(
-        self, ctx: Context, config: dict[str, JsonValue] | None = None
-    ) -> None:
-        await ctx.inject(_CATALOG_DEPENDENCIES, mount_catalog)
-        await ctx.inject(_RUNTIME_DEPENDENCIES, mount_runtime)
-        await ctx.inject(["server", "sessions"], mount_http)
+mount_thread.inject = tuple(_CATALOG_DEPENDENCIES)
+mount_thread.provide = (AGENT_CATALOG, AGENT_RUNTIME)
 
 
-plugin = AgentsPlugin()
+def mount_process(ctx, config):
+    ctx.inject(["server", "sessions"], mount_http)
 
-__all__ = ["AgentsPlugin"]
+mount_process.inject = ()
+mount_process.provide = ()

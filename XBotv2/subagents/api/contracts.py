@@ -32,3 +32,14 @@ __all__ = [
     "SubagentResult",
     "SubagentsConfig",
 ]
+
+
+from typing import Protocol
+from xcore.api.services import ServiceKey
+
+class SubagentCoordination(Protocol):
+    def allocate(self, agent: str) -> str: ...
+    def lock(self, thread_id: str): ...
+    def owned(self, parent_thread: str) -> set[str]: ...
+
+SUBAGENTS: ServiceKey[SubagentCoordination] = ServiceKey("subagents")

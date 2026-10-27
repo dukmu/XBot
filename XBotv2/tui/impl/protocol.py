@@ -45,13 +45,13 @@ from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.protocol.api.models import ServerEvent
 from XBotv2.interactions.api.contracts import InteractionRequest
-from XBotv2.session.events import (
+from XBotv2.session.api.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,
     InputConsumedEvent,
     QueueReplacedEvent,
 )
-from XBotv2.session.records import (
+from XBotv2.session.api.records import (
     AssistantRecord,
     HumanInputRecord,
     InputRecordPayload,

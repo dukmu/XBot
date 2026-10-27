@@ -7,7 +7,7 @@ from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.messages import ConversationMessage
 from XBotv2.agentloop.impl.history import ConversationHistory
 from XBotv2.agentloop.impl.metadata import ThreadMetadataState
-from XBotv2.session.contracts import SessionKey
+from XBotv2.session.api.contracts import SessionKey
 
 class LoopRuntimeState:
     """Mutable conversation state owned by the Agent loop.

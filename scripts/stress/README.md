@@ -79,14 +79,12 @@ requests entering one process share one turn driver and use the declared
 steer/queue policy. It verifies that each POST message submission returns 202
 and that the sole GET `/events` stream retains the complete lifecycle, cursor
 order, and terminal event.
-`--servers 2` starts independent application instances
-against one data root and enables `multi_server`, which detects split-brain
-ownership when the same session is routed to different workers. It is a probe,
-not a distributed lock implementation: a failing invariant is evidence that
-the deployment needs a cross-worker ownership mechanism. With the current
-implementation this is expected to expose the missing mechanism: duplicate
-turn ownership can corrupt trajectory positions, which is a product defect,
-not a reason to mark the probe successful.
+`--servers 2` starts independent process roots against one data directory.
+`multi_server` verifies that a second writer receives the explicit
+`409 session_in_use` conflict while the first owner keeps its conversation,
+and that the second server can complete work in a different session. A refused
+second writer is the expected successful invariant. Threads in one session
+share their owner's lock; the lock is released after all owned work drains.
 `--mock-tools` makes the isolated provider produce a deterministic shell tool
 call; without it, the tool scenario is reported as skipped rather than
 pretending that a tool was exercised. The

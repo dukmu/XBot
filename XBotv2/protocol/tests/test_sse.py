@@ -19,7 +19,7 @@ def _event():
         payload={"operation": "undo", "label": "中文"},
         sequence=7,
         session_id="s1",
-        thread_id="agent",
+        thread_id="main",
         scope=SessionScope(),
     )
 

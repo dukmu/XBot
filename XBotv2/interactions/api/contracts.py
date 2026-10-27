@@ -1,6 +1,8 @@
+from __future__ import annotations
+from collections.abc import Callable
+from pydantic import BaseModel
 """Public service contract for live client interactions."""
 
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
@@ -116,3 +118,56 @@ __all__ = [
     "InteractionsPort",
     "ResolutionFactory",
 ]
+
+
+class ClientEventSink(Protocol):
+    async def __call__(
+        self,
+        event: InteractionRequest,
+    ) -> InteractionResolution: ...
+
+
+class ClientEventsPort(Protocol):
+    def install(self, sink: ClientEventSink | None) -> Callable[[], None]: ...
+
+    async def request(
+        self,
+        event: InteractionRequest,
+    ) -> InteractionResolution | None: ...
+
+    def register_interaction(
+        self,
+        registration: InteractionRegistration,
+    ) -> Callable[[], bool]: ...
+
+    def waiter_for(self, request: InteractionRequest) -> InteractionWaiterPort: ...
+
+    def timeout_for(self, request: InteractionRequest) -> float | None: ...
+
+    def resolve(
+        self,
+        interaction_id: str,
+        resolution: InteractionResolution,
+    ) -> InteractionReceipt: ...
+
+    def cancel(
+        self,
+        interaction_id: str,
+        reason: str,
+        *,
+        expected_kind: str | None = None,
+    ) -> InteractionReceipt: ...
+
+    def recorded_event(
+        self,
+        request: InteractionRequest,
+        resolution: InteractionResolution,
+    ) -> BaseModel: ...
+
+    def pending_request_ids(self) -> list[str]: ...
+
+    def pending_interactions(self) -> list[InteractionRequest]: ...
+
+
+
+CLIENT_EVENTS: ServiceKey[ClientEventsPort] = ServiceKey("client_events")

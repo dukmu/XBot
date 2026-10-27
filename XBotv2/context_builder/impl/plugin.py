@@ -111,4 +111,10 @@ class ContextBuildHandler:
         return tuple(messages)
 
 
-plugin = ContextBuilderComponent()
+def mount_thread(ctx, config):
+    ContextBuilderComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(ContextBuilderComponent, "inject", ())
+mount_thread.provide = ('context_builder',)
+mount_thread.Config = getattr(ContextBuilderComponent, "Config", None)

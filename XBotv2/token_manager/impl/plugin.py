@@ -37,7 +37,7 @@ _LatestRequest = _RequestReady | _ResponseObserved
 
 
 class TokenManagerPlugin:
-    inject = ["session"]
+    inject = ["thread_info"]
     name = "token_manager"
 
     def __init__(self) -> None:
@@ -145,4 +145,10 @@ def _budget_diagnostics(budget: TokenBudget) -> dict[str, JsonValue]:
     }
 
 
-plugin = TokenManagerPlugin()
+def mount_thread(ctx, config):
+    TokenManagerPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(TokenManagerPlugin, "inject", ())
+mount_thread.provide = ('token_manager',)
+mount_thread.Config = getattr(TokenManagerPlugin, "Config", None)

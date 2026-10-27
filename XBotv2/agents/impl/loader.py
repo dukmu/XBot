@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from functools import lru_cache
 import yaml
 from pydantic import JsonValue, TypeAdapter
 from XBotv2.agents.api.contracts import AgentDefinition, AgentModelPolicy, AgentToolPolicy
@@ -39,15 +40,8 @@ def load_definition(
     variables: RuntimeVariables | None = None,
 ) -> AgentDefinition:
     variables = variables or RuntimeVariables()
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith(f"{_FRONTMATTER}\n"):
-        raise ValueError(f"Agent definition requires YAML frontmatter: {path}")
-    marker = text.find(f"\n{_FRONTMATTER}\n", len(_FRONTMATTER) + 1)
-    if marker < 0:
-        raise ValueError(f"Agent definition has unclosed frontmatter: {path}")
-    raw_metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
-    if not isinstance(raw_metadata, dict):
-        raise ValueError(f"Agent frontmatter must be a mapping: {path}")
+    stat = path.stat()
+    raw_metadata, prompt_text = _parse_source(path, stat.st_mtime_ns, stat.st_size)
     expanded_metadata = variables.expand_config(
         raw_metadata,
         source=f"Agent frontmatter in {path}",
@@ -64,7 +58,7 @@ def load_definition(
             f"Unknown Agent fields in {path}: {', '.join(sorted(unknown))}"
         )
     prompt = variables.expand_markdown(
-        text[marker + len(_FRONTMATTER) + 2:].strip(),
+        prompt_text,
         source=str(path),
     )
     return AgentDefinition(
@@ -87,3 +81,17 @@ def load_definition(
 
 
 __all__ = ["load_definition", "load_definitions"]
+
+
+@lru_cache(maxsize=128)
+def _parse_source(path: Path, modified_ns: int, size: int):
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith(f"{_FRONTMATTER}\n"):
+        raise ValueError(f"Agent definition requires YAML frontmatter: {path}")
+    marker = text.find(f"\n{_FRONTMATTER}\n", len(_FRONTMATTER) + 1)
+    if marker < 0:
+        raise ValueError(f"Agent definition has unclosed frontmatter: {path}")
+    raw_metadata = yaml.safe_load(text[len(_FRONTMATTER) + 1:marker]) or {}
+    if not isinstance(raw_metadata, dict):
+        raise ValueError(f"Agent frontmatter must be a mapping: {path}")
+    return raw_metadata, text[marker + len(_FRONTMATTER) + 2:].strip()

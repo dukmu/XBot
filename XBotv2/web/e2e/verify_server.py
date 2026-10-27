@@ -8,13 +8,12 @@ transcript/compaction path is exercised over the real HTTP transport.
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 from pathlib import Path
 import uvicorn
 import yaml
-from XBotv2.application.server import start_server_application
-from XBotv2.loader import PluginOverlay
-from XBotv2.application.app import create_agent_application
+from XBotv2.main import open_runtime
+from XBotv2.loader.api.contracts import PluginOverlay
+from XBotv2.llm.api.contracts import LLM
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
 
@@ -79,22 +78,14 @@ class RealMainScriptedAux:
 
 
 async def main() -> None:
-    application = await start_server_application(
+    application = await open_runtime(
         paths=RuntimePaths.from_data_dir(DATA),
         overrides=PluginOverlay.parse([{"id": "session", "config": {
             "provider_name": "default", "workspace_root": str(WORKSPACE), "no_plugins": False,
         }}]),
     )
-    application.sessions.application_factory = partial(
-        create_agent_application,
-        model_override=RealMainScriptedAux(MockLLM(
-            responses=[
-                {"content": f"Real reply {index}.", "chunk_delay_ms": 2}
-                for index in range(1, 500)
-            ],
-            input_modalities=["text", "image"],
-        )),
-    )
+    application.require(LLM).unregister("openai")
+    application.require(LLM).register("openai", lambda *_: RealMainScriptedAux(MockLLM(responses=[{'content': f'Real reply {index}.', 'chunk_delay_ms': 2} for index in range(1, 500)], input_modalities=['text', 'image'])))
     server = uvicorn.Server(
         uvicorn.Config(
             application.server,
@@ -106,7 +97,7 @@ async def main() -> None:
     try:
         await server.serve()
     finally:
-        await application.stop()
+        await application.close()
 
 
 if __name__ == "__main__":

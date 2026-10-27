@@ -1,6 +1,7 @@
 """LLM C/S wire models and route contribution."""
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 
 from fastapi import APIRouter
 from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
@@ -14,7 +15,7 @@ from XBotv2.llm.api.contracts import (
     SelectProvider,
 )
 from XBotv2.protocol.api.http_util import HttpServerError
-from XBotv2.session.contracts import SessionsPort
+from XBotv2.session.api.contracts import SessionsPort
 from xcore.api.events import EventDispatch
 from XBotv2.llm.api.protocol import (
     EffortSelectionRequest, EffortSelectionResponse,
@@ -38,12 +39,7 @@ def build_router(*, events: EventDispatch, sessions: SessionsPort) -> APIRouter:
         payload: ProviderSelectionRequest,
     ) -> ProviderSelectionResponse:
         try:
-            selected = await sessions.dispatch(
-                session_id,
-                thread_id,
-                SELECT_PROVIDER,
-                SelectProvider(payload.name, payload.model),
-            )
+            selected = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(SELECT_PROVIDER, SelectProvider(payload.name, payload.model))
         except LlmSelectionError as exc:
             # The selection error carries the wire code; no message matching.
             raise HttpServerError(exc.code, str(exc), status=404) from exc
@@ -65,12 +61,7 @@ def build_router(*, events: EventDispatch, sessions: SessionsPort) -> APIRouter:
         payload: EffortSelectionRequest,
     ) -> EffortSelectionResponse:
         try:
-            selected = await sessions.dispatch(
-                session_id,
-                thread_id,
-                SELECT_EFFORT,
-                SelectEffort(payload.effort),
-            )
+            selected = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(SELECT_EFFORT, SelectEffort(payload.effort))
         except ValueError as exc:
             raise HttpServerError("unsupported_effort", str(exc), status=400) from exc
         return EffortSelectionResponse(

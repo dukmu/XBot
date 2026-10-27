@@ -48,7 +48,10 @@ class CompactPlugin:
         ctx.set("compact", service)
 
 
-plugin = CompactPlugin()
+def mount_thread(ctx, config):
+    CompactPlugin().apply(ctx, config)
 
 
-__all__ = ["CompactPlugin", "plugin"]
+mount_thread.inject = getattr(CompactPlugin, "inject", ())
+mount_thread.provide = ('compact',)
+mount_thread.Config = getattr(CompactPlugin, "Config", None)

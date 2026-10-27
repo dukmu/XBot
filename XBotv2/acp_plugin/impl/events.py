@@ -33,14 +33,7 @@ from XBotv2.core.api.domain import TokenCounters
 from XBotv2.core.api.parts import ReasoningPart, TextPart
 from XBotv2.interactions.api.models import ClientNotice
 from XBotv2.jobs.api.protocol import JobCompletedEvent, JobUpdatedEvent
-from XBotv2.session import (
-    AssistantRecord,
-    CompactionSummaryRecord,
-    ConversationRecord,
-    HumanInputRecord,
-    RuntimeNoticeRecord,
-    ToolRecord,
-)
+from XBotv2.session.api.records import AssistantRecord, CompactionSummaryRecord, ConversationRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolOutcome, ToolSucceeded
 
 # The engine reports turn outcomes in its own vocabulary; ACP accepts a fixed

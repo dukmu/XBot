@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 from XBotv2.context_builder.impl.builder import ContextBuilder
 """Compaction preserves typed history boundaries and bounded summaries."""
 
@@ -7,8 +8,8 @@ import pytest
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.agentloop.api.outputs import LoopError, ToolCompleted
 from XBotv2.agentloop.api.events import Events, ModelRequestReady
-from XBotv2.application.app import start_application
-from XBotv2.application import RUNTIME_EVENT
+from XBotv2.tests.runtime import thread_scope
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
 from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand
 from XBotv2.compact.impl.history import compact_prefix_end, history_chars
 from XBotv2.compact.api.events import PRE_COMPACT
@@ -177,7 +178,7 @@ async def test_compact_command_runs_through_application_and_persists_summary(
     options = dict(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -186,10 +187,10 @@ async def test_compact_command_runs_through_application_and_persists_summary(
             "config": {"automatic": False, "keep_recent_turns": 1},
         }],
     )
-    application = await start_application(**options)
+    application = await thread_scope(**options)
     compact_service = application.compact
     commands = application.commands
-    tools = application.engine.tools
+    tools = engine_of(application).tools
     runtime_events = []
     try:
         application.on(
@@ -197,8 +198,8 @@ async def test_compact_command_runs_through_application_and_persists_summary(
             lambda event: runtime_events.append(event.event),
         )
         assert application.commands.get("compact") is not None
-        await _run_turn(application.engine, "Research X")
-        await _run_turn(application.engine, "Remember decision Y")
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
         application.thread_persistence.history.record(
             TransactionStarted(transaction=TransactionRef(
                 kind="compaction", id="orphaned-compaction"
@@ -212,7 +213,7 @@ async def test_compact_command_runs_through_application_and_persists_summary(
         )
 
         assert result.status == "ok"
-        history = application.engine.messages
+        history = engine_of(application).messages
         summaries = [item for item in history if isinstance(item, CompactionSummaryMessage)]
         assert len(summaries) == 1
         assert "decision Y" in summaries[0].summary
@@ -223,7 +224,7 @@ async def test_compact_command_runs_through_application_and_persists_summary(
         assert application.thread_persistence.history.load_surface() == tuple(history)
         assert application.thread_persistence.history.open_transactions("compaction") == frozenset()
     finally:
-        await application.destroy()
+        await application.root.close()
     assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
     assert compact_service.diagnostics()["compactions"] == 0
     assert commands.get("compact") is None
@@ -239,10 +240,10 @@ async def test_compact_command_failure_preserves_live_and_persisted_history(
         {"content": "First answer"},
         {"content": "Second answer"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-failure-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -252,9 +253,9 @@ async def test_compact_command_failure_preserves_live_and_persisted_history(
         }],
     )
     try:
-        await _run_turn(application.engine, "Research X")
-        await _run_turn(application.engine, "Remember decision Y")
-        before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
 
         result = await application.serial(
@@ -263,14 +264,14 @@ async def test_compact_command_failure_preserves_live_and_persisted_history(
         )
 
         assert result.status == "error"
-        assert tuple(application.engine.messages) == before
+        assert tuple(engine_of(application).messages) == before
         assert application.thread_persistence.history.load_surface() == durable_before
         assert not any(
             isinstance(item, CompactionSummaryMessage)
-            for item in application.engine.messages
+            for item in engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -282,10 +283,10 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
         {"content": "First answer"},
         {"content": "Second answer"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-cancelled-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -307,9 +308,9 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Research X")
-        await _run_turn(application.engine, "Remember decision Y")
-        history_before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        history_before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
         application.compact.model.provider.astream = blocked_summary
 
@@ -322,7 +323,7 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
         with pytest.raises(asyncio.CancelledError):
             await command
 
-        assert tuple(application.engine.messages) == history_before
+        assert tuple(engine_of(application).messages) == history_before
         assert application.thread_persistence.history.load_surface() == durable_before
         assert application.thread_persistence.history.open_transactions(
             "compaction"
@@ -347,7 +348,7 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
         )
         assert failure.message == "Compaction cancelled."
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -360,10 +361,10 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
         {"content": "Second answer"},
         {"content": "Summary ready for listener"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-precommit-cancelled-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -385,9 +386,9 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
             lambda event: runtime_events.append(event.event),
         )
         application.on(PRE_COMPACT, wait_before_commit)
-        await _run_turn(application.engine, "Research X")
-        await _run_turn(application.engine, "Remember decision Y")
-        live_before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        live_before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
 
         command = asyncio.create_task(application.serial(
@@ -405,7 +406,7 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
         ]
         assert len(failures) == 1
         assert failures[0].message == "Compaction cancelled."
-        assert tuple(application.engine.messages) == live_before
+        assert tuple(engine_of(application).messages) == live_before
         assert application.thread_persistence.history.load_surface() == durable_before
         assert application.thread_persistence.history.open_transactions(
             "compaction"
@@ -424,7 +425,7 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
         assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
         assert transaction_ends[-1].outcome.reason == "cancelled"
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -442,10 +443,10 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
             }],
         },
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-tool-cancelled-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -469,7 +470,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Earlier work " + "x" * 100)
+        await _run_turn(engine_of(application), "Earlier work " + "x" * 100)
         bound_provider = application.compact.model.provider
         original_astream = bound_provider.astream
         bound_provider.astream = wait_on_summary
@@ -477,7 +478,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
         observed_events = []
 
         async def run_tool_turn():
-            async for event in application.engine.run_turn(InboxItem(
+            async for event in engine_of(application).run_turn(InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Compact this conversation"),
             )):
@@ -492,7 +493,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
             and event.execution.message.call.name == "compact"
         )
         assert isinstance(compact_result.execution.message.outcome, ToolSucceeded)
-        live_before_cancel = tuple(application.engine.messages)
+        live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
             application.thread_persistence.history.load_surface()
         )
@@ -505,7 +506,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
         with pytest.raises(asyncio.CancelledError):
             await turn
 
-        assert tuple(application.engine.messages) == live_before_cancel
+        assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
             application.thread_persistence.history.load_surface()
             == durable_before_cancel
@@ -533,7 +534,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
         assert len(failures) == 1
         assert failures[0].message == "Compaction cancelled."
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -574,10 +575,10 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
             },
         },
     ]
-    application = await start_application(
+    application = await thread_scope(
         paths=paths,
         session_id="compact-automatic-cancelled-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -591,8 +592,8 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        await _run_turn(application.engine, "New context " + "y" * 150)
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
 
         bound_provider = application.compact.model.provider
         original_astream = bound_provider.astream
@@ -606,10 +607,10 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
 
         bound_provider.astream = wait_on_automatic_summary
         turn = asyncio.create_task(_run_turn(
-            application.engine, "Cancel during automatic compaction"
+            engine_of(application), "Cancel during automatic compaction"
         ))
         await asyncio.wait_for(summary_started.wait(), timeout=2)
-        live_before_cancel = tuple(application.engine.messages)
+        live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
             application.thread_persistence.history.load_surface()
         )
@@ -618,7 +619,7 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
         with pytest.raises(asyncio.CancelledError):
             await turn
 
-        assert tuple(application.engine.messages) == live_before_cancel
+        assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
             application.thread_persistence.history.load_surface()
             == durable_before_cancel
@@ -648,7 +649,7 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
         assert failures[0].automatic is True
         assert failures[0].message == "Compaction cancelled."
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -715,10 +716,10 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
             },
         },
     ]
-    application = await start_application(
+    application = await thread_scope(
         paths=paths,
         session_id="compact-overflow-cancelled-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -731,17 +732,17 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        await _run_turn(application.engine, "New context " + "y" * 150)
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
         provider.probe["block_summary"] = True
 
         turn = asyncio.create_task(_run_turn(
-            application.engine, "Cancel context-overflow recovery"
+            engine_of(application), "Cancel context-overflow recovery"
         ))
         await asyncio.wait_for(
             provider.probe["summary_started"].wait(), timeout=2
         )
-        live_before_cancel = tuple(application.engine.messages)
+        live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
             application.thread_persistence.history.load_surface()
         )
@@ -750,7 +751,7 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
         with pytest.raises(asyncio.CancelledError):
             await turn
 
-        assert tuple(application.engine.messages) == live_before_cancel
+        assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
             application.thread_persistence.history.load_surface()
             == durable_before_cancel
@@ -780,7 +781,7 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
         assert failures[0].automatic is True
         assert failures[0].message == "Compaction cancelled."
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -796,37 +797,37 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
     gate = tmp_path / "compact_gate"
     gate.mkdir()
     listener_marker = tmp_path / "compact-listener-called"
-    (gate / "__init__.py").write_text(
+    (gate / "impl").mkdir()
+    (gate / "impl" / "plugin.py").write_text(
         "from XBotv2.compact.api.events import PRE_COMPACT\n"
         "from pathlib import Path\n"
         "\n"
-        "class CompactGate:\n"
-        "    name = 'compact-gate'\n"
-        "    def apply(self, ctx, _config):\n"
-        "        async def reject(_event):\n"
-        f"            Path({str(listener_marker)!r}).write_text('called')\n"
-        "            return 'policy denied compaction'\n"
-        "        ctx.on(PRE_COMPACT, reject, global_=True)\n"
-        "\n"
-        "plugin = CompactGate()\n",
+        "def mount_thread(ctx, config):\n"
+        "    async def reject(_event):\n"
+        f"        Path({str(listener_marker)!r}).write_text('called')\n"
+        "        return 'policy denied compaction'\n"
+        "    ctx.on(PRE_COMPACT, reject)\n"
+        "mount_thread.inject = ()\n"
+        "mount_thread.provide = ()\n"
+        "mount_thread.Config = None\n",
         encoding="utf-8",
     )
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-rejected-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[tmp_path],
         llm_override=provider,
         extra_plugins=[{
             "id": "compact",
             "config": {"automatic": False, "keep_recent_turns": 1},
-        }],
+        }, {"id": "compact_gate", "name": "compact_gate.impl.plugin"}],
     )
     try:
-        await _run_turn(application.engine, "Research X")
-        await _run_turn(application.engine, "Remember decision Y")
-        before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
 
         result = await application.serial(
@@ -837,13 +838,13 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
         assert result.status == "error"
         assert listener_marker.read_text(encoding="utf-8") == "called"
         assert "rejected before commit" in result.message
-        assert tuple(application.engine.messages) == before
+        assert tuple(engine_of(application).messages) == before
         assert application.thread_persistence.history.load_surface() == durable_before
         assert application.thread_persistence.history.open_transactions(
             "compaction"
         ) == frozenset()
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -854,10 +855,10 @@ async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
         {"content": "A title"},
         {"content": "First answer"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-below-threshold-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -877,22 +878,22 @@ async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "A short request")
+        await _run_turn(engine_of(application), "A short request")
 
         assert not any(
             isinstance(item, CompactionSummaryMessage)
-            for item in application.engine.messages
+            for item in engine_of(application).messages
         )
         assert not any(
             isinstance(event, (CompactionCompleted, CompactionFailed))
             for event in runtime_events
         )
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
         assert provider.call_count == 2
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -909,10 +910,10 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
         {"content": "summary of the first turn"},
         {"content": "second answer"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-built-request-budget",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -960,7 +961,7 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "old turn " * 100)
+        await _run_turn(engine_of(application), "old turn " * 100)
         model = application.loop_state.metadata.value.runtime_selection.model
         context_limit = context_token_limit(
             model.context_window,
@@ -974,12 +975,12 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
 
         next_input = _human(999, "new turn content")
         history_tokens = estimate_messages_tokens((
-            *application.engine.messages,
+            *engine_of(application).messages,
             next_input,
         ))
         assert history_tokens < context_limit
 
-        second_events = [event async for event in application.engine.run_turn(
+        second_events = [event async for event in engine_of(application).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="new turn content"),
@@ -1001,10 +1002,10 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
         assert metrics.context_tokens_after_estimate < metrics.context_tokens_before
         assert len(ready_requests) == 3
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1048,22 +1049,22 @@ async def test_automatic_compaction_is_triggered_before_request_and_survives_res
             },
         },
     ]
-    application = await start_application(
+    application = await thread_scope(
         paths=paths,
         session_id="compact-automatic-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
         extra_plugins=plugin_overrides,
     )
     try:
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        await _run_turn(application.engine, "New context " + "y" * 150)
-        await _run_turn(application.engine, "Continue with the next request")
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        await _run_turn(engine_of(application), "Continue with the next request")
 
         summaries = [
-            item for item in application.engine.messages
+            item for item in engine_of(application).messages
             if isinstance(item, CompactionSummaryMessage)
         ]
         assert len(summaries) == 1
@@ -1076,15 +1077,16 @@ async def test_automatic_compaction_is_triggered_before_request_and_survives_res
             for part in message.parts
         )
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
-    resumed = await start_application(
+    resumed = await thread_scope(
         paths=paths,
+        mode="resume",
         session_id="compact-automatic-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=MockLLM(responses=[]),
@@ -1092,13 +1094,13 @@ async def test_automatic_compaction_is_triggered_before_request_and_survives_res
     )
     try:
         summaries = [
-            item for item in resumed.engine.messages
+            item for item in engine_of(resumed).messages
             if isinstance(item, CompactionSummaryMessage)
         ]
         assert len(summaries) == 1
         assert "typed runtime boundary" in summaries[0].summary
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
 
 @pytest.mark.asyncio
@@ -1111,10 +1113,10 @@ async def test_automatic_summary_failure_preserves_the_full_live_and_durable_his
         {"content": ""},
         {"content": "Third answer after summary failure"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-automatic-failure-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1148,13 +1150,13 @@ async def test_automatic_summary_failure_preserves_the_full_live_and_durable_his
         ],
     )
     try:
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
 
-        await _run_turn(application.engine, "Continue after summary failure")
+        await _run_turn(engine_of(application), "Continue after summary failure")
 
-        live = tuple(application.engine.messages)
+        live = tuple(engine_of(application).messages)
         durable = application.thread_persistence.history.load_surface()
         assert len(live) == len(before) + 2
         assert live[:-2] == before
@@ -1172,7 +1174,7 @@ async def test_automatic_summary_failure_preserves_the_full_live_and_durable_his
         ] == [item for item in before if isinstance(item, CompactionSummaryMessage)]
         assert provider.call_count == 4
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.parametrize("overflow_count", [1, 2])
@@ -1236,10 +1238,10 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
             },
         },
     ]
-    application = await start_application(
+    application = await thread_scope(
         paths=paths,
         session_id="compact-context-overflow-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1251,13 +1253,13 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        await _run_turn(application.engine, "New context " + "y" * 150)
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
         if overflow_count == 1:
-            await _run_turn(application.engine, "Recover this request after overflow")
+            await _run_turn(engine_of(application), "Recover this request after overflow")
         else:
             events = [
-                event async for event in application.engine.run_turn(InboxItem(
+                event async for event in engine_of(application).run_turn(InboxItem(
                     target=InboxTarget.NEXT_TURN,
                     input=HumanInput(content="Propagate a repeated context overflow"),
                 ))
@@ -1270,7 +1272,7 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
             )
 
         summaries = [
-            item for item in application.engine.messages
+            item for item in engine_of(application).messages
             if isinstance(item, CompactionSummaryMessage)
         ]
         assert len(summaries) == 1
@@ -1286,11 +1288,11 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
             assert any(
                 isinstance(part, TextPart)
                 and part.text == "Recovered after context overflow"
-                for part in application.engine.messages[-1].parts
+                for part in engine_of(application).messages[-1].parts
             )
         else:
-            assert isinstance(application.engine.messages[-1], HumanInputMessage)
-            assert application.engine.messages[-1].parts[0].text == (
+            assert isinstance(engine_of(application).messages[-1], HumanInputMessage)
+            assert engine_of(application).messages[-1].parts[0].text == (
                 "Propagate a repeated context overflow"
             )
         completed = [
@@ -1300,10 +1302,10 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
         assert len(completed) == 1
         assert completed[0].reason == "context-overflow"
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1337,10 +1339,10 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
 
     provider = SummaryFailureMock()
     runtime_events = []
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-summary-provider-failure-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1378,9 +1380,9 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Old context " + "x" * 150)
-        await _run_turn(application.engine, "New context " + "y" * 150)
-        before = tuple(application.engine.messages)
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        before = tuple(engine_of(application).messages)
         durable_before = application.thread_persistence.history.load_surface()
         completed_before = [
             event for event in runtime_events
@@ -1388,9 +1390,9 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
         ]
         provider.probe["fail_next_summary"] = True
 
-        await _run_turn(application.engine, "Continue after provider failure")
+        await _run_turn(engine_of(application), "Continue after provider failure")
 
-        live = tuple(application.engine.messages)
+        live = tuple(engine_of(application).messages)
         durable = application.thread_persistence.history.load_surface()
         assert provider.probe["summary_failure"] is not None
         assert live[:-2] == before
@@ -1415,7 +1417,7 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
         assert failures[0].reason == "automatic"
         assert application.thread_persistence.history.load_surface() == live
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1435,10 +1437,10 @@ async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
         {"content": "Preserve the decision made earlier."},
         {"content": "The task continued after compaction."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-tool-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1448,9 +1450,9 @@ async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
         }],
     )
     try:
-        assert "compact" in application.engine.tools.names()
-        await _run_turn(application.engine, "First task " + "a" * 100)
-        events = [event async for event in application.engine.run_turn(
+        assert "compact" in engine_of(application).tools.names()
+        await _run_turn(engine_of(application), "First task " + "a" * 100)
+        events = [event async for event in engine_of(application).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Continue and retain the earlier decision."),
@@ -1462,18 +1464,18 @@ async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
         assert any(
             isinstance(item, CompactionSummaryMessage)
             and "decision made earlier" in item.summary
-            for item in application.engine.messages
+            for item in engine_of(application).messages
         )
         retained_calls = {
             str(part.id)
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, AssistantMessage)
             for part in item.parts
             if isinstance(part, ToolCall)
         }
         retained_results = {
             str(item.call.id)
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, ToolMessage)
         }
         assert retained_calls & retained_results
@@ -1481,12 +1483,12 @@ async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
         assert any(
             isinstance(part, TextPart)
             and "task continued after compaction" in part.text
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, AssistantMessage)
             for part in item.parts
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1509,10 +1511,10 @@ async def test_compact_command_resolves_externalized_tool_artifacts(
         {"content": "First answer"},
         {"content": "The user inspected notes.txt and chose decision Y."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-artifact-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1535,11 +1537,11 @@ async def test_compact_command_resolves_externalized_tool_artifacts(
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Read notes.txt")
+        await _run_turn(engine_of(application), "Read notes.txt")
 
         externalized = [
             item
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, ToolMessage)
             and isinstance(item.outcome, ToolSucceeded)
             and item.outcome.output.artifacts
@@ -1554,7 +1556,7 @@ async def test_compact_command_resolves_externalized_tool_artifacts(
         assert result.status == "ok", result.message
         summaries = [
             item
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, CompactionSummaryMessage)
         ]
         assert len(summaries) == 1
@@ -1584,7 +1586,7 @@ async def test_compact_command_resolves_externalized_tool_artifacts(
             for part in tool_parts
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1612,10 +1614,10 @@ async def test_automatic_compaction_commits_over_artifact_bearing_history(
         {"content": "summary retaining decision Y"},
         {"content": "second answer"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-artifact-automatic-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1663,18 +1665,18 @@ async def test_automatic_compaction_commits_over_artifact_bearing_history(
             RUNTIME_EVENT,
             lambda event: runtime_events.append(event.event),
         )
-        await _run_turn(application.engine, "Read notes.txt")
+        await _run_turn(engine_of(application), "Read notes.txt")
 
         externalized = [
             item
-            for item in application.engine.messages
+            for item in engine_of(application).messages
             if isinstance(item, ToolMessage)
             and isinstance(item.outcome, ToolSucceeded)
             and item.outcome.output.artifacts
         ]
         assert externalized, "the tool result was not externalized into an artifact"
 
-        await _run_turn(application.engine, "Continue after reading notes")
+        await _run_turn(engine_of(application), "Continue after reading notes")
 
         completions = [
             event for event in runtime_events
@@ -1690,13 +1692,13 @@ async def test_automatic_compaction_commits_over_artifact_bearing_history(
         assert any(
             isinstance(item, CompactionSummaryMessage)
             and "decision Y" in item.summary
-            for item in application.engine.messages
+            for item in engine_of(application).messages
         )
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -1716,10 +1718,10 @@ async def test_compaction_summary_keeps_the_model_output_budget(
         # real failure rather than being silently accepted.
         {"reasoning": "thinking only, no summary text"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="compact-output-budget-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1729,8 +1731,8 @@ async def test_compaction_summary_keeps_the_model_output_budget(
         ],
     )
     try:
-        await _run_turn(application.engine, "First task " + "a" * 100)
-        await _run_turn(application.engine, "Second task")
+        await _run_turn(engine_of(application), "First task " + "a" * 100)
+        await _run_turn(engine_of(application), "Second task")
 
         result = await application.serial(
             EXECUTE_COMMAND.name,
@@ -1754,7 +1756,7 @@ async def test_compaction_summary_keeps_the_model_output_budget(
             for request in summary_requests
         )
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.parametrize("automatic", [False, True])
@@ -1778,10 +1780,10 @@ async def test_compaction_releases_context_and_the_session_continues(
         {"content": "answer five"},
         {"content": "answer six"},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id=f"compact-release-{'auto' if automatic else 'manual'}",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1835,8 +1837,8 @@ async def test_compaction_releases_context_and_the_session_continues(
 
         # A large first turn plus a short second one push the request estimate
         # over the threshold, leaving a compactable prefix behind.
-        await _run_turn(application.engine, "big " * 5_000)
-        await _run_turn(application.engine, "short follow-up")
+        await _run_turn(engine_of(application), "big " * 5_000)
+        await _run_turn(engine_of(application), "short follow-up")
 
         if automatic:
             # The over-threshold request is compacted before it is sent, and
@@ -1866,11 +1868,11 @@ async def test_compaction_releases_context_and_the_session_continues(
         )
         assert any(
             isinstance(item, CompactionSummaryMessage)
-            for item in application.engine.messages
+            for item in engine_of(application).messages
         )
 
         # Continue the session: the rebuilt request is back under the threshold.
-        await _run_turn(application.engine, "continue after compaction")
+        await _run_turn(engine_of(application), "continue after compaction")
         after_estimate = estimate_model_request_tokens(ready_requests[-1].request)
         assert after_estimate < context_limit, (
             f"request after compaction is {after_estimate}, still over {context_limit}"
@@ -1879,7 +1881,7 @@ async def test_compaction_releases_context_and_the_session_continues(
         # Later turns run normally and never compact again.
         for text in ("question two", "question three", "question four"):
             events = [
-                event async for event in application.engine.run_turn(
+                event async for event in engine_of(application).run_turn(
                     InboxItem(target=InboxTarget.NEXT_TURN, input=HumanInput(content=text)),
                 )
             ]
@@ -1894,7 +1896,7 @@ async def test_compaction_releases_context_and_the_session_continues(
             if isinstance(event, CompactionCompleted)
         ]) == 1, "compaction ran more than once"
         assert application.thread_persistence.history.load_surface() == tuple(
-            application.engine.messages
+            engine_of(application).messages
         )
     finally:
-        await application.destroy()
+        await application.root.close()

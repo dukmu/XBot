@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 
-from XBotv2.session.contracts import PendingInputData
+from XBotv2.agentloop.api.models import PendingInputData
 from XBotv2.tui.impl.view.queue import QueuePanel, queue_row
 
 

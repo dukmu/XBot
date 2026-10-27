@@ -216,12 +216,15 @@
     workspace_tools: []
 
 - id: subagents
+  optional: true
   name: subagents
 
 - id: goal
+  optional: true
   name: goal
 
 - id: todolist
+  optional: true
   name: todolist
   profiles: [agent, server]
   config:
@@ -234,9 +237,11 @@
     verification_nudge: true
 
 - id: skills
+  optional: true
   name: skills
 
 - id: mcp_plugin
+  optional: true
   name: mcp_plugin
 
 - id: content_cache
@@ -247,15 +252,19 @@
     tail_chars: 2000
 
 - id: compact
+  optional: true
   name: compact
 
 - id: browser
+  optional: true
   name: browser
 
 - id: token_manager
+  optional: true
   name: token_manager
 
 - id: workspace_instructions
+  optional: true
   name: workspace_instructions
 
 - id: interactions
@@ -275,4 +284,5 @@
   profiles: [server]
 
 - id: caption
+  optional: true
   name: caption

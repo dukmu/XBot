@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """Focused behavior tests for the built-in Browser plugin."""
 
 import asyncio
@@ -8,7 +9,7 @@ from XBotv2.core.api.tools import ToolDenied, ToolFailed, ToolOutcome, ToolSucce
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolCompleted
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.messages import ToolMessage
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
@@ -53,10 +54,10 @@ async def test_agent_web_fetch_uses_registered_tool_and_active_sandbox_policy(
         }]},
         {"content": "The network is disabled."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-policy-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
@@ -72,7 +73,7 @@ async def test_agent_web_fetch_uses_registered_tool_and_active_sandbox_policy(
     )
 
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Fetch this page."),
         ))]
@@ -139,10 +140,10 @@ async def test_agent_web_fetch_reads_local_page_and_closes_network_client(
         }]},
         {"content": "The page says Local evidence."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-fetch-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
@@ -159,7 +160,7 @@ async def test_agent_web_fetch_reads_local_page_and_closes_network_client(
     )
 
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Fetch the local article."),
         ))]
@@ -243,10 +244,10 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
         }]},
         {"content": "The local browser workflow completed."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-agent-tool-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
@@ -267,11 +268,11 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
         return Allowed(scope="once")
 
     dispose_sink = application.client_events.install(approve_once)
-    browser_tool = application.engine.tools.resolve("browser_open")
+    browser_tool = engine_of(application).tools.resolve("browser_open")
     assert browser_tool is not None
     browser_plugin = browser_tool.function.__self__
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Use the browser on the local form."),
         ))]
@@ -344,10 +345,10 @@ async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path, 
         }]},
         {"content": "The browser action was denied."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-permission-denial-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=workspace,
         llm_override=llm,
         extra_plugins=[
@@ -364,11 +365,11 @@ async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path, 
         return Denied(reason="Action declined by test client")
 
     dispose_sink = application.client_events.install(deny)
-    browser_tool = application.engine.tools.resolve("browser_open")
+    browser_tool = engine_of(application).tools.resolve("browser_open")
     assert browser_tool is not None
     browser_plugin = browser_tool.function.__self__
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Open the local form, but deny editing it."),
         ))]
@@ -436,10 +437,10 @@ async def test_agent_browser_permission_cancellation_prevents_page_mutation(
         }]},
         {"content": "The browser action was cancelled."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-permission-cancel-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=workspace,
         llm_override=llm,
         extra_plugins=[
@@ -462,12 +463,12 @@ async def test_agent_browser_permission_cancellation_prevents_page_mutation(
         )
 
     dispose_sink = router.install(wait_for_client_resolution)
-    browser_tool = application.engine.tools.resolve("browser_open")
+    browser_tool = engine_of(application).tools.resolve("browser_open")
     assert browser_tool is not None
     browser_plugin = browser_tool.function.__self__
 
     async def run_turn():
-        return [event async for event in application.engine.run_turn(InboxItem(
+        return [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Open the form and wait before editing."),
         ))]
@@ -526,10 +527,10 @@ async def test_agent_browser_blocks_loopback_before_launching_chromium(tmp_path)
         }]},
         {"content": "Private destinations are blocked."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-private-destination-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
@@ -537,11 +538,11 @@ async def test_agent_browser_blocks_loopback_before_launching_chromium(tmp_path)
             {"id": "caption", "config": {"auto": False, "allow_access": False}},
         ],
     )
-    browser_tool = application.engine.tools.resolve("browser_open")
+    browser_tool = engine_of(application).tools.resolve("browser_open")
     assert browser_tool is not None
     browser_plugin = browser_tool.function.__self__
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Open this private destination."),
         ))]
@@ -582,10 +583,10 @@ async def test_agent_web_search_uses_registered_tool_and_active_sandbox(
         }]},
         {"content": "I found a result for XBot runtime."},
     ])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="browser-search-e2e",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path / "workspace",
         llm_override=llm,
         extra_plugins=[
@@ -598,7 +599,7 @@ async def test_agent_web_search_uses_registered_tool_and_active_sandbox(
     )
 
     try:
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Search for XBot runtime."),
         ))]

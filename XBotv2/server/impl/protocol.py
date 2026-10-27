@@ -49,7 +49,7 @@ def build_core_router(
         return HelloResponse(
             server_name=info.name,
             session_id=(payload.session_id or "").strip(),
-            thread_id=payload.thread_id.strip() or "agent",
+            thread_id=payload.thread_id.strip() or "main",
         )
 
     return router

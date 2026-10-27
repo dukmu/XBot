@@ -76,11 +76,9 @@ from XBotv2.agentloop.api.events import (
     SHORT_CIRCUIT_EVENTS,
 )
 from XBotv2.agentloop.api.contracts import (
-    DEFAULT_MAX_ITERATIONS,
     HumanInput,
     InboxItem,
     RuntimeInput,
-    AgentLoopDriverPort,
     ToolsPort,
 )
 from XBotv2.agentloop.api.state import LoopState, ThreadExecution
@@ -179,7 +177,7 @@ class _ModelResponseEvent:
     timing: ModelTiming
 
 
-class Engine(AgentLoopDriverPort):
+class Engine:
     """Core ReAct loop engine.
 
     No plugin imports. No DAG, skills, or compaction logic.
@@ -187,8 +185,7 @@ class Engine(AgentLoopDriverPort):
 
     Usage::
 
-        services = await start_application(...)
-        engine = services.engine
+        engine = Engine(model_client=..., tools=..., events=..., state=...)
         item = InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="list files"),
@@ -206,7 +203,7 @@ class Engine(AgentLoopDriverPort):
         state: LoopState,
         user_identity: UserContext,
         memory: str,
-        max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        max_iterations: int | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
         inbox: AgentInbox,
     ) -> None:
@@ -217,7 +214,7 @@ class Engine(AgentLoopDriverPort):
         self.user_identity = user_identity
         self.memory = memory
         self.max_iterations = max_iterations
-        self._log = runtime_log.bind("engine")
+        self._log = runtime_log.bind("agent_loop")
         self.inbox = inbox
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
@@ -320,6 +317,8 @@ class Engine(AgentLoopDriverPort):
         return tool.kind if tool is not None else "other"
 
     async def submit_input(self, item: InboxItem, *, wake: bool) -> None:
+        if self.state.session.status != "active":
+            raise OperationError("session_closing", "Thread is closing")
         await self.inbox.submit(item, wake=wake)
 
     @property
@@ -350,12 +349,12 @@ class Engine(AgentLoopDriverPort):
         self,
         *,
         model_client: ModelPort | _Unchanged = _UNCHANGED,
-        max_iterations: int | None = None,
+        max_iterations: int | None | _Unchanged = _UNCHANGED,
     ) -> None:
         """Replace loop-owned runtime ports without copying effective config."""
         if model_client is not _UNCHANGED:
             self.model_client = model_client
-        if max_iterations is not None:
+        if max_iterations is not _UNCHANGED:
             self.max_iterations = max_iterations
 
     # ------------------------------------------------------------------
@@ -501,7 +500,7 @@ class Engine(AgentLoopDriverPort):
             if retrying_iteration:
                 retrying_iteration = False
             else:
-                finalizing = iteration >= self.max_iterations
+                finalizing = self.max_iterations is not None and iteration >= self.max_iterations
                 if finalizing:
                     if iteration_limit_reached:
                         break

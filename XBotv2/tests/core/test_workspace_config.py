@@ -3,7 +3,7 @@
 import pytest
 import yaml
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.config.impl.loader import load_plugin_tree
+from XBotv2.config.api.tree import load_plugin_tree
 
 
 def _write_yaml(path, value):
@@ -56,11 +56,14 @@ def test_config_edit_rejects_invalid_plugin_policy_without_writing(
     from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config
 
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    catalog = plugin_config_catalog(paths, temp_workspace, "global")
+    from XBotv2.loader.impl.runtime import Loader
+    loader = Loader()
+    catalog = plugin_config_catalog(paths, temp_workspace, "global", loader=loader)
     with pytest.raises(ValueError, match=error):
         update_plugin_config(
             paths, temp_workspace, plugin_id,
             PatchPluginConfig(scope="global", revision=catalog.revision, config=config),
+            loader=loader,
         )
     assert not (paths.config_dir / "plugins.yaml").exists()
 

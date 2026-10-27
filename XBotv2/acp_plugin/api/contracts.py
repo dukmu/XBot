@@ -1,17 +1,16 @@
-"""Public launch declarations owned by the ACP carrier."""
+"""ACP carrier configuration and foreground protocol lifetime."""
+from typing import Protocol
+from pydantic import BaseModel, ConfigDict
+from xcore.api.services import ServiceKey
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from XBotv2.core.api.providers import Provider
-
-
-@dataclass(frozen=True, slots=True)
-class ACPLaunch:
-    provider_name: str | None
-    no_plugins: bool
+class ACPConfig(BaseModel):
+    provider_name: str | None = None
+    no_plugins: bool = False
     selected_agent: str | None = None
-    llm_override: Provider | None = None
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
+class ACPServer(Protocol):
+    async def serve(self) -> None: ...
+    async def close(self) -> None: ...
 
-__all__ = ["ACPLaunch"]
+ACP_SERVER: ServiceKey[ACPServer] = ServiceKey("acp.server")

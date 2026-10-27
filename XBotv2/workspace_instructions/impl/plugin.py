@@ -54,4 +54,10 @@ class WorkspaceInstructionsPlugin:
         event.components.append(component)
 
 
-plugin = WorkspaceInstructionsPlugin()
+def mount_thread(ctx, config):
+    WorkspaceInstructionsPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(WorkspaceInstructionsPlugin, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(WorkspaceInstructionsPlugin, "Config", None)

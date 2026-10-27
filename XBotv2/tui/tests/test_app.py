@@ -31,7 +31,7 @@ from XBotv2.tui.tests.factories import (
 )
 from XBotv2.client import XBotClientError
 from XBotv2.protocol.api.models import ErrorResponse
-from XBotv2.session.records import AssistantRecord
+from XBotv2.session.api.records import AssistantRecord
 from textual.screen import Screen
 
 from XBotv2.interactions.api.models import Answered, UserInputRecorded, UserInputRequest
@@ -982,7 +982,7 @@ def test_the_app_uses_the_theme_module() -> None:
 
 
 def summary(session_id: str, *, title: str = "", status: str = "inactive"):
-    from XBotv2.session.contracts import SessionSummary
+    from XBotv2.session.api.contracts import SessionSummary
 
     return SessionSummary(
         session_id=session_id, status=status, title=title or session_id, blank=False

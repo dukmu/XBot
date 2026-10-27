@@ -6,8 +6,11 @@ does not keep another mailbox, transcript, or child lifecycle cache.
 """
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP, AGENT_LOOP
+from XBotv2.session.api.contracts import THREAD_EVENTS
 
 import asyncio
+from weakref import WeakValueDictionary
 import uuid
 from dataclasses import dataclass
 from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
@@ -21,16 +24,9 @@ from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.prompts import prompt_container, prompt_element
 from XBotv2.jobs.api.contracts import Job, JobNotFound, JobRegistryClosed, JobsPort, parse_job_status
-from XBotv2.session.contracts import (
-    OpenThread,
-    PendingInputUpdate,
-    SessionPort,
-    SessionNotFound,
-    SessionsPort,
-    ThreadNotActive,
-    ThreadSummary,
-)
-from XBotv2.session.events import InputClaimedEvent
+from XBotv2.session.api.contracts import OpenThread, ThreadInfo, SessionNotFound, SessionsPort, ThreadNotActive, ThreadSummary
+from XBotv2.agentloop.api.models import PendingInputUpdate
+from XBotv2.session.api.events import InputClaimedEvent
 from XBotv2.subagents.api.contracts import SubagentAgentError, SubagentExecutionError, SubagentResult
 
 _MAX_PROMPT_PREVIEW = 100
@@ -45,6 +41,24 @@ class AgentJobSpec:
     kind: str = "subagent"
 
 
+class SubagentCoordinator:
+    """Session-owned child identities and operation locks."""
+    def __init__(self, session_info, sessions):
+        self._info = session_info
+        self._sessions = sessions
+        self._locks = WeakValueDictionary()
+        self._owned = {}
+
+    def allocate(self, agent):
+        return self._sessions.new_thread_id(self._info.session_id, agent)
+
+    def lock(self, thread_id):
+        return self._locks.setdefault(thread_id, asyncio.Lock())
+
+    def owned(self, parent_thread):
+        return self._owned.setdefault(parent_thread, set())
+
+
 class SubagentLauncher:
     """Resolve direct children and operate them through ``SessionsPort``."""
 
@@ -52,8 +66,9 @@ class SubagentLauncher:
         self,
         *,
         catalog: AgentCatalogPort,
-        session: SessionPort,
+        session: ThreadInfo,
         sessions: SessionsPort,
+        coordinator,
         provider_name: str | None,
         no_plugins: bool,
     ) -> None:
@@ -62,15 +77,15 @@ class SubagentLauncher:
         self._sessions = sessions
         self._provider_name = provider_name
         self._no_plugins = no_plugins
-        self._locks: dict[str, asyncio.Lock] = {}
-        self._owned_threads: set[str] = set()
+        self._coordinator = coordinator
+        self._owned_threads = coordinator.owned(session.thread_id)
 
     @property
     def parent_thread_id(self) -> str:
         return self._session.thread_id
 
     def allocate(self, agent: str) -> str:
-        return self._session.new_thread_id(self._definition(agent).name)
+        return self._coordinator.allocate(self._definition(agent).name)
 
     async def resolve(self, thread_id: str) -> ThreadSummary:
         for summary in await self._sessions.list_threads(self._session.session_id):
@@ -85,7 +100,7 @@ class SubagentLauncher:
         raise SubagentAgentError(f"Unknown child thread: {thread_id}")
 
     def lock(self, thread_id: str) -> asyncio.Lock:
-        return self._locks.setdefault(thread_id, asyncio.Lock())
+        return self._coordinator.lock(thread_id)
 
     async def ensure_open(
         self,
@@ -115,22 +130,16 @@ class SubagentLauncher:
         self._owned_threads.add(thread_id)
 
     async def submit(self, thread_id: str, item: InboxItem, *, wake: bool) -> None:
-        await self._sessions.submit_runtime_input(
-            self._session.session_id,
-            thread_id,
-            item,
-            wake=wake,
-        )
+        scope = await self._sessions.locate(self._session.session_id, thread_id)
+        await scope.require(AGENT_LOOP).submit_input(item, wake=wake)
 
     async def close_thread(self, thread_id: str) -> None:
         await self._sessions.close_thread(self._session.session_id, thread_id)
         self._owned_threads.discard(thread_id)
 
     async def subscribe(self, thread_id: str):
-        return await self._sessions.stream_events(
-            self._session.session_id,
-            thread_id,
-        )
+        scope = await self._sessions.locate(self._session.session_id, thread_id)
+        return scope.require(THREAD_EVENTS).subscribe()
 
     async def usage(self, thread_id: str):
         return (await self._sessions.thread_summary(
@@ -147,19 +156,16 @@ class SubagentLauncher:
     ) -> None:
         if not claimed:
             try:
-                await self._sessions.update_pending_input(PendingInputUpdate(
-                    session_id=self._session.session_id,
-                    thread_id=thread_id,
-                    message_id=input_id,
-                    action="remove",
-                ))
+                scope = await self._sessions.locate(self._session.session_id, thread_id)
+                await scope.require(AGENT_LOOP).update_pending_input(input_id, "remove")
                 return
             except OperationError as exc:
                 # Removal and claim can cross. Once claimed, interruption is
                 # the only operation that still owns the executing turn.
                 if exc.code != "queue_item_not_found":
                     raise
-        await self._sessions.interrupt(self._session.session_id, thread_id)
+        scope = await self._sessions.locate(self._session.session_id, thread_id)
+        await scope.require(AGENT_LOOP).interrupt()
 
     async def close(self) -> None:
         errors: list[Exception] = []

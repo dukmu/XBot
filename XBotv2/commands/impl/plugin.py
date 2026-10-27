@@ -6,6 +6,7 @@ registering plugin unloads.
 """
 
 from __future__ import annotations
+import asyncio
 
 from typing import Literal
 from pydantic import JsonValue
@@ -38,11 +39,14 @@ from XBotv2.core.api.operations import EmptyRequest
 class CommandsService(CommandsPort):
     """Plugin-facing command registry with fiber-scoped auto-unregister."""
 
-    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
+    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber", owner: Context | None = None) -> None:
         self._commands: dict[str, tuple[object, Command]] = {}
         # Composition-level default for registrations made outside a plugin
         # apply: "fiber" stays loud, "caller" states the composer owns release.
         self._ownership = ownership
+        self._owner = owner
+        self._closing = False
+        self._calls = set()
 
     def register(
         self,
@@ -51,6 +55,8 @@ class CommandsService(CommandsPort):
         owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str:
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise RuntimeError("command registry is closing")
         if command.name in self._commands:
             raise ValueError(f"Command {command.name!r} is already registered")
         token = object()
@@ -73,6 +79,24 @@ class CommandsService(CommandsPort):
             remove()
             raise
         return command.name
+
+    async def invoke(self, command, args):
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise RuntimeError("command registry is closing")
+        task = asyncio.current_task()
+        self._calls.add(task)
+        try:
+            return await command.handler(args)
+        finally:
+            self._calls.discard(task)
+
+    async def close(self):
+        self._closing = True
+        calls = [task for task in self._calls if task is not asyncio.current_task()]
+        for task in calls:
+            task.cancel()
+        if calls:
+            await asyncio.gather(*calls, return_exceptions=True)
 
     def unregister(self, name: str) -> bool:
         return self._commands.pop(name, None) is not None
@@ -114,7 +138,7 @@ class CommandOperations:
                 message=f"Unknown server command: /{name}",
             )
         assert command.handler is not None
-        result = await command.handler(request.raw_args)
+        result = await self._commands.invoke(command, request.raw_args)
         return CommandExecution(
             command=name,
             status=result.status,
@@ -131,12 +155,25 @@ class CommandsComponent:
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        service = CommandsService()
+        service = CommandsService(owner=ctx)
         ctx.set(COMMANDS, service)
+        ctx.pre_stop(service.close)
         operations = CommandOperations(service)
         ctx.on(LIST_COMMANDS.name, operations.list_commands)
         ctx.on(EXECUTE_COMMAND.name, operations.execute_command)
-        ctx.inject(["server", "sessions"], mount_http)
 
 
-plugin = CommandsComponent()
+def mount_thread(ctx, config):
+    CommandsComponent().apply(ctx, config)
+
+mount_thread.inject = ()
+mount_thread.provide = (COMMANDS,)
+
+
+def mount_process(ctx, config):
+    ctx.inject(["server", "sessions"], mount_http)
+    # Client roots own their command registry at process scope.
+    CommandsComponent().apply(ctx, config)
+
+mount_process.inject = ()
+mount_process.provide = (COMMANDS,)

@@ -1,7 +1,6 @@
 """Thread-local metadata lifecycle owned by the loop runtime."""
 from __future__ import annotations
 from xcore.api.context import Context
-from xcore.api.service import Service
 from XBotv2.core.api.domain import ResolvedRuntimeSelection
 from XBotv2.core.api.metadata import (
     ThreadMetadata,
@@ -15,7 +14,7 @@ from XBotv2.core.api.metadata import (
     THREAD_METADATA_INITIALIZED,
 )
 
-class ThreadMetadataState(Service):
+class ThreadMetadataState:
     """Own one thread's metadata lifecycle and publish each state transition.
 
     A runtime starts without effective metadata. The Agent resolver or
@@ -32,7 +31,7 @@ class ThreadMetadataState(Service):
         session_id: str,
         thread_id: str,
     ) -> None:
-        super().__init__(ctx, name=self.name)
+        self.ctx = ctx
         self._session_id = session_id
         self._thread_id = thread_id
         self._state: ThreadMetadataLifecycle = MetadataUninitialized()

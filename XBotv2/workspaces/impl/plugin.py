@@ -4,12 +4,7 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 from xcore.api.context import Context
-from XBotv2.session.contracts import (
-    SESSION_RESOURCE_CHANGED,
-    SESSION_RESOURCE_REMOVED,
-    SessionResourceChanged,
-    SessionResourceRemoved,
-)
+from XBotv2.session.api.contracts import SESSION_RESOURCE_CHANGED, SESSION_RESOURCE_REMOVED, SessionResourceChanged, SessionResourceRemoved
 from XBotv2.workspaces.impl.service import WorkspaceRegistry
 from XBotv2.workspaces.api.contracts import (
     WORKSPACES, WORKSPACE_EVENTS, WORKSPACE_DIRECTORIES,
@@ -93,10 +88,10 @@ class WorkspacesPlugin:
         )
 
 
-plugin = WorkspacesPlugin()
+async def mount_process(ctx, config):
+    await WorkspacesPlugin().apply(ctx, config)
 
-__all__ = [
-    "WorkspaceCatalogHandlers",
-    "WorkspaceSessionHandlers",
-    "WorkspacesPlugin",
-]
+
+mount_process.inject = getattr(WorkspacesPlugin, "inject", ())
+mount_process.provide = ('workspaces', 'workspace_events', 'workspace_directories')
+mount_process.Config = getattr(WorkspacesPlugin, "Config", None)

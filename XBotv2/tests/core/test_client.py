@@ -132,12 +132,12 @@ async def test_the_catalogue_is_a_typed_resource():
 
     client = XBotClient(base_url="http://xbot.test", transport=httpx.MockTransport(handler))
     try:
-        response = await client.list_commands("s1", "agent")
+        response = await client.list_commands("s1", "main")
     finally:
         await client.close()
 
     assert seen[0].method == "GET"
-    assert seen[0].url.path == "/sessions/s1/threads/agent/commands"
+    assert seen[0].url.path == "/sessions/s1/threads/main/commands"
     assert [item.name for item in response.commands] == ["status"]
     assert response.commands[0].effects == ("thread",), "what it touches, before running it"
 

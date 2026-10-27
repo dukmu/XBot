@@ -119,7 +119,7 @@ async def test_harness_releases_provider_and_temp_root_on_application_start_fail
     async def fail_start(**kwargs):
         raise RuntimeError("application startup failed")
 
-    monkeypatch.setattr("scripts.stress.server.start_server_application", fail_start)
+    monkeypatch.setattr("scripts.stress.server.open_runtime", fail_start)
     harness = MockServerHarness(5)
     with pytest.raises(RuntimeError, match="application startup failed"):
         await harness.__aenter__()

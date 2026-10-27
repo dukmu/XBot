@@ -13,6 +13,7 @@ from __future__ import annotations
 from XBotv2.commands.api.contracts import COMMANDS
 
 from xcore.api.context import Context
+from xcore.api.services import ServiceKey
 from XBotv2.agents.api.contracts import AGENT_RUNTIME
 from XBotv2.llm.impl.service import LlmService, ModelService
 from XBotv2.llm.impl.commands import build_llm_commands
@@ -35,7 +36,7 @@ def mount_commands(ctx: Context) -> None:
         ctx.require(COMMANDS).register(command)
 
 
-def build_llm_service(config: LlmConfig | None = None) -> LlmService:
+def build_llm_service(config: LlmConfig | None = None, *, factories=None) -> LlmService:
     """Create an ``LlmService`` with the built-in adapters and tree config.
 
     Used by the llm plugin's ``apply`` and by server-root / CLI code that
@@ -47,39 +48,63 @@ def build_llm_service(config: LlmConfig | None = None) -> LlmService:
 
     if config is None:
         config = LlmConfig()
-    service = LlmService(config)
-    service.register("mock", create_mock_provider)
-    service.register("openai", create_openai_provider)
-    service.register("anthropic", create_anthropic_provider)
+    service = LlmService(config, factories=factories)
+    if factories is None:
+        service.register("mock", create_mock_provider)
+        service.register("openai", create_openai_provider)
+        service.register("anthropic", create_anthropic_provider)
     for name in service.names():
         service.provider_config(name)
     return service
 
 
-class LlmComponent:
-    """Register the provider route directory as ``ctx.llm``."""
+class ProviderDirectories:
+    def __init__(self):
+        self._catalogs = {}
+        self._factories = None
 
-    name = "xbot.llm"
-    inject = ["runtime_log"]
-    Config = LlmConfig
+    def resolve(self, config):
+        key = config.model_dump_json()
+        if key not in self._catalogs:
+            catalog = build_llm_service(config, factories=self._factories)
+            self._factories = catalog._factories
+            self._catalogs[key] = catalog
+        return self._catalogs[key]
 
-    def apply(
-        self,
-        ctx: Context,
-        config: LlmConfig,
-    ) -> None:
-        service = build_llm_service(config)
-        ctx.runtime_log.bind("llm").info(
-            "provider.catalog.loaded",
-            providers=list(service.names()),
-            configured_default=config.default_provider,
-        )
-        ctx.set(LLM, service)
-        ctx.set(MODEL, ModelService())
 
-        ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
-        ctx.inject([LLM, AGENT_RUNTIME, COMMANDS], mount_commands)
-        ctx.inject(["server", "sessions"], mount_http)
+    async def close(self):
+        for catalog in self._catalogs.values():
+            await catalog.close()
+        self._catalogs.clear()
+
+
+PROVIDER_DIRECTORY = ServiceKey[ProviderDirectories]("llm.directory")
+
+
+def mount_process(ctx, config):
+    directory = ProviderDirectories()
+    ctx.dispose(directory.close)
+    ctx.provide(PROVIDER_DIRECTORY, directory)
+    service = directory.resolve(config)
+    ctx.provide(LLM, service)
+    ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
+    ctx.inject(["server", "sessions"], mount_http)
+
+mount_process.inject = ("runtime_log",)
+mount_process.provide = (LLM, PROVIDER_DIRECTORY)
+mount_process.Config = LlmConfig
+
+
+def mount_thread(ctx, config):
+    service = ctx.require(PROVIDER_DIRECTORY).resolve(config)
+    ctx.provide(LLM, service)
+    ctx.provide(MODEL, ModelService())
+    ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
+    ctx.inject([LLM, AGENT_RUNTIME, COMMANDS], mount_commands)
+
+mount_thread.inject = (PROVIDER_DIRECTORY,)
+mount_thread.provide = (LLM, MODEL)
+mount_thread.Config = LlmConfig
 
 
 class ProviderCatalogHandler:
@@ -88,6 +113,3 @@ class ProviderCatalogHandler:
 
     def list_providers(self, _request: EmptyRequest) -> ProviderCatalog:
         return self._service.catalog()
-
-
-plugin = LlmComponent()

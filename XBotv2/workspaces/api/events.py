@@ -1,7 +1,7 @@
 """Workspace catalog replay event contracts."""
 
 from dataclasses import dataclass
-from XBotv2.session.contracts import SessionResourceChanged, SessionResourceRemoved
+from XBotv2.session.api.contracts import SessionResourceChanged, SessionResourceRemoved
 from XBotv2.workspaces.api.contracts import ArchivedSessionsChanged, WorkspaceOrderChanged, WorkspaceResourceChanged, WorkspaceResourceRemoved
 
 

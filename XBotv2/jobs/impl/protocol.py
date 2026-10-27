@@ -1,10 +1,12 @@
+
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 """HTTP job routes."""
 
 from fastapi import APIRouter
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.jobs.api.contracts import LIST_JOBS, STOP_ALL_JOBS, STOP_JOB, StopJob
 from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
-from XBotv2.session.contracts import SessionsPort
+from XBotv2.session.api.contracts import SessionsPort
 
 
 def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
@@ -20,9 +22,7 @@ def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> JobListResponse:
-        result = await sessions.dispatch(
-            session_id, thread_id, LIST_JOBS, EmptyRequest()
-        )
+        result = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(LIST_JOBS, EmptyRequest())
         return JobListResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -38,9 +38,7 @@ def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
         thread_id: str,
         job_id: str,
     ) -> JobStopResponse:
-        result = await sessions.dispatch(
-            session_id, thread_id, STOP_JOB, StopJob(job_id)
-        )
+        result = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(STOP_JOB, StopJob(job_id))
         return JobStopResponse(
             session_id=session_id,
             thread_id=thread_id,
@@ -56,9 +54,7 @@ def build_jobs_router(*, sessions: SessionsPort) -> APIRouter:
         session_id: str,
         thread_id: str,
     ) -> JobStopResponse:
-        result = await sessions.dispatch(
-            session_id, thread_id, STOP_ALL_JOBS, EmptyRequest()
-        )
+        result = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(STOP_ALL_JOBS, EmptyRequest())
         return JobStopResponse(
             session_id=session_id,
             thread_id=thread_id,

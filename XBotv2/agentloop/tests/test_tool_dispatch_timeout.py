@@ -32,8 +32,12 @@ async def test_sync_tool_does_not_block_event_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_registered_timeout_is_reported_as_tool_error() -> None:
+    worker_finished = False
+
     def slow() -> str:
+        nonlocal worker_finished
         time.sleep(0.3)
+        worker_finished = True
         return "late"
 
     registry = ToolRegistry()
@@ -42,7 +46,6 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
         timeout_seconds=0.05,
     )
 
-    started = time.monotonic()
     results = [
         message async for message in execute_tools(
             [ToolCall(id="call_1", name="slow", args={})],
@@ -50,7 +53,7 @@ async def test_registered_timeout_is_reported_as_tool_error() -> None:
         )
     ]
 
-    assert time.monotonic() - started < 0.2
+    assert worker_finished  # A timeout cannot leave started filesystem work alive.
     outcome = results[0].message.outcome
     assert isinstance(outcome, ToolFailed)
     assert "Tool slow timed out after 0.05s" in outcome.error.message

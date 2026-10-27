@@ -9,12 +9,10 @@ from pydantic import JsonValue
 from xcore.api.context import Context
 from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import Events, ModelResponseObserved
-from XBotv2.application import (
-    APPLICATION_INITIALIZED,
-    RUNTIME_EVENT,
-    ApplicationInitialized,
-    RuntimeEvent,
-)
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.agentloop.api.events import ThreadInitialized
+from XBotv2.agentloop.api.events import RuntimeEvent
 from XBotv2.core.api.domain import RequestObservation, TokenCounters, UsageDelta, UsageSnapshot
 from XBotv2.core.api.messages import AssistantMessage, ConversationMessage
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
@@ -130,7 +128,7 @@ class UsageHandlers:
         self._service = service
         self._state = state
 
-    async def initialize(self, _event: ApplicationInitialized) -> None:
+    async def initialize(self, _event: ThreadInitialized) -> None:
         await self._service.initialize(self._state.messages)
 
     async def record(self, event: ModelResponseObserved) -> None:
@@ -152,7 +150,13 @@ class UsageComponent:
         handlers = UsageHandlers(service, ctx.require(LOOP_STATE))
         ctx.set(USAGE, service)
         ctx.on(Events.MODEL_RESPONSE_OBSERVED, handlers.record)
-        ctx.on(APPLICATION_INITIALIZED, handlers.initialize, prepend=True)
+        ctx.on(THREAD_INITIALIZED, handlers.initialize, prepend=True)
 
 
-plugin = UsageComponent()
+def mount_thread(ctx, config):
+    UsageComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(UsageComponent, "inject", ())
+mount_thread.provide = ('usage',)
+mount_thread.Config = getattr(UsageComponent, "Config", None)

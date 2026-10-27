@@ -19,7 +19,7 @@ import pytest
 from textual.app import App, ComposeResult
 from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, AssistantTextDelta
 from XBotv2.core.api.domain import CompletedStop, ModelTiming
-from XBotv2.session.records import AssistantRecord, HumanInputRecord
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord
 from XBotv2.tui.tests.factories import (
     assistant_record,
     history_page,

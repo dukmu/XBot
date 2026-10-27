@@ -1,6 +1,7 @@
 """Behavior tests for explicit same-session goals."""
 
 from __future__ import annotations
+from XBotv2.tests.runtime import engine_of
 
 import asyncio
 from pathlib import Path
@@ -8,10 +9,11 @@ from types import SimpleNamespace
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from xcore.api.state import StateService
-from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
+from XBotv2.agentloop.api.contracts import AGENT_LOOP, INBOX, InboxItem, RuntimeInput
 from XBotv2.agentloop.api.events import OnTurnInput, RejectInput, SessionLifecycle, TurnEnded
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.domain import TokenCounters, UsageSnapshot
+from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.messages import RuntimeNoticeMessage
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.paths import RuntimePaths
@@ -29,12 +31,13 @@ class FakeEngine:
         assert wake is True
         self.pending_inputs.append(item)
 
-    async def remove_input(self, input_id: str) -> InboxItem:
+    async def update_pending_input(self, input_id: str, action: str):
+        assert action == "remove"
         item = next((item for item in self.pending_inputs if item.id == input_id), None)
         if item is None:
-            raise KeyError(input_id)
+            raise OperationError("queue_item_not_found", "input already claimed")
         self.pending_inputs.remove(item)
-        return item
+        return ()
 
 
 class FakeEvents:
@@ -269,19 +272,19 @@ async def test_pause_resume_accumulates_only_goal_owned_turns(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_hot_unload_removes_reserved_goal_input(tmp_path: Path):
-    app = await start_application(
+    app = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="goal-unload",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=tmp_path,
         llm_override=MockLLM(responses=[{"content": "must not run"}]),
     )
     try:
         await app.goal.command("ship")
-        assert app.engine.pending_input_count == 1
+        assert engine_of(app).pending_input_count == 1
 
         handle = next(
-            handle for handle in app.registry.handles() if handle.name == "goal"
+            handle for handle in app.registry.handles() if handle.uid == app.goal._events.fiber.uid
         )
         await handle.dispose()
         for _ in range(100):
@@ -290,10 +293,42 @@ async def test_hot_unload_removes_reserved_goal_input(tmp_path: Path):
             await asyncio.sleep(0.01)
 
         assert app.get("goal", strict=False) is None
-        assert [event async for event in app.engine.run_pending()] == []
+        assert [event async for event in engine_of(app).run_pending()] == []
         assert not any(
             isinstance(message, RuntimeNoticeMessage) and message.source == "goal"
-            for message in app.engine.messages
+            for message in engine_of(app).messages
         )
     finally:
-        await app.destroy()
+        await app.root.close()
+
+
+@pytest.mark.asyncio
+async def test_claimed_real_input_is_rejected_after_goal_replacement(tmp_path: Path):
+    app = await thread_scope(
+        paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+        session_id="goal-claimed", thread_id="main", workspace_root=tmp_path,
+        llm_override=MockLLM(responses=[{"content": "unused"}]),
+    )
+    try:
+        await app.goal.command("old objective")
+        [claimed] = await app.require(INBOX).claim_turn()
+        await app.goal.command("new objective")
+        assert isinstance(await app.goal.on_turn_input(OnTurnInput(claimed, ())), RejectInput)
+        assert (await app.goal.snapshot()).state.objective == "new objective"
+        assert app.require(AGENT_LOOP).pending_input_count == 1
+    finally:
+        await app.root.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_removal_propagates_other_operation_errors(tmp_path: Path):
+    service, engine = _service(tmp_path)
+    await service.command("tests pass")
+
+    async def fail(_input_id, _action):
+        raise OperationError("storage_error", "cannot remove input")
+
+    engine.update_pending_input = fail
+    with pytest.raises(OperationError, match="cannot remove input") as error:
+        await service.command("pause")
+    assert error.value.code == "storage_error"

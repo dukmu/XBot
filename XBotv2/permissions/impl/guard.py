@@ -1,6 +1,7 @@
 """Final tool guard owned by the permissions plugin."""
 
 from __future__ import annotations
+import uuid
 
 from typing import Awaitable, Callable
 from XBotv2.agentloop.api.contracts import ToolRegistration
@@ -63,7 +64,7 @@ class PermissionGuard:
         if decision == "deny":
             return GuardDecision("deny", reason, source="permissions")
         event = PermissionRequest(
-            interaction_id=f"permission:{tool_call.id}",
+            interaction_id=f"permission:{uuid.uuid4().hex}",
             source="permission_system",
             subject=ToolPermission(tool_call=tool_call),
             reason=reason,

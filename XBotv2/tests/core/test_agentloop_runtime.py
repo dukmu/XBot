@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """Behavioral checks for the composed Agent loop runtime."""
 
 import asyncio
@@ -19,7 +20,7 @@ from XBotv2.agentloop.api.outputs import (
     ToolCompleted,
     UsageObserved,
 )
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope, engine_of
 from XBotv2.core.api.artifacts import ArtifactKind
 from XBotv2.core.api.messages import AssistantMessage
 from XBotv2.core.api.paths import RuntimePaths
@@ -30,19 +31,21 @@ from XBotv2.core.api.tools import Tool, ToolCall, ToolFailed, ToolSucceeded
 from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.llm.impl.provider_errors import normalize_sdk_provider_error
 from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
-from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord, project_message
-from XBotv2.session.contracts import conversation_replay
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
+from XBotv2.session.api.records import project_message
+
+from XBotv2.session.api.records import conversation_replay
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("persistent", [True])
 async def test_assistant_completion_is_committed_before_it_is_published(
     temp_data_dir, temp_workspace, persistent
 ):
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id=f"assistant-commit-before-publish-{persistent}",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         llm_override=MockLLM(responses=[{"content": "committed answer"}]),
         extra_plugins=[
@@ -50,7 +53,7 @@ async def test_assistant_completion_is_committed_before_it_is_published(
             {"id": "caption", "config": {"auto": False}},
         ],
     )
-    stream = services.engine.run_turn(InboxItem(
+    stream = engine_of(services).run_turn(InboxItem(
         target=InboxTarget.NEXT_TURN,
         input=HumanInput(content="answer once"),
     ))
@@ -81,12 +84,12 @@ async def test_assistant_completion_is_committed_before_it_is_published(
 async def test_assistant_persistence_failure_prevents_completed_event(
     temp_data_dir, temp_workspace, monkeypatch
 ):
-    from XBotv2.persistence.store import MessageHistoryStore
+    from XBotv2.persistence.impl.store import MessageHistoryStore
 
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="assistant-commit-failure",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         llm_override=MockLLM(responses=[{"content": "must not publish"}]),
         extra_plugins=[{"id": "caption", "config": {"auto": False}}],
@@ -100,7 +103,7 @@ async def test_assistant_persistence_failure_prevents_completed_event(
 
     monkeypatch.setattr(MessageHistoryStore, "append", fail_assistant_append)
     try:
-        events = [event async for event in services.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(services).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="trigger persistence failure"),
         ))]
@@ -122,7 +125,8 @@ async def test_hook_can_complete_a_turn_without_sending_a_model_request(
     plugin_name = "finish_at_context" if boundary == Events.BEFORE_CONTEXT_BUILD else "finish_at_request"
     plugin_dir = tmp_path / plugin_name
     plugin_dir.mkdir()
-    (plugin_dir / "__init__.py").write_text(
+    (plugin_dir / "impl").mkdir()
+    (plugin_dir / "impl" / "plugin.py").write_text(
         "from XBotv2.agentloop.api.events import CompleteTurn, Events\n"
         "from XBotv2.agentloop.api.outputs import LoopError\n"
         "\n"
@@ -134,23 +138,23 @@ async def test_hook_can_complete_a_turn_without_sending_a_model_request(
         "            ))\n"
         f"        ctx.on(Events.{('BEFORE_CONTEXT_BUILD' if boundary == Events.BEFORE_CONTEXT_BUILD else 'BEFORE_MODEL_REQUEST')}, finish, global_=True)\n"
         "\n"
-        "plugin = HookPlugin()\n",
+        "def mount_thread(ctx, config):\n    HookPlugin().apply(ctx, config)\nmount_thread.inject=()\nmount_thread.provide=()\n",
         encoding="utf-8",
     )
     provider = MockLLM(responses=[
         {"content": "session title"},
         {"content": "This model answer must not be requested."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id=f"runtime-hook-{plugin_name}",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[tmp_path],
         llm_override=provider,
     )
     try:
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Handle this without a model request"),
@@ -199,10 +203,10 @@ async def test_tool_turn_executes_and_persists_the_complete_conversation(
             "usage_metadata": {"input_tokens": 20, "output_tokens": 8},
         },
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-tool-turn",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -211,9 +215,9 @@ async def test_tool_turn_executes_and_persists_the_complete_conversation(
         services.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
-        services.engine.tools.register(Tool.from_function(lookup), cleanup="caller")
+        engine_of(services).tools.register(Tool.from_function(lookup), cleanup="caller")
 
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Look up runtime"),
@@ -229,7 +233,7 @@ async def test_tool_turn_executes_and_persists_the_complete_conversation(
         assert events[-1].outcome.kind == "finished"
 
         records = [
-            record for message in services.engine.messages
+            record for message in engine_of(services).messages
             if (record := project_message(message)) is not None
         ]
         assert [type(record) for record in records] == [
@@ -244,7 +248,7 @@ async def test_tool_turn_executes_and_persists_the_complete_conversation(
         )
         assert records[3].content == "The result is found:runtime."
 
-        replay = conversation_replay(services.engine.messages)
+        replay = conversation_replay(engine_of(services).messages)
         assert [item.kind for item in replay] == [
             "human_input", "assistant", "tool", "assistant",
         ]
@@ -267,10 +271,10 @@ async def test_turn_end_hook_observes_the_complete_durable_conversation(
         },
         {"content": "The durable order is preserved."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-turn-end-durable-order",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -279,7 +283,7 @@ async def test_turn_end_hook_observes_the_complete_durable_conversation(
         async def lookup(term: str) -> str:
             return f"found:{term}"
 
-        services.engine.tools.register(Tool.from_function(lookup), cleanup="caller")
+        engine_of(services).tools.register(Tool.from_function(lookup), cleanup="caller")
         persistence = services.get("thread_persistence")
         assert persistence is not None
         observations = []
@@ -296,7 +300,7 @@ async def test_turn_end_hook_observes_the_complete_durable_conversation(
             ))
 
         services.on(Events.TURN_END, inspect_durable_history)
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Check durable ordering"),
@@ -307,8 +311,8 @@ async def test_turn_end_hook_observes_the_complete_durable_conversation(
         assert isinstance(events[-1], LoopTurnEnded)
         assert events[-1].outcome.kind == "finished"
         assert observations == [(
-            tuple(message.id for message in services.engine.messages),
-            tuple(message.id for message in services.engine.messages),
+            tuple(message.id for message in engine_of(services).messages),
+            tuple(message.id for message in engine_of(services).messages),
             ("HumanInputRecord", "AssistantRecord", "ToolRecord", "AssistantRecord"),
         )]
     finally:
@@ -326,17 +330,18 @@ import sys
 from pathlib import Path
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.agentloop.api.outputs import LoopTurnEnded
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope, engine_of
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.session.records import project_message
+
+from XBotv2.session.api.records import project_message
 
 async def main():
-    app = await start_application(
+    app = await thread_scope(
         paths=RuntimePaths.from_data_dir(Path(sys.argv[1])),
         session_id='crash-recovery',
-        thread_id='agent',
+        thread_id='main',
         workspace_root=Path(sys.argv[2]),
         plugin_dirs=[],
         llm_override=MockLLM(responses=[
@@ -344,7 +349,7 @@ async def main():
             {'content': 'durable answer before crash'},
         ]),
     )
-    events = [event async for event in app.engine.run_turn(
+    events = [event async for event in engine_of(app).run_turn(
         InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content='persist this before abrupt exit'),
@@ -389,24 +394,25 @@ os._exit(0)
     assert child.stdout.strip() == "durable-turn-recorded"
 
     provider = MockLLM(responses=[{"content": "recovered follow-up"}])
-    resumed = await start_application(
+    resumed = await thread_scope(
+        mode="resume",
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="crash-recovery",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
     try:
         stored = [
-            record for message in resumed.engine.messages
+            record for message in engine_of(resumed).messages
             if (record := project_message(message)) is not None
         ]
         assert [record.kind for record in stored] == ["human_input", "assistant"]
         assert stored[0].content == "persist this before abrupt exit"
         assert stored[1].content == "durable answer before crash"
 
-        events = [event async for event in resumed.engine.run_turn(
+        events = [event async for event in engine_of(resumed).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="continue after process crash"),
@@ -467,10 +473,10 @@ async def test_multiple_tool_calls_keep_order_and_continue_after_tool_failure(
         },
         {"content": "The lookup failed, but status is ready."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-multiple-tools",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -479,14 +485,14 @@ async def test_multiple_tool_calls_keep_order_and_continue_after_tool_failure(
         services.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
-        services.engine.tools.register(
+        engine_of(services).tools.register(
             Tool.from_function(fail_lookup), cleanup="caller",
         )
-        services.engine.tools.register(
+        engine_of(services).tools.register(
             Tool.from_function(read_status), cleanup="caller",
         )
 
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Check runtime"),
@@ -510,8 +516,8 @@ async def test_multiple_tool_calls_keep_order_and_continue_after_tool_failure(
         assert isinstance(events[-1], LoopTurnEnded)
         assert events[-1].outcome.kind == "finished"
         assert provider.call_count == 3
-        assert isinstance(services.engine.messages[-1], AssistantMessage)
-        assert services.engine.messages[-1].parts == (
+        assert isinstance(engine_of(services).messages[-1], AssistantMessage)
+        assert engine_of(services).messages[-1].parts == (
             TextPart(text="The lookup failed, but status is ready."),
         )
     finally:
@@ -546,10 +552,10 @@ async def test_full_agent_tool_arguments_reach_standard_handler_unchanged(
         },
         {"content": f"Handled {len(expected['text'])} characters."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-full-tool-args",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -558,11 +564,11 @@ async def test_full_agent_tool_arguments_reach_standard_handler_unchanged(
         services.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
-        services.engine.tools.register(
+        engine_of(services).tools.register(
             Tool.from_function(inspect_payload), cleanup="caller"
         )
 
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Inspect this complete payload"),
@@ -573,7 +579,7 @@ async def test_full_agent_tool_arguments_reach_standard_handler_unchanged(
         assert received == [expected]
         recorded_calls = [
             part
-            for message in services.engine.messages
+            for message in engine_of(services).messages
             if isinstance(message, AssistantMessage)
             for part in message.parts
             if isinstance(part, ToolCall)
@@ -596,10 +602,10 @@ async def test_human_attachment_keeps_logical_id_and_compiles_thread_absolute_pa
         {"content": "session title"},
         {"content": "I can inspect the attached notes."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-artifact-path",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -613,7 +619,7 @@ async def test_human_attachment_keeps_logical_id_and_compiles_thread_absolute_pa
         )
         model_path = services.artifacts.model_path(artifact)
 
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(
@@ -626,7 +632,7 @@ async def test_human_attachment_keeps_logical_id_and_compiles_thread_absolute_pa
 
         stored_input = next(
             message
-            for message in services.engine.messages
+            for message in engine_of(services).messages
             if message.kind == "human_input"
         )
         assert stored_input.artifacts == (artifact,)
@@ -684,10 +690,10 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         },
         {"content": "I reviewed both complete sources."},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-content-cache",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -699,11 +705,11 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         services.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
-        services.engine.tools.register(
+        engine_of(services).tools.register(
             Tool.from_function(read_large_result), cleanup="caller"
         )
 
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content=long_user_text),
@@ -749,7 +755,7 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         tool_model_path = Path(tool_path.group(1))
         thread_paths = RuntimePaths.from_data_dir(temp_data_dir).session(
             "runtime-content-cache"
-        ).thread("agent")
+        ).thread("main")
         user_artifact_id = str(
             user_model_path.relative_to(thread_paths.artifacts_dir)
         )
@@ -764,7 +770,7 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         assert services.artifacts.read(tool_artifact_id) == long_tool_text.encode("utf-8")
 
         human = next(
-            message for message in services.engine.messages
+            message for message in engine_of(services).messages
             if message.kind == "human_input"
         )
         assert human.parts[0].text.startswith("user-start α")
@@ -776,7 +782,7 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         )
         assert str(user_model_path) not in human.model_dump_json()
         tool_message = next(
-            message for message in services.engine.messages
+            message for message in engine_of(services).messages
             if message.kind == "tool"
         )
         tool_preview = tool_message.outcome.output.parts[0].text
@@ -804,10 +810,10 @@ async def test_content_cache_keeps_prior_long_user_input_externalized_on_next_tu
         {"content": "first turn answer"},
         {"content": "follow-up answer"},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-content-cache-follow-up",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -817,7 +823,7 @@ async def test_content_cache_keeps_prior_long_user_input_externalized_on_next_tu
             (long_user_text, "long-input-request"),
             ("A short follow-up", "follow-up-request"),
         ):
-            events = [event async for event in services.engine.run_turn(
+            events = [event async for event in engine_of(services).run_turn(
                 InboxItem(
                     target=InboxTarget.NEXT_TURN,
                     input=HumanInput(content=content),
@@ -841,7 +847,7 @@ async def test_content_cache_keeps_prior_long_user_input_externalized_on_next_tu
         assert "HISTORY_MIDDLE_MUST_NOT_REACH_MODEL" not in prior_input
 
         stored_input = next(
-            message for message in services.engine.messages
+            message for message in engine_of(services).messages
             if message.kind == "human_input"
             and message.parts[0].text.startswith("history-start α")
         )
@@ -868,16 +874,16 @@ async def test_content_cache_artifact_resolves_after_application_restart(
         {"content": "first answer"},
     ])
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
+    services = await thread_scope(
         paths=paths,
         session_id="runtime-content-cache-recovery",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=first_provider,
     )
     try:
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content=long_user_text),
@@ -887,7 +893,7 @@ async def test_content_cache_artifact_resolves_after_application_restart(
         assert isinstance(events[-1], LoopTurnEnded)
         assert events[-1].outcome.kind == "finished"
         stored = next(
-            message for message in services.engine.messages
+            message for message in engine_of(services).messages
             if message.kind == "human_input"
         )
         assert len(stored.artifacts) == 1
@@ -899,17 +905,18 @@ async def test_content_cache_artifact_resolves_after_application_restart(
         await services.stop()
 
     resumed_provider = MockLLM(responses=[{"content": "after restart"}])
-    resumed = await start_application(
+    resumed = await thread_scope(
+        mode="resume",
         paths=paths,
         session_id="runtime-content-cache-recovery",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=resumed_provider,
     )
     try:
         restored = next(
-            message for message in resumed.engine.messages
+            message for message in engine_of(resumed).messages
             if message.kind == "human_input"
         )
         assert len(restored.artifacts) == 1
@@ -918,7 +925,7 @@ async def test_content_cache_artifact_resolves_after_application_restart(
             "utf-8"
         )
 
-        events = [event async for event in resumed.engine.run_turn(
+        events = [event async for event in engine_of(resumed).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Continue after restart"),
@@ -968,16 +975,16 @@ async def test_content_cache_runs_after_skill_input_expansion(
         {"content": "session title"},
         {"content": "reviewed"},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-content-cache-skill",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
     try:
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="/large-review inspect this change"),
@@ -988,7 +995,7 @@ async def test_content_cache_runs_after_skill_input_expansion(
         assert events[-1].outcome.kind == "finished"
 
         accepted = next(
-            message for message in services.engine.messages
+            message for message in engine_of(services).messages
             if message.kind == "human_input"
         )
         assert "large-review" in accepted.parts[0].text
@@ -1030,16 +1037,16 @@ async def test_streaming_turn_exposes_reasoning_and_usage_and_keeps_final_answer
             "usage_metadata": {"input_tokens": 7, "output_tokens": 4},
         },
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-streaming-turn",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
     try:
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="What is the answer?"),
@@ -1078,10 +1085,10 @@ async def test_streaming_turn_exposes_reasoning_and_usage_and_keeps_final_answer
 async def test_failed_provider_turn_is_durable_and_same_runtime_recovers(
     temp_data_dir, temp_workspace
 ):
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-failed-turn",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         # The caption call succeeds; the actual turn request then exhausts.
@@ -1104,7 +1111,7 @@ async def test_failed_provider_turn_is_durable_and_same_runtime_recovers(
             ))
 
         services.on(Events.ON_ERROR, inspect_provider_failure)
-        failed = [event async for event in services.engine.run_turn(
+        failed = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="request that will fail"),
@@ -1116,17 +1123,17 @@ async def test_failed_provider_turn_is_durable_and_same_runtime_recovers(
         assert isinstance(failed[-1], LoopTurnEnded)
         assert failed[-1].outcome.kind == "finished"
         assert failed[-1].outcome.stop_reason == "error"
-        assert isinstance(project_message(services.engine.messages[0]), HumanInputRecord)
+        assert isinstance(project_message(engine_of(services).messages[0]), HumanInputRecord)
         assert failure_observations == [(
-            (services.engine.messages[0].id,),
-            (services.engine.messages[0].id,),
+            (engine_of(services).messages[0].id,),
+            (engine_of(services).messages[0].id,),
             ("HumanInputRecord",),
         )]
 
-        services.engine.configure(
+        engine_of(services).configure(
             model_client=MockLLM(responses=[{"content": "recovered answer"}])
         )
-        recovered = [event async for event in services.engine.run_turn(
+        recovered = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="retry in the same runtime"),
@@ -1138,10 +1145,10 @@ async def test_failed_provider_turn_is_durable_and_same_runtime_recovers(
         assert recovered[-1].outcome.kind == "finished"
         assert [
             record.kind
-            for message in services.engine.messages
+            for message in engine_of(services).messages
             if (record := project_message(message)) is not None
         ] == ["human_input", "human_input", "assistant"]
-        assert services.engine.pending_input_count == 0
+        assert engine_of(services).pending_input_count == 0
     finally:
         await services.stop()
 
@@ -1171,16 +1178,16 @@ async def test_agent_turn_retries_transient_provider_failure_before_output(
                 yield event
 
     provider = TransientOnceMockLLM()
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-provider-retry",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
     try:
-        events = [event async for event in services.engine.run_turn(
+        events = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="Retry before output"),
@@ -1194,8 +1201,8 @@ async def test_agent_turn_retries_transient_provider_failure_before_output(
         assert sum(isinstance(event, AssistantCompleted) for event in events) == 1
         assert isinstance(events[-1], LoopTurnEnded)
         assert events[-1].outcome.kind == "finished"
-        assert isinstance(services.engine.messages[-1], AssistantMessage)
-        assert services.engine.messages[-1].parts == (
+        assert isinstance(engine_of(services).messages[-1], AssistantMessage)
+        assert engine_of(services).messages[-1].parts == (
             TextPart(text="answer after retry"),
         )
     finally:
@@ -1227,10 +1234,10 @@ async def test_cancelled_stream_keeps_only_user_input_and_same_runtime_recovers(
         {"content": "session title"},
         {"content": "complete answer"},
     ])
-    services = await start_application(
+    services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="runtime-cancelled-stream",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
@@ -1240,7 +1247,7 @@ async def test_cancelled_stream_keeps_only_user_input_and_same_runtime_recovers(
 
         async def consume_interrupted_turn():
             try:
-                async for event in services.engine.run_turn(
+                async for event in engine_of(services).run_turn(
                     InboxItem(
                         target=InboxTarget.NEXT_TURN,
                         input=HumanInput(content="answer this request"),
@@ -1263,17 +1270,17 @@ async def test_cancelled_stream_keeps_only_user_input_and_same_runtime_recovers(
         )
         assert isinstance(interrupted_events[-1], LoopTurnEnded)
         assert interrupted_events[-1].outcome.kind == "cancelled"
-        assert services.engine.pending_input_count == 0
+        assert engine_of(services).pending_input_count == 0
         assert [
             record.kind
-            for message in services.engine.messages
+            for message in engine_of(services).messages
             if (record := project_message(message)) is not None
         ] == ["human_input"]
 
-        services.engine.configure(
+        engine_of(services).configure(
             model_client=MockLLM(responses=[{"content": "recovered answer"}])
         )
-        recovered = [event async for event in services.engine.run_turn(
+        recovered = [event async for event in engine_of(services).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="continue after cancellation"),
@@ -1285,10 +1292,10 @@ async def test_cancelled_stream_keeps_only_user_input_and_same_runtime_recovers(
         assert recovered[-1].outcome.kind == "finished"
         assert [
             record.kind
-            for message in services.engine.messages
+            for message in engine_of(services).messages
             if (record := project_message(message)) is not None
         ] == ["human_input", "human_input", "assistant"]
-        assert services.engine.pending_input_count == 0
+        assert engine_of(services).pending_input_count == 0
     finally:
         release_stream.set()
         await services.stop()

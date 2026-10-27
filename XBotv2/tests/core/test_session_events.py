@@ -12,9 +12,9 @@ from XBotv2.core.api.domain import (
 )
 from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.agentloop.impl.metadata import ThreadMetadataState
-from XBotv2.session.contracts import SessionKey
+from XBotv2.session.api.contracts import SessionKey
 from XBotv2.agentloop.impl.state import SessionRuntimeState
-from XBotv2.session.event_stream import SessionEventCursorExpired, SessionEventStream
+from XBotv2.session.impl.event_stream import SessionEventCursorExpired, SessionEventStream
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ async def _stream(capacity=512):
         ),
     )
     metadata_state = ThreadMetadataState(
-        __import__("xcore").Context(), session_id="s", thread_id="t",
+        __import__("xcore.api.context", fromlist=["Context"]).Context(), session_id="s", thread_id="t",
     )
     await metadata_state.initialize(ThreadMetadata(runtime_selection=selection))
     state = SessionRuntimeState(SessionKey("s", "t"), metadata_state)

@@ -8,6 +8,11 @@ events through the installed live sink (the protocol) or the waiter.
 """
 
 from __future__ import annotations
+from XBotv2.session.api.contracts import SESSIONS, THREAD_INFO
+from XBotv2.interactions.api.contracts import CLIENT_EVENTS
+from XBotv2.interactions.impl.client_http import build_router as build_client_router
+from XBotv2.server.api.contracts import contribute_router
+from XBotv2.persistence.api.contracts import PERSISTENCE
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from xcore.api.context import Context
@@ -25,7 +30,7 @@ from XBotv2.interactions.api.contracts import (
     ResolutionFactory,
 )
 from XBotv2.agentloop.api.events import Events, SessionLifecycle
-from XBotv2.application.contracts import ClientEventsPort
+from XBotv2.interactions.api.contracts import ClientEventsPort
 from XBotv2.interactions.impl.tools import build_ask_user_tool, notify_user
 from XBotv2.interactions.api.models import (
     Answered,
@@ -106,7 +111,7 @@ class InteractionsService(InteractionsPort):
         status such as ``disconnected`` / ``timeout`` / ``cancelled`` /
         ``unsupported``).
         """
-        request_id = f"user_input:{tool_call_id or uuid.uuid4().hex}"
+        request_id = f"user_input:{uuid.uuid4().hex}"
         payload = UserInputRequest(
             interaction_id=request_id,
             tool_call_id=tool_call_id,
@@ -129,16 +134,25 @@ class InteractionsService(InteractionsPort):
 class InteractionsComponent:
     """Register the interactions service as ``ctx.interactions``."""
 
-    inject = [TOOLS, "session_launch"]
+    inject = [TOOLS, "interactive", SESSIONS, THREAD_INFO]
     name = "xbot.interactions"
 
-    def apply(
+    async def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        client_events = ClientEventRouter(parent=ctx.session_launch.parent_client_events)
+        info = ctx.require(THREAD_INFO)
+        parent = None
+        if info.parent_thread_id:
+            owner = await ctx.require(SESSIONS).locate(info.session_id, info.parent_thread_id)
+            parent = owner.require(CLIENT_EVENTS)
+        client_events = ClientEventRouter(parent, owner=ctx)
         ctx.set("client_events", client_events)
         service = InteractionsService(ctx, client_events)
         ctx.set(INTERACTIONS, service)
+        async def drain():
+            service.session_closed(SessionLifecycle())
+            await client_events.close()
+        ctx.pre_stop(drain)
         ctx.dispose(client_events.register_interaction(
             InteractionRegistration(
                 kind="user_input_required",
@@ -150,9 +164,25 @@ class InteractionsComponent:
             )
         ))
         ctx.require(TOOLS).register(notify_user)
-        if ctx.session_launch.interactive:
+        if ctx.interactive:
             ctx.require(TOOLS).register(build_ask_user_tool(service))
         ctx.on(Events.SESSION_CLOSE, service.session_closed)
 
 
-plugin = InteractionsComponent()
+async def mount_thread(ctx, config):
+    await InteractionsComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(InteractionsComponent, "inject", ())
+mount_thread.provide = ('client_events', 'interactions')
+mount_thread.Config = getattr(InteractionsComponent, "Config", None)
+
+
+async def mount_client_http(ctx):
+    await contribute_router(ctx, owner="xbot.interactions.client-http", router=build_client_router(sessions=ctx.sessions, persistence=ctx.require(PERSISTENCE)))
+
+
+def mount_process(ctx, config):
+    ctx.inject(["server", "sessions", PERSISTENCE], mount_client_http)
+mount_process.inject = ()
+mount_process.provide = ()

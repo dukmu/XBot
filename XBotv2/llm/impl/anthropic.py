@@ -148,6 +148,9 @@ class AnthropicProvider(BaseProvider):
         "input tokens exceed",
     )
 
+    async def close(self) -> None:
+        await self.client.close()
+
     def normalize_provider_error(self, error: Exception):
         overflow = provider_context_overflow(
             error,

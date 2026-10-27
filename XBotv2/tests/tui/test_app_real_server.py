@@ -21,7 +21,6 @@ import shutil
 import subprocess
 import sys
 import uuid
-from functools import partial
 from pathlib import Path
 from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
@@ -42,10 +41,10 @@ from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.permissions.api.models import PermissionRequest
-from XBotv2.application.app import create_agent_application
-from XBotv2.application.server import start_server_application
-from XBotv2.loader import PluginOverlay
-from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
+from XBotv2.llm.api.contracts import LLM
+from XBotv2.main import open_runtime
+from XBotv2.loader.api.contracts import PluginOverlay
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.tests.tui.factories import PNG_BYTES, tui_app
 from XBotv2.tui.impl.app import TuiApp
 from XBotv2.tui.impl.transport import TransportConfig
@@ -55,7 +54,7 @@ from XBotv2.tui.impl.view.status_bar import StatusBar
 from XBotv2.tui.impl.view.transcript import TranscriptScroll
 
 SESSION_ID = "tui-e2e"
-THREAD_ID = "agent"
+THREAD_ID = "main"
 REPLY = "hello from the real server"
 CAPTION = "A title from the caption plugin"
 _LONG_HISTORY_GATE: asyncio.Event | None = None
@@ -279,7 +278,7 @@ async def base_url(
         (data_dir / "state.json").write_text(
             '{"unrelated.setting":"preserved"}\n', encoding="utf-8",
         )
-    server = await start_server_application(
+    server = await open_runtime(
         paths=RuntimePaths.from_data_dir(data_dir),
         overrides=PluginOverlay.parse([{"id": "session", "config": {
             "provider_name": provider_name, "workspace_root": str(workspace),
@@ -579,15 +578,8 @@ async def base_url(
 
         model_factory = AgentRoutedMockLLM
     if scenario != "minimax_thinking":
-        server.sessions.application_factory = partial(
-            create_agent_application,
-            model_override=model_factory(
-                responses=model_responses,
-                # The override bypasses the plugin config, so its capabilities have to
-                # be declared here; attaching an image is otherwise rejected.
-                input_modalities=["text", "image"],
-            ),
-        )
+        server.require(LLM).unregister("openai")
+        server.require(LLM).register("openai", lambda *_: model_factory(responses=model_responses, input_modalities=['text', 'image']))
     config = uvicorn.Config(
         server.server,
         host="127.0.0.1",
@@ -610,7 +602,7 @@ async def base_url(
             _LONG_HISTORY_GATE.set()
         http.should_exit = True
         await asyncio.gather(serving, return_exceptions=True)
-        await server.stop()
+        await server.close()
         if upstream_http is not None and upstream_serving is not None:
             upstream_http.should_exit = True
             await asyncio.gather(upstream_serving, return_exceptions=True)
@@ -3186,7 +3178,7 @@ async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
             await asyncio.sleep(0.02)
         assert child_id, "the production subagent created a public child thread"
 
-        from XBotv2.session.records import RuntimeNoticeRecord
+        from XBotv2.session.api.records import RuntimeNoticeRecord
         from XBotv2.tui.impl.view.blocks import ClampedBlock
 
         history = await real_client.list_messages(SESSION_ID, THREAD_ID)

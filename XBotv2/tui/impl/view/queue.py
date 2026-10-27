@@ -16,7 +16,7 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from XBotv2.session.contracts import PendingInputData
+from XBotv2.agentloop.api.models import PendingInputData
 
 QUEUE_PANEL_CSS = """
 QueuePanel {

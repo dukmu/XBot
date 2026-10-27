@@ -1,29 +1,25 @@
 """Typed operations owned by the Agent tool capability."""
 
 from __future__ import annotations
+from contextlib import AbstractAsyncContextManager
+from XBotv2.core.api.operations import RequestT, ResponseT
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 import uuid
-from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, Protocol, TypeAlias, overload
 from XBotv2.core.api.domain import InboxTarget, MessageId
 from XBotv2.core.api.operations import EmptyRequest, Operation
-from XBotv2.core.api.messages import ConversationMessage
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from xcore.api.context import Context
 from xcore.api.services import ServiceKey
 from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
 from XBotv2.core.api.tools import GuardDecision, Tool, ToolCall, ToolExecution
-from XBotv2.agentloop.api.state import LoopState
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop.api.outputs import LoopEvent
-    from xcore.api.events import EventDispatch
-
+    from XBotv2.agentloop.api.models import PendingInputData, SendMessage, HistoryMutation, SessionStatus
     from XBotv2.llm.api.contracts import ModelPort
-    from XBotv2.core.api.domain import UserContext
 
-DEFAULT_MAX_ITERATIONS = 200
 
 
 class AllTools(BaseModel):
@@ -163,53 +159,32 @@ class ToolRegistration:
     timeout_seconds: float | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class LoopFactoryOptions:
-    """Resolved ports consumed by an Agent loop factory."""
 
-    model_client: ModelPort
-    tools: "ToolsPort"
-    events: EventDispatch
-    state: LoopState
-    user_identity: "UserContext"
-    memory: str
-    max_iterations: int
-    #: The composed inbox (durable after hydration, transient otherwise),
-    #: bound at construction by the agent_inbox service dependency.
-    inbox: "Inbox"
-
-
-class AgentLoopDriverPort(Protocol):
-    messages: Sequence[ConversationMessage]
-    pending_input_count: int
-    pending_inputs: Sequence[InboxItem]
-
-    def configure(
-        self, *, model_client: ModelPort, max_iterations: int | None = None,
-    ) -> None: ...
-
-    async def start_session(self) -> None: ...
-    async def close_session(self) -> None: ...
-    async def discard_inputs(self) -> None: ...
+class AgentLoopPort(Protocol):
+    @property
+    def busy(self) -> bool: ...
+    @property
+    def last_activity(self) -> float: ...
+    @property
+    def pending_input_count(self) -> int: ...
+    def touch(self) -> None: ...
+    def status(self) -> SessionStatus: ...
+    def pending_inputs(self) -> tuple[PendingInputData, ...]: ...
+    def resume_pending_inputs(self) -> bool: ...
+    def idle(self, action: str) -> AbstractAsyncContextManager[None]: ...
+    @overload
+    def configure(self, *, model_client: ModelPort) -> None: ...
+    @overload
+    def configure(self, *, model_client: ModelPort, max_iterations: int | None) -> None: ...
+    async def invoke(self, operation: Operation[RequestT, ResponseT], request: RequestT) -> ResponseT: ...
+    async def interrupt(self) -> bool: ...
     async def submit_input(self, item: InboxItem, *, wake: bool) -> None: ...
-    async def edit_input(self, input_id: str, content: str) -> InboxItem: ...
-    async def remove_input(self, input_id: str) -> InboxItem: ...
-    async def retarget_input(
-        self,
-        input_id: str,
-        target: InboxTarget,
-    ) -> InboxItem: ...
-    def run_turn(
-        self,
-        item: InboxItem,
-        *,
-        request_id: str = "",
-    ) -> AsyncIterator[LoopEvent]: ...
-    def run_pending(
-        self,
-        *,
-        request_id: str = "",
-    ) -> AsyncIterator[LoopEvent]: ...
+    async def submit_message(self, request: SendMessage) -> None: ...
+    async def send_message(self, content: str, request_id: str, *, delivery: str = "steer", images: list[ImageRef] | None = None, artifacts: list[ArtifactRef] | None = None) -> None: ...
+    async def update_pending_input(self, message_id: str, action: str, content: str = "") -> tuple[PendingInputData, ...]: ...
+    async def regenerate(self, request_id: str) -> None: ...
+    async def clear_history(self, *, history_limit: int | None = None) -> HistoryMutation: ...
+    async def undo_history(self, count: int, *, history_limit: int | None = None) -> HistoryMutation: ...
 
 
 ToolGuard = Callable[
@@ -252,8 +227,7 @@ class ToolsPort(Protocol):
     ) -> AsyncIterator[ToolExecution]: ...
 
 
-class AgentLoopFactoryPort(Protocol):
-    def create(self, options: LoopFactoryOptions) -> AgentLoopDriverPort: ...
+
 
 
 LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)
@@ -261,4 +235,4 @@ LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)
 
 TOOLS: ServiceKey[ToolsPort] = ServiceKey("tools")
 INBOX: ServiceKey[Inbox] = ServiceKey("agent_inbox")
-AGENT_LOOP_FACTORY: ServiceKey[AgentLoopFactoryPort] = ServiceKey("agent_loop_factory")
+AGENT_LOOP: ServiceKey[AgentLoopPort] = ServiceKey("agent_loop")

@@ -1,8 +1,9 @@
 """Thread-scoped task list and the four fine-grained task tools."""
 
 from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
 
-from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopDriverPort, InboxItem, RuntimeInput
+from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopPort, InboxItem, RuntimeInput
 from XBotv2.agentloop.api.state import LOOP_STATE
 import copy
 from collections.abc import Mapping
@@ -11,12 +12,13 @@ from xml.sax.saxutils import escape
 from xcore.api.context import Context
 from xcore.api.state import StateService
 from XBotv2.agentloop.api.events import Events, TurnStarted
-from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.agentloop.api.events import RuntimeEvent
 from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.server.api.contracts import contribute_router
-from XBotv2.session import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.api.contracts import HISTORY_CHANGED, HistoryChanged
 from XBotv2.todolist.api.models import (
     DependencyEdge,
     Task,
@@ -70,7 +72,7 @@ class TaskService:
         store: StateService,
         *,
         agent_name: str,
-        engine: AgentLoopDriverPort,
+        engine: AgentLoopPort,
         events: Context,
         config: TaskConfig,
     ) -> None:
@@ -536,14 +538,14 @@ def _render_compaction_reminder(
 
 
 class TodolistRuntimeComponent:
-    inject = {"required": [TOOLS, "state", "engine", LOOP_STATE]}
+    inject = {"required": [TOOLS, "state", "agent_loop", LOOP_STATE]}
     name = "todolist"
     Config = TaskConfig
 
     def apply(
         self, ctx: Context, config: TaskConfig | None = None
     ) -> None:
-        engine: AgentLoopDriverPort = ctx.engine
+        engine: AgentLoopPort = ctx.require(AGENT_LOOP)
         resolved = config or TaskConfig()
         service = TaskService(
             ctx.state.namespace(self.name),
@@ -566,17 +568,16 @@ class TodolistRuntimeComponent:
             ctx.require(TOOLS).register(_task_tool(function, resolved))
 
 
-class TodolistPlugin:
-    """Compose the Agent task service and its HTTP projection."""
+async def mount_thread(ctx, config):
+    await ctx.plugin(TodolistRuntimeComponent(), config)
 
-    name = "xbot.todolist"
-    Config = TaskConfig
-
-    async def apply(
-        self, ctx: Context, config: TaskConfig | None = None
-    ) -> None:
-        await ctx.plugin(TodolistRuntimeComponent(), config)
-        await ctx.inject(["server", "sessions"], mount_http)
+mount_thread.inject = ()
+mount_thread.provide = ("todolist",)
+mount_thread.Config = TaskConfig
 
 
-plugin = TodolistPlugin()
+def mount_process(ctx, config):
+    ctx.inject(["server", "sessions"], mount_http)
+
+mount_process.inject = ()
+mount_process.provide = ()

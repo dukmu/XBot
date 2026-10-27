@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """Task-list state owns identity, dependency, and transition invariants."""
 
 import pytest
@@ -122,16 +123,18 @@ async def _start(
     *,
     config=None,
     additional_plugins=(),
+    mode="new",
 ):
-    from XBotv2.application.app import start_application
+    from XBotv2.tests.runtime import thread_scope
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.llm.impl.mock import MockLLM
     from XBotv2.permissions.api.models import PermissionPolicy
 
     llm = MockLLM(responses=responses)
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="todolist-production",
+        mode=mode,
         thread_id="main",
         workspace_root=temp_workspace,
         llm_override=llm,
@@ -175,10 +178,10 @@ async def test_task_tool_failures_are_typed_and_the_turn_continues(
         {"content": "One task was created; three calls were rejected."},
     ])
     try:
-        events = await _run_turn(application.engine, "Manage the work")
+        events = await _run_turn(engine_of(application), "Manage the work")
         messages = application.loop_state.history.snapshot()
     finally:
-        await application.destroy()
+        await application.root.close()
 
     assert not [event for event in events if isinstance(event, LoopError)]
     outcomes = _tool_messages(messages)
@@ -203,11 +206,11 @@ async def test_task_tool_failures_are_typed_and_the_turn_continues(
     )
     resumed, _ = await _start(temp_data_dir, temp_workspace, [
         {"content": "Resumed."},
-    ])
+    ], mode="resume")
     try:
         assert resumed.loop_state.history.snapshot() == tuple(messages)
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
 
 @pytest.mark.asyncio
@@ -229,11 +232,11 @@ async def test_config_reaches_the_registry_schema_and_the_task_limit(
         config={"max_tasks": 1, "max_subject_chars": 80},
     )
     try:
-        await _run_turn(application.engine, "Plan")
+        await _run_turn(engine_of(application), "Plan")
         messages = application.loop_state.history.snapshot()
         request = llm.request_history[0]
     finally:
-        await application.destroy()
+        await application.root.close()
 
     outcomes = _tool_messages(messages)
     assert "Created task #1: Only task" in _outcome_text(
@@ -278,10 +281,10 @@ async def test_dependencies_block_start_and_reject_cycles(
                     "cycles rejected."},
     ])
     try:
-        await _run_turn(application.engine, "Coordinate the work")
+        await _run_turn(engine_of(application), "Coordinate the work")
         messages = application.loop_state.history.snapshot()
     finally:
-        await application.destroy()
+        await application.root.close()
 
     outcomes = _tool_messages(messages)
     assert "Updated task #2" in _outcome_text(outcomes["link-b"].outcome)
@@ -302,7 +305,7 @@ async def test_dependencies_block_start_and_reject_cycles(
 async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
     temp_data_dir, temp_workspace,
 ):
-    from XBotv2.application import RUNTIME_EVENT
+    from XBotv2.agentloop.api.events import RUNTIME_EVENT
     from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.events import TaskChanged
@@ -335,11 +338,11 @@ async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
 
     try:
         application.on(RUNTIME_EVENT, observe)
-        await _run_turn(application.engine, "Revise and finish the plan")
+        await _run_turn(engine_of(application), "Revise and finish the plan")
         outcomes = _tool_messages(application.loop_state.history.snapshot())
         snapshot = await dispatch_operation(application, GET_TODOS, EmptyRequest())
     finally:
-        await application.destroy()
+        await application.root.close()
 
     assert outcomes["invalid-claim"].outcome.kind == "failed"
     assert outcomes["invalid-claim"].outcome.error.code == "blocked"
@@ -359,7 +362,7 @@ async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
 async def test_dependency_revisions_are_atomic_and_survive_resume(
     temp_data_dir, temp_workspace,
 ):
-    from XBotv2.application import RUNTIME_EVENT
+    from XBotv2.agentloop.api.events import RUNTIME_EVENT
     from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.events import TaskChanged
@@ -392,7 +395,7 @@ async def test_dependency_revisions_are_atomic_and_survive_resume(
 
     try:
         application.on(RUNTIME_EVENT, observe)
-        await _run_turn(application.engine, "Revise the prerequisites")
+        await _run_turn(engine_of(application), "Revise the prerequisites")
         outcomes = _tool_messages(application.loop_state.history.snapshot())
         saved = await dispatch_operation(application, GET_TODOS, EmptyRequest())
         assert outcomes["conflict"].outcome.error.code == "invalid_task_update"
@@ -402,22 +405,22 @@ async def test_dependency_revisions_are_atomic_and_survive_resume(
         assert saved.find("1").subject == "Prepare"
         assert saved.prerequisites("2") == ("1",)
     finally:
-        await application.destroy()
+        await application.root.close()
 
     resumed, _ = await _start(temp_data_dir, temp_workspace, [
         {"tool_calls": [{"id": "blocked-after-resume", "name": "task_update",
                          "args": {"taskId": "2", "status": "in_progress"}}]},
         {"content": "Prerequisite remains incomplete."},
-    ])
+    ], mode="resume")
     try:
         restored = await dispatch_operation(resumed, GET_TODOS, EmptyRequest())
         assert restored == saved
-        await _run_turn(resumed.engine, "Try starting delivery")
+        await _run_turn(engine_of(resumed), "Try starting delivery")
         outcomes = _tool_messages(resumed.loop_state.history.snapshot())
         assert outcomes["blocked-after-resume"].outcome.error.code == "blocked"
         assert await dispatch_operation(resumed, GET_TODOS, EmptyRequest()) == saved
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
 
 @pytest.mark.asyncio
@@ -448,14 +451,14 @@ async def test_stale_reminder_queues_folds_into_one_turn_and_resets_on_use(
         config={"reminder_after_turns": 2},
     )
     try:
-        await _run_turn(application.engine, "Please draft the plan")   # 1: creates
-        await _run_turn(application.engine, "Keep going")             # 2: counter 1
-        await _run_turn(application.engine, "Keep going again")       # 3: queues
-        await _run_turn(application.engine, "Where are we?")          # 4: folds
+        await _run_turn(engine_of(application), "Please draft the plan")   # 1: creates
+        await _run_turn(engine_of(application), "Keep going")             # 2: counter 1
+        await _run_turn(engine_of(application), "Keep going again")       # 3: queues
+        await _run_turn(engine_of(application), "Where are we?")          # 4: folds
         messages = application.loop_state.history.snapshot()
         requests = llm.request_history
     finally:
-        await application.destroy()
+        await application.root.close()
 
     # The reminder is folded at the first available step boundary. Later
     # requests see the same persisted notice, never duplicate injections.
@@ -506,14 +509,14 @@ async def test_reminder_counter_and_snapshot_survive_close_and_resume(
         config=config,
     )
     try:
-        await _run_turn(application.engine, "Please draft the plan")
-        await _run_turn(application.engine, "Keep going")
+        await _run_turn(engine_of(application), "Please draft the plan")
+        await _run_turn(engine_of(application), "Keep going")
         assert not [
             message for message in application.loop_state.history.snapshot()
             if isinstance(message, RuntimeNoticeMessage)
         ]
     finally:
-        await application.destroy()
+        await application.root.close()
 
     # One stale turn left the counter at 1; a fresh application reads that
     # back from disk, so a single further turn queues the reminder.
@@ -524,6 +527,7 @@ async def test_reminder_counter_and_snapshot_survive_close_and_resume(
             {"content": "Noted."},
         ],
         config=config,
+        mode="resume",
     )
     try:
         snapshot = await dispatch_operation(resumed, GET_TODOS, EmptyRequest())
@@ -531,10 +535,10 @@ async def test_reminder_counter_and_snapshot_survive_close_and_resume(
         assert [task.subject for task in snapshot.tasks] == ["Draft the plan"]
         assert snapshot.tasks[0].status == "pending"
 
-        await _run_turn(resumed.engine, "Keep going again")
+        await _run_turn(engine_of(resumed), "Keep going again")
         requests = llm.request_history
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
     assert requests[-1].messages
     assert '<system_reminder source="todo" event="reminder">' in _prompt(
@@ -557,9 +561,9 @@ async def test_compaction_restates_unfinished_tasks_once(
     from XBotv2.compact.api.protocol import CompactionCompleted
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.core.api.messages import RuntimeNoticeMessage
-    from XBotv2.application import RUNTIME_EVENT
+    from XBotv2.agentloop.api.events import RUNTIME_EVENT
     from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
-    from XBotv2.persistence.store import ThreadPersistence
+    from XBotv2.persistence.impl.store import ThreadPersistence
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.models import TaskList
 
@@ -603,19 +607,19 @@ async def test_compaction_restates_unfinished_tasks_once(
     try:
         application.on(RUNTIME_EVENT, lambda event: runtime_events.append(event.event))
         application.on(Events.INPUT_ACCEPTED, observe_input)
-        await _run_turn(application.engine, "Plan the work")
+        await _run_turn(engine_of(application), "Plan the work")
         compacted = await application.serial(
             EXECUTE_COMMAND.name,
             ExecuteCommand(command="compact", kind="server", raw_args=""),
         )
         assert compacted.status == "ok"
         assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
-        await _run_turn(application.engine, "Continue")
+        await _run_turn(engine_of(application), "Continue")
         prompt = _prompt(llm.request_history[-1])
         assert '<system_reminder source="todo" event="compaction">' in prompt
         assert "Review the module" in prompt
         assert len(todo_inputs) == 1
-        await _run_turn(application.engine, "Finish everything")
+        await _run_turn(engine_of(application), "Finish everything")
         completed = await application.serial(
             EXECUTE_COMMAND.name,
             ExecuteCommand(command="compact", kind="server", raw_args=""),
@@ -624,7 +628,7 @@ async def test_compaction_restates_unfinished_tasks_once(
         assert len(todo_inputs) == 1
         requests = llm.request_history
     finally:
-        await application.destroy()
+        await application.root.close()
 
     assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
     assert requests
@@ -651,13 +655,14 @@ async def test_compaction_restates_unfinished_tasks_once(
             "id": "compact",
             "config": {"automatic": False, "keep_recent_turns": 1},
         }],
+        mode="resume",
     )
     try:
         tasks = await dispatch_operation(resumed, GET_TODOS, EmptyRequest())
         assert isinstance(tasks, TaskList)
         assert [task.status for task in tasks.tasks] == ["completed", "completed"]
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
 
 # ---------------------------------------------------------------------------

@@ -7,12 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 import yaml
 from pydantic import BaseModel, JsonValue
-from XBotv2.loader import (
-    plugin_config_json_schema,
-    plugin_config_schema,
-    resolve_agent_tree,
-    validate_plugin_config,
-)
+from XBotv2.loader.api.configuration import plugin_config_json_schema, validate_plugin_config
+from XBotv2.loader.api.tree import resolve_agent_tree
 from XBotv2.config.api.contracts import (
     PatchPluginConfig,
     PluginConfigCatalog,
@@ -21,9 +17,9 @@ from XBotv2.config.api.contracts import (
     PluginConfigScope,
     PluginConfigUnavailable,
 )
-from XBotv2.core.filesystem.atomic import write_text_atomic
+from XBotv2.persistence.api.files import write_text_atomic
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.loader.contracts import PluginEntry, PluginOverlay
+from XBotv2.loader.api.contracts import PluginEntry, PluginOverlay
 
 
 def plugin_config_catalog(
@@ -31,6 +27,7 @@ def plugin_config_catalog(
     workspace_root: Path | str,
     scope: PluginConfigScope,
     session_id: str | None = None,
+    *, loader,
 ) -> PluginConfigCatalog:
     """Describe resolved plugin declarations without mounting their lifecycles."""
     workspace = Path(workspace_root).resolve()
@@ -39,7 +36,6 @@ def plugin_config_catalog(
     tree = resolve_agent_tree(
         paths=paths,
         workspace_root=workspace,
-        is_subagent=False,
         no_plugins=False,
         plugin_dirs=None,
         extra_plugins=None,
@@ -49,7 +45,7 @@ def plugin_config_catalog(
         include_session=scope == "session",
     )
     plugins = [
-        _descriptor(entry, scope_configs.get(entry.id, {}))
+        _descriptor(entry, scope_configs.get(entry.id, {}), loader)
         for entry in tree.entries
     ]
     return PluginConfigCatalog(
@@ -71,6 +67,7 @@ def update_plugin_config(
     plugin_id: str,
     patch: PatchPluginConfig,
     session_id: str | None = None,
+    *, loader,
 ) -> PluginConfigCatalog:
     """Validate and replace one layer's config object for a declared plugin."""
     workspace = Path(workspace_root).resolve()
@@ -84,7 +81,6 @@ def update_plugin_config(
     lower_tree = resolve_agent_tree(
         paths=paths,
         workspace_root=workspace,
-        is_subagent=False,
         no_plugins=False,
         plugin_dirs=None,
         extra_plugins=None,
@@ -93,7 +89,7 @@ def update_plugin_config(
         include_session=False,
     )
     entry = _entry(lower_tree.entries, plugin_id)
-    schema = _declared_schema(entry)
+    schema = _declared_schema(entry, loader)
     effective = _merge_config(entry.config, patch.config)
     try:
         validate_plugin_config(schema, effective)
@@ -108,15 +104,16 @@ def update_plugin_config(
         path,
         yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
     )
-    return plugin_config_catalog(paths, workspace, patch.scope, session_id)
+    return plugin_config_catalog(paths, workspace, patch.scope, session_id, loader=loader)
 
 
 def _descriptor(
     entry: PluginEntry,
     scope_config: dict[str, JsonValue],
+    loader,
 ) -> PluginConfigDescriptor:
     try:
-        schema = _declared_schema(entry)
+        schema = _declared_schema(entry, loader)
     except (ImportError, TypeError, ValueError) as exc:
         return PluginConfigDescriptor(
             plugin_id=entry.id,
@@ -136,8 +133,8 @@ def _descriptor(
     )
 
 
-def _declared_schema(entry: PluginEntry) -> type[BaseModel]:
-    schema = plugin_config_schema(entry)
+def _declared_schema(entry: PluginEntry, loader) -> type[BaseModel]:
+    schema = loader.config_schema(entry)
     if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
         raise PluginConfigUnavailable(
             "This plugin does not declare a Pydantic Config model."

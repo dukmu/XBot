@@ -13,6 +13,7 @@ no knowledge of individual plugins.
 """
 
 from __future__ import annotations
+import asyncio
 
 from collections.abc import AsyncIterator
 from functools import partial
@@ -49,6 +50,7 @@ class ToolsService(ToolsPort):
         events: EventDispatch | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
         ownership: Literal["fiber", "caller"] = "fiber",
+        owner: Context | None = None,
     ) -> None:
         self._registry = registry
         self.events = events
@@ -57,7 +59,10 @@ class ToolsService(ToolsPort):
         # apply: "fiber" stays loud, "caller" says the composer owns release
         # (test harnesses, embedding hosts).
         self._ownership = ownership
+        self._owner = owner
         self._guards: list[tuple[object, ToolGuard, bool]] = []
+        self._closing = False
+        self._calls = set()
 
     def guard(
         self,
@@ -77,6 +82,8 @@ class ToolsService(ToolsPort):
         Outside plugin ``apply``, pass the retained plugin context as ``owner``.
         Embedding callers can instead explicitly own cleanup.
         """
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise RuntimeError("tool registry is closing")
         token = object()
         remove = partial(self._remove_guard, token)
         if owner is not None:
@@ -114,6 +121,8 @@ class ToolsService(ToolsPort):
         owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str:
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise RuntimeError("tool registry is closing")
         """Register one tool; undone automatically when the plugin unloads.
 
         ``namespace`` is only for functional name scoping (e.g. ``mcp:server``,
@@ -215,16 +224,24 @@ class ToolsService(ToolsPort):
             results.append(message)
         return results
 
-    def execute_each(
-        self,
-        tool_calls: list[ToolCall],
-    ) -> AsyncIterator[ToolExecution]:
+    async def execute_each(self, tool_calls: list[ToolCall]) -> AsyncIterator[ToolExecution]:
+        if self._closing or (self._owner is not None and not self._owner.is_active):
+            raise RuntimeError("tool registry is closing")
+        task = asyncio.current_task()
+        self._calls.add(task)
+        try:
+            async for result in execute_tools(
+                tool_calls, self._registry, events=self.events, guards=self.guards(),
+                runtime_log=self._log, approval_layer_active=self.approval_layer_active(),
+            ):
+                yield result
+        finally:
+            self._calls.discard(task)
 
-        return execute_tools(
-            tool_calls,
-            self._registry,
-            events=self.events,
-            guards=self.guards(),
-            runtime_log=self._log,
-            approval_layer_active=self.approval_layer_active(),
-        )
+    async def close(self):
+        self._closing = True
+        calls = [task for task in self._calls if task is not asyncio.current_task()]
+        for task in calls:
+            task.cancel()
+        if calls:
+            await asyncio.gather(*calls, return_exceptions=True)

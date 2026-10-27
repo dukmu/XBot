@@ -39,18 +39,11 @@ from XBotv2.llm.api.protocol import EffortSelectionResponse, ProviderSelectionRe
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.protocol.api.models import ServerEvent
 from XBotv2.protocol.api.models import HelloResponse
-from XBotv2.session import (
-    AttachmentInput,
-    ImageInput,
-    OpenSessionResponse,
-    SessionListResponse,
-    SessionMode,
-    SessionSummary,
-    ThreadListResponse,
-    ThreadSummary,
-)
-from XBotv2.session.protocol import InterruptResponse
-from XBotv2.session.records import ConversationRecord
+from XBotv2.agentloop.api.models import AttachmentInput, ImageInput
+from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
+from XBotv2.session.api.protocol import OpenSessionResponse, SessionListResponse, ThreadListResponse
+from XBotv2.session.api.protocol import InterruptResponse
+from XBotv2.session.api.records import ConversationRecord
 from XBotv2.tui.impl.events import (
     ConnectionChanged,
     ErrorFrame,
@@ -216,7 +209,7 @@ class TransportConfig:
     """Everything the transport needs to attach to one thread."""
 
     session_id: str = ""
-    thread_id: str = "agent"
+    thread_id: str = "main"
     workspace_root: str | None = None
     mode: SessionMode = "new"
     agent: str | None = None
@@ -637,7 +630,7 @@ class TransportSession:
         return await self._backend.open_session(
             session_id=session_id,
             thread_id=target_thread,
-            workspace_root=self._config.workspace_root if mode == "new" else None,
+            workspace_root=self._config.workspace_root,
             mode=mode,
             agent=self._config.agent or None,
             history_limit=self._config.history_window,

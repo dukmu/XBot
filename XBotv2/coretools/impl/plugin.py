@@ -23,7 +23,7 @@ from XBotv2.coretools.api.models import CoreToolsConfig, HookConfig, WorkspaceTo
 
 class CoreToolsComponent:
     inject = {
-        "required": [TOOLS, "session", "artifacts", SANDBOX, JOBS, "workspace_root"],
+        "required": [TOOLS, "thread_info", "artifacts", SANDBOX, JOBS, "workspace_root"],
         # The approval layer is optional: without it, escalating shell calls
         # fail closed at call time instead of running unsandboxed.
         "optional": [PERMISSIONS],
@@ -186,4 +186,10 @@ def _resolve_workspace_target(
         ) from exc
 
 
-plugin = CoreToolsComponent()
+def mount_thread(ctx, config):
+    CoreToolsComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(CoreToolsComponent, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(CoreToolsComponent, "Config", None)

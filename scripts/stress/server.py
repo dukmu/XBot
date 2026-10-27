@@ -9,10 +9,10 @@ from typing import Any
 from xcore.api.context import Context
 import httpx
 import yaml
-from XBotv2.application.server import start_server_application
+from XBotv2.main import open_runtime
 from XBotv2.client import XBotClient
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.loader import PluginOverlay
+from XBotv2.loader.api.contracts import PluginOverlay
 from .provider import LoopbackServer, NetworkMockLLM
 
 
@@ -143,7 +143,7 @@ class MockServerHarness:
             self.workspace.mkdir(parents=True, exist_ok=True)
             await self._stack.enter_async_context(self.provider)
             _write_config(self.data_dir, self.provider.base_url)
-            self.application = await start_server_application(
+            self.application = await open_runtime(
                 paths=RuntimePaths.from_data_dir(self.data_dir),
                 overrides=PluginOverlay.parse([{
                     "id": "session",
@@ -153,7 +153,7 @@ class MockServerHarness:
                     },
                 }]),
             )
-            self._stack.push_async_callback(self.application.stop)
+            self._stack.push_async_callback(self.application.close)
             transport = httpx.ASGITransport(app=self.application.server)
             self.client = XBotClient(
                 base_url=self.base_url,

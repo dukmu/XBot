@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.outputs import ToolCompleted
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolFailed, ToolSucceeded
 from XBotv2.llm.impl.mock import MockLLM

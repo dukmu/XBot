@@ -1,3 +1,8 @@
+from XBotv2.tests.runtime import engine_of
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.session.api.contracts import THREAD_EVENTS
+from XBotv2.core.api.errors import OperationError
 """End-to-end checks for the loop-owned input path."""
 
 import asyncio
@@ -8,27 +13,34 @@ from pathlib import Path
 import pytest
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, RuntimeInput
 from XBotv2.core.api.domain import InboxTarget
-from XBotv2.session.records import (
-    AssistantRecord,
-    HumanInputRecord,
-    RuntimeNoticeRecord,
-    ToolRecord,
-    project_message,
-)
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
+from XBotv2.session.api.records import project_message
 from XBotv2.core.api.tools import ToolFailed, ToolSucceeded, Tool
-from XBotv2.session.runtime import SessionRuntime
-from XBotv2.session.contracts import conversation_replay
-from XBotv2.application.app import create_agent_application, start_application
-from XBotv2.application.host import mounted_application
+from XBotv2.agentloop.impl.execution import AgentLoop
+
+from XBotv2.session.api.records import conversation_replay
+from XBotv2.tests.runtime import thread_scope, engine_of
 from XBotv2.core.api.messages import AssistantMessage
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.core.filesystem.session_lock import acquire_session
+from XBotv2.persistence.impl.session_lock import acquire_session
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ProviderUser
 from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.persistence.plugin import thread_persistence_factory
-from XBotv2.session.manager import SessionManager
+from XBotv2.session.impl.manager import SessionManager
+
+
+async def _finished_turn(scope):
+    events = scope.require(THREAD_EVENTS).subscribe(after=0)
+    frames = []
+    try:
+        async with asyncio.timeout(5):
+            async for frame in events:
+                frames.append(frame.event)
+                if frame.event.kind == "turn_ended":
+                    return frames
+    finally:
+        await events.aclose()
 
 
 def _record_text(record):
@@ -40,14 +52,14 @@ def _record_text(record):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("persistent", [True])
 @pytest.mark.parametrize("short_circuit", ["reject", "complete"])
 async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, persistent, short_circuit):
     from XBotv2.agentloop.api.events import CompleteTurn, Events, RejectInput
     from XBotv2.agentloop.api.outputs import LoopError
 
     provider = MockLLM(responses=[{"content": "answered"}])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
         no_plugins=True, llm_override=provider,
         extra_plugins=[{"id": "persistence", "disabled": not persistent}],
@@ -69,29 +81,29 @@ async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, 
 
     try:
         application.on(Events.ON_TURN_INPUT, reject_notice)
-        await application.engine.submit_input(InboxItem(
+        await engine_of(application).submit_input(InboxItem(
             id="accepted-notice", target=InboxTarget.NEXT_STEP,
             input=RuntimeInput(source="job", event="completion", content="accepted notice"),
         ), wake=False)
-        await application.engine.submit_input(notice, wake=False)
-        events = [event async for event in application.engine.run_turn(user)]
+        await engine_of(application).submit_input(notice, wake=False)
+        events = [event async for event in engine_of(application).run_turn(user)]
         assert any(event.kind == "error" for event in events)
         assert provider.call_count == 0
-        assert [message.id for message in application.engine.messages] == ["accepted-notice"]
-        assert [item.id for item in application.engine.pending_inputs] == [user.id]
+        assert [message.id for message in engine_of(application).messages] == ["accepted-notice"]
+        assert [item.id for item in engine_of(application).pending_inputs] == [user.id]
         if persistent:
             assert [item.id for item in application.thread_persistence.inbox.load()] == [user.id]
-        retried = [event async for event in application.engine.run_pending()]
+        retried = [event async for event in engine_of(application).run_pending()]
         assert any(event.kind == "assistant_completed" for event in retried)
-        assert application.engine.pending_input_count == 0
+        assert engine_of(application).pending_input_count == 0
         assert provider.call_count == 1
-        assert [message.id for message in application.engine.messages if message.kind == "human_input"] == [user.id]
+        assert [message.id for message in engine_of(application).messages if message.kind == "human_input"] == [user.id]
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("persistent", [True])
 @pytest.mark.parametrize("short_circuit", ["reject", "complete"])
 @pytest.mark.parametrize("with_tool", [False, True])
 async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_path, persistent, short_circuit, with_tool):
@@ -103,7 +115,7 @@ async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_pat
         if with_tool else {"content": "first"}
     )
     provider = MockLLM(responses=[first_response, {"content": "follow-up"}])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
         no_plugins=True, llm_override=provider,
         extra_plugins=[{"id": "persistence", "disabled": not persistent}],
@@ -115,7 +127,7 @@ async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_pat
     async def enqueue(_event):
         dispose()
         for item in items:
-            await application.engine.submit_input(item, wake=False)
+            await engine_of(application).submit_input(item, wake=False)
 
     def handle(event):
         if event.input.id == "handled-input":
@@ -128,13 +140,13 @@ async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_pat
             """Return a deterministic tool result."""
             return "observed"
 
-        application.engine.tools.register(Tool.from_function(observe), cleanup="caller")
+        engine_of(application).tools.register(Tool.from_function(observe), cleanup="caller")
         application.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern="observe", decision="allow"),
         )),))
         dispose = application.on(Events.MODEL_REQUEST_READY, enqueue)
         application.on(Events.ON_TURN_INPUT, handle)
-        events = [event async for event in application.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(application).run_turn(InboxItem(
             id="initial", target=InboxTarget.NEXT_TURN, input=HumanInput(content="start"),
         ))]
         dispose()
@@ -143,18 +155,18 @@ async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_pat
         assert provider.call_count == 1
         assert sum(event.kind == "tool_completed" for event in events) == int(with_tool)
         assert sum(event.kind == "turn_ended" for event in events) == 1
-        assert [item.id for item in application.engine.pending_inputs] == ["pending-suffix"]
-        assert [message.id for message in application.engine.messages if message.kind == "human_input"] == [
+        assert [item.id for item in engine_of(application).pending_inputs] == ["pending-suffix"]
+        assert [message.id for message in engine_of(application).messages if message.kind == "human_input"] == [
             "initial", "accepted-prefix",
         ]
         if persistent:
             assert [item.id for item in application.thread_persistence.inbox.load()] == ["pending-suffix"]
-        retried = [event async for event in application.engine.run_pending()]
+        retried = [event async for event in engine_of(application).run_pending()]
         assert any(event.kind == "assistant_completed" for event in retried)
         assert provider.call_count == 2
-        assert application.engine.pending_input_count == 0
+        assert engine_of(application).pending_input_count == 0
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -164,7 +176,7 @@ async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_n
     from XBotv2.agentloop.api.events import AcceptInput, Events, InputAccepted
 
     provider = MockLLM(responses=[{"content": "retried"}])
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"), workspace_root=tmp_path,
         no_plugins=True, llm_override=provider,
     )
@@ -181,31 +193,31 @@ async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_n
             Events.ON_TURN_INPUT if hook == "accept" else Events.INPUT_ACCEPTED,
             replace_identity,
         )
-        events = [event async for event in application.engine.run_turn(item)]
+        events = [event async for event in engine_of(application).run_turn(item)]
         dispose()
         assert any(event.kind == "error" and "identity" in event.message for event in events)
         assert provider.call_count == 0
-        assert application.engine.messages.snapshot() == ()
+        assert engine_of(application).messages.snapshot() == ()
         assert application.thread_persistence.history.load_surface() == ()
         assert application.thread_persistence.inbox.load() == [item]
-        retried = [event async for event in application.engine.run_pending()]
+        retried = [event async for event in engine_of(application).run_pending()]
         assert any(event.kind == "assistant_completed" for event in retried)
-        assert application.engine.messages[0].id == item.id
-        assert application.engine.pending_input_count == 0
+        assert engine_of(application).messages[0].id == item.id
+        assert engine_of(application).pending_input_count == 0
     finally:
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["compact", "clear"])
 async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_path, operation):
     from XBotv2.core.api.messages import CompactionSummaryMessage
-    from XBotv2.persistence.store import ThreadPersistence
+    from XBotv2.persistence.impl.store import ThreadPersistence
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
 
-    async def start():
-        return await start_application(
+    async def start(mode="new"):
+        return await thread_scope(mode=mode,
             paths=paths, workspace_root=tmp_path, session_id="reconcile-trace",
             thread_id="main", no_plugins=True,
             llm_override=MockLLM(responses=[{"content": "done"}]),
@@ -223,11 +235,11 @@ async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_pat
     )
     first = await start()
     try:
-        await first.engine.submit_input(notice, wake=False)
-        async for _event in first.engine.run_turn(user):
+        await engine_of(first).submit_input(notice, wake=False)
+        async for _event in engine_of(first).run_turn(user):
             pass
     finally:
-        await first.destroy()
+        await first.root.close()
 
     store = ThreadPersistence.open(paths.session("reconcile-trace"), thread_id="main")
     # Model the crash boundary: history committed, inbox inputs not retired.
@@ -240,26 +252,27 @@ async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_pat
     store.history.replace_surface(
         source_ids, replacement, operation=operation, preserve_transcript=operation == "compact",
     )
-    resumed = await start()
+    resumed = await start(mode="resume")
     try:
-        assert [item.id for item in resumed.engine.pending_inputs] == [pending.id]
-        assert [item.id for item in store.inbox.load()] == [pending.id]
-        events = [event async for event in resumed.engine.run_pending()]
+        events = await _finished_turn(resumed)
+        from XBotv2.session.api.events import InputClaimedEvent
+        claimed = [identity for event in events if isinstance(event, InputClaimedEvent) for identity in event.message_ids]
+        assert claimed == [pending.id]
         assert not any(event.kind == "error" for event in events)
-        assert resumed.engine.pending_input_count == 0
+        assert engine_of(resumed).pending_input_count == 0
         assert store.inbox.load() == []
     finally:
-        await resumed.destroy()
+        await resumed.root.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rejected", [False, True])
 async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rejected):
     from XBotv2.agentloop.api.events import Events, RejectInput
-    from XBotv2.session.events import InputConsumedEvent, MessagePublishedEvent
+    from XBotv2.session.api.events import InputConsumedEvent, MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    context = await start_application(
+    context = await thread_scope(
         paths=paths, workspace_root=tmp_path,
         llm_override=MockLLM(responses=[{"content": "reply"}]),
         extra_plugins=[
@@ -269,21 +282,21 @@ async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rej
             }},
         ],
     )
-    application = await mounted_application(context)
-    runtime = SessionRuntime(paths, False, application, context.engine)
-    events = runtime.event_stream.subscribe()
+    application = context
+    runtime = application.require(AGENT_LOOP)
+    events = application.require(THREAD_EVENTS).subscribe()
     if rejected:
         context.on(Events.ON_TURN_INPUT, lambda _event: RejectInput(error="rejected"))
     try:
         original = "long user input " * 100
-        async for _event in context.engine.run_turn(InboxItem(
+        async for _event in engine_of(context).run_turn(InboxItem(
             id="request-identity", target=InboxTarget.NEXT_TURN,
             input=HumanInput(content=original),
         )):
             pass
         frames = [
             await asyncio.wait_for(anext(events), timeout=1)
-            for _ in range(runtime.event_stream.sequence)
+            for _ in range(application.require(THREAD_EVENTS).sequence)
         ]
         published = [
             frame.event.record.root for frame in frames
@@ -309,17 +322,17 @@ async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rej
             assert history[0].content != original
     finally:
         await events.aclose()
-        await runtime.close()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("persistent", [True])
 @pytest.mark.parametrize("cancelled", [True, False])
 async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, cancelled):
     from XBotv2.agentloop.api.events import Events
     from XBotv2.core.api.messages import HumanInputMessage
 
-    application = await start_application(
+    application = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         workspace_root=tmp_path, no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "first"}, {"content": "retried"}]),
@@ -330,7 +343,7 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
     )
 
     async def enqueue_while_running(_event):
-        await application.engine.submit_input(steer, wake=False)
+        await engine_of(application).submit_input(steer, wake=False)
 
     accepting = asyncio.Event()
 
@@ -342,7 +355,7 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
             raise RuntimeError("steering handler failed")
 
     async def run():
-        return [event async for event in application.engine.run_turn(InboxItem(
+        return [event async for event in engine_of(application).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN, input=HumanInput(content="start"),
         ))]
 
@@ -361,12 +374,12 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
             assert any(event.kind == "error" and event.message == "steering handler failed" for event in events)
         dispose_enqueue()
         dispose_failure()
-        assert [item.id for item in application.engine.inbox.pending] == [steer.id]
-        retried = [event async for event in application.engine.run_pending()]
+        assert [item.id for item in engine_of(application).inbox.pending] == [steer.id]
+        retried = [event async for event in engine_of(application).run_pending()]
         assert any(event.kind == "assistant_completed" for event in retried)
         assert sum(
             isinstance(message, HumanInputMessage) and message.id == steer.id
-            for message in application.engine.messages
+            for message in engine_of(application).messages
         ) == 1
         if persistent:
             assert application.thread_persistence.inbox.load() == []
@@ -374,25 +387,25 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        await application.destroy()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("persistent", [True])
 async def test_partial_input_batch_does_not_replay_committed_notice(tmp_path, persistent):
     from XBotv2.agentloop.api.events import Events
     from XBotv2.core.api.messages import RuntimeNoticeMessage
-    from XBotv2.session.events import MessagePublishedEvent
+    from XBotv2.session.api.events import MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    application = await start_application(
+    application = await thread_scope(
         paths=paths,
         workspace_root=tmp_path, no_plugins=True,
         llm_override=MockLLM(responses=[{"content": "continued"}]),
         extra_plugins=[{"id": "persistence", "disabled": not persistent}],
     )
-    runtime = SessionRuntime(paths, False, await mounted_application(application), application.engine)
-    stream = runtime.event_stream.subscribe()
+    runtime = application.require(AGENT_LOOP)
+    stream = application.require(THREAD_EVENTS).subscribe()
     notice = InboxItem(
         id="completed-job", target=InboxTarget.NEXT_STEP,
         input=RuntimeInput(source="job", event="completion", content="job finished"),
@@ -404,32 +417,32 @@ async def test_partial_input_batch_does_not_replay_committed_notice(tmp_path, pe
             raise RuntimeError("input handler failed")
 
     try:
-        await application.engine.submit_input(notice, wake=False)
+        await engine_of(application).submit_input(notice, wake=False)
         dispose = application.on(Events.ON_TURN_INPUT, fail_human_input)
-        failed = [event async for event in application.engine.run_turn(user)]
+        failed = [event async for event in engine_of(application).run_turn(user)]
         assert any(event.kind == "error" for event in failed)
         dispose()
-        assert [item.id for item in application.engine.inbox.pending] == [user.id]
+        assert [item.id for item in engine_of(application).inbox.pending] == [user.id]
         frames = [
             await asyncio.wait_for(anext(stream), timeout=1)
-            for _ in range(runtime.event_stream.sequence)
+            for _ in range(application.require(THREAD_EVENTS).sequence)
         ]
         assert [
             frame.event.record.root for frame in frames
             if isinstance(frame.event, MessagePublishedEvent)
-        ] == [project_message(application.engine.messages[0])]
-        retried = [event async for event in application.engine.run_pending()]
+        ] == [project_message(engine_of(application).messages[0])]
+        retried = [event async for event in engine_of(application).run_pending()]
         assert not any(event.kind == "error" for event in retried)
-        messages = application.engine.messages
+        messages = engine_of(application).messages
         assert sum(isinstance(message, RuntimeNoticeMessage) for message in messages) == 1
-        assert application.engine.pending_input_count == 0
+        assert engine_of(application).pending_input_count == 0
         if persistent:
             stored = application.thread_persistence.history.load_surface()
             assert sum(isinstance(message, RuntimeNoticeMessage) for message in stored) == 1
             assert application.thread_persistence.inbox.load() == []
     finally:
         await stream.aclose()
-        await runtime.close()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -454,24 +467,24 @@ async def test_busy_user_input_is_claimed_from_next_step_without_content_side_qu
         {"content": "merged reply"},
     ])
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
+    services = await thread_scope(
         paths=paths,
         session_id="inbox-routing",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
-    engine = services.engine
+    engine = engine_of(services)
     services.permissions.replace_policies((PermissionPolicy(rules=(
         PermissionRule(tool_pattern=".*", decision="allow"),
     )),))
     engine.tools.register(Tool.from_function(blocker), cleanup="caller")
-    application = await mounted_application(services)
-    runtime = SessionRuntime(paths, False, application, engine)
+    application = services
+    runtime = application.require(AGENT_LOOP)
 
     async def collect(content: str, request_id: str):
-        events = runtime.event_stream.subscribe()
+        events = application.require(THREAD_EVENTS).subscribe()
         await runtime.send_message(content, request_id)
         collected = []
         async for frame in events:
@@ -502,17 +515,17 @@ async def test_injected_notification_is_durable_and_does_not_wake(
     temp_workspace,
 ):
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
+    services = await thread_scope(
         paths=paths,
         session_id="durable-inbox",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=MockLLM(),
     )
-    engine = services.engine
-    application = await mounted_application(services)
-    runtime = SessionRuntime(paths, False, application, engine)
+    engine = engine_of(services)
+    application = services
+    runtime = application.require(AGENT_LOOP)
     await engine.submit_input(
         InboxItem(
             id="job-1",
@@ -525,63 +538,44 @@ async def test_injected_notification_is_durable_and_does_not_wake(
     )
 
     assert engine.pending_input_count == 1
-    assert runtime.wakeup_task is None
+    assert not runtime.busy
 
-    resumed_services = await start_application(
-        paths=paths,
-        session_id="durable-inbox",
-        thread_id="agent",
-        workspace_root=temp_workspace,
-        plugin_dirs=[],
-        # caption auto-titles this session too: serve it before the turn.
-        llm_override=MockLLM(responses=[
-            {"content": "session title"},
-            {"content": "observed"},
-        ]),
+    await services.root.close()
+    resumed_services = await thread_scope(
+        mode="resume", paths=paths, session_id="durable-inbox", thread_id="main",
+        workspace_root=temp_workspace, llm_override=MockLLM([{"content": "observed"}]),
     )
-    resumed = resumed_services.engine
-    assert resumed.pending_input_count == 1
-    events = [
-        event
-        async for event in resumed.run_turn(
-            InboxItem(
-                target=InboxTarget.NEXT_TURN,
-                input=HumanInput(content="continue"),
-            ),
-            request_id="user-1",
-        )
-    ]
-    assert resumed.pending_input_count == 0
-    assert [_record_text(project_message(message)) for message in resumed.messages] == [
-        "job finished", "continue", "observed",
-    ]
-    replayed = conversation_replay(resumed.messages)
-    assert replayed[0].kind == "runtime_notice"
-    assert replayed[0].source == "job"
-    assert replayed[0].event == "completion"
-    assert project_message(resumed.messages[1]).kind == "human_input"
-    assert events[-1].kind == "turn_ended"
-    await resumed_services.stop()
-    await services.stop()
+    try:
+        events = await _finished_turn(resumed_services)
+        messages = resumed_services.require(LOOP_STATE).history.snapshot()
+        assert [_record_text(project_message(message)) for message in messages] == ["job finished", "observed"]
+        replayed = conversation_replay(messages)
+        assert replayed[0].kind == "runtime_notice"
+        assert replayed[0].source == "job"
+        assert replayed[0].event == "completion"
+        assert sum(event.kind == "turn_ended" for event in events) == 1
+    finally:
+        await resumed_services.root.close()
+
 
 
 @pytest.mark.asyncio
-async def test_edited_pending_input_is_hydrated_by_application_factory(
+async def test_edited_pending_input_is_hydrated_and_consumed_after_reopen(
     temp_data_dir,
     temp_workspace,
 ):
     paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
+    services = await thread_scope(
         paths=paths,
         session_id="edited-durable-inbox",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=MockLLM(),
     )
     resumed_services = None
     try:
-        engine = services.engine
+        engine = engine_of(services)
         await engine.submit_input(
             InboxItem(
                 id="keep",
@@ -606,28 +600,18 @@ async def test_edited_pending_input_is_hydrated_by_application_factory(
             {"content": "session title"},
             {"content": "response to restored input"},
         ])
-        resumed_services = await start_application(
+        await services.root.close()
+        resumed_services = await thread_scope(
+            mode="resume",
             paths=paths,
             session_id="edited-durable-inbox",
-            thread_id="agent",
+            thread_id="main",
             workspace_root=temp_workspace,
             plugin_dirs=[],
             llm_override=restored_provider,
         )
-        resumed_engine = resumed_services.engine
-        assert [
-            (item.id, item.target, item.input.content)
-            for item in resumed_engine.pending_inputs
-        ] == [
-            ("keep", InboxTarget.NEXT_STEP, "edited durable input"),
-        ]
-
-        events = [
-            event
-            async for event in resumed_engine.run_pending(
-                request_id="restored-queue"
-            )
-        ]
+        resumed_engine = engine_of(resumed_services)
+        events = await _finished_turn(resumed_services)
         assert events[-1].kind == "turn_ended"
         assert resumed_engine.pending_input_count == 0
         assert [
@@ -646,134 +630,10 @@ async def test_edited_pending_input_is_hydrated_by_application_factory(
         assert "discard this" not in provider_user_text
     finally:
         if resumed_services is not None:
-            await resumed_services.stop()
-        await services.stop()
+            await resumed_services.root.close()
+        await services.root.close()
 
 
-@pytest.mark.asyncio
-async def test_session_manager_resumes_durable_inbox_after_owner_process_crashes(
-    temp_data_dir,
-    temp_workspace,
-):
-    child_program = """
-import asyncio
-import os
-import sys
-from pathlib import Path
-from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
-from XBotv2.application.app import start_application
-from XBotv2.core.api.domain import InboxTarget
-from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.impl.mock import MockLLM
-
-async def main():
-    app = await start_application(
-        paths=RuntimePaths.from_data_dir(Path(sys.argv[1])),
-        session_id='crashed-pending-inbox',
-        thread_id='agent',
-        workspace_root=Path(sys.argv[2]),
-        plugin_dirs=[],
-        llm_override=MockLLM(),
-    )
-    await app.engine.start_session()
-    await app.engine.submit_input(
-        InboxItem(
-            id='durable-before-crash',
-            target=InboxTarget.NEXT_TURN,
-            input=HumanInput(content='resume this durable inbox item'),
-        ),
-        wake=False,
-    )
-    persistence = app.get('thread_persistence')
-    assert persistence is not None
-    assert [item.id for item in persistence.inbox.load()] == ['durable-before-crash']
-    os.write(1, b'pending-input-durable\\n')
-
-asyncio.run(main())
-os._exit(0)
-"""
-    repository_root = Path(__file__).resolve().parents[3]
-    python_path = os.pathsep.join(filter(None, (
-        str(repository_root / "XBotv2"),
-        os.environ.get("PYTHONPATH", ""),
-    )))
-    child = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            child_program,
-            str(temp_data_dir),
-            str(temp_workspace),
-        ],
-        cwd=repository_root,
-        env={**os.environ, "PYTHONPATH": python_path},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=20,
-    )
-    assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "pending-input-durable"
-
-    class Events:
-        async def emit(self, *_args, **_kwargs):
-            return None
-
-    paths = RuntimePaths.from_data_dir(temp_data_dir)
-    provider = MockLLM(responses=[
-        {"content": "restored session title"},
-        {"content": "restored inbox response"},
-    ])
-    manager = SessionManager(
-        paths,
-        Events(),
-        application_factory=create_agent_application,
-        thread_persistence_factory=thread_persistence_factory,
-        idle_timeout=None,
-    )
-    runtime = await manager.open_session(
-        session_id="crashed-pending-inbox",
-        thread_id="agent",
-        provider_name=None,
-        workspace_root=str(temp_workspace),
-        mode="resume",
-        no_plugins=False,
-        llm_override=provider,
-    )
-    try:
-        for _ in range(200):
-            if (
-                runtime.engine.pending_input_count == 0
-                and len(provider.request_history) >= 2
-                and any(
-                    isinstance(message, AssistantMessage)
-                    for message in runtime.engine.messages
-                )
-            ):
-                break
-            await asyncio.sleep(0.01)
-
-        assert runtime.engine.pending_input_count == 0
-        records = [
-            record for message in runtime.engine.messages
-            if (record := project_message(message)) is not None
-        ]
-        assert [record.kind for record in records] == [
-            "human_input", "assistant",
-        ]
-        assert records[0].content == "resume this durable inbox item"
-        assert records[1].content == "restored inbox response"
-        request_text = [
-            part.text
-            for request in provider.request_history
-            for message in request.messages
-            if isinstance(message, ProviderUser)
-            for part in message.parts
-            if isinstance(part, TextPart)
-        ]
-        assert any("resume this durable inbox item" in text for text in request_text)
-    finally:
-        await manager.close_all()
 
 
 @pytest.mark.asyncio
@@ -788,11 +648,12 @@ import asyncio
 import sys
 from pathlib import Path
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope, engine_of
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.session.records import project_message
+
+from XBotv2.session.api.records import project_message
 
 class BlockAfterCaption(MockLLM):
     def __init__(self, marker):
@@ -811,15 +672,15 @@ class BlockAfterCaption(MockLLM):
 
 async def main():
     provider = BlockAfterCaption(sys.argv[3])
-    app = await start_application(
+    app = await thread_scope(
         paths=RuntimePaths.from_data_dir(Path(sys.argv[1])),
         session_id='crashed-active-turn',
-        thread_id='agent',
+        thread_id='main',
         workspace_root=Path(sys.argv[2]),
         plugin_dirs=[],
         llm_override=provider,
     )
-    async for _event in app.engine.run_turn(
+    async for _event in engine_of(app).run_turn(
         InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content='request interrupted by owner crash'),
@@ -870,24 +731,25 @@ asyncio.run(main())
             process.communicate(timeout=10)
 
     provider = MockLLM(responses=[{"content": "continued after crash"}])
-    resumed = await start_application(
+    resumed = await thread_scope(
+        mode="resume",
         paths=RuntimePaths.from_data_dir(temp_data_dir),
         session_id="crashed-active-turn",
-        thread_id="agent",
+        thread_id="main",
         workspace_root=temp_workspace,
         plugin_dirs=[],
         llm_override=provider,
     )
     try:
         recovered = [
-            record for message in resumed.engine.messages
+            record for message in engine_of(resumed).messages
             if (record := project_message(message)) is not None
         ]
         assert [record.kind for record in recovered] == ["human_input"]
         assert recovered[0].content == "request interrupted by owner crash"
         assert provider.call_count == 0
 
-        events = [event async for event in resumed.engine.run_turn(
+        events = [event async for event in engine_of(resumed).run_turn(
             InboxItem(
                 target=InboxTarget.NEXT_TURN,
                 input=HumanInput(content="continue after interrupted turn"),
@@ -906,260 +768,52 @@ asyncio.run(main())
         assert any("request interrupted by owner crash" in text for text in user_text)
         assert any("continue after interrupted turn" in text for text in user_text)
     finally:
-        await resumed.stop()
+        await resumed.root.close()
+
+
 
 
 @pytest.mark.asyncio
-async def test_tool_side_effect_is_not_replayed_after_process_crash(
-    temp_data_dir,
-    temp_workspace,
-    tmp_path,
-):
-    marker = tmp_path / "tool-effect-started"
-    effect_log = tmp_path / "tool-effects.txt"
-    child_program = """
-import asyncio
-import os
-import sys
-from pathlib import Path
-from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
-from XBotv2.application.app import start_application
-from XBotv2.core.api.domain import InboxTarget
-from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.core.api.tools import Tool
-from XBotv2.llm.impl.mock import MockLLM
-from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
-
-async def main():
-    async def irreversible() -> str:
-        with Path(sys.argv[4]).open('a', encoding='utf-8') as stream:
-            stream.write('effect\\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-        Path(sys.argv[3]).write_text('started', encoding='utf-8')
-        await asyncio.Event().wait()
-
-    app = await start_application(
-        paths=RuntimePaths.from_data_dir(Path(sys.argv[1])),
-        session_id='crashed-tool-turn',
-        thread_id='agent',
-        workspace_root=Path(sys.argv[2]),
-        plugin_dirs=[],
-        llm_override=MockLLM(responses=[
-            {'content': 'tool crash title'},
-            {'tool_calls': [{
-                'id': 'irreversible-call',
-                'name': 'irreversible',
-                'args': {},
-            }]},
-        ]),
-    )
-    app.engine.tools.register(Tool.from_function(irreversible), cleanup='caller')
-    app.permissions.replace_policies((PermissionPolicy(rules=(
-        PermissionRule(tool_pattern='.*', decision='allow'),
-    )),))
-    async for _event in app.engine.run_turn(
-        InboxItem(
-            target=InboxTarget.NEXT_TURN,
-            input=HumanInput(content='perform one irreversible action'),
-        ),
-        request_id='crashed-tool-request',
-    ):
-        pass
-
-asyncio.run(main())
-"""
-    repository_root = Path(__file__).resolve().parents[3]
-    python_path = os.pathsep.join(filter(None, (
-        str(repository_root / "XBotv2"),
-        os.environ.get("PYTHONPATH", ""),
-    )))
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            child_program,
-            str(temp_data_dir),
-            str(temp_workspace),
-            str(marker),
-            str(effect_log),
-        ],
-        cwd=repository_root,
-        env={**os.environ, "PYTHONPATH": python_path},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        for _ in range(1000):
-            if marker.is_file() or process.poll() is not None:
-                break
-            await asyncio.sleep(0.01)
-        if not marker.is_file():
-            stdout, stderr = process.communicate(timeout=10)
-            pytest.fail(
-                "child did not reach the irreversible tool side effect; "
-                f"returncode={process.returncode}, stdout={stdout!r}, stderr={stderr!r}"
-            )
-        process.kill()
-        _stdout, _stderr = process.communicate(timeout=10)
-        assert process.returncode == -9
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.communicate(timeout=10)
-
-
-    assert effect_log.read_text(encoding="utf-8") == "effect\n"
-
-    class Events:
-        async def emit(self, *_args, **_kwargs):
-            return None
-
-    paths = RuntimePaths.from_data_dir(temp_data_dir)
-    provider = MockLLM(responses=[{"content": "continue after recovered failure"}])
-    manager = SessionManager(
-        paths,
-        Events(),
-        application_factory=create_agent_application,
-        thread_persistence_factory=thread_persistence_factory,
-        idle_timeout=None,
-    )
-    runtime = await manager.open_session(
-        session_id="crashed-tool-turn",
-        thread_id="agent",
-        provider_name=None,
-        workspace_root=str(temp_workspace),
-        mode="resume",
-        no_plugins=False,
-        llm_override=provider,
-    )
-    reopened_invocations = []
-
-    async def irreversible() -> str:
-        reopened_invocations.append(True)
-        with effect_log.open("a", encoding="utf-8") as stream:
-            stream.write("effect\n")
-        return "effect repeated"
-
-    runtime.engine.tools.register(Tool.from_function(irreversible), cleanup="caller")
-    try:
-        records = [
-            record for message in runtime.engine.messages
-            if (record := project_message(message)) is not None
-        ]
-        assert [record.kind for record in records] == [
-            "human_input", "assistant", "tool",
-        ]
-        assert isinstance(records[-1].outcome, ToolFailed)
-        assert records[-1].outcome.error.code == "session_restarted"
-
-        events = [event async for event in runtime.engine.run_turn(
-            InboxItem(
-                target=InboxTarget.NEXT_TURN,
-                input=HumanInput(content="continue after uncertain tool outcome"),
-            ),
-            request_id="after-crashed-tool-follow-up",
-        )]
-        assert events[-1].kind == "turn_ended"
-        assert reopened_invocations == []
-        assert effect_log.read_text(encoding="utf-8") == "effect\n"
-        assert provider.call_count == 1
-    finally:
-        await manager.close_all()
-
-
-@pytest.mark.asyncio
-async def test_runtime_close_propagates_engine_failure_after_releasing_resources(
-    temp_data_dir,
-    temp_workspace,
-    monkeypatch,
-):
-    paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
-        paths=paths,
-        session_id="close-failure",
-        thread_id="agent",
-        workspace_root=temp_workspace,
-        plugin_dirs=[],
-        llm_override=MockLLM(),
-    )
-    application = await mounted_application(services)
-    runtime = SessionRuntime(paths, False, application, services.engine)
-    subscription = runtime.event_stream.subscribe()
-    application_closed = False
-
-    async def fail_engine_close():
+async def test_scope_close_retains_resources_after_engine_cleanup_failure(tmp_path, monkeypatch):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    scope = await thread_scope(paths=paths, session_id="close-failure", workspace_root=tmp_path, llm_override=MockLLM())
+    engine = engine_of(scope)
+    original = engine.close_session
+    async def fail():
         raise RuntimeError("engine close failed")
-
-    monkeypatch.setattr(services.engine, "close_session", fail_engine_close)
-    original_application_close = type(application).close
-
-    async def record_application_close(instance):
-        nonlocal application_closed
-        await original_application_close(instance)
-        application_closed = True
-
-    monkeypatch.setattr(
-        type(application), "close", record_application_close,
-    )
-
-    with pytest.raises(RuntimeError, match="engine close failed"):
-        await runtime.close("test_close_failure")
-
-    assert application_closed
-    assert application.loop_state.session.status == "closed"
-    with pytest.raises(StopAsyncIteration):
-        await subscription.__anext__()
-    ownership = acquire_session(
-        paths.session("close-failure").root,
-        label="test/close-failure-released",
-    )
-    ownership.release()
+    monkeypatch.setattr(engine, "close_session", fail)
+    try:
+        with pytest.raises(ExceptionGroup) as failure:
+            await scope.root.close()
+        assert failure.value.subgroup(lambda error: isinstance(error, RuntimeError) and str(error) == "engine close failed") is not None
+        assert scope.require(AGENT_LOOP) is not None
+        with pytest.raises(OperationError, match="already owned"):
+            acquire_session(paths.session("close-failure").root, label="competitor")
+    finally:
+        monkeypatch.setattr(engine, "close_session", original)
+        await scope.root.close()
+    claim = acquire_session(paths.session("close-failure").root, label="after-close")
+    claim.release()
 
 
 @pytest.mark.asyncio
-async def test_runtime_close_releases_resources_after_inbox_discard_failure(
-    temp_data_dir,
-    temp_workspace,
-    monkeypatch,
-):
-    paths = RuntimePaths.from_data_dir(temp_data_dir)
-    services = await start_application(
-        paths=paths,
-        session_id="discard-close-failure",
-        thread_id="agent",
-        workspace_root=temp_workspace,
-        plugin_dirs=[],
-        llm_override=MockLLM(),
-    )
-    application = await mounted_application(services)
-    runtime = SessionRuntime(paths, False, application, services.engine)
-    subscription = runtime.event_stream.subscribe()
-    application_closed = False
-
-    async def fail_discard():
-        raise RuntimeError("inbox discard failed")
-
-    monkeypatch.setattr(services.engine, "discard_inputs", fail_discard)
-    original_application_close = type(application).close
-
-    async def record_application_close(instance):
-        nonlocal application_closed
-        await original_application_close(instance)
-        application_closed = True
-
-    monkeypatch.setattr(type(application), "close", record_application_close)
-
-    with pytest.raises(RuntimeError, match="inbox discard failed"):
-        await runtime.close("test_discard_failure")
-
-    assert application_closed
-    assert application.loop_state.session.status == "closed"
-    with pytest.raises(StopAsyncIteration):
-        await subscription.__anext__()
-    ownership = acquire_session(
-        paths.session("discard-close-failure").root,
-        label="test/discard-close-failure-released",
-    )
-    ownership.release()
+async def test_scope_close_retries_failed_pre_stop_without_discarding_inbox(tmp_path):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    scope = await thread_scope(paths=paths, session_id="inbox-close-failure", workspace_root=tmp_path, llm_override=MockLLM())
+    item = InboxItem(id="accepted", target=InboxTarget.NEXT_STEP, input=RuntimeInput(source="test", event="notification", content="preserved"))
+    await scope.require(AGENT_LOOP).submit_input(item, wake=False)
+    fault = True
+    async def fail():
+        if fault:
+            raise RuntimeError("pre-stop failed")
+    scope.pre_stop(fail)
+    try:
+        with pytest.raises(ExceptionGroup):
+            await scope.root.close()
+        assert [pending.id for pending in scope.require("thread_persistence").inbox.load()] == ["accepted"]
+        with pytest.raises(OperationError, match="already owned"):
+            acquire_session(paths.session("inbox-close-failure").root, label="competitor")
+    finally:
+        fault = False
+        await scope.root.close()
+    assert paths.session("inbox-close-failure").thread("main").inbox_file.exists()

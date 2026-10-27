@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from pydantic import JsonValue
 
-from XBotv2.config.impl.loader import load_plugin_tree as resolve_plugin_tree
+from XBotv2.config.api.tree import load_plugin_tree as resolve_plugin_tree
 from XBotv2.config.impl.policy import load_session_policy, patch_session_policy
 
 logger = logging.getLogger("xbotv2.config")
@@ -24,7 +24,7 @@ from XBotv2.config.api.contracts import (
     SettingsPort,
 )
 from XBotv2.config.api.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.loader.contracts import PluginTree
+from XBotv2.loader.api.contracts import PluginTree
 from XBotv2.core.api.domain import UserContext
 from XBotv2.core.api.runtime_logging import RuntimeLog
 from XBotv2.core.api.paths import RuntimePaths
@@ -45,7 +45,6 @@ class ConfigService(SettingsPort):
         runtime_log: RuntimeLog,
         extra_plugins: list[dict[str, JsonValue]] | None = None,
         plugin_dirs: list[Path | str] | None = None,
-        is_subagent: bool = False,
         no_plugins: bool = False,
     ) -> None:
         self.paths = paths
@@ -55,7 +54,6 @@ class ConfigService(SettingsPort):
         self._log = runtime_log.bind("config", session_id=session_id)
         self._extra_plugins = extra_plugins or []
         self._plugin_dirs = plugin_dirs or []
-        self._is_subagent = is_subagent
         self._no_plugins = no_plugins
 
     def user_context(self) -> UserContext:
@@ -75,7 +73,7 @@ class ConfigService(SettingsPort):
         return ConfigPluginConfig.model_validate(entry.config).user
 
     def load_plugin_tree(
-        self, workspace: Path, session_id: str, thread_id: str = "agent"
+        self, workspace: Path, session_id: str, thread_id: str = "main"
     ) -> PluginTree:
         return resolve_plugin_tree(
             self.paths,
@@ -84,7 +82,6 @@ class ConfigService(SettingsPort):
             thread_id=thread_id,
             extra_plugins=self._extra_plugins,
             plugin_dirs=self._plugin_dirs,
-            is_subagent=self._is_subagent,
             no_plugins=self._no_plugins,
         )
 
@@ -105,8 +102,7 @@ class ConfigService(SettingsPort):
                 self.session_id,
                 extra_plugins=extra,
                 plugin_dirs=self._plugin_dirs,
-                is_subagent=self._is_subagent,
-                no_plugins=self._no_plugins,
+                    no_plugins=self._no_plugins,
                 include_global=include_global,
                 include_workspace=include_workspace,
                 include_session=include_session,

@@ -16,14 +16,14 @@ from XBotv2.core.api.history import HistoryCursorInvalid, MessageAppended, Surfa
 from XBotv2.core.api.messages import CompactionSummaryMessage, HumanInputMessage
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.persistence.models import StoredTrajectoryRecord
-from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
+from XBotv2.persistence.api.models import StoredTrajectoryRecord
+from XBotv2.persistence.impl.store import ThreadPersistence, _TrajectoryState
 
 
 def _store(tmp_path):
     return ThreadPersistence.open(
         RuntimePaths.from_data_dir(tmp_path).session("s1"),
-        thread_id="agent",
+        thread_id="main",
     )
 
 
@@ -39,7 +39,7 @@ def test_append_round_trips_canonical_message_identity(tmp_path):
     messages = (_human(1), _human(2))
     persistence.history.append(messages)
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="main")
     assert reopened.history.load_surface() == messages
     assert reopened.history.count() == 2
 
@@ -47,7 +47,7 @@ def test_append_round_trips_canonical_message_identity(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [20, 40])
 async def test_inbox_growth_writes_only_new_records(tmp_path, monkeypatch, count):
-    import XBotv2.persistence.store as storage
+    import XBotv2.persistence.impl.store as storage
     from XBotv2.agentloop.impl.inbox import AgentInbox
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
     from XBotv2.core.api.domain import InboxTarget
@@ -166,7 +166,7 @@ async def test_failed_inbox_append_preserves_prefix_and_allows_retry(tmp_path, m
 def test_failed_first_inbox_write_does_not_materialize_a_thread(tmp_path, monkeypatch):
     from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, Inserted
     from XBotv2.core.api.domain import InboxTarget
-    from XBotv2.session.manager import thread_has_evidence
+    from XBotv2.session.impl.manager import thread_has_evidence
 
     store = _store(tmp_path)
 
@@ -312,7 +312,7 @@ def test_live_threads_append_and_page_without_rereading_their_prefix(tmp_path, m
 
 
 def test_reader_folds_only_external_append_suffix(tmp_path, monkeypatch):
-    import XBotv2.persistence.store as storage
+    import XBotv2.persistence.impl.store as storage
 
     persistence = _store(tmp_path)
     original = tuple(_human(index) for index in range(10))
@@ -323,7 +323,7 @@ def test_reader_folds_only_external_append_suffix(tmp_path, monkeypatch):
 
     # Model another process: it uses the production store API but owns a
     # distinct in-memory trajectory state for the same append-only file.
-    writer = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    writer = ThreadPersistence.open(persistence.paths, thread_id="main")
     writer.history._state = storage._TrajectoryState(writer.history.path)
     assert writer.history.load_surface() == original
 
@@ -428,7 +428,7 @@ def test_non_preserving_replacement_updates_both_projections(tmp_path):
 
 @pytest.mark.parametrize("prefix_size", [10, 100])
 def test_compaction_folds_only_the_new_record_on_warm_projections(tmp_path, monkeypatch, prefix_size):
-    import XBotv2.persistence.store as storage
+    import XBotv2.persistence.impl.store as storage
 
     history = _store(tmp_path).history
     original = tuple(_human(i) for i in range(prefix_size))
@@ -593,7 +593,7 @@ def test_corrupt_trajectory_fails_at_persistence_boundary(tmp_path):
     with persistence.history.path.open("a", encoding="utf-8") as handle:
         handle.write("{not-json}\n")
 
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="main")
     with pytest.raises(ValueError, match="Invalid messages.jsonl"):
         reopened.history.load_surface()
 
@@ -615,7 +615,7 @@ def _rewrite_records(path, mutate):
 
 
 def _independent_reopen(persistence):
-    reopened = ThreadPersistence.open(persistence.paths, thread_id="agent")
+    reopened = ThreadPersistence.open(persistence.paths, thread_id="main")
     reopened.history._state = _TrajectoryState(reopened.history.path)
     return reopened
 

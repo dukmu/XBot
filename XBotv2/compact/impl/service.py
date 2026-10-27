@@ -9,7 +9,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Protocol, Sequence
 from pydantic import JsonValue
-from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.agentloop.api.events import RuntimeEvent
 from XBotv2.core.api.providers import ProviderFailure
 from XBotv2.core.api.tokens import (
     context_token_limit,
@@ -44,7 +45,7 @@ from XBotv2.agentloop.api.state import LoopState, ThreadExecution
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.commands.api.contracts import CommandResult
 from XBotv2.llm.api.contracts import ModelPort
-from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
+from XBotv2.session.api.contracts import HISTORY_CHANGED, HistoryChanged
 from XBotv2.compact.impl.commands import run_compact_command
 from XBotv2.compact.impl.compactor import build_compaction_plan
 from XBotv2.compact.api.contracts import CompactConfig, CompactionPlan

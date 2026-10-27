@@ -1,3 +1,4 @@
+from XBotv2.tests.runtime import engine_of
 """MCP tools translate one external result into canonical ToolOutcome values."""
 
 from XBotv2.agentloop.api.contracts import TOOLS, HumanInput, InboxItem
@@ -8,7 +9,7 @@ from pathlib import Path
 import pytest
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.outputs import ToolCompleted
-from XBotv2.application.app import start_application
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolSucceeded
 from XBotv2.llm.impl.mock import MockLLM
@@ -46,7 +47,7 @@ server.run("stdio")
         }]},
         {"content": "done"},
     ])
-    context = await start_application(
+    context = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="mcp-stdio",
         thread_id="main",
@@ -70,7 +71,7 @@ server.run("stdio")
         assert "mcp__local__echo" in {
             tool.name for tool in context.require(TOOLS).enabled()
         }
-        events = [event async for event in context.engine.run_turn(InboxItem(
+        events = [event async for event in engine_of(context).run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,
             input=HumanInput(content="Call the local echo tool"),
         ))]
@@ -80,7 +81,7 @@ server.run("stdio")
         assert isinstance(outcome, ToolSucceeded)
         assert outcome.output.parts[0].text == "echo:production-path"
     finally:
-        await context.destroy()
+        await context.root.close()
 
     assert tools.resolve("mcp__local__echo", include_disabled=True) is None
     for _ in range(100):

@@ -31,9 +31,9 @@ from XBotv2.sandbox.impl.tools import RequestSandboxAccessTool, build_apply_sand
 
 class SandboxComponent:
     inject = [
-        "thread_paths", "session", TOOLS, "data_root", "variables",
+        "thread_paths", "thread_info", TOOLS, "data_root", "variables",
         "workspace_root", COMMANDS, SETTINGS, APPROVAL,
-        "session_launch",
+        "thread_info", "interactive",
     ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
@@ -62,7 +62,7 @@ class SandboxComponent:
         # parent agent, not to a delegated worker. Non-interactive
         # sessions have no human to approve the rule, so the tool is
         # suppressed there as well.
-        if ctx.session_launch.interactive and not ctx.session_launch.is_subagent:
+        if ctx.interactive and not ctx.thread_info.is_subagent:
             tool = RequestSandboxAccessTool(
                 ctx.require(APPROVAL),
                 apply_decision=build_apply_sandbox_access(ctx.require(SETTINGS)),
@@ -83,4 +83,10 @@ class SandboxHandlers:
         event.sandbox_summary = self._policy.describe()
 
 
-plugin = SandboxComponent()
+def mount_thread(ctx, config):
+    SandboxComponent().apply(ctx, config)
+
+
+mount_thread.inject = getattr(SandboxComponent, "inject", ())
+mount_thread.provide = ('sandbox',)
+mount_thread.Config = getattr(SandboxComponent, "Config", None)
