@@ -10,6 +10,7 @@ provider selection or artifact reads.
 A process has one root, each active session has one owner scope, and each
 thread has a child owner scope. The main thread ID is `main`. Child IDs are
 independent readable identities; Agent definition names remain references.
+Thread IDs beginning with `__` are reserved for session-owned non-conversation streams.
 A session owner holds one OS writer lock; child scopes share that owner.
 Independent roots, including roots in the same PID, cannot share its claim.
 Different sessions may run concurrently.

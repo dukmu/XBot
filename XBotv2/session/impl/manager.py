@@ -365,6 +365,8 @@ class SessionManager(SessionsPort):
         parent_thread_id: str = "",
         interactive: bool = True,
     ) -> Context:
+        if thread_id.startswith("__"):
+            raise OperationError("invalid_request", "Thread IDs beginning with '__' are reserved")
         if self._closing:
             raise OperationError("session_closing", "Runtime is closing")
         mode = (mode or "new").lower().strip()
