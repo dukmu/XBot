@@ -433,5 +433,14 @@
 
 - [x] 从日志14f5290b/生产5fff12c8继续，完整goal保持active；本轮只用Terra，分工为配置缺省、服务端目录与Web有界分页消费，后续空出owner接Python客户端。原用户设计稿及.worktrees不纳入提交，不重复上轮浏览器/MiniMax/完整套件。
 - [x] 子线程限额缺省由4改为None，并允许显式None清除已有session限额；正整数仍约束全部活跃子孙。必要3项5.32s通过，actual exit0，日志`/tmp/xbot-child-limit-tests.log`；覆盖默认五个含嵌套子线程、设置整数限制、清除限制及None配置解析。主代理已读实际差异和日志，未跑完整套件或真实provider。
-- [ ] 会话目录只构建当前页，清退历史摘要；工作区局部SQL更新，列表/成员/归档分别分页，SSE只发小变更；不增加全局权威目录数据库或全snapshot兼容路径。
-- [ ] Web与Python客户端/TUI/ACP实际消费分页，不自动拉全页后聚合；有界窗口可继续到后页，活动会话独立于目录页。必要验证与限制完成后追加，不先勾选。
+- [x] 会话目录只构建当前页，清退历史摘要；工作区局部SQL更新，列表/成员/归档分别分页，SSE只发小变更；不增加全局权威目录数据库或全snapshot兼容路径。
+- [x] Web与Python客户端/TUI/ACP实际消费分页，不自动拉全页后聚合；有界窗口可继续到后页，活动会话独立于目录页。必要验证与限制见下列实际证据。
+- [x] 服务端会话/工作区/成员/归档改为双向keyset页，内部每页1–100条而非业务总量限制；摘要只读当前页，thread数用owner SQL计数，blank判定按100条thread批次短路，不装入全部thread IDs或正文。目录实际采用with os.scandir，不以Python3.12内部listdir的Path.iterdir冒称流式。变更摘要缓存256条LRU，仅为内部起点，未冒称已测最优预算。
+- [x] 工作区取消全snapshot load/save和资源全成员数组：WorkspaceView仅元数据及未归档成员数，归档/成员分别分页，rename/archive/attach只写相关行；整数ordinal重排单条SQL更新所移动区间，写量仍随移动距离增长。SSE只发单实体/重排锚点/归档flag，不广播全IDs；schema/字段/成员投影均归workspace owner，persistence未混入业务或新增全局权威目录DB。启动一次以100批次校正丢失成员，已正确成员不写；list请求不全量reconcile。
+- [x] 服务端证据：最初7项6.43s（`/tmp/xbot-catalog-targeted-v3.log`）、旧workspace/event owner14项3.96s（`/tmp/xbot-workspace-owner-v1.log`）、实际新事件/空末页回退等4项3.31s（`/tmp/xbot-catalog-final-v6.log`）均actual exit0；新增启动恢复1项2.15s（`/tmp/xbot-catalog-recovery-v5.log`）、scandir实际改动后仅相关2项3.61s（`/tmp/xbot-scandir-v7.log`），另新增session/archived 550条第6页及反向2项2.06s（`/tmp/xbot-catalog-550-v8.log`）通过。组合有重叠，不累计冒充独立覆盖或全套全绿；初次paging失败为默认workspace fixture漏计，其原日志曾被同路径成功输出覆盖，无法恢复；recovery错误open_runtime参数的失败保留`/tmp/xbot-catalog-recovery-v4.log`，修正只跑该节点。
+- [x] SDK四个目录方法只请求一页；ACP使用session owner的cursor/workspace_root过滤并回传nextCursor；TUI共享选择器只持当前页和服务端previous/next游标，无翻页栈。聚焦ACP/TUI5项3.22s（`/tmp/xbot-client-pagination-ui.log`）及SDK1项0.36s（`/tmp/xbot-client-pagination-sdk-final.log`）actual exit0，主代理已读差异/日志，未跑旧完整TUI/ACP。
+- [x] 真实HTTP+tmux PTY分页：实际session owner落盘101个session，真实xbot serve/xbot tui，首100条→Next→第二页item-100→选择后HTTP main status=active且状态栏Ready session:item-100。总脚本actual exit0，TUI pane退出0；服务最后SIGTERM并wait得-15，仅证明已终止，不冒称本次验证优雅资源清退。证据`/tmp/xbot-pty-pagination-xq97hiq9/{page-one.txt,page-two.txt,selected.txt,target-threads.json}`及`/tmp/xbot-pty-pagination-accept.log`，主代理已读实际屏幕/HTTP产物；本链无模型请求，不代替流/媒体/权限或全TUI验收。
+- [x] Web仅持当前workspace页与一个all/member/archived session页，服务端双向游标，不聚合全部页；搜索明确当前页，当前页相邻排序、归档视图及活动会话独立。真实生产loader服务+Chromium建101工作区、翻至workspace-100选择并返回且活动会话保留，1 passed/13.1s（20673 actual exit0，`/tmp/xbot-web-catalog-browser-first.log`）；成员后页未做真实浏览器，用定向状态测试明确覆盖，不扩大结论。
+- [x] Web必要受影响验证：最初4文件6项（14505 exit0，`/tmp/xbot-web-catalog-vitest-final.log`），scope切换并发缺陷首轮71278 exit1后定向修复；后续实际并发/删除/过期游标resnapshot/stop/空末页返回共5文件13项（82727 exit0，`/tmp/xbot-web-catalog-vitest-concurrency.log`），再新增成员双向单节点1 passed/5 skipped（`/tmp/xbot-web-catalog-vitest-member.log`）及最终tsc（40254 exit0，`/tmp/xbot-web-catalog-tsc-final.log`）。有重叠不累加；误相对路径No tests found的55235 exit1也已终态。纯可读性多行整理不重复旧测试/浏览器。
+- [ ] 本轮thread列表本身仍全量，后续需明确分页与subagent/客户端消费；session目录每页仍需O(目录数)枚举，尚未实测是否要可重建索引。完整goal其余配置/预算定值、TUI样式及虚拟化、指定独立网络Mock工况和最终安装产物验收继续保留，未由本轮目录证据替代。
+- [x] 本轮独立提交：子线程缺省720b9397、服务端目录daca3a7f、Python客户端8aa6a84f、Web窗口751b087c；本轮验收归档对应开发源码提交`751b087caaff5622c208a3f27c9c6d133d911560`，各范围证据及未验限制如上，非整个产品验收。最后仅整理可读性/文档并作暂存检查，未重跑旧验证、wheel或hash快照；之后只提交TODO日志，完整goal继续active。
