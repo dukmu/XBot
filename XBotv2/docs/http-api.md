@@ -82,7 +82,8 @@ A client that does not want the whole conversation asks for a bounded window:
 - `GET .../trajectory` returns `TrajectoryRead(page=HistoryPage[TrajectoryEntry],
   newest_position=...)` and also accepts `before=<position>` as an absolute
   anchor, which is what a client uses once it has released the front of its own
-  window.
+  window. A newly opened thread with no persisted records returns an empty
+  page with `newest_position=0`; an unknown thread returns not found.
 
 `MessageRequest` supports `content`, `request_id`, `delivery` (`queue` or
 `steer`), images, and attachments. SSE envelopes carry sequence, session,

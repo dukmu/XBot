@@ -596,6 +596,7 @@ class SessionManager(SessionsPort):
         )
         if contexts:
             try:
+                await self._discard_empty_session(session_id)
                 await self._emit_session_changed(session_id)
             except Exception as exc:
                 close_errors.append(exc)
@@ -877,8 +878,20 @@ class SessionManager(SessionsPort):
                 "Cannot delete while a session thread has an active turn.",
                 retryable=True,
             )
-        await self.close_session(session_id, reason="session_deleted")
-        delete_persisted_session(self.paths, session_id)
+        ownership = acquire_session(
+            self.paths.session(session_id).root, label=f"delete/{session_id}"
+        )
+        try:
+            await self.close_session(session_id, reason="session_deleted")
+            if ownership.count != 1:
+                raise OperationError(
+                    "session_in_use", f"Session {session_id!r} is still in use"
+                )
+            root = self.paths.session(session_id).root
+            if root.exists() or root.is_symlink():
+                delete_persisted_session(self.paths, session_id)
+        finally:
+            ownership.release()
         self._published_summaries.pop(session_id, None)
         self._log.info("session.deleted", session_id=session_id)
         await self._events.emit(
@@ -1025,7 +1038,13 @@ class SessionManager(SessionsPort):
         limit: int,
         before: int | None = None,
     ) -> TrajectoryRead:
-        persistence = await self._persisted_thread(session_id, thread_id)
+        runtime = await self._runtime(session_id, thread_id)
+        if runtime is not None:
+            persistence = self._thread_persistence(
+                self.paths.session(session_id), thread_id=thread_id
+            )
+        else:
+            persistence = await self._persisted_thread(session_id, thread_id)
         try:
             page = persistence.history.page_trajectory(
                 limit=limit, cursor=cursor, before=before
